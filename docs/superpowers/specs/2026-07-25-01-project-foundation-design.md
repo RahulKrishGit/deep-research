@@ -34,16 +34,16 @@ Use a standard `src` package layout:
 
 ```text
 src/deep_research/
-â”œâ”€â”€ __init__.py
-â”œâ”€â”€ __main__.py
-â”œâ”€â”€ main.py
-â”œâ”€â”€ graph/
-â”œâ”€â”€ agents/
-â”œâ”€â”€ memory/
-â”œâ”€â”€ tools/
-â”œâ”€â”€ providers/
-â”œâ”€â”€ observability/
-â””â”€â”€ utils/
+|-- __init__.py
+|-- __main__.py
+|-- main.py
+|-- graph/
+|-- agents/
+|-- memory/
+|-- tools/
+|-- providers/
+|-- observability/
+`-- utils/
 ```
 
 The package should expose a stub `run_research()` interface in `main.py` with the final expected shape documented, but not implemented beyond raising `NotImplementedError`.

@@ -478,66 +478,65 @@ Proposed repository layout:
 
 ```text
 deep-research/
-â”œâ”€â”€ config.yaml
-â”œâ”€â”€ pyproject.toml
-â”œâ”€â”€ .env.example
-â”œâ”€â”€ README.md
-â”œâ”€â”€ src/
-â”‚   â””â”€â”€ deep_research/
-â”‚       â”œâ”€â”€ __init__.py
-â”‚       â”œâ”€â”€ __main__.py
-â”‚       â”œâ”€â”€ main.py
-â”‚       â”œâ”€â”€ graph/
-â”‚       â”‚   â”œâ”€â”€ __init__.py
-â”‚       â”‚   â”œâ”€â”€ state.py
-â”‚       â”‚   â””â”€â”€ orchestrator.py
-â”‚       â”œâ”€â”€ agents/
-â”‚       â”‚   â”œâ”€â”€ __init__.py
-â”‚       â”‚   â”œâ”€â”€ base.py
-â”‚       â”‚   â”œâ”€â”€ planner.py
-â”‚       â”‚   â”œâ”€â”€ researcher.py
-â”‚       â”‚   â”œâ”€â”€ source_evaluator.py
-â”‚       â”‚   â”œâ”€â”€ fact_checker.py
-â”‚       â”‚   â”œâ”€â”€ synthesizer.py
-â”‚       â”‚   â””â”€â”€ critic.py
-â”‚       â”œâ”€â”€ memory/
-â”‚       â”‚   â”œâ”€â”€ __init__.py
-â”‚       â”‚   â”œâ”€â”€ scratchpad.py
-â”‚       â”‚   â”œâ”€â”€ long_term.py
-â”‚       â”‚   â””â”€â”€ procedural.py
-â”‚       â”œâ”€â”€ tools/
-â”‚       â”‚   â”œâ”€â”€ __init__.py
-â”‚       â”‚   â”œâ”€â”€ base.py
-â”‚       â”‚   â”œâ”€â”€ web_search.py
-â”‚       â”‚   â”œâ”€â”€ web_scraper.py
-â”‚       â”‚   â”œâ”€â”€ document_reader.py
-â”‚       â”‚   â”œâ”€â”€ memory_tools.py
-â”‚       â”‚   â””â”€â”€ write_document.py
-â”‚       â”œâ”€â”€ providers/
-â”‚       â”‚   â”œâ”€â”€ __init__.py
-â”‚       â”‚   â””â”€â”€ openai_provider.py
-â”‚       â”œâ”€â”€ observability/
-â”‚       â”‚   â”œâ”€â”€ __init__.py
-â”‚       â”‚   â”œâ”€â”€ tracker.py
-â”‚       â”‚   â””â”€â”€ evaluator.py
-â”‚       â””â”€â”€ utils/
-â”‚           â”œâ”€â”€ __init__.py
-â”‚           â”œâ”€â”€ config.py
-â”‚           â””â”€â”€ types.py
-â”œâ”€â”€ api/
-â”‚   â”œâ”€â”€ __init__.py
-â”‚   â””â”€â”€ server.py
-â”œâ”€â”€ ui/
-â”‚   â”œâ”€â”€ app.py
-â”‚   â””â”€â”€ components/
-â”œâ”€â”€ memory/
-â”œâ”€â”€ output/
-â””â”€â”€ tests/
-    â”œâ”€â”€ test_agents/
-    â”œâ”€â”€ test_tools/
-    â”œâ”€â”€ test_memory/
-    â””â”€â”€ test_graph/
-```
+|-- config.yaml
+|-- pyproject.toml
+|-- .env.example
+|-- README.md
+|-- src/
+|   `-- deep_research/
+|       |-- __init__.py
+|       |-- __main__.py
+|       |-- main.py
+|       |-- graph/
+|       |   |-- __init__.py
+|       |   |-- state.py
+|       |   `-- orchestrator.py
+|       |-- agents/
+|       |   |-- __init__.py
+|       |   |-- base.py
+|       |   |-- planner.py
+|       |   |-- researcher.py
+|       |   |-- source_evaluator.py
+|       |   |-- fact_checker.py
+|       |   |-- synthesizer.py
+|       |   `-- critic.py
+|       |-- memory/
+|       |   |-- __init__.py
+|       |   |-- scratchpad.py
+|       |   |-- long_term.py
+|       |   `-- procedural.py
+|       |-- tools/
+|       |   |-- __init__.py
+|       |   |-- base.py
+|       |   |-- web_search.py
+|       |   |-- web_scraper.py
+|       |   |-- document_reader.py
+|       |   |-- memory_tools.py
+|       |   `-- write_document.py
+|       |-- providers/
+|       |   |-- __init__.py
+|       |   `-- openai_provider.py
+|       |-- observability/
+|       |   |-- __init__.py
+|       |   |-- tracker.py
+|       |   `-- evaluator.py
+|       `-- utils/
+|           |-- __init__.py
+|           |-- config.py
+|           `-- types.py
+|-- api/
+|   |-- __init__.py
+|   `-- server.py
+|-- ui/
+|   |-- app.py
+|   `-- components/
+|-- memory/
+|-- output/
+`-- tests/
+    |-- test_agents/
+    |-- test_tools/
+    |-- test_memory/
+    `-- test_graph/`n```
 
 Runtime directories `memory/` and `output/` should be gitignored.
 
