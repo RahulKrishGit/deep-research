@@ -1,5 +1,6 @@
 # Deep Research — default runtime configuration
-# Override any value via environment variable with the same key name.
+# Override values with uppercase full-path environment variable names (for example,
+# LLM_MODEL or MEMORY_LONG_TERM_PERSIST_DIRECTORY).
 
 llm:
   provider: openai

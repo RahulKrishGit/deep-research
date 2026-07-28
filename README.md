@@ -36,6 +36,10 @@ Foundation phase — package skeleton and configuration loading only.
    # Edit .env with your API keys
    ```
 
+   Copying `.env.example` creates a template only. The foundation does not load
+   `.env` automatically, so export these values or inject them into the process
+   environment before running the application.
+
 5. **Verify setup**
 
    ```bash
@@ -63,7 +67,9 @@ output/                # Generated reports (gitignored)
 
 ## Configuration
 
-See `config.yaml` for default settings. Sensitive values are set via environment variables (see `.env.example`).
+See `config.yaml` for default settings. Sensitive values are set via environment
+variables (see `.env.example`). Configuration overrides use uppercase full-path
+names, such as `LLM_MODEL` and `MEMORY_LONG_TERM_PERSIST_DIRECTORY`.
 
 ## Development
 
