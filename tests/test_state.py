@@ -13,6 +13,8 @@ from deep_research.utils.types import (
     ResearchState,
     ScoredSource,
     SubTopic,
+    advance_research_iteration,
+    merge_research_state,
 )
 
 
@@ -153,3 +155,139 @@ def test_state_rejects_iteration_above_maximum() -> None:
             iteration=4,
             max_iterations=3,
         )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "item"),
+    [
+        ("sub_topics", sub_topic()),
+        ("raw_findings", finding()),
+        ("evaluated_sources", source()),
+        ("verified_claims", claim()),
+        (
+            "events",
+            ResearchEvent(
+                event_type="agent.started",
+                source="researcher",
+                message="Researcher started.",
+            ),
+        ),
+        (
+            "errors",
+            ResearchError(
+                error_type="search_timeout",
+                source="web_search",
+                message="Search timed out.",
+            ),
+        ),
+    ],
+)
+def test_merge_appends_lists_without_mutating_original(
+    field_name: str,
+    item: object,
+) -> None:
+    state = ResearchState(session_id="session-1", original_question="A question?")
+
+    merged = merge_research_state(state, {field_name: [item]})
+
+    assert getattr(merged, field_name) == [item]
+    assert getattr(state, field_name) == []
+
+
+def test_merge_replaces_scalars_critique_report_and_memory() -> None:
+    old_critique = critique(score=6).model_copy(update={"should_continue": True})
+    new_critique = critique(score=9)
+    new_memory = MemorySnapshot(
+        similar_findings=[finding("A recalled finding.")],
+        known_source_reputations={"example.com": 0.9},
+        suggested_strategies=["Prefer primary sources."],
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        report="Old report",
+        critique=old_critique,
+        memory_context=MemorySnapshot(suggested_strategies=["Old strategy."]),
+    )
+
+    merged = merge_research_state(
+        state,
+        {
+            "report": "New report",
+            "critique": new_critique,
+            "max_iterations": 5,
+            "memory_context": new_memory,
+        },
+    )
+
+    assert merged.report == "New report"
+    assert merged.critique == new_critique
+    assert merged.max_iterations == 5
+    assert merged.memory_context == new_memory
+    assert state.report == "Old report"
+    assert state.critique == old_critique
+
+
+def test_merge_deep_copies_unchanged_nested_values() -> None:
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        memory_context=MemorySnapshot(similar_findings=[finding()]),
+    )
+
+    merged = merge_research_state(state, {"report": "Draft report"})
+    merged.memory_context.similar_findings.append(finding("A new finding."))
+
+    assert len(merged.memory_context.similar_findings) == 2
+    assert len(state.memory_context.similar_findings) == 1
+
+
+def test_merge_deep_copies_supplied_nested_values() -> None:
+    replacement = MemorySnapshot(similar_findings=[finding()])
+    state = ResearchState(session_id="session-1", original_question="A question?")
+
+    merged = merge_research_state(state, {"memory_context": replacement})
+    merged.memory_context.similar_findings.append(finding("A new finding."))
+
+    assert len(merged.memory_context.similar_findings) == 2
+    assert len(replacement.similar_findings) == 1
+
+
+def test_merge_rejects_unknown_fields() -> None:
+    state = ResearchState(session_id="session-1", original_question="A question?")
+
+    with pytest.raises(ValueError, match="unknown ResearchState fields"):
+        merge_research_state(state, {"unknown": "value"})
+
+
+def test_merge_rejects_iteration_changes() -> None:
+    state = ResearchState(session_id="session-1", original_question="A question?")
+
+    with pytest.raises(ValueError, match="advance_research_iteration"):
+        merge_research_state(state, {"iteration": 1})
+
+
+def test_graph_iteration_advance_returns_a_new_state() -> None:
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        iteration=1,
+        max_iterations=3,
+    )
+
+    advanced = advance_research_iteration(state)
+
+    assert advanced.iteration == 2
+    assert state.iteration == 1
+
+
+def test_graph_iteration_cannot_advance_past_maximum() -> None:
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        iteration=3,
+        max_iterations=3,
+    )
+
+    with pytest.raises(ValueError, match="max_iterations"):
+        advance_research_iteration(state)

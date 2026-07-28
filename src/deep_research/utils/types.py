@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias, TypedDict
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    model_validator,
+)
 
 
 def _validate_aware_iso8601(value: str) -> str:
@@ -134,3 +142,62 @@ class ResearchState(ContractModel):
         if self.iteration > self.max_iterations:
             raise ValueError("iteration cannot exceed max_iterations")
         return self
+
+
+class ResearchStateUpdate(TypedDict, total=False):
+    session_id: str
+    original_question: str
+    sub_topics: list[SubTopic]
+    raw_findings: list[Finding]
+    evaluated_sources: list[ScoredSource]
+    verified_claims: list[Claim]
+    report: str | None
+    critique: Critique | None
+    max_iterations: int
+    memory_context: MemorySnapshot
+    events: list[ResearchEvent]
+    errors: list[ResearchError]
+
+
+_APPEND_STATE_FIELDS = frozenset(
+    {
+        "sub_topics",
+        "raw_findings",
+        "evaluated_sources",
+        "verified_claims",
+        "events",
+        "errors",
+    }
+)
+
+
+def merge_research_state(
+    state: ResearchState,
+    update: ResearchStateUpdate,
+) -> ResearchState:
+    unknown_fields = set(update).difference(ResearchState.model_fields)
+    if unknown_fields:
+        names = ", ".join(sorted(unknown_fields))
+        raise ValueError(f"unknown ResearchState fields: {names}")
+    if "iteration" in update:
+        raise ValueError("use advance_research_iteration to change iteration")
+
+    payload = state.model_dump(mode="python")
+    for field_name, value in update.items():
+        if field_name in _APPEND_STATE_FIELDS:
+            if not isinstance(value, list):
+                raise TypeError(f"{field_name} update must be a list")
+            payload[field_name] = [*payload[field_name], *deepcopy(value)]
+        else:
+            payload[field_name] = deepcopy(value)
+
+    return ResearchState.model_validate(payload)
+
+
+def advance_research_iteration(state: ResearchState) -> ResearchState:
+    if state.iteration >= state.max_iterations:
+        raise ValueError("cannot advance iteration beyond max_iterations")
+
+    payload = state.model_dump(mode="python")
+    payload["iteration"] = state.iteration + 1
+    return ResearchState.model_validate(payload)
