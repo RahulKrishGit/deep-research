@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
 
 
 def _validate_aware_iso8601(value: str) -> str:
@@ -17,6 +17,10 @@ def _validate_aware_iso8601(value: str) -> str:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("timestamp must be timezone-aware")
     return value
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 AwareISOString: TypeAlias = Annotated[str, AfterValidator(_validate_aware_iso8601)]
@@ -91,3 +95,20 @@ class MemorySnapshot(ContractModel):
     similar_findings: list[Finding] = Field(default_factory=list)
     known_source_reputations: dict[str, UnitScore] = Field(default_factory=dict)
     suggested_strategies: list[str] = Field(default_factory=list)
+
+
+class ResearchEvent(ContractModel):
+    event_type: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    timestamp: AwareISOString = Field(default_factory=_utc_now_iso)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class ResearchError(ContractModel):
+    error_type: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    recoverable: bool = True
+    timestamp: AwareISOString = Field(default_factory=_utc_now_iso)
+    details: dict[str, JsonValue] = Field(default_factory=dict)

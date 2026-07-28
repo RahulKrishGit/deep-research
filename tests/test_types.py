@@ -1,5 +1,7 @@
 """Tests for shared research domain contracts."""
 
+from datetime import datetime
+
 import pytest
 from pydantic import ValidationError
 
@@ -8,6 +10,8 @@ from deep_research.utils.types import (
     Critique,
     Finding,
     MemorySnapshot,
+    ResearchError,
+    ResearchEvent,
     ScoredSource,
     SubTopic,
 )
@@ -116,3 +120,26 @@ def test_missing_required_field_fails_validation() -> None:
 def test_domain_models_reject_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         scored_source(undocumented_score=0.5)
+
+
+def test_research_event_serializes_and_round_trips() -> None:
+    event = ResearchEvent(event_type='agent.started', source='planner', message='Planner started.', timestamp='2026-07-25T12:00:00+00:00', metadata={})
+    payload = event.model_dump(mode='json')
+    assert payload['event_type'] == 'agent.started'
+
+def test_research_error_serializes_and_round_trips() -> None:
+    error = ResearchError(error_type='search_timeout', source='web_search', message='The search provider timed out.', recoverable=True, timestamp='2026-07-25T12:01:00Z', details={'retry_count': 2, 'provider': 'tavily'})
+    payload = error.model_dump(mode='json')
+    assert payload['recoverable'] is True
+    assert payload['timestamp'] == '2026-07-25T12:01:00Z'
+    assert payload['details'] == {'retry_count': 2, 'provider': 'tavily'}
+    assert ResearchError.model_validate(payload) == error
+
+def test_event_and_error_defaults_are_json_safe_and_timezone_aware() -> None:
+    event = ResearchEvent(event_type='session.started', source='orchestrator', message='Research session started.')
+    error = ResearchError(error_type='trace_failure', source='langsmith', message='Tracing failed; continuing locally.')
+    assert datetime.fromisoformat(event.timestamp).utcoffset() is not None
+    assert datetime.fromisoformat(error.timestamp).utcoffset() is not None
+    assert event.metadata == {}
+    assert error.details == {}
+    assert error.recoverable is True
