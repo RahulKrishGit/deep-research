@@ -30,15 +30,20 @@ def test_all_subpackages_import() -> None:
 
 def test_shared_research_types_import_from_utils_package() -> None:
     from deep_research.utils import (  # noqa: F401
+        AwareISOString,
         Claim,
+        ClaimVerdict,
+        CriticScore,
         Critique,
         Finding,
         MemorySnapshot,
         ResearchError,
         ResearchEvent,
         ResearchState,
+        ResearchStateUpdate,
         ScoredSource,
         SubTopic,
+        UnitScore,
         advance_research_iteration,
         merge_research_state,
     )

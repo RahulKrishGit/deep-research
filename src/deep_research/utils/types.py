@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Annotated, Literal, TypeAlias, TypedDict
 
 from pydantic import (
@@ -31,7 +32,23 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _validate_finite_json(value: JsonValue) -> JsonValue:
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError("JSON numbers must be finite")
+    if isinstance(value, list):
+        for item in value:
+            _validate_finite_json(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _validate_finite_json(item)
+    return value
+
+
 AwareISOString: TypeAlias = Annotated[str, AfterValidator(_validate_aware_iso8601)]
+_FiniteJsonValue: TypeAlias = Annotated[
+    JsonValue,
+    AfterValidator(_validate_finite_json),
+]
 UnitScore: TypeAlias = Annotated[float, Field(ge=0.0, le=1.0)]
 CriticScore: TypeAlias = Annotated[int, Field(ge=1, le=10)]
 Priority: TypeAlias = Annotated[int, Field(ge=1)]
@@ -110,7 +127,7 @@ class ResearchEvent(ContractModel):
     source: str = Field(min_length=1)
     message: str = Field(min_length=1)
     timestamp: AwareISOString = Field(default_factory=_utc_now_iso)
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    metadata: dict[str, _FiniteJsonValue] = Field(default_factory=dict)
 
 
 class ResearchError(ContractModel):
@@ -119,7 +136,7 @@ class ResearchError(ContractModel):
     message: str = Field(min_length=1)
     recoverable: bool = True
     timestamp: AwareISOString = Field(default_factory=_utc_now_iso)
-    details: dict[str, JsonValue] = Field(default_factory=dict)
+    details: dict[str, _FiniteJsonValue] = Field(default_factory=dict)
 
 
 class ResearchState(ContractModel):

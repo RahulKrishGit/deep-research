@@ -194,6 +194,36 @@ def test_merge_appends_lists_without_mutating_original(
     assert getattr(state, field_name) == []
 
 
+def test_merge_preserves_multi_item_append_order() -> None:
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        sub_topics=[sub_topic("Existing")],
+    )
+
+    merged = merge_research_state(
+        state,
+        {"sub_topics": [sub_topic("First"), sub_topic("Second")]},
+    )
+
+    assert [topic.title for topic in merged.sub_topics] == [
+        "Existing",
+        "First",
+        "Second",
+    ]
+
+
+def test_merge_isolates_supplied_append_items() -> None:
+    supplied = sub_topic("Supplied")
+    state = ResearchState(session_id="session-1", original_question="A question?")
+
+    merged = merge_research_state(state, {"sub_topics": [supplied]})
+    merged.sub_topics[0].search_queries.append("new query")
+
+    assert merged.sub_topics[0].search_queries == ["supplied evidence", "new query"]
+    assert supplied.search_queries == ["supplied evidence"]
+
+
 def test_merge_replaces_scalars_critique_report_and_memory() -> None:
     old_critique = critique(score=6).model_copy(update={"should_continue": True})
     new_critique = critique(score=9)
@@ -226,6 +256,13 @@ def test_merge_replaces_scalars_critique_report_and_memory() -> None:
     assert merged.memory_context == new_memory
     assert state.report == "Old report"
     assert state.critique == old_critique
+
+
+def test_merge_validates_invalid_scalar_replacement() -> None:
+    state = ResearchState(session_id="session-1", original_question="A question?")
+
+    with pytest.raises(ValidationError):
+        merge_research_state(state, {"max_iterations": 0})
 
 
 def test_merge_deep_copies_unchanged_nested_values() -> None:

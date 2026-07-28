@@ -149,6 +149,18 @@ def test_research_event_serializes_and_round_trips() -> None:
     }
     assert ResearchEvent.model_validate(payload) == event
 
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_research_event_rejects_nested_non_finite_metadata(value: float) -> None:
+    with pytest.raises(ValidationError, match="finite"):
+        ResearchEvent(
+            event_type="agent.completed",
+            source="researcher",
+            message="Researcher completed.",
+            metadata={"results": [{"score": value}]},
+        )
+
+
 def test_research_error_serializes_and_round_trips() -> None:
     error = ResearchError(
         error_type="search_timeout",
@@ -163,6 +175,18 @@ def test_research_error_serializes_and_round_trips() -> None:
     assert payload["timestamp"] == "2026-07-25T12:01:00Z"
     assert payload["details"] == {"retry_count": 2, "provider": "tavily"}
     assert ResearchError.model_validate(payload) == error
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_research_error_rejects_nested_non_finite_details(value: float) -> None:
+    with pytest.raises(ValidationError, match="finite"):
+        ResearchError(
+            error_type="invalid_score",
+            source="evaluator",
+            message="Evaluator returned an invalid score.",
+            details={"attempts": [{"scores": [0.5, value]}]},
+        )
+
 
 def test_event_and_error_defaults_are_json_safe_and_timezone_aware() -> None:
     event = ResearchEvent(
