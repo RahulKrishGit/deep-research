@@ -63,6 +63,15 @@ def test_load_config_invalid_yaml(tmp_path: Path) -> None:
         load_config(str(config_path))
 
 
+def test_load_config_empty_yaml(tmp_path: Path) -> None:
+    """Empty YAML content is rejected because it is not a mapping."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid YAML"):
+        load_config(str(config_path))
+
+
 @pytest.mark.parametrize(
     ("environment_name", "expected_path", "value", "expected_value"),
     [

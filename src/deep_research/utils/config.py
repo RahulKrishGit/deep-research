@@ -111,8 +111,7 @@ def load_config(config_path: str, strict: bool = False) -> ConfigSettings:
     except yaml.YAMLError as error:
         raise ValueError(f"Invalid YAML in {config_path}: {error}") from error
 
-    if raw_config is None:
-        raw_config = {}
+
     if not isinstance(raw_config, dict):
         raise ValueError(f"Invalid YAML in {config_path}: expected a top-level mapping")
 
