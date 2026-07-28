@@ -124,56 +124,56 @@ def test_domain_models_reject_unknown_fields() -> None:
 
 def test_research_event_serializes_and_round_trips() -> None:
     event = ResearchEvent(
-        event_type='agent.started',
-        source='planner',
-        message='Planner started.',
-        timestamp='2026-07-25T12:00:00+00:00',
+        event_type="agent.started",
+        source="planner",
+        message="Planner started.",
+        timestamp="2026-07-25T12:00:00+00:00",
         metadata={
-            'iteration': 0,
-            'queries': ['enterprise AI adoption'],
-            'counts': {'sub_topics': 3},
+            "iteration": 0,
+            "queries": ["enterprise AI adoption"],
+            "counts": {"sub_topics": 3},
         },
     )
-    payload = event.model_dump(mode='json')
+    payload = event.model_dump(mode="json")
 
     assert payload == {
-        'event_type': 'agent.started',
-        'source': 'planner',
-        'message': 'Planner started.',
-        'timestamp': '2026-07-25T12:00:00+00:00',
-        'metadata': {
-            'iteration': 0,
-            'queries': ['enterprise AI adoption'],
-            'counts': {'sub_topics': 3},
+        "event_type": "agent.started",
+        "source": "planner",
+        "message": "Planner started.",
+        "timestamp": "2026-07-25T12:00:00+00:00",
+        "metadata": {
+            "iteration": 0,
+            "queries": ["enterprise AI adoption"],
+            "counts": {"sub_topics": 3},
         },
     }
     assert ResearchEvent.model_validate(payload) == event
 
 def test_research_error_serializes_and_round_trips() -> None:
     error = ResearchError(
-        error_type='search_timeout',
-        source='web_search',
-        message='The search provider timed out.',
+        error_type="search_timeout",
+        source="web_search",
+        message="The search provider timed out.",
         recoverable=True,
-        timestamp='2026-07-25T12:01:00Z',
-        details={'retry_count': 2, 'provider': 'tavily'},
+        timestamp="2026-07-25T12:01:00Z",
+        details={"retry_count": 2, "provider": "tavily"},
     )
-    payload = error.model_dump(mode='json')
-    assert payload['recoverable'] is True
-    assert payload['timestamp'] == '2026-07-25T12:01:00Z'
-    assert payload['details'] == {'retry_count': 2, 'provider': 'tavily'}
+    payload = error.model_dump(mode="json")
+    assert payload["recoverable"] is True
+    assert payload["timestamp"] == "2026-07-25T12:01:00Z"
+    assert payload["details"] == {"retry_count": 2, "provider": "tavily"}
     assert ResearchError.model_validate(payload) == error
 
 def test_event_and_error_defaults_are_json_safe_and_timezone_aware() -> None:
     event = ResearchEvent(
-        event_type='session.started',
-        source='orchestrator',
-        message='Research session started.',
+        event_type="session.started",
+        source="orchestrator",
+        message="Research session started.",
     )
     error = ResearchError(
-        error_type='trace_failure',
-        source='langsmith',
-        message='Tracing failed; continuing locally.',
+        error_type="trace_failure",
+        source="langsmith",
+        message="Tracing failed; continuing locally.",
     )
     assert datetime.fromisoformat(event.timestamp).utcoffset() is not None
     assert datetime.fromisoformat(error.timestamp).utcoffset() is not None
