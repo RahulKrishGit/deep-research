@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 def _validate_aware_iso8601(value: str) -> str:
@@ -112,3 +112,25 @@ class ResearchError(ContractModel):
     recoverable: bool = True
     timestamp: AwareISOString = Field(default_factory=_utc_now_iso)
     details: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class ResearchState(ContractModel):
+    session_id: str = Field(min_length=1)
+    original_question: str = Field(min_length=1)
+    sub_topics: list[SubTopic] = Field(default_factory=list)
+    raw_findings: list[Finding] = Field(default_factory=list)
+    evaluated_sources: list[ScoredSource] = Field(default_factory=list)
+    verified_claims: list[Claim] = Field(default_factory=list)
+    report: str | None = None
+    critique: Critique | None = None
+    iteration: int = Field(default=0, ge=0)
+    max_iterations: int = Field(default=3, ge=1)
+    memory_context: MemorySnapshot = Field(default_factory=MemorySnapshot)
+    events: list[ResearchEvent] = Field(default_factory=list)
+    errors: list[ResearchError] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_iteration_bounds(self) -> ResearchState:
+        if self.iteration > self.max_iterations:
+            raise ValueError("iteration cannot exceed max_iterations")
+        return self
