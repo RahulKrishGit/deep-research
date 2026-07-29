@@ -52,6 +52,13 @@ async def test_disabled_nested_spans_record_local_context_events_and_metrics() -
                     llm.set_token_usage(input_tokens=11, output_tokens=7)
                     assert current_trace_context().model == "gpt-4o"
 
+                llm_parent_context = current_trace_context()
+                assert llm_parent_context is not None
+                assert llm_parent_context.agent_name == "planner"
+                assert llm_parent_context.iteration == 2
+                assert llm_parent_context.model is None
+                assert llm_parent_context.tool_name is None
+
                 async with tracker.tool_span(
                     "web_search",
                     {"query": "Rayleigh scattering"},
@@ -59,7 +66,34 @@ async def test_disabled_nested_spans_record_local_context_events_and_metrics() -
                 ):
                     assert current_trace_context().tool_name == "web_search"
 
+                tool_parent_context = current_trace_context()
+                assert tool_parent_context is not None
+                assert tool_parent_context.agent_name == "planner"
+                assert tool_parent_context.iteration == 2
+                assert tool_parent_context.model is None
+                assert tool_parent_context.tool_name is None
+
+            react_parent_context = current_trace_context()
+            assert react_parent_context is not None
+            assert react_parent_context.agent_name == "planner"
+            assert react_parent_context.iteration is None
+            assert react_parent_context.model is None
+            assert react_parent_context.tool_name is None
+
+        agent_parent_context = current_trace_context()
+        assert agent_parent_context is not None
+        assert agent_parent_context.session_id == "session-1"
+        assert agent_parent_context.agent_name is None
+        assert agent_parent_context.iteration is None
+        assert agent_parent_context.model is None
+        assert agent_parent_context.tool_name is None
+
     assert current_trace_context() is None
+    assert tracker.events[4].metadata["token_usage"] == {
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "total_tokens": 18,
+    }
     assert [event.event_type for event in tracker.events] == [
         "observability.span.started",
         "observability.span.started",
