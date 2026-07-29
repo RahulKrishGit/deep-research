@@ -798,6 +798,36 @@ async def test_remote_payloads_and_client_anonymizer_redacts_secrets(
 
 
 @pytest.mark.asyncio
+async def test_remote_run_names_and_initial_metadata_redact_configured_secret(
+) -> None:
+    secret = "sentinel-context-secret"
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key=secret,
+        ),
+        client_factory=RecordingClientFactory(),
+        trace_factory=trace_factory,
+    )
+
+    async with tracker.session_span(f"session-{secret}", "question"):
+        async with tracker.agent_span(f"agent-{secret}"):
+            async with tracker.react_iteration_span(0):
+                async with tracker.llm_span(f"model-{secret}", {}):
+                    pass
+                async with tracker.tool_span(f"tool-{secret}", {}):
+                    pass
+
+    assert secret not in repr(trace_factory.calls)
+    assert trace_factory.calls[1]["name"] == "agent.agent-[REDACTED]"
+    assert trace_factory.calls[3]["name"] == "llm.model-[REDACTED]"
+    assert trace_factory.calls[4]["name"] == "tool.tool-[REDACTED]"
+    assert secret in repr(tracker.events)
+
+
+@pytest.mark.asyncio
 async def test_started_event_precedes_remote_entry_and_completion_keeps_url() -> None:
     observed_events: list[tuple[str, ...]] = []
     tracker: Tracker
@@ -844,6 +874,19 @@ async def test_invalid_public_child_span_arguments_fail_before_yielding() -> Non
                 tracker.llm_span("   ", {})
             with pytest.raises(ValidationError):
                 tracker.tool_span("   ", {})
+
+
+@pytest.mark.asyncio
+async def test_negative_tool_retry_count_fails_before_entering_body() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    body_entered = False
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            async with tracker.tool_span("web_search", {}, retry_count=-1):
+                body_entered = True
+
+    assert body_entered is False
 
 
 @pytest.mark.asyncio

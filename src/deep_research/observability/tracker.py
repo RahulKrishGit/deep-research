@@ -13,7 +13,15 @@ from time import perf_counter
 from typing import Any, Literal, Protocol, TypeAlias
 
 from langsmith import Client, trace, tracing_context
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    NonNegativeInt,
+    TypeAdapter,
+    model_validator,
+)
 
 from deep_research.observability.context import (
     LangSmithRuntimeConfig,
@@ -49,6 +57,7 @@ _SENSITIVE_KEYS = frozenset(
         "credential",
     }
 )
+_RETRY_COUNT_ADAPTER = TypeAdapter(NonNegativeInt)
 
 
 class RunLike(Protocol):
@@ -372,6 +381,7 @@ class Tracker:
     ) -> AbstractAsyncContextManager[SpanHandle]:
         parent = self._require_context()
         context = _validated_context(parent, tool_name=tool_name, model=None)
+        retry_count = _RETRY_COUNT_ADAPTER.validate_python(retry_count)
 
         def metric_factory(
             ctx: TraceContext,
@@ -443,13 +453,16 @@ class Tracker:
 
         try:
             manager = self._trace_factory(
-                name,
+                _redact_string(self._redact, name),
                 run_type,
                 inputs=_redact_mapping(self._redact, inputs),
                 project_name=self._runtime.project,
-                metadata=build_trace_metadata(
-                    context,
-                    extra={"span_kind": kind},
+                metadata=_redact_mapping(
+                    self._redact,
+                    build_trace_metadata(
+                        context,
+                        extra={"span_kind": kind},
+                    ),
                 ),
                 client=self._client,
             )
@@ -822,6 +835,13 @@ def _redact_mapping(
     redacted = redactor(value)
     if not isinstance(redacted, dict):
         raise TypeError("redacted mapping must remain a mapping")
+    return redacted
+
+
+def _redact_string(redactor: Redactor, value: str) -> str:
+    redacted = redactor(value)
+    if not isinstance(redacted, str):
+        raise TypeError("redacted string must remain a string")
     return redacted
 
 
