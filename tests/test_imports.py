@@ -47,3 +47,22 @@ def test_shared_research_types_import_from_utils_package() -> None:
         advance_research_iteration,
         merge_research_state,
     )
+
+
+def test_observability_contracts_import_from_package() -> None:
+    from deep_research.observability import (  # noqa: F401
+        AgentMetric,
+        LangSmithRuntimeConfig,
+        MetricRecord,
+        SessionMetric,
+        SpanHandle,
+        TokenUsage,
+        TokenUsageMetric,
+        ToolMetric,
+        TraceContext,
+        Tracker,
+        bind_trace_context,
+        build_trace_metadata,
+        current_trace_context,
+        load_langsmith_runtime_config,
+    )

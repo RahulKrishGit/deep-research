@@ -4,7 +4,7 @@ Multi-agent deep research system using LangGraph, OpenAI, ChromaDB, and LangSmit
 
 ## Project Status
 
-Foundation phase — package skeleton and configuration loading only.
+Foundation phase — package skeleton, typed configuration/state, and the LangSmith observability foundation.
 
 ## Setup
 
@@ -71,6 +71,35 @@ See `config.yaml` for default settings. Sensitive values are set via environment
 variables (see `.env.example`). Configuration overrides use uppercase full-path
 names, such as `LLM_MODEL` and `MEMORY_LONG_TERM_PERSIST_DIRECTORY`.
 
+## Observability
+
+Set `LANGSMITH_TRACING=false` to keep tracing fully local for tests and offline
+development. Set it to `true` and provide non-empty `LANGSMITH_API_KEY` and
+`LANGSMITH_PROJECT` values to mirror the same spans to LangSmith.
+
+Application code imports only the project tracker:
+
+```python
+from deep_research.observability import Tracker
+from deep_research.utils.config import load_config
+
+settings = load_config("config.yaml")
+tracker = Tracker.from_config(settings.langsmith)
+
+async with tracker.session_span("session-123", "Why is the sky blue?"):
+    async with tracker.agent_span("planner"):
+        async with tracker.tool_span(
+            "web_search",
+            {"query": "Rayleigh scattering"},
+        ):
+            results = await search_client.search("Rayleigh scattering")
+```
+
+The documentation snippet uses a named `search_client` placeholder only as an example dependency; the observability implementation does not create that client.
+
+Each completed span appends a typed metric and structured event. A LangSmith
+transport failure appends a recoverable `ResearchError` and research work
+continues locally.
 ## Development
 
 ```bash
