@@ -79,7 +79,7 @@ def test_load_config_empty_yaml(tmp_path: Path) -> None:
         ("LLM_MODEL", ("llm", "model"), "gpt-4.1", "gpt-4.1"),
         ("LLM_TEMPERATURE", ("llm", "temperature"), "0.25", 0.25),
         ("LLM_MAX_TOKENS", ("llm", "max_tokens"), "2048", 2048),
-        ("LANGSMITH_TRACING_ENABLED", ("langsmith", "tracing_enabled"), "true", True),
+        ("LANGSMITH_TRACING", ("langsmith", "tracing_enabled"), "true", True),
         ("LANGSMITH_PROJECT", ("langsmith", "project"), "env-project", "env-project"),
         ("TAVILY_SEARCH_DEPTH", ("tavily", "search_depth"), "advanced", "advanced"),
         ("TAVILY_MAX_RESULTS", ("tavily", "max_results"), "8", 8),

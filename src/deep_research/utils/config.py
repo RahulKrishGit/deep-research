@@ -73,7 +73,7 @@ _ENVIRONMENT_OVERRIDES = {
     "LLM_MODEL": ("llm", "model"),
     "LLM_TEMPERATURE": ("llm", "temperature"),
     "LLM_MAX_TOKENS": ("llm", "max_tokens"),
-    "LANGSMITH_TRACING_ENABLED": ("langsmith", "tracing_enabled"),
+    "LANGSMITH_TRACING": ("langsmith", "tracing_enabled"),
     "LANGSMITH_PROJECT": ("langsmith", "project"),
     "TAVILY_SEARCH_DEPTH": ("tavily", "search_depth"),
     "TAVILY_MAX_RESULTS": ("tavily", "max_results"),
