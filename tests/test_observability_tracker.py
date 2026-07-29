@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 
+import deep_research.observability.tracker as tracker_module
 from deep_research.observability.context import (
     LangSmithRuntimeConfig,
     current_trace_context,
@@ -146,6 +148,7 @@ async def test_child_span_requires_an_active_session() -> None:
         async with tracker.agent_span("planner"):
             pass
 
+
 class FakeRun:
     def __init__(self, trace_url: str) -> None:
         self.trace_url = trace_url
@@ -174,19 +177,27 @@ class FakeTraceManager:
         *,
         enter_error: Exception | None = None,
         exit_error: Exception | None = None,
+        on_enter: Callable[[FakeRun], None] | None = None,
+        on_exit: Callable[[FakeRun], None] | None = None,
     ) -> None:
         self.run = run
         self.enter_error = enter_error
         self.exit_error = exit_error
+        self.on_enter = on_enter
+        self.on_exit = on_exit
         self.exit_calls: list[tuple[object, object, object]] = []
 
     async def __aenter__(self) -> FakeRun:
         if self.enter_error is not None:
             raise self.enter_error
+        if self.on_enter is not None:
+            self.on_enter(self.run)
         return self.run
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> None:
         self.exit_calls.append((exc_type, exc_value, traceback))
+        if self.on_exit is not None:
+            self.on_exit(self.run)
         if self.exit_error is not None:
             raise self.exit_error
 
@@ -199,10 +210,7 @@ class RecordingTraceFactory:
     def __call__(self, name: str, run_type: str, **kwargs: Any) -> FakeTraceManager:
         self.calls.append({"name": name, "run_type": run_type, **kwargs})
         manager = FakeTraceManager(
-            FakeRun(
-                "https://smith.langchain.com/o/example/r/"
-                f"{len(self.calls)}"
-            )
+            FakeRun(f"https://smith.langchain.com/o/example/r/{len(self.calls)}")
         )
         self.managers.append(manager)
         return manager
@@ -260,12 +268,12 @@ async def test_enabled_tracing_emits_nested_runs_and_captures_trace_url() -> Non
     assert trace_factory.calls[0]["metadata"]["session_id"] == "session-1"
     assert trace_factory.calls[3]["metadata"]["agent_name"] == "planner"
     assert trace_factory.calls[4]["metadata"]["tool_name"] == "web_search"
-    assert trace_factory.managers[3].run.end_calls[-1]["metadata"][
-        "token_usage"
-    ] == {"input_tokens": 12, "output_tokens": 4, "total_tokens": 16}
-    assert trace_factory.managers[4].run.end_calls[-1]["outputs"] == {
-        "results": 3
+    assert trace_factory.managers[3].run.end_calls[-1]["metadata"]["token_usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 4,
+        "total_tokens": 16,
     }
+    assert trace_factory.managers[4].run.end_calls[-1]["outputs"] == {"results": 3}
     session_metric = next(
         metric for metric in tracker.metrics if isinstance(metric, SessionMetric)
     )
@@ -386,3 +394,280 @@ async def test_span_end_failure_does_not_hide_operation_exception() -> None:
     assert tracker.metrics[-1].success is False
     assert tracker.metrics[-1].error_type == "ValueError"
     assert tracker.errors[-1].details["stage"] == "span_end"
+
+
+class RecordingTracingContext:
+    def __init__(
+        self,
+        factory: "RecordingTracingContextFactory",
+        kwargs: dict[str, Any],
+    ) -> None:
+        self.factory = factory
+        self.kwargs = kwargs
+        self.exit_calls: list[tuple[object, object, object]] = []
+
+    def __enter__(self) -> None:
+        if self.factory.enter_error is not None:
+            raise self.factory.enter_error
+        self.factory.active_depth += 1
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.exit_calls.append((exc_type, exc_value, traceback))
+        self.factory.active_depth -= 1
+        if self.factory.exit_error is not None:
+            raise self.factory.exit_error
+
+
+class RecordingTracingContextFactory:
+    def __init__(
+        self,
+        *,
+        enter_error: Exception | None = None,
+        exit_error: Exception | None = None,
+    ) -> None:
+        self.enter_error = enter_error
+        self.exit_error = exit_error
+        self.active_depth = 0
+        self.contexts: list[RecordingTracingContext] = []
+
+    def __call__(self, **kwargs: Any) -> RecordingTracingContext:
+        context = RecordingTracingContext(self, kwargs)
+        self.contexts.append(context)
+        return context
+
+
+class ContextAwareTraceFactory:
+    def __init__(self, contexts: RecordingTracingContextFactory) -> None:
+        self.contexts = contexts
+        self.calls: list[dict[str, Any]] = []
+        self.managers: list[FakeTraceManager] = []
+        self.active_runs: list[FakeRun] = []
+
+    def __call__(self, name: str, run_type: str, **kwargs: Any) -> FakeTraceManager:
+        parent = self.active_runs[-1] if self.active_runs else None
+        self.calls.append(
+            {
+                "name": name,
+                "run_type": run_type,
+                "parent": parent,
+                "context_depth": self.contexts.active_depth,
+                **kwargs,
+            }
+        )
+        manager = FakeTraceManager(
+            FakeRun(f"https://smith.langchain.com/o/example/r/{len(self.calls)}"),
+            on_enter=self.active_runs.append,
+            on_exit=lambda run: self.active_runs.pop(),
+        )
+        self.managers.append(manager)
+        return manager
+
+
+@pytest.mark.asyncio
+async def test_enabled_tracing_activates_context_nests_runs_and_inherits_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = RecordingTracingContextFactory()
+    trace_factory = ContextAwareTraceFactory(contexts)
+    client = object()
+    monkeypatch.setattr(
+        tracker_module,
+        "tracing_context",
+        contexts,
+        raising=False,
+    )
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: client,
+        trace_factory=trace_factory,
+    )
+
+    async with tracker.session_span("session-1", "question") as session:
+        session_url = session.trace_url
+        async with tracker.agent_span("planner") as agent:
+            assert agent.trace_url == session_url
+            async with tracker.react_iteration_span(0) as iteration:
+                assert iteration.trace_url == session_url
+                async with tracker.llm_span("gpt-4o", {"prompt": "plan"}) as llm:
+                    assert llm.trace_url == session_url
+                    llm.set_outputs({"response": "plan"})
+                    llm.set_token_usage(input_tokens=12, output_tokens=4)
+                async with tracker.tool_span("web_search", {"query": "topic"}) as tool:
+                    assert tool.trace_url == session_url
+                    tool.set_outputs({"results": 3})
+
+    assert session_url == "https://smith.langchain.com/o/example/r/1"
+    assert [call["context_depth"] for call in trace_factory.calls] == [1, 2, 3, 4, 4]
+    assert [context.kwargs for context in contexts.contexts] == [
+        {
+            "enabled": True,
+            "project_name": "deep-research-tests",
+            "client": client,
+        }
+    ] * 5
+    assert [call["parent"] for call in trace_factory.calls] == [
+        None,
+        trace_factory.managers[0].run,
+        trace_factory.managers[1].run,
+        trace_factory.managers[2].run,
+        trace_factory.managers[2].run,
+    ]
+    assert contexts.active_depth == 0
+    assert trace_factory.active_runs == []
+
+    llm_metadata = trace_factory.managers[3].run.end_calls[-1]["metadata"]
+    assert llm_metadata["success"] is True
+    assert "latency_ms" in llm_metadata
+    assert llm_metadata["trace_url"] == session_url
+    assert llm_metadata["model"] == "gpt-4o"
+    assert llm_metadata["token_usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 4,
+        "total_tokens": 16,
+    }
+    tool_metadata = trace_factory.managers[4].run.end_calls[-1]["metadata"]
+    assert tool_metadata["success"] is True
+    assert "latency_ms" in tool_metadata
+    assert tool_metadata["trace_url"] == session_url
+
+
+class InvalidUrlRun(FakeRun):
+    def __init__(self, value: Any) -> None:
+        super().__init__("https://smith.langchain.com/o/example/r/invalid")
+        self.value = value
+
+    def get_url(self) -> str:
+        return self.value
+
+
+class RaisingUrlRun(FakeRun):
+    def get_url(self) -> str:
+        raise ConnectionError("cannot retrieve trace URL")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["", "  ", None, 42])
+async def test_invalid_session_trace_url_falls_back_locally(value: Any) -> None:
+    manager = FakeTraceManager(InvalidUrlRun(value))
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=lambda *args, **kwargs: manager,
+    )
+
+    async with tracker.session_span("session-1", "question") as session:
+        assert session.trace_url is None
+
+    assert tracker.errors[-1].details["stage"] == "trace_url"
+    assert "trace_url" not in manager.run.end_calls[-1]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_raising_session_trace_url_falls_back_locally() -> None:
+    manager = FakeTraceManager(RaisingUrlRun("ignored"))
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=lambda *args, **kwargs: manager,
+    )
+
+    async with tracker.session_span("session-1", "question") as session:
+        assert session.trace_url is None
+
+    assert tracker.errors[-1].details["stage"] == "trace_url"
+
+
+@pytest.mark.asyncio
+async def test_successful_operation_survives_remote_end_and_exit_failures() -> None:
+    manager = FakeTraceManager(
+        FailingEndRun("https://smith.langchain.com/o/example/r/failure"),
+        exit_error=ConnectionError("cannot patch run"),
+    )
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=lambda *args, **kwargs: manager,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        pass
+
+    assert tracker.metrics[-1].success is True
+    assert [error.details["stage"] for error in tracker.errors] == [
+        "span_end",
+        "span_exit",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tracing_context_entry_failure_falls_back_locally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = RecordingTracingContextFactory(
+        enter_error=ConnectionError("context unavailable")
+    )
+    monkeypatch.setattr(tracker_module, "tracing_context", contexts)
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        pass
+
+    assert tracker.metrics[-1].success is True
+    assert tracker.errors[-1].details["stage"] == "tracing_context_enter"
+
+
+@pytest.mark.asyncio
+async def test_tracing_context_exit_failure_preserves_operation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = RecordingTracingContextFactory(
+        exit_error=ConnectionError("context close")
+    )
+    manager = FakeTraceManager(
+        FakeRun("https://smith.langchain.com/o/example/r/failure")
+    )
+    monkeypatch.setattr(tracker_module, "tracing_context", contexts)
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=lambda *args, **kwargs: manager,
+    )
+
+    with pytest.raises(ValueError, match="research failed"):
+        async with tracker.session_span("session-1", "question"):
+            raise ValueError("research failed")
+
+    metadata = manager.run.end_calls[-1]["metadata"]
+    assert metadata["success"] is False
+    assert metadata["error_type"] == "ValueError"
+    assert "latency_ms" in metadata
+    assert metadata["trace_url"] == "https://smith.langchain.com/o/example/r/failure"
+    assert tracker.errors[-1].details["stage"] == "tracing_context_exit"

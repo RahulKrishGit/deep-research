@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    asynccontextmanager,
+)
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Literal, Protocol, TypeAlias
 
-from langsmith import Client, trace
+from langsmith import Client, trace, tracing_context
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from deep_research.observability.context import (
@@ -385,9 +389,30 @@ class Tracker:
         run_type: RunType,
         context: TraceContext,
         inputs: Mapping[str, JsonValue],
-    ) -> tuple[AsyncTraceManager | None, RunLike | None, str | None]:
+    ) -> tuple[
+        AbstractContextManager[None] | None,
+        AsyncTraceManager | None,
+        RunLike | None,
+        str | None,
+    ]:
         if self._client is None:
-            return None, None, None
+            return None, None, None, None
+
+        tracing_manager: AbstractContextManager[None] | None = None
+        try:
+            tracing_manager = tracing_context(
+                enabled=True,
+                project_name=self._runtime.project,
+                client=self._client,
+            )
+            tracing_manager.__enter__()
+        except Exception as error:
+            self._record_langsmith_failure(
+                stage="tracing_context_enter",
+                context=context,
+                error=error,
+            )
+            return None, None, None, None
 
         try:
             manager = self._trace_factory(
@@ -408,19 +433,27 @@ class Tracker:
                 context=context,
                 error=error,
             )
-            return None, None, None
+            await self._exit_tracing_context(
+                manager=tracing_manager,
+                context=context,
+                operation_error=None,
+            )
+            return None, None, None, None
 
         trace_url = None
         if kind == "session":
             try:
-                trace_url = run.get_url()
+                candidate = run.get_url()
+                if not isinstance(candidate, str) or not candidate.strip():
+                    raise ValueError("LangSmith trace URL must be a non-empty string")
+                trace_url = candidate
             except Exception as error:
                 self._record_langsmith_failure(
                     stage="trace_url",
                     context=context,
                     error=error,
                 )
-        return manager, run, trace_url
+        return tracing_manager, manager, run, trace_url
 
     def _end_remote_run(
         self,
@@ -477,13 +510,34 @@ class Tracker:
             await manager.__aexit__(
                 type(operation_error) if operation_error is not None else None,
                 operation_error,
-                operation_error.__traceback__
-                if operation_error is not None
-                else None,
+                operation_error.__traceback__ if operation_error is not None else None,
             )
         except Exception as error:
             self._record_langsmith_failure(
                 stage="span_exit",
+                context=context,
+                error=error,
+            )
+
+    async def _exit_tracing_context(
+        self,
+        *,
+        manager: AbstractContextManager[None] | None,
+        context: TraceContext,
+        operation_error: BaseException | None,
+    ) -> None:
+        if manager is None:
+            return
+
+        try:
+            manager.__exit__(
+                type(operation_error) if operation_error is not None else None,
+                operation_error,
+                operation_error.__traceback__ if operation_error is not None else None,
+            )
+        except Exception as error:
+            self._record_langsmith_failure(
+                stage="tracing_context_exit",
                 context=context,
                 error=error,
             )
@@ -502,22 +556,23 @@ class Tracker:
         started_at = perf_counter()
         handle = SpanHandle(context=context)
         operation_error: BaseException | None = None
-        manager, run, trace_url = await self._enter_remote_span(
+        tracing_manager, manager, run, new_session_url = await self._enter_remote_span(
             kind=kind,
             name=name,
             run_type=run_type,
             context=context,
             inputs=inputs,
         )
-        handle.trace_url = trace_url
-        bound_context = context.model_copy(update={"trace_url": trace_url})
+        effective_trace_url = new_session_url or context.trace_url
+        handle.trace_url = effective_trace_url
+        bound_context = context.model_copy(update={"trace_url": effective_trace_url})
         handle.context = bound_context
         self._record_span_event(
             phase="started",
             kind=kind,
             name=name,
             context=bound_context,
-            trace_url=trace_url,
+            trace_url=effective_trace_url,
         )
 
         try:
@@ -531,9 +586,7 @@ class Tracker:
             latency_ms = (perf_counter() - started_at) * 1000
             success = operation_error is None
             error_type = (
-                type(operation_error).__name__
-                if operation_error is not None
-                else None
+                type(operation_error).__name__ if operation_error is not None else None
             )
             self._end_remote_run(
                 run=run,
@@ -548,13 +601,18 @@ class Tracker:
                 context=bound_context,
                 operation_error=operation_error,
             )
+            await self._exit_tracing_context(
+                manager=tracing_manager,
+                context=bound_context,
+                operation_error=operation_error,
+            )
             self._metrics.append(
                 metric_factory(
                     bound_context,
                     latency_ms,
                     success,
                     error_type,
-                    trace_url,
+                    effective_trace_url,
                     handle,
                 )
             )
@@ -567,7 +625,7 @@ class Tracker:
                 success=success,
                 error_type=error_type,
                 token_usage=handle.token_usage if kind == "llm" else None,
-                trace_url=trace_url,
+                trace_url=effective_trace_url,
             )
 
     def _record_span_event(
