@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
@@ -177,7 +178,7 @@ class FakeTraceManager:
         run: FakeRun,
         *,
         enter_error: Exception | None = None,
-        exit_error: Exception | None = None,
+        exit_error: BaseException | None = None,
         on_enter: Callable[[FakeRun], None] | None = None,
         on_exit: Callable[[FakeRun], None] | None = None,
     ) -> None:
@@ -373,6 +374,74 @@ class FailingEndRun(FakeRun):
     ) -> None:
         super().end(outputs=outputs, error=error, metadata=metadata)
         raise ConnectionError("cannot complete run")
+
+
+class CancelledEndRun(FakeRun):
+    def end(
+        self,
+        *,
+        outputs: dict[str, Any] | None = None,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        super().end(outputs=outputs, error=error, metadata=metadata)
+        raise asyncio.CancelledError("cleanup cancelled")
+
+
+def _cancelled_cleanup_manager(stage: str) -> FakeTraceManager:
+    trace_url = "https://smith.langchain.com/o/example/r/cancelled"
+    if stage == "span_end":
+        return FakeTraceManager(CancelledEndRun(trace_url))
+    return FakeTraceManager(
+        FakeRun(trace_url),
+        exit_error=asyncio.CancelledError("cleanup cancelled"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["span_end", "span_exit"])
+async def test_cleanup_cancellation_does_not_replace_active_research_exception(
+    stage: str,
+) -> None:
+    manager = _cancelled_cleanup_manager(stage)
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=lambda *args, **kwargs: manager,
+    )
+
+    with pytest.raises(ValueError, match="research failed"):
+        async with tracker.session_span("session-1", "question"):
+            raise ValueError("research failed")
+
+    assert tracker.errors[-1].details["stage"] == stage
+    assert tracker.metrics[-1].success is False
+    assert tracker.events[-1].event_type == "observability.span.completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["span_end", "span_exit"])
+async def test_cleanup_cancellation_propagates_without_active_research_exception(
+    stage: str,
+) -> None:
+    manager = _cancelled_cleanup_manager(stage)
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=lambda *args, **kwargs: manager,
+    )
+
+    with pytest.raises(asyncio.CancelledError, match="cleanup cancelled"):
+        async with tracker.session_span("session-1", "question"):
+            pass
 
 
 @pytest.mark.asyncio
@@ -717,6 +786,39 @@ def test_client_background_transport_callback_records_failure_without_raising() 
     ]
 
 
+class FailingErrorList(list[Any]):
+    def append(self, value: Any) -> None:
+        del value
+        raise RuntimeError("cannot record fallback error")
+
+
+@pytest.mark.asyncio
+async def test_langsmith_failure_recorder_failure_does_not_mask_research_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = FakeTraceManager(
+        FakeRun("https://smith.langchain.com/o/example/r/recorder-failure"),
+        exit_error=ConnectionError("cannot patch run"),
+    )
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=lambda *args, **kwargs: manager,
+    )
+    monkeypatch.setattr(tracker, "_errors", FailingErrorList())
+
+    with pytest.raises(ValueError, match="research failed"):
+        async with tracker.session_span("session-1", "question"):
+            raise ValueError("research failed")
+
+    assert tracker.metrics[-1].success is False
+    assert tracker.events[-1].event_type == "observability.span.completed"
+
+
 @pytest.mark.asyncio
 async def test_remote_payloads_and_client_anonymizer_redacts_secrets(
 ) -> None:
@@ -748,6 +850,9 @@ async def test_remote_payloads_and_client_anonymizer_redacts_secrets(
                         {"access_token": "access-secret"},
                         {"refresh_token": "refresh-secret"},
                         {"secret": "nested-secret"},
+                        {"openai_api_key": "openai-secret"},
+                        {"db_password": "database-secret"},
+                        {"auth_token": "auth-secret"},
                         f"free form {secret}",
                     ],
                 },
@@ -755,6 +860,8 @@ async def test_remote_payloads_and_client_anonymizer_redacts_secrets(
                 llm.set_outputs(
                     {
                         "api_key": "provider-key",
+                        "tavily_api_key": "tavily-secret",
+                        "x_api_key": "x-api-secret",
                         "response": f"response containing {secret}",
                     }
                 )
@@ -765,6 +872,10 @@ async def test_remote_payloads_and_client_anonymizer_redacts_secrets(
         {
             "credential": "service-credential",
             "Authorization": "Bearer another-secret",
+            "client_secret": "client-secret-value",
+            "auth_token": "anonymizer-auth-secret",
+            "password_hint": "first pet",
+            "secretary": "office contact",
             "message": f"anonymizer containing {secret}",
             "token_usage": {"input_tokens": 3, "output_tokens": 2},
         }
@@ -783,8 +894,17 @@ async def test_remote_payloads_and_client_anonymizer_redacts_secrets(
     assert "access-secret" not in serialized
     assert "refresh-secret" not in serialized
     assert "nested-secret" not in serialized
+    assert "openai-secret" not in serialized
+    assert "database-secret" not in serialized
+    assert "auth-secret" not in serialized
+    assert "tavily-secret" not in serialized
+    assert "x-api-secret" not in serialized
     assert "service-credential" not in serialized
     assert "another-secret" not in serialized
+    assert "client-secret-value" not in serialized
+    assert "anonymizer-auth-secret" not in serialized
+    assert anonymized["password_hint"] == "first pet"
+    assert anonymized["secretary"] == "office contact"
     assert anonymized["token_usage"] == {"input_tokens": 3, "output_tokens": 2}
     llm_exit = trace_factory.managers[1].exit_calls[-1]
     assert llm_exit[0] is ValueError
@@ -887,6 +1007,129 @@ async def test_negative_tool_retry_count_fails_before_entering_body() -> None:
                 body_entered = True
 
     assert body_entered is False
+
+
+def _tracker_for_validation_test(tracing_enabled: bool) -> Tracker:
+    runtime = LangSmithRuntimeConfig(
+        tracing_enabled=tracing_enabled,
+        project="deep-research-tests" if tracing_enabled else "",
+        api_key="secret-key" if tracing_enabled else None,
+    )
+    return Tracker(
+        runtime,
+        client_factory=(
+            RecordingClientFactory() if tracing_enabled else ForbiddenClientFactory()
+        ),
+        trace_factory=(
+            RecordingTraceFactory() if tracing_enabled else ForbiddenTraceFactory()
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tracing_enabled", [False, True])
+@pytest.mark.parametrize("invalid_question", [None, "   "])
+async def test_invalid_session_question_fails_before_entering_body(
+    tracing_enabled: bool,
+    invalid_question: Any,
+) -> None:
+    tracker = _tracker_for_validation_test(tracing_enabled)
+    body_entered = False
+
+    with pytest.raises(ValidationError):
+        async with tracker.session_span("session-1", invalid_question):
+            body_entered = True
+
+    assert body_entered is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tracing_enabled", [False, True])
+@pytest.mark.parametrize("span_kind", ["llm", "tool"])
+@pytest.mark.parametrize(
+    "invalid_inputs",
+    [None, {1: "value"}, {b"key": "value"}, {"bad": object()}],
+)
+async def test_invalid_child_inputs_fail_before_entering_body(
+    tracing_enabled: bool,
+    span_kind: str,
+    invalid_inputs: Any,
+) -> None:
+    tracker = _tracker_for_validation_test(tracing_enabled)
+    body_entered = False
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            span = (
+                tracker.llm_span("gpt-4o", invalid_inputs)
+                if span_kind == "llm"
+                else tracker.tool_span("web_search", invalid_inputs)
+            )
+            async with span:
+                body_entered = True
+
+    assert body_entered is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("span_kind", ["llm", "tool"])
+async def test_child_inputs_are_copied_before_context_manager_entry(
+    span_kind: str,
+) -> None:
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=RecordingClientFactory(),
+        trace_factory=trace_factory,
+    )
+    inputs = {"value": "original"}
+
+    async with tracker.session_span("session-1", "question"):
+        span = (
+            tracker.llm_span("gpt-4o", inputs)
+            if span_kind == "llm"
+            else tracker.tool_span("web_search", inputs)
+        )
+        inputs["value"] = "mutated"
+        async with span:
+            pass
+
+    assert trace_factory.calls[1]["inputs"] == {"value": "original"}
+
+
+@pytest.mark.asyncio
+async def test_overlapping_tasks_keep_trace_context_isolated() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    entered = {
+        "session-1": asyncio.Event(),
+        "session-2": asyncio.Event(),
+    }
+
+    async def run_session(session_id: str, agent_name: str, peer_id: str) -> None:
+        async with tracker.session_span(session_id, "question"):
+            async with tracker.agent_span(agent_name):
+                entered[session_id].set()
+                await entered[peer_id].wait()
+                await asyncio.sleep(0)
+                context = current_trace_context()
+                assert context is not None
+                assert context.session_id == session_id
+                assert context.agent_name == agent_name
+            context = current_trace_context()
+            assert context is not None
+            assert context.session_id == session_id
+            assert context.agent_name is None
+        assert current_trace_context() is None
+
+    await asyncio.gather(
+        run_session("session-1", "planner", "session-2"),
+        run_session("session-2", "writer", "session-1"),
+    )
+    assert current_trace_context() is None
 
 
 @pytest.mark.asyncio

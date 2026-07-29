@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
@@ -10,7 +11,7 @@ from contextlib import (
 )
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any, Literal, Protocol, TypeAlias
+from typing import Annotated, Any, Literal, Protocol, TypeAlias
 
 from langsmith import Client, trace, tracing_context
 from pydantic import (
@@ -45,18 +46,37 @@ SpanKind: TypeAlias = Literal["session", "agent", "react_iteration", "llm", "too
 RunType: TypeAlias = Literal["chain", "llm", "tool"]
 Redactor: TypeAlias = Callable[[Any], JsonValue]
 _REDACTED = "[REDACTED]"
-_SENSITIVE_KEYS = frozenset(
+_SENSITIVE_KEY_ALIASES = frozenset(
     {
-        "api_key",
         "apikey",
+        "accesstoken",
+        "authtoken",
         "authorization",
-        "password",
-        "secret",
-        "access_token",
-        "refresh_token",
+        "clientsecret",
         "credential",
+        "password",
+        "refreshtoken",
+        "secret",
     }
 )
+_SENSITIVE_KEY_SUFFIXES = frozenset(
+    {
+        ("access", "token"),
+        ("api", "key"),
+        ("auth", "token"),
+        ("client", "secret"),
+        ("refresh", "token"),
+    }
+)
+_SENSITIVE_TERMINAL_SEGMENTS = frozenset(
+    {"authorization", "credential", "password", "secret"}
+)
+_NON_EMPTY_STRING_ADAPTER = TypeAdapter(
+    Annotated[str, Field(min_length=1)],
+    config=ConfigDict(str_strip_whitespace=True),
+)
+_STRING_ADAPTER = TypeAdapter(str)
+_JSON_MAPPING_ADAPTER = TypeAdapter(dict[str, JsonValue])
 _RETRY_COUNT_ADAPTER = TypeAdapter(NonNegativeInt)
 
 
@@ -235,6 +255,7 @@ class Tracker:
         question: str,
     ) -> AbstractAsyncContextManager[SpanHandle]:
         context = TraceContext(session_id=session_id)
+        question = _validate_non_empty_string(question)
 
         def metric_factory(
             ctx: TraceContext,
@@ -341,6 +362,7 @@ class Tracker:
     ) -> AbstractAsyncContextManager[SpanHandle]:
         parent = self._require_context()
         context = _validated_context(parent, model=model, tool_name=None)
+        inputs = _validate_json_mapping(inputs)
 
         def metric_factory(
             ctx: TraceContext,
@@ -381,6 +403,7 @@ class Tracker:
     ) -> AbstractAsyncContextManager[SpanHandle]:
         parent = self._require_context()
         context = _validated_context(parent, tool_name=tool_name, model=None)
+        inputs = _validate_json_mapping(inputs)
         retry_count = _RETRY_COUNT_ADAPTER.validate_python(retry_count)
 
         def metric_factory(
@@ -529,7 +552,9 @@ class Tracker:
                 error=self._redact(str(error)) if error is not None else None,
                 metadata=_redact_mapping(self._redact, completion_metadata),
             )
-        except Exception as langsmith_error:
+        except BaseException as langsmith_error:
+            if error is None and not isinstance(langsmith_error, Exception):
+                raise
             self._record_langsmith_failure(
                 stage="span_end",
                 context=context,
@@ -553,7 +578,9 @@ class Tracker:
                 remote_error,
                 None,
             )
-        except Exception as error:
+        except BaseException as error:
+            if operation_error is None and not isinstance(error, Exception):
+                raise
             self._record_langsmith_failure(
                 stage="span_exit",
                 context=context,
@@ -577,7 +604,9 @@ class Tracker:
                 remote_error,
                 None,
             )
-        except Exception as error:
+        except BaseException as error:
+            if operation_error is None and not isinstance(error, Exception):
+                raise
             self._record_langsmith_failure(
                 stage="tracing_context_exit",
                 context=context,
@@ -769,36 +798,53 @@ class Tracker:
         *,
         stage: str,
         context: TraceContext | None,
-        error: Exception,
+        error: BaseException,
     ) -> None:
-        details: dict[str, JsonValue] = {
-            "stage": stage,
-            "exception_type": type(error).__name__,
-        }
-        if context is not None:
-            details["session_id"] = context.session_id
-        self._errors.append(
-            ResearchError(
-                error_type="langsmith_tracing_failure",
-                source="langsmith",
-                message=(
-                    f"LangSmith tracing failed during {stage}; continuing locally."
-                ),
-                details=details,
+        try:
+            details: dict[str, JsonValue] = {
+                "stage": stage,
+                "exception_type": type(error).__name__,
+            }
+            if context is not None:
+                details["session_id"] = context.session_id
+            self._errors.append(
+                ResearchError(
+                    error_type="langsmith_tracing_failure",
+                    source="langsmith",
+                    message=(
+                        f"LangSmith tracing failed during {stage}; continuing locally."
+                    ),
+                    details=details,
+                )
             )
-        )
+        except BaseException:
+            return
 
 
 def _validated_context(context: TraceContext, **updates: Any) -> TraceContext:
     return TraceContext.model_validate({**context.model_dump(), **updates})
 
 
-def _build_redactor(secret: str | None) -> Redactor:
-    normalized_sensitive_keys = {
-        "".join(character for character in key.lower() if character.isalnum())
-        for key in _SENSITIVE_KEYS
-    }
+def _validate_non_empty_string(value: Any) -> str:
+    return _NON_EMPTY_STRING_ADAPTER.validate_python(value, strict=True)
 
+
+def _validate_json_mapping(value: Any) -> dict[str, JsonValue]:
+    _validate_json_mapping_keys(value)
+    return _JSON_MAPPING_ADAPTER.validate_python(value)
+
+
+def _validate_json_mapping_keys(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _STRING_ADAPTER.validate_python(key, strict=True)
+            _validate_json_mapping_keys(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _validate_json_mapping_keys(item)
+
+
+def _build_redactor(secret: str | None) -> Redactor:
     def redact(value: Any, *, sensitive: bool = False) -> JsonValue:
         if sensitive:
             return _REDACTED
@@ -806,14 +852,7 @@ def _build_redactor(secret: str | None) -> Redactor:
             return {
                 str(key): redact(
                     item,
-                    sensitive=(
-                        "".join(
-                            character
-                            for character in str(key).lower()
-                            if character.isalnum()
-                        )
-                        in normalized_sensitive_keys
-                    ),
+                    sensitive=_is_sensitive_key(str(key)),
                 )
                 for key, item in value.items()
             }
@@ -826,6 +865,18 @@ def _build_redactor(secret: str | None) -> Redactor:
         return redact(str(value))
 
     return redact
+
+
+def _is_sensitive_key(key: str) -> bool:
+    segmented = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+    segments = tuple(re.findall(r"[a-z0-9]+", segmented.lower()))
+    if not segments:
+        return False
+    if "".join(segments) in _SENSITIVE_KEY_ALIASES:
+        return True
+    if segments[-1] in _SENSITIVE_TERMINAL_SEGMENTS:
+        return True
+    return len(segments) >= 2 and segments[-2:] in _SENSITIVE_KEY_SUFFIXES
 
 
 def _redact_mapping(
