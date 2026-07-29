@@ -126,9 +126,9 @@ def test_environment_overrides_every_yaml_leaf(
 
 @pytest.mark.parametrize(
     "missing_environment_name",
-    ["OPENAI_API_KEY", "LANGSMITH_API_KEY", "LANGSMITH_PROJECT", "TAVILY_API_KEY"],
+    ["OPENAI_API_KEY", "TAVILY_API_KEY"],
 )
-def test_load_config_strict_requires_each_secret(
+def test_load_config_strict_always_requires_provider_secrets(
     monkeypatch: pytest.MonkeyPatch,
     config_path: Path,
     missing_environment_name: str,
@@ -192,3 +192,38 @@ def test_config_settings_excludes_provider_secrets(config_path: Path) -> None:
     assert "OPENAI_API_KEY" not in settings.model_dump()
     assert "LANGSMITH_API_KEY" not in settings.model_dump()
     assert "TAVILY_API_KEY" not in settings.model_dump()
+
+
+def test_load_config_strict_disabled_tracing_does_not_require_langsmith(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "configured")
+    monkeypatch.setenv("TAVILY_API_KEY", "configured")
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+
+    settings = load_config(str(config_path), strict=True)
+
+    assert settings.langsmith.tracing_enabled is False
+
+
+@pytest.mark.parametrize(
+    "missing_environment_name", ["LANGSMITH_API_KEY", "LANGSMITH_PROJECT"]
+)
+def test_load_config_strict_enabled_tracing_requires_langsmith_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    config_path: Path,
+    missing_environment_name: str,
+) -> None:
+    for environment_name in (
+        "OPENAI_API_KEY",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_PROJECT",
+        "TAVILY_API_KEY",
+    ):
+        monkeypatch.setenv(environment_name, "configured")
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.delenv(missing_environment_name)
+
+    with pytest.raises(ValueError, match=missing_environment_name):
+        load_config(str(config_path), strict=True)

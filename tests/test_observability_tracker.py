@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 import deep_research.observability.tracker as tracker_module
 from deep_research.observability.context import (
@@ -249,7 +250,9 @@ async def test_enabled_tracing_emits_nested_runs_and_captures_trace_url() -> Non
                 ) as tool:
                     tool.set_outputs({"results": 3})
 
-    assert clients == [{"api_key": "secret-key"}]
+    assert clients[0]["api_key"] == "secret-key"
+    assert callable(clients[0]["tracing_error_callback"])
+    assert callable(clients[0]["anonymizer"])
     assert [call["run_type"] for call in trace_factory.calls] == [
         "chain",
         "chain",
@@ -671,3 +674,194 @@ async def test_tracing_context_exit_failure_preserves_operation_error(
     assert "latency_ms" in metadata
     assert metadata["trace_url"] == "https://smith.langchain.com/o/example/r/failure"
     assert tracker.errors[-1].details["stage"] == "tracing_context_exit"
+
+
+class RecordingClientFactory:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(
+        self,
+        *,
+        api_key: str,
+        tracing_error_callback: Callable[[Exception], None],
+        anonymizer: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> object:
+        self.calls.append(
+            {
+                "api_key": api_key,
+                "tracing_error_callback": tracing_error_callback,
+                "anonymizer": anonymizer,
+            }
+        )
+        return object()
+
+
+def test_client_background_transport_callback_records_failure_without_raising() -> None:
+    client_factory = RecordingClientFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=client_factory,
+        trace_factory=ForbiddenTraceFactory(),
+    )
+    callback = client_factory.calls[0]["tracing_error_callback"]
+
+    callback(ConnectionError("background upload failed"))
+
+    assert [error.details["stage"] for error in tracker.errors] == [
+        "background_transport"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remote_payloads_and_client_anonymizer_redacts_secrets(
+) -> None:
+    secret = "sentinel-langsmith-secret"
+    client_factory = RecordingClientFactory()
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key=secret,
+        ),
+        client_factory=client_factory,
+        trace_factory=trace_factory,
+    )
+
+    with pytest.raises(ValueError, match="research failed"):
+        async with tracker.session_span(
+            "session-1",
+            f"question containing {secret}",
+        ):
+            async with tracker.llm_span(
+                "gpt-4o",
+                {
+                    "authorization": f"Bearer {secret}",
+                    "nested": [
+                        {"password": "provider-password"},
+                        {"apikey": "alternate-key"},
+                        {"access_token": "access-secret"},
+                        {"refresh_token": "refresh-secret"},
+                        {"secret": "nested-secret"},
+                        f"free form {secret}",
+                    ],
+                },
+            ) as llm:
+                llm.set_outputs(
+                    {
+                        "api_key": "provider-key",
+                        "response": f"response containing {secret}",
+                    }
+                )
+                llm.set_token_usage(input_tokens=3, output_tokens=2)
+                raise ValueError(f"research failed with {secret}")
+
+    anonymized = client_factory.calls[0]["anonymizer"](
+        {
+            "credential": "service-credential",
+            "Authorization": "Bearer another-secret",
+            "message": f"anonymizer containing {secret}",
+            "token_usage": {"input_tokens": 3, "output_tokens": 2},
+        }
+    )
+    remote_payloads = {
+        "session_inputs": trace_factory.calls[0]["inputs"],
+        "llm_inputs": trace_factory.calls[1]["inputs"],
+        "llm_end": trace_factory.managers[1].run.end_calls[-1],
+        "anonymized": anonymized,
+    }
+    serialized = repr(remote_payloads)
+    assert secret not in serialized
+    assert "provider-password" not in serialized
+    assert "provider-key" not in serialized
+    assert "alternate-key" not in serialized
+    assert "access-secret" not in serialized
+    assert "refresh-secret" not in serialized
+    assert "nested-secret" not in serialized
+    assert "service-credential" not in serialized
+    assert "another-secret" not in serialized
+    assert anonymized["token_usage"] == {"input_tokens": 3, "output_tokens": 2}
+    llm_exit = trace_factory.managers[1].exit_calls[-1]
+    assert llm_exit[0] is ValueError
+    assert secret not in str(llm_exit[1])
+    assert str(llm_exit[1]) == "research failed with [REDACTED]"
+    assert llm_exit[2] is None
+    session_exit = trace_factory.managers[0].exit_calls[-1]
+    assert session_exit[0] is ValueError
+    assert secret not in str(session_exit[1])
+    assert session_exit[2] is None
+
+
+@pytest.mark.asyncio
+async def test_started_event_precedes_remote_entry_and_completion_keeps_url() -> None:
+    observed_events: list[tuple[str, ...]] = []
+    tracker: Tracker
+
+    def trace_factory(name: str, run_type: str, **kwargs: Any) -> FakeTraceManager:
+        del name, run_type, kwargs
+        observed_events.append(tuple(event.event_type for event in tracker.events))
+        return FakeTraceManager(
+            FakeRun("https://smith.langchain.com/o/example/r/ordered")
+        )
+
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=RecordingClientFactory(),
+        trace_factory=trace_factory,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        pass
+
+    assert observed_events == [("observability.span.started",)]
+    assert tracker.events[-1].metadata["trace_url"].endswith("/ordered")
+    assert tracker.events[-1].metadata["session_id"] == "session-1"
+    assert tracker.events[0].metadata["session_id"] == "session-1"
+    assert "trace_url" not in tracker.events[0].metadata
+    assert tracker.metrics[-1].trace_url.endswith("/ordered")
+
+
+@pytest.mark.asyncio
+async def test_invalid_public_child_span_arguments_fail_before_yielding() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            tracker.agent_span("   ")
+        async with tracker.agent_span("planner"):
+            with pytest.raises(ValidationError):
+                tracker.react_iteration_span(-1)
+            with pytest.raises(ValidationError):
+                tracker.llm_span("   ", {})
+            with pytest.raises(ValidationError):
+                tracker.tool_span("   ", {})
+
+
+@pytest.mark.asyncio
+async def test_local_finalization_failure_does_not_replace_research_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    original_record_span_event = tracker._record_span_event
+
+    def fail_completion(*args: Any, **kwargs: Any) -> None:
+        if kwargs["phase"] == "completed":
+            raise RuntimeError("local completion failed")
+        original_record_span_event(*args, **kwargs)
+
+    monkeypatch.setattr(tracker, "_record_span_event", fail_completion)
+
+    with pytest.raises(ValueError, match="research failed"):
+        async with tracker.session_span("session-1", "question"):
+            raise ValueError("research failed")
+
+    assert tracker.errors[-1].details["stage"] == "local_finalization"

@@ -7,7 +7,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, model_validator
 
 from deep_research.utils.config import LangSmithConfig
 
@@ -20,6 +20,20 @@ class LangSmithRuntimeConfig(BaseModel):
     tracing_enabled: bool = False
     project: str = ""
     api_key: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def require_enabled_credentials(self) -> "LangSmithRuntimeConfig":
+        if not self.tracing_enabled:
+            return self
+        if not self.project:
+            raise ValueError(
+                "LANGSMITH_PROJECT is required when LANGSMITH_TRACING=true"
+            )
+        if self.api_key is None or not self.api_key.get_secret_value().strip():
+            raise ValueError(
+                "LANGSMITH_API_KEY is required when LANGSMITH_TRACING=true"
+            )
+        return self
 
 
 class TraceContext(BaseModel):

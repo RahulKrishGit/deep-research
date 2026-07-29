@@ -35,6 +35,20 @@ from deep_research.utils.types import ResearchError, ResearchEvent
 
 SpanKind: TypeAlias = Literal["session", "agent", "react_iteration", "llm", "tool"]
 RunType: TypeAlias = Literal["chain", "llm", "tool"]
+Redactor: TypeAlias = Callable[[Any], JsonValue]
+_REDACTED = "[REDACTED]"
+_SENSITIVE_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "password",
+        "secret",
+        "access_token",
+        "refresh_token",
+        "credential",
+    }
+)
 
 
 class RunLike(Protocol):
@@ -71,7 +85,13 @@ class AsyncTraceManager(Protocol):
 
 
 class ClientFactory(Protocol):
-    def __call__(self, *, api_key: str) -> Any:
+    def __call__(
+        self,
+        *,
+        api_key: str,
+        tracing_error_callback: Callable[[Exception], None],
+        anonymizer: Callable[[dict[str, Any]], dict[str, JsonValue]],
+    ) -> Any:
         """Construct a LangSmith-compatible client."""
         raise NotImplementedError
 
@@ -149,14 +169,21 @@ class Tracker:
         self._runtime = runtime
         self._trace_factory = trace_factory
         self._client: Any | None = None
+        secret = (
+            runtime.api_key.get_secret_value()
+            if runtime.api_key is not None
+            else None
+        )
+        self._redact: Redactor = _build_redactor(secret)
         self._events: list[ResearchEvent] = []
         self._errors: list[ResearchError] = []
         self._metrics: list[MetricRecord] = []
         if runtime.tracing_enabled:
-            assert runtime.api_key is not None
             try:
                 self._client = client_factory(
-                    api_key=runtime.api_key.get_secret_value()
+                    api_key=secret or "",
+                    tracing_error_callback=self._background_transport_failure,
+                    anonymizer=self._anonymize,
                 )
             except Exception as error:
                 self._record_langsmith_failure(
@@ -228,8 +255,8 @@ class Tracker:
 
     def agent_span(self, agent_name: str) -> AbstractAsyncContextManager[SpanHandle]:
         parent = self._require_context()
-        context = parent.model_copy(
-            update={"agent_name": agent_name, "tool_name": None, "model": None}
+        context = _validated_context(
+            parent, agent_name=agent_name, tool_name=None, model=None
         )
 
         def metric_factory(
@@ -266,8 +293,8 @@ class Tracker:
         parent = self._require_context()
         if parent.agent_name is None:
             raise RuntimeError("ReAct iteration spans require an active agent span")
-        context = parent.model_copy(
-            update={"iteration": iteration, "tool_name": None, "model": None}
+        context = _validated_context(
+            parent, iteration=iteration, tool_name=None, model=None
         )
 
         def metric_factory(
@@ -304,7 +331,7 @@ class Tracker:
         inputs: Mapping[str, JsonValue],
     ) -> AbstractAsyncContextManager[SpanHandle]:
         parent = self._require_context()
-        context = parent.model_copy(update={"model": model, "tool_name": None})
+        context = _validated_context(parent, model=model, tool_name=None)
 
         def metric_factory(
             ctx: TraceContext,
@@ -344,7 +371,7 @@ class Tracker:
         retry_count: int = 0,
     ) -> AbstractAsyncContextManager[SpanHandle]:
         parent = self._require_context()
-        context = parent.model_copy(update={"tool_name": tool_name, "model": None})
+        context = _validated_context(parent, tool_name=tool_name, model=None)
 
         def metric_factory(
             ctx: TraceContext,
@@ -418,7 +445,7 @@ class Tracker:
             manager = self._trace_factory(
                 name,
                 run_type,
-                inputs=dict(inputs),
+                inputs=_redact_mapping(self._redact, inputs),
                 project_name=self._runtime.project,
                 metadata=build_trace_metadata(
                     context,
@@ -485,9 +512,9 @@ class Tracker:
 
         try:
             run.end(
-                outputs=handle.outputs,
-                error=str(error) if error is not None else None,
-                metadata=completion_metadata,
+                outputs=_redact_optional_mapping(self._redact, handle.outputs),
+                error=self._redact(str(error)) if error is not None else None,
+                metadata=_redact_mapping(self._redact, completion_metadata),
             )
         except Exception as langsmith_error:
             self._record_langsmith_failure(
@@ -506,11 +533,12 @@ class Tracker:
         if manager is None:
             return
 
+        remote_error = self._redacted_exception(operation_error)
         try:
             await manager.__aexit__(
-                type(operation_error) if operation_error is not None else None,
-                operation_error,
-                operation_error.__traceback__ if operation_error is not None else None,
+                type(remote_error) if remote_error is not None else None,
+                remote_error,
+                None,
             )
         except Exception as error:
             self._record_langsmith_failure(
@@ -529,11 +557,12 @@ class Tracker:
         if manager is None:
             return
 
+        remote_error = self._redacted_exception(operation_error)
         try:
             manager.__exit__(
-                type(operation_error) if operation_error is not None else None,
-                operation_error,
-                operation_error.__traceback__ if operation_error is not None else None,
+                type(remote_error) if remote_error is not None else None,
+                remote_error,
+                None,
             )
         except Exception as error:
             self._record_langsmith_failure(
@@ -554,8 +583,15 @@ class Tracker:
         metric_factory: MetricFactory,
     ) -> AbstractAsyncContextManager[SpanHandle]:
         started_at = perf_counter()
-        handle = SpanHandle(context=context)
+        handle = SpanHandle(context=context, trace_url=context.trace_url)
         operation_error: BaseException | None = None
+        self._record_span_event(
+            phase="started",
+            kind=kind,
+            name=name,
+            context=context,
+            trace_url=context.trace_url,
+        )
         tracing_manager, manager, run, new_session_url = await self._enter_remote_span(
             kind=kind,
             name=name,
@@ -565,15 +601,8 @@ class Tracker:
         )
         effective_trace_url = new_session_url or context.trace_url
         handle.trace_url = effective_trace_url
-        bound_context = context.model_copy(update={"trace_url": effective_trace_url})
+        bound_context = _validated_context(context, trace_url=effective_trace_url)
         handle.context = bound_context
-        self._record_span_event(
-            phase="started",
-            kind=kind,
-            name=name,
-            context=bound_context,
-            trace_url=effective_trace_url,
-        )
 
         try:
             with bind_trace_context(bound_context):
@@ -606,27 +635,34 @@ class Tracker:
                 context=bound_context,
                 operation_error=operation_error,
             )
-            self._metrics.append(
-                metric_factory(
-                    bound_context,
-                    latency_ms,
-                    success,
-                    error_type,
-                    effective_trace_url,
-                    handle,
+            try:
+                self._metrics.append(
+                    metric_factory(
+                        bound_context,
+                        latency_ms,
+                        success,
+                        error_type,
+                        effective_trace_url,
+                        handle,
+                    )
                 )
-            )
-            self._record_span_event(
-                phase="completed",
-                kind=kind,
-                name=name,
-                context=bound_context,
-                latency_ms=latency_ms,
-                success=success,
-                error_type=error_type,
-                token_usage=handle.token_usage if kind == "llm" else None,
-                trace_url=effective_trace_url,
-            )
+                self._record_span_event(
+                    phase="completed",
+                    kind=kind,
+                    name=name,
+                    context=bound_context,
+                    latency_ms=latency_ms,
+                    success=success,
+                    error_type=error_type,
+                    token_usage=handle.token_usage if kind == "llm" else None,
+                    trace_url=effective_trace_url,
+                )
+            except Exception as error:
+                self._record_local_failure(
+                    stage="local_finalization",
+                    context=bound_context,
+                    error=error,
+                )
 
     def _record_span_event(
         self,
@@ -664,6 +700,57 @@ class Tracker:
             )
         )
 
+    def _anonymize(self, payload: dict[str, Any]) -> dict[str, JsonValue]:
+        return _redact_mapping(self._redact, payload)
+
+    def _redacted_exception(
+        self,
+        error: BaseException | None,
+    ) -> BaseException | None:
+        if error is None:
+            return None
+        redacted = self._redact(str(error))
+        try:
+            return type(error)(redacted)
+        except Exception:
+            return RuntimeError(redacted)
+
+    def _background_transport_failure(self, error: Exception) -> None:
+        try:
+            self._record_langsmith_failure(
+                stage="background_transport",
+                context=current_trace_context(),
+                error=error,
+            )
+        except BaseException:
+            return
+
+    def _record_local_failure(
+        self,
+        *,
+        stage: str,
+        context: TraceContext,
+        error: Exception,
+    ) -> None:
+        try:
+            self._errors.append(
+                ResearchError(
+                    error_type="local_observability_failure",
+                    source="observability",
+                    message=(
+                        f"Local observability failed during {stage}; "
+                        "research work is unchanged."
+                    ),
+                    details={
+                        "stage": stage,
+                        "exception_type": type(error).__name__,
+                        "session_id": context.session_id,
+                    },
+                )
+            )
+        except BaseException:
+            return
+
     def _record_langsmith_failure(
         self,
         *,
@@ -687,3 +774,59 @@ class Tracker:
                 details=details,
             )
         )
+
+
+def _validated_context(context: TraceContext, **updates: Any) -> TraceContext:
+    return TraceContext.model_validate({**context.model_dump(), **updates})
+
+
+def _build_redactor(secret: str | None) -> Redactor:
+    normalized_sensitive_keys = {
+        "".join(character for character in key.lower() if character.isalnum())
+        for key in _SENSITIVE_KEYS
+    }
+
+    def redact(value: Any, *, sensitive: bool = False) -> JsonValue:
+        if sensitive:
+            return _REDACTED
+        if isinstance(value, Mapping):
+            return {
+                str(key): redact(
+                    item,
+                    sensitive=(
+                        "".join(
+                            character
+                            for character in str(key).lower()
+                            if character.isalnum()
+                        )
+                        in normalized_sensitive_keys
+                    ),
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [redact(item) for item in value]
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            return value.replace(secret, _REDACTED) if secret else value
+        return redact(str(value))
+
+    return redact
+
+
+def _redact_mapping(
+    redactor: Redactor,
+    value: Mapping[str, Any],
+) -> dict[str, JsonValue]:
+    redacted = redactor(value)
+    if not isinstance(redacted, dict):
+        raise TypeError("redacted mapping must remain a mapping")
+    return redacted
+
+
+def _redact_optional_mapping(
+    redactor: Redactor,
+    value: Mapping[str, Any] | None,
+) -> dict[str, JsonValue] | None:
+    return None if value is None else _redact_mapping(redactor, value)

@@ -3,8 +3,10 @@
 from collections.abc import Mapping
 
 import pytest
+from pydantic import ValidationError
 
 from deep_research.observability.context import (
+    LangSmithRuntimeConfig,
     TraceContext,
     bind_trace_context,
     build_trace_metadata,
@@ -78,3 +80,26 @@ def test_build_trace_metadata_filters_none_and_protects_context_keys() -> None:
         "agent_name": "planner",
         "iteration": 2,
     }
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"tracing_enabled": True, "project": "", "api_key": "secret-key"},
+        {
+            "tracing_enabled": True,
+            "project": "deep-research-tests",
+            "api_key": None,
+        },
+        {
+            "tracing_enabled": True,
+            "project": "deep-research-tests",
+            "api_key": "   ",
+        },
+    ],
+)
+def test_direct_enabled_runtime_config_requires_project_and_api_key(
+    values: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        LangSmithRuntimeConfig(**values)

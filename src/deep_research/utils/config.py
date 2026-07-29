@@ -85,9 +85,11 @@ _ENVIRONMENT_OVERRIDES = {
 }
 _REQUIRED_ENVIRONMENT_VARIABLES = (
     "OPENAI_API_KEY",
+    "TAVILY_API_KEY",
+)
+_LANGSMITH_ENVIRONMENT_VARIABLES = (
     "LANGSMITH_API_KEY",
     "LANGSMITH_PROJECT",
-    "TAVILY_API_KEY",
 )
 
 
@@ -119,7 +121,7 @@ def load_config(config_path: str, strict: bool = False) -> ConfigSettings:
     settings = ConfigSettings.model_validate(raw_config)
 
     if strict:
-        _validate_runtime_secrets()
+        _validate_runtime_secrets(tracing_enabled=settings.langsmith.tracing_enabled)
 
     return settings
 
@@ -141,11 +143,14 @@ def _apply_environment_overrides(config: dict[str, Any]) -> None:
         target[path[-1]] = value
 
 
-def _validate_runtime_secrets() -> None:
+def _validate_runtime_secrets(*, tracing_enabled: bool) -> None:
     """Raise when strict-mode runtime secrets are absent or blank."""
+    required = list(_REQUIRED_ENVIRONMENT_VARIABLES)
+    if tracing_enabled:
+        required.extend(_LANGSMITH_ENVIRONMENT_VARIABLES)
     missing = [
         environment_name
-        for environment_name in _REQUIRED_ENVIRONMENT_VARIABLES
+        for environment_name in required
         if not os.getenv(environment_name, "").strip()
     ]
     if missing:
