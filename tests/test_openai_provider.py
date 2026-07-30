@@ -520,6 +520,16 @@ async def test_embed_texts_translates_malformed_response_shapes(
             SimpleNamespace(data=[SimpleNamespace(index=1, embedding=[0.1])]),
         ),
         (
+            ["first", "second"],
+            SimpleNamespace(
+                data=[
+                    SimpleNamespace(index=0, embedding=[0.1]),
+                    SimpleNamespace(index=1, embedding=[0.2]),
+                    SimpleNamespace(index=1, embedding=[0.3]),
+                ]
+            ),
+        ),
+        (
             ["first"],
             SimpleNamespace(data=[SimpleNamespace(index="0", embedding=[0.1])]),
         ),

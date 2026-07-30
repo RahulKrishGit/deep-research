@@ -329,10 +329,14 @@ class OpenAIEmbeddingProvider:
             try:
                 rows = list(response.data)
                 indices = [item.index for item in rows]
-                if any(
-                    isinstance(index, bool) or not isinstance(index, int)
-                    for index in indices
-                ) or set(indices) != set(range(len(texts))):
+                if (
+                    any(
+                        isinstance(index, bool) or not isinstance(index, int)
+                        for index in indices
+                    )
+                    or len(indices) != len(texts)
+                    or set(indices) != set(range(len(texts)))
+                ):
                     raise ProviderResponseError(
                         "OpenAI embedding response indices did not match "
                         "input positions"
