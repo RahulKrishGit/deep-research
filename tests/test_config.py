@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from deep_research.utils.config import ConfigSettings, load_config
+from deep_research.utils.config import ConfigSettings, LLMConfig, load_config
 
 
 @pytest.fixture
@@ -18,6 +18,10 @@ def config_path(tmp_path: Path) -> Path:
                 "llm": {
                     "provider": "openai",
                     "model": "gpt-4o",
+                    "embedding_model": "text-embedding-3-small",
+                    "model_overrides": {"planner": "gpt-4o-mini"},
+                    "timeout": 45.0,
+                    "retry_count": 2,
                     "temperature": 0.7,
                     "max_tokens": 4096,
                 },
@@ -46,6 +50,64 @@ def test_load_default_config(config_path: Path) -> None:
     assert settings.llm.provider == "openai"
     assert settings.llm.model == "gpt-4o"
     assert settings.tavily.max_results == 5
+
+def test_llm_config_resolves_agent_model_override(config_path: Path) -> None:
+    """Return the configured agent override or the default OpenAI model."""
+    settings = load_config(str(config_path))
+
+    assert settings.llm.model_for(None) == "gpt-4o"
+    assert settings.llm.model_for("researcher") == "gpt-4o"
+    assert settings.llm.model_for("planner") == "gpt-4o-mini"
+    assert settings.llm.embedding_model == "text-embedding-3-small"
+    assert settings.llm.timeout == 45.0
+    assert settings.llm.retry_count == 2
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "expected_value"),
+    [
+        ("LLM_EMBEDDING_MODEL", "text-embedding-3-large"),
+        ("LLM_TIMEOUT", 12.5),
+        ("LLM_RETRY_COUNT", 4),
+    ],
+)
+def test_openai_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    config_path: Path,
+    environment_name: str,
+    expected_value: object,
+) -> None:
+    """Apply OpenAI runtime environment overrides before validation."""
+    attribute = {
+        "LLM_EMBEDDING_MODEL": "embedding_model",
+        "LLM_TIMEOUT": "timeout",
+        "LLM_RETRY_COUNT": "retry_count",
+    }[environment_name]
+    monkeypatch.setenv(environment_name, str(expected_value))
+
+    settings = load_config(str(config_path))
+
+    assert getattr(settings.llm, attribute) == expected_value
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("timeout", 0),
+        ("retry_count", -1),
+        ("max_tokens", 0),
+        ("temperature", -0.1),
+    ],
+)
+def test_llm_config_rejects_invalid_runtime_values(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    """Reject unsafe request-runtime values at configuration load time."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        LLMConfig(**{field_name: invalid_value})
 
 
 def test_load_config_missing_file() -> None:
