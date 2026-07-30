@@ -100,6 +100,41 @@ The documentation snippet uses a named `search_client` placeholder only as an ex
 Each completed span appends a typed metric and structured event. A LangSmith
 transport failure appends a recoverable `ResearchError` and research work
 continues locally.
+
+## Core Tools
+
+Core tools run inside an active tracker session. They return failures as a
+`ToolResult` instead of raising operational errors, so callers can retain
+partial research progress. Network clients and memory backends are injectable,
+which keeps tool tests deterministic without live services. The later memory
+stack implements the exported `LongTermMemory` protocol.
+
+```python
+import os
+
+from deep_research.observability import Tracker
+from deep_research.tools import WebSearchTool, WriteDocumentTool
+from deep_research.utils.config import load_config
+
+settings = load_config("config.yaml", strict=True)
+tracker = Tracker.from_config(settings.langsmith)
+
+async with tracker.session_span("session-123", "research question"):
+    search = WebSearchTool(
+        tracker,
+        api_key=os.environ["TAVILY_API_KEY"],
+        search_depth=settings.tavily.search_depth,
+        max_results=settings.tavily.max_results,
+    )
+    search_result = await search.execute(query="research question")
+
+    writer = WriteDocumentTool(tracker, settings.output.directory)
+    report_result = await writer.execute(
+        filename="session-report.md",
+        content="# Research report\n\n...",
+    )
+```
+
 ## Development
 
 ```bash

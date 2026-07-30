@@ -66,3 +66,22 @@ def test_observability_contracts_import_from_package() -> None:
         current_trace_context,
         load_langsmith_runtime_config,
     )
+
+
+def test_core_tool_contracts_import_from_package() -> None:
+    """Core tool integrations are available from the public tools package."""
+    from deep_research.tools import (  # noqa: F401
+        BaseTool,
+        DocumentReaderTool,
+        LongTermMemory,
+        QueryMemoryTool,
+        SaveToMemoryTool,
+        ToolCallContext,
+        ToolError,
+        ToolExecution,
+        ToolExecutionError,
+        ToolResult,
+        WebScraperTool,
+        WebSearchTool,
+        WriteDocumentTool,
+    )
