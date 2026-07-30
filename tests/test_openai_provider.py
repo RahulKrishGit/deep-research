@@ -7,7 +7,13 @@ from typing import Any
 
 import httpx
 import pytest
-from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    ContentFilterFinishReasonError,
+    RateLimitError,
+)
 from pydantic import BaseModel, ValidationError
 
 from deep_research.observability import (
@@ -553,3 +559,84 @@ async def test_embed_texts_rejects_invalid_indices_and_nonfinite_values(
     async with tracker.session_span("session-1", "question"):
         with pytest.raises(ProviderResponseError):
             await provider.embed_texts(texts)
+
+
+@pytest.mark.asyncio
+async def test_complete_structured_translates_finish_reason_error() -> None:
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(
+            responses=RecordingResponses(ContentFilterFinishReasonError())
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="structured output"):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="Create an outline")], Outline
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output_text", [None, 42])
+async def test_complete_rejects_non_string_output_text(output_text: object) -> None:
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(
+            responses=RecordingResponses(response(text=output_text))
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="text output"):
+            await provider.complete([ChatMessage(role="user", content="Answer")])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed_response",
+    [
+        SimpleNamespace(
+            output_text="Answer", usage=SimpleNamespace(input_tokens="bad")
+        ),
+        SimpleNamespace(
+            output_text="Answer",
+            output_parsed=Outline(title="Answer", points=[]),
+            usage=SimpleNamespace(input_tokens=1, output_tokens="bad"),
+        ),
+        SimpleNamespace(
+            data=[SimpleNamespace(index=0, embedding=[0.1])],
+            usage=SimpleNamespace(prompt_tokens="bad"),
+        ),
+    ],
+)
+async def test_provider_methods_reject_malformed_usage(
+    malformed_response: object,
+) -> None:
+    tracker = local_tracker()
+    chat = OpenAIChatProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(responses=RecordingResponses(malformed_response)),
+    )
+    embeddings = RecordingEmbeddings(malformed_response)
+    embedding_provider = OpenAIEmbeddingProvider(
+        LLMConfig(), tracker, client=FakeOpenAIClient(embeddings=embeddings)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        if hasattr(malformed_response, "data"):
+            with pytest.raises(ProviderResponseError, match="usage"):
+                await embedding_provider.embed_texts(["text"])
+        elif hasattr(malformed_response, "output_parsed"):
+            with pytest.raises(ProviderResponseError, match="usage"):
+                await chat.complete_structured(
+                    [ChatMessage(role="user", content="Create an outline")], Outline
+                )
+        else:
+            with pytest.raises(ProviderResponseError, match="usage"):
+                await chat.complete([ChatMessage(role="user", content="Answer")])

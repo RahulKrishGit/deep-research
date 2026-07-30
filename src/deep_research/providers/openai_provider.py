@@ -12,6 +12,7 @@ from openai import (
     APIStatusError,
     APITimeoutError,
     AsyncOpenAI,
+    OpenAIError,
     RateLimitError,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -88,12 +89,21 @@ def _usage_from_response(response: Any) -> TokenUsage:
         return TokenUsage()
     input_tokens = getattr(usage, "input_tokens", None)
     if input_tokens is None:
-        input_tokens = getattr(usage, "prompt_tokens", 0)
+        input_tokens = getattr(usage, "prompt_tokens", None)
     output_tokens = getattr(usage, "output_tokens", 0)
+    if (
+        isinstance(input_tokens, bool)
+        or not isinstance(input_tokens, int)
+        or input_tokens < 0
+        or isinstance(output_tokens, bool)
+        or not isinstance(output_tokens, int)
+        or output_tokens < 0
+    ):
+        raise ProviderResponseError("OpenAI response contained malformed usage")
     return TokenUsage(
-        input_tokens=input_tokens or 0,
-        output_tokens=output_tokens or 0,
-        total_tokens=(input_tokens or 0) + (output_tokens or 0),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
     )
 
 
@@ -179,7 +189,12 @@ class OpenAIChatProvider:
                     APIStatusError,
                 ) as error:
                     _raise_provider_error(error)
-                text = str(getattr(response, "output_text", "")).strip()
+                output_text = getattr(response, "output_text", None)
+                if not isinstance(output_text, str):
+                    raise ProviderResponseError(
+                        "OpenAI response did not contain text output"
+                    )
+                text = output_text.strip()
                 if not text:
                     raise ProviderResponseError(
                         "OpenAI response did not contain text output"
@@ -224,6 +239,10 @@ class OpenAIChatProvider:
                 APIStatusError,
             ) as error:
                 _raise_provider_error(error)
+            except OpenAIError as error:
+                raise ProviderResponseError(
+                    "OpenAI structured output request failed"
+                ) from error
             except ValidationError as error:
                 raise _StructuredValidationFailure(
                     schema.__name__, str(error)
