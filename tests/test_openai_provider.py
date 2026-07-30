@@ -18,6 +18,7 @@ from deep_research.observability import (
 from deep_research.providers.openai_provider import (
     ChatMessage,
     OpenAIChatProvider,
+    OpenAIEmbeddingProvider,
     ProviderConfigurationError,
     ProviderRateLimitError,
     ProviderResponseError,
@@ -78,6 +79,28 @@ class FakeOpenAIClient:
         self.embeddings = embeddings
 
 
+def embedding_response(vectors: list[list[float]]) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="embedding-response",
+        data=[
+            SimpleNamespace(index=index, embedding=vector)
+            for index, vector in reversed(list(enumerate(vectors)))
+        ],
+        usage=SimpleNamespace(prompt_tokens=6, total_tokens=6),
+    )
+
+
+class RecordingEmbeddings:
+    def __init__(self, *results: object) -> None:
+        self.results = list(results)
+        self.calls: list[dict[str, Any]] = []
+
+    async def create(self, **kwargs: Any) -> object:
+        self.calls.append(kwargs)
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 def local_tracker() -> Tracker:
     return Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
 
@@ -318,3 +341,73 @@ async def test_complete_structured_raises_after_two_pydantic_validation_errors()
             )
 
     assert len(responses.parse_calls) == 2
+
+@pytest.mark.asyncio
+async def test_embed_query_returns_vector_and_reports_dimension() -> None:
+    embeddings = RecordingEmbeddings(embedding_response([[0.1, 0.2, 0.3]]))
+    tracker = local_tracker()
+    provider = OpenAIEmbeddingProvider(
+        LLMConfig(embedding_model="text-embedding-3-small"),
+        tracker,
+        client=FakeOpenAIClient(embeddings=embeddings),
+    )
+
+    assert provider.dimension is None
+    async with tracker.session_span("session-1", "question"):
+        vector = await provider.embed_query("semantic query")
+
+    assert vector == [0.1, 0.2, 0.3]
+    assert provider.dimension == 3
+    assert embeddings.calls == [
+        {"model": "text-embedding-3-small", "input": ["semantic query"]}
+    ]
+    metric = next(m for m in tracker.metrics if isinstance(m, TokenUsageMetric))
+    assert metric.input_tokens == 6
+    assert metric.output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_embed_texts_preserves_input_order() -> None:
+    embeddings = RecordingEmbeddings(embedding_response([[1.0, 0.0], [0.0, 1.0]]))
+    tracker = local_tracker()
+    provider = OpenAIEmbeddingProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(embeddings=embeddings),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        vectors = await provider.embed_texts(["first", "second"])
+
+    assert vectors == [[1.0, 0.0], [0.0, 1.0]]
+    assert provider.dimension == 2
+
+
+@pytest.mark.asyncio
+async def test_embed_texts_rejects_inconsistent_dimensions() -> None:
+    embeddings = RecordingEmbeddings(embedding_response([[1.0, 0.0], [0.0, 1.0, 2.0]]))
+    tracker = local_tracker()
+    provider = OpenAIEmbeddingProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(embeddings=embeddings),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="dimension"):
+            await provider.embed_texts(["first", "second"])
+
+
+@pytest.mark.asyncio
+async def test_embed_texts_rejects_empty_batches_without_api_call() -> None:
+    embeddings = RecordingEmbeddings()
+    provider = OpenAIEmbeddingProvider(
+        LLMConfig(),
+        local_tracker(),
+        client=FakeOpenAIClient(embeddings=embeddings),
+    )
+
+    with pytest.raises(ValueError, match="at least one"):
+        await provider.embed_texts([])
+
+    assert embeddings.calls == []

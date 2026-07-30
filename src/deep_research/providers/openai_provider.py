@@ -253,3 +253,71 @@ class OpenAIChatProvider:
                 ]
 
         raise AssertionError("structured output attempt loop did not return")
+
+class OpenAIEmbeddingProvider:
+    """Async single and batch embeddings through the OpenAI API."""
+
+    def __init__(
+        self,
+        config: LLMConfig,
+        tracker: Tracker,
+        *,
+        api_key: str | None = None,
+        client: Any | None = None,
+    ) -> None:
+        self._config = config
+        self._tracker = tracker
+        self._client = _build_client(config, api_key=api_key, client=client)
+        self._dimension: int | None = None
+
+    @property
+    def dimension(self) -> int | None:
+        """Return the observed vector size, or None before the first call."""
+        return self._dimension
+
+    async def embed_query(self, text: str) -> list[float]:
+        if not text.strip():
+            raise ValueError("text must not be blank")
+        return (await self.embed_texts([text]))[0]
+
+    async def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        if not texts:
+            raise ValueError("texts must contain at least one item")
+        if any(not text.strip() for text in texts):
+            raise ValueError("embedding texts must not be blank")
+        model = self._config.embedding_model
+        async with self._tracker.llm_span(
+            model,
+            {
+                "provider": "openai",
+                "operation": "embedding",
+                "input_count": len(texts),
+            },
+        ) as span:
+            try:
+                response = await self._client.embeddings.create(
+                    model=model,
+                    input=list(texts),
+                )
+            except (APITimeoutError, RateLimitError, APIStatusError) as error:
+                _raise_provider_error(error)
+            ordered = sorted(response.data, key=lambda item: item.index)
+            if len(ordered) != len(texts):
+                raise ProviderResponseError(
+                    "OpenAI embedding response count did not match input count"
+                )
+            vectors = [list(item.embedding) for item in ordered]
+            dimensions = {len(vector) for vector in vectors}
+            if len(dimensions) != 1 or 0 in dimensions:
+                raise ProviderResponseError(
+                    "OpenAI embedding response contained inconsistent dimensions"
+                )
+            observed_dimension = dimensions.pop()
+            if self._dimension is not None and self._dimension != observed_dimension:
+                raise ProviderResponseError(
+                    "OpenAI embedding dimension changed between requests"
+                )
+            self._dimension = observed_dimension
+            usage = _usage_from_response(response)
+            _set_span_result(span, response, usage)
+            return vectors
