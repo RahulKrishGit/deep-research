@@ -66,3 +66,28 @@ def test_observability_contracts_import_from_package() -> None:
         current_trace_context,
         load_langsmith_runtime_config,
     )
+
+
+def test_provider_public_api_imports() -> None:
+    from deep_research.providers import (
+        ChatMessage,
+        ChatResult,
+        OpenAIChatProvider,
+        OpenAIEmbeddingProvider,
+        OpenAIProviderError,
+        ProviderConfigurationError,
+        ProviderRateLimitError,
+        ProviderResponseError,
+        ProviderTimeoutError,
+        StructuredOutputError,
+    )
+
+    assert OpenAIChatProvider.__name__ == "OpenAIChatProvider"
+    assert OpenAIEmbeddingProvider.__name__ == "OpenAIEmbeddingProvider"
+    assert ChatMessage.__name__ == "ChatMessage"
+    assert ChatResult.__name__ == "ChatResult"
+    assert issubclass(ProviderConfigurationError, OpenAIProviderError)
+    assert issubclass(ProviderRateLimitError, OpenAIProviderError)
+    assert issubclass(ProviderResponseError, OpenAIProviderError)
+    assert issubclass(ProviderTimeoutError, OpenAIProviderError)
+    assert issubclass(StructuredOutputError, OpenAIProviderError)
