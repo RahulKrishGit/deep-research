@@ -39,7 +39,7 @@ class SaveToMemoryTool(BaseTool):
     input_schema = {"content": "string", "metadata": "object"}
     output_schema = {"entry_id": "string"}
 
-    def __init__(self, tracker: Tracker, *, memory: LongTermMemory) -> None:
+    def __init__(self, tracker: Tracker, memory: LongTermMemory) -> None:
         super().__init__(tracker)
         self._memory = memory
 
@@ -76,7 +76,7 @@ class QueryMemoryTool(BaseTool):
     input_schema = {"query": "string", "top_k": "integer", "filters": "object"}
     output_schema = {"matches": "array"}
 
-    def __init__(self, tracker: Tracker, *, memory: LongTermMemory) -> None:
+    def __init__(self, tracker: Tracker, memory: LongTermMemory) -> None:
         super().__init__(tracker)
         self._memory = memory
 

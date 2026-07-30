@@ -68,6 +68,18 @@ _SENSITIVE_KEY_SUFFIXES = frozenset(
         ("refresh", "token"),
     }
 )
+
+
+def _semantic_error_type(error: BaseException | None) -> str | None:
+    """Return a structured error's semantic type, or its exception class."""
+    if error is None:
+        return None
+    error_type = getattr(error, "error_type", None)
+    if isinstance(error_type, str) and error_type:
+        return error_type
+    return type(error).__name__
+
+
 _SENSITIVE_TERMINAL_SEGMENTS = frozenset(
     {"authorization", "credential", "password", "secret"}
 )
@@ -544,7 +556,7 @@ class Tracker:
         completion_metadata: dict[str, Any] = {
             "latency_ms": latency_ms,
             "success": success,
-            "error_type": type(error).__name__ if error is not None else None,
+            "error_type": _semantic_error_type(error),
             "trace_url": handle.trace_url,
         }
         if context.model is not None:
@@ -666,9 +678,7 @@ class Tracker:
         finally:
             latency_ms = (perf_counter() - started_at) * 1000
             success = operation_error is None
-            error_type = (
-                type(operation_error).__name__ if operation_error is not None else None
-            )
+            error_type = _semantic_error_type(operation_error)
             self._end_remote_run(
                 run=run,
                 handle=handle,

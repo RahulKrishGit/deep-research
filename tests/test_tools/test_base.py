@@ -187,8 +187,15 @@ async def test_failing_execution_returns_recoverable_error_and_records_metric(
         metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
     )
     assert metric.success is False
-    assert metric.error_type == "ToolExecutionError"
+    assert metric.error_type == "TimeoutError"
     assert metric.retry_count == 1
+    completed_tool_event = next(
+        event
+        for event in tracker.events
+        if event.event_type == "observability.span.completed"
+        and event.metadata["span_kind"] == "tool"
+    )
+    assert completed_tool_event.metadata["error_type"] == "TimeoutError"
 
 
 @pytest.mark.asyncio

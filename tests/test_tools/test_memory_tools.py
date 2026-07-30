@@ -60,7 +60,7 @@ async def test_save_persists_entry_with_private_summary_and_span_inputs(
     tracker,
 ) -> None:
     memory = FakeMemory()
-    tool = SaveToMemoryTool(tracker, memory=memory)
+    tool = SaveToMemoryTool(tracker, memory)
     metadata = {
         "finding_type": "verified",
         "session_id": "session-1",
@@ -129,7 +129,7 @@ async def test_save_rejects_blank_content_and_non_json_metadata(
         metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
     )
     assert metric.success is False
-    assert metric.error_type == "ToolExecutionError"
+    assert metric.error_type == "ValidationError"
 
 
 @pytest.mark.asyncio
@@ -142,7 +142,7 @@ async def test_query_preserves_order_and_passes_configuration(tracker) -> None:
     filters = {"session_id": "session-1"}
 
     async with tracker.session_span("session-1", "question"):
-        result = await QueryMemoryTool(tracker, memory=memory).execute(
+        result = await QueryMemoryTool(tracker, memory).execute(
             query="verified finding", top_k=3, filters=filters
         )
 
@@ -177,7 +177,7 @@ async def test_query_rejects_invalid_arguments_without_calling_backend(
         metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
     )
     assert metric.success is False
-    assert metric.error_type == "ToolExecutionError"
+    assert metric.error_type == "ValidationError"
 
 
 @pytest.mark.asyncio

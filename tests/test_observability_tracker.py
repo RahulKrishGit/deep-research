@@ -21,6 +21,7 @@ from deep_research.observability.metrics import (
     ToolMetric,
 )
 from deep_research.observability.tracker import Tracker
+from deep_research.tools.base import ToolExecutionError
 
 
 class ForbiddenClientFactory:
@@ -31,6 +32,42 @@ class ForbiddenClientFactory:
 class ForbiddenTraceFactory:
     def __call__(self, *args: Any, **kwargs: Any) -> object:
         raise AssertionError("disabled tracing must not open a LangSmith trace")
+
+
+@pytest.mark.asyncio
+async def test_remote_tool_span_completion_preserves_structured_error_type() -> None:
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=trace_factory,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ToolExecutionError):
+            async with tracker.tool_span("web_search", {"query": "test"}):
+                raise ToolExecutionError(
+                    "provider timed out", error_type="TimeoutError"
+                )
+
+    assert trace_factory.managers[1].run.end_calls[-1]["metadata"][
+        "error_type"
+    ] == "TimeoutError"
+    tool_metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert tool_metric.error_type == "TimeoutError"
+    completed_tool_event = next(
+        event
+        for event in tracker.events
+        if event.event_type == "observability.span.completed"
+        and event.metadata["span_kind"] == "tool"
+    )
+    assert completed_tool_event.metadata["error_type"] == "TimeoutError"
 
 
 @pytest.mark.asyncio
