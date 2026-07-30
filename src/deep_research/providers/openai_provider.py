@@ -116,6 +116,12 @@ def _raise_provider_error(error: Exception) -> None:
     raise error
 
 
+class _StructuredValidationFailure(RuntimeError):
+    def __init__(self, schema_name: str, output_text: str) -> None:
+        super().__init__(f"OpenAI output failed {schema_name} validation")
+        self.output_text = output_text
+
+
 class OpenAIChatProvider:
     """Async text and structured-output access through OpenAI Responses."""
 
@@ -169,3 +175,77 @@ class OpenAIChatProvider:
                 return ChatResult(text=text, model=model, usage=usage)
         except OpenAIProviderError:
             raise
+
+    async def _structured_attempt(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[SchemaT],
+        *,
+        model: str,
+        attempt: int,
+    ) -> SchemaT:
+        payload = [message.model_dump(mode="json") for message in messages]
+        async with self._tracker.llm_span(
+            model,
+            {
+                "provider": "openai",
+                "operation": "structured_output",
+                "schema": schema.__name__,
+                "attempt": attempt,
+                "message_count": len(payload),
+            },
+        ) as span:
+            try:
+                response = await self._client.responses.parse(
+                    model=model,
+                    input=payload,
+                    text_format=schema,
+                    temperature=self._config.temperature,
+                    max_output_tokens=self._config.max_tokens,
+                )
+            except (APITimeoutError, RateLimitError, APIStatusError) as error:
+                _raise_provider_error(error)
+            usage = _usage_from_response(response)
+            _set_span_result(span, response, usage)
+            parsed = getattr(response, "output_parsed", None)
+            if not isinstance(parsed, schema):
+                raise _StructuredValidationFailure(
+                    schema.__name__, str(getattr(response, "output_text", ""))
+                )
+            return parsed
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[SchemaT],
+        *,
+        agent_name: str | None = None,
+    ) -> SchemaT:
+        if not messages:
+            raise ValueError("messages must contain at least one item")
+        model = self._config.model_for(agent_name)
+        current_messages = list(messages)
+
+        for attempt in (1, 2):
+            try:
+                return await self._structured_attempt(
+                    current_messages, schema, model=model, attempt=attempt
+                )
+            except _StructuredValidationFailure as error:
+                if attempt == 2:
+                    raise StructuredOutputError(
+                        f"OpenAI output failed {schema.__name__} validation "
+                        "after one repair attempt"
+                    ) from error
+                repair_instruction = (
+                    f"The previous response failed {schema.__name__} validation. "
+                    "Return a corrected response that matches the supplied schema "
+                    "exactly. Invalid response: "
+                    f"{error.output_text}"
+                )
+                current_messages = [
+                    *messages,
+                    ChatMessage(role="developer", content=repair_instruction),
+                ]
+
+        raise AssertionError("structured output attempt loop did not return")
