@@ -69,6 +69,7 @@ class WebSearchTool(BaseTool):
             isinstance(max_retries, bool)
             or not isinstance(max_retries, int)
             or max_retries < 0
+            or max_retries > 2
         ):
             raise ValueError("max_retries must be a non-negative integer")
         self._client = client or TavilyClient(api_key=api_key)

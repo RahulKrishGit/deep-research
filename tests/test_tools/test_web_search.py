@@ -171,6 +171,8 @@ def test_constructor_rejects_invalid_limits(tracker) -> None:
         WebSearchTool(tracker, client=FakeSearchClient([]), timeout_s=0)
     with pytest.raises(ValueError, match="max_retries"):
         WebSearchTool(tracker, client=FakeSearchClient([]), max_retries=-1)
+    with pytest.raises(ValueError, match="max_retries"):
+        WebSearchTool(tracker, client=FakeSearchClient([]), max_retries=3)
 
 
 def test_observability_inputs_exclude_client_and_api_key(tracker) -> None:
