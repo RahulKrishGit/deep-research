@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 
@@ -122,6 +123,8 @@ def load_config(config_path: str, strict: bool = False) -> ConfigSettings:
     path = Path(config_path)
     if not path.is_file():
         raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    load_dotenv(dotenv_path=path.parent / ".env", override=False)
 
     try:
         raw_config = yaml.safe_load(path.read_text(encoding="utf-8"))

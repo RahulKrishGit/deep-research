@@ -1,5 +1,6 @@
 """Tests for configuration loading."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,64 @@ def test_load_default_config(config_path: Path) -> None:
     assert settings.llm.provider == "openai"
     assert settings.llm.model == "gpt-4o"
     assert settings.tavily.max_results == 5
+
+def test_load_config_loads_sibling_dotenv_before_strict_validation(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """A sibling .env supplies secrets before strict validation runs."""
+    for environment_name in (
+        "OPENAI_API_KEY",
+        "TAVILY_API_KEY",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_PROJECT",
+    ):
+        monkeypatch.delenv(environment_name, raising=False)
+    (config_path.parent / ".env").write_text(
+        "\n".join(
+            (
+                "OPENAI_API_KEY=dotenv-openai",
+                "TAVILY_API_KEY=dotenv-tavily",
+                "LANGSMITH_API_KEY=dotenv-langsmith",
+                "LANGSMITH_PROJECT=dotenv-project",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_config(str(config_path), strict=True)
+
+    assert settings.langsmith.project == "dotenv-project"
+    assert os.environ["OPENAI_API_KEY"] == "dotenv-openai"
+    assert os.environ["TAVILY_API_KEY"] == "dotenv-tavily"
+
+
+def test_process_environment_takes_precedence_over_sibling_dotenv(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """A value injected by the process wins over the local file."""
+    monkeypatch.setenv("LLM_MODEL", "shell-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-openai")
+    (config_path.parent / ".env").write_text(
+        "LLM_MODEL=dotenv-model\nOPENAI_API_KEY=dotenv-openai\n",
+        encoding="utf-8",
+    )
+
+    settings = load_config(str(config_path))
+
+    assert settings.llm.model == "shell-model"
+    assert os.environ["OPENAI_API_KEY"] == "shell-openai"
+
+
+def test_load_config_without_sibling_dotenv_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """The normal YAML load remains valid when no .env file exists."""
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    assert not (config_path.parent / ".env").exists()
+
+    settings = load_config(str(config_path))
+
+    assert settings.llm.model == "gpt-4o"
 
 def test_llm_config_resolves_agent_model_override(config_path: Path) -> None:
     """Return the configured agent override or the default OpenAI model."""
