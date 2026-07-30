@@ -189,6 +189,8 @@ class OpenAIChatProvider:
                     APIStatusError,
                 ) as error:
                     _raise_provider_error(error)
+                except OpenAIError as error:
+                    raise ProviderResponseError("OpenAI chat request failed") from error
                 output_text = getattr(response, "output_text", None)
                 if not isinstance(output_text, str):
                     raise ProviderResponseError(
@@ -345,6 +347,10 @@ class OpenAIEmbeddingProvider:
                 APIStatusError,
             ) as error:
                 _raise_provider_error(error)
+            except OpenAIError as error:
+                raise ProviderResponseError(
+                    "OpenAI embedding request failed"
+                ) from error
             try:
                 rows = list(response.data)
                 indices = [item.index for item in rows]

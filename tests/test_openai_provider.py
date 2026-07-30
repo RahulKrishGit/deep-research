@@ -12,6 +12,7 @@ from openai import (
     APIStatusError,
     APITimeoutError,
     ContentFilterFinishReasonError,
+    OpenAIError,
     RateLimitError,
 )
 from pydantic import BaseModel, ValidationError
@@ -640,3 +641,31 @@ async def test_provider_methods_reject_malformed_usage(
         else:
             with pytest.raises(ProviderResponseError, match="usage"):
                 await chat.complete([ChatMessage(role="user", content="Answer")])
+
+
+@pytest.mark.asyncio
+async def test_complete_translates_generic_openai_errors() -> None:
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(responses=RecordingResponses(OpenAIError("invalid"))),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="request failed"):
+            await provider.complete([ChatMessage(role="user", content="Answer")])
+
+
+@pytest.mark.asyncio
+async def test_embed_texts_translates_generic_openai_errors() -> None:
+    tracker = local_tracker()
+    provider = OpenAIEmbeddingProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(embeddings=RecordingEmbeddings(OpenAIError("invalid"))),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="request failed"):
+            await provider.embed_texts(["text"])
