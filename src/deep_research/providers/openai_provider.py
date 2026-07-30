@@ -6,7 +6,13 @@ import os
 from collections.abc import Sequence
 from typing import Any, Literal, TypeVar
 
-from openai import APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    RateLimitError,
+)
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
@@ -109,6 +115,8 @@ def _raise_provider_error(error: Exception) -> None:
         raise ProviderTimeoutError("OpenAI request timed out") from error
     if isinstance(error, RateLimitError):
         raise ProviderRateLimitError("OpenAI rate limit exceeded") from error
+    if isinstance(error, APIConnectionError):
+        raise ProviderResponseError("OpenAI connection failed") from error
     if isinstance(error, APIStatusError):
         raise ProviderResponseError(
             f"OpenAI request failed with status {error.status_code}"
@@ -163,7 +171,12 @@ class OpenAIChatProvider:
                         temperature=self._config.temperature,
                         max_output_tokens=self._config.max_tokens,
                     )
-                except (APITimeoutError, RateLimitError, APIStatusError) as error:
+                except (
+                    APITimeoutError,
+                    RateLimitError,
+                    APIConnectionError,
+                    APIStatusError,
+                ) as error:
                     _raise_provider_error(error)
                 text = str(getattr(response, "output_text", "")).strip()
                 if not text:
@@ -203,7 +216,12 @@ class OpenAIChatProvider:
                     temperature=self._config.temperature,
                     max_output_tokens=self._config.max_tokens,
                 )
-            except (APITimeoutError, RateLimitError, APIStatusError) as error:
+            except (
+                APITimeoutError,
+                RateLimitError,
+                APIConnectionError,
+                APIStatusError,
+            ) as error:
                 _raise_provider_error(error)
             except ValidationError as error:
                 raise _StructuredValidationFailure(
@@ -254,6 +272,7 @@ class OpenAIChatProvider:
 
         raise AssertionError("structured output attempt loop did not return")
 
+
 class OpenAIEmbeddingProvider:
     """Async single and batch embeddings through the OpenAI API."""
 
@@ -299,14 +318,26 @@ class OpenAIEmbeddingProvider:
                     model=model,
                     input=list(texts),
                 )
-            except (APITimeoutError, RateLimitError, APIStatusError) as error:
+            except (
+                APITimeoutError,
+                RateLimitError,
+                APIConnectionError,
+                APIStatusError,
+            ) as error:
                 _raise_provider_error(error)
-            ordered = sorted(response.data, key=lambda item: item.index)
+            try:
+                ordered = sorted(response.data, key=lambda item: item.index)
+                vectors = [
+                    [float(value) for value in item.embedding] for item in ordered
+                ]
+            except (AttributeError, TypeError, ValueError) as error:
+                raise ProviderResponseError(
+                    "OpenAI embedding response was malformed"
+                ) from error
             if len(ordered) != len(texts):
                 raise ProviderResponseError(
                     "OpenAI embedding response count did not match input count"
                 )
-            vectors = [list(item.embedding) for item in ordered]
             dimensions = {len(vector) for vector in vectors}
             if len(dimensions) != 1 or 0 in dimensions:
                 raise ProviderResponseError(

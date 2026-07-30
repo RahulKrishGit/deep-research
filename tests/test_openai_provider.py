@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
-from openai import APIStatusError, APITimeoutError, RateLimitError
+from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, ValidationError
 
 from deep_research.observability import (
@@ -101,6 +101,8 @@ class RecordingEmbeddings:
         if isinstance(result, Exception):
             raise result
         return result
+
+
 def local_tracker() -> Tracker:
     return Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
 
@@ -342,6 +344,7 @@ async def test_complete_structured_raises_after_two_pydantic_validation_errors()
 
     assert len(responses.parse_calls) == 2
 
+
 @pytest.mark.asyncio
 async def test_embed_query_returns_vector_and_reports_dimension() -> None:
     embeddings = RecordingEmbeddings(embedding_response([[0.1, 0.2, 0.3]]))
@@ -411,3 +414,89 @@ async def test_embed_texts_rejects_empty_batches_without_api_call() -> None:
         await provider.embed_texts([])
 
     assert embeddings.calls == []
+
+
+@pytest.mark.asyncio
+async def test_complete_translates_connection_errors() -> None:
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(
+            responses=RecordingResponses(
+                APIConnectionError(
+                    request=httpx.Request("POST", "https://api.openai.com")
+                )
+            )
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="connection"):
+            await provider.complete([ChatMessage(role="user", content="Answer")])
+
+
+@pytest.mark.asyncio
+async def test_complete_structured_translates_connection_errors() -> None:
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(
+            responses=RecordingResponses(
+                APIConnectionError(
+                    request=httpx.Request("POST", "https://api.openai.com")
+                )
+            )
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="connection"):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="Create an outline")], Outline
+            )
+
+
+@pytest.mark.asyncio
+async def test_embed_texts_translates_connection_errors() -> None:
+    embeddings = RecordingEmbeddings(
+        APIConnectionError(request=httpx.Request("POST", "https://api.openai.com"))
+    )
+    tracker = local_tracker()
+    provider = OpenAIEmbeddingProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(embeddings=embeddings),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="connection"):
+            await provider.embed_texts(["first"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed_response",
+    [
+        SimpleNamespace(),
+        SimpleNamespace(data=[SimpleNamespace(embedding=[0.1])]),
+        SimpleNamespace(data=[SimpleNamespace(index=0)]),
+        SimpleNamespace(data=[SimpleNamespace(index=0, embedding=None)]),
+        SimpleNamespace(data=[SimpleNamespace(index=0, embedding=["not-a-number"])]),
+    ],
+)
+async def test_embed_texts_translates_malformed_response_shapes(
+    malformed_response: object,
+) -> None:
+    embeddings = RecordingEmbeddings(malformed_response)
+    tracker = local_tracker()
+    provider = OpenAIEmbeddingProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(embeddings=embeddings),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError):
+            await provider.embed_texts(["first"])
