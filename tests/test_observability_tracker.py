@@ -21,6 +21,7 @@ from deep_research.observability.metrics import (
     ToolMetric,
 )
 from deep_research.observability.tracker import Tracker
+from deep_research.tools.base import ToolExecutionError
 
 
 class ForbiddenClientFactory:
@@ -31,6 +32,42 @@ class ForbiddenClientFactory:
 class ForbiddenTraceFactory:
     def __call__(self, *args: Any, **kwargs: Any) -> object:
         raise AssertionError("disabled tracing must not open a LangSmith trace")
+
+
+@pytest.mark.asyncio
+async def test_remote_tool_span_completion_preserves_structured_error_type() -> None:
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=trace_factory,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ToolExecutionError):
+            async with tracker.tool_span("web_search", {"query": "test"}):
+                raise ToolExecutionError(
+                    "provider timed out", error_type="TimeoutError"
+                )
+
+    assert trace_factory.managers[1].run.end_calls[-1]["metadata"][
+        "error_type"
+    ] == "TimeoutError"
+    tool_metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert tool_metric.error_type == "TimeoutError"
+    completed_tool_event = next(
+        event
+        for event in tracker.events
+        if event.event_type == "observability.span.completed"
+        and event.metadata["span_kind"] == "tool"
+    )
+    assert completed_tool_event.metadata["error_type"] == "TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -1008,6 +1045,28 @@ async def test_negative_tool_retry_count_fails_before_entering_body() -> None:
 
     assert body_entered is False
 
+
+@pytest.mark.asyncio
+async def test_tool_span_uses_retry_count_reported_during_execution() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+
+    async with tracker.session_span("session-1", "question"):
+        async with tracker.tool_span("web_search", {"query": "topic"}) as span:
+            span.set_retry_count(2)
+            span.set_outputs({"success": True, "result_count": 1})
+
+    metric = next(item for item in tracker.metrics if isinstance(item, ToolMetric))
+    assert metric.retry_count == 2
+
+
+@pytest.mark.asyncio
+async def test_span_handle_rejects_negative_retry_count() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+
+    async with tracker.session_span("session-1", "question"):
+        async with tracker.tool_span("web_search", {"query": "topic"}) as span:
+            with pytest.raises(ValidationError):
+                span.set_retry_count(-1)
 
 def _tracker_for_validation_test(tracing_enabled: bool) -> Tracker:
     runtime = LangSmithRuntimeConfig(

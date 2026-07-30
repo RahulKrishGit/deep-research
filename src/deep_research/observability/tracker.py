@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
     AbstractContextManager,
@@ -68,6 +68,18 @@ _SENSITIVE_KEY_SUFFIXES = frozenset(
         ("refresh", "token"),
     }
 )
+
+
+def _semantic_error_type(error: BaseException | None) -> str | None:
+    """Return a structured error's semantic type, or its exception class."""
+    if error is None:
+        return None
+    error_type = getattr(error, "error_type", None)
+    if isinstance(error_type, str) and error_type:
+        return error_type
+    return type(error).__name__
+
+
 _SENSITIVE_TERMINAL_SEGMENTS = frozenset(
     {"authorization", "credential", "password", "secret"}
 )
@@ -169,9 +181,13 @@ class SpanHandle:
     trace_url: str | None = None
     outputs: dict[str, JsonValue] | None = None
     token_usage: TokenUsage = field(default_factory=TokenUsage)
+    retry_count: int = 0
 
     def set_outputs(self, outputs: Mapping[str, JsonValue]) -> None:
         self.outputs = dict(outputs)
+
+    def set_retry_count(self, retry_count: int) -> None:
+        self.retry_count = _RETRY_COUNT_ADAPTER.validate_python(retry_count)
 
     def set_token_usage(
         self,
@@ -414,26 +430,32 @@ class Tracker:
             trace_url: str | None,
             handle: SpanHandle,
         ) -> MetricRecord:
-            del trace_url, handle
+            del trace_url
             return ToolMetric(
                 session_id=ctx.session_id,
                 agent_name=ctx.agent_name,
                 tool_name=tool_name,
                 iteration=ctx.iteration,
-                retry_count=retry_count,
+                retry_count=handle.retry_count,
                 latency_ms=latency,
                 success=success,
                 error_type=error_type,
             )
 
-        return self._span(
-            kind="tool",
-            name=f"tool.{tool_name}",
-            run_type="tool",
-            context=context,
-            inputs=inputs,
-            metric_factory=metric_factory,
-        )
+        @asynccontextmanager
+        async def tool_manager() -> AsyncIterator[SpanHandle]:
+            async with self._span(
+                kind="tool",
+                name=f"tool.{tool_name}",
+                run_type="tool",
+                context=context,
+                inputs=inputs,
+                metric_factory=metric_factory,
+            ) as handle:
+                handle.set_retry_count(retry_count)
+                yield handle
+
+        return tool_manager()
 
     def _require_context(self) -> TraceContext:
         context = current_trace_context()
@@ -534,7 +556,7 @@ class Tracker:
         completion_metadata: dict[str, Any] = {
             "latency_ms": latency_ms,
             "success": success,
-            "error_type": type(error).__name__ if error is not None else None,
+            "error_type": _semantic_error_type(error),
             "trace_url": handle.trace_url,
         }
         if context.model is not None:
@@ -656,9 +678,7 @@ class Tracker:
         finally:
             latency_ms = (perf_counter() - started_at) * 1000
             success = operation_error is None
-            error_type = (
-                type(operation_error).__name__ if operation_error is not None else None
-            )
+            error_type = _semantic_error_type(operation_error)
             self._end_remote_run(
                 run=run,
                 handle=handle,
