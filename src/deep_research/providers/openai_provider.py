@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Sequence
 from typing import Any, Literal, TypeVar
@@ -326,17 +327,29 @@ class OpenAIEmbeddingProvider:
             ) as error:
                 _raise_provider_error(error)
             try:
-                ordered = sorted(response.data, key=lambda item: item.index)
+                rows = list(response.data)
+                indices = [item.index for item in rows]
+                if any(
+                    isinstance(index, bool) or not isinstance(index, int)
+                    for index in indices
+                ) or set(indices) != set(range(len(texts))):
+                    raise ProviderResponseError(
+                        "OpenAI embedding response indices did not match "
+                        "input positions"
+                    )
+                ordered = sorted(rows, key=lambda item: item.index)
                 vectors = [
                     [float(value) for value in item.embedding] for item in ordered
                 ]
+            except ProviderResponseError:
+                raise
             except (AttributeError, TypeError, ValueError) as error:
                 raise ProviderResponseError(
                     "OpenAI embedding response was malformed"
                 ) from error
-            if len(ordered) != len(texts):
+            if any(not math.isfinite(value) for vector in vectors for value in vector):
                 raise ProviderResponseError(
-                    "OpenAI embedding response count did not match input count"
+                    "OpenAI embedding response contained non-finite values"
                 )
             dimensions = {len(vector) for vector in vectors}
             if len(dimensions) != 1 or 0 in dimensions:

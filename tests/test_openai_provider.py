@@ -500,3 +500,46 @@ async def test_embed_texts_translates_malformed_response_shapes(
     async with tracker.session_span("session-1", "question"):
         with pytest.raises(ProviderResponseError):
             await provider.embed_texts(["first"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("texts", "malformed_response"),
+    [
+        (
+            ["first", "second"],
+            SimpleNamespace(
+                data=[
+                    SimpleNamespace(index=0, embedding=[0.1]),
+                    SimpleNamespace(index=0, embedding=[0.2]),
+                ]
+            ),
+        ),
+        (
+            ["first"],
+            SimpleNamespace(data=[SimpleNamespace(index=1, embedding=[0.1])]),
+        ),
+        (
+            ["first"],
+            SimpleNamespace(data=[SimpleNamespace(index="0", embedding=[0.1])]),
+        ),
+        (
+            ["first"],
+            SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[float("nan")])]),
+        ),
+    ],
+)
+async def test_embed_texts_rejects_invalid_indices_and_nonfinite_values(
+    texts: list[str], malformed_response: object
+) -> None:
+    embeddings = RecordingEmbeddings(malformed_response)
+    tracker = local_tracker()
+    provider = OpenAIEmbeddingProvider(
+        LLMConfig(),
+        tracker,
+        client=FakeOpenAIClient(embeddings=embeddings),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError):
+            await provider.embed_texts(texts)
