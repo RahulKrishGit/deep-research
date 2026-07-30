@@ -63,7 +63,7 @@ def _build_client(
 ) -> Any:
     if client is not None:
         return client
-    resolved_key = api_key or os.getenv("OPENAI_API_KEY", "")
+    resolved_key = os.getenv("OPENAI_API_KEY", "") if api_key is None else api_key
     if not resolved_key.strip():
         raise ProviderConfigurationError(
             "OPENAI_API_KEY is required when no OpenAI client is injected"

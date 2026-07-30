@@ -118,3 +118,12 @@ def test_missing_api_key_fails_before_client_construction(
 
     with pytest.raises(ProviderConfigurationError, match="OPENAI_API_KEY"):
         OpenAIChatProvider(LLMConfig(), local_tracker())
+
+
+def test_explicit_empty_api_key_does_not_fall_back_to_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+
+    with pytest.raises(ProviderConfigurationError, match="OPENAI_API_KEY"):
+        OpenAIChatProvider(LLMConfig(), local_tracker(), api_key="")
