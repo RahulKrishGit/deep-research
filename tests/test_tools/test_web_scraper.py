@@ -1,9 +1,10 @@
 import asyncio
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
 
-from deep_research.observability import ToolMetric
+from deep_research.observability.tracker import SpanHandle
 from deep_research.tools.web_scraper import WebScraperTool
 
 
@@ -11,24 +12,39 @@ def _client(handler):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+class RecordingToolTracker:
+    def __init__(self) -> None:
+        self.span = SpanHandle(context=None)  # type: ignore[arg-type]
+
+    @asynccontextmanager
+    async def tool_span(self, name: str, inputs: dict[str, object]):
+        del name, inputs
+        yield self.span
+
+
 @pytest.mark.asyncio
-async def test_scraper_extracts_static_html_and_reports_observable_summary(tracker) -> None:
+async def test_scraper_extracts_static_html_and_reports_observable_summary(
+) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
             return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
         return httpx.Response(
             200,
             headers={"Content-Type": "text/html; charset=utf-8"},
-            text="""<html><head><title>Example Article</title><style>hidden</style></head>
-            <body><nav>Navigation</nav><p>First paragraph.</p><script>ignored</script>
-            <p>Second paragraph.</p><noscript>ignored fallback</noscript></body></html>""",
+            text=(
+                "<html><head><title>Example Article</title><style>hidden</style>"
+                "</head><body><nav>Navigation</nav><p>First paragraph.</p><script>"
+                "ignored</script><p>Second paragraph.</p><noscript>ignored fallback"
+                "</noscript></body></html>"
+            ),
             request=request,
         )
 
     async with _client(handler) as client:
-        tool = WebScraperTool(tracker, client=client)
-        async with tracker.session_span("session-1", "question"):
-            result = await tool.execute(url="https://example.test/article")
+        tracker = RecordingToolTracker()
+        result = await WebScraperTool(tracker, client=client).execute(
+            url="https://example.test/article"
+        )
 
     assert result.data == {
         "url": "https://example.test/article",
@@ -38,8 +54,12 @@ async def test_scraper_extracts_static_html_and_reports_observable_summary(track
         "content_type": "text/html; charset=utf-8",
     }
     assert result.metadata == {"robots_checked": True, "retry_count": 0}
-    metric = next(item for item in tracker.metrics if isinstance(item, ToolMetric))
-    assert metric.success is True
+    assert tracker.span.outputs == {
+        "status_code": 200,
+        "character_count": 61,
+        "robots_checked": True,
+        "success": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -48,7 +68,9 @@ async def test_scraper_stops_before_page_when_robots_disallows_url(tracker) -> N
 
     async def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
-        return httpx.Response(200, text="User-agent: *\nDisallow: /private", request=request)
+        return httpx.Response(
+            200, text="User-agent: *\nDisallow: /private", request=request
+        )
 
     async with _client(handler) as client:
         tool = WebScraperTool(tracker, client=client)
@@ -67,7 +89,12 @@ async def test_scraper_allows_page_when_robots_is_unavailable(tracker) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
             return httpx.Response(404, request=request)
-        return httpx.Response(200, headers={"Content-Type": "text/html"}, text="<title>T</title>", request=request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            text="<title>T</title>",
+            request=request,
+        )
 
     async with _client(handler) as client:
         tool = WebScraperTool(tracker, client=client)
@@ -90,7 +117,12 @@ async def test_scraper_retries_rate_limited_page_using_retry_after(tracker) -> N
         calls += 1
         if calls == 1:
             return httpx.Response(429, headers={"Retry-After": "1"}, request=request)
-        return httpx.Response(200, headers={"Content-Type": "text/html"}, text="<title>T</title>", request=request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            text="<title>T</title>",
+            request=request,
+        )
 
     async def sleep(delay: float) -> None:
         delays.append(delay)
@@ -138,7 +170,12 @@ async def test_scraper_rejects_non_html_content(tracker) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
             return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
-        return httpx.Response(200, headers={"Content-Type": "application/pdf"}, content=b"pdf", request=request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/pdf"},
+            content=b"pdf",
+            request=request,
+        )
 
     async with _client(handler) as client:
         tool = WebScraperTool(tracker, client=client)
