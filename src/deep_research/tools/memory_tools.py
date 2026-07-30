@@ -47,7 +47,9 @@ class SaveToMemoryTool(BaseTool):
         content = kwargs.get("content")
         return {
             "content_chars": len(content) if isinstance(content, str) else 0,
-            "metadata": kwargs.get("metadata", {}),
+            "metadata": _json_safe_observability_value(
+                kwargs.get("metadata", {})
+            ),
         }
 
     async def _execute(
@@ -80,9 +82,9 @@ class QueryMemoryTool(BaseTool):
 
     def _observability_inputs(self, kwargs: dict[str, Any]) -> dict[str, JsonValue]:
         return {
-            "query": kwargs.get("query"),
-            "top_k": kwargs.get("top_k", 5),
-            "filters": kwargs.get("filters"),
+            "query": _json_safe_observability_value(kwargs.get("query")),
+            "top_k": _json_safe_observability_value(kwargs.get("top_k", 5)),
+            "filters": _json_safe_observability_value(kwargs.get("filters")),
         }
 
     async def _execute(
@@ -128,7 +130,10 @@ def _is_json_safe(value: Any) -> bool:
     if isinstance(value, float):
         return isfinite(value)
     if isinstance(value, Mapping):
-        return all(isinstance(key, str) and _is_json_safe(item) for key, item in value.items())
+        return all(
+            isinstance(key, str) and _is_json_safe(item)
+            for key, item in value.items()
+        )
     if isinstance(value, list):
         return all(_is_json_safe(item) for item in value)
     return False
@@ -136,3 +141,9 @@ def _is_json_safe(value: Any) -> bool:
 
 def _as_json_mapping(value: Mapping[str, Any]) -> Mapping[str, JsonValue]:
     return value  # type: ignore[return-value]
+
+
+def _json_safe_observability_value(value: Any) -> JsonValue:
+    if _is_json_safe(value):
+        return value  # type: ignore[return-value]
+    return "[INVALID_JSON_VALUE]"

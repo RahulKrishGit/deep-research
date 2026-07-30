@@ -56,7 +56,9 @@ class RecordingTracker:
 
 
 @pytest.mark.asyncio
-async def test_save_persists_entry_with_private_summary_and_span_inputs(tracker) -> None:
+async def test_save_persists_entry_with_private_summary_and_span_inputs(
+    tracker,
+) -> None:
     memory = FakeMemory()
     tool = SaveToMemoryTool(tracker, memory=memory)
     metadata = {
@@ -74,7 +76,9 @@ async def test_save_persists_entry_with_private_summary_and_span_inputs(tracker)
     assert result.success is True
     assert result.data == {"entry_id": "entry-123"}
     assert result.metadata == {"retry_count": 0}
-    metric = next(metric for metric in tracker.metrics if isinstance(metric, ToolMetric))
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
     assert metric.success is True
 
 
@@ -84,7 +88,9 @@ async def test_save_records_length_and_metadata_without_exposing_content() -> No
     tracker = RecordingTracker()
     tool = SaveToMemoryTool(tracker, memory=memory)  # type: ignore[arg-type]
 
-    result = await tool.execute(content="Verified finding", metadata={"kind": "finding"})
+    result = await tool.execute(
+        content="Verified finding", metadata={"kind": "finding"}
+    )
 
     assert result.success is True
     assert tracker.calls == [
@@ -119,6 +125,11 @@ async def test_save_rejects_blank_content_and_non_json_metadata(
     assert result.error is not None
     assert result.error.type == "ValidationError"
     assert memory.save_calls == []
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert metric.success is False
+    assert metric.error_type == "ToolExecutionError"
 
 
 @pytest.mark.asyncio
@@ -162,10 +173,17 @@ async def test_query_rejects_invalid_arguments_without_calling_backend(
     assert result.error is not None
     assert result.error.type == "ValidationError"
     assert memory.query_calls == []
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert metric.success is False
+    assert metric.error_type == "ToolExecutionError"
 
 
 @pytest.mark.asyncio
-async def test_query_backend_failure_is_structured_and_marks_metric_failed(tracker) -> None:
+async def test_query_backend_failure_is_structured_and_marks_metric_failed(
+    tracker,
+) -> None:
     memory = FakeMemory(error=RuntimeError("memory unavailable"))
 
     async with tracker.session_span("session-1", "question"):
@@ -174,6 +192,8 @@ async def test_query_backend_failure_is_structured_and_marks_metric_failed(track
     assert result.success is False
     assert result.error is not None
     assert result.error.type == "RuntimeError"
-    metric = next(metric for metric in tracker.metrics if isinstance(metric, ToolMetric))
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
     assert metric.success is False
     assert metric.error_type == "RuntimeError"
