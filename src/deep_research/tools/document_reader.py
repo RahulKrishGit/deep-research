@@ -144,7 +144,7 @@ class DocumentReaderTool(BaseTool):
                         details["status_code"] = error.response.status_code
                     raise ToolExecutionError(str(error) or type(error).__name__, error_type=type(error).__name__, details=details) from error
                 context.record_retry()
-                await self._sleep(0.5 * (2**attempt))
+                await self._sleep(_retry_delay(error, attempt))
         raise AssertionError("retry loop must return or raise")
 
 
@@ -158,6 +158,20 @@ def _source_suffix(source: str) -> str:
 
 def _media_type(content_type: str) -> str:
     return content_type.split(";", 1)[0].strip().lower()
+
+
+def _retry_delay(error: BaseException, retry_index: int) -> float:
+    if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429:
+        retry_after = error.response.headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                pass
+            else:
+                if delay >= 0:
+                    return delay
+    return 0.5 * (2**retry_index)
 
 
 def _extract(document_format: str, payload: bytes, chunk_chars: int, csv_rows_per_chunk: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

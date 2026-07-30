@@ -191,3 +191,32 @@ async def test_reader_records_two_retries_for_repeated_remote_timeout(tracker) -
     assert result.success is False
     assert calls == 3
     assert result.metadata["retry_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_reader_retries_rate_limit_using_numeric_retry_after(tracker) -> None:
+    calls = 0
+    delays: list[float] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                429, headers={"Retry-After": "1.25"}, request=request
+            )
+        return httpx.Response(200, text="remote document", request=request)
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker, client=client, sleep=sleep).execute(
+                source="https://example.test/report.txt"
+            )
+
+    assert result.success is True
+    assert calls == 2
+    assert delays == [1.25]
+    assert result.metadata["retry_count"] == 1
