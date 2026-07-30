@@ -92,17 +92,18 @@ class BaseTool(ABC):
             ) as span:
                 context = ToolCallContext(span=span)
                 execution = await self._execute(context, **kwargs)
-                span.set_outputs({"success": True, **execution.output_summary})
-            return ToolResult(
-                tool_name=self.name,
-                success=True,
-                data=execution.data,
-                latency_ms=(perf_counter() - started_at) * 1000,
-                metadata={
-                    **execution.metadata,
-                    "retry_count": context.retry_count,
-                },
-            )
+                result = ToolResult(
+                    tool_name=self.name,
+                    success=True,
+                    data=execution.data,
+                    latency_ms=(perf_counter() - started_at) * 1000,
+                    metadata={
+                        **execution.metadata,
+                        "retry_count": context.retry_count,
+                    },
+                )
+                span.set_outputs({**execution.output_summary, "success": True})
+            return result
         except Exception as error:
             failure = (
                 error
