@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from typing import Any, Literal, TypeVar
 
 from openai import APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.utils.config import LLMConfig
@@ -205,6 +205,10 @@ class OpenAIChatProvider:
                 )
             except (APITimeoutError, RateLimitError, APIStatusError) as error:
                 _raise_provider_error(error)
+            except ValidationError as error:
+                raise _StructuredValidationFailure(
+                    schema.__name__, str(error)
+                ) from error
             usage = _usage_from_response(response)
             _set_span_result(span, response, usage)
             parsed = getattr(response, "output_parsed", None)

@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 from openai import APIStatusError, APITimeoutError, RateLimitError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from deep_research.observability import (
     LangSmithRuntimeConfig,
@@ -271,3 +271,50 @@ async def test_complete_translates_sdk_errors(
     async with tracker.session_span("session-1", "question"):
         with pytest.raises(expected_type):
             await provider.complete([ChatMessage(role="user", content="Answer")])
+
+
+def outline_validation_error() -> ValidationError:
+    with pytest.raises(ValidationError) as exc_info:
+        Outline.model_validate({"title": 3, "points": "invalid"})
+    return exc_info.value
+
+
+@pytest.mark.asyncio
+async def test_complete_structured_repairs_pydantic_validation_error() -> None:
+    repaired = Outline(title="Repaired", points=["Valid"])
+    responses = RecordingResponses(
+        outline_validation_error(), response(parsed=repaired)
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="Create an outline")], Outline
+        )
+
+    assert result == repaired
+    assert len(responses.parse_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_complete_structured_raises_after_two_pydantic_validation_errors() -> (
+    None
+):
+    responses = RecordingResponses(
+        outline_validation_error(), outline_validation_error()
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(StructuredOutputError, match="Outline"):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="Create an outline")], Outline
+            )
+
+    assert len(responses.parse_calls) == 2
