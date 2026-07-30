@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
     AbstractContextManager,
@@ -169,9 +169,13 @@ class SpanHandle:
     trace_url: str | None = None
     outputs: dict[str, JsonValue] | None = None
     token_usage: TokenUsage = field(default_factory=TokenUsage)
+    retry_count: int = 0
 
     def set_outputs(self, outputs: Mapping[str, JsonValue]) -> None:
         self.outputs = dict(outputs)
+
+    def set_retry_count(self, retry_count: int) -> None:
+        self.retry_count = _RETRY_COUNT_ADAPTER.validate_python(retry_count)
 
     def set_token_usage(
         self,
@@ -414,26 +418,32 @@ class Tracker:
             trace_url: str | None,
             handle: SpanHandle,
         ) -> MetricRecord:
-            del trace_url, handle
+            del trace_url
             return ToolMetric(
                 session_id=ctx.session_id,
                 agent_name=ctx.agent_name,
                 tool_name=tool_name,
                 iteration=ctx.iteration,
-                retry_count=retry_count,
+                retry_count=handle.retry_count,
                 latency_ms=latency,
                 success=success,
                 error_type=error_type,
             )
 
-        return self._span(
-            kind="tool",
-            name=f"tool.{tool_name}",
-            run_type="tool",
-            context=context,
-            inputs=inputs,
-            metric_factory=metric_factory,
-        )
+        @asynccontextmanager
+        async def tool_manager() -> AsyncIterator[SpanHandle]:
+            async with self._span(
+                kind="tool",
+                name=f"tool.{tool_name}",
+                run_type="tool",
+                context=context,
+                inputs=inputs,
+                metric_factory=metric_factory,
+            ) as handle:
+                handle.set_retry_count(retry_count)
+                yield handle
+
+        return tool_manager()
 
     def _require_context(self) -> TraceContext:
         context = current_trace_context()

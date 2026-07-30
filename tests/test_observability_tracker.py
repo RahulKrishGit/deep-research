@@ -1009,6 +1009,28 @@ async def test_negative_tool_retry_count_fails_before_entering_body() -> None:
     assert body_entered is False
 
 
+@pytest.mark.asyncio
+async def test_tool_span_uses_retry_count_reported_during_execution() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+
+    async with tracker.session_span("session-1", "question"):
+        async with tracker.tool_span("web_search", {"query": "topic"}) as span:
+            span.set_retry_count(2)
+            span.set_outputs({"success": True, "result_count": 1})
+
+    metric = next(item for item in tracker.metrics if isinstance(item, ToolMetric))
+    assert metric.retry_count == 2
+
+
+@pytest.mark.asyncio
+async def test_span_handle_rejects_negative_retry_count() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+
+    async with tracker.session_span("session-1", "question"):
+        async with tracker.tool_span("web_search", {"query": "topic"}) as span:
+            with pytest.raises(ValidationError):
+                span.set_retry_count(-1)
+
 def _tracker_for_validation_test(tracing_enabled: bool) -> Tracker:
     runtime = LangSmithRuntimeConfig(
         tracing_enabled=tracing_enabled,
