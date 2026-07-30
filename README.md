@@ -4,7 +4,7 @@ Multi-agent deep research system using LangGraph, OpenAI, ChromaDB, and LangSmit
 
 ## Project Status
 
-Foundation phase — package skeleton, typed configuration/state, and the LangSmith observability foundation.
+Foundation phase — package skeleton, typed configuration/state, LangSmith observability, and OpenAI model and embedding providers.
 
 ## Setup
 
@@ -100,6 +100,33 @@ The documentation snippet uses a named `search_client` placeholder only as an ex
 Each completed span appends a typed metric and structured event. A LangSmith
 transport failure appends a recoverable `ResearchError` and research work
 continues locally.
+
+## OpenAI Providers
+
+Set `OPENAI_API_KEY` in the process environment. Chat and embedding defaults live
+under `llm` in `config.yaml`; `LLM_MODEL`, `LLM_EMBEDDING_MODEL`, `LLM_TIMEOUT`,
+and `LLM_RETRY_COUNT` override the corresponding YAML values.
+
+Provider callers use project-owned messages and results, not OpenAI SDK types:
+
+```python
+from deep_research.providers import ChatMessage, OpenAIChatProvider
+
+settings = load_config("config.yaml")
+chat = OpenAIChatProvider(settings.llm, tracker)
+
+async with tracker.session_span("session-123", "Why is the sky blue?"):
+    result = await chat.complete(
+        [ChatMessage(role="user", content="Why is the sky blue?")],
+        agent_name="researcher",
+    )
+```
+
+Use `complete_structured(messages, Schema)` for validated Pydantic output.
+The provider performs one repair request if validation fails. Use
+`OpenAIEmbeddingProvider.embed_query(...)` or `embed_texts(...)` for memory
+vectors; `dimension` reports the vector size after the first successful call.
+
 ## Development
 
 ```bash

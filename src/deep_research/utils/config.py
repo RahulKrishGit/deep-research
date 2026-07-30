@@ -5,17 +5,29 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LLMConfig(BaseModel):
-    """Language model settings."""
+    """OpenAI model and request settings."""
 
-    provider: str = "openai"
-    model: str = "gpt-4o"
-    temperature: float = 0.7
-    max_tokens: int = 4096
+    provider: str = Field(default="openai", min_length=1)
+    model: str = Field(default="gpt-4o", min_length=1)
+    embedding_model: str = Field(
+        default="text-embedding-3-small",
+        min_length=1,
+    )
+    model_overrides: dict[str, str] = Field(default_factory=dict)
+    timeout: float = Field(default=60.0, gt=0)
+    retry_count: int = Field(default=2, ge=0)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=4096, ge=1)
 
+    def model_for(self, agent_name: str | None) -> str:
+        """Return an agent override when configured, otherwise the default."""
+        if agent_name is None:
+            return self.model
+        return self.model_overrides.get(agent_name, self.model)
 
 class LangSmithConfig(BaseModel):
     """LangSmith tracing settings."""
@@ -71,6 +83,9 @@ class ConfigSettings(BaseModel):
 _ENVIRONMENT_OVERRIDES = {
     "LLM_PROVIDER": ("llm", "provider"),
     "LLM_MODEL": ("llm", "model"),
+    "LLM_EMBEDDING_MODEL": ("llm", "embedding_model"),
+    "LLM_TIMEOUT": ("llm", "timeout"),
+    "LLM_RETRY_COUNT": ("llm", "retry_count"),
     "LLM_TEMPERATURE": ("llm", "temperature"),
     "LLM_MAX_TOKENS": ("llm", "max_tokens"),
     "LANGSMITH_TRACING": ("langsmith", "tracing_enabled"),

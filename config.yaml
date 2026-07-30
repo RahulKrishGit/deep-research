@@ -5,6 +5,10 @@
 llm:
   provider: openai
   model: gpt-4o
+  embedding_model: text-embedding-3-small
+  model_overrides: {}
+  timeout: 60.0
+  retry_count: 2
   temperature: 0.7
   max_tokens: 4096
 
