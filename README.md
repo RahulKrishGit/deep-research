@@ -36,9 +36,11 @@ Foundation phase — package skeleton, typed configuration/state, LangSmith obse
    # Edit .env with your API keys
    ```
 
-   Copying `.env.example` creates a template only. The foundation does not load
-   `.env` automatically, so export these values or inject them into the process
-   environment before running the application.
+   `load_config("config.yaml")` automatically loads the `.env` file beside
+   `config.yaml`. Values already set by the shell, CI, a container, or the
+   deployment platform take precedence over `.env`, so the same loader is safe
+   for local development and deployed environments. Keep personal keys only in
+   `.env`; it is ignored by Git.
 
 5. **Verify setup**
 
@@ -67,9 +69,12 @@ output/                # Generated reports (gitignored)
 
 ## Configuration
 
-See `config.yaml` for default settings. Sensitive values are set via environment
-variables (see `.env.example`). Configuration overrides use uppercase full-path
-names, such as `LLM_MODEL` and `MEMORY_LONG_TERM_PERSIST_DIRECTORY`.
+See `config.yaml` for default non-secret settings. Copy `.env.example` to `.env`
+and add personal API keys for local runs; `load_config("config.yaml")` loads that
+sibling file automatically. Shell and CI environment variables take precedence.
+Configuration overrides use uppercase full-path names, such as `LLM_MODEL` and
+`MEMORY_LONG_TERM_PERSIST_DIRECTORY`. API keys remain environment-only and are
+not included in typed settings or telemetry.
 
 ## Observability
 
@@ -103,9 +108,10 @@ continues locally.
 
 ## OpenAI Providers
 
-Set `OPENAI_API_KEY` in the process environment. Chat and embedding defaults live
-under `llm` in `config.yaml`; `LLM_MODEL`, `LLM_EMBEDDING_MODEL`, `LLM_TIMEOUT`,
-and `LLM_RETRY_COUNT` override the corresponding YAML values.
+Set `OPENAI_API_KEY` in the process environment or the repository-root `.env`.
+Chat and embedding defaults live under `llm` in `config.yaml`; `LLM_MODEL`,
+`LLM_EMBEDDING_MODEL`, `LLM_TIMEOUT`, and `LLM_RETRY_COUNT` override the
+corresponding YAML values.
 
 Provider callers use project-owned messages and results, not OpenAI SDK types:
 

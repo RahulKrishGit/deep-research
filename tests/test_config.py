@@ -1,10 +1,13 @@
 """Tests for configuration loading."""
 
+import json
+import os
 from pathlib import Path
 
 import pytest
 import yaml
 
+from deep_research.observability import Tracker
 from deep_research.utils.config import ConfigSettings, LLMConfig, load_config
 
 
@@ -50,6 +53,64 @@ def test_load_default_config(config_path: Path) -> None:
     assert settings.llm.provider == "openai"
     assert settings.llm.model == "gpt-4o"
     assert settings.tavily.max_results == 5
+
+def test_load_config_loads_sibling_dotenv_before_strict_validation(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """A sibling .env supplies secrets before strict validation runs."""
+    for environment_name in (
+        "OPENAI_API_KEY",
+        "TAVILY_API_KEY",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_PROJECT",
+    ):
+        monkeypatch.delenv(environment_name, raising=False)
+    (config_path.parent / ".env").write_text(
+        "\n".join(
+            (
+                "OPENAI_API_KEY=dotenv-openai",
+                "TAVILY_API_KEY=dotenv-tavily",
+                "LANGSMITH_API_KEY=dotenv-langsmith",
+                "LANGSMITH_PROJECT=dotenv-project",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_config(str(config_path), strict=True)
+
+    assert settings.langsmith.project == "dotenv-project"
+    assert os.environ["OPENAI_API_KEY"] == "dotenv-openai"
+    assert os.environ["TAVILY_API_KEY"] == "dotenv-tavily"
+
+
+def test_process_environment_takes_precedence_over_sibling_dotenv(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """A value injected by the process wins over the local file."""
+    monkeypatch.setenv("LLM_MODEL", "shell-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-openai")
+    (config_path.parent / ".env").write_text(
+        "LLM_MODEL=dotenv-model\nOPENAI_API_KEY=dotenv-openai\n",
+        encoding="utf-8",
+    )
+
+    settings = load_config(str(config_path))
+
+    assert settings.llm.model == "shell-model"
+    assert os.environ["OPENAI_API_KEY"] == "shell-openai"
+
+
+def test_load_config_without_sibling_dotenv_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """The normal YAML load remains valid when no .env file exists."""
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    assert not (config_path.parent / ".env").exists()
+
+    settings = load_config(str(config_path))
+
+    assert settings.llm.model == "gpt-4o"
 
 def test_llm_config_resolves_agent_model_override(config_path: Path) -> None:
     """Return the configured agent override or the default OpenAI model."""
@@ -254,6 +315,53 @@ def test_config_settings_excludes_provider_secrets(config_path: Path) -> None:
     assert "OPENAI_API_KEY" not in settings.model_dump()
     assert "LANGSMITH_API_KEY" not in settings.model_dump()
     assert "TAVILY_API_KEY" not in settings.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_dotenv_api_keys_are_absent_from_settings_and_tracker_records(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """Loaded API-key values never enter serializable config or telemetry."""
+    secret_values = (
+        "dotenv-openai-secret",
+        "dotenv-tavily-secret",
+        "dotenv-langsmith-secret",
+    )
+    for environment_name in (
+        "OPENAI_API_KEY",
+        "TAVILY_API_KEY",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_PROJECT",
+    ):
+        monkeypatch.delenv(environment_name, raising=False)
+    (config_path.parent / ".env").write_text(
+        "\n".join(
+            (
+                f"OPENAI_API_KEY={secret_values[0]}",
+                f"TAVILY_API_KEY={secret_values[1]}",
+                f"LANGSMITH_API_KEY={secret_values[2]}",
+                "LANGSMITH_PROJECT=dotenv-project",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_config(str(config_path), strict=True)
+    tracker = Tracker.from_config(settings.langsmith)
+    async with tracker.session_span("session-1", "safe question"):
+        pass
+
+    serialized_surfaces = json.dumps(
+        {
+            "settings": settings.model_dump(mode="json"),
+            "events": [event.model_dump(mode="json") for event in tracker.events],
+            "errors": [error.model_dump(mode="json") for error in tracker.errors],
+            "metrics": [metric.model_dump(mode="json") for metric in tracker.metrics],
+        },
+        sort_keys=True,
+    )
+    for secret_value in secret_values:
+        assert secret_value not in serialized_surfaces
 
 
 def test_load_config_strict_disabled_tracing_does_not_require_langsmith(
