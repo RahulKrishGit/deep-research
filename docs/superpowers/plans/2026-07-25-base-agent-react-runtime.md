@@ -1458,6 +1458,7 @@ Create `tests/test_agents/test_react.py`:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -1474,6 +1475,28 @@ from tests.agent_fakes import (
     finish,
     use_tool,
 )
+
+
+def _capture_iteration_outputs(
+    tracker: Tracker,
+) -> list[dict[str, object] | None]:
+    """Record ``span.outputs`` for every ``react_iteration_span`` opened.
+
+    Mirrors the ``RecordingToolTracker`` pattern in ``test_tools/test_base.py``:
+    wrap the real span so the assertion on ``span.set_outputs(...)`` fails if
+    the call is ever removed from the loop.
+    """
+    captured: list[dict[str, object] | None] = []
+    original = tracker.react_iteration_span
+
+    @asynccontextmanager
+    async def wrapped(iteration: int):
+        async with original(iteration) as span:
+            yield span
+            captured.append(span.outputs)
+
+    tracker.react_iteration_span = wrapped  # type: ignore[method-assign]
+    return captured
 
 
 def _decider(decisions: Sequence[ReActDecision]):
@@ -1686,6 +1709,82 @@ async def test_tool_failure_becomes_an_observation_and_the_loop_continues(
 
 
 @pytest.mark.asyncio
+async def test_unknown_tool_summary_is_truncated_to_summary_limit(
+    tracker: Tracker,
+) -> None:
+    """A pathological/hallucinated tool name must not blow past summary_limit."""
+    long_tool_name = "x" * 500
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [
+                    use_tool("Reach for a made-up tool.", long_tool_name),
+                    finish("Use what I have.", "Answered without it."),
+                ]
+            ),
+            max_iterations=4,
+            tool_budget=5,
+            summary_limit=20,
+        )
+
+    observation = run.steps[0].observation
+    assert observation is not None
+    assert observation.error_type == "agent_unknown_tool"
+    assert len(observation.summary) <= 20
+    assert run.errors[0].error_type == "agent_unknown_tool"
+    # The tool name portion is clamped to summary_limit; only the fixed
+    # surrounding text ("... is not available to this agent.") adds to that.
+    assert len(run.errors[0].message) <= 20 + len(" is not available to this agent.")
+    assert long_tool_name not in run.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_tool_budget_exhausted_summary_is_truncated_to_summary_limit(
+    tracker: Tracker,
+) -> None:
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [use_tool("Keep going.", "echo", '{"value": "x"}')] * 2
+            ),
+            max_iterations=5,
+            tool_budget=0,
+            summary_limit=20,
+        )
+
+    assert run.stop_reason == "tool_budget_exhausted"
+    observation = run.steps[-1].observation
+    assert observation is not None
+    assert observation.error_type == "agent_tool_budget_exhausted"
+    assert len(observation.summary) <= 20
+
+
+@pytest.mark.asyncio
+async def test_finish_wins_over_sufficiency_on_the_same_step(
+    tracker: Tracker,
+) -> None:
+    """`stop_reason` must not be overwritten once `finish` already set it."""
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider([finish("Done already.", "The answer.")]),
+            max_iterations=3,
+            tool_budget=5,
+            is_sufficient=lambda steps: True,
+        )
+
+    assert run.stop_reason == "finished"
+
+
+@pytest.mark.asyncio
 async def test_unknown_tool_is_a_recoverable_observation(tracker: Tracker) -> None:
     async with agent_scope(tracker):
         run = await run_react_loop(
@@ -1857,6 +1956,8 @@ async def test_on_step_receives_every_completed_step(tracker: Tracker) -> None:
 async def test_each_iteration_emits_a_metric_and_span_outputs(
     tracker: Tracker,
 ) -> None:
+    captured = _capture_iteration_outputs(tracker)
+
     async with agent_scope(tracker):
         await run_react_loop(
             agent_name="researcher",
@@ -1871,6 +1972,22 @@ async def test_each_iteration_emits_a_metric_and_span_outputs(
             max_iterations=4,
             tool_budget=5,
         )
+
+    assert len(captured) == 2
+    tool_outputs, finish_outputs = captured
+    assert tool_outputs is not None
+    assert tool_outputs["agent_name"] == "researcher"
+    assert tool_outputs["iteration"] == 1
+    assert tool_outputs["action"] == "use_tool"
+    assert tool_outputs["tool"] == "echo"
+    assert tool_outputs["success"] is True
+    assert "echo succeeded" in tool_outputs["observation"]
+    assert finish_outputs is not None
+    assert finish_outputs["action"] == "finish"
+    assert finish_outputs["observation"] is None
+    # No observation on a finish step: success must default to True, not
+    # crash on `observation.success` against a None observation.
+    assert finish_outputs["success"] is True
 
     iteration_metrics = [
         metric
@@ -2080,15 +2197,19 @@ async def run_react_loop(
                     stop_reason = "finished"
                 else:
                     tool_name = decision.tool_name or ""
+                    # Unreachable-by-construction: ReActDecision requires a
+                    # non-blank tool_name when action == "use_tool".
                     tool = tools.get(tool_name)
                     available = ", ".join(tools.names) or "none"
+                    safe_tool_name = summarize_text(tool_name, limit=summary_limit)
                     if tool is None:
                         observation = ReActObservation(
                             tool_name=tool_name,
                             success=False,
-                            summary=(
+                            summary=summarize_text(
                                 f"{tool_name} is not available to this agent. "
-                                f"Available tools: {available}."
+                                f"Available tools: {available}.",
+                                limit=summary_limit,
                             ),
                             error_type="agent_unknown_tool",
                         )
@@ -2097,7 +2218,8 @@ async def run_react_loop(
                                 agent_name=agent_name,
                                 error_type="agent_unknown_tool",
                                 message=(
-                                    f"{tool_name} is not available to this agent."
+                                    f"{safe_tool_name} is not available to "
+                                    "this agent."
                                 ),
                                 details={
                                     "tool": tool_name,
@@ -2109,9 +2231,10 @@ async def run_react_loop(
                         observation = ReActObservation(
                             tool_name=tool_name,
                             success=False,
-                            summary=(
+                            summary=summarize_text(
                                 f"The tool budget of {tool_budget} calls is "
-                                "exhausted; no further tool calls are possible."
+                                "exhausted; no further tool calls are possible.",
+                                limit=summary_limit,
                             ),
                             error_type="agent_tool_budget_exhausted",
                         )

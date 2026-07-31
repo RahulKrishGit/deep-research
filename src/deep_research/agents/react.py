@@ -102,15 +102,19 @@ async def run_react_loop(
                     stop_reason = "finished"
                 else:
                     tool_name = decision.tool_name or ""
+                    # Unreachable-by-construction: ReActDecision requires a
+                    # non-blank tool_name when action == "use_tool".
                     tool = tools.get(tool_name)
                     available = ", ".join(tools.names) or "none"
+                    safe_tool_name = summarize_text(tool_name, limit=summary_limit)
                     if tool is None:
                         observation = ReActObservation(
                             tool_name=tool_name,
                             success=False,
-                            summary=(
+                            summary=summarize_text(
                                 f"{tool_name} is not available to this agent. "
-                                f"Available tools: {available}."
+                                f"Available tools: {available}.",
+                                limit=summary_limit,
                             ),
                             error_type="agent_unknown_tool",
                         )
@@ -119,7 +123,8 @@ async def run_react_loop(
                                 agent_name=agent_name,
                                 error_type="agent_unknown_tool",
                                 message=(
-                                    f"{tool_name} is not available to this agent."
+                                    f"{safe_tool_name} is not available to "
+                                    "this agent."
                                 ),
                                 details={
                                     "tool": tool_name,
@@ -131,9 +136,10 @@ async def run_react_loop(
                         observation = ReActObservation(
                             tool_name=tool_name,
                             success=False,
-                            summary=(
+                            summary=summarize_text(
                                 f"The tool budget of {tool_budget} calls is "
-                                "exhausted; no further tool calls are possible."
+                                "exhausted; no further tool calls are possible.",
+                                limit=summary_limit,
                             ),
                             error_type="agent_tool_budget_exhausted",
                         )
