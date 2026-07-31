@@ -99,6 +99,8 @@ _NON_EMPTY_STRING_ADAPTER = TypeAdapter(
 _STRING_ADAPTER = TypeAdapter(str)
 _JSON_MAPPING_ADAPTER = TypeAdapter(dict[str, JsonValue])
 _RETRY_COUNT_ADAPTER = TypeAdapter(NonNegativeInt)
+_TOP_K_ADAPTER = TypeAdapter(Annotated[int, Field(ge=1)])
+_MEMORY_LAYER_ADAPTER = TypeAdapter(MemoryLayer)
 
 
 class RunLike(Protocol):
@@ -482,6 +484,9 @@ class Tracker:
     ) -> AbstractAsyncContextManager[SpanHandle]:
         parent = self._require_context()
         operation = _validate_non_empty_string(operation)
+        memory_layer = _validate_memory_layer(memory_layer)
+        entry_type = _validate_optional_entry_type(entry_type)
+        top_k = _validate_optional_top_k(top_k)
         context = _validated_context(
             parent, tool_name=f"memory.{memory_layer}", model=None
         )
@@ -915,6 +920,22 @@ def _validated_context(context: TraceContext, **updates: Any) -> TraceContext:
 
 def _validate_non_empty_string(value: Any) -> str:
     return _NON_EMPTY_STRING_ADAPTER.validate_python(value, strict=True)
+
+
+def _validate_memory_layer(value: Any) -> MemoryLayer:
+    return _MEMORY_LAYER_ADAPTER.validate_python(value)
+
+
+def _validate_optional_entry_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _validate_non_empty_string(value)
+
+
+def _validate_optional_top_k(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return _TOP_K_ADAPTER.validate_python(value)
 
 
 def _validate_json_mapping(value: Any) -> dict[str, JsonValue]:

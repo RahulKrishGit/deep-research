@@ -1280,3 +1280,61 @@ async def test_memory_span_requires_an_active_session_span() -> None:
 
     with pytest.raises(RuntimeError, match="child spans require an active session"):
         tracker.memory_span("save", memory_layer="long_term")
+
+
+@pytest.mark.asyncio
+async def test_memory_span_rejects_non_positive_top_k_before_entering_body() -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+    body_entered = False
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            async with tracker.memory_span(
+                "query", memory_layer="long_term", top_k=0
+            ):
+                body_entered = True
+
+    assert body_entered is False
+    assert not any(metric.metric_type == "memory" for metric in tracker.metrics)
+
+
+@pytest.mark.asyncio
+async def test_memory_span_rejects_blank_entry_type_before_entering_body() -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+    body_entered = False
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            async with tracker.memory_span(
+                "query", memory_layer="long_term", entry_type="   "
+            ):
+                body_entered = True
+
+    assert body_entered is False
+    assert not any(metric.metric_type == "memory" for metric in tracker.metrics)
+
+
+@pytest.mark.asyncio
+async def test_memory_span_rejects_invalid_memory_layer_before_entering_body() -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+    body_entered = False
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            async with tracker.memory_span("query", memory_layer="redis"):  # type: ignore[arg-type]
+                body_entered = True
+
+    assert body_entered is False
+    assert not any(metric.metric_type == "memory" for metric in tracker.metrics)
