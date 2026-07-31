@@ -110,13 +110,58 @@ def test_scratchpad_records_a_recoverable_error_when_summarization_fails() -> No
         "note-3",
         "note-4",
     ]
+    assert pad.session_id == "session-1"
     errors = pad.drain_errors()
     assert len(errors) == 1
     assert errors[0].error_type == "scratchpad_summarization_failed"
     assert errors[0].source == "scratchpad_memory"
     assert errors[0].recoverable is True
     assert errors[0].details["exception_type"] == "RuntimeError"
+    assert errors[0].details["session_id"] == "session-1"
+    assert errors[0].details["agent_name"] == "researcher"
+    assert errors[0].details["evicted_entries"] == 2
     assert pad.errors == ()
+
+
+def test_scratchpad_errors_are_visible_before_draining() -> None:
+    def explode(entries: Sequence[ScratchpadEntry]) -> str:
+        raise RuntimeError("summarizer offline")
+
+    pad = _pad(max_entries=4, summarizer=explode)
+    for index in range(5):
+        pad.add(f"note-{index}")
+
+    assert len(pad.errors) == 1
+    assert pad.errors[0].error_type == "scratchpad_summarization_failed"
+    # Reading .errors must not consume the log.
+    assert len(pad.errors) == 1
+    drained = pad.drain_errors()
+    assert len(drained) == 1
+    assert pad.errors == ()
+
+
+def test_scratchpad_add_stores_provided_metadata() -> None:
+    pad = _pad()
+
+    entry = pad.add("note", metadata={"tool": "search", "results": 5})
+
+    assert entry.metadata == {"tool": "search", "results": 5}
+    assert pad.entries[0].metadata == {"tool": "search", "results": 5}
+
+
+@pytest.mark.parametrize("max_entries", [2, 3])
+def test_scratchpad_summary_survives_compaction_with_a_small_window(
+    max_entries: int,
+) -> None:
+    pad = _pad(max_entries=max_entries, summarizer=lambda entries: "condensed")
+    for index in range(max_entries + 2):
+        pad.add(f"note-{index}")
+
+    assert len(pad) == max_entries
+    kinds = [entry.kind for entry in pad.recent()]
+    assert "summary" in kinds
+    summary_entry = next(entry for entry in pad.recent() if entry.kind == "summary")
+    assert summary_entry.content == "condensed"
 
 
 def test_scratchpad_recent_returns_the_newest_entries_in_order() -> None:

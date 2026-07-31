@@ -16,6 +16,10 @@ from deep_research.memory.errors import MemoryErrorLog
 from deep_research.utils.config import ShortTermMemoryConfig
 from deep_research.utils.types import ResearchError
 
+#: Note: a summary entry produced by this hook can itself be evicted and
+#: re-fed into the summarizer on a later compaction (it is a plain
+#: ``ScratchpadEntry`` like any other), so summarizers should tolerate
+#: receiving their own prior output.
 Summarizer = Callable[[Sequence[ScratchpadEntry]], str]
 
 _DEFAULT_MAX_ENTRIES = 20
@@ -110,7 +114,14 @@ class ScratchpadMemory:
         self._entries.clear()
 
     def _compact(self) -> None:
-        evict_count = max(1, self.max_entries // 2)
+        # When a summarizer is configured, compaction must free room for two
+        # things: the inserted summary entry, plus the new entry `add()` is
+        # about to append. Evicting only one slot would let `_enforce_bound`
+        # immediately delete the just-inserted summary from the front.
+        min_evict = 2 if self._summarizer is not None else 1
+        evict_count = min(
+            self.max_entries, max(min_evict, self.max_entries // 2)
+        )
         evicted = self._entries[:evict_count]
         self._entries = self._entries[evict_count:]
         if self._summarizer is None or not evicted:
@@ -131,6 +142,12 @@ class ScratchpadMemory:
                 },
             )
             return
+        # This guard (not the .strip() below) is what actually matters: it
+        # keeps a whitespace-only summary from reaching ScratchpadEntry,
+        # which would otherwise raise ValidationError outside this try
+        # block. The .strip() passed to `content=` below is redundant with
+        # it in practice, since ContractModel strips content itself, but is
+        # kept for clarity at the call site.
         if not isinstance(summary, str) or not summary.strip():
             return
         self._entries.insert(
