@@ -97,20 +97,14 @@ class BaseAgent(ABC, Generic[ResultT]):
             raise AgentConfigurationError(
                 "scratchpad agent_name must match the agent name"
             )
+        self._name = name.strip()
         self._provider = provider
         self._tracker = tracker
         self._scratchpad = scratchpad
         self._config = config or AgentRuntimeConfig()
-        self._tools = tuple(tools)
-        # Built eagerly so a declared-but-uninjected tool fails loudly at
-        # construction time, and rebuilt on every access afterward so a
-        # subclass or instance that adjusts ``allowed_tools`` after
-        # construction is honored by the runtime rather than silently
-        # ignored.
-        self._build_toolset()
-
-    def _build_toolset(self) -> AgentToolset:
-        return AgentToolset(self._tools, allowed=self.allowed_tools)
+        # Built once at construction time so a declared-but-uninjected tool
+        # fails loudly here rather than being deferred to first use.
+        self._toolset = AgentToolset(tools, allowed=self.allowed_tools)
 
     @property
     def config(self) -> AgentRuntimeConfig:
@@ -122,7 +116,7 @@ class BaseAgent(ABC, Generic[ResultT]):
 
     @property
     def toolset(self) -> AgentToolset:
-        return self._build_toolset()
+        return self._toolset
 
     # --- hooks concrete agents must implement -------------------------------
 
@@ -180,7 +174,7 @@ class BaseAgent(ABC, Generic[ResultT]):
         return await self._provider.complete_structured(
             messages,
             self.output_schema,
-            agent_name=self.name,
+            agent_name=self._name,
         )
 
     async def run(self, state: ResearchState) -> AgentRun[ResultT]:
@@ -206,12 +200,12 @@ class BaseAgent(ABC, Generic[ResultT]):
             return await self._provider.complete_structured(
                 messages,
                 ReActDecision,
-                agent_name=self.name,
+                agent_name=self._name,
             )
 
-        async with self._tracker.agent_span(self.name) as span:
+        async with self._tracker.agent_span(self._name) as span:
             react = await run_react_loop(
-                agent_name=self.name,
+                agent_name=self._name,
                 tracker=self._tracker,
                 tools=toolset,
                 decide=decide,
@@ -228,7 +222,7 @@ class BaseAgent(ABC, Generic[ResultT]):
             result = await self.finalize(task, react)
             span.set_outputs(
                 {
-                    "agent_name": self.name,
+                    "agent_name": self._name,
                     "stop_reason": react.stop_reason,
                     "iterations": react.iterations,
                     "tool_calls": react.tool_calls,
@@ -237,7 +231,7 @@ class BaseAgent(ABC, Generic[ResultT]):
             )
 
         return AgentRun(
-            agent_name=self.name,
+            agent_name=self._name,
             result=result,
             react=react,
             errors=list(react.errors),

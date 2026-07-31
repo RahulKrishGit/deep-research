@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 
 import pytest
 from pydantic import ConfigDict, Field
@@ -74,6 +75,11 @@ class SufficientAgent(SummaryAgent):
             step.observation is not None and step.observation.success
             for step in steps
         )
+
+
+class FlakyAgent(SummaryAgent):
+    name = "flaky_summarizer"
+    allowed_tools = ("echo", "boom")
 
 
 def _state(question: str = "Why is the sky blue?") -> ResearchState:
@@ -202,15 +208,46 @@ async def test_run_limits_the_rendered_scratchpad_window(tracker: Tracker) -> No
     assert len(notes) == 1
 
 
+def _capture_agent_outputs(
+    tracker: Tracker,
+) -> list[dict[str, object] | None]:
+    """Record ``span.outputs`` for every ``agent_span`` opened.
+
+    Mirrors ``_capture_iteration_outputs`` in ``test_react.py``: wrap the
+    real span so the assertion on ``span.set_outputs(...)`` fails if the
+    call is ever removed from ``BaseAgent.run``.
+    """
+    captured: list[dict[str, object] | None] = []
+    original = tracker.agent_span
+
+    @asynccontextmanager
+    async def wrapped(agent_name: str):
+        async with original(agent_name) as span:
+            yield span
+            captured.append(span.outputs)
+
+    tracker.agent_span = wrapped  # type: ignore[method-assign]
+    return captured
+
+
 @pytest.mark.asyncio
 async def test_run_records_the_stop_reason_on_the_agent_span(
     tracker: Tracker,
 ) -> None:
     completer = ScriptedCompleter([finish("Nothing to look up.", "Rayleigh.")])
     agent = _agent(tracker, completer)
+    captured = _capture_agent_outputs(tracker)
 
     async with tracker.session_span("session-1", "Why is the sky blue?"):
         await agent.run(_state())
+
+    assert len(captured) == 1
+    outputs = captured[0]
+    assert outputs is not None
+    assert outputs["stop_reason"] == "finished"
+    assert outputs["iterations"] == 1
+    assert outputs["tool_calls"] == 0
+    assert outputs["produced_result"] is True
 
     agent_metrics = [
         metric
@@ -237,14 +274,12 @@ async def test_tool_failures_reach_the_state_update_as_recoverable_errors(
     completer = ScriptedCompleter(
         [use_tool("Try the flaky tool.", "boom"), finish("Enough.", "Partial.")]
     )
-    agent = SummaryAgent(
-        provider=completer,
-        tracker=tracker,
-        scratchpad=_pad(),
+    agent = _agent(
+        tracker,
+        completer,
+        agent_class=FlakyAgent,
         tools=[EchoTool(tracker), BoomTool(tracker)],
-        config=AgentRuntimeConfig(max_iterations=3, tool_budget=3),
     )
-    agent.allowed_tools = ("echo", "boom")  # type: ignore[misc]
 
     async with tracker.session_span("session-1", "Why is the sky blue?"):
         outcome = await agent.run(_state())
