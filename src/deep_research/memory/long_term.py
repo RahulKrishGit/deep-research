@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, Protocol
 
 from deep_research.memory.entries import (
@@ -18,9 +19,10 @@ from deep_research.memory.entries import (
     SourceReputation,
     source_reputation_entry_id,
 )
-from deep_research.memory.errors import MemoryErrorLog
+from deep_research.memory.errors import MemoryErrorLog, MemoryInitializationError
 from deep_research.memory.instrumentation import memory_operation
 from deep_research.observability import Tracker
+from deep_research.utils.config import LongTermMemoryConfig
 from deep_research.utils.types import ResearchError
 
 DEFAULT_TOP_K = 5
@@ -143,6 +145,41 @@ def _parse_get_response(raw: Mapping[str, Any]) -> list[MemoryEntry]:
     return entries
 
 
+def build_chroma_collection(config: LongTermMemoryConfig) -> VectorCollection:
+    """Open the persistent ChromaDB collection backing long-term memory.
+
+    ``chromadb`` is imported lazily so that importing ``deep_research.memory``
+    stays cheap and does not require the backend. Any failure here is a startup
+    failure and is deliberately not recoverable.
+    """
+    try:
+        import chromadb
+        from chromadb.config import Settings
+    except ImportError as error:
+        raise MemoryInitializationError(
+            "chromadb is required for long-term memory; "
+            'install the project with pip install -e ".[dev]"'
+        ) from error
+
+    directory = Path(config.persist_directory) / "chroma"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        client = chromadb.PersistentClient(
+            path=str(directory),
+            settings=Settings(anonymized_telemetry=False, allow_reset=False),
+        )
+        return client.get_or_create_collection(
+            name=config.collection_name,
+            embedding_function=None,
+            metadata={"hnsw:space": "cosine"},
+        )
+    except Exception as error:
+        raise MemoryInitializationError(
+            f"cannot open ChromaDB collection {config.collection_name!r} at "
+            f"{directory}: {type(error).__name__}"
+        ) from error
+
+
 class LongTermMemory:
     """Semantic memory over verified findings, reputations, and summaries."""
 
@@ -157,6 +194,21 @@ class LongTermMemory:
         self._embeddings = embeddings
         self._tracker = tracker
         self._error_log = MemoryErrorLog("long_term_memory")
+
+    @classmethod
+    def from_config(
+        cls,
+        config: LongTermMemoryConfig,
+        *,
+        embeddings: EmbeddingProvider,
+        tracker: Tracker | None = None,
+    ) -> "LongTermMemory":
+        """Open long-term memory against the configured ChromaDB directory."""
+        return cls(
+            collection=build_chroma_collection(config),
+            embeddings=embeddings,
+            tracker=tracker,
+        )
 
     @property
     def errors(self) -> Sequence[ResearchError]:
