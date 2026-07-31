@@ -392,7 +392,7 @@ git commit -m "feat: add agent runtime config and error contracts"
   - `DEFAULT_SUMMARY_LIMIT = 200`
   - `summarize_text(text: str, *, limit: int = DEFAULT_SUMMARY_LIMIT) -> str`
   - `parse_tool_input(raw: str) -> dict[str, JsonValue]`
-  - `ReActDecision(thought, action, tool_name=None, tool_input_json="{}", final_answer=None)` — the provider structured-output schema
+  - `ReActDecision(thought, action, tool_name=None, tool_input_json, final_answer=None)` — the provider structured-output schema; `tool_input_json` is required (no default, per Task 2 fix round — see ledger) to avoid emitting a `default` keyword in the strict OpenAI schema. Callers pass `"{}"` explicitly for no-argument tool calls or finish decisions.
   - `ReActObservation(tool_name, success, summary, latency_ms=0.0, error_type=None)`
   - `ReActStep(iteration, thought, action, tool_name=None, tool_input={}, observation=None, tool_result=None, final_answer=None)`
   - `ReActRun(agent_name, steps=[], stop_reason, iterations=0, tool_calls=0, final_answer=None, errors=[])` with a `succeeded: bool` property
@@ -912,7 +912,12 @@ def use_tool(
 
 
 def finish(thought: str, final_answer: str) -> ReActDecision:
-    return ReActDecision(thought=thought, action="finish", final_answer=final_answer)
+    return ReActDecision(
+        thought=thought,
+        action="finish",
+        final_answer=final_answer,
+        tool_input_json="{}",
+    )
 
 
 @asynccontextmanager
