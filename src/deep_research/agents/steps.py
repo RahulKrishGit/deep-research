@@ -10,13 +10,17 @@ rejects.
 from __future__ import annotations
 
 import json
-from math import isfinite
-from typing import Literal, TypeAlias
+from typing import Literal, NoReturn, TypeAlias
 
 from pydantic import Field, JsonValue, model_validator
 
 from deep_research.tools.base import ToolResult
-from deep_research.utils.types import ContractModel, ResearchError
+from deep_research.utils.types import (
+    ContractModel,
+    ResearchError,
+    _FiniteJsonValue,
+    _validate_finite_json,
+)
 
 StopReason: TypeAlias = Literal[
     "finished",
@@ -49,7 +53,7 @@ def summarize_text(text: str, *, limit: int = DEFAULT_SUMMARY_LIMIT) -> str:
     return collapsed[: limit - len(_ELLIPSIS)].rstrip() + _ELLIPSIS
 
 
-def _reject_json_constant(name: str) -> JsonValue:
+def _reject_json_constant(name: str) -> NoReturn:
     raise ValueError(f"tool arguments must be finite JSON numbers, got {name}")
 
 
@@ -67,9 +71,10 @@ def parse_tool_input(raw: str) -> dict[str, JsonValue]:
         raise ValueError("tool_input_json must be valid JSON") from error
     if not isinstance(parsed, dict):
         raise ValueError("tool_input_json must decode to a JSON object")
-    for key, value in parsed.items():
-        if isinstance(value, float) and not isfinite(value):
-            raise ValueError(f"tool argument {key!r} must be a finite number")
+    try:
+        _validate_finite_json(parsed)
+    except ValueError as error:
+        raise ValueError("tool arguments must be finite JSON numbers") from error
     return parsed
 
 
@@ -79,7 +84,7 @@ class ReActDecision(ContractModel):
     thought: str = Field(min_length=1)
     action: ReActActionType
     tool_name: str | None = None
-    tool_input_json: str = "{}"
+    tool_input_json: str
     final_answer: str | None = None
 
     @model_validator(mode="after")
@@ -114,7 +119,7 @@ class ReActStep(ContractModel):
     thought: str = Field(min_length=1)
     action: ReActActionType
     tool_name: str | None = Field(default=None, min_length=1)
-    tool_input: dict[str, JsonValue] = Field(default_factory=dict)
+    tool_input: dict[str, _FiniteJsonValue] = Field(default_factory=dict)
     observation: ReActObservation | None = None
     tool_result: ToolResult | None = None
     final_answer: str | None = Field(default=None, min_length=1)

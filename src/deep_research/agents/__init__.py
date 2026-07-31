@@ -1,1 +1,1 @@
-"""Stub package — implemented in a later phase."""
+"""ReAct agent contracts and errors; runtime orchestration lands in a later phase."""

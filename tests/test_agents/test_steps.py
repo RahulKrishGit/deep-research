@@ -14,6 +14,8 @@ from deep_research.agents.steps import (
     parse_tool_input,
     summarize_text,
 )
+from deep_research.tools.base import ToolResult
+from deep_research.utils.types import ResearchError
 
 
 def test_summary_limit_default_is_prompt_sized() -> None:
@@ -84,15 +86,26 @@ def test_use_tool_decision_defaults_to_no_arguments() -> None:
         thought="List everything.",
         action="use_tool",
         tool_name="echo",
+        tool_input_json="{}",
     )
 
     assert decision.tool_input_json == "{}"
+
+
+def test_use_tool_decision_requires_tool_input_json() -> None:
+    with pytest.raises(ValidationError, match="tool_input_json"):
+        ReActDecision(
+            thought="List everything.",
+            action="use_tool",
+            tool_name="echo",
+        )
 
 
 def test_finish_decision_carries_a_final_answer() -> None:
     decision = ReActDecision(
         thought="I have enough.",
         action="finish",
+        tool_input_json="{}",
         final_answer="Error rates fell 30%.",
     )
 
@@ -104,7 +117,7 @@ def test_finish_decision_carries_a_final_answer() -> None:
     ("payload", "match"),
     [
         (
-            {"thought": "t", "action": "use_tool"},
+            {"thought": "t", "action": "use_tool", "tool_input_json": "{}"},
             "use_tool decisions require tool_name",
         ),
         (
@@ -112,25 +125,38 @@ def test_finish_decision_carries_a_final_answer() -> None:
                 "thought": "t",
                 "action": "use_tool",
                 "tool_name": "echo",
+                "tool_input_json": "{}",
                 "final_answer": "done",
             },
             "use_tool decisions must not carry final_answer",
         ),
         (
-            {"thought": "t", "action": "finish"},
+            {"thought": "t", "action": "finish", "tool_input_json": "{}"},
             "finish decisions require final_answer",
         ),
         (
             {
                 "thought": "t",
                 "action": "finish",
+                "tool_input_json": "{}",
                 "final_answer": "done",
                 "tool_name": "echo",
             },
             "finish decisions must not name a tool",
         ),
-        ({"thought": "", "action": "finish", "final_answer": "d"}, "thought"),
-        ({"thought": "t", "action": "reflect"}, "action"),
+        (
+            {
+                "thought": "",
+                "action": "finish",
+                "tool_input_json": "{}",
+                "final_answer": "d",
+            },
+            "thought",
+        ),
+        (
+            {"thought": "t", "action": "reflect", "tool_input_json": "{}"},
+            "action",
+        ),
     ],
 )
 def test_decision_rejects_inconsistent_action_shapes(
@@ -146,6 +172,7 @@ def test_decision_forbids_unknown_fields() -> None:
             {
                 "thought": "t",
                 "action": "finish",
+                "tool_input_json": "{}",
                 "final_answer": "d",
                 "confidence": 0.5,
             }
@@ -196,3 +223,99 @@ def test_run_reports_success_for_every_stop_reason_but_provider_error() -> None:
 def test_run_rejects_an_unknown_stop_reason() -> None:
     with pytest.raises(ValidationError):
         ReActRun(agent_name="researcher", stop_reason="gave_up")
+
+
+def test_decision_strict_schema_has_no_default_on_tool_input_json() -> None:
+    """OpenAI's strict-mode schema converter only strips ``None`` defaults.
+
+    ``tool_input_json`` must therefore carry no default at all — a string
+    default like ``"{}"`` would still show up as ``"default": "{}"`` on the
+    wire while strict mode independently forces the field into ``required``,
+    so the default would be dead weight that risks a 400 from the schema
+    validator.
+    """
+    from openai.lib._pydantic import to_strict_json_schema
+
+    schema = to_strict_json_schema(ReActDecision)
+    tool_input_schema = schema["properties"]["tool_input_json"]
+
+    assert "default" not in tool_input_schema
+    assert "tool_input_json" in schema["required"]
+
+
+def test_parse_tool_input_rejects_a_non_finite_number_nested_in_a_list() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        parse_tool_input('{"scores": [1, 2, 1e400]}')
+
+
+def test_parse_tool_input_rejects_a_non_finite_number_nested_in_a_dict() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        parse_tool_input('{"nested": {"deep": {"score": 1e400}}}')
+
+
+def test_react_step_rejects_a_non_finite_number_nested_in_a_list() -> None:
+    with pytest.raises(ValidationError, match="finite"):
+        ReActStep(
+            iteration=1,
+            thought="t",
+            action="finish",
+            final_answer="d",
+            tool_input={"scores": [1, 2, float("inf")]},
+        )
+
+
+def test_react_step_rejects_a_non_finite_number_nested_in_a_dict() -> None:
+    with pytest.raises(ValidationError, match="finite"):
+        ReActStep(
+            iteration=1,
+            thought="t",
+            action="finish",
+            final_answer="d",
+            tool_input={"nested": {"deep": {"score": float("nan")}}},
+        )
+
+
+def test_react_step_carries_a_successful_tool_result() -> None:
+    step = ReActStep(
+        iteration=1,
+        thought="Search for benchmarks.",
+        action="use_tool",
+        tool_name="web_search",
+        tool_input={"query": "qec"},
+        observation=ReActObservation(
+            tool_name="web_search",
+            success=True,
+            summary="web_search found 3 results",
+        ),
+        tool_result=ToolResult(
+            tool_name="web_search",
+            success=True,
+            data={"results": ["a", "b", "c"]},
+            latency_ms=42.0,
+        ),
+    )
+
+    assert step.tool_input == {"query": "qec"}
+    assert step.tool_result is not None
+    assert step.tool_result.success is True
+    assert step.tool_result.data == {"results": ["a", "b", "c"]}
+    assert step.observation is not None
+    assert step.observation.success is True
+
+
+def test_react_run_carries_a_non_empty_errors_list() -> None:
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="provider_error",
+        errors=[
+            ResearchError(
+                error_type="TimeoutError",
+                source="researcher",
+                message="upstream timed out",
+            )
+        ],
+    )
+
+    assert len(run.errors) == 1
+    assert run.errors[0].error_type == "TimeoutError"
+    assert run.succeeded is False
