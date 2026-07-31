@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from deep_research.agents.prompts import (
+    REACT_RESPONSE_CONTRACT,
     AgentTask,
     render_react_messages,
     render_scratchpad,
@@ -52,6 +53,30 @@ def test_scratchpad_renders_kind_prefixed_lines_oldest_first() -> None:
 
 def test_scratchpad_says_so_when_empty() -> None:
     assert render_scratchpad([]) == "(no notes yet)"
+
+
+def test_scratchpad_collapses_multiline_entry_content_onto_one_line() -> None:
+    rendered = render_scratchpad(
+        [
+            _entry(
+                "## Summary\nFirst I need X.\n\nThen Y.",
+                kind="summary",
+            )
+        ]
+    )
+
+    assert rendered == "- [summary] ## Summary First I need X. Then Y."
+    assert "\n" not in rendered.split("] ", 1)[1]
+
+
+def test_response_contract_tells_the_model_to_leave_final_answer_empty_for_tools() -> (
+    None
+):
+    assert "leave final_answer empty" in REACT_RESPONSE_CONTRACT
+
+
+def test_response_contract_gives_tool_input_json_guidance_for_finish() -> None:
+    assert 'tool_input_json when finishing' in REACT_RESPONSE_CONTRACT
 
 
 def test_react_messages_open_with_the_agent_system_prompt() -> None:
@@ -125,7 +150,7 @@ def test_react_messages_are_deterministic() -> None:
 @pytest.mark.parametrize(
     ("iteration", "max_iterations", "match"),
     [
-        (0, 3, "iteration must be at least 1"),
+        (0, 3, r"^iteration must be at least 1$"),
         (4, 3, "iteration must not exceed max_iterations"),
         (1, 0, "max_iterations must be at least 1"),
     ],
@@ -142,6 +167,35 @@ def test_react_messages_reject_an_impossible_iteration_budget(
             iteration=iteration,
             max_iterations=max_iterations,
         )
+
+
+def test_react_messages_render_the_full_body_verbatim() -> None:
+    messages = render_react_messages(
+        system_prompt="You are a researcher.",
+        task=AgentTask(
+            instruction="Summarize QEC progress.",
+            guidance="Prefer 2025 sources.",
+        ),
+        descriptors=[_descriptor()],
+        scratchpad=[_entry("Search for benchmarks.")],
+        iteration=2,
+        max_iterations=3,
+    )
+
+    assert messages[1].content == (
+        "## Task\n"
+        "Summarize QEC progress.\n\n"
+        "## Guidance\n"
+        "Prefer 2025 sources.\n\n"
+        "## Tools\n"
+        '- echo: Call echo. Arguments: {"value": "string"}\n\n'
+        "## Notes so far\n"
+        "- [thought] Search for benchmarks.\n\n"
+        "## Budget\n"
+        "Iteration 2 of 3.\n\n"
+        "## Response contract\n"
+        f"{REACT_RESPONSE_CONTRACT}"
+    )
 
 
 def test_react_messages_reject_a_blank_system_prompt() -> None:

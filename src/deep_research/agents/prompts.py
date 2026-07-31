@@ -22,9 +22,10 @@ REACT_RESPONSE_CONTRACT = (
     'Set action to "use_tool" to call exactly one listed tool: put its name in '
     "tool_name and its arguments in tool_input_json as a JSON object string "
     '(for example {"value": "hello"}). Use "{}" when the tool takes no '
-    "arguments.\n"
+    "arguments, and leave final_answer empty.\n"
     'Set action to "finish" when you can answer without another tool call: put '
-    "the answer in final_answer and leave tool_name empty.\n"
+    "the answer in final_answer and leave tool_name empty. Use \"{}\" for "
+    "tool_input_json when finishing.\n"
     "Always explain the choice in thought."
 )
 
@@ -48,10 +49,17 @@ def render_tool_catalog(descriptors: Sequence[ToolDescriptor]) -> str:
 
 
 def render_scratchpad(entries: Sequence[ScratchpadEntry]) -> str:
-    """Render scratchpad notes oldest first, one kind-prefixed line each."""
+    """Render scratchpad notes oldest first, one kind-prefixed line each.
+
+    Entry content is whitespace-collapsed onto a single line so that
+    multi-line thoughts or final answers (which may contain Markdown
+    headers) can never break the surrounding prompt's section grammar.
+    """
     if not entries:
         return "(no notes yet)"
-    return "\n".join(f"- [{entry.kind}] {entry.content}" for entry in entries)
+    return "\n".join(
+        f"- [{entry.kind}] {' '.join(entry.content.split())}" for entry in entries
+    )
 
 
 def render_react_messages(
