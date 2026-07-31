@@ -134,7 +134,7 @@ def _parse_get_response(raw: Mapping[str, Any]) -> list[MemoryEntry]:
     entries: list[MemoryEntry] = []
     for index, entry_id in enumerate(ids):
         if index >= len(documents) or index >= len(metadatas):
-            break
+            raise ValueError("get response is missing documents or metadata")
         entries.append(
             MemoryEntry.from_storage(
                 entry_id=entry_id,
@@ -266,7 +266,11 @@ class LongTermMemory:
         entry_type: MemoryEntryType | None = None,
         where: Mapping[str, Any] | None = None,
     ) -> list[MemoryQueryResult]:
-        """Semantic search with optional metadata filters. Never raises."""
+        """Semantic search with optional metadata filters.
+
+        Backend and embedding failures return ``[]``; invalid arguments
+        (``top_k < 1``, blank text) raise ``ValueError``.
+        """
         if top_k < 1:
             raise ValueError("top_k must be at least 1")
         if not text.strip():
@@ -339,36 +343,54 @@ class LongTermMemory:
         accumulated history with a single fresh observation. In that case we
         leave the existing record untouched and surface the recorded error.
         """
-        errors_before = len(self._error_log.errors)
-        existing = await self.get_source_reputation(url)
-        read_failed = existing is None and len(self._error_log.errors) > errors_before
-        if read_failed:
+        source_reputation_entry_id(url)  # raise on a blank url before opening a span
+        try:
+            async with memory_operation(
+                self._tracker,
+                "update_source_reputation",
+                memory_layer="long_term",
+                entry_type="source_reputation",
+            ) as span:
+                errors_before = len(self._error_log.errors)
+                existing = await self.get_source_reputation(url)
+                read_failed = (
+                    existing is None and len(self._error_log.errors) > errors_before
+                )
+                if read_failed:
+                    span.set_result_count(0)
+                    return None
+                normalized_score = min(1.0, max(0.0, reputation_score))
+                clean_title = (title or "").strip()
+                if existing is None:
+                    record = SourceReputation(
+                        url=url,
+                        title=clean_title or url,
+                        reputation_score=normalized_score,
+                        observations=1,
+                        notes=notes,
+                    )
+                else:
+                    observations = existing.observations + 1
+                    blended = (
+                        existing.reputation_score * existing.observations
+                        + normalized_score
+                    ) / observations
+                    record = SourceReputation(
+                        url=existing.url,
+                        title=clean_title or existing.title,
+                        reputation_score=min(1.0, max(0.0, blended)),
+                        observations=observations,
+                        notes=notes or existing.notes,
+                    )
+                saved = await self.save(
+                    record.to_entry(session_id=session_id, agent_id=agent_id)
+                )
+                span.set_result_count(1 if saved else 0)
+        except Exception as error:
+            self._record_unavailable(
+                error, operation="update_source_reputation", details={}
+            )
             return None
-        normalized_score = min(1.0, max(0.0, reputation_score))
-        if existing is None:
-            record = SourceReputation(
-                url=url,
-                title=title.strip() or url,
-                reputation_score=normalized_score,
-                observations=1,
-                notes=notes,
-            )
-        else:
-            observations = existing.observations + 1
-            blended = (
-                existing.reputation_score * existing.observations
-                + normalized_score
-            ) / observations
-            record = SourceReputation(
-                url=existing.url,
-                title=title.strip() or existing.title,
-                reputation_score=min(1.0, max(0.0, blended)),
-                observations=observations,
-                notes=notes or existing.notes,
-            )
-        saved = await self.save(
-            record.to_entry(session_id=session_id, agent_id=agent_id)
-        )
         return record if saved else None
 
     def _record_unavailable(

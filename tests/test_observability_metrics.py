@@ -5,6 +5,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from deep_research.observability.metrics import (
     AgentMetric,
+    MemoryMetric,
     MetricRecord,
     SessionMetric,
     TokenUsageMetric,
@@ -96,6 +97,17 @@ def test_metric_union_round_trips_each_record() -> None:
             output_tokens=5,
             total_tokens=15,
             latency_ms=40.0,
+            success=True,
+        ),
+        MemoryMetric(
+            session_id="session-1",
+            agent_name="researcher",
+            memory_layer="long_term",
+            operation="query",
+            entry_type="finding",
+            top_k=5,
+            result_count=3,
+            latency_ms=12.5,
             success=True,
         ),
     ]

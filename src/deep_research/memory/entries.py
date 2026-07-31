@@ -15,6 +15,7 @@ from deep_research.utils.types import (
     ContractModel,
     UnitScore,
     _utc_now_iso,
+    _validate_finite_json,
 )
 
 MemoryEntryType: TypeAlias = Literal[
@@ -52,26 +53,8 @@ MetadataValue: TypeAlias = Annotated[
 ]
 
 
-def _reject_non_finite_json(value: JsonValue) -> JsonValue:
-    """Recursively reject non-finite floats anywhere inside a JSON value.
-
-    Duplicated from ``deep_research.utils.types._validate_finite_json``
-    (rather than imported) because that helper is private and promoting it
-    to a public export is out of scope for this task.
-    """
-    if isinstance(value, float) and not isfinite(value):
-        raise ValueError("JSON numbers must be finite")
-    if isinstance(value, list):
-        for item in value:
-            _reject_non_finite_json(item)
-    elif isinstance(value, dict):
-        for item in value.values():
-            _reject_non_finite_json(item)
-    return value
-
-
 _FiniteJsonValue: TypeAlias = Annotated[
-    JsonValue, AfterValidator(_reject_non_finite_json)
+    JsonValue, AfterValidator(_validate_finite_json)
 ]
 
 _RESERVED_METADATA_KEYS = frozenset(

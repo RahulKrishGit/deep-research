@@ -17,6 +17,12 @@ _KNOWN_DIMENSIONS = {
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
 }
+# OpenAI caps the number of inputs accepted in a single embeddings request at
+# 2048. This constant chunks requests by *count* only; it does not address
+# OpenAI's per-request token cap or per-input token cap -- a single oversized
+# document can still fail a request, and that's a known, separate limitation
+# not addressed here.
+_MAX_INPUTS_PER_REQUEST = 2048
 
 
 class OpenAIEmbeddingProvider:
@@ -59,12 +65,21 @@ class OpenAIEmbeddingProvider:
             return []
         if any(not text.strip() for text in payload):
             raise ValueError("embedding input must not be blank")
-        request: dict[str, Any] = {"model": self.model, "input": payload}
+        vectors: list[list[float]] = []
+        for start in range(0, len(payload), _MAX_INPUTS_PER_REQUEST):
+            chunk = payload[start : start + _MAX_INPUTS_PER_REQUEST]
+            vectors.extend(self._embed_chunk(chunk))
+        return vectors
+
+    def _embed_chunk(self, chunk: Sequence[str]) -> list[list[float]]:
+        request: dict[str, Any] = {"model": self.model, "input": list(chunk)}
         if self._dimensions is not None:
             request["dimensions"] = self._dimensions
         response = self._get_client().embeddings.create(**request)
         items = sorted(response.data, key=lambda item: item.index)
-        if len(items) != len(payload):
+        if len(items) != len(chunk) or [item.index for item in items] != list(
+            range(len(chunk))
+        ):
             raise ValueError("OpenAI returned an unexpected number of embeddings")
         return [list(item.embedding) for item in items]
 

@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from deep_research.providers import embeddings as embeddings_module
 from deep_research.providers.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     OpenAIEmbeddingProvider,
@@ -71,6 +72,44 @@ def test_embed_documents_restores_the_requested_order() -> None:
     vectors = provider.embed_documents(["a", "b", "c"])
 
     assert [vector[0] for vector in vectors] == [0.0, 1.0, 2.0]
+
+
+def test_embed_documents_chunks_batches_larger_than_the_request_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch larger than the per-request cap is split across requests.
+
+    Mirrors the existing reversed-order fake in ``FakeEmbeddingsEndpoint``
+    (each request's response comes back index-reversed) to prove that
+    order-restoration across chunk boundaries isn't accidental: if chunk
+    results were concatenated without per-chunk sorting, or if the wrong
+    slice of ``texts`` were sent to the wrong request, the final vector
+    order would be wrong.
+    """
+    monkeypatch.setattr(embeddings_module, "_MAX_INPUTS_PER_REQUEST", 2)
+    client = FakeOpenAIClient()
+    provider = OpenAIEmbeddingProvider(client=client)
+    texts = ["a", "b", "c", "d", "e"]
+
+    vectors = provider.embed_documents(texts)
+
+    assert len(client.requests) == 3
+    assert [request["input"] for request in client.requests] == [
+        ["a", "b"],
+        ["c", "d"],
+        ["e"],
+    ]
+    # Each fake response reverses indices *within its own request*, so the
+    # per-text vector cycles per chunk rather than climbing globally -- this
+    # is what makes the assertion below prove real order-restoration across
+    # chunk boundaries, not an accident of a monotonically increasing fake.
+    assert vectors == [
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.0, 1.0],
+    ]
 
 
 def test_embed_query_returns_a_single_vector() -> None:
