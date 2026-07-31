@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
 from hashlib import sha256
-from typing import Literal, TypeAlias
+from math import isfinite
+from typing import Annotated, Literal, TypeAlias
 from uuid import uuid4
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import AfterValidator, Field, JsonValue, model_validator
 
-from deep_research.utils.types import AwareISOString, ContractModel, UnitScore
+from deep_research.utils.types import (
+    AwareISOString,
+    ContractModel,
+    UnitScore,
+    _utc_now_iso,
+)
 
 MemoryEntryType: TypeAlias = Literal[
     "finding",
@@ -24,7 +29,50 @@ ScratchpadEntryKind: TypeAlias = Literal[
     "decision",
     "summary",
 ]
-MetadataValue: TypeAlias = str | int | float | bool
+
+
+_ScalarValue: TypeAlias = str | int | float | bool
+
+
+def _reject_non_finite_scalar(value: _ScalarValue) -> _ScalarValue:
+    """Reject ``nan``/``inf`` floats so metadata survives a JSON round-trip.
+
+    A non-finite float serializes to JSON ``null``, which is not a valid
+    ``MetadataValue`` member, so re-validating stored JSON would otherwise
+    fail with a confusing error far from the value that caused it.
+    """
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError("metadata values must be finite")
+    return value
+
+
+MetadataValue: TypeAlias = Annotated[
+    _ScalarValue,
+    AfterValidator(_reject_non_finite_scalar),
+]
+
+
+def _reject_non_finite_json(value: JsonValue) -> JsonValue:
+    """Recursively reject non-finite floats anywhere inside a JSON value.
+
+    Duplicated from ``deep_research.utils.types._validate_finite_json``
+    (rather than imported) because that helper is private and promoting it
+    to a public export is out of scope for this task.
+    """
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError("JSON numbers must be finite")
+    if isinstance(value, list):
+        for item in value:
+            _reject_non_finite_json(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _reject_non_finite_json(item)
+    return value
+
+
+_FiniteJsonValue: TypeAlias = Annotated[
+    JsonValue, AfterValidator(_reject_non_finite_json)
+]
 
 _RESERVED_METADATA_KEYS = frozenset(
     {
@@ -37,10 +85,6 @@ _RESERVED_METADATA_KEYS = frozenset(
         "timestamp",
     }
 )
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def source_reputation_entry_id(url: str) -> str:
@@ -100,37 +144,52 @@ class MemoryEntry(ContractModel):
         document: str,
         metadata: Mapping[str, MetadataValue],
     ) -> "MemoryEntry":
-        """Rebuild an entry from a stored document and its flat metadata."""
+        """Rebuild an entry from a stored document and its flat metadata.
+
+        Reads back through ``model_validate`` rather than subscripting
+        ``metadata`` directly, so a malformed or truncated storage record
+        (e.g. a backend that dropped a field) raises a catchable
+        ``ValidationError`` instead of an uncaught ``KeyError``.
+        """
         attributes = {
             key: value
             for key, value in metadata.items()
             if key not in _RESERVED_METADATA_KEYS
         }
-        return cls(
-            entry_id=entry_id,
-            entry_type=metadata["entry_type"],
-            content=document,
-            session_id=metadata["session_id"],
-            agent_id=metadata["agent_id"],
-            confidence=float(metadata.get("confidence", 1.0)),
-            source_url=metadata.get("source_url"),
-            source_title=metadata.get("source_title"),
-            timestamp=metadata["timestamp"],
-            attributes=attributes,
-        )
+        payload: dict[str, object] = {
+            "entry_id": entry_id,
+            "content": document,
+            "attributes": attributes,
+        }
+        for key in ("entry_type", "session_id", "agent_id", "timestamp"):
+            if key in metadata:
+                payload[key] = metadata[key]
+        if "confidence" in metadata:
+            payload["confidence"] = metadata["confidence"]
+        if "source_url" in metadata:
+            payload["source_url"] = metadata["source_url"]
+        if "source_title" in metadata:
+            payload["source_title"] = metadata["source_title"]
+        return cls.model_validate(payload)
 
 
 class MemoryQueryResult(ContractModel):
     """One semantic search hit with its raw backend distance."""
 
     entry: MemoryEntry
-    distance: float | None = Field(default=None, ge=0.0)
+    distance: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
 
     @property
     def relevance(self) -> float:
-        """Map an unbounded non-negative distance onto ``(0.0, 1.0]``."""
+        """Map a finite non-negative distance onto ``[0.0, 1.0]``.
+
+        A missing distance is treated as the *lowest* relevance rather than
+        a perfect match: this value feeds retrieval ranking, and silently
+        scoring an un-distanced hit as an exact match would let a backend
+        that omits distances outrank everything that reported one honestly.
+        """
         if self.distance is None:
-            return 1.0
+            return 0.0
         return 1.0 / (1.0 + self.distance)
 
 
@@ -172,13 +231,20 @@ class SourceReputation(ContractModel):
             raise ValueError("entry_type must be source_reputation")
         if entry.source_url is None:
             raise ValueError("source_reputation entries require source_url")
+        try:
+            reputation_score = float(
+                entry.attributes.get("reputation_score", entry.confidence)
+            )
+            observations = int(entry.attributes.get("observations", 1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "source_reputation entry has malformed reputation attributes"
+            ) from exc
         return cls(
             url=entry.source_url,
             title=entry.source_title or entry.source_url,
-            reputation_score=float(
-                entry.attributes.get("reputation_score", entry.confidence)
-            ),
-            observations=int(entry.attributes.get("observations", 1)),
+            reputation_score=reputation_score,
+            observations=observations,
             notes=str(entry.attributes.get("notes", "")),
             last_updated=entry.timestamp,
         )
@@ -191,7 +257,7 @@ class ScratchpadEntry(ContractModel):
     kind: ScratchpadEntryKind = "observation"
     content: str = Field(min_length=1)
     timestamp: AwareISOString = Field(default_factory=_utc_now_iso)
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    metadata: dict[str, _FiniteJsonValue] = Field(default_factory=dict)
 
 
 class StrategyRecord(ContractModel):

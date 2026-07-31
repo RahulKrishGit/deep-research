@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from deep_research.memory.entries import (
     MemoryEntry,
     MemoryQueryResult,
+    ScratchpadEntry,
     SourceReputation,
     StrategyRecord,
     source_reputation_entry_id,
@@ -78,10 +79,33 @@ def test_memory_entry_rejects_unknown_entry_types() -> None:
         _entry(entry_type="rumour")
 
 
+def test_memory_entry_rejects_non_finite_attribute_values() -> None:
+    with pytest.raises(ValidationError):
+        _entry(attributes={"score": float("nan")})
+    with pytest.raises(ValidationError):
+        _entry(attributes={"score": float("inf")})
+
+
+def test_memory_entry_from_storage_raises_validation_error_on_missing_fields() -> None:
+    with pytest.raises(ValidationError):
+        MemoryEntry.from_storage(
+            entry_id="entry-1",
+            document="content",
+            metadata={"entry_type": "finding", "session_id": "session-1"},
+        )
+
+
 def test_memory_query_result_derives_relevance_from_distance() -> None:
     assert MemoryQueryResult(entry=_entry(), distance=0.0).relevance == 1.0
     assert MemoryQueryResult(entry=_entry(), distance=1.0).relevance == 0.5
-    assert MemoryQueryResult(entry=_entry(), distance=None).relevance == 1.0
+    assert MemoryQueryResult(entry=_entry(), distance=None).relevance == 0.0
+
+
+def test_memory_query_result_rejects_non_finite_distance() -> None:
+    with pytest.raises(ValidationError):
+        MemoryQueryResult(entry=_entry(), distance=float("inf"))
+    with pytest.raises(ValidationError):
+        MemoryQueryResult(entry=_entry(), distance=float("nan"))
 
 
 def test_source_reputation_entry_id_is_deterministic_per_url() -> None:
@@ -115,6 +139,45 @@ def test_source_reputation_round_trips_through_a_memory_entry() -> None:
 def test_source_reputation_rejects_entries_of_the_wrong_type() -> None:
     with pytest.raises(ValueError, match="source_reputation"):
         SourceReputation.from_entry(_entry())
+
+
+def test_scratchpad_entry_defaults_and_construction() -> None:
+    entry = ScratchpadEntry(agent_name="researcher", content="Trying query X.")
+
+    assert entry.kind == "observation"
+    assert entry.metadata == {}
+    assert len(entry.timestamp) > 0
+
+
+def test_scratchpad_entry_accepts_each_declared_kind() -> None:
+    for kind in ("thought", "observation", "decision", "summary"):
+        entry = ScratchpadEntry(agent_name="researcher", kind=kind, content="note")
+        assert entry.kind == kind
+
+
+def test_scratchpad_entry_rejects_unknown_kind() -> None:
+    with pytest.raises(ValidationError):
+        ScratchpadEntry(agent_name="researcher", kind="musing", content="note")
+
+
+def test_scratchpad_entry_rejects_blank_agent_name() -> None:
+    with pytest.raises(ValidationError):
+        ScratchpadEntry(agent_name="", content="note")
+
+
+def test_scratchpad_entry_rejects_non_finite_metadata_values() -> None:
+    with pytest.raises(ValidationError):
+        ScratchpadEntry(
+            agent_name="researcher",
+            content="note",
+            metadata={"score": float("nan")},
+        )
+    with pytest.raises(ValidationError):
+        ScratchpadEntry(
+            agent_name="researcher",
+            content="note",
+            metadata={"nested": {"score": float("inf")}},
+        )
 
 
 def test_strategy_record_derives_rates_from_stored_counts() -> None:
