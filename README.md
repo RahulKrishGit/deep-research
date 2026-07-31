@@ -4,7 +4,7 @@ Multi-agent deep research system using LangGraph, OpenAI, ChromaDB, and LangSmit
 
 ## Project Status
 
-Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, core tools, and the three-layer memory stack.
+Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, OpenAI chat/embedding providers, core tools, and the three-layer memory stack.
 
 ## Setup
 
@@ -36,9 +36,11 @@ Foundation phase — package skeleton, typed configuration/state, the LangSmith 
    # Edit .env with your API keys
    ```
 
-   Copying `.env.example` creates a template only. The foundation does not load
-   `.env` automatically, so export these values or inject them into the process
-   environment before running the application.
+   `load_config("config.yaml")` automatically loads the `.env` file beside
+   `config.yaml`. Values already set by the shell, CI, a container, or the
+   deployment platform take precedence over `.env`, so the same loader is safe
+   for local development and deployed environments. Keep personal keys only in
+   `.env`; it is ignored by Git.
 
 5. **Verify setup**
 
@@ -67,9 +69,12 @@ output/                # Generated reports (gitignored)
 
 ## Configuration
 
-See `config.yaml` for default settings. Sensitive values are set via environment
-variables (see `.env.example`). Configuration overrides use uppercase full-path
-names, such as `LLM_MODEL` and `MEMORY_LONG_TERM_PERSIST_DIRECTORY`.
+See `config.yaml` for default non-secret settings. Copy `.env.example` to `.env`
+and add personal API keys for local runs; `load_config("config.yaml")` loads that
+sibling file automatically. Shell and CI environment variables take precedence.
+Configuration overrides use uppercase full-path names, such as `LLM_MODEL` and
+`MEMORY_LONG_TERM_PERSIST_DIRECTORY`. API keys remain environment-only and are
+not included in typed settings or telemetry.
 
 ## Observability
 
@@ -100,6 +105,33 @@ The documentation snippet uses a named `search_client` placeholder only as an ex
 Each completed span appends a typed metric and structured event. A LangSmith
 transport failure appends a recoverable `ResearchError` and research work
 continues locally.
+
+## OpenAI Providers
+
+Set `OPENAI_API_KEY` in the process environment or the repository-root `.env`.
+Chat and embedding defaults live under `llm` in `config.yaml`; `LLM_MODEL`,
+`LLM_EMBEDDING_MODEL`, `LLM_TIMEOUT`, and `LLM_RETRY_COUNT` override the
+corresponding YAML values.
+
+Chat callers use project-owned messages and results, not OpenAI SDK types:
+
+```python
+from deep_research.providers import ChatMessage, OpenAIChatProvider
+
+settings = load_config("config.yaml")
+chat = OpenAIChatProvider(settings.llm, tracker)
+
+async with tracker.session_span("session-123", "Why is the sky blue?"):
+    result = await chat.complete(
+        [ChatMessage(role="user", content="Why is the sky blue?")],
+        agent_name="researcher",
+    )
+```
+
+Use `complete_structured(messages, Schema)` for validated Pydantic output. The
+provider performs one repair request if validation fails. `OpenAIEmbeddingProvider`
+is the synchronous embedding client memory uses — see `embed_query(...)` and
+`embed_documents(...)` below.
 
 ## Core Tools
 
