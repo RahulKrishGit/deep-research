@@ -119,3 +119,63 @@ def test_outcome_metrics_reject_invalid_failure_metadata(
 ) -> None:
     with pytest.raises(ValidationError):
         SessionMetric(session_id="session-1", **kwargs)
+
+
+def test_memory_metric_captures_operation_shape() -> None:
+    from deep_research.observability.metrics import MemoryMetric
+
+    metric = MemoryMetric(
+        session_id="session-1",
+        agent_name="researcher",
+        memory_layer="long_term",
+        operation="query",
+        entry_type="finding",
+        top_k=5,
+        result_count=3,
+        latency_ms=12.5,
+        success=True,
+    )
+
+    assert metric.metric_type == "memory"
+    assert metric.model_dump()["memory_layer"] == "long_term"
+
+
+def test_memory_metric_defaults_result_count_to_zero() -> None:
+    from deep_research.observability.metrics import MemoryMetric
+
+    metric = MemoryMetric(
+        session_id="session-1",
+        memory_layer="procedural",
+        operation="save",
+        latency_ms=1.0,
+        success=False,
+        error_type="OSError",
+    )
+
+    assert metric.result_count == 0
+    assert metric.agent_name is None
+    assert metric.top_k is None
+
+
+def test_memory_metric_rejects_unknown_layers_and_non_positive_top_k() -> None:
+    from pydantic import ValidationError
+
+    from deep_research.observability.metrics import MemoryMetric
+
+    with pytest.raises(ValidationError):
+        MemoryMetric(
+            session_id="session-1",
+            memory_layer="redis",
+            operation="save",
+            latency_ms=1.0,
+            success=True,
+        )
+    with pytest.raises(ValidationError):
+        MemoryMetric(
+            session_id="session-1",
+            memory_layer="long_term",
+            operation="query",
+            top_k=0,
+            latency_ms=1.0,
+            success=True,
+        )

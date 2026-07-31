@@ -82,6 +82,20 @@ class TokenUsageMetric(OutcomeMetric):
         return self
 
 
+MemoryLayer: TypeAlias = Literal["scratchpad", "long_term", "procedural"]
+
+
+class MemoryMetric(OutcomeMetric):
+    metric_type: Literal["memory"] = "memory"
+    session_id: str = Field(min_length=1)
+    agent_name: str | None = Field(default=None, min_length=1)
+    memory_layer: MemoryLayer
+    operation: str = Field(min_length=1)
+    entry_type: str | None = Field(default=None, min_length=1)
+    top_k: int | None = Field(default=None, ge=1)
+    result_count: NonNegativeInt = 0
+
+
 MetricRecord: TypeAlias = (
-    SessionMetric | AgentMetric | ToolMetric | TokenUsageMetric
+    SessionMetric | AgentMetric | ToolMetric | TokenUsageMetric | MemoryMetric
 )

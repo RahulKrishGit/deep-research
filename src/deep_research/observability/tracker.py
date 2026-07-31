@@ -34,6 +34,8 @@ from deep_research.observability.context import (
 )
 from deep_research.observability.metrics import (
     AgentMetric,
+    MemoryLayer,
+    MemoryMetric,
     MetricRecord,
     SessionMetric,
     TokenUsageMetric,
@@ -42,7 +44,14 @@ from deep_research.observability.metrics import (
 from deep_research.utils.config import LangSmithConfig
 from deep_research.utils.types import ResearchError, ResearchEvent
 
-SpanKind: TypeAlias = Literal["session", "agent", "react_iteration", "llm", "tool"]
+SpanKind: TypeAlias = Literal[
+    "session",
+    "agent",
+    "react_iteration",
+    "llm",
+    "tool",
+    "memory",
+]
 RunType: TypeAlias = Literal["chain", "llm", "tool"]
 Redactor: TypeAlias = Callable[[Any], JsonValue]
 _REDACTED = "[REDACTED]"
@@ -182,6 +191,7 @@ class SpanHandle:
     outputs: dict[str, JsonValue] | None = None
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     retry_count: int = 0
+    result_count: int | None = None
 
     def set_outputs(self, outputs: Mapping[str, JsonValue]) -> None:
         self.outputs = dict(outputs)
@@ -201,6 +211,11 @@ class SpanHandle:
             output_tokens=output_tokens,
             total_tokens=total_tokens,
         )
+
+    def set_result_count(self, count: int) -> None:
+        if count < 0:
+            raise ValueError("result_count must not be negative")
+        self.result_count = count
 
 
 class Tracker:
@@ -456,6 +471,59 @@ class Tracker:
                 yield handle
 
         return tool_manager()
+
+    def memory_span(
+        self,
+        operation: str,
+        *,
+        memory_layer: MemoryLayer,
+        entry_type: str | None = None,
+        top_k: int | None = None,
+    ) -> AbstractAsyncContextManager[SpanHandle]:
+        parent = self._require_context()
+        operation = _validate_non_empty_string(operation)
+        context = _validated_context(
+            parent, tool_name=f"memory.{memory_layer}", model=None
+        )
+        inputs: dict[str, JsonValue] = {
+            "operation": operation,
+            "memory_layer": memory_layer,
+        }
+        if entry_type is not None:
+            inputs["entry_type"] = entry_type
+        if top_k is not None:
+            inputs["top_k"] = top_k
+
+        def metric_factory(
+            ctx: TraceContext,
+            latency: float,
+            success: bool,
+            error_type: str | None,
+            trace_url: str | None,
+            handle: SpanHandle,
+        ) -> MetricRecord:
+            del trace_url
+            return MemoryMetric(
+                session_id=ctx.session_id,
+                agent_name=ctx.agent_name,
+                memory_layer=memory_layer,
+                operation=operation,
+                entry_type=entry_type,
+                top_k=top_k,
+                result_count=handle.result_count or 0,
+                latency_ms=latency,
+                success=success,
+                error_type=error_type,
+            )
+
+        return self._span(
+            kind="memory",
+            name=f"memory.{memory_layer}.{operation}",
+            run_type="tool",
+            context=context,
+            inputs=inputs,
+            metric_factory=metric_factory,
+        )
 
     def _require_context(self) -> TraceContext:
         context = current_trace_context()
