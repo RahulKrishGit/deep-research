@@ -135,3 +135,33 @@ def test_provider_public_api_imports() -> None:
     assert issubclass(ProviderResponseError, OpenAIProviderError)
     assert issubclass(ProviderTimeoutError, OpenAIProviderError)
     assert issubclass(StructuredOutputError, OpenAIProviderError)
+
+
+def test_agent_runtime_contracts_import_from_package() -> None:
+    from deep_research.agents import (  # noqa: F401
+        AgentConfigurationError,
+        AgentError,
+        AgentRun,
+        AgentTask,
+        AgentToolset,
+        BaseAgent,
+        ReActActionType,
+        ReActDecision,
+        ReActObservation,
+        ReActRun,
+        ReActStep,
+        StopReason,
+        StructuredCompleter,
+        ToolDescriptor,
+        agent_error,
+        parse_tool_input,
+        render_react_messages,
+        run_react_loop,
+        summarize_text,
+    )
+
+
+def test_agent_runtime_config_imports_from_utils_config() -> None:
+    from deep_research.utils.config import AgentRuntimeConfig
+
+    assert AgentRuntimeConfig().max_iterations >= 1
