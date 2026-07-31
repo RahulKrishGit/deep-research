@@ -29,6 +29,7 @@ def config_path(tmp_path: Path) -> Path:
                         "persist_directory": "memory/",
                     },
                     "short_term": {"max_turns": 20},
+                    "procedural": {"strategies_path": "memory/strategies.json"},
                 },
                 "output": {"directory": "output/", "default_format": "markdown"},
             }
@@ -100,6 +101,12 @@ def test_load_config_empty_yaml(tmp_path: Path) -> None:
             ("memory", "short_term", "max_turns"),
             "12",
             12,
+        ),
+        (
+            "MEMORY_PROCEDURAL_STRATEGIES_PATH",
+            ("memory", "procedural", "strategies_path"),
+            "env-memory/strategies.json",
+            "env-memory/strategies.json",
         ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
@@ -227,3 +234,11 @@ def test_load_config_strict_enabled_tracing_requires_langsmith_credentials(
 
     with pytest.raises(ValueError, match=missing_environment_name):
         load_config(str(config_path), strict=True)
+
+
+def test_procedural_memory_path_defaults_to_the_runtime_registry(
+    config_path: Path,
+) -> None:
+    settings = load_config(str(config_path))
+
+    assert settings.memory.procedural.strategies_path == "memory/strategies.json"

@@ -44,11 +44,18 @@ class ShortTermMemoryConfig(BaseModel):
     max_turns: int = 20
 
 
+class ProceduralMemoryConfig(BaseModel):
+    """Procedural strategy registry settings."""
+
+    strategies_path: str = "memory/strategies.json"
+
+
 class MemoryConfig(BaseModel):
     """Memory settings."""
 
     long_term: LongTermMemoryConfig = LongTermMemoryConfig()
     short_term: ShortTermMemoryConfig = ShortTermMemoryConfig()
+    procedural: ProceduralMemoryConfig = ProceduralMemoryConfig()
 
 
 class OutputConfig(BaseModel):
@@ -80,6 +87,11 @@ _ENVIRONMENT_OVERRIDES = {
     "MEMORY_LONG_TERM_COLLECTION_NAME": ("memory", "long_term", "collection_name"),
     "MEMORY_LONG_TERM_PERSIST_DIRECTORY": ("memory", "long_term", "persist_directory"),
     "MEMORY_SHORT_TERM_MAX_TURNS": ("memory", "short_term", "max_turns"),
+    "MEMORY_PROCEDURAL_STRATEGIES_PATH": (
+        "memory",
+        "procedural",
+        "strategies_path",
+    ),
     "OUTPUT_DIRECTORY": ("output", "directory"),
     "OUTPUT_DEFAULT_FORMAT": ("output", "default_format"),
 }
