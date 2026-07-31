@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from dataclasses import dataclass
 from typing import Any
 
@@ -143,3 +146,50 @@ def test_short_response_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="unexpected number of embeddings"):
         provider.embed_documents(["a", "b"])
+
+
+def test_the_openai_package_is_not_imported_at_module_import_time() -> None:
+    """Regression guard for the lazy-import constraint.
+
+    ``openai`` is a real installed dependency in this environment, so a
+    plain ``import deep_research.providers`` cannot tell a lazy
+    ``from openai import OpenAI`` (inside ``_get_client``) apart from an
+    eager one hoisted to module scope — both would pass identically. This
+    test runs in a fresh subprocess and poisons ``sys.modules["openai"]``
+    before importing, which makes *any* ``import openai`` statement raise
+    ``ImportError`` immediately. If the lazy import is ever hoisted to
+    module level, this subprocess exits non-zero and the test fails.
+    """
+    script = textwrap.dedent(
+        """
+        import sys
+
+        sys.modules["openai"] = None  # any `import openai` now raises ImportError
+
+        import deep_research.memory  # noqa: F401
+        import deep_research.providers  # noqa: F401
+        from deep_research.providers.embeddings import OpenAIEmbeddingProvider
+
+        assert sys.modules["openai"] is None, "openai must not be imported yet"
+
+        class FakeEmbeddings:
+            def create(self, **kwargs):
+                raise AssertionError("network call should not happen in this test")
+
+        class FakeClient:
+            embeddings = FakeEmbeddings()
+
+        # Constructing with an injected client must not touch openai either.
+        OpenAIEmbeddingProvider(client=FakeClient())
+        assert sys.modules["openai"] is None, "openai must still not be imported"
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
