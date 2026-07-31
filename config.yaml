@@ -29,6 +29,11 @@ memory:
   procedural:
     strategies_path: memory/strategies.json
 
+agents:
+  max_iterations: 5
+  tool_budget: 10
+  prompt_context_entries: 8
+
 output:
   directory: output/
   default_format: markdown

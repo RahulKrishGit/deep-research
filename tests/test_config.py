@@ -38,6 +38,11 @@ def config_path(tmp_path: Path) -> Path:
                     "short_term": {"max_turns": 20},
                     "procedural": {"strategies_path": "memory/strategies.json"},
                 },
+                "agents": {
+                    "max_iterations": 5,
+                    "tool_budget": 10,
+                    "prompt_context_entries": 8,
+                },
                 "output": {"directory": "output/", "default_format": "markdown"},
             }
         ),
@@ -231,6 +236,14 @@ def test_load_config_empty_yaml(tmp_path: Path) -> None:
             "env-memory/strategies.json",
             "env-memory/strategies.json",
         ),
+        ("AGENTS_MAX_ITERATIONS", ("agents", "max_iterations"), "9", 9),
+        ("AGENTS_TOOL_BUDGET", ("agents", "tool_budget"), "3", 3),
+        (
+            "AGENTS_PROMPT_CONTEXT_ENTRIES",
+            ("agents", "prompt_context_entries"),
+            "4",
+            4,
+        ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
     ],
@@ -412,3 +425,32 @@ def test_procedural_memory_path_defaults_to_the_runtime_registry(
     settings = load_config(str(config_path))
 
     assert settings.memory.procedural.strategies_path == "memory/strategies.json"
+
+
+def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> None:
+    settings = load_config(str(config_path))
+
+    assert settings.agents.max_iterations == 5
+    assert settings.agents.tool_budget == 10
+    assert settings.agents.prompt_context_entries == 8
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("max_iterations", 0),
+        ("tool_budget", -1),
+        ("prompt_context_entries", -1),
+    ],
+)
+def test_agent_runtime_config_rejects_unbounded_values(
+    field_name: str,
+    invalid_value: int,
+) -> None:
+    """An agent loop with no upper bound is not a valid configuration."""
+    from pydantic import ValidationError
+
+    from deep_research.utils.config import AgentRuntimeConfig
+
+    with pytest.raises(ValidationError):
+        AgentRuntimeConfig(**{field_name: invalid_value})
