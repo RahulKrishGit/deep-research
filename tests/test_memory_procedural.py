@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -137,6 +138,28 @@ async def test_corrupt_registry_is_backed_up_and_restarts_empty(
 
 
 @pytest.mark.asyncio
+async def test_non_utf8_registry_is_backed_up_and_restarts_empty(
+    strategies_path: Path,
+) -> None:
+    strategies_path.parent.mkdir(parents=True, exist_ok=True)
+    strategies_path.write_bytes(b"\xff\xfe\x00\x01garbage")
+    memory = ProceduralMemory(strategies_path)
+
+    await memory.load()
+
+    backups = list(strategies_path.parent.glob("strategies.json.corrupt-*.bak"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"\xff\xfe\x00\x01garbage"
+    assert not strategies_path.exists()
+    assert memory.strategies == ()
+
+    errors = memory.drain_errors()
+    assert len(errors) == 1
+    assert errors[0].error_type == "procedural_memory_corrupt"
+    assert errors[0].recoverable is True
+
+
+@pytest.mark.asyncio
 async def test_schema_violations_are_treated_as_corruption(
     strategies_path: Path,
 ) -> None:
@@ -162,10 +185,10 @@ async def test_unreadable_registry_fails_startup(
     strategies_path.parent.mkdir(parents=True, exist_ok=True)
     strategies_path.write_text("[]", encoding="utf-8")
 
-    def explode(self: Path, encoding: str = "utf-8") -> str:
+    def explode(self: Path) -> bytes:
         raise OSError("permission denied")
 
-    monkeypatch.setattr(Path, "read_text", explode)
+    monkeypatch.setattr(Path, "read_bytes", explode)
     memory = ProceduralMemory(strategies_path)
 
     with pytest.raises(MemoryInitializationError, match="cannot read"):
@@ -196,6 +219,33 @@ async def test_write_failures_are_recoverable(
     assert errors[0].error_type == "procedural_memory_write_failed"
     assert errors[0].details["exception_type"] == "OSError"
     assert await memory.save() is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_record_session_outcome_calls_do_not_race(
+    strategies_path: Path,
+) -> None:
+    memory = ProceduralMemory(strategies_path)
+    await memory.load()
+
+    await asyncio.gather(
+        *(
+            memory.record_session_outcome(
+                topic_type="technology", succeeded=True, iterations=1
+            )
+            for _ in range(40)
+        )
+    )
+
+    errors = memory.drain_errors()
+    assert errors == []
+    record = memory.get("technology")
+    assert record is not None
+    assert record.sessions == 40
+
+    payload = json.loads(strategies_path.read_text(encoding="utf-8"))
+    assert len(payload) == 1
+    assert payload[0]["sessions"] == 40
 
 
 @pytest.mark.asyncio
