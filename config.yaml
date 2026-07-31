@@ -22,6 +22,8 @@ memory:
     persist_directory: memory/
   short_term:
     max_turns: 20
+  procedural:
+    strategies_path: memory/strategies.json
 
 output:
   directory: output/

@@ -4,7 +4,7 @@ Multi-agent deep research system using LangGraph, OpenAI, ChromaDB, and LangSmit
 
 ## Project Status
 
-Foundation phase — package skeleton, typed configuration/state, and the LangSmith observability foundation.
+Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, core tools, and the three-layer memory stack.
 
 ## Setup
 
@@ -135,6 +135,58 @@ async with tracker.session_span("session-123", "research question"):
     )
 ```
 
+## Memory
+
+Three layers, each independently usable:
+
+- `ScratchpadMemory` — synchronous, bounded, per-agent and per-session. Never
+  persisted. Optional summarization hook compacts the window instead of
+  silently dropping the oldest notes.
+- `LongTermMemory` — async, ChromaDB-backed semantic recall over verified
+  findings, source reputations, report summaries, and notable failed
+  strategies. Persists under `<memory.long_term.persist_directory>/chroma/`.
+- `ProceduralMemory` — async, JSON-backed strategy registry at
+  `memory/strategies.json`.
+
+```python
+from deep_research.memory import LongTermMemory, ProceduralMemory, ScratchpadMemory
+from deep_research.providers import OpenAIEmbeddingProvider
+from deep_research.utils.config import load_config
+from deep_research.utils.types import merge_research_state
+
+settings = load_config("config.yaml")
+
+pad = ScratchpadMemory.from_config(
+    settings.memory.short_term, session_id="session-123", agent_name="researcher"
+)
+pad.add("Tavily returned 5 results.", kind="observation")
+
+long_term = LongTermMemory.from_config(
+    settings.memory.long_term, embeddings=OpenAIEmbeddingProvider()
+)
+hits = await long_term.query("quantum error correction", top_k=5)
+
+procedural = ProceduralMemory.from_config(settings.memory.procedural)
+await procedural.load()
+await procedural.record_session_outcome(
+    topic_type="technology", succeeded=True, iterations=3
+)
+
+state = merge_research_state(state, {"errors": long_term.drain_errors()})
+```
+
+Memory failures are recoverable. A long-term write returns `False`, a query
+returns `[]`, and each failure appends a recoverable `ResearchError` that
+`drain_errors()` hands back for merging into `ResearchState.errors` — agents
+continue with short-term state. Only startup problems raise
+`MemoryInitializationError`. A corrupt `memory/strategies.json` is renamed to
+`memory/strategies.json.corrupt-<timestamp>.bak` and the registry restarts
+empty.
+
+Long-term and procedural operations emit a `MemoryMetric` (operation, layer,
+entry type, top-k, result count, latency, error type) whenever a tracker and an
+active session span are available.
+
 ## Development
 
 ```bash
@@ -147,8 +199,8 @@ ruff check src/
 
 ## Phases
 
-- Phase 1: Core package foundation, config, types, providers ← current
-- Phase 2: Memory and tools
+- Phase 1: Core package foundation, config, types, providers
+- Phase 2: Memory and tools ← current (complete)
 - Phase 3: Agents and LangGraph orchestration
 - Phase 4: CLI, API, and UI interfaces
 - Phase 5: Tests and verification

@@ -85,3 +85,33 @@ def test_core_tool_contracts_import_from_package() -> None:
         WebSearchTool,
         WriteDocumentTool,
     )
+
+
+def test_memory_contracts_import_from_package() -> None:
+    from deep_research.memory import (  # noqa: F401
+        EmbeddingProvider,
+        LongTermMemory,
+        MemoryEntry,
+        MemoryEntryType,
+        MemoryErrorLog,
+        MemoryInitializationError,
+        MemoryQueryResult,
+        MemoryStackError,
+        ProceduralMemory,
+        ScratchpadEntry,
+        ScratchpadMemory,
+        SourceReputation,
+        StrategyRecord,
+        Summarizer,
+        VectorCollection,
+        build_chroma_collection,
+        memory_operation,
+        source_reputation_entry_id,
+    )
+
+
+def test_provider_contracts_import_from_package() -> None:
+    from deep_research.providers import (  # noqa: F401
+        DEFAULT_EMBEDDING_MODEL,
+        OpenAIEmbeddingProvider,
+    )

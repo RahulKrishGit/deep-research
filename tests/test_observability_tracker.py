@@ -1210,3 +1210,131 @@ async def test_local_finalization_failure_does_not_replace_research_exception(
             raise ValueError("research failed")
 
     assert tracker.errors[-1].details["stage"] == "local_finalization"
+
+
+@pytest.mark.asyncio
+async def test_memory_span_records_operation_metadata_and_result_count() -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+
+    async with tracker.session_span("session-memory", "What changed?"):
+        async with tracker.agent_span("researcher"):
+            async with tracker.memory_span(
+                "query",
+                memory_layer="long_term",
+                entry_type="finding",
+                top_k=5,
+            ) as span:
+                context = current_trace_context()
+                assert context is not None
+                assert context.tool_name == "memory.long_term"
+                span.set_result_count(3)
+
+    memory_metrics = [
+        metric for metric in tracker.metrics if metric.metric_type == "memory"
+    ]
+    assert len(memory_metrics) == 1
+    metric = memory_metrics[0]
+    assert metric.session_id == "session-memory"
+    assert metric.agent_name == "researcher"
+    assert metric.memory_layer == "long_term"
+    assert metric.operation == "query"
+    assert metric.entry_type == "finding"
+    assert metric.top_k == 5
+    assert metric.result_count == 3
+    assert metric.success is True
+    assert metric.latency_ms >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_memory_span_records_storage_errors_and_reraises() -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+
+    with pytest.raises(OSError):
+        async with tracker.session_span("session-memory", "What changed?"):
+            async with tracker.memory_span("save", memory_layer="procedural"):
+                raise OSError("disk full")
+
+    metric = next(
+        metric for metric in tracker.metrics if metric.metric_type == "memory"
+    )
+    assert metric.success is False
+    assert metric.error_type == "OSError"
+    assert metric.result_count == 0
+
+
+@pytest.mark.asyncio
+async def test_memory_span_requires_an_active_session_span() -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+
+    with pytest.raises(RuntimeError, match="child spans require an active session"):
+        tracker.memory_span("save", memory_layer="long_term")
+
+
+@pytest.mark.asyncio
+async def test_memory_span_rejects_non_positive_top_k_before_entering_body() -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+    body_entered = False
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            async with tracker.memory_span(
+                "query", memory_layer="long_term", top_k=0
+            ):
+                body_entered = True
+
+    assert body_entered is False
+    assert not any(metric.metric_type == "memory" for metric in tracker.metrics)
+
+
+@pytest.mark.asyncio
+async def test_memory_span_rejects_blank_entry_type_before_entering_body() -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+    body_entered = False
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            async with tracker.memory_span(
+                "query", memory_layer="long_term", entry_type="   "
+            ):
+                body_entered = True
+
+    assert body_entered is False
+    assert not any(metric.metric_type == "memory" for metric in tracker.metrics)
+
+
+@pytest.mark.asyncio
+async def test_memory_span_rejects_invalid_memory_layer_before_entering_body() -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+    body_entered = False
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            async with tracker.memory_span("query", memory_layer="redis"):  # type: ignore[arg-type]
+                body_entered = True
+
+    assert body_entered is False
+    assert not any(metric.metric_type == "memory" for metric in tracker.metrics)
