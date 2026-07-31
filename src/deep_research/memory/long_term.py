@@ -279,24 +279,37 @@ class LongTermMemory:
         agent_id: str,
         notes: str = "",
     ) -> SourceReputation | None:
-        """Blend a new judgement into the running reputation and persist it."""
+        """Blend a new judgement into the running reputation and persist it.
+
+        Returns ``None`` both when the write fails and when the prior read
+        fails: a failed read means we cannot tell whether a record already
+        exists, so falling through to "create new" would silently overwrite
+        accumulated history with a single fresh observation. In that case we
+        leave the existing record untouched and surface the recorded error.
+        """
+        errors_before = len(self._error_log.errors)
         existing = await self.get_source_reputation(url)
+        read_failed = existing is None and len(self._error_log.errors) > errors_before
+        if read_failed:
+            return None
+        normalized_score = min(1.0, max(0.0, reputation_score))
         if existing is None:
             record = SourceReputation(
                 url=url,
-                title=title,
-                reputation_score=reputation_score,
+                title=title.strip() or url,
+                reputation_score=normalized_score,
                 observations=1,
                 notes=notes,
             )
         else:
             observations = existing.observations + 1
             blended = (
-                existing.reputation_score * existing.observations + reputation_score
+                existing.reputation_score * existing.observations
+                + normalized_score
             ) / observations
             record = SourceReputation(
                 url=existing.url,
-                title=title or existing.title,
+                title=title.strip() or existing.title,
                 reputation_score=min(1.0, max(0.0, blended)),
                 observations=observations,
                 notes=notes or existing.notes,

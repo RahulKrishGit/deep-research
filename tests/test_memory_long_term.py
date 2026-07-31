@@ -252,6 +252,74 @@ async def test_source_reputation_read_failure_is_recoverable(
 
 
 @pytest.mark.asyncio
+async def test_update_does_not_clobber_history_when_the_read_fails(
+    memory: LongTermMemory, collection: FakeCollection
+) -> None:
+    for _ in range(4):
+        await memory.update_source_reputation(
+            url="https://example.org/a",
+            title="Example",
+            reputation_score=1.0,
+            session_id="session-1",
+            agent_id="source_evaluator",
+        )
+    memory.drain_errors()
+
+    collection.fail_on.add("get")
+    result = await memory.update_source_reputation(
+        url="https://example.org/a",
+        title="Example",
+        reputation_score=0.0,
+        session_id="session-2",
+        agent_id="source_evaluator",
+    )
+
+    assert result is None
+    errors = memory.drain_errors()
+    assert len(errors) == 1
+    assert errors[0].error_type == "long_term_memory_unavailable"
+
+    collection.fail_on.discard("get")
+    stored = await memory.get_source_reputation("https://example.org/a")
+    assert stored is not None
+    assert stored.observations == 4
+    assert stored.reputation_score == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_out_of_range_score_and_blank_title_are_normalized_consistently(
+    memory: LongTermMemory,
+) -> None:
+    created = await memory.update_source_reputation(
+        url="https://example.org/b",
+        title="",
+        reputation_score=1.5,
+        session_id="session-1",
+        agent_id="source_evaluator",
+    )
+
+    assert created is not None
+    assert created.reputation_score == pytest.approx(1.0)
+    assert created.title.strip() != ""
+
+    updated = await memory.update_source_reputation(
+        url="https://example.org/b",
+        title="",
+        reputation_score=-3.0,
+        session_id="session-2",
+        agent_id="source_evaluator",
+    )
+
+    assert updated is not None
+    # The prior observation clamped to 1.0 and the new one clamps to 0.0,
+    # so the blended running average is 0.5 -- clamping happens before
+    # blending, identically to the create path, not after.
+    assert updated.reputation_score == pytest.approx(0.5)
+    assert updated.title.strip() != ""
+    assert memory.errors == ()
+
+
+@pytest.mark.asyncio
 async def test_operations_emit_memory_metrics_inside_a_session(
     collection: FakeCollection, embeddings: FakeEmbeddings
 ) -> None:
