@@ -33,6 +33,7 @@ agents:
   max_iterations: 5
   tool_budget: 10
   prompt_context_entries: 8
+  observation_summary_chars: 200
 
 output:
   directory: output/

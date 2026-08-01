@@ -42,6 +42,7 @@ def config_path(tmp_path: Path) -> Path:
                     "max_iterations": 5,
                     "tool_budget": 10,
                     "prompt_context_entries": 8,
+                    "observation_summary_chars": 200,
                 },
                 "output": {"directory": "output/", "default_format": "markdown"},
             }
@@ -244,6 +245,12 @@ def test_load_config_empty_yaml(tmp_path: Path) -> None:
             "4",
             4,
         ),
+        (
+            "AGENTS_OBSERVATION_SUMMARY_CHARS",
+            ("agents", "observation_summary_chars"),
+            "80",
+            80,
+        ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
     ],
@@ -433,6 +440,7 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.max_iterations == 5
     assert settings.agents.tool_budget == 10
     assert settings.agents.prompt_context_entries == 8
+    assert settings.agents.observation_summary_chars == 200
 
 
 @pytest.mark.parametrize(
@@ -441,6 +449,7 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
         ("max_iterations", 0),
         ("tool_budget", -1),
         ("prompt_context_entries", -1),
+        ("observation_summary_chars", 0),
     ],
 )
 def test_agent_runtime_config_rejects_unbounded_values(

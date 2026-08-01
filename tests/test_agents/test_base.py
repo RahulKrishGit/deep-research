@@ -208,6 +208,32 @@ async def test_run_limits_the_rendered_scratchpad_window(tracker: Tracker) -> No
     assert len(notes) == 1
 
 
+@pytest.mark.asyncio
+async def test_run_uses_the_configured_observation_summary_limit(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        [
+            use_tool("Echo something long.", "echo", '{"value": "' + "x" * 50 + '"}'),
+            finish("Enough.", "Rayleigh."),
+        ]
+    )
+    agent = _agent(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=3, tool_budget=3, observation_summary_chars=20
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    observation = outcome.react.steps[0].observation
+    assert observation is not None
+    assert len(observation.summary) == 20
+
+
 def _capture_agent_outputs(
     tracker: Tracker,
 ) -> list[dict[str, object] | None]:

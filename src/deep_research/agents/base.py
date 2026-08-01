@@ -213,6 +213,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                 tool_budget=self._config.tool_budget,
                 on_step=self._record_step,
                 is_sufficient=self.is_sufficient,
+                summary_limit=self._config.observation_summary_chars,
             )
             react = react.model_copy(
                 update={

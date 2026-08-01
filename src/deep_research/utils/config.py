@@ -81,6 +81,7 @@ class AgentRuntimeConfig(BaseModel):
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
     prompt_context_entries: int = Field(default=8, ge=0)
+    observation_summary_chars: int = Field(default=200, ge=1)
 
 
 class OutputConfig(BaseModel):
@@ -124,6 +125,7 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_MAX_ITERATIONS": ("agents", "max_iterations"),
     "AGENTS_TOOL_BUDGET": ("agents", "tool_budget"),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
+    "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
     "OUTPUT_DIRECTORY": ("output", "directory"),
     "OUTPUT_DEFAULT_FORMAT": ("output", "default_format"),
 }
