@@ -69,6 +69,17 @@ def test_parse_tool_input_rejects_non_finite_numbers() -> None:
         parse_tool_input('{"score": NaN}')
 
 
+def test_parse_tool_input_rejects_the_self_key() -> None:
+    """A ``self`` key collides with ``BaseTool.execute(self, **kwargs)``."""
+    with pytest.raises(ValueError, match="self"):
+        parse_tool_input('{"self": "x"}')
+
+
+def test_parse_tool_input_rejects_a_non_identifier_key() -> None:
+    with pytest.raises(ValueError, match="identifier"):
+        parse_tool_input('{"bad key": 1}')
+
+
 def test_use_tool_decision_carries_a_tool_and_encoded_arguments() -> None:
     decision = ReActDecision(
         thought="Search for benchmarks.",

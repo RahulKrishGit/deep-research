@@ -75,6 +75,15 @@ def parse_tool_input(raw: str) -> dict[str, JsonValue]:
         _validate_finite_json(parsed)
     except ValueError as error:
         raise ValueError("tool arguments must be finite JSON numbers") from error
+    for key in parsed:
+        if key == "self":
+            raise ValueError(
+                "tool arguments must not use the reserved key 'self'"
+            )
+        if not key.isidentifier():
+            raise ValueError(
+                f"tool argument key {key!r} must be a valid Python identifier"
+            )
     return parsed
 
 

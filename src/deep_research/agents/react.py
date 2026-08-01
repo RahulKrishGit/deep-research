@@ -127,7 +127,7 @@ async def run_react_loop(
                                     "this agent."
                                 ),
                                 details={
-                                    "tool": tool_name,
+                                    "tool": safe_tool_name,
                                     "iteration": iteration,
                                 },
                             )
@@ -220,7 +220,13 @@ async def run_react_loop(
                             decision.thought, limit=summary_limit
                         ),
                         "action": decision.action,
-                        "tool": decision.tool_name,
+                        "tool": (
+                            None
+                            if decision.tool_name is None
+                            else summarize_text(
+                                decision.tool_name, limit=summary_limit
+                            )
+                        ),
                         "observation": (
                             None if observation is None else observation.summary
                         ),

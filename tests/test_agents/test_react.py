@@ -385,6 +385,63 @@ async def test_malformed_tool_arguments_are_a_recoverable_observation(
 
 
 @pytest.mark.asyncio
+async def test_unknown_tool_error_details_clamp_an_oversized_tool_name(
+    tracker: Tracker,
+) -> None:
+    """``errors[].details["tool"]`` must not carry an unbounded model string."""
+    oversized_tool_name = "x" * (400)
+    captured = _capture_iteration_outputs(tracker)
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [
+                    use_tool("Reach for a tool I do not have.", oversized_tool_name),
+                    finish("Use what I have.", "Answered without search."),
+                ]
+            ),
+            max_iterations=4,
+            tool_budget=5,
+            summary_limit=50,
+        )
+
+    assert len(run.errors[0].details["tool"]) <= 50
+    assert captured[0] is not None
+    assert len(captured[0]["tool"]) <= 50
+
+
+@pytest.mark.asyncio
+async def test_self_keyed_tool_arguments_are_a_recoverable_observation(
+    tracker: Tracker,
+) -> None:
+    """A ``self`` key must not crash the loop via ``tool.execute(**kwargs)``."""
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [
+                    use_tool("Send a self key.", "echo", '{"self": "x"}'),
+                    finish("Recovered.", "Done."),
+                ]
+            ),
+            max_iterations=4,
+            tool_budget=5,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.tool_calls == 0
+    observation = run.steps[0].observation
+    assert observation is not None
+    assert observation.error_type == "agent_invalid_tool_input"
+    assert run.steps[0].tool_input == {}
+    assert run.errors[0].error_type == "agent_invalid_tool_input"
+
+
+@pytest.mark.asyncio
 async def test_wrong_tool_arguments_surface_as_a_failed_tool_result(
     tracker: Tracker,
 ) -> None:
