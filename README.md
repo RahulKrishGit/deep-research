@@ -291,6 +291,9 @@ Loops are bounded by `agents.max_iterations` and `agents.tool_budget` in
 `config.yaml` (`AGENTS_MAX_ITERATIONS`, `AGENTS_TOOL_BUDGET` override them).
 `agents.prompt_context_entries` (`AGENTS_PROMPT_CONTEXT_ENTRIES`) controls how
 many scratchpad entries are rendered into the prompt on each turn.
+`agents.observation_summary_chars` (`AGENTS_OBSERVATION_SUMMARY_CHARS`) bounds
+how long each tool observation summary can be before it is fed back to the
+model and recorded in `ResearchState.errors`.
 `outcome.react.stop_reason` is one of `finished`, `sufficient`,
 `max_iterations`, `tool_budget_exhausted`, or `provider_error`.
 
