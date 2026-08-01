@@ -225,15 +225,17 @@ active session span are available.
 action, execute a tool, observe, update the scratchpad, stop or continue. It
 has no LangGraph dependency: a concrete agent is a plain async object.
 
-A concrete agent implements four hooks and may override two more:
+A concrete agent implements four required hooks and one required `ClassVar`,
+and may override up to three more:
 
 | Hook | Required | Purpose |
 | --- | --- | --- |
+| `name` | yes (`ClassVar[str]`) | The agent's identity — used in spans, provider calls, and scratchpad matching |
 | `output_schema` | yes | The Pydantic model the agent produces |
 | `system_prompt(task)` | yes | Developer-role instructions |
 | `build_task(state)` | yes | Read `ResearchState`, describe this run |
 | `finalize(task, run)` | yes | Turn the finished loop into the typed output |
-| `allowed_tools` | no | Tool names this agent may call (default: none) |
+| `allowed_tools` | no (`ClassVar`) | Tool names this agent may call (default: none) |
 | `is_sufficient(steps)` | no | Stop early (default: never) |
 | `state_update(result, run)` | no | Describe the state change (default: errors only) |
 
@@ -287,15 +289,23 @@ state = merge_research_state(state, outcome.state_update)
 
 Loops are bounded by `agents.max_iterations` and `agents.tool_budget` in
 `config.yaml` (`AGENTS_MAX_ITERATIONS`, `AGENTS_TOOL_BUDGET` override them).
+`agents.prompt_context_entries` (`AGENTS_PROMPT_CONTEXT_ENTRIES`) controls how
+many scratchpad entries are rendered into the prompt on each turn.
 `outcome.react.stop_reason` is one of `finished`, `sufficient`,
 `max_iterations`, `tool_budget_exhausted`, or `provider_error`.
 
 Failures are predictable: a tool failure becomes an observation the model can
 react to plus a recoverable `ResearchError`, and the loop continues. A model
-provider failure stops the loop with `provider_error`, records a
-non-recoverable `ResearchError`, and yields `outcome.result is None` — the
-provider has already applied its configured retries and its single structured
-repair attempt, so the agent adds none of its own.
+provider failure stops the loop with `provider_error` and records a
+non-recoverable `ResearchError` — the provider has already applied its
+configured retries and its single structured repair attempt, so the agent
+adds none of its own. `BaseAgent.run` still calls `finalize(task, run)`
+unconditionally after every stop reason, including `provider_error`, so
+whether `outcome.result` ends up `None` on failure is entirely up to the
+concrete agent's own `finalize`. A well-behaved `finalize` should check
+`run.stop_reason` (or the `ReActRun.succeeded` property) and return `None`
+itself when the run didn't succeed, rather than assuming the runtime enforces
+that for it.
 
 Every iteration opens a `react_iteration_span` carrying agent name, iteration
 number, thought summary, selected tool, and observation summary; the agent

@@ -139,26 +139,46 @@ def test_provider_public_api_imports() -> None:
 
 def test_agent_runtime_contracts_import_from_package() -> None:
     from deep_research.agents import (  # noqa: F401
+        DEFAULT_SUMMARY_LIMIT,
+        REACT_RESPONSE_CONTRACT,
         AgentConfigurationError,
         AgentError,
         AgentRun,
         AgentTask,
         AgentToolset,
         BaseAgent,
+        DecideCallback,
         ReActActionType,
         ReActDecision,
         ReActObservation,
         ReActRun,
         ReActStep,
+        StepCallback,
         StopReason,
         StructuredCompleter,
+        SufficiencyCallback,
         ToolDescriptor,
         agent_error,
         parse_tool_input,
         render_react_messages,
+        render_scratchpad,
+        render_tool_catalog,
         run_react_loop,
         summarize_text,
     )
+
+
+def test_agent_runtime_all_surface_is_fully_covered() -> None:
+    """Every name in ``deep_research.agents.__all__`` must actually resolve.
+
+    Guards against a typo'd or dropped ``__all__`` entry going unnoticed —
+    the import-list test above only proves the names it enumerates exist,
+    not that it enumerates everything ``__all__`` claims to export.
+    """
+    import deep_research.agents as agents_pkg
+
+    missing = [name for name in agents_pkg.__all__ if not hasattr(agents_pkg, name)]
+    assert not missing, f"__all__ entries missing from package: {missing}"
 
 
 def test_agent_runtime_config_imports_from_utils_config() -> None:
