@@ -379,6 +379,57 @@ strict structured outputs reject, so the provider is asked for
 `ResearchPlanDraft` and `SubTopicFindingsDraft` — constraint-free mirrors —
 and the drafts are validated into the domain types locally.
 
+## Source Evaluator And Fact Checker
+
+`SourceEvaluatorAgent` groups `state.raw_findings` by canonical source URL,
+computes a corroboration score locally (the fraction of a source's
+sub-topics that a *different* domain also covered), looks up any
+reputation previous sessions recorded for each URL, and asks the model for
+authority, recency, and relevance. `overall_score` is computed here, not by
+the model: `0.35*authority + 0.15*recency + 0.30*relevance +
+0.20*corroboration`, with a remembered reputation blended into authority at
+weight 0.4. Every score is a `UnitScore` in `[0.0, 1.0]`. A source scoring
+under `LOW_CONFIDENCE_THRESHOLD` (0.4) is flagged `low_confidence=True`, and
+so is any source the model did not score, any source past `max_sources`, and
+every source in a run where the scoring call failed — the guarantee is that
+*every* source behind a finding gets a record. A failing reputation backend
+records one recoverable `source_evaluator_reputation_unavailable` error and
+scoring continues directly. This agent runs no ReAct loop and declares no
+tools; reputation reaches it through an injected `ReputationSource`, which
+`LongTermMemory` satisfies.
+
+`FactCheckerAgent` extracts the major factual claims from the findings in
+one structured call (dropping any claim whose source URL never appeared in
+`raw_findings`), then runs one bounded ReAct loop **per claim** using
+`web_search`, `web_scraper`, `document_reader`, and `query_memory`. A
+verdict is only requested from the model once the loop has actually
+retrieved content from a domain other than the claim's own publisher.
+Verdicts are normalized locally: no independent domain, a loop that died to
+a provider failure, an unrecognized verdict string, or a failed verdict call
+all become `insufficient_evidence` with confidence 0.0, and any verdict
+arriving alongside reported contradictions becomes `contradicted`. There is
+no path that invents confidence.
+
+```python
+from deep_research.agents import FactCheckerAgent, SourceEvaluatorAgent
+from deep_research.utils.types import merge_research_state
+
+async with tracker.session_span(session_id, state.original_question):
+    evaluation = await evaluator.run(state)
+    state = merge_research_state(state, evaluation.state_update)
+
+    fact_check = await checker.run(state)
+    state = merge_research_state(state, fact_check.state_update)
+```
+
+| Event type | Emitted by | Key metadata |
+| --- | --- | --- |
+| `source_evaluator.evaluation.started` | Source Evaluator | `finding_count`, `source_count` |
+| `source_evaluator.evaluation.completed` | Source Evaluator | `source_count`, `average_score`, `low_confidence_count`, `reputation_hits`, `reputation_failures` |
+| `fact_checker.claims.extracted` | Fact Checker | `claim_count`, `findings_considered`, `sources_considered` |
+| `fact_checker.claim.checked` | Fact Checker | `claim`, `verdict`, `confidence`, `contradictions`, `independent_sources`, `tool_calls`, `reason` |
+| `fact_checker.fact_check.completed` | Fact Checker | `claim_count`, `verified`, `unverified`, `contradicted`, `insufficient_evidence`, `contradiction_count`, `tool_calls` |
+
 ## Development
 
 ```bash
@@ -393,6 +444,6 @@ ruff check src/
 
 - Phase 1: Core package foundation, config, types, providers
 - Phase 2: Memory and tools
-- Phase 3: Agents and LangGraph orchestration ← current (runtime, Planner, and Researcher complete; Source Evaluator, Fact Checker, Synthesizer, Critic, and the graph pending)
+- Phase 3: Agents and LangGraph orchestration ← current (runtime, Planner, Researcher, Source Evaluator, and Fact Checker complete; Synthesizer, Critic, and the graph pending)
 - Phase 4: CLI, API, and UI interfaces
 - Phase 5: Tests and verification

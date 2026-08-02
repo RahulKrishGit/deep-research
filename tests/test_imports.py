@@ -140,16 +140,26 @@ def test_provider_public_api_imports() -> None:
 def test_agent_runtime_contracts_import_from_package() -> None:
     from deep_research.agents import (  # noqa: F401
         DEFAULT_SUMMARY_LIMIT,
+        FACT_CHECKER_NAME,
+        LOW_CONFIDENCE_THRESHOLD,
         MAX_SUB_TOPICS,
         MIN_SUB_TOPICS,
         REACT_RESPONSE_CONTRACT,
+        SOURCE_EVALUATOR_NAME,
+        VERDICT_VALUES,
         AgentConfigurationError,
         AgentError,
         AgentRun,
         AgentTask,
         AgentToolset,
         BaseAgent,
+        ClaimDraft,
+        ClaimsDraft,
+        ClaimTask,
+        ClaimVerdictDraft,
         DecideCallback,
+        EvaluatedSources,
+        FactCheckerAgent,
         FindingDraft,
         PlannerAgent,
         PlanningError,
@@ -158,10 +168,16 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         ReActObservation,
         ReActRun,
         ReActStep,
+        ReputationSource,
         ResearcherAgent,
         ResearchFindings,
         ResearchPlan,
         ResearchPlanDraft,
+        SourceEvaluationTask,
+        SourceEvaluatorAgent,
+        SourceGroup,
+        SourceScoreDraft,
+        SourceScoresDraft,
         StepCallback,
         StopReason,
         StructuredCompleter,
@@ -170,22 +186,33 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         SubTopicTask,
         SufficiencyCallback,
         ToolDescriptor,
+        VerifiedClaims,
         agent_error,
         agent_event,
+        build_claim,
         build_findings,
+        build_scored_source,
+        corroboration_score,
         existing_sources_for,
         extraction_provider_error,
+        group_findings_by_url,
         is_high_priority,
         merge_react_runs,
+        normalize_source_url,
+        normalize_verdict,
         parse_tool_input,
         render_memory_guidance,
         render_react_messages,
         render_scratchpad,
         render_tool_catalog,
+        resolve_verdict,
+        retrieved_source_urls,
         run_react_loop,
         select_sub_topics,
+        source_domain,
         summarize_text,
         validate_plan_draft,
+        verdict_counts,
     )
 
 
@@ -235,10 +262,13 @@ def test_agent_submodule_public_names_all_reach_all() -> None:
         "base",
         "errors",
         "events",
+        "fact_checker",
         "planner",
         "prompts",
         "react",
         "researcher",
+        "source_evaluator",
+        "sources",
         "steps",
         "toolset",
         "validation",
@@ -283,7 +313,12 @@ def test_agent_runtime_config_imports_from_utils_config() -> None:
 
 
 def test_concrete_agents_expose_their_identity_and_tools() -> None:
-    from deep_research.agents import PlannerAgent, ResearcherAgent
+    from deep_research.agents import (
+        FactCheckerAgent,
+        PlannerAgent,
+        ResearcherAgent,
+        SourceEvaluatorAgent,
+    )
 
     assert PlannerAgent.name == "planner"
     assert PlannerAgent.allowed_tools == ("query_memory", "web_search")
@@ -294,4 +329,13 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
         "document_reader",
         "query_memory",
         "save_to_memory",
+    }
+    assert SourceEvaluatorAgent.name == "source_evaluator"
+    assert SourceEvaluatorAgent.allowed_tools == ()
+    assert FactCheckerAgent.name == "fact_checker"
+    assert set(FactCheckerAgent.allowed_tools) == {
+        "web_search",
+        "web_scraper",
+        "document_reader",
+        "query_memory",
     }
