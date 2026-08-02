@@ -34,7 +34,7 @@ from deep_research.agents.steps import (
     StopReason,
     summarize_text,
 )
-from deep_research.agents.validation import invalid_fields
+from deep_research.agents.validation import _invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, OpenAIProviderError
@@ -409,7 +409,7 @@ def build_findings(
                 )
             )
         except ValidationError as error:
-            rejected.append(f"finding {index}: invalid {invalid_fields(error)}")
+            rejected.append(f"finding {index}: invalid {_invalid_fields(error)}")
     return findings, rejected
 
 

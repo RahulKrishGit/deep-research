@@ -19,7 +19,7 @@ from deep_research.agents.errors import PlanningError
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import AgentTask, render_memory_guidance
 from deep_research.agents.steps import ReActRun, summarize_text
-from deep_research.agents.validation import invalid_fields
+from deep_research.agents.validation import _invalid_fields
 from deep_research.providers import ChatMessage, OpenAIProviderError
 from deep_research.utils.types import (
     ContractModel,
@@ -115,7 +115,7 @@ def validate_plan_draft(
         except ValidationError as error:
             problems.append(
                 f"sub-topic {index} is invalid: check these fields: "
-                f"{invalid_fields(error)}"
+                f"{_invalid_fields(error)}"
             )
 
     seen: dict[str, int] = {}

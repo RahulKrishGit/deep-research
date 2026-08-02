@@ -174,6 +174,7 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         agent_event,
         build_findings,
         existing_sources_for,
+        extraction_provider_error,
         is_high_priority,
         merge_react_runs,
         parse_tool_input,
@@ -199,6 +200,80 @@ def test_agent_runtime_all_surface_is_fully_covered() -> None:
 
     missing = [name for name in agents_pkg.__all__ if not hasattr(agents_pkg, name)]
     assert not missing, f"__all__ entries missing from package: {missing}"
+
+
+def test_agent_submodule_public_names_all_reach_all() -> None:
+    """Every public (non-underscored) module-level name in ``agents/*.py``
+    must be reachable via ``deep_research.agents.__all__``.
+
+    ``test_agent_runtime_all_surface_is_fully_covered`` only checks that
+    every ``__all__`` entry resolves — it doesn't catch a public name that
+    exists in a submodule but was never wired into ``__all__`` (the exact
+    gap that let ``extraction_provider_error`` and ``invalid_fields`` go
+    unexported after later fix-round commits added/renamed them). This
+    test walks the submodule source with ``ast`` and asserts the
+    complement: every public top-level name is either exported or on the
+    small allowlist of deliberate internals below.
+    """
+    import ast
+    from pathlib import Path
+
+    import deep_research.agents as agents_pkg
+
+    # Names that are legitimately module-level and public-looking (no
+    # leading underscore) but are not meant to be part of the package's
+    # public surface.
+    allowlist = {
+        # Generic TypeVar used only for `BaseAgent`/`AgentRun` typing;
+        # re-exporting it would imply callers should parameterize with it
+        # directly, which they don't.
+        "ResultT",
+    }
+
+    agents_dir = Path(agents_pkg.__file__).parent
+    submodules = [
+        "base",
+        "errors",
+        "events",
+        "planner",
+        "prompts",
+        "react",
+        "researcher",
+        "steps",
+        "toolset",
+        "validation",
+    ]
+
+    missing: list[str] = []
+    for module_name in submodules:
+        path = agents_dir / f"{module_name}.py"
+        assert path.is_file(), f"expected submodule file missing: {path}"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            name: str | None = None
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                name = node.name
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        name = target.id
+                        break
+            elif isinstance(node, ast.AnnAssign) and isinstance(
+                node.target, ast.Name
+            ):
+                name = node.target.id
+
+            if name is None or name.startswith("_"):
+                continue
+            if name in allowlist:
+                continue
+            if name not in agents_pkg.__all__:
+                missing.append(f"{module_name}.{name}")
+
+    assert not missing, (
+        "public submodule names missing from `deep_research.agents.__all__`: "
+        f"{missing}"
+    )
 
 
 def test_agent_runtime_config_imports_from_utils_config() -> None:

@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 
-def invalid_fields(error: ValidationError) -> str:
+def _invalid_fields(error: ValidationError) -> str:
     """Name the fields a validation failure touched, without provider text.
 
     Field names come from ``error.errors()[i]["loc"]``, which pydantic
