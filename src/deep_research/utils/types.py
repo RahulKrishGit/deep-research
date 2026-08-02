@@ -96,6 +96,14 @@ class ScoredSource(ContractModel):
     corroboration_score: UnitScore
     overall_score: UnitScore
     rationale: str = Field(min_length=1)
+    low_confidence: bool = False
+    """True when this source must not be leaned on without corroboration.
+
+    Set explicitly by ``SourceEvaluatorAgent`` — either because
+    ``overall_score`` fell under its threshold, or because the source could
+    not be scored by the model at all. Downstream agents read this flag
+    rather than re-deriving the evaluator's threshold.
+    """
 
 
 class Claim(ContractModel):
