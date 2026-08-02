@@ -62,3 +62,24 @@ def test_agent_error_copies_its_details_mapping() -> None:
     details["iteration"] = 99
 
     assert recorded.details == {"iteration": 1}
+
+
+def test_planning_error_is_an_agent_error_carrying_its_problems() -> None:
+    from deep_research.agents.errors import PlanningError
+
+    error = PlanningError(
+        "The planner could not produce a valid research plan.",
+        problems=["the plan has 1 valid sub-topics; produce between 3 and 7"],
+    )
+
+    assert isinstance(error, AgentError)
+    assert error.problems == (
+        "the plan has 1 valid sub-topics; produce between 3 and 7",
+    )
+    assert str(error) == "The planner could not produce a valid research plan."
+
+
+def test_planning_error_defaults_to_no_problems() -> None:
+    from deep_research.agents.errors import PlanningError
+
+    assert PlanningError("no plan").problems == ()

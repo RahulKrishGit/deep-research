@@ -466,3 +466,12 @@ def test_the_default_config_bounds_the_loop(tracker: Tracker) -> None:
 
     assert agent.config == AgentRuntimeConfig()
     assert agent.toolset.names == ("echo",)
+
+
+def test_the_agent_exposes_its_provider_and_tracker(tracker: Tracker) -> None:
+    """Concrete agents that drive their own loops need both collaborators."""
+    completer = ScriptedCompleter()
+    agent = _agent(tracker, completer)
+
+    assert agent.provider is completer
+    assert agent.tracker is tracker

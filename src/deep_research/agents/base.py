@@ -111,6 +111,16 @@ class BaseAgent(ABC, Generic[ResultT]):
         return self._config
 
     @property
+    def provider(self) -> StructuredCompleter:
+        """The structured-output provider, for agents that drive their own loop."""
+        return self._provider
+
+    @property
+    def tracker(self) -> Tracker:
+        """The tracker, for agents that open their own spans."""
+        return self._tracker
+
+    @property
     def scratchpad(self) -> ScratchpadMemory:
         return self._scratchpad
 

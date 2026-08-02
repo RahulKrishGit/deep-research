@@ -208,3 +208,37 @@ def test_react_messages_reject_a_blank_system_prompt() -> None:
             iteration=1,
             max_iterations=1,
         )
+
+
+def test_memory_guidance_lists_recalled_findings_and_strategies() -> None:
+    from deep_research.agents.prompts import render_memory_guidance
+    from deep_research.utils.types import Finding, MemorySnapshot
+
+    guidance = render_memory_guidance(
+        MemorySnapshot(
+            similar_findings=[
+                Finding(
+                    content="Logical error rates fell below break-even.",
+                    source_url="https://example.test/qec",
+                    source_title="QEC 2025",
+                    extracted_at="2026-01-01T00:00:00+00:00",
+                    confidence=0.8,
+                    related_sub_topic="Error correction",
+                )
+            ],
+            suggested_strategies=["Prefer peer-reviewed sources."],
+        )
+    )
+
+    assert "1 finding(s) recalled from previous sessions:" in guidance
+    assert "Logical error rates fell below break-even." in guidance
+    assert "https://example.test/qec" in guidance
+    assert "Strategies that worked before:" in guidance
+    assert "- Prefer peer-reviewed sources." in guidance
+
+
+def test_memory_guidance_is_empty_when_nothing_was_recalled() -> None:
+    from deep_research.agents.prompts import render_memory_guidance
+    from deep_research.utils.types import MemorySnapshot
+
+    assert render_memory_guidance(MemorySnapshot()) == ""

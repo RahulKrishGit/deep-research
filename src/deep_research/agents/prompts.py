@@ -12,10 +12,11 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
+from deep_research.agents.steps import summarize_text
 from deep_research.agents.toolset import ToolDescriptor
 from deep_research.memory.entries import ScratchpadEntry
 from deep_research.providers import ChatMessage
-from deep_research.utils.types import ContractModel
+from deep_research.utils.types import ContractModel, MemorySnapshot
 
 REACT_RESPONSE_CONTRACT = (
     "Respond with one decision.\n"
@@ -93,3 +94,29 @@ def render_react_messages(
         ChatMessage(role="developer", content=system_prompt),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
+
+
+def render_memory_guidance(memory_context: MemorySnapshot) -> str:
+    """Render recalled long-term memory as agent-facing context.
+
+    Returns an empty string when nothing was recalled, so callers can pass
+    the result straight into ``AgentTask.guidance`` and have the guidance
+    section disappear from the prompt.
+    """
+    lines: list[str] = []
+    if memory_context.similar_findings:
+        lines.append(
+            f"{len(memory_context.similar_findings)} finding(s) recalled "
+            "from previous sessions:"
+        )
+        lines.extend(
+            f"- {summarize_text(finding.content)} ({finding.source_url})"
+            for finding in memory_context.similar_findings
+        )
+    if memory_context.suggested_strategies:
+        lines.append("Strategies that worked before:")
+        lines.extend(
+            f"- {summarize_text(strategy)}"
+            for strategy in memory_context.suggested_strategies
+        )
+    return "\n".join(lines)
