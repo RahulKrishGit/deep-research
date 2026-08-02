@@ -335,7 +335,15 @@ entries — skipped entirely when the loop retrieved nothing, so a source is
 never invented. A tool failure is an observation and the loop continues; a
 provider failure stops the remaining sub-topics with the findings so far kept.
 A high-priority sub-topic that produced no findings records a recoverable
-`researcher_sub_topic_without_findings` error in `state.errors`.
+`researcher_sub_topic_without_findings` error in `state.errors`. A
+high-priority sub-topic that was never attempted at all records a recoverable
+`researcher_sub_topic_skipped` error instead — this can happen either because
+`max_sub_topics` truncated the planned list before its turn came up
+(`reason="cap"`), or because an earlier sub-topic's non-recoverable provider
+failure stopped the pass before it could run
+(`reason="provider_failure_stopped_processing"`). The two errors are mutually
+exclusive for a given sub-topic: a run that died to a provider failure is
+reported as that failure, never also as "no findings".
 
 ```python
 from deep_research.agents import PlannerAgent, ResearcherAgent
@@ -363,7 +371,7 @@ Both agents append progress events to `state.events`:
 | `researcher.sub_topic.started` | Researcher | `sub_topic`, `priority`, `existing_sources` |
 | `researcher.tool_call` | Researcher | `tool`, `iteration`, `success`, `error_type` |
 | `researcher.sub_topic.completed` | Researcher | `stop_reason`, `iterations`, `tool_calls`, `findings` |
-| `researcher.research.completed` | Researcher | `sub_topics_researched`, `findings` |
+| `researcher.research.completed` | Researcher | `sub_topics_planned`, `sub_topics_researched`, `sub_topics_skipped`, `findings` |
 
 Neither agent sends a domain type to OpenAI. `SubTopic` and `Finding` declare
 `Field(min_length=1)` constraints that render as `minLength`/`minItems`, which

@@ -26,7 +26,12 @@ from deep_research.agents.researcher import (
     render_sub_topic_guidance,
     select_sub_topics,
 )
-from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
+from deep_research.agents.steps import (
+    ReActObservation,
+    ReActRun,
+    ReActStep,
+    summarize_text,
+)
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ProviderTimeoutError
@@ -1152,6 +1157,98 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
     ]
     assert len(extraction_errors) == 1
     assert extraction_errors[0].recoverable is False
+
+    # Finding 2 (stop_reason override): the merged run must report
+    # "provider_error", not "finished" — Beta's extraction failure is what
+    # aborted the pass, and the merged run must say so.
+    assert outcome.react.stop_reason == "provider_error"
+
+    # Finding 3 (no_findings_error ordering): Beta is priority 2, which is
+    # already high-priority (HIGH_PRIORITY_THRESHOLD == 2), and its
+    # extraction failed — it must get the provider-error-shaped error only,
+    # never also a "no findings" warning that would mischaracterize an
+    # outage as a coverage gap.
+    assert "researcher_sub_topic_without_findings" not in [
+        error.error_type for error in outcome.errors
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_mid_loop_skips_the_remaining_high_priority_sub_topics(
+    tracker: Tracker,
+) -> None:
+    """Sub-topics dropped by a mid-pass break must be recorded, not silently missing.
+
+    Mirrors the seam test's regression pin for the ``max_sub_topics`` cap
+    (``reason="cap"``), but for the other path that can drop a high-priority
+    sub-topic: here all three sub-topics fit under ``max_sub_topics``, so
+    nothing is capped, but Beta's loop hits a non-recoverable provider
+    failure and ``break``s the pass before Gamma — high-priority and never
+    attempted — gets a turn.
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            finish("Nothing for Alpha.", "Alpha has no sources."),
+            ProviderTimeoutError("timed out"),
+        ],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1),
+            _sub_topic("Beta", 2),
+            _sub_topic("Gamma", 2),
+        ]
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == ["Alpha", "Beta"]
+
+    skipped = [
+        error
+        for error in outcome.errors
+        if error.error_type == "researcher_sub_topic_skipped"
+    ]
+    assert len(skipped) == 1
+    assert skipped[0].details["sub_topic"] == "Gamma"
+    assert skipped[0].details["reason"] == "provider_failure_stopped_processing"
+    assert skipped[0].recoverable is True
+
+
+@pytest.mark.asyncio
+async def test_a_long_sub_topic_title_is_clamped_in_recorded_events(
+    tracker: Tracker,
+) -> None:
+    """``summarize_text`` must actually clamp long titles, not just be called.
+
+    Regression guard for Finding 4: a title long enough that, left
+    unclamped, would bloat every event and error that carries it.
+    """
+    long_title = "Quantum error correction " * 20  # well over 200 chars
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing to retrieve.", "No sources found.")],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(sub_topics=[_sub_topic(long_title, 1)])
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    )
+    assert started.metadata["sub_topic"] == summarize_text(long_title)
+    assert started.metadata["sub_topic"] != long_title
+    assert len(started.metadata["sub_topic"]) < len(long_title)
 
 
 @pytest.mark.asyncio
