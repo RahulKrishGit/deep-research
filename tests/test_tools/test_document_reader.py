@@ -1,4 +1,3 @@
-import asyncio
 import json
 from pathlib import Path
 
@@ -54,7 +53,12 @@ async def test_reader_formats_csv_and_json_documents(tracker, tmp_path) -> None:
 
     assert csv_result.data is not None
     assert csv_result.data["chunks"] == [
-        {"text": "name,city\nAda,London\n", "chunk_index": 0, "row_start": 1, "row_end": 1},
+        {
+            "text": "name,city\nAda,London\n",
+            "chunk_index": 0,
+            "row_start": 1,
+            "row_end": 1,
+        },
         {"text": "Lin,Paris\n", "chunk_index": 1, "row_start": 2, "row_end": 2},
     ]
     formatted = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
@@ -63,7 +67,9 @@ async def test_reader_formats_csv_and_json_documents(tracker, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reader_fetches_remote_text_with_timeout_and_source_preserved(tracker) -> None:
+async def test_reader_fetches_remote_text_with_timeout_and_source_preserved(
+    tracker,
+) -> None:
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -73,9 +79,9 @@ async def test_reader_fetches_remote_text_with_timeout_and_source_preserved(trac
     source = "https://example.test/report.txt"
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         async with tracker.session_span("session-1", "question"):
-            result = await DocumentReaderTool(tracker, client=client, timeout_s=7).execute(
-                source=source
-            )
+            result = await DocumentReaderTool(
+                tracker, client=client, timeout_s=7
+            ).execute(source=source)
 
     assert result.data is not None
     assert result.data["source"] == source
@@ -96,7 +102,11 @@ async def test_reader_preserves_pdf_page_failures(monkeypatch, tracker) -> None:
             return self.value
 
     class Pdf:
-        pages = [Page("page one"), Page(RuntimeError("damaged page")), Page("page three")]
+        pages = [
+            Page("page one"),
+            Page(RuntimeError("damaged page")),
+            Page("page three"),
+        ]
 
         def __enter__(self):
             return self
@@ -104,7 +114,9 @@ async def test_reader_preserves_pdf_page_failures(monkeypatch, tracker) -> None:
         def __exit__(self, *args):
             return None
 
-    monkeypatch.setattr("deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf())
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
     source = "report.pdf"
     report = Path(source)
     report.write_bytes(b"not-a-real-pdf")
@@ -121,12 +133,19 @@ async def test_reader_preserves_pdf_page_failures(monkeypatch, tracker) -> None:
         {"text": "page three", "chunk_index": 1, "page": 3},
     ]
     assert result.data["failures"] == [
-        {"scope": "page", "reference": 2, "error_type": "RuntimeError", "message": "damaged page"}
+        {
+            "scope": "page",
+            "reference": 2,
+            "error_type": "RuntimeError",
+            "message": "damaged page",
+        }
     ]
 
 
 @pytest.mark.asyncio
-async def test_reader_returns_partial_error_when_every_pdf_page_fails(monkeypatch, tracker) -> None:
+async def test_reader_returns_partial_error_when_every_pdf_page_fails(
+    monkeypatch, tracker
+) -> None:
     class Page:
         def extract_text(self):
             raise RuntimeError("damaged page")
@@ -137,7 +156,9 @@ async def test_reader_returns_partial_error_when_every_pdf_page_fails(monkeypatc
         def __enter__(self): return self
         def __exit__(self, *args): return None
 
-    monkeypatch.setattr("deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf())
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
     source = "report.pdf"
     report = Path(source)
     report.write_bytes(b"not-a-real-pdf")
@@ -155,13 +176,19 @@ async def test_reader_returns_partial_error_when_every_pdf_page_fails(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_reader_reports_unsupported_and_missing_local_documents(tracker, tmp_path) -> None:
+async def test_reader_reports_unsupported_and_missing_local_documents(
+    tracker, tmp_path
+) -> None:
     unsupported = tmp_path / "file.docx"
     unsupported.write_text("ignored", encoding="utf-8")
     missing = tmp_path / "missing.txt"
     async with tracker.session_span("session-1", "question"):
-        unsupported_result = await DocumentReaderTool(tracker).execute(source=str(unsupported))
-        missing_result = await DocumentReaderTool(tracker).execute(source=str(missing))
+        unsupported_result = await DocumentReaderTool(tracker).execute(
+            source=str(unsupported)
+        )
+        missing_result = await DocumentReaderTool(tracker).execute(
+            source=str(missing)
+        )
 
     assert unsupported_result.error is not None
     assert unsupported_result.error.type == "unsupported_document_format"
@@ -184,9 +211,9 @@ async def test_reader_records_two_retries_for_repeated_remote_timeout(tracker) -
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         async with tracker.session_span("session-1", "question"):
-            result = await DocumentReaderTool(tracker, client=client, sleep=sleep).execute(
-                source="https://example.test/report.txt"
-            )
+            result = await DocumentReaderTool(
+                tracker, client=client, sleep=sleep
+            ).execute(source="https://example.test/report.txt")
 
     assert result.success is False
     assert calls == 3
@@ -212,9 +239,9 @@ async def test_reader_retries_rate_limit_using_numeric_retry_after(tracker) -> N
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         async with tracker.session_span("session-1", "question"):
-            result = await DocumentReaderTool(tracker, client=client, sleep=sleep).execute(
-                source="https://example.test/report.txt"
-            )
+            result = await DocumentReaderTool(
+                tracker, client=client, sleep=sleep
+            ).execute(source="https://example.test/report.txt")
 
     assert result.success is True
     assert calls == 2
