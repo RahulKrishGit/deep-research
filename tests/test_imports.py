@@ -140,6 +140,8 @@ def test_provider_public_api_imports() -> None:
 def test_agent_runtime_contracts_import_from_package() -> None:
     from deep_research.agents import (  # noqa: F401
         DEFAULT_SUMMARY_LIMIT,
+        MAX_SUB_TOPICS,
+        MIN_SUB_TOPICS,
         REACT_RESPONSE_CONTRACT,
         AgentConfigurationError,
         AgentError,
@@ -148,23 +150,41 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         AgentToolset,
         BaseAgent,
         DecideCallback,
+        FindingDraft,
+        PlannerAgent,
+        PlanningError,
         ReActActionType,
         ReActDecision,
         ReActObservation,
         ReActRun,
         ReActStep,
+        ResearcherAgent,
+        ResearchFindings,
+        ResearchPlan,
+        ResearchPlanDraft,
         StepCallback,
         StopReason,
         StructuredCompleter,
+        SubTopicDraft,
+        SubTopicFindingsDraft,
+        SubTopicTask,
         SufficiencyCallback,
         ToolDescriptor,
         agent_error,
+        agent_event,
+        build_findings,
+        existing_sources_for,
+        is_high_priority,
+        merge_react_runs,
         parse_tool_input,
+        render_memory_guidance,
         render_react_messages,
         render_scratchpad,
         render_tool_catalog,
         run_react_loop,
+        select_sub_topics,
         summarize_text,
+        validate_plan_draft,
     )
 
 
@@ -185,3 +205,18 @@ def test_agent_runtime_config_imports_from_utils_config() -> None:
     from deep_research.utils.config import AgentRuntimeConfig
 
     assert AgentRuntimeConfig().max_iterations >= 1
+
+
+def test_concrete_agents_expose_their_identity_and_tools() -> None:
+    from deep_research.agents import PlannerAgent, ResearcherAgent
+
+    assert PlannerAgent.name == "planner"
+    assert PlannerAgent.allowed_tools == ("query_memory", "web_search")
+    assert ResearcherAgent.name == "researcher"
+    assert set(ResearcherAgent.allowed_tools) == {
+        "web_search",
+        "web_scraper",
+        "document_reader",
+        "query_memory",
+        "save_to_memory",
+    }

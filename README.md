@@ -315,6 +315,62 @@ number, thought summary, selected tool, and observation summary; the agent
 span carries the stop reason and counts; token and latency metrics come from
 the provider's own `llm_span`.
 
+## Planner And Researcher
+
+`PlannerAgent` turns `state.original_question` into 3–7 distinct, prioritized
+`SubTopic` entries. Its ReAct loop is for scoping only — `query_memory` to
+recall prior findings, `web_search` to resolve unfamiliar terminology — and
+the plan itself comes from one structured-output call afterwards. If that plan
+is empty, redundant, out of size bounds, or fails field validation, the agent
+makes exactly one repair attempt with the problems listed back to the model,
+and raises `PlanningError` if the repair also fails. There is no partial plan.
+
+`ResearcherAgent` runs one bounded ReAct loop **per selected sub-topic**, each
+in its own agent span with its own tool budget, using `web_search`,
+`web_scraper`, `document_reader`, `query_memory`, and `save_to_memory`.
+Sub-topics are ordered by Critic-flagged gaps first, then by priority
+ascending, and capped at `max_sub_topics`. After each loop, a structured
+extraction pass over the loop's actual tool payloads produces `Finding`
+entries — skipped entirely when the loop retrieved nothing, so a source is
+never invented. A tool failure is an observation and the loop continues; a
+provider failure stops the remaining sub-topics with the findings so far kept.
+A high-priority sub-topic that produced no findings records a recoverable
+`researcher_sub_topic_without_findings` error in `state.errors`.
+
+```python
+from deep_research.agents import PlannerAgent, ResearcherAgent
+from deep_research.utils.types import merge_research_state
+
+async with tracker.session_span(session_id, state.original_question):
+    plan_run = await planner.run(state)
+    state = merge_research_state(state, plan_run.state_update)
+
+    research_run = await researcher.run(state)
+    state = merge_research_state(state, research_run.state_update)
+```
+
+Priority convention: **lower is more important**. Priority 1 is the most
+important sub-topic; `HIGH_PRIORITY_THRESHOLD` (2) is the largest value still
+treated as high priority.
+
+Both agents append progress events to `state.events`:
+
+| Event type | Emitted by | Key metadata |
+| --- | --- | --- |
+| `planner.planning.started` | Planner | `iteration`, `min_sub_topics`, `max_sub_topics` |
+| `planner.memory.recalled` | Planner | `recalled_findings`, `suggested_strategies` |
+| `planner.planning.completed` | Planner | `sub_topic_count`, `repair_attempted`, `stop_reason` |
+| `researcher.sub_topic.started` | Researcher | `sub_topic`, `priority`, `existing_sources` |
+| `researcher.tool_call` | Researcher | `tool`, `iteration`, `success`, `error_type` |
+| `researcher.sub_topic.completed` | Researcher | `stop_reason`, `iterations`, `tool_calls`, `findings` |
+| `researcher.research.completed` | Researcher | `sub_topics_researched`, `findings` |
+
+Neither agent sends a domain type to OpenAI. `SubTopic` and `Finding` declare
+`Field(min_length=1)` constraints that render as `minLength`/`minItems`, which
+strict structured outputs reject, so the provider is asked for
+`ResearchPlanDraft` and `SubTopicFindingsDraft` — constraint-free mirrors —
+and the drafts are validated into the domain types locally.
+
 ## Development
 
 ```bash
@@ -329,6 +385,6 @@ ruff check src/
 
 - Phase 1: Core package foundation, config, types, providers
 - Phase 2: Memory and tools
-- Phase 3: Agents and LangGraph orchestration ← current (shared runtime complete, concrete agents pending)
+- Phase 3: Agents and LangGraph orchestration ← current (runtime, Planner, and Researcher complete; Source Evaluator, Fact Checker, Synthesizer, Critic, and the graph pending)
 - Phase 4: CLI, API, and UI interfaces
 - Phase 5: Tests and verification
