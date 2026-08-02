@@ -37,7 +37,7 @@ from deep_research.agents.steps import (
 from deep_research.agents.validation import invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import ChatMessage
+from deep_research.providers import ChatMessage, OpenAIProviderError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -518,6 +518,34 @@ def no_findings_error(sub_topic: SubTopic, run: ReActRun) -> ResearchError:
     )
 
 
+def extraction_provider_error(
+    run: ReActRun,
+    error: Exception,
+) -> ResearchError:
+    """Record that a sub-topic's extraction call could not reach the provider.
+
+    Non-recoverable: the caller must stop researching remaining sub-topics,
+    mirroring the ReAct-loop-level ``provider_error`` path. ``details``
+    carries only ``exception_type`` and counts, never ``str(error)`` — the
+    same redaction discipline ``react.py`` and ``planner.py`` follow.
+    """
+    return agent_error(
+        agent_name=RESEARCHER_NAME,
+        error_type="researcher_extraction_provider_error",
+        message=(
+            "The model provider failed while extracting findings for a "
+            "sub-topic; the research pass stopped before further "
+            "sub-topics were researched."
+        ),
+        recoverable=False,
+        details={
+            "exception_type": type(error).__name__,
+            "iterations": run.iterations,
+            "tool_calls": run.tool_calls,
+        },
+    )
+
+
 class ResearcherAgent(BaseAgent[ResearchFindings]):
     """Run one bounded ReAct loop per selected sub-topic and extract findings.
 
@@ -625,31 +653,41 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self,
         task: SubTopicTask,
         run: ReActRun,
-    ) -> tuple[list[Finding], list[ResearchError]]:
+    ) -> tuple[list[Finding], list[ResearchError], bool]:
         """Turn one finished sub-topic loop into validated findings.
 
         Returns nothing — and makes no provider call — when the loop stopped
         on a provider failure or retrieved no source, so the extraction step
         can never invent one.
+
+        The third element, ``provider_failed``, is ``True`` only when the
+        extraction call itself could not reach the model provider. The
+        caller must treat that the same way it treats a ReAct-loop-level
+        ``provider_error``: stop researching further sub-topics, but keep
+        every finding already collected.
         """
         retrieved = any(_has_evidence(step) for step in run.steps)
         if not run.succeeded or not retrieved:
-            return [], []
+            return [], [], False
 
-        draft = await self.provider.complete_structured(
-            extraction_messages(
-                task, run, evidence_chars=self._evidence_chars
-            ),
-            SubTopicFindingsDraft,
-            agent_name=self.name,
-        )
+        try:
+            draft = await self.provider.complete_structured(
+                extraction_messages(
+                    task, run, evidence_chars=self._evidence_chars
+                ),
+                SubTopicFindingsDraft,
+                agent_name=self.name,
+            )
+        except OpenAIProviderError as error:
+            return [], [extraction_provider_error(run, error)], True
+
         findings, rejected = build_findings(
             draft,
             sub_topic=task.sub_topic,
             extracted_at=self._clock().isoformat(),
         )
         if not rejected:
-            return findings, []
+            return findings, [], False
         return findings, [
             agent_error(
                 agent_name=self.name,
@@ -662,7 +700,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     "rejected": rejected,
                 },
             )
-        ]
+        ], False
 
     async def finalize(
         self,
@@ -678,7 +716,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             raise AgentConfigurationError(
                 "ResearcherAgent.finalize requires a SubTopicTask"
             )
-        findings, _ = await self.extract_findings(task, run)
+        findings, _, _ = await self.extract_findings(task, run)
         return ResearchFindings(findings=findings)
 
     def state_update(
@@ -760,9 +798,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             )
             async with self.tracker.agent_span(self.name) as span:
                 react = await self._research_sub_topic(task)
-                sub_findings, extraction_errors = await self.extract_findings(
-                    task, react
-                )
+                (
+                    sub_findings,
+                    extraction_errors,
+                    extraction_failed,
+                ) = await self.extract_findings(task, react)
                 span.set_outputs(
                     {
                         "agent_name": self.name,
@@ -791,9 +831,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 sub_topic, threshold=self._high_priority_threshold
             ):
                 errors.append(no_findings_error(sub_topic, react))
-            if not react.succeeded:
-                # A provider failure is non-recoverable; the next sub-topic
-                # would almost certainly repeat it at cost.
+            if not react.succeeded or extraction_failed:
+                # A provider failure — whether from the ReAct loop or from
+                # extraction — is non-recoverable; the next sub-topic would
+                # almost certainly repeat it at cost. Findings already
+                # collected from this and prior sub-topics are kept.
                 break
 
         if not selected:

@@ -561,9 +561,10 @@ async def test_extraction_stamps_findings_from_retrieved_evidence(
         tool_calls=1,
     )
 
-    findings, errors = await agent.extract_findings(task, run)
+    findings, errors, provider_failed = await agent.extract_findings(task, run)
 
     assert errors == []
+    assert provider_failed is False
     assert findings[0].related_sub_topic == "Alpha"
     assert findings[0].extracted_at == "2026-08-01T12:00:00+00:00"
 
@@ -579,10 +580,11 @@ async def test_extraction_makes_no_provider_call_without_evidence(
     )
     run = ReActRun(agent_name="researcher", stop_reason="max_iterations")
 
-    findings, errors = await agent.extract_findings(task, run)
+    findings, errors, provider_failed = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors == []
+    assert provider_failed is False
     assert completer.calls == []
 
 
@@ -613,10 +615,11 @@ async def test_extraction_makes_no_provider_call_when_the_only_hit_is_empty(
         tool_calls=2,
     )
 
-    findings, errors = await agent.extract_findings(task, run)
+    findings, errors, provider_failed = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors == []
+    assert provider_failed is False
     assert completer.calls == []
 
 
@@ -640,10 +643,11 @@ async def test_extraction_makes_no_provider_call_when_every_tool_call_failed(
         tool_calls=2,
     )
 
-    findings, errors = await agent.extract_findings(task, run)
+    findings, errors, provider_failed = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors == []
+    assert provider_failed is False
     assert completer.calls == []
 
 
@@ -664,9 +668,10 @@ async def test_extraction_makes_no_provider_call_after_a_provider_failure(
         tool_calls=1,
     )
 
-    findings, errors = await agent.extract_findings(task, run)
+    findings, errors, provider_failed = await agent.extract_findings(task, run)
 
     assert findings == []
+    assert provider_failed is False
     assert completer.calls == []
 
 
@@ -700,12 +705,51 @@ async def test_malformed_extracted_findings_become_a_recoverable_error(
         tool_calls=1,
     )
 
-    findings, errors = await agent.extract_findings(task, run)
+    findings, errors, provider_failed = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors[0].error_type == "researcher_invalid_finding"
     assert errors[0].recoverable is True
     assert errors[0].details["rejected"] == ["finding 1: invalid confidence"]
+    assert provider_failed is False
+
+
+@pytest.mark.asyncio
+async def test_extraction_reports_a_provider_failure_without_raising(
+    tracker: Tracker,
+) -> None:
+    """The extraction call's own provider failure must degrade, not raise.
+
+    Regression guard for the Critical finding: previously an
+    ``OpenAIProviderError`` raised by the extraction call (separate from,
+    and after, the sub-topic's ReAct loop) propagated straight out of
+    ``run`` uncaught, discarding every finding already collected from prior
+    sub-topics. ``extract_findings`` must instead catch it, report it as a
+    non-recoverable structured error, and signal the failure back to the
+    caller via ``provider_failed`` rather than letting the exception escape.
+    """
+    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    agent = _researcher(tracker, completer)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    findings, errors, provider_failed = await agent.extract_findings(task, run)
+
+    assert findings == []
+    assert provider_failed is True
+    assert len(errors) == 1
+    assert errors[0].error_type == "researcher_extraction_provider_error"
+    assert errors[0].recoverable is False
+    assert errors[0].details["exception_type"] == "ProviderTimeoutError"
+    assert "timed out" not in str(errors[0].details)
 
 
 @pytest.mark.asyncio
@@ -827,6 +871,76 @@ async def test_the_researcher_reports_counts_and_stop_reason_per_sub_topic(
         "sub_topics_researched": 1,
         "findings": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_two_sub_topics_each_produce_findings_with_a_fresh_tool_budget(
+    tracker: Tracker,
+) -> None:
+    """The capstone happy path: every selected sub-topic succeeds.
+
+    Every other ``run`` test that produces findings uses exactly one
+    sub-topic. This exercises two high-priority sub-topics whose loops and
+    extractions both succeed, asserting the findings merge in order, the
+    per-sub-topic events carry the right index, and — by setting
+    ``tool_budget`` to exactly the number of tool calls one sub-topic makes
+    — that the budget is genuinely fresh per sub-topic rather than a single
+    pool shared and decremented across them (a shared pool would exhaust
+    before Beta's second tool call and force ``tool_budget_exhausted``
+    instead of ``finished``).
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            *_search_and_scrape_decisions(),
+            *_search_and_scrape_decisions(),
+        ],
+        outputs=[
+            _findings_draft("Alpha finding."),
+            _findings_draft("Beta finding."),
+        ],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([search_response(), search_response()]),
+        config=AgentRuntimeConfig(max_iterations=4, tool_budget=2),
+    )
+    state = _state(
+        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 2)]
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.tool_calls == 4
+    assert [
+        finding.related_sub_topic for finding in outcome.result.findings
+    ] == ["Alpha", "Beta"]
+    assert [
+        finding.content for finding in outcome.result.findings
+    ] == ["Alpha finding.", "Beta finding."]
+
+    started = [
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    completed = [
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+    ]
+    assert len(started) == 2
+    assert len(completed) == 2
+    assert [event.metadata["index"] for event in started] == [1, 2]
+    assert [event.metadata["index"] for event in completed] == [1, 2]
+    assert [event.metadata["sub_topic"] for event in completed] == [
+        "Alpha",
+        "Beta",
+    ]
+    assert [event.metadata["findings"] for event in completed] == [1, 1]
+    assert outcome.errors == []
 
 
 @pytest.mark.asyncio
@@ -979,6 +1093,63 @@ async def test_a_provider_failure_stops_the_remaining_sub_topics(
     ]
     assert len(started) == 1
     assert any(error.recoverable is False for error in outcome.errors)
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_during_extraction_keeps_prior_findings(
+    tracker: Tracker,
+) -> None:
+    """Findings from a completed sub-topic must survive a later failure.
+
+    Regression guard for the Critical finding: sub-topic Alpha's loop and
+    extraction both succeed and produce one finding. Sub-topic Beta's loop
+    *also* succeeds, but its extraction call raises ``ProviderTimeoutError``
+    — the failure specifically identified as escaping ``run`` uncaught and
+    destroying every finding collected so far. Sub-topic Gamma must never be
+    started at all.
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Search Alpha.", "web_search", '{"query": "alpha 2025"}'),
+            finish("Done with Alpha.", "Alpha answer."),
+            use_tool("Search Beta.", "web_search", '{"query": "beta 2025"}'),
+            finish("Done with Beta.", "Beta answer."),
+        ],
+        outputs=[_findings_draft(), ProviderTimeoutError("timed out")],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([search_response(), search_response()]),
+    )
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1),
+            _sub_topic("Beta", 2),
+            _sub_topic("Gamma", 3),
+        ]
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert len(outcome.result.findings) == 1
+    assert outcome.result.findings[0].related_sub_topic == "Alpha"
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == ["Alpha", "Beta"]
+
+    extraction_errors = [
+        error
+        for error in outcome.errors
+        if error.error_type == "researcher_extraction_provider_error"
+    ]
+    assert len(extraction_errors) == 1
+    assert extraction_errors[0].recoverable is False
 
 
 @pytest.mark.asyncio
