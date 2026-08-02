@@ -22,14 +22,19 @@ from deep_research.agents.errors import agent_error
 from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
+    CLAIM_VERIFICATION_INSTRUCTION,
+    CLAIM_VERIFICATION_SYSTEM_PROMPT,
     AgentTask,
     render_finding_digest,
     render_source_quality,
 )
-from deep_research.agents.sources import normalize_source_url
+from deep_research.agents.researcher import render_evidence
+from deep_research.agents.sources import normalize_source_url, source_domain
+from deep_research.agents.steps import ReActRun
 from deep_research.providers import ChatMessage
 from deep_research.utils.types import (
     Claim,
+    ClaimVerdict,
     ContractModel,
     ResearchError,
     ResearchState,
@@ -187,3 +192,274 @@ def no_findings_to_check_error() -> ResearchError:
         error_type="fact_checker_no_findings",
         message="No findings were available to extract claims from.",
     )
+
+
+# The verdict vocabulary, in report order. Pinned against ClaimVerdict by
+# test_verdict_values_match_the_shared_claim_verdict_type so the two can
+# never drift.
+VERDICT_VALUES: tuple[ClaimVerdict, ...] = (
+    "verified",
+    "unverified",
+    "contradicted",
+    "insufficient_evidence",
+)
+
+# Enumerated, project-generated reasons a claim could not be judged.
+# Never provider text: these reach ResearchEvent.metadata.
+INSUFFICIENT_REASONS = {
+    "no_independent_source": (
+        "No source independent of the claim's own publisher was retrieved."
+    ),
+    "loop_failed": "The verification loop stopped on a provider failure.",
+    "provider_unavailable": (
+        "The model provider failed while the verdict was requested."
+    ),
+    "unrecognized_verdict": "The model returned no usable verdict.",
+}
+
+# Read tools that can carry evidence, mapped to the payload key holding the
+# source identifier. save_to_memory is absent by construction: this agent
+# never writes.
+_EVIDENCE_URL_KEYS = {
+    "web_search": "results",
+    "web_scraper": "url",
+    "document_reader": "source",
+    "query_memory": "matches",
+}
+
+
+class ClaimVerdictDraft(ContractModel):
+    """One model verdict for one claim, before domain validation.
+
+    ``verdict`` is a plain ``str`` rather than a ``Literal``: a value the
+    model invents must become ``insufficient_evidence`` locally, not a
+    validation failure that discards the whole verification pass.
+    """
+
+    verdict: str
+    confidence: float
+    evidence: list[str]
+    contradictions: list[str]
+
+
+def _search_urls(data: dict[str, object]) -> list[str]:
+    results = data.get("results")
+    if not isinstance(results, list):
+        return []
+    urls: list[str] = []
+    for item in results:
+        if isinstance(item, dict) and isinstance(item.get("url"), str):
+            urls.append(str(item["url"]))
+    return urls
+
+
+def _memory_urls(data: dict[str, object]) -> list[str]:
+    matches = data.get("matches")
+    if not isinstance(matches, list):
+        return []
+    urls: list[str] = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        candidate = match.get("source_url")
+        if not isinstance(candidate, str):
+            metadata = match.get("metadata")
+            candidate = (
+                metadata.get("source_url") if isinstance(metadata, dict) else None
+            )
+        if isinstance(candidate, str) and candidate.strip():
+            urls.append(candidate)
+    return urls
+
+
+def retrieved_source_urls(run: ReActRun) -> list[str]:
+    """Canonical URLs the loop actually retrieved content from, in order.
+
+    A tool can return ``success=True`` with nothing usable inside it — a
+    search with no hits, an empty scrape, a memory miss — so a payload is
+    only counted when it actually carries content. This doubles as the
+    "did we retrieve anything at all" predicate: an empty list means the
+    verification call must not be made.
+    """
+    found: list[str] = []
+    for step in run.steps:
+        result = step.tool_result
+        if result is None or not result.success:
+            continue
+        data = result.data
+        if not isinstance(data, dict):
+            continue
+        if result.tool_name not in _EVIDENCE_URL_KEYS:
+            continue
+        if result.tool_name == "web_search":
+            candidates = _search_urls(data)
+        elif result.tool_name == "query_memory":
+            candidates = _memory_urls(data)
+        elif result.tool_name == "web_scraper":
+            url = data.get("url")
+            text = data.get("text")
+            candidates = (
+                [url]
+                if isinstance(url, str) and isinstance(text, str) and text.strip()
+                else []
+            )
+        else:
+            source = data.get("source")
+            candidates = (
+                [source]
+                if isinstance(source, str) and data.get("chunks")
+                else []
+            )
+        for candidate in candidates:
+            url = normalize_source_url(candidate)
+            if url and url not in found:
+                found.append(url)
+    return found
+
+
+def claimed_domains_for(source_urls: Sequence[str]) -> list[str]:
+    """The distinct domains a claim's own sources live on."""
+    domains: list[str] = []
+    for url in source_urls:
+        domain = source_domain(url).casefold()
+        if domain not in domains:
+            domains.append(domain)
+    return domains
+
+
+def independent_domains(
+    urls: Sequence[str],
+    *,
+    claimed_domains: Sequence[str],
+) -> list[str]:
+    """Distinct retrieved domains that are not the claim's own.
+
+    A second page from the publisher that made the claim is not
+    corroboration, which is the whole point of cross-referencing.
+    """
+    claimed = {domain.casefold() for domain in claimed_domains}
+    found: list[str] = []
+    for url in urls:
+        domain = source_domain(url).casefold()
+        if domain in claimed or domain in found:
+            continue
+        found.append(domain)
+    return found
+
+
+def normalize_verdict(raw: str) -> ClaimVerdict:
+    """Map model text onto a ``ClaimVerdict``, defaulting to the honest one.
+
+    Anything unrecognised becomes ``insufficient_evidence``: a verdict the
+    system cannot interpret is not evidence of anything.
+    """
+    candidate = " ".join(raw.split()).casefold().replace("-", "_")
+    candidate = candidate.replace(" ", "_")
+    if candidate in VERDICT_VALUES:
+        return candidate  # type: ignore[return-value]
+    return "insufficient_evidence"
+
+
+def _clamp_confidence(value: float) -> float:
+    return min(1.0, max(0.0, float(value)))
+
+
+def resolve_verdict(
+    draft: ClaimVerdictDraft,
+    *,
+    independent: Sequence[str],
+) -> tuple[ClaimVerdict, float]:
+    """Decide the recorded verdict from the model's answer and the evidence.
+
+    Three local rules override the model, in this order:
+    nothing independent was retrieved -> ``insufficient_evidence``;
+    the model itself reported contradictions -> ``contradicted``, whatever
+    it called the verdict; ``insufficient_evidence`` carries no confidence.
+    """
+    if not independent:
+        return "insufficient_evidence", 0.0
+    verdict = normalize_verdict(draft.verdict)
+    confidence = _clamp_confidence(draft.confidence)
+    if draft.contradictions:
+        return "contradicted", confidence
+    if verdict == "insufficient_evidence":
+        return "insufficient_evidence", 0.0
+    return verdict, confidence
+
+
+def build_claim(
+    claim: ClaimDraft,
+    draft: ClaimVerdictDraft,
+    *,
+    independent: Sequence[str],
+) -> Claim:
+    """Stamp one model verdict into a validated ``Claim`` record."""
+    verdict, confidence = resolve_verdict(draft, independent=independent)
+    return Claim(
+        text=claim.text,
+        source_urls=list(claim.source_urls),
+        verdict=verdict,
+        confidence=confidence,
+        evidence=list(draft.evidence),
+        contradictions=list(draft.contradictions),
+    )
+
+
+def insufficient_claim(claim: ClaimDraft, *, reason: str) -> Claim:
+    """Record a claim that could not be judged, with no invented confidence.
+
+    ``reason`` is one of ``INSUFFICIENT_REASONS``; it travels in the
+    claim's event metadata rather than on the record, because ``Claim``
+    has no field for it and this project does not widen a shared contract
+    for one agent's bookkeeping.
+    """
+    if reason not in INSUFFICIENT_REASONS:
+        raise ValueError(f"unknown insufficient-evidence reason: {reason}")
+    return Claim(
+        text=claim.text,
+        source_urls=list(claim.source_urls),
+        verdict="insufficient_evidence",
+        confidence=0.0,
+        evidence=[],
+        contradictions=[],
+    )
+
+
+def claim_verification_messages(
+    task: ClaimTask,
+    run: ReActRun,
+    *,
+    evidence_chars: int,
+    independent: Sequence[str],
+) -> list[ChatMessage]:
+    """Build the messages that judge one claim from one finished loop."""
+    claimed = "\n".join(f"- {url}" for url in task.claim.source_urls)
+    domains = ", ".join(independent) or "(none)"
+    sections = [
+        f"## Claim\n{task.claim.text}",
+        f"## Sources that made the claim\n{claimed}",
+        f"## Independent domains retrieved\n{domains}",
+        (
+            "## Retrieved evidence\n"
+            f"{render_evidence(run, limit=evidence_chars)}"
+        ),
+        f"## Response contract\n{CLAIM_VERIFICATION_INSTRUCTION}",
+    ]
+    return [
+        ChatMessage(
+            role="developer", content=CLAIM_VERIFICATION_SYSTEM_PROMPT
+        ),
+        ChatMessage(role="user", content="\n\n".join(sections)),
+    ]
+
+
+def verdict_counts(claims: Sequence[Claim]) -> dict[str, int]:
+    """Count every verdict value, including the ones that did not occur.
+
+    Zero-filled so a consumer reading the event stream never has to guess
+    whether a missing key means zero or means the agent forgot.
+    """
+    counts = {verdict: 0 for verdict in VERDICT_VALUES}
+    for claim in claims:
+        counts[claim.verdict] += 1
+    return counts
