@@ -155,6 +155,23 @@ def test_a_sub_topic_missing_its_queries_is_reported_by_field() -> None:
     ]
 
 
+def test_duplicate_indices_refer_to_draft_positions_not_valid_ones() -> None:
+    draft = ResearchPlanDraft(
+        sub_topics=[
+            _draft("Bad", priority=1, search_queries=[]),
+            _draft("Alpha", priority=2),
+            _draft("Alpha", priority=3),
+            _draft("Beta", priority=4),
+        ]
+    )
+    _, problems = validate_plan_draft(draft)
+    assert problems == [
+        "sub-topic 1 is invalid: check these fields: search_queries",
+        "sub-topics 2 and 3 repeat the same title; every sub-topic must be "
+        "distinct",
+    ]
+
+
 def test_a_sub_topic_with_a_zero_priority_is_reported_by_field() -> None:
     draft = ResearchPlanDraft(
         sub_topics=[
