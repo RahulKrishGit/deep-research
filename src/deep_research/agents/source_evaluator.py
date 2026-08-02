@@ -21,8 +21,9 @@ from typing import Protocol
 
 from pydantic import Field
 
-from deep_research.agents.base import BaseAgent, StructuredCompleter
+from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
 from deep_research.agents.errors import AgentConfigurationError, agent_error
+from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
@@ -45,6 +46,7 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     ContractModel,
     ResearchError,
+    ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
     ScoredSource,
@@ -384,6 +386,49 @@ def no_sources_error() -> ResearchError:
     )
 
 
+def evaluation_started_event(
+    *,
+    finding_count: int,
+    source_count: int,
+) -> ResearchEvent:
+    """Announce that evaluation began, before any provider call."""
+    return agent_event(
+        agent_name=SOURCE_EVALUATOR_NAME,
+        event_type="source_evaluator.evaluation.started",
+        message="Source evaluation started.",
+        metadata={
+            "finding_count": finding_count,
+            "source_count": source_count,
+        },
+    )
+
+
+def evaluation_completed_event(
+    sources: Sequence[ScoredSource],
+    *,
+    reputation_hits: int,
+    reputation_failures: int,
+) -> ResearchEvent:
+    """Report the counts the spec requires of this agent.
+
+    ``average_score`` is rounded and zero-guarded by ``average_score`` so
+    this metadata is always a finite JSON number, which
+    ``ResearchEvent.metadata`` requires.
+    """
+    return agent_event(
+        agent_name=SOURCE_EVALUATOR_NAME,
+        event_type="source_evaluator.evaluation.completed",
+        message="Source evaluation complete.",
+        metadata={
+            "source_count": len(sources),
+            "average_score": average_score(sources),
+            "low_confidence_count": low_confidence_count(sources),
+            "reputation_hits": reputation_hits,
+            "reputation_failures": reputation_failures,
+        },
+    )
+
+
 class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
     """Score every source behind ``state.raw_findings``.
 
@@ -601,3 +646,69 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         if result is not None:
             update["evaluated_sources"] = list(result.sources)
         return update
+
+    async def run(self, state: ResearchState) -> AgentRun[EvaluatedSources]:
+        """Group, look up reputations, score, and report the counts.
+
+        No ReAct loop runs, so the returned ``ReActRun`` is a synthetic
+        record with zero iterations and zero tool calls. ``stop_reason`` is
+        ``"provider_error"`` only when the scoring call itself failed, so a
+        caller reading ``react.succeeded`` learns the same thing it would
+        from any other agent.
+        """
+        task = self.build_task(state)
+        events: list[ResearchEvent] = [
+            evaluation_started_event(
+                finding_count=len(state.raw_findings),
+                source_count=len(task.groups),
+            )
+        ]
+        errors: list[ResearchError] = []
+
+        async with self.tracker.agent_span(self.name) as span:
+            task, lookup_errors, hits = await self.lookup_reputations(task)
+            errors.extend(lookup_errors)
+            sources, scoring_errors, provider_failed = await self.score_sources(
+                task
+            )
+            errors.extend(scoring_errors)
+            if not task.groups:
+                errors.append(no_sources_error())
+            failures = sum(
+                int(error.details.get("failures", 0) or 0)
+                for error in lookup_errors
+            )
+            events.append(
+                evaluation_completed_event(
+                    sources,
+                    reputation_hits=hits,
+                    reputation_failures=failures,
+                )
+            )
+            span.set_outputs(
+                {
+                    "agent_name": self.name,
+                    "source_count": len(sources),
+                    "average_score": average_score(sources),
+                    "low_confidence_count": low_confidence_count(sources),
+                    "reputation_hits": hits,
+                    "reputation_failures": failures,
+                }
+            )
+
+        react = ReActRun(
+            agent_name=self.name,
+            stop_reason="provider_error" if provider_failed else "finished",
+            errors=errors,
+        )
+        result = EvaluatedSources(sources=sources)
+        return AgentRun(
+            agent_name=self.name,
+            result=result,
+            react=react,
+            errors=errors,
+            state_update={
+                **self.state_update(result, react),
+                "events": events,
+            },
+        )

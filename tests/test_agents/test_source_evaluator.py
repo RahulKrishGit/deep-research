@@ -21,6 +21,7 @@ from deep_research.agents.source_evaluator import (
     build_rationale,
     build_scored_source,
     clamp_unit,
+    evaluation_completed_event,
     fallback_scored_source,
     low_confidence_count,
     overall_score,
@@ -36,6 +37,7 @@ from deep_research.utils.types import (
     MemorySnapshot,
     ResearchState,
     ScoredSource,
+    merge_research_state,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.research_fakes import FakeReputationSource
@@ -478,3 +480,143 @@ def test_state_update_carries_scored_sources_and_errors(
 
     assert update["evaluated_sources"] == [scored]
     assert update["errors"] == []
+
+
+def _scoring_response() -> SourceScoresDraft:
+    return SourceScoresDraft(
+        sources=[
+            SourceScoreDraft(
+                url="https://example.org/a",
+                authority_score=0.9,
+                recency_score=0.8,
+                relevance_score=0.9,
+                rationale="Peer-reviewed.",
+            ),
+            SourceScoreDraft(
+                url="https://other.test/b",
+                authority_score=0.1,
+                recency_score=0.1,
+                relevance_score=0.1,
+                rationale="Anonymous blog.",
+            ),
+        ]
+    )
+
+
+def test_the_completed_event_reports_the_three_required_counts() -> None:
+    strong = build_scored_source(
+        _group(), _draft(), corroboration=1.0, reputation=None
+    )
+    weak = fallback_scored_source(
+        _group(url="https://weak.test/b"),
+        corroboration=0.0,
+        reputation=None,
+        reason="not_scored_by_model",
+    )
+
+    event = evaluation_completed_event(
+        [strong, weak], reputation_hits=1, reputation_failures=0
+    )
+
+    assert event.event_type == "source_evaluator.evaluation.completed"
+    assert event.source == "agent.source_evaluator"
+    assert event.metadata["source_count"] == 2
+    assert event.metadata["low_confidence_count"] == 1
+    assert event.metadata["average_score"] == pytest.approx(
+        average_score([strong, weak])
+    )
+    assert event.metadata["reputation_hits"] == 1
+    assert event.metadata["reputation_failures"] == 0
+
+
+def test_the_completed_event_is_finite_for_an_empty_run() -> None:
+    event = evaluation_completed_event(
+        [], reputation_hits=0, reputation_failures=0
+    )
+
+    assert event.metadata["source_count"] == 0
+    assert event.metadata["average_score"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_a_full_run_writes_sources_events_and_span_outputs(
+    tracker: Tracker,
+) -> None:
+    memory = FakeReputationSource(reputations={"https://example.org/a": 0.95})
+    agent = _evaluator(
+        tracker, ScriptedCompleter(outputs=[_scoring_response()]),
+        reputation=memory,
+    )
+    state = _eval_state(
+        [
+            _eval_finding("https://example.org/a", "Alpha"),
+            _eval_finding("https://other.test/b", "Alpha"),
+        ]
+    )
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.agent_name == "source_evaluator"
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.result is not None
+    assert len(outcome.result.sources) == 2
+
+    merged = merge_research_state(state, outcome.state_update)
+    assert [source.url for source in merged.evaluated_sources] == [
+        "https://example.org/a",
+        "https://other.test/b",
+    ]
+    assert merged.evaluated_sources[1].low_confidence is True
+
+    event_types = [event.event_type for event in outcome.state_update["events"]]
+    assert event_types == [
+        "source_evaluator.evaluation.started",
+        "source_evaluator.evaluation.completed",
+    ]
+    completed = outcome.state_update["events"][1]
+    assert completed.metadata["source_count"] == 2
+    assert completed.metadata["low_confidence_count"] == 1
+    assert completed.metadata["reputation_hits"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_findings_records_a_recoverable_error(
+    tracker: Tracker,
+) -> None:
+    agent = _evaluator(tracker, ScriptedCompleter())
+    state = _eval_state([])
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert outcome.result.sources == []
+    assert outcome.errors[0].error_type == "source_evaluator_no_sources"
+    assert outcome.errors[0].recoverable is True
+    started = outcome.state_update["events"][0]
+    assert started.metadata["finding_count"] == 0
+    assert started.metadata["source_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_reputation_failure_is_visible_in_state_and_events(
+    tracker: Tracker,
+) -> None:
+    memory = FakeReputationSource(error=RuntimeError("chroma is down"))
+    agent = _evaluator(
+        tracker,
+        ScriptedCompleter(outputs=[_scoring_response()]),
+        reputation=memory,
+    )
+    state = _eval_state([_eval_finding("https://example.org/a")])
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert len(outcome.result.sources) == 1
+    types = {error.error_type for error in outcome.errors}
+    assert "source_evaluator_reputation_unavailable" in types
+    completed = outcome.state_update["events"][-1]
+    assert completed.metadata["reputation_failures"] == 1
