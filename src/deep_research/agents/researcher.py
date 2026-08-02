@@ -24,6 +24,7 @@ from deep_research.agents.steps import (
     StopReason,
     summarize_text,
 )
+from deep_research.agents.validation import invalid_fields
 from deep_research.providers import ChatMessage
 from deep_research.utils.types import (
     ContractModel,
@@ -161,32 +162,52 @@ def existing_sources_for(
     return seen
 
 
+# Precedence for the merged ``stop_reason``, most urgent first. A caller
+# only ever sees one stop reason for the whole merged run, so a reason that
+# demands attention (a hard failure, or a budget that ran out) must never be
+# masked by a later sub-topic that happened to finish cleanly. "finished" is
+# the least informative outcome and sorts last for exactly that reason;
+# "sufficient" is a deliberate early stop and outranks it but still yields
+# to any budget or error condition.
+_STOP_REASON_PRECEDENCE: tuple[StopReason, ...] = (
+    "provider_error",
+    "tool_budget_exhausted",
+    "max_iterations",
+    "sufficient",
+    "finished",
+)
+
+
 def merge_react_runs(
     agent_name: str,
     runs: Sequence[ReActRun],
 ) -> ReActRun:
     """Fold per-sub-topic loops into one run record for ``AgentRun.react``.
 
-    ``stop_reason`` reports ``provider_error`` when any loop hit it, because
-    that is the only stop reason a caller must react to. Per-sub-topic stop
-    reasons stay in the emitted events.
+    ``stop_reason`` is picked by ``_STOP_REASON_PRECEDENCE``: the highest-
+    priority reason present across every run wins, so a real stop condition
+    (an error, or an exhausted budget) is never masked by a later sub-topic
+    that simply finished. Per-sub-topic stop reasons stay in the emitted
+    events. ``final_answer`` joins every non-``None`` final answer across the
+    merged runs, in order, separated by blank lines — sub-topic loops each
+    contribute their own answer, and none should be silently dropped.
     """
     if not runs:
         return ReActRun(agent_name=agent_name, stop_reason="finished")
 
     steps: list[ReActStep] = []
     errors: list[ResearchError] = []
-    final_answer: str | None = None
+    final_answers: list[str] = []
     for run in runs:
         steps.extend(run.steps)
         errors.extend(run.errors)
         if run.final_answer is not None:
-            final_answer = run.final_answer
+            final_answers.append(run.final_answer)
+    final_answer = "\n\n".join(final_answers) if final_answers else None
 
-    stop_reason: StopReason = (
-        "provider_error"
-        if any(run.stop_reason == "provider_error" for run in runs)
-        else runs[-1].stop_reason
+    reasons = {run.stop_reason for run in runs}
+    stop_reason: StopReason = next(
+        reason for reason in _STOP_REASON_PRECEDENCE if reason in reasons
     )
     return ReActRun(
         agent_name=agent_name,
@@ -322,14 +343,5 @@ def build_findings(
                 )
             )
         except ValidationError as error:
-            fields = sorted(
-                {
-                    str(detail["loc"][0])
-                    for detail in error.errors()
-                    if detail["loc"]
-                }
-            )
-            rejected.append(
-                f"finding {index}: invalid {', '.join(fields) or 'value'}"
-            )
+            rejected.append(f"finding {index}: invalid {invalid_fields(error)}")
     return findings, rejected

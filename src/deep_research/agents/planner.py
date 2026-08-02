@@ -19,6 +19,7 @@ from deep_research.agents.errors import PlanningError
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import AgentTask, render_memory_guidance
 from deep_research.agents.steps import ReActRun, summarize_text
+from deep_research.agents.validation import invalid_fields
 from deep_research.providers import ChatMessage, OpenAIProviderError
 from deep_research.utils.types import (
     ContractModel,
@@ -94,18 +95,6 @@ def _normalized_title(title: str) -> str:
     return " ".join(title.split()).casefold()
 
 
-def _invalid_fields(error: ValidationError) -> str:
-    """Name the fields a validation failure touched, without provider text."""
-    fields = sorted(
-        {
-            str(detail["loc"][0])
-            for detail in error.errors()
-            if detail["loc"]
-        }
-    )
-    return ", ".join(fields) or "unknown"
-
-
 def validate_plan_draft(
     draft: ResearchPlanDraft,
 ) -> tuple[list[SubTopic], list[str]]:
@@ -126,7 +115,7 @@ def validate_plan_draft(
         except ValidationError as error:
             problems.append(
                 f"sub-topic {index} is invalid: check these fields: "
-                f"{_invalid_fields(error)}"
+                f"{invalid_fields(error)}"
             )
 
     seen: dict[str, int] = {}

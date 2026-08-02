@@ -24,6 +24,7 @@ from deep_research.utils.types import (
     Critique,
     Finding,
     MemorySnapshot,
+    ResearchError,
     ResearchState,
     SubTopic,
 )
@@ -182,12 +183,19 @@ def test_existing_sources_are_scoped_to_the_sub_topic_and_deduplicated() -> None
 
 
 def test_merging_runs_sums_the_counts_and_keeps_every_error() -> None:
+    error = ResearchError(
+        error_type="tool_failure",
+        source="agent.researcher",
+        message="web_search timed out",
+        recoverable=True,
+    )
     first = ReActRun(
         agent_name="researcher",
         stop_reason="finished",
         iterations=2,
         tool_calls=1,
         final_answer="First answer.",
+        errors=[error],
     )
     second = ReActRun(
         agent_name="researcher",
@@ -202,6 +210,24 @@ def test_merging_runs_sums_the_counts_and_keeps_every_error() -> None:
     assert merged.tool_calls == 3
     assert merged.stop_reason == "max_iterations"
     assert merged.final_answer == "First answer."
+    assert merged.errors == [error]
+
+
+def test_merging_runs_joins_every_final_answer_in_order() -> None:
+    first = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        final_answer="ANSWER-A",
+    )
+    second = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        final_answer="ANSWER-B",
+    )
+
+    merged = merge_react_runs("researcher", [first, second])
+
+    assert merged.final_answer == "ANSWER-A\n\nANSWER-B"
 
 
 def test_merging_runs_surfaces_a_provider_failure() -> None:
@@ -211,6 +237,17 @@ def test_merging_runs_surfaces_a_provider_failure() -> None:
     ]
 
     assert merge_react_runs("researcher", runs).stop_reason == "provider_error"
+
+
+def test_merging_runs_does_not_let_a_later_finish_hide_an_exhausted_budget() -> (
+    None
+):
+    runs = [
+        ReActRun(agent_name="researcher", stop_reason="max_iterations"),
+        ReActRun(agent_name="researcher", stop_reason="finished"),
+    ]
+
+    assert merge_react_runs("researcher", runs).stop_reason == "max_iterations"
 
 
 def test_merging_no_runs_yields_an_empty_finished_run() -> None:
