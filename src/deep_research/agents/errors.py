@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from pydantic import JsonValue
 
@@ -15,6 +15,18 @@ class AgentError(Exception):
 
 class AgentConfigurationError(AgentError):
     """An agent was assembled incorrectly. Not recoverable at runtime."""
+
+
+class PlanningError(AgentError):
+    """The planner could not produce a valid plan. Fails the session.
+
+    ``problems`` holds strings this project generated during validation, not
+    provider text, so they are safe to log and to surface to a user.
+    """
+
+    def __init__(self, message: str, *, problems: Sequence[str] = ()) -> None:
+        super().__init__(message)
+        self.problems = tuple(problems)
 
 
 def agent_error(
