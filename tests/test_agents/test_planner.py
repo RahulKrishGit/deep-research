@@ -30,7 +30,12 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
-from tests.research_fakes import FakeMemory, FakeSearchClient, planner_tools
+from tests.research_fakes import (
+    FakeMemory,
+    FakeSearchClient,
+    planner_tools,
+    research_tools,
+)
 
 
 def _draft(
@@ -453,6 +458,52 @@ async def test_a_provider_failure_fails_the_session_without_a_plan_request(
 
 
 @pytest.mark.asyncio
+async def test_a_provider_failure_during_the_initial_plan_draft_raises_planning_error(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[ProviderTimeoutError("timed out")],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError, match="model provider") as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert "timed out" not in str(failure.value)
+    assert [call[0] for call in completer.calls] == [
+        "ReActDecision",
+        "ResearchPlanDraft",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_during_the_repair_call_raises_planning_error(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            ResearchPlanDraft(sub_topics=[]),
+            ProviderTimeoutError("timed out"),
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError, match="model provider") as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert "timed out" not in str(failure.value)
+    assert [call[0] for call in completer.calls] == [
+        "ReActDecision",
+        "ResearchPlanDraft",
+        "ResearchPlanDraft",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_search_failure_does_not_stop_the_planner(
     tracker: Tracker,
 ) -> None:
@@ -475,3 +526,29 @@ async def test_a_search_failure_does_not_stop_the_planner(
     assert outcome.result is not None
     assert [error.error_type for error in outcome.errors] == ["agent_tool_failed"]
     assert outcome.errors[0].recoverable is True
+
+
+@pytest.mark.asyncio
+async def test_document_reader_succeeds_through_research_tools_defaults(
+    tracker: Tracker,
+) -> None:
+    """A Task-4 author must be able to exercise document_reader offline.
+
+    ``research_tools()``'s default client only served HTML, which
+    ``DocumentReaderTool`` cannot parse. It now also serves content-type-
+    aware bodies by request suffix, so a plain URL ending ``.json`` (or
+    ``.csv``/``.md``) succeeds.
+    """
+    tools = {tool.name: tool for tool in research_tools(tracker)}
+    document_reader = tools["document_reader"]
+
+    async with tracker.session_span("session-1", "q"):
+        result = await document_reader.execute(
+            source="https://example.test/notes.json"
+        )
+
+    assert result.success is True
+    assert result.data is not None
+    assert result.data["format"] == "json"
+    assert result.data["chunks"] != []
+    assert result.data["failures"] == []

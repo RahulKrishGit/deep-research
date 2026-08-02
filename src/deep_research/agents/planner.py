@@ -19,7 +19,7 @@ from deep_research.agents.errors import PlanningError
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import AgentTask, render_memory_guidance
 from deep_research.agents.steps import ReActRun, summarize_text
-from deep_research.providers import ChatMessage
+from deep_research.providers import ChatMessage, OpenAIProviderError
 from deep_research.utils.types import (
     ContractModel,
     MemorySnapshot,
@@ -280,11 +280,18 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         *,
         repair: str | None = None,
     ) -> tuple[list[SubTopic], list[str]]:
-        draft = await self.provider.complete_structured(
-            plan_messages(task, run, repair=repair),
-            ResearchPlanDraft,
-            agent_name=self.name,
-        )
+        try:
+            draft = await self.provider.complete_structured(
+                plan_messages(task, run, repair=repair),
+                ResearchPlanDraft,
+                agent_name=self.name,
+            )
+        except OpenAIProviderError as error:
+            raise PlanningError(
+                "The planner could not reach the model provider while a "
+                "plan was requested.",
+                problems=["the model provider failed while the plan was requested"],
+            ) from error
         return validate_plan_draft(draft)
 
     async def finalize(

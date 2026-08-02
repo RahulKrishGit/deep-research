@@ -9,7 +9,9 @@ Not collected by pytest: the filename does not match ``test_*.py``.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -39,7 +41,13 @@ class FakeSearchClient:
         search_depth: str,
         max_results: int,
     ) -> Mapping[str, Any]:
-        self.calls.append({"query": query, "max_results": max_results})
+        self.calls.append(
+            {
+                "query": query,
+                "search_depth": search_depth,
+                "max_results": max_results,
+            }
+        )
         if not self.responses:
             raise AssertionError("no scripted search response left")
         response = self.responses.pop(0)
@@ -49,20 +57,32 @@ class FakeSearchClient:
 
 
 class FakeMemory:
-    """In-memory stand-in for the long-term memory backend."""
+    """In-memory stand-in for the long-term memory backend.
+
+    ``matches`` fixes what ``query`` returns. When it is left unset,
+    ``query`` instead falls back to what ``save`` has recorded so far
+    (rendered as ``{"content": ..., "metadata": ...}`` entries) — enough for
+    a "save a finding then recall it" test against a shared backend, but not
+    a real similarity search: it ignores the query text and always returns
+    every saved entry.
+    """
 
     def __init__(
         self,
         *,
         entry_id: str = "entry-1",
-        matches: Sequence[Mapping[str, Any]] = (),
+        matches: Sequence[Mapping[str, Any]] | None = None,
+        error: Exception | None = None,
     ) -> None:
         self.entry_id = entry_id
-        self.matches = [dict(match) for match in matches]
+        self.matches = None if matches is None else [dict(match) for match in matches]
+        self.error = error
         self.saved: list[tuple[str, dict[str, Any]]] = []
         self.queried: list[str] = []
 
     async def save(self, content: str, metadata: Mapping[str, Any]) -> str:
+        if self.error is not None:
+            raise self.error
         self.saved.append((content, dict(metadata)))
         return self.entry_id
 
@@ -74,8 +94,15 @@ class FakeMemory:
         filters: Mapping[str, Any] | None = None,
     ) -> Sequence[Mapping[str, Any]]:
         del top_k, filters
+        if self.error is not None:
+            raise self.error
         self.queried.append(query)
-        return list(self.matches)
+        if self.matches is not None:
+            return list(self.matches)
+        return [
+            {"content": content, "metadata": metadata}
+            for content, metadata in self.saved
+        ]
 
 
 def search_response(
@@ -97,7 +124,13 @@ def page_client(
     title: str = "Quantum error correction in 2025",
     body: str = "Logical error rates fell below break-even in 2025.",
 ) -> httpx.AsyncClient:
-    """A client serving one permissive robots.txt and one HTML page.
+    """A client serving one permissive robots.txt and content-type-aware pages.
+
+    A request path with no suffix (what ``WebScraperTool`` tests exercise)
+    gets the existing HTML page. A path ending ``.csv``, ``.json``, or
+    ``.md``/``.markdown`` gets a body and content type ``DocumentReaderTool``
+    can parse, so ``research_tools()``'s default ``document_reader`` can
+    succeed against this same client.
 
     Backed by ``httpx.MockTransport``, so it holds no sockets and tests do
     not need to close it.
@@ -107,6 +140,28 @@ def page_client(
         if request.url.path == "/robots.txt":
             return httpx.Response(
                 200, text="User-agent: *\nAllow: /", request=request
+            )
+        suffix = Path(request.url.path).suffix.lower()
+        if suffix == ".csv":
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/csv; charset=utf-8"},
+                text=f"title,body\n{title},{body}\n",
+                request=request,
+            )
+        if suffix == ".json":
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "application/json"},
+                text=json.dumps({"title": title, "body": body}),
+                request=request,
+            )
+        if suffix in {".md", ".markdown"}:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/markdown; charset=utf-8"},
+                text=f"# {title}\n\n{body}\n",
+                request=request,
             )
         return httpx.Response(
             200,
