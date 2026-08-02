@@ -13,7 +13,11 @@ from deep_research.observability import SpanHandle, Tracker
 
 
 class ToolError(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    # NOTE: str_strip_whitespace is deliberately NOT set here. Pydantic applies it
+    # recursively to every string nested inside `details: dict[str, JsonValue]`,
+    # which can carry opaque tool payload data (e.g. document text). Stripping
+    # would silently corrupt that content instead of just tidying scalar fields.
+    model_config = ConfigDict(extra="forbid")
 
     type: str = Field(min_length=1)
     message: str = Field(min_length=1)
@@ -22,7 +26,11 @@ class ToolError(BaseModel):
 
 
 class ToolResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    # NOTE: str_strip_whitespace is deliberately NOT set here. Pydantic applies it
+    # recursively to every string nested inside `data: JsonValue`, which can carry
+    # opaque tool payload data (e.g. document text chunks). Stripping would
+    # silently corrupt that content instead of just tidying scalar fields.
+    model_config = ConfigDict(extra="forbid")
 
     tool_name: str = Field(min_length=1)
     success: bool

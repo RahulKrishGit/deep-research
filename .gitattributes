@@ -1,0 +1,5 @@
+# Force LF line endings for fixture documents that tests read as raw bytes.
+# Without this, `core.autocrlf=true` on Windows checks these files out with
+# CRLF, while tests build their expected value via text-mode reads that
+# normalize newlines to LF, causing spurious platform-dependent mismatches.
+tests/fixtures/documents/* text eol=lf
