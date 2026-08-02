@@ -31,7 +31,7 @@ from deep_research.agents.validation import invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage
-from deep_research.tools.base import BaseTool
+from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     ContractModel,
@@ -286,6 +286,50 @@ def render_sub_topic_guidance(
     return "\n".join(lines)
 
 
+# Read tools that can carry evidence, mapped to the payload key that holds
+# it. ``save_to_memory`` is deliberately absent: it is a write, never
+# evidence, and a successful call to it must never count as "retrieved".
+_EVIDENCE_PAYLOAD_KEYS: dict[str, str] = {
+    "web_search": "results",
+    "web_scraper": "text",
+    "document_reader": "chunks",
+    "query_memory": "matches",
+}
+
+
+def _successful_result(step: ReActStep) -> ToolResult | None:
+    """The step's tool result, or ``None`` unless the call succeeded."""
+    result = step.tool_result
+    if result is None or not result.success:
+        return None
+    return result
+
+
+def _has_evidence(step: ReActStep) -> bool:
+    """True when a successful call actually returned a non-empty payload.
+
+    A tool can return ``success=True`` with nothing usable inside it —
+    ``query_memory`` on a miss, ``web_search`` with no hits, an empty
+    scrape — and ``save_to_memory`` never carries evidence at all. Counting
+    any of those as "retrieved" would let the extraction call run against
+    an evidence section with nothing in it, which is exactly the
+    hallucination-pressure case the caller guards against.
+    """
+    result = _successful_result(step)
+    if result is None:
+        return False
+    key = _EVIDENCE_PAYLOAD_KEYS.get(result.tool_name)
+    if key is None:
+        return False
+    data = result.data
+    value = data.get(key) if isinstance(data, dict) else None
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return False
+
+
 def render_evidence(run: ReActRun, *, limit: int) -> str:
     """Render every successful tool payload, each clamped to ``limit`` chars.
 
@@ -295,8 +339,8 @@ def render_evidence(run: ReActRun, *, limit: int) -> str:
     """
     lines: list[str] = []
     for step in run.steps:
-        result = step.tool_result
-        if result is None or not result.success:
+        result = _successful_result(step)
+        if result is None:
             continue
         payload = json.dumps(result.data, default=str, ensure_ascii=False)
         summary = summarize_text(payload, limit=limit)
@@ -406,6 +450,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             raise ValueError("high_priority_threshold must be at least 1")
         if evidence_chars < 1:
             raise ValueError("evidence_chars must be at least 1")
+        probe = clock()
+        if probe.tzinfo is None or probe.utcoffset() is None:
+            raise AgentConfigurationError(
+                "ResearcherAgent clock must return a timezone-aware "
+                "datetime; got a naive datetime instead"
+            )
         self._max_sub_topics = max_sub_topics
         self._high_priority_threshold = high_priority_threshold
         self._evidence_chars = evidence_chars
@@ -469,10 +519,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         on a provider failure or retrieved no source, so the extraction step
         can never invent one.
         """
-        retrieved = any(
-            step.tool_result is not None and step.tool_result.success
-            for step in run.steps
-        )
+        retrieved = any(_has_evidence(step) for step in run.steps)
         if not run.succeeded or not retrieved:
             return [], []
 

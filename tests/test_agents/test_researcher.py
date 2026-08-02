@@ -484,6 +484,26 @@ def test_the_researcher_rejects_unbounded_construction(
         )
 
 
+def test_the_researcher_rejects_a_naive_clock(tracker: Tracker) -> None:
+    """Fail loudly at construction, not with mysteriously empty findings.
+
+    A caller who passes ``clock=datetime.now`` without ``tz=`` would
+    otherwise only discover the mistake later, when every ``build_findings``
+    call fails validation and the resulting error misleadingly blames the
+    extraction model instead of the constructor misconfiguration.
+    """
+    with pytest.raises(AgentConfigurationError, match="timezone-aware"):
+        ResearcherAgent(
+            provider=ScriptedCompleter(),
+            tracker=tracker,
+            scratchpad=ScratchpadMemory(
+                session_id="session-1", agent_name="researcher"
+            ),
+            tools=research_tools(tracker),
+            clock=lambda: datetime.now(),
+        )
+
+
 def test_the_sub_topic_task_merges_session_and_sub_topic_guidance(
     tracker: Tracker,
 ) -> None:
@@ -551,6 +571,67 @@ async def test_extraction_makes_no_provider_call_without_evidence(
         instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
     )
     run = ReActRun(agent_name="researcher", stop_reason="max_iterations")
+
+    findings, errors = await agent.extract_findings(task, run)
+
+    assert findings == []
+    assert errors == []
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_extraction_makes_no_provider_call_when_the_only_hit_is_empty(
+    tracker: Tracker,
+) -> None:
+    """A successful query_memory with no matches is not evidence.
+
+    Regression guard for the loosened predicate that previously counted any
+    successful tool call, including a memory lookup that hit nothing, as
+    "retrieved" and triggered an extraction call against an empty evidence
+    section.
+    """
+    completer = ScriptedCompleter()
+    agent = _researcher(tracker, completer)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[
+            _tool_step(1, "query_memory", {"matches": []}),
+            _tool_step(2, "web_search", None, success=False),
+        ],
+        iterations=2,
+        tool_calls=2,
+    )
+
+    findings, errors = await agent.extract_findings(task, run)
+
+    assert findings == []
+    assert errors == []
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_extraction_makes_no_provider_call_when_every_tool_call_failed(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter()
+    agent = _researcher(tracker, completer)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[
+            _tool_step(1, "web_search", None, success=False),
+            _tool_step(2, "web_scraper", None, success=False),
+        ],
+        iterations=2,
+        tool_calls=2,
+    )
 
     findings, errors = await agent.extract_findings(task, run)
 
