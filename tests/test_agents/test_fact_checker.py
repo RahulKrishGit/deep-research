@@ -16,9 +16,11 @@ from deep_research.agents.fact_checker import (
     VerifiedClaims,
     build_claim,
     build_claim_drafts,
+    claim_checked_event,
     claim_extraction_messages,
     claim_verification_messages,
     claimed_domains_for,
+    fact_check_completed_event,
     independent_domains,
     insufficient_claim,
     known_source_urls,
@@ -41,9 +43,10 @@ from deep_research.utils.types import (
     MemorySnapshot,
     ResearchState,
     ScoredSource,
+    merge_research_state,
 )
-from tests.agent_fakes import ScriptedCompleter
-from tests.research_fakes import fact_checker_tools
+from tests.agent_fakes import ScriptedCompleter, finish, use_tool
+from tests.research_fakes import FakeSearchClient, fact_checker_tools, search_response
 
 CHECK_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
@@ -727,3 +730,178 @@ def test_state_update_carries_verified_claims_and_errors(
 
     assert update["verified_claims"] == [claim]
     assert update["errors"] == []
+
+
+def _check_decisions() -> list[object]:
+    return [
+        use_tool(
+            "Look for an independent source.",
+            "web_search",
+            '{"query": "break-even 2025"}',
+        ),
+        finish("I have independent material.", "Checked."),
+    ]
+
+
+def test_the_per_claim_event_reports_tool_calls_and_the_verdict() -> None:
+    claim = insufficient_claim(_claim_draft(), reason="no_independent_source")
+    run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="finished",
+        iterations=2,
+        tool_calls=2,
+    )
+
+    event = claim_checked_event(
+        claim, run, index=1, independent_sources=0,
+        reason="no_independent_source",
+    )
+
+    assert event.event_type == "fact_checker.claim.checked"
+    assert event.source == "agent.fact_checker"
+    assert event.metadata["verdict"] == "insufficient_evidence"
+    assert event.metadata["tool_calls"] == 2
+    assert event.metadata["independent_sources"] == 0
+    assert event.metadata["reason"] == "no_independent_source"
+    assert event.metadata["contradictions"] == 0
+
+
+def test_the_completed_event_reports_every_verdict_count() -> None:
+    verified = build_claim(
+        _claim_draft(), _verdict_draft(), independent=["third.test"]
+    )
+    contradicted = build_claim(
+        _claim_draft(),
+        _verdict_draft(contradictions=["Disputed."]),
+        independent=["third.test"],
+    )
+
+    event = fact_check_completed_event(
+        [verified, contradicted], tool_calls=5
+    )
+
+    assert event.event_type == "fact_checker.fact_check.completed"
+    assert event.metadata["claim_count"] == 2
+    assert event.metadata["verified"] == 1
+    assert event.metadata["contradicted"] == 1
+    assert event.metadata["unverified"] == 0
+    assert event.metadata["insufficient_evidence"] == 0
+    assert event.metadata["contradiction_count"] == 1
+    assert event.metadata["tool_calls"] == 5
+
+
+@pytest.mark.asyncio
+async def test_a_full_run_verifies_each_claim_and_reports_the_counts(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=list(_check_decisions()),
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(
+                        text="Break-even was crossed in 2025.",
+                        source_urls=["https://example.org/a"],
+                    )
+                ]
+            ),
+            _verdict_draft(verdict="verified"),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+    )
+    state = _check_state(
+        [_check_finding("https://example.org/a")],
+        [_scored("https://example.org/a")],
+    )
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.agent_name == "fact_checker"
+    assert outcome.result is not None
+    assert [claim.verdict for claim in outcome.result.claims] == ["verified"]
+
+    merged = merge_research_state(state, outcome.state_update)
+    assert len(merged.verified_claims) == 1
+
+    events = outcome.state_update["events"]
+    types = [event.event_type for event in events]
+    assert types[0] == "fact_checker.claims.extracted"
+    assert "fact_checker.claim.checked" in types
+    assert types[-1] == "fact_checker.fact_check.completed"
+    completed = events[-1]
+    assert completed.metadata["claim_count"] == 1
+    assert completed.metadata["verified"] == 1
+    assert completed.metadata["contradiction_count"] == 0
+    checked = next(
+        event for event in events
+        if event.event_type == "fact_checker.claim.checked"
+    )
+    assert checked.metadata["tool_calls"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_findings_verifies_nothing_and_says_so(
+    tracker: Tracker,
+) -> None:
+    agent = _checker(tracker, ScriptedCompleter())
+    state = _check_state([])
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert outcome.result.claims == []
+    assert outcome.errors[0].error_type == "fact_checker_no_findings"
+    completed = outcome.state_update["events"][-1]
+    assert completed.metadata["claim_count"] == 0
+    assert completed.metadata["insufficient_evidence"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_verification_provider_failure_stops_further_claims(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=list(_check_decisions()),
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text="First.", source_urls=["https://example.org/a"]),
+                    ClaimDraft(text="Second.", source_urls=["https://example.org/a"]),
+                ]
+            ),
+            ProviderTimeoutError("timed out"),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+    )
+    state = _check_state([_check_finding("https://example.org/a")])
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [claim.verdict for claim in outcome.result.claims] == [
+        "insufficient_evidence"
+    ]
+    assert outcome.react.stop_reason == "provider_error"
+    types = {error.error_type for error in outcome.errors}
+    assert "fact_checker_verification_provider_error" in types

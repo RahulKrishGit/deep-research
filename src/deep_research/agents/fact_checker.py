@@ -18,8 +18,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from deep_research.agents.base import BaseAgent, StructuredCompleter
+from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
 from deep_research.agents.errors import AgentConfigurationError, agent_error
+from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
@@ -28,11 +29,18 @@ from deep_research.agents.prompts import (
     FACT_CHECKER_SYSTEM_PROMPT,
     AgentTask,
     render_finding_digest,
+    render_react_messages,
     render_source_quality,
 )
-from deep_research.agents.researcher import render_evidence
+from deep_research.agents.react import run_react_loop
+from deep_research.agents.researcher import merge_react_runs, render_evidence
 from deep_research.agents.sources import normalize_source_url, source_domain
-from deep_research.agents.steps import ReActRun
+from deep_research.agents.steps import (
+    ReActDecision,
+    ReActRun,
+    ReActStep,
+    summarize_text,
+)
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, OpenAIProviderError
@@ -43,6 +51,7 @@ from deep_research.utils.types import (
     ClaimVerdict,
     ContractModel,
     ResearchError,
+    ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
 )
@@ -490,6 +499,84 @@ def claim_verification_provider_error(error: Exception) -> ResearchError:
     )
 
 
+def claims_extracted_event(
+    *,
+    claim_count: int,
+    findings_considered: int,
+    sources_considered: int,
+) -> ResearchEvent:
+    """Report how many checkable claims the findings yielded."""
+    return agent_event(
+        agent_name=FACT_CHECKER_NAME,
+        event_type="fact_checker.claims.extracted",
+        message="Claim extraction complete.",
+        metadata={
+            "claim_count": claim_count,
+            "findings_considered": findings_considered,
+            "sources_considered": sources_considered,
+        },
+    )
+
+
+def claim_checked_event(
+    claim: Claim,
+    run: ReActRun,
+    *,
+    index: int,
+    independent_sources: int,
+    reason: str | None,
+) -> ResearchEvent:
+    """Report one claim's verdict and what it cost to reach it.
+
+    ``tool_calls`` here is the spec's "tool calls per claim". ``reason`` is
+    an ``INSUFFICIENT_REASONS`` key or ``None``; it is never provider
+    text. The claim itself is summarized, never pasted, for the same
+    reason.
+    """
+    return agent_event(
+        agent_name=FACT_CHECKER_NAME,
+        event_type="fact_checker.claim.checked",
+        message=f"Claim {index} checked.",
+        metadata={
+            "claim": summarize_text(claim.text),
+            "index": index,
+            "verdict": claim.verdict,
+            "confidence": round(claim.confidence, 4),
+            "contradictions": len(claim.contradictions),
+            "independent_sources": independent_sources,
+            "tool_calls": run.tool_calls,
+            "iterations": run.iterations,
+            "stop_reason": run.stop_reason,
+            "reason": reason,
+        },
+    )
+
+
+def fact_check_completed_event(
+    claims: Sequence[Claim],
+    *,
+    tool_calls: int,
+) -> ResearchEvent:
+    """Report the whole fact-checking pass.
+
+    Verdict counts are zero-filled by ``verdict_counts``, so a consumer
+    never has to guess whether a missing key means zero.
+    """
+    counts = verdict_counts(claims)
+    contradiction_count = sum(1 for claim in claims if claim.contradictions)
+    return agent_event(
+        agent_name=FACT_CHECKER_NAME,
+        event_type="fact_checker.fact_check.completed",
+        message="Fact checking complete.",
+        metadata={
+            "claim_count": len(claims),
+            **counts,
+            "contradiction_count": contradiction_count,
+            "tool_calls": tool_calls,
+        },
+    )
+
+
 class FactCheckerAgent(BaseAgent[VerifiedClaims]):
     """Extract the major claims and verify each against independent sources.
 
@@ -697,3 +784,145 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         if result is not None:
             update["verified_claims"] = list(result.claims)
         return update
+
+    async def _check_claim(self, task: ClaimTask) -> ReActRun:
+        """Run one bounded ReAct loop inside the caller's agent span.
+
+        The scratchpad is cleared first: notes about the previous claim are
+        noise in this one's prompt. Context that genuinely carries over
+        travels in ``task.guidance`` instead.
+        """
+        self.scratchpad.clear()
+        toolset = self.toolset
+
+        async def decide(
+            iteration: int,
+            steps: Sequence[ReActStep],
+        ) -> ReActDecision:
+            del steps
+            return await self.provider.complete_structured(
+                render_react_messages(
+                    system_prompt=self.system_prompt(task),
+                    task=task,
+                    descriptors=toolset.descriptors(),
+                    scratchpad=self.scratchpad.recent(
+                        self.config.prompt_context_entries
+                    ),
+                    iteration=iteration,
+                    max_iterations=self.config.max_iterations,
+                ),
+                ReActDecision,
+                agent_name=self.name,
+            )
+
+        react = await run_react_loop(
+            agent_name=self.name,
+            tracker=self.tracker,
+            tools=toolset,
+            decide=decide,
+            max_iterations=self.config.max_iterations,
+            tool_budget=self.config.tool_budget,
+            on_step=self._record_step,
+            is_sufficient=self.is_sufficient,
+            summary_limit=self.config.observation_summary_chars,
+        )
+        return react.model_copy(
+            update={"errors": [*react.errors, *self.scratchpad.drain_errors()]}
+        )
+
+    async def run(self, state: ResearchState) -> AgentRun[VerifiedClaims]:
+        """Extract claims, then verify each in its own bounded loop."""
+        base_task = self.build_task(state)
+        events: list[ResearchEvent] = []
+        errors: list[ResearchError] = []
+        claims: list[Claim] = []
+        runs: list[ReActRun] = []
+
+        async with self.tracker.agent_span(self.name) as span:
+            drafts, extraction_errors, extraction_failed = (
+                await self.extract_claims(state)
+            )
+            errors.extend(extraction_errors)
+            span.set_outputs(
+                {
+                    "agent_name": self.name,
+                    "phase": "extraction",
+                    "claim_count": len(drafts),
+                    "provider_failed": extraction_failed,
+                }
+            )
+        events.append(
+            claims_extracted_event(
+                claim_count=len(drafts),
+                findings_considered=len(state.raw_findings),
+                sources_considered=len(state.evaluated_sources),
+            )
+        )
+
+        for index, draft in enumerate(drafts, start=1):
+            task = self.claim_task(base_task, draft)
+            async with self.tracker.agent_span(self.name) as span:
+                react = await self._check_claim(task)
+                claim, reason, verify_errors, verify_failed = (
+                    await self.verify_claim(task, react)
+                )
+                if verify_failed:
+                    # Mirror the loop-level provider_error path so the
+                    # merged run never claims "finished" over an abort that
+                    # actually happened during verification.
+                    react = react.model_copy(
+                        update={"stop_reason": "provider_error"}
+                    )
+                independent = len(
+                    independent_domains(
+                        retrieved_source_urls(react),
+                        claimed_domains=task.claimed_domains,
+                    )
+                )
+                span.set_outputs(
+                    {
+                        "agent_name": self.name,
+                        "claim_index": index,
+                        "verdict": claim.verdict,
+                        "independent_sources": independent,
+                        "tool_calls": react.tool_calls,
+                        "stop_reason": react.stop_reason,
+                    }
+                )
+
+            runs.append(react)
+            claims.append(claim)
+            errors.extend(react.errors)
+            errors.extend(verify_errors)
+            events.append(
+                claim_checked_event(
+                    claim,
+                    react,
+                    index=index,
+                    independent_sources=independent,
+                    reason=reason,
+                )
+            )
+            if not react.succeeded:
+                # A provider failure — from the loop or from verification —
+                # is non-recoverable; the next claim would almost certainly
+                # repeat it at cost. Claims already judged are kept.
+                break
+
+        merged = merge_react_runs(self.name, runs).model_copy(
+            update={"errors": errors}
+        )
+        events.append(
+            fact_check_completed_event(claims, tool_calls=merged.tool_calls)
+        )
+        result = VerifiedClaims(claims=claims)
+        return AgentRun(
+            agent_name=self.name,
+            result=result,
+            react=merged,
+            errors=errors,
+            state_update={
+                **self.state_update(result, merged),
+                "events": events,
+            },
+        )
