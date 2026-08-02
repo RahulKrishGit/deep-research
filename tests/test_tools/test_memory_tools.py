@@ -1,6 +1,5 @@
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import Any
 
 import pytest
 

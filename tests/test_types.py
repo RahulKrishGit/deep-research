@@ -204,3 +204,34 @@ def test_event_and_error_defaults_are_json_safe_and_timezone_aware() -> None:
     assert event.metadata == {}
     assert error.details == {}
     assert error.recoverable is True
+
+
+def test_scored_source_defaults_to_not_low_confidence() -> None:
+    source = ScoredSource(
+        url="https://example.org/a",
+        title="A",
+        authority_score=0.8,
+        recency_score=0.7,
+        relevance_score=0.9,
+        corroboration_score=0.5,
+        overall_score=0.76,
+        rationale="Peer-reviewed and corroborated.",
+    )
+
+    assert source.low_confidence is False
+
+
+def test_scored_source_records_an_explicit_low_confidence_flag() -> None:
+    source = ScoredSource(
+        url="https://example.org/b",
+        title="B",
+        authority_score=0.1,
+        recency_score=0.0,
+        relevance_score=0.2,
+        corroboration_score=0.0,
+        overall_score=0.095,
+        rationale="Anonymous blog with no corroboration.",
+        low_confidence=True,
+    )
+
+    assert source.low_confidence is True

@@ -5,14 +5,26 @@ from __future__ import annotations
 import pytest
 
 from deep_research.agents.prompts import (
+    CLAIM_EXTRACTION_INSTRUCTION,
+    CLAIM_EXTRACTION_SYSTEM_PROMPT,
+    CLAIM_VERIFICATION_INSTRUCTION,
+    CLAIM_VERIFICATION_SYSTEM_PROMPT,
+    FACT_CHECKER_SYSTEM_PROMPT,
     REACT_RESPONSE_CONTRACT,
+    SOURCE_EVALUATOR_SYSTEM_PROMPT,
+    SOURCE_SCORING_INSTRUCTION,
     AgentTask,
+    render_finding_digest,
     render_react_messages,
     render_scratchpad,
+    render_source_dossier,
+    render_source_quality,
     render_tool_catalog,
 )
+from deep_research.agents.sources import SourceGroup
 from deep_research.agents.toolset import ToolDescriptor
 from deep_research.memory.entries import ScratchpadEntry
+from deep_research.utils.types import Finding, ScoredSource
 
 
 def _descriptor(name: str = "echo") -> ToolDescriptor:
@@ -242,3 +254,141 @@ def test_memory_guidance_is_empty_when_nothing_was_recalled() -> None:
     from deep_research.utils.types import MemorySnapshot
 
     assert render_memory_guidance(MemorySnapshot()) == ""
+
+
+PROMPT_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
+
+
+def _prompt_finding(
+    *,
+    content: str = "Logical error rates fell below break-even.",
+    url: str = "https://example.org/a",
+    sub_topic: str = "Alpha",
+) -> Finding:
+    return Finding(
+        content=content,
+        source_url=url,
+        source_title="QEC 2025",
+        extracted_at=PROMPT_EXTRACTED_AT,
+        confidence=0.8,
+        related_sub_topic=sub_topic,
+    )
+
+
+def test_source_dossier_renders_every_scoring_input() -> None:
+    group = SourceGroup(
+        url="https://example.org/a",
+        domain="example.org",
+        title="QEC 2025",
+        sub_topics=["Alpha"],
+        findings=[_prompt_finding()],
+    )
+
+    rendered = render_source_dossier(
+        group, index=2, corroboration=0.5, reputation=0.9
+    )
+
+    assert "Source 2: https://example.org/a" in rendered
+    assert "Title: QEC 2025" in rendered
+    assert "Cited for: Alpha" in rendered
+    assert "Corroboration (computed): 0.50" in rendered
+    assert "Known reputation: 0.90" in rendered
+    assert "Logical error rates fell below break-even." in rendered
+
+
+def test_source_dossier_says_so_when_no_reputation_is_known() -> None:
+    group = SourceGroup(
+        url="https://example.org/a", domain="example.org", title="A"
+    )
+
+    rendered = render_source_dossier(
+        group, index=1, corroboration=0.0, reputation=None
+    )
+
+    assert "Known reputation: none on record" in rendered
+    assert "(no findings)" in rendered
+
+
+def test_source_dossier_clamps_long_finding_text() -> None:
+    group = SourceGroup(
+        url="https://example.org/a",
+        domain="example.org",
+        title="A",
+        sub_topics=["Alpha"],
+        findings=[_prompt_finding(content="x" * 500)],
+    )
+
+    rendered = render_source_dossier(
+        group, index=1, corroboration=0.0, reputation=None, excerpt_chars=50
+    )
+
+    assert "x" * 500 not in rendered
+    assert "..." in rendered
+
+
+def test_finding_digest_numbers_findings_and_names_their_sources() -> None:
+    rendered = render_finding_digest(
+        [
+            _prompt_finding(sub_topic="Alpha"),
+            _prompt_finding(content="Second claim.", sub_topic="Beta"),
+        ]
+    )
+
+    assert "1. [Alpha] Logical error rates fell below break-even." in rendered
+    assert "(https://example.org/a)" in rendered
+    assert "2. [Beta] Second claim." in rendered
+
+
+def test_finding_digest_handles_an_empty_list() -> None:
+    assert render_finding_digest([]) == "(no findings)"
+
+
+def test_source_quality_marks_low_confidence_sources() -> None:
+    rendered = render_source_quality(
+        [
+            ScoredSource(
+                url="https://example.org/a",
+                title="A",
+                authority_score=0.9,
+                recency_score=0.8,
+                relevance_score=0.9,
+                corroboration_score=1.0,
+                overall_score=0.9,
+                rationale="Strong.",
+            ),
+            ScoredSource(
+                url="https://weak.test/b",
+                title="B",
+                authority_score=0.1,
+                recency_score=0.1,
+                relevance_score=0.1,
+                corroboration_score=0.0,
+                overall_score=0.08,
+                rationale="Weak.",
+                low_confidence=True,
+            ),
+        ]
+    )
+
+    assert "https://example.org/a: 0.90" in rendered
+    assert "https://weak.test/b: 0.08 (LOW CONFIDENCE)" in rendered
+
+
+def test_source_quality_handles_an_empty_list() -> None:
+    assert render_source_quality([]) == "(no sources scored)"
+
+
+def test_new_prompt_constants_state_their_contracts() -> None:
+    # The scoring call must never be asked for a combined score: this
+    # project computes overall_score from the four recorded dimensions.
+    assert "overall" not in SOURCE_SCORING_INSTRUCTION
+    assert "authority" in SOURCE_SCORING_INSTRUCTION
+    assert "between 0 and 1" in SOURCE_SCORING_INSTRUCTION
+    assert "exact url" in SOURCE_EVALUATOR_SYSTEM_PROMPT
+    assert "independent" in FACT_CHECKER_SYSTEM_PROMPT
+    assert "retrieved findings" in CLAIM_EXTRACTION_SYSTEM_PROMPT
+    assert "empty list" in CLAIM_EXTRACTION_INSTRUCTION
+    assert "invent" in CLAIM_VERIFICATION_SYSTEM_PROMPT
+    for verdict in ("verified", "unverified", "contradicted",
+                    "insufficient_evidence"):
+        assert verdict in CLAIM_VERIFICATION_INSTRUCTION
