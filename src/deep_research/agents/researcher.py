@@ -18,10 +18,17 @@ from datetime import datetime, timezone
 
 from pydantic import Field, ValidationError
 
-from deep_research.agents.base import BaseAgent, StructuredCompleter
+from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
 from deep_research.agents.errors import AgentConfigurationError, agent_error
-from deep_research.agents.prompts import AgentTask, render_memory_guidance
+from deep_research.agents.events import agent_event
+from deep_research.agents.prompts import (
+    AgentTask,
+    render_memory_guidance,
+    render_react_messages,
+)
+from deep_research.agents.react import run_react_loop
 from deep_research.agents.steps import (
+    ReActDecision,
     ReActRun,
     ReActStep,
     StopReason,
@@ -37,6 +44,7 @@ from deep_research.utils.types import (
     ContractModel,
     Finding,
     ResearchError,
+    ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
     SubTopic,
@@ -405,6 +413,111 @@ def build_findings(
     return findings, rejected
 
 
+def sub_topic_started_event(
+    sub_topic: SubTopic,
+    *,
+    index: int,
+    existing_sources: int,
+) -> ResearchEvent:
+    """Announce that one sub-topic's loop is about to run."""
+    return agent_event(
+        agent_name=RESEARCHER_NAME,
+        event_type="researcher.sub_topic.started",
+        message=f"Researching sub-topic {index}.",
+        metadata={
+            "sub_topic": sub_topic.title,
+            "priority": sub_topic.priority,
+            "index": index,
+            "existing_sources": existing_sources,
+        },
+    )
+
+
+def tool_call_events(
+    sub_topic: SubTopic,
+    run: ReActRun,
+) -> list[ResearchEvent]:
+    """Report one event per tool call the sub-topic's loop made."""
+    events: list[ResearchEvent] = []
+    for step in run.steps:
+        observation = step.observation
+        if observation is None:
+            continue
+        events.append(
+            agent_event(
+                agent_name=RESEARCHER_NAME,
+                event_type="researcher.tool_call",
+                message=f"{observation.tool_name} call completed.",
+                metadata={
+                    "sub_topic": sub_topic.title,
+                    "tool": observation.tool_name,
+                    "iteration": step.iteration,
+                    "success": observation.success,
+                    "error_type": observation.error_type,
+                },
+            )
+        )
+    return events
+
+
+def sub_topic_completed_event(
+    sub_topic: SubTopic,
+    run: ReActRun,
+    *,
+    index: int,
+    findings: int,
+) -> ResearchEvent:
+    """Report one sub-topic's stop reason, counts, and finding total."""
+    return agent_event(
+        agent_name=RESEARCHER_NAME,
+        event_type="researcher.sub_topic.completed",
+        message=f"Sub-topic {index} complete.",
+        metadata={
+            "sub_topic": sub_topic.title,
+            "index": index,
+            "stop_reason": run.stop_reason,
+            "iterations": run.iterations,
+            "tool_calls": run.tool_calls,
+            "findings": findings,
+        },
+    )
+
+
+def research_completed_event(
+    *,
+    sub_topics_researched: int,
+    findings: int,
+) -> ResearchEvent:
+    """Report the whole research pass."""
+    return agent_event(
+        agent_name=RESEARCHER_NAME,
+        event_type="researcher.research.completed",
+        message="Research pass complete.",
+        metadata={
+            "sub_topics_researched": sub_topics_researched,
+            "findings": findings,
+        },
+    )
+
+
+def no_findings_error(sub_topic: SubTopic, run: ReActRun) -> ResearchError:
+    """Warn that a high-priority sub-topic produced nothing citable."""
+    return agent_error(
+        agent_name=RESEARCHER_NAME,
+        error_type="researcher_sub_topic_without_findings",
+        message=(
+            "A high-priority sub-topic produced no findings; the report will "
+            "be incomplete for it."
+        ),
+        details={
+            "sub_topic": sub_topic.title,
+            "priority": sub_topic.priority,
+            "stop_reason": run.stop_reason,
+            "tool_calls": run.tool_calls,
+        },
+    )
+
+
 class ResearcherAgent(BaseAgent[ResearchFindings]):
     """Run one bounded ReAct loop per selected sub-topic and extract findings.
 
@@ -578,3 +691,136 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         if result is not None:
             update["raw_findings"] = list(result.findings)
         return update
+
+    async def _research_sub_topic(self, task: SubTopicTask) -> ReActRun:
+        """Run one bounded ReAct loop inside the caller's agent span.
+
+        The scratchpad is cleared first: notes about the previous sub-topic
+        are noise in this one's prompt. Context that genuinely carries over
+        travels in ``task.guidance`` instead.
+        """
+        self.scratchpad.clear()
+        toolset = self.toolset
+
+        async def decide(
+            iteration: int,
+            steps: Sequence[ReActStep],
+        ) -> ReActDecision:
+            del steps
+            return await self.provider.complete_structured(
+                render_react_messages(
+                    system_prompt=self.system_prompt(task),
+                    task=task,
+                    descriptors=toolset.descriptors(),
+                    scratchpad=self.scratchpad.recent(
+                        self.config.prompt_context_entries
+                    ),
+                    iteration=iteration,
+                    max_iterations=self.config.max_iterations,
+                ),
+                ReActDecision,
+                agent_name=self.name,
+            )
+
+        react = await run_react_loop(
+            agent_name=self.name,
+            tracker=self.tracker,
+            tools=toolset,
+            decide=decide,
+            max_iterations=self.config.max_iterations,
+            tool_budget=self.config.tool_budget,
+            on_step=self._record_step,
+            is_sufficient=self.is_sufficient,
+            summary_limit=self.config.observation_summary_chars,
+        )
+        return react.model_copy(
+            update={
+                "errors": [*react.errors, *self.scratchpad.drain_errors()]
+            }
+        )
+
+    async def run(self, state: ResearchState) -> AgentRun[ResearchFindings]:
+        """Research each selected sub-topic in its own bounded loop."""
+        base_task = self.build_task(state)
+        selected = select_sub_topics(
+            state, max_sub_topics=self._max_sub_topics
+        )
+        events: list[ResearchEvent] = []
+        errors: list[ResearchError] = []
+        findings: list[Finding] = []
+        runs: list[ReActRun] = []
+
+        for index, sub_topic in enumerate(selected, start=1):
+            existing = existing_sources_for(state, sub_topic)
+            task = self.sub_topic_task(base_task, sub_topic, existing)
+            events.append(
+                sub_topic_started_event(
+                    sub_topic, index=index, existing_sources=len(existing)
+                )
+            )
+            async with self.tracker.agent_span(self.name) as span:
+                react = await self._research_sub_topic(task)
+                sub_findings, extraction_errors = await self.extract_findings(
+                    task, react
+                )
+                span.set_outputs(
+                    {
+                        "agent_name": self.name,
+                        "sub_topic": sub_topic.title,
+                        "stop_reason": react.stop_reason,
+                        "iterations": react.iterations,
+                        "tool_calls": react.tool_calls,
+                        "findings": len(sub_findings),
+                    }
+                )
+
+            runs.append(react)
+            findings.extend(sub_findings)
+            errors.extend(react.errors)
+            errors.extend(extraction_errors)
+            events.extend(tool_call_events(sub_topic, react))
+            events.append(
+                sub_topic_completed_event(
+                    sub_topic,
+                    react,
+                    index=index,
+                    findings=len(sub_findings),
+                )
+            )
+            if not sub_findings and is_high_priority(
+                sub_topic, threshold=self._high_priority_threshold
+            ):
+                errors.append(no_findings_error(sub_topic, react))
+            if not react.succeeded:
+                # A provider failure is non-recoverable; the next sub-topic
+                # would almost certainly repeat it at cost.
+                break
+
+        if not selected:
+            errors.append(
+                agent_error(
+                    agent_name=self.name,
+                    error_type="researcher_no_sub_topics",
+                    message="No sub-topics were available to research.",
+                )
+            )
+        events.append(
+            research_completed_event(
+                sub_topics_researched=len(runs), findings=len(findings)
+            )
+        )
+
+        merged = merge_react_runs(self.name, runs).model_copy(
+            update={"errors": errors}
+        )
+        result = ResearchFindings(findings=findings)
+        return AgentRun(
+            agent_name=self.name,
+            result=result,
+            react=merged,
+            errors=errors,
+            state_update={
+                **self.state_update(result, merged),
+                "events": events,
+            },
+        )

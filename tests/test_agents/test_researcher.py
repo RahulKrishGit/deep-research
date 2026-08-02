@@ -29,6 +29,7 @@ from deep_research.agents.researcher import (
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
+from deep_research.providers import ProviderTimeoutError
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -38,9 +39,15 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchState,
     SubTopic,
+    merge_research_state,
 )
-from tests.agent_fakes import ScriptedCompleter
-from tests.research_fakes import FakeMemory, FakeSearchClient, research_tools
+from tests.agent_fakes import ScriptedCompleter, finish, use_tool
+from tests.research_fakes import (
+    FakeMemory,
+    FakeSearchClient,
+    research_tools,
+    search_response,
+)
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
@@ -720,3 +727,293 @@ def test_the_state_update_carries_findings_and_errors(tracker: Tracker) -> None:
     update = agent.state_update(ResearchFindings(findings=[finding]), run)
 
     assert update == {"errors": [], "raw_findings": [finding]}
+
+
+def _findings_draft(content: str = "Logical error rates fell below break-even.") -> (
+    SubTopicFindingsDraft
+):
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=content,
+                source_url="https://example.test/qec",
+                source_title="Quantum error correction in 2025",
+                confidence=0.8,
+            )
+        ]
+    )
+
+
+def _search_and_scrape_decisions() -> list[object]:
+    return [
+        use_tool("Find sources.", "web_search", '{"query": "qec 2025"}'),
+        use_tool(
+            "Read the best source.",
+            "web_scraper",
+            '{"url": "https://example.test/qec"}',
+        ),
+        finish("I have a source-backed answer.", "Error rates fell."),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_researcher_creates_findings_from_search_and_scrape(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(),
+        outputs=[_findings_draft()],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(sub_topics=[_sub_topic("Alpha", 1)])
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert len(outcome.result.findings) == 1
+    finding = outcome.result.findings[0]
+    assert finding.related_sub_topic == "Alpha"
+    assert finding.source_url == "https://example.test/qec"
+    assert outcome.state_update["raw_findings"] == outcome.result.findings
+    assert outcome.react.tool_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_findings_merge_into_research_state(tracker: Tracker) -> None:
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(),
+        outputs=[_findings_draft()],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(sub_topics=[_sub_topic("Alpha", 1)])
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+    merged = merge_research_state(state, outcome.state_update)
+
+    assert len(merged.raw_findings) == 1
+    assert [event.event_type for event in merged.events] == [
+        "researcher.sub_topic.started",
+        "researcher.tool_call",
+        "researcher.tool_call",
+        "researcher.sub_topic.completed",
+        "researcher.research.completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_researcher_reports_counts_and_stop_reason_per_sub_topic(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(),
+        outputs=[_findings_draft()],
+    )
+    agent = _researcher(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    events = {
+        event.event_type: event for event in outcome.state_update["events"]
+    }
+    completed = events["researcher.sub_topic.completed"]
+    assert completed.metadata["sub_topic"] == "Alpha"
+    assert completed.metadata["stop_reason"] == "finished"
+    assert completed.metadata["tool_calls"] == 2
+    assert completed.metadata["findings"] == 1
+    assert events["researcher.research.completed"].metadata == {
+        "sub_topics_researched": 1,
+        "findings": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_researcher_respects_its_iteration_bound(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Search again.", "web_search", '{"query": "qec 2025"}')
+        ]
+        * 2,
+        outputs=[SubTopicFindingsDraft(findings=[])],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([search_response(), search_response()]),
+        config=AgentRuntimeConfig(max_iterations=2, tool_budget=4),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    assert outcome.react.stop_reason == "max_iterations"
+    assert outcome.react.iterations == 2
+
+
+@pytest.mark.asyncio
+async def test_the_researcher_prioritizes_the_gap_the_critic_named(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing to retrieve.", "No new sources.")],
+        outputs=[],
+    )
+    agent = _researcher(tracker, completer, max_sub_topics=1)
+    state = _state(
+        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 5)],
+        critique=_critique(
+            gaps=["Beta is completely uncovered."],
+            recommended_queries=["beta throughput 2025"],
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = outcome.state_update["events"][0]
+    assert started.metadata["sub_topic"] == "Beta"
+    loop_body = completer.calls[0][2][1].content
+    assert "- beta throughput 2025" in loop_body
+    assert "Sub-topic: Beta" in loop_body
+
+
+@pytest.mark.asyncio
+async def test_a_tool_failure_does_not_stop_the_loop(tracker: Tracker) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Search first.", "web_search", '{"query": "qec 2025"}'),
+            use_tool(
+                "Try the other source.",
+                "web_scraper",
+                '{"url": "https://example.test/qec"}',
+            ),
+            finish("I have one source.", "Error rates fell."),
+        ],
+        outputs=[_findings_draft()],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([RuntimeError("tavily is down")]),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    assert len(outcome.result.findings) == 1
+    assert [error.error_type for error in outcome.errors] == [
+        "agent_tool_failed"
+    ]
+    assert outcome.errors[0].recoverable is True
+    tool_events = [
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.tool_call"
+    ]
+    assert [event.metadata["success"] for event in tool_events] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_a_high_priority_sub_topic_without_findings_records_a_warning(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing worth retrieving.", "No sources found.")],
+    )
+    agent = _researcher(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    warnings = [
+        error
+        for error in outcome.errors
+        if error.error_type == "researcher_sub_topic_without_findings"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].recoverable is True
+    assert warnings[0].source == "agent.researcher"
+    assert warnings[0].details["sub_topic"] == "Alpha"
+    assert warnings[0].details["stop_reason"] == "finished"
+
+
+@pytest.mark.asyncio
+async def test_a_low_priority_sub_topic_without_findings_records_no_warning(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing worth retrieving.", "No sources found.")],
+    )
+    agent = _researcher(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 7)]))
+
+    assert outcome.errors == []
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_stops_the_remaining_sub_topics(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[ProviderTimeoutError("timed out")],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(
+        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 2)]
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert outcome.react.stop_reason == "provider_error"
+    started = [
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert len(started) == 1
+    assert any(error.recoverable is False for error in outcome.errors)
+
+
+@pytest.mark.asyncio
+async def test_a_plan_with_no_sub_topics_records_a_recoverable_error(
+    tracker: Tracker,
+) -> None:
+    agent = _researcher(tracker, ScriptedCompleter())
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result == ResearchFindings()
+    assert [error.error_type for error in outcome.errors] == [
+        "researcher_no_sub_topics"
+    ]
+    assert outcome.react.stop_reason == "finished"
+
+
+@pytest.mark.asyncio
+async def test_the_scratchpad_does_not_leak_between_sub_topics(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            finish("Nothing for Alpha.", "Alpha has no sources."),
+            finish("Nothing for Beta.", "Beta has no sources."),
+        ],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(
+        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 2)]
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(state)
+
+    second_loop_body = completer.calls[1][2][1].content
+    assert "(no notes yet)" in second_loop_body
