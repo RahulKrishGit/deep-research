@@ -130,20 +130,17 @@ def _normalized(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
-def select_sub_topics(
-    state: ResearchState,
-    *,
-    max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
-) -> list[SubTopic]:
-    """Order sub-topics by Critic-flagged gaps first, then by priority.
+def _ordered_sub_topics(state: ResearchState) -> list[SubTopic]:
+    """Order every sub-topic by Critic-flagged gaps first, then by priority.
 
     A sub-topic counts as gap-flagged when its normalized title appears
     inside the concatenated, normalized text of ``critique.gaps``. Ties
     resolve by ``priority`` ascending (1 is most important), then by the
-    order the planner produced.
+    order the planner produced. Callers that need to know which sub-topics
+    a ``max_sub_topics`` cap left out (``ResearcherAgent.run``) use this
+    directly instead of ``select_sub_topics``, which only returns the
+    truncated head.
     """
-    if max_sub_topics < 1:
-        raise ValueError("max_sub_topics must be at least 1")
     critique = state.critique
     gap_text = (
         " ".join(_normalized(gap) for gap in critique.gaps)
@@ -158,7 +155,22 @@ def select_sub_topics(
         return (flagged, sub_topic.priority, index)
 
     ordered = sorted(enumerate(state.sub_topics), key=sort_key)
-    return [sub_topic for _, sub_topic in ordered[:max_sub_topics]]
+    return [sub_topic for _, sub_topic in ordered]
+
+
+def select_sub_topics(
+    state: ResearchState,
+    *,
+    max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
+) -> list[SubTopic]:
+    """Return the top ``max_sub_topics`` sub-topics, ordered by ``_ordered_sub_topics``.
+
+    Sub-topics past the cap are truncated here with no record of their own —
+    ``ResearcherAgent.run`` is responsible for recording what this cap drops.
+    """
+    if max_sub_topics < 1:
+        raise ValueError("max_sub_topics must be at least 1")
+    return _ordered_sub_topics(state)[:max_sub_topics]
 
 
 def is_high_priority(
@@ -425,7 +437,7 @@ def sub_topic_started_event(
         event_type="researcher.sub_topic.started",
         message=f"Researching sub-topic {index}.",
         metadata={
-            "sub_topic": sub_topic.title,
+            "sub_topic": summarize_text(sub_topic.title),
             "priority": sub_topic.priority,
             "index": index,
             "existing_sources": existing_sources,
@@ -449,7 +461,7 @@ def tool_call_events(
                 event_type="researcher.tool_call",
                 message=f"{observation.tool_name} call completed.",
                 metadata={
-                    "sub_topic": sub_topic.title,
+                    "sub_topic": summarize_text(sub_topic.title),
                     "tool": observation.tool_name,
                     "iteration": step.iteration,
                     "success": observation.success,
@@ -473,7 +485,7 @@ def sub_topic_completed_event(
         event_type="researcher.sub_topic.completed",
         message=f"Sub-topic {index} complete.",
         metadata={
-            "sub_topic": sub_topic.title,
+            "sub_topic": summarize_text(sub_topic.title),
             "index": index,
             "stop_reason": run.stop_reason,
             "iterations": run.iterations,
@@ -485,23 +497,43 @@ def sub_topic_completed_event(
 
 def research_completed_event(
     *,
+    sub_topics_planned: int,
     sub_topics_researched: int,
+    sub_topics_skipped: int,
     findings: int,
 ) -> ResearchEvent:
-    """Report the whole research pass."""
+    """Report the whole research pass.
+
+    ``sub_topics_planned`` is every sub-topic the Planner produced;
+    ``sub_topics_skipped`` is however many of those were never attempted —
+    dropped by the ``max_sub_topics`` cap, or left unstarted when a
+    non-recoverable provider failure stopped the pass early. Together with
+    ``sub_topics_researched`` this makes "was every planned sub-topic
+    accounted for" answerable from the event stream alone, without cross-
+    referencing ``state.errors``.
+    """
     return agent_event(
         agent_name=RESEARCHER_NAME,
         event_type="researcher.research.completed",
         message="Research pass complete.",
         metadata={
+            "sub_topics_planned": sub_topics_planned,
             "sub_topics_researched": sub_topics_researched,
+            "sub_topics_skipped": sub_topics_skipped,
             "findings": findings,
         },
     )
 
 
 def no_findings_error(sub_topic: SubTopic, run: ReActRun) -> ResearchError:
-    """Warn that a high-priority sub-topic produced nothing citable."""
+    """Warn that a high-priority sub-topic produced nothing citable.
+
+    The caller must only call this once a sub-topic's loop and extraction
+    are both known to have succeeded — a run that died to a provider
+    failure gets ``extraction_provider_error`` or the loop-level
+    ``provider_error`` instead, never this, so a coverage gap is never
+    confused with an infrastructure outage.
+    """
     return agent_error(
         agent_name=RESEARCHER_NAME,
         error_type="researcher_sub_topic_without_findings",
@@ -510,10 +542,39 @@ def no_findings_error(sub_topic: SubTopic, run: ReActRun) -> ResearchError:
             "be incomplete for it."
         ),
         details={
-            "sub_topic": sub_topic.title,
+            "sub_topic": summarize_text(sub_topic.title),
             "priority": sub_topic.priority,
             "stop_reason": run.stop_reason,
             "tool_calls": run.tool_calls,
+        },
+    )
+
+
+def sub_topic_skipped_error(
+    sub_topic: SubTopic,
+    *,
+    reason: str,
+) -> ResearchError:
+    """Warn that a high-priority sub-topic was never attempted at all.
+
+    ``reason`` is one of two enumerated strings, never raw exception text:
+    ``"cap"`` when ``max_sub_topics`` truncated the planned list before this
+    sub-topic's turn came up, or ``"provider_failure_stopped_processing"``
+    when an earlier sub-topic's non-recoverable provider failure stopped
+    the pass before this sub-topic could run. Recoverable: the rest of the
+    report can still stand, just incomplete for this sub-topic.
+    """
+    return agent_error(
+        agent_name=RESEARCHER_NAME,
+        error_type="researcher_sub_topic_skipped",
+        message=(
+            "A high-priority sub-topic was never researched; the report "
+            "will be incomplete for it."
+        ),
+        details={
+            "sub_topic": summarize_text(sub_topic.title),
+            "priority": sub_topic.priority,
+            "reason": reason,
         },
     )
 
@@ -696,7 +757,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     "Some extracted findings were malformed and were dropped."
                 ),
                 details={
-                    "sub_topic": task.sub_topic.title,
+                    "sub_topic": summarize_text(task.sub_topic.title),
                     "rejected": rejected,
                 },
             )
@@ -780,14 +841,15 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
     async def run(self, state: ResearchState) -> AgentRun[ResearchFindings]:
         """Research each selected sub-topic in its own bounded loop."""
         base_task = self.build_task(state)
-        selected = select_sub_topics(
-            state, max_sub_topics=self._max_sub_topics
-        )
+        ordered = _ordered_sub_topics(state)
+        selected = ordered[: self._max_sub_topics]
+        capped = ordered[self._max_sub_topics :]
         events: list[ResearchEvent] = []
         errors: list[ResearchError] = []
         findings: list[Finding] = []
         runs: list[ReActRun] = []
 
+        stopped_at: int | None = None
         for index, sub_topic in enumerate(selected, start=1):
             existing = existing_sources_for(state, sub_topic)
             task = self.sub_topic_task(base_task, sub_topic, existing)
@@ -803,6 +865,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     extraction_errors,
                     extraction_failed,
                 ) = await self.extract_findings(task, react)
+                if extraction_failed:
+                    # Mirror the loop-level provider_error path so the
+                    # merged run (and this sub-topic's own completed event)
+                    # never claims "finished" over an abort that actually
+                    # happened during extraction.
+                    react = react.model_copy(
+                        update={"stop_reason": "provider_error"}
+                    )
                 span.set_outputs(
                     {
                         "agent_name": self.name,
@@ -827,16 +897,38 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     findings=len(sub_findings),
                 )
             )
+            if not react.succeeded:
+                # A provider failure — whether from the ReAct loop or from
+                # extraction — is non-recoverable; the next sub-topic would
+                # almost certainly repeat it at cost. Findings already
+                # collected from this and prior sub-topics are kept. This
+                # check must run before the "no findings" check below: a
+                # sub-topic that died to a provider error is an outage, not
+                # a coverage gap, and must never be reported as one.
+                stopped_at = index
+                break
             if not sub_findings and is_high_priority(
                 sub_topic, threshold=self._high_priority_threshold
             ):
                 errors.append(no_findings_error(sub_topic, react))
-            if not react.succeeded or extraction_failed:
-                # A provider failure — whether from the ReAct loop or from
-                # extraction — is non-recoverable; the next sub-topic would
-                # almost certainly repeat it at cost. Findings already
-                # collected from this and prior sub-topics are kept.
-                break
+
+        # Every high-priority sub-topic that was never attempted — either
+        # truncated by the max_sub_topics cap, or left unstarted when a
+        # provider failure stopped the pass early — gets a structured,
+        # recoverable record. Without this, state.errors and the event
+        # stream cannot be trusted as "every high-priority sub-topic was
+        # actually attempted": sub-topics could vanish with no trace.
+        skipped_by_break = selected[stopped_at:] if stopped_at is not None else []
+        for sub_topic in capped:
+            if is_high_priority(sub_topic, threshold=self._high_priority_threshold):
+                errors.append(sub_topic_skipped_error(sub_topic, reason="cap"))
+        for sub_topic in skipped_by_break:
+            if is_high_priority(sub_topic, threshold=self._high_priority_threshold):
+                errors.append(
+                    sub_topic_skipped_error(
+                        sub_topic, reason="provider_failure_stopped_processing"
+                    )
+                )
 
         if not selected:
             errors.append(
@@ -848,7 +940,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             )
         events.append(
             research_completed_event(
-                sub_topics_researched=len(runs), findings=len(findings)
+                sub_topics_planned=len(state.sub_topics),
+                sub_topics_researched=len(runs),
+                sub_topics_skipped=len(capped) + len(skipped_by_break),
+                findings=len(findings),
             )
         )
 

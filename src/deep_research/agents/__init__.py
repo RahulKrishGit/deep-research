@@ -65,6 +65,7 @@ from deep_research.agents.researcher import (
     research_completed_event,
     select_sub_topics,
     sub_topic_completed_event,
+    sub_topic_skipped_error,
     sub_topic_started_event,
     tool_call_events,
 )
@@ -149,6 +150,7 @@ __all__ = [
     "run_react_loop",
     "select_sub_topics",
     "sub_topic_completed_event",
+    "sub_topic_skipped_error",
     "sub_topic_started_event",
     "summarize_text",
     "tool_call_events",

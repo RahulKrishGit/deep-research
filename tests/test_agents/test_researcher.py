@@ -868,7 +868,9 @@ async def test_the_researcher_reports_counts_and_stop_reason_per_sub_topic(
     assert completed.metadata["tool_calls"] == 2
     assert completed.metadata["findings"] == 1
     assert events["researcher.research.completed"].metadata == {
+        "sub_topics_planned": 1,
         "sub_topics_researched": 1,
+        "sub_topics_skipped": 0,
         "findings": 1,
     }
 
