@@ -12,6 +12,8 @@ from deep_research.agents.fact_checker import (
     ClaimsDraft,
     ClaimTask,
     ClaimVerdictDraft,
+    FactCheckerAgent,
+    VerifiedClaims,
     build_claim,
     build_claim_drafts,
     claim_extraction_messages,
@@ -25,8 +27,13 @@ from deep_research.agents.fact_checker import (
     retrieved_source_urls,
     verdict_counts,
 )
+from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import Tracker
+from deep_research.providers import ProviderTimeoutError
 from deep_research.tools.base import ToolResult
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
     ClaimVerdict,
@@ -35,6 +42,8 @@ from deep_research.utils.types import (
     ResearchState,
     ScoredSource,
 )
+from tests.agent_fakes import ScriptedCompleter
+from tests.research_fakes import fact_checker_tools
 
 CHECK_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
@@ -427,3 +436,294 @@ def test_verdict_counts_cover_every_verdict_value() -> None:
         "contradicted": 0,
         "insufficient_evidence": 1,
     }
+
+
+def _checker(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    tools: list[object] | None = None,
+    max_claims: int = 5,
+) -> FactCheckerAgent:
+    return FactCheckerAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="fact_checker", max_entries=20
+        ),
+        tools=tools if tools is not None else fact_checker_tools(tracker),
+        config=AgentRuntimeConfig(max_iterations=3, tool_budget=3),
+        max_claims=max_claims,
+    )
+
+
+@pytest.mark.asyncio
+async def test_extraction_keeps_only_claims_backed_by_real_sources(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(
+                        text="Break-even was crossed in 2025.",
+                        source_urls=["https://example.org/a"],
+                    ),
+                    ClaimDraft(
+                        text="Invented.",
+                        source_urls=["https://invented.test/x"],
+                    ),
+                ]
+            )
+        ]
+    )
+    agent = _checker(tracker, completer)
+    state = _check_state([_check_finding("https://example.org/a")])
+
+    claims, errors, provider_failed = await agent.extract_claims(state)
+
+    assert provider_failed is False
+    assert [claim.text for claim in claims] == [
+        "Break-even was crossed in 2025."
+    ]
+    assert errors[0].error_type == "fact_checker_invalid_claim"
+    assert errors[0].recoverable is True
+
+
+@pytest.mark.asyncio
+async def test_extraction_makes_no_provider_call_without_findings(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter()
+    agent = _checker(tracker, completer)
+
+    claims, errors, provider_failed = await agent.extract_claims(_check_state([]))
+
+    assert claims == []
+    assert provider_failed is False
+    assert errors[0].error_type == "fact_checker_no_findings"
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_extraction_provider_failure_is_non_recoverable(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    agent = _checker(tracker, completer)
+    state = _check_state([_check_finding("https://example.org/a")])
+
+    claims, errors, provider_failed = await agent.extract_claims(state)
+
+    assert claims == []
+    assert provider_failed is True
+    assert errors[0].error_type == "fact_checker_extraction_provider_error"
+    assert errors[0].recoverable is False
+    assert errors[0].details["exception_type"] == "ProviderTimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_a_claim_with_only_its_own_domain_retrieved_is_insufficient(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter()
+    agent = _checker(tracker, completer)
+    task = agent.claim_task(
+        AgentTask(instruction="Check claims."), _claim_draft()
+    )
+    run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                1,
+                "web_scraper",
+                {"url": "https://example.org/other", "text": "Same publisher."},
+            )
+        ],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    claim, reason, errors, provider_failed = await agent.verify_claim(task, run)
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.confidence == pytest.approx(0.0)
+    assert reason == "no_independent_source"
+    assert errors == []
+    assert provider_failed is False
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_loop_that_died_to_the_provider_is_insufficient(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter()
+    agent = _checker(tracker, completer)
+    task = agent.claim_task(
+        AgentTask(instruction="Check claims."), _claim_draft()
+    )
+    run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="provider_error",
+        steps=[
+            _tool_step(
+                1,
+                "web_search",
+                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+            )
+        ],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    claim, reason, _, _ = await agent.verify_claim(task, run)
+
+    assert claim.verdict == "insufficient_evidence"
+    assert reason == "loop_failed"
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_every_tool_call_failing_is_insufficient_not_unverified(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter()
+    agent = _checker(tracker, completer)
+    task = agent.claim_task(
+        AgentTask(instruction="Check claims."), _claim_draft()
+    )
+    run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="finished",
+        steps=[
+            _tool_step(1, "web_search", None, success=False),
+            _tool_step(2, "web_scraper", None, success=False),
+        ],
+        iterations=2,
+        tool_calls=2,
+    )
+
+    claim, reason, _, _ = await agent.verify_claim(task, run)
+
+    assert claim.verdict == "insufficient_evidence"
+    assert reason == "no_independent_source"
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_independent_evidence_produces_a_model_verdict(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(outputs=[_verdict_draft(verdict="verified")])
+    agent = _checker(tracker, completer)
+    task = agent.claim_task(
+        AgentTask(instruction="Check claims."), _claim_draft()
+    )
+    run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                1,
+                "web_search",
+                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+            )
+        ],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    claim, reason, errors, provider_failed = await agent.verify_claim(task, run)
+
+    assert claim.verdict == "verified"
+    assert claim.confidence == pytest.approx(0.9)
+    assert reason is None
+    assert errors == []
+    assert provider_failed is False
+
+
+@pytest.mark.asyncio
+async def test_a_contradiction_survives_a_verified_model_answer(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        outputs=[
+            _verdict_draft(
+                verdict="verified",
+                contradictions=["A regulator published the opposite figure."],
+            )
+        ]
+    )
+    agent = _checker(tracker, completer)
+    task = agent.claim_task(
+        AgentTask(instruction="Check claims."), _claim_draft()
+    )
+    run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                1,
+                "web_search",
+                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+            )
+        ],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    claim, reason, _, _ = await agent.verify_claim(task, run)
+
+    assert claim.verdict == "contradicted"
+    assert claim.contradictions == [
+        "A regulator published the opposite figure."
+    ]
+    assert reason is None
+
+
+@pytest.mark.asyncio
+async def test_a_verification_provider_failure_is_insufficient_not_invented(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    agent = _checker(tracker, completer)
+    task = agent.claim_task(
+        AgentTask(instruction="Check claims."), _claim_draft()
+    )
+    run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                1,
+                "web_search",
+                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+            )
+        ],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    claim, reason, errors, provider_failed = await agent.verify_claim(task, run)
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.confidence == pytest.approx(0.0)
+    assert reason == "provider_unavailable"
+    assert provider_failed is True
+    assert errors[0].error_type == "fact_checker_verification_provider_error"
+    assert errors[0].recoverable is False
+
+
+def test_state_update_carries_verified_claims_and_errors(
+    tracker: Tracker,
+) -> None:
+    agent = _checker(tracker, ScriptedCompleter())
+    claim = insufficient_claim(_claim_draft(), reason="no_independent_source")
+    run = ReActRun(agent_name="fact_checker", stop_reason="finished")
+
+    update = agent.state_update(VerifiedClaims(claims=[claim]), run)
+
+    assert update["verified_claims"] == [claim]
+    assert update["errors"] == []

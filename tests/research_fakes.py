@@ -215,6 +215,30 @@ def research_tools(
     ]
 
 
+def fact_checker_tools(
+    tracker: Tracker,
+    *,
+    search: FakeSearchClient | None = None,
+    memory: FakeMemory | None = None,
+    http: httpx.AsyncClient | None = None,
+) -> list[BaseTool]:
+    """Build the four tools ``FactCheckerAgent`` declares, all offline.
+
+    No ``save_to_memory``: the Fact Checker reads evidence and never
+    writes findings.
+    """
+    client = http or page_client()
+    return [
+        WebSearchTool(
+            tracker,
+            client=search or FakeSearchClient([search_response()]),
+        ),
+        WebScraperTool(tracker, client=client),
+        DocumentReaderTool(tracker, client=client),
+        QueryMemoryTool(tracker, memory or FakeMemory()),
+    ]
+
+
 class FakeReputationSource:
     """Serve remembered source reputations without a vector store.
 

@@ -18,12 +18,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from deep_research.agents.errors import agent_error
+from deep_research.agents.base import BaseAgent, StructuredCompleter
+from deep_research.agents.errors import AgentConfigurationError, agent_error
 from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
     CLAIM_VERIFICATION_INSTRUCTION,
     CLAIM_VERIFICATION_SYSTEM_PROMPT,
+    FACT_CHECKER_SYSTEM_PROMPT,
     AgentTask,
     render_finding_digest,
     render_source_quality,
@@ -31,13 +33,18 @@ from deep_research.agents.prompts import (
 from deep_research.agents.researcher import render_evidence
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.agents.steps import ReActRun
-from deep_research.providers import ChatMessage
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import Tracker
+from deep_research.providers import ChatMessage, OpenAIProviderError
+from deep_research.tools.base import BaseTool
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
     ClaimVerdict,
     ContractModel,
     ResearchError,
     ResearchState,
+    ResearchStateUpdate,
 )
 
 FACT_CHECKER_NAME = "fact_checker"
@@ -463,3 +470,230 @@ def verdict_counts(claims: Sequence[Claim]) -> dict[str, int]:
     for claim in claims:
         counts[claim.verdict] += 1
     return counts
+
+
+def claim_verification_provider_error(error: Exception) -> ResearchError:
+    """Record that one claim's verdict call could not reach the provider.
+
+    Non-recoverable, and the claim is recorded as
+    ``insufficient_evidence``: an outage is not evidence.
+    """
+    return agent_error(
+        agent_name=FACT_CHECKER_NAME,
+        error_type="fact_checker_verification_provider_error",
+        message=(
+            "The model provider failed while a claim's verdict was "
+            "requested; the claim was recorded as insufficient evidence."
+        ),
+        recoverable=False,
+        details={"exception_type": type(error).__name__},
+    )
+
+
+class FactCheckerAgent(BaseAgent[VerifiedClaims]):
+    """Extract the major claims and verify each against independent sources.
+
+    ``run`` is overridden because the spec requires a loop *per claim*,
+    which the single-loop ``BaseAgent.run`` cannot express. Everything
+    below ``run`` — bounds, tracing, tool execution, scratchpad writes —
+    is still the shared runtime's.
+    """
+
+    name = FACT_CHECKER_NAME
+    description = "Verify the major factual claims against independent sources."
+    allowed_tools = (
+        "web_search",
+        "web_scraper",
+        "document_reader",
+        "query_memory",
+    )
+
+    def __init__(
+        self,
+        *,
+        provider: StructuredCompleter,
+        tracker: Tracker,
+        scratchpad: ScratchpadMemory,
+        tools: Sequence[BaseTool] = (),
+        config: AgentRuntimeConfig | None = None,
+        max_claims: int = DEFAULT_MAX_CLAIMS,
+        finding_digest: int = DEFAULT_FINDING_DIGEST,
+        evidence_chars: int = FACT_CHECK_EVIDENCE_CHARS,
+    ) -> None:
+        super().__init__(
+            provider=provider,
+            tracker=tracker,
+            scratchpad=scratchpad,
+            tools=tools,
+            config=config,
+        )
+        if max_claims < 1:
+            raise ValueError("max_claims must be at least 1")
+        if finding_digest < 1:
+            raise ValueError("finding_digest must be at least 1")
+        if evidence_chars < 1:
+            raise ValueError("evidence_chars must be at least 1")
+        self._max_claims = max_claims
+        self._finding_digest = finding_digest
+        self._evidence_chars = evidence_chars
+
+    @property
+    def output_schema(self) -> type[VerifiedClaims]:
+        """The validated claims. Never sent to the provider.
+
+        ``extract_claims`` asks for ``ClaimsDraft`` and ``verify_claim``
+        asks for ``ClaimVerdictDraft``, because ``Claim`` carries ``Field``
+        and ``UnitScore`` constraints that do not survive strict JSON
+        schema conversion. Do not route this agent through
+        ``complete_output``.
+        """
+        return VerifiedClaims
+
+    def system_prompt(self, task: AgentTask) -> str:
+        del task
+        return FACT_CHECKER_SYSTEM_PROMPT
+
+    def build_task(self, state: ResearchState) -> AgentTask:
+        """Describe the run as a whole. ``claim_task`` narrows it."""
+        return AgentTask(instruction=state.original_question)
+
+    def claim_task(self, base: AgentTask, claim: ClaimDraft) -> ClaimTask:
+        """Narrow the run-level task down to one claim's loop."""
+        claimed = claimed_domains_for(claim.source_urls)
+        sources = "\n".join(f"- {url}" for url in claim.source_urls)
+        guidance = "\n".join(
+            [
+                "The claim was made by these sources:",
+                sources,
+                (
+                    "Do not treat another page from "
+                    f"{', '.join(claimed)} as independent corroboration."
+                ),
+            ]
+        )
+        sections = [
+            section
+            for section in (base.guidance.strip(), guidance)
+            if section
+        ]
+        return ClaimTask(
+            instruction=(
+                f'Verify this claim against independent sources: "'
+                f'{claim.text}"'
+            ),
+            guidance="\n\n".join(sections),
+            claim=claim,
+            claimed_domains=claimed,
+        )
+
+    async def extract_claims(
+        self,
+        state: ResearchState,
+    ) -> tuple[list[ClaimDraft], list[ResearchError], bool]:
+        """Turn the finished research pass into checkable claim drafts.
+
+        Makes no provider call when there are no findings, so the
+        extraction step can never invent a claim out of nothing.
+        """
+        if not state.raw_findings:
+            return [], [no_findings_to_check_error()], False
+
+        try:
+            response = await self.provider.complete_structured(
+                claim_extraction_messages(
+                    state, max_findings=self._finding_digest
+                ),
+                ClaimsDraft,
+                agent_name=self.name,
+            )
+        except OpenAIProviderError as error:
+            return [], [claim_extraction_provider_error(error)], True
+
+        claims, rejected = build_claim_drafts(
+            response, known_urls=known_source_urls(state)
+        )
+        errors = [invalid_claim_error(rejected)] if rejected else []
+        return claims[: self._max_claims], errors, False
+
+    async def verify_claim(
+        self,
+        task: ClaimTask,
+        run: ReActRun,
+    ) -> tuple[Claim, str | None, list[ResearchError], bool]:
+        """Judge one claim from one finished loop.
+
+        Returns ``(claim, reason, errors, provider_failed)``. ``reason`` is
+        an ``INSUFFICIENT_REASONS`` key when the claim could not be judged
+        and ``None`` otherwise. No provider call is made when the loop
+        failed or retrieved nothing independent, so a verdict can never be
+        invented over an empty evidence section.
+        """
+        if not run.succeeded:
+            return insufficient_claim(task.claim, reason="loop_failed"), (
+                "loop_failed"
+            ), [], False
+
+        independent = independent_domains(
+            retrieved_source_urls(run), claimed_domains=task.claimed_domains
+        )
+        if not independent:
+            return (
+                insufficient_claim(task.claim, reason="no_independent_source"),
+                "no_independent_source",
+                [],
+                False,
+            )
+
+        try:
+            draft = await self.provider.complete_structured(
+                claim_verification_messages(
+                    task,
+                    run,
+                    evidence_chars=self._evidence_chars,
+                    independent=independent,
+                ),
+                ClaimVerdictDraft,
+                agent_name=self.name,
+            )
+        except OpenAIProviderError as error:
+            return (
+                insufficient_claim(task.claim, reason="provider_unavailable"),
+                "provider_unavailable",
+                [claim_verification_provider_error(error)],
+                True,
+            )
+
+        return (
+            build_claim(task.claim, draft, independent=independent),
+            None,
+            [],
+            False,
+        )
+
+    async def finalize(
+        self,
+        task: AgentTask,
+        run: ReActRun,
+    ) -> VerifiedClaims | None:
+        """Adapt ``verify_claim`` to the ``BaseAgent`` hook.
+
+        ``run`` calls ``verify_claim`` directly so it can keep the reason
+        and the errors this hook signature has nowhere to return.
+        """
+        if not isinstance(task, ClaimTask):
+            raise AgentConfigurationError(
+                "FactCheckerAgent.finalize requires a ClaimTask"
+            )
+        claim, _, _, _ = await self.verify_claim(task, run)
+        return VerifiedClaims(claims=[claim])
+
+    def state_update(
+        self,
+        result: VerifiedClaims | None,
+        run: ReActRun,
+    ) -> ResearchStateUpdate:
+        """Verified claims and errors only. ``run`` adds the events."""
+        update: ResearchStateUpdate = {"errors": list(run.errors)}
+        if result is not None:
+            update["verified_claims"] = list(result.claims)
+        return update
