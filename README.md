@@ -4,7 +4,7 @@ Multi-agent deep research system using LangGraph, OpenAI, ChromaDB, and LangSmit
 
 ## Project Status
 
-Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, OpenAI chat/embedding providers, core tools, and the three-layer memory stack.
+Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, OpenAI chat/embedding providers, core tools, the three-layer memory stack, and the shared agent ReAct runtime.
 
 ## Setup
 
@@ -219,6 +219,102 @@ Long-term and procedural operations emit a `MemoryMetric` (operation, layer,
 entry type, top-k, result count, latency, error type) whenever a tracker and an
 active session span are available.
 
+## Agent Runtime
+
+`BaseAgent` runs a bounded ReAct loop — prepare context, think, choose an
+action, execute a tool, observe, update the scratchpad, stop or continue. It
+has no LangGraph dependency: a concrete agent is a plain async object.
+
+A concrete agent implements four required hooks and one required `ClassVar`,
+and may override up to three more:
+
+| Hook | Required | Purpose |
+| --- | --- | --- |
+| `name` | yes (`ClassVar[str]`) | The agent's identity — used in spans, provider calls, and scratchpad matching |
+| `output_schema` | yes | The Pydantic model the agent produces |
+| `system_prompt(task)` | yes | Developer-role instructions |
+| `build_task(state)` | yes | Read `ResearchState`, describe this run |
+| `finalize(task, run)` | yes | Turn the finished loop into the typed output |
+| `allowed_tools` | no (`ClassVar`) | Tool names this agent may call (default: none) |
+| `is_sufficient(steps)` | no | Stop early (default: never) |
+| `state_update(result, run)` | no | Describe the state change (default: errors only) |
+
+```python
+from deep_research.agents import AgentTask, BaseAgent, ReActRun
+from deep_research.memory import ScratchpadMemory
+from deep_research.observability import Tracker
+from deep_research.providers import OpenAIChatProvider
+from deep_research.tools import WebSearchTool
+from deep_research.utils.config import load_config
+from deep_research.utils.types import merge_research_state
+
+settings = load_config("config.yaml")
+tracker = Tracker.from_config(settings.langsmith)
+
+
+class BriefAgent(BaseAgent[Brief]):
+    name = "brief"
+    description = "Answer one question from web search."
+    allowed_tools = ("web_search",)
+
+    @property
+    def output_schema(self) -> type[Brief]:
+        return Brief
+
+    def system_prompt(self, task: AgentTask) -> str:
+        return "You are a careful researcher."
+
+    def build_task(self, state) -> AgentTask:
+        return AgentTask(instruction=state.original_question)
+
+    async def finalize(self, task: AgentTask, run: ReActRun) -> Brief | None:
+        return None if run.final_answer is None else Brief(text=run.final_answer)
+
+
+agent = BriefAgent(
+    provider=OpenAIChatProvider(settings.llm, tracker),
+    tracker=tracker,
+    scratchpad=ScratchpadMemory.from_config(
+        settings.memory.short_term, session_id="session-123", agent_name="brief"
+    ),
+    tools=[WebSearchTool(tracker, api_key=tavily_key)],
+    config=settings.agents,
+)
+
+async with tracker.session_span("session-123", state.original_question):
+    outcome = await agent.run(state)
+
+state = merge_research_state(state, outcome.state_update)
+```
+
+Loops are bounded by `agents.max_iterations` and `agents.tool_budget` in
+`config.yaml` (`AGENTS_MAX_ITERATIONS`, `AGENTS_TOOL_BUDGET` override them).
+`agents.prompt_context_entries` (`AGENTS_PROMPT_CONTEXT_ENTRIES`) controls how
+many scratchpad entries are rendered into the prompt on each turn.
+`agents.observation_summary_chars` (`AGENTS_OBSERVATION_SUMMARY_CHARS`) bounds
+how long each tool observation summary can be before it is fed back to the
+model and recorded in `ResearchState.errors`.
+`outcome.react.stop_reason` is one of `finished`, `sufficient`,
+`max_iterations`, `tool_budget_exhausted`, or `provider_error`.
+
+Failures are predictable: a tool failure becomes an observation the model can
+react to plus a recoverable `ResearchError`, and the loop continues. A model
+provider failure stops the loop with `provider_error` and records a
+non-recoverable `ResearchError` — the provider has already applied its
+configured retries and its single structured repair attempt, so the agent
+adds none of its own. `BaseAgent.run` still calls `finalize(task, run)`
+unconditionally after every stop reason, including `provider_error`, so
+whether `outcome.result` ends up `None` on failure is entirely up to the
+concrete agent's own `finalize`. A well-behaved `finalize` should check
+`run.stop_reason` (or the `ReActRun.succeeded` property) and return `None`
+itself when the run didn't succeed, rather than assuming the runtime enforces
+that for it.
+
+Every iteration opens a `react_iteration_span` carrying agent name, iteration
+number, thought summary, selected tool, and observation summary; the agent
+span carries the stop reason and counts; token and latency metrics come from
+the provider's own `llm_span`.
+
 ## Development
 
 ```bash
@@ -232,7 +328,7 @@ ruff check src/
 ## Phases
 
 - Phase 1: Core package foundation, config, types, providers
-- Phase 2: Memory and tools ← current (complete)
-- Phase 3: Agents and LangGraph orchestration
+- Phase 2: Memory and tools
+- Phase 3: Agents and LangGraph orchestration ← current (shared runtime complete, concrete agents pending)
 - Phase 4: CLI, API, and UI interfaces
 - Phase 5: Tests and verification
