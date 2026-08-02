@@ -13,10 +13,13 @@ still considered high priority.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 
 from pydantic import Field, ValidationError
 
+from deep_research.agents.base import BaseAgent, StructuredCompleter
+from deep_research.agents.errors import AgentConfigurationError, agent_error
 from deep_research.agents.prompts import AgentTask, render_memory_guidance
 from deep_research.agents.steps import (
     ReActRun,
@@ -25,12 +28,17 @@ from deep_research.agents.steps import (
     summarize_text,
 )
 from deep_research.agents.validation import invalid_fields
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage
+from deep_research.tools.base import BaseTool
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     ContractModel,
     Finding,
     ResearchError,
     ResearchState,
+    ResearchStateUpdate,
     SubTopic,
 )
 
@@ -38,6 +46,12 @@ RESEARCHER_NAME = "researcher"
 HIGH_PRIORITY_THRESHOLD = 2
 DEFAULT_MAX_SUB_TOPICS = 3
 DEFAULT_EVIDENCE_CHARS = 4000
+
+Clock = Callable[[], datetime]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 RESEARCHER_SYSTEM_PROMPT = (
     "You are the researcher of a multi-agent research system. You gather "
@@ -345,3 +359,175 @@ def build_findings(
         except ValidationError as error:
             rejected.append(f"finding {index}: invalid {invalid_fields(error)}")
     return findings, rejected
+
+
+class ResearcherAgent(BaseAgent[ResearchFindings]):
+    """Run one bounded ReAct loop per selected sub-topic and extract findings.
+
+    ``run`` is overridden because the spec requires a loop *per sub-topic*,
+    which the single-loop ``BaseAgent.run`` cannot express. Everything below
+    ``run`` — bounds, tracing, tool execution, scratchpad writes — is still
+    the shared runtime's.
+    """
+
+    name = RESEARCHER_NAME
+    description = "Gather source-backed findings for planned sub-topics."
+    allowed_tools = (
+        "web_search",
+        "web_scraper",
+        "document_reader",
+        "query_memory",
+        "save_to_memory",
+    )
+
+    def __init__(
+        self,
+        *,
+        provider: StructuredCompleter,
+        tracker: Tracker,
+        scratchpad: ScratchpadMemory,
+        tools: Sequence[BaseTool] = (),
+        config: AgentRuntimeConfig | None = None,
+        max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
+        high_priority_threshold: int = HIGH_PRIORITY_THRESHOLD,
+        evidence_chars: int = DEFAULT_EVIDENCE_CHARS,
+        clock: Clock = _utc_now,
+    ) -> None:
+        super().__init__(
+            provider=provider,
+            tracker=tracker,
+            scratchpad=scratchpad,
+            tools=tools,
+            config=config,
+        )
+        if max_sub_topics < 1:
+            raise ValueError("max_sub_topics must be at least 1")
+        if high_priority_threshold < 1:
+            raise ValueError("high_priority_threshold must be at least 1")
+        if evidence_chars < 1:
+            raise ValueError("evidence_chars must be at least 1")
+        self._max_sub_topics = max_sub_topics
+        self._high_priority_threshold = high_priority_threshold
+        self._evidence_chars = evidence_chars
+        self._clock = clock
+
+    @property
+    def output_schema(self) -> type[ResearchFindings]:
+        """The validated findings. Never sent to the provider.
+
+        ``extract_findings`` asks for ``SubTopicFindingsDraft`` instead,
+        because ``Finding`` carries ``Field`` constraints that do not survive
+        strict JSON schema conversion. Do not route this agent through
+        ``complete_output``.
+        """
+        return ResearchFindings
+
+    def system_prompt(self, task: AgentTask) -> str:
+        del task
+        return RESEARCHER_SYSTEM_PROMPT
+
+    def build_task(self, state: ResearchState) -> AgentTask:
+        """Describe the run as a whole. ``sub_topic_task`` narrows it."""
+        return AgentTask(
+            instruction=state.original_question,
+            guidance=render_session_guidance(state),
+        )
+
+    def sub_topic_task(
+        self,
+        base: AgentTask,
+        sub_topic: SubTopic,
+        existing_sources: Sequence[str],
+    ) -> SubTopicTask:
+        """Narrow the run-level task down to one sub-topic's loop."""
+        sections = [
+            section
+            for section in (
+                base.guidance.strip(),
+                render_sub_topic_guidance(sub_topic, existing_sources),
+            )
+            if section
+        ]
+        return SubTopicTask(
+            instruction=(
+                f'Gather evidence for the sub-topic "{sub_topic.title}" of '
+                f"the research question: {base.instruction}"
+            ),
+            guidance="\n\n".join(sections),
+            sub_topic=sub_topic,
+            existing_sources=list(existing_sources),
+        )
+
+    async def extract_findings(
+        self,
+        task: SubTopicTask,
+        run: ReActRun,
+    ) -> tuple[list[Finding], list[ResearchError]]:
+        """Turn one finished sub-topic loop into validated findings.
+
+        Returns nothing — and makes no provider call — when the loop stopped
+        on a provider failure or retrieved no source, so the extraction step
+        can never invent one.
+        """
+        retrieved = any(
+            step.tool_result is not None and step.tool_result.success
+            for step in run.steps
+        )
+        if not run.succeeded or not retrieved:
+            return [], []
+
+        draft = await self.provider.complete_structured(
+            extraction_messages(
+                task, run, evidence_chars=self._evidence_chars
+            ),
+            SubTopicFindingsDraft,
+            agent_name=self.name,
+        )
+        findings, rejected = build_findings(
+            draft,
+            sub_topic=task.sub_topic,
+            extracted_at=self._clock().isoformat(),
+        )
+        if not rejected:
+            return findings, []
+        return findings, [
+            agent_error(
+                agent_name=self.name,
+                error_type="researcher_invalid_finding",
+                message=(
+                    "Some extracted findings were malformed and were dropped."
+                ),
+                details={
+                    "sub_topic": task.sub_topic.title,
+                    "rejected": rejected,
+                },
+            )
+        ]
+
+    async def finalize(
+        self,
+        task: AgentTask,
+        run: ReActRun,
+    ) -> ResearchFindings | None:
+        """Adapt ``extract_findings`` to the ``BaseAgent`` hook.
+
+        ``run`` calls ``extract_findings`` directly so it can keep the
+        recoverable errors this hook signature has nowhere to return.
+        """
+        if not isinstance(task, SubTopicTask):
+            raise AgentConfigurationError(
+                "ResearcherAgent.finalize requires a SubTopicTask"
+            )
+        findings, _ = await self.extract_findings(task, run)
+        return ResearchFindings(findings=findings)
+
+    def state_update(
+        self,
+        result: ResearchFindings | None,
+        run: ReActRun,
+    ) -> ResearchStateUpdate:
+        """Findings and errors only. ``run`` adds the progress events."""
+        update: ResearchStateUpdate = {"errors": list(run.errors)}
+        if result is not None:
+            update["raw_findings"] = list(result.findings)
+        return update

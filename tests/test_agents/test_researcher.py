@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import pytest
+
+from deep_research.agents.errors import AgentConfigurationError
+from deep_research.agents.prompts import AgentTask
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
     HIGH_PRIORITY_THRESHOLD,
     FindingDraft,
+    ResearcherAgent,
+    ResearchFindings,
     SubTopicFindingsDraft,
     SubTopicTask,
     build_findings,
@@ -19,7 +27,10 @@ from deep_research.agents.researcher import (
     select_sub_topics,
 )
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import Tracker
 from deep_research.tools.base import ToolResult
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Critique,
     Finding,
@@ -28,6 +39,8 @@ from deep_research.utils.types import (
     ResearchState,
     SubTopic,
 )
+from tests.agent_fakes import ScriptedCompleter
+from tests.research_fakes import FakeMemory, FakeSearchClient, research_tools
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
@@ -409,3 +422,220 @@ def test_malformed_drafts_are_dropped_and_named_by_field() -> None:
 
     assert [finding.content for finding in findings] == ["Also fine."]
     assert rejected == ["finding 1: invalid confidence"]
+
+
+def _clock() -> datetime:
+    return datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+
+
+def _researcher(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    search: FakeSearchClient | None = None,
+    memory: FakeMemory | None = None,
+    max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
+    config: AgentRuntimeConfig | None = None,
+) -> ResearcherAgent:
+    return ResearcherAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="researcher", max_entries=20
+        ),
+        tools=research_tools(tracker, search=search, memory=memory),
+        config=config or AgentRuntimeConfig(max_iterations=4, tool_budget=4),
+        max_sub_topics=max_sub_topics,
+        clock=_clock,
+    )
+
+
+def test_the_researcher_declares_its_identity_and_tools() -> None:
+    assert ResearcherAgent.name == "researcher"
+    assert ResearcherAgent.allowed_tools == (
+        "web_search",
+        "web_scraper",
+        "document_reader",
+        "query_memory",
+        "save_to_memory",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("max_sub_topics", 0),
+        ("high_priority_threshold", 0),
+        ("evidence_chars", 0),
+    ],
+)
+def test_the_researcher_rejects_unbounded_construction(
+    tracker: Tracker, field_name: str, invalid_value: int
+) -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        ResearcherAgent(
+            provider=ScriptedCompleter(),
+            tracker=tracker,
+            scratchpad=ScratchpadMemory(
+                session_id="session-1", agent_name="researcher"
+            ),
+            tools=research_tools(tracker),
+            **{field_name: invalid_value},
+        )
+
+
+def test_the_sub_topic_task_merges_session_and_sub_topic_guidance(
+    tracker: Tracker,
+) -> None:
+    agent = _researcher(tracker, ScriptedCompleter())
+    base = agent.build_task(
+        _state(critique=_critique(recommended_queries=["surface code 2025"]))
+    )
+
+    task = agent.sub_topic_task(
+        base, _sub_topic("Alpha", 1), ["https://example.test/one"]
+    )
+
+    assert isinstance(task, SubTopicTask)
+    assert task.sub_topic.title == "Alpha"
+    assert task.existing_sources == ["https://example.test/one"]
+    assert 'Gather evidence for the sub-topic "Alpha"' in task.instruction
+    assert "- surface code 2025" in task.guidance
+    assert "Sub-topic: Alpha" in task.guidance
+
+
+@pytest.mark.asyncio
+async def test_extraction_stamps_findings_from_retrieved_evidence(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        outputs=[
+            SubTopicFindingsDraft(
+                findings=[
+                    FindingDraft(
+                        content="Logical error rates fell below break-even.",
+                        source_url="https://example.test/qec",
+                        source_title="QEC 2025",
+                        confidence=0.8,
+                    )
+                ]
+            )
+        ]
+    )
+    agent = _researcher(tracker, completer)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    findings, errors = await agent.extract_findings(task, run)
+
+    assert errors == []
+    assert findings[0].related_sub_topic == "Alpha"
+    assert findings[0].extracted_at == "2026-08-01T12:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_extraction_makes_no_provider_call_without_evidence(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter()
+    agent = _researcher(tracker, completer)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(agent_name="researcher", stop_reason="max_iterations")
+
+    findings, errors = await agent.extract_findings(task, run)
+
+    assert findings == []
+    assert errors == []
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_extraction_makes_no_provider_call_after_a_provider_failure(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter()
+    agent = _researcher(tracker, completer)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="provider_error",
+        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    findings, errors = await agent.extract_findings(task, run)
+
+    assert findings == []
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_extracted_findings_become_a_recoverable_error(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        outputs=[
+            SubTopicFindingsDraft(
+                findings=[
+                    FindingDraft(
+                        content="Bad confidence.",
+                        source_url="https://example.test/qec",
+                        source_title="QEC 2025",
+                        confidence=9.0,
+                    )
+                ]
+            )
+        ]
+    )
+    agent = _researcher(tracker, completer)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    findings, errors = await agent.extract_findings(task, run)
+
+    assert findings == []
+    assert errors[0].error_type == "researcher_invalid_finding"
+    assert errors[0].recoverable is True
+    assert errors[0].details["rejected"] == ["finding 1: invalid confidence"]
+
+
+@pytest.mark.asyncio
+async def test_finalize_requires_a_sub_topic_task(tracker: Tracker) -> None:
+    agent = _researcher(tracker, ScriptedCompleter())
+
+    with pytest.raises(AgentConfigurationError, match="SubTopicTask"):
+        await agent.finalize(
+            AgentTask(instruction="Gather evidence."),
+            ReActRun(agent_name="researcher", stop_reason="finished"),
+        )
+
+
+def test_the_state_update_carries_findings_and_errors(tracker: Tracker) -> None:
+    agent = _researcher(tracker, ScriptedCompleter())
+    finding = _finding("Alpha", "https://example.test/one")
+    run = ReActRun(agent_name="researcher", stop_reason="finished")
+
+    update = agent.state_update(ResearchFindings(findings=[finding]), run)
+
+    assert update == {"errors": [], "raw_findings": [finding]}
