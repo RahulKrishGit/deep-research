@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from deep_research.memory.entries import SourceReputation
 from deep_research.observability import Tracker
 from deep_research.tools.base import BaseTool
 from deep_research.tools.document_reader import DocumentReaderTool
@@ -212,3 +213,36 @@ def research_tools(
         QueryMemoryTool(tracker, backend),
         SaveToMemoryTool(tracker, backend),
     ]
+
+
+class FakeReputationSource:
+    """Serve remembered source reputations without a vector store.
+
+    ``error`` makes every lookup raise, which is how the "reputation
+    lookup failed, keep scoring directly" path is exercised.
+    """
+
+    def __init__(
+        self,
+        *,
+        reputations: Mapping[str, float] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.reputations = dict(reputations or {})
+        self.error = error
+        self.queried: list[str] = []
+
+    async def get_source_reputation(self, url: str) -> SourceReputation | None:
+        self.queried.append(url)
+        if self.error is not None:
+            raise self.error
+        score = self.reputations.get(url)
+        if score is None:
+            return None
+        return SourceReputation(
+            url=url,
+            title=url,
+            reputation_score=score,
+            observations=3,
+            notes="",
+        )
