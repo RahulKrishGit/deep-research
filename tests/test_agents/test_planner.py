@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents.errors import PlanningError
 from deep_research.agents.planner import (
     MAX_SUB_TOPICS,
     MIN_SUB_TOPICS,
+    PlannerAgent,
     ResearchPlan,
     ResearchPlanDraft,
     SubTopicDraft,
@@ -17,6 +19,18 @@ from deep_research.agents.planner import (
 )
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import Tracker
+from deep_research.providers import ProviderTimeoutError
+from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.types import (
+    Finding,
+    MemorySnapshot,
+    ResearchState,
+    merge_research_state,
+)
+from tests.agent_fakes import ScriptedCompleter, finish, use_tool
+from tests.research_fakes import FakeMemory, FakeSearchClient, planner_tools
 
 
 def _draft(
@@ -239,3 +253,225 @@ def test_the_validated_plan_enforces_its_own_size_bounds() -> None:
     assert ResearchPlan(sub_topics=sub_topics).repair_attempted is False
     with pytest.raises(ValidationError):
         ResearchPlan(sub_topics=sub_topics[:1])
+
+
+def _state(
+    question: str = "What are the security implications of quantum computing?",
+    *,
+    memory_context: MemorySnapshot | None = None,
+) -> ResearchState:
+    return ResearchState(
+        session_id="session-1",
+        original_question=question,
+        memory_context=memory_context or MemorySnapshot(),
+    )
+
+
+def _planner(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    search: FakeSearchClient | None = None,
+    memory: FakeMemory | None = None,
+) -> PlannerAgent:
+    return PlannerAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="planner", max_entries=20
+        ),
+        tools=planner_tools(tracker, search=search, memory=memory),
+        config=AgentRuntimeConfig(max_iterations=3, tool_budget=3),
+    )
+
+
+def test_the_planner_declares_its_identity_and_tools() -> None:
+    assert PlannerAgent.name == "planner"
+    assert PlannerAgent.allowed_tools == ("query_memory", "web_search")
+
+
+def test_build_task_carries_the_question_and_recalled_memory(
+    tracker: Tracker,
+) -> None:
+    agent = _planner(tracker, ScriptedCompleter())
+    state = _state(
+        memory_context=MemorySnapshot(
+            similar_findings=[
+                Finding(
+                    content="Shor's algorithm breaks RSA.",
+                    source_url="https://example.test/shor",
+                    source_title="Shor 1994",
+                    extracted_at="2026-01-01T00:00:00+00:00",
+                    confidence=0.9,
+                    related_sub_topic="Cryptography",
+                )
+            ]
+        )
+    )
+
+    task = agent.build_task(state)
+
+    assert task.instruction == state.original_question
+    assert "1 finding(s) recalled from previous sessions:" in task.guidance
+    assert "Shor's algorithm breaks RSA." in task.guidance
+
+
+@pytest.mark.asyncio
+async def test_the_planner_turns_a_question_into_a_validated_plan(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
+            finish("I understand the question.", "Three angles matter."),
+        ],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.result.repair_attempted is False
+    assert [sub_topic.title for sub_topic in outcome.result.sub_topics] == [
+        "Cryptography",
+        "Hardware timelines",
+        "Mitigations",
+    ]
+    assert outcome.state_update["sub_topics"] == outcome.result.sub_topics
+    assert outcome.state_update["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_plan_merges_into_research_state(tracker: Tracker) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+    state = merge_research_state(_state(), outcome.state_update)
+
+    assert len(state.sub_topics) == 3
+    assert len(state.events) == 3
+
+
+@pytest.mark.asyncio
+async def test_the_planner_emits_start_recall_and_completion_events(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(tracker, completer)
+    state = _state(
+        memory_context=MemorySnapshot(suggested_strategies=["Prefer 2025 sources."])
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    events = outcome.state_update["events"]
+    assert [event.event_type for event in events] == [
+        "planner.planning.started",
+        "planner.memory.recalled",
+        "planner.planning.completed",
+    ]
+    assert all(event.source == "agent.planner" for event in events)
+    assert events[1].metadata["recalled_findings"] == 0
+    assert events[1].metadata["suggested_strategies"] == 1
+    assert events[2].metadata["sub_topic_count"] == 3
+    assert events[2].metadata["repair_attempted"] is False
+    assert events[2].metadata["stop_reason"] == "finished"
+
+
+@pytest.mark.asyncio
+async def test_a_redundant_plan_is_repaired_once_and_then_accepted(
+    tracker: Tracker,
+) -> None:
+    redundant = ResearchPlanDraft(
+        sub_topics=[
+            _draft("Cryptography", priority=1),
+            _draft("cryptography", priority=2),
+        ]
+    )
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            redundant,
+            _plan("Cryptography", "Hardware timelines", "Mitigations"),
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.result.repair_attempted is True
+    repair_body = completer.calls[-1][2][1].content
+    assert "## Repair" in repair_body
+    assert "repeat the same title" in repair_body
+    assert "produce between 3 and 7" in repair_body
+
+
+@pytest.mark.asyncio
+async def test_a_plan_that_stays_invalid_fails_the_session(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[ResearchPlanDraft(sub_topics=[]), _plan("Only one")],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        "the plan has 1 valid sub-topics; produce between 3 and 7",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_fails_the_session_without_a_plan_request(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(decisions=[ProviderTimeoutError("timed out")])
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError, match="model provider"):
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert [call[0] for call in completer.calls] == ["ReActDecision"]
+
+
+@pytest.mark.asyncio
+async def test_a_search_failure_does_not_stop_the_planner(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Scope the terms.", "web_search", '{"query": "quantum"}'),
+            finish("Enough context.", "Three angles matter."),
+        ],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(
+        tracker,
+        completer,
+        search=FakeSearchClient([RuntimeError("tavily is down")]),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert [error.error_type for error in outcome.errors] == ["agent_tool_failed"]
+    assert outcome.errors[0].recoverable is True

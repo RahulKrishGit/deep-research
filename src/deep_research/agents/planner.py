@@ -14,10 +14,20 @@ from collections.abc import Sequence
 
 from pydantic import Field, ValidationError
 
-from deep_research.agents.prompts import AgentTask
+from deep_research.agents.base import AgentRun, BaseAgent
+from deep_research.agents.errors import PlanningError
+from deep_research.agents.events import agent_event
+from deep_research.agents.prompts import AgentTask, render_memory_guidance
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.providers import ChatMessage
-from deep_research.utils.types import ContractModel, SubTopic
+from deep_research.utils.types import (
+    ContractModel,
+    MemorySnapshot,
+    ResearchEvent,
+    ResearchState,
+    ResearchStateUpdate,
+    SubTopic,
+)
 
 PLANNER_NAME = "planner"
 MIN_SUB_TOPICS = 3
@@ -181,3 +191,153 @@ def plan_messages(
         ChatMessage(role="developer", content=PLANNER_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
+
+
+def planning_started_event(state: ResearchState) -> ResearchEvent:
+    """Announce that planning began, before any provider call."""
+    return agent_event(
+        agent_name=PLANNER_NAME,
+        event_type="planner.planning.started",
+        message="Planning started.",
+        metadata={
+            "iteration": state.iteration,
+            "min_sub_topics": MIN_SUB_TOPICS,
+            "max_sub_topics": MAX_SUB_TOPICS,
+        },
+    )
+
+
+def memory_recalled_event(memory_context: MemorySnapshot) -> ResearchEvent:
+    """Report how much long-term memory the session started with."""
+    return agent_event(
+        agent_name=PLANNER_NAME,
+        event_type="planner.memory.recalled",
+        message="Memory recall complete.",
+        metadata={
+            "recalled_findings": len(memory_context.similar_findings),
+            "known_source_reputations": len(
+                memory_context.known_source_reputations
+            ),
+            "suggested_strategies": len(memory_context.suggested_strategies),
+        },
+    )
+
+
+def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent:
+    """Report the finished plan's size and how the scoping loop stopped."""
+    plan = outcome.result
+    return agent_event(
+        agent_name=PLANNER_NAME,
+        event_type="planner.planning.completed",
+        message="Planning complete.",
+        metadata={
+            "sub_topic_count": 0 if plan is None else len(plan.sub_topics),
+            "repair_attempted": False if plan is None else plan.repair_attempted,
+            "stop_reason": outcome.react.stop_reason,
+            "iterations": outcome.react.iterations,
+            "tool_calls": outcome.react.tool_calls,
+        },
+    )
+
+
+class PlannerAgent(BaseAgent[ResearchPlan]):
+    """Convert ``original_question`` into 3-7 distinct, prioritized sub-topics.
+
+    The ReAct loop is for scoping only — recalling prior findings and
+    resolving unfamiliar terminology. The plan itself is produced in
+    ``finalize`` by a structured-output call over what the loop learned.
+    """
+
+    name = PLANNER_NAME
+    description = "Turn a research question into a validated research plan."
+    allowed_tools = ("query_memory", "web_search")
+
+    @property
+    def output_schema(self) -> type[ResearchPlan]:
+        """The validated plan. Never sent to the provider.
+
+        ``finalize`` asks for ``ResearchPlanDraft`` instead, because
+        ``ResearchPlan`` nests ``SubTopic``, whose ``Field`` constraints do
+        not survive strict JSON schema conversion. Do not route this agent
+        through ``complete_output``.
+        """
+        return ResearchPlan
+
+    def system_prompt(self, task: AgentTask) -> str:
+        del task
+        return PLANNER_SYSTEM_PROMPT
+
+    def build_task(self, state: ResearchState) -> AgentTask:
+        return AgentTask(
+            instruction=state.original_question,
+            guidance=render_memory_guidance(state.memory_context),
+        )
+
+    async def _request_plan(
+        self,
+        task: AgentTask,
+        run: ReActRun,
+        *,
+        repair: str | None = None,
+    ) -> tuple[list[SubTopic], list[str]]:
+        draft = await self.provider.complete_structured(
+            plan_messages(task, run, repair=repair),
+            ResearchPlanDraft,
+            agent_name=self.name,
+        )
+        return validate_plan_draft(draft)
+
+    async def finalize(
+        self,
+        task: AgentTask,
+        run: ReActRun,
+    ) -> ResearchPlan | None:
+        """Request a plan, repair it at most once, or fail the session."""
+        if not run.succeeded:
+            raise PlanningError(
+                "The planner could not reach the model provider.",
+                problems=[
+                    "the model provider failed before a plan was requested"
+                ],
+            )
+
+        sub_topics, problems = await self._request_plan(task, run)
+        if not problems:
+            return ResearchPlan(sub_topics=sub_topics)
+
+        sub_topics, problems = await self._request_plan(
+            task, run, repair=format_plan_problems(problems)
+        )
+        if problems:
+            raise PlanningError(
+                "The planner could not produce a valid research plan after "
+                "one repair attempt.",
+                problems=problems,
+            )
+        return ResearchPlan(sub_topics=sub_topics, repair_attempted=True)
+
+    def state_update(
+        self,
+        result: ResearchPlan | None,
+        run: ReActRun,
+    ) -> ResearchStateUpdate:
+        update: ResearchStateUpdate = {"errors": list(run.errors)}
+        if result is not None:
+            update["sub_topics"] = list(result.sub_topics)
+        return update
+
+    async def run(self, state: ResearchState) -> AgentRun[ResearchPlan]:
+        """Run the inherited loop, bracketed by planning progress events."""
+        events = [
+            planning_started_event(state),
+            memory_recalled_event(state.memory_context),
+        ]
+        outcome = await super().run(state)
+        events.append(planning_completed_event(outcome))
+        return AgentRun(
+            agent_name=outcome.agent_name,
+            result=outcome.result,
+            react=outcome.react,
+            errors=outcome.errors,
+            state_update={**outcome.state_update, "events": events},
+        )
