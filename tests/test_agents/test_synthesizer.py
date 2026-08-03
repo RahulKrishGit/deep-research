@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from deep_research.agents.errors import AgentConfigurationError
+from deep_research.agents.prompts import AgentTask
 from deep_research.agents.report import REPORT_SECTIONS, ReportSection
+from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import (
     DEFAULT_MEMORY_CONFIDENCE,
     REPORT_SUMMARY_FALLBACK,
     ReportDraft,
     ReportSectionDraft,
     SynthesisTask,
+    SynthesizedReport,
+    SynthesizerAgent,
     build_report_sections,
     compose_report,
     high_confidence_claims,
@@ -20,6 +27,11 @@ from deep_research.agents.synthesizer import (
     report_filename,
     report_messages,
 )
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import Tracker
+from deep_research.providers import OpenAIProviderError
+from deep_research.tools.base import BaseTool
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
     Critique,
@@ -28,6 +40,8 @@ from deep_research.utils.types import (
     ResearchState,
     ScoredSource,
 )
+from tests.agent_fakes import ScriptedCompleter
+from tests.research_fakes import FakeMemory, synthesizer_tools
 
 SYNTH_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 SOURCE_URL = "https://example.org/a"
@@ -340,3 +354,313 @@ def test_report_messages_drop_the_context_section_without_guidance() -> None:
     body = report_messages(_task(), finding_digest=10, claim_digest=10)[1].content
 
     assert "## Context" not in body
+
+
+def _synthesizer(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    tools: list[BaseTool],
+    **overrides: object,
+) -> SynthesizerAgent:
+    return SynthesizerAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1",
+            agent_name="synthesizer",
+            max_entries=20,
+        ),
+        tools=tools,
+        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
+        **overrides,
+    )
+
+
+def _draft(
+    *,
+    summary: str = "Break-even was reached in 2025.",
+    urls: list[str] | None = None,
+    notes: str = "Vendor numbers remain unaudited.",
+) -> ReportDraft:
+    return ReportDraft(
+        executive_summary=summary,
+        sections=[
+            ReportSectionDraft(
+                title="Error correction",
+                body="Break-even was reached.",
+                source_urls=urls if urls is not None else [SOURCE_URL],
+            )
+        ],
+        uncertainty_notes=notes,
+    )
+
+
+def test_build_task_carries_the_evidence_limitations_and_revision_notes(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+    state = _state(
+        evaluated_sources=[_source(overall=0.1, low_confidence=True)],
+        critique=Critique(
+            score=4,
+            gaps=["No cost data."],
+            unsupported_claims=[],
+            recommended_queries=[],
+            should_continue=True,
+            rationale="Thin sourcing.",
+        ),
+    )
+
+    task = agent.build_task(state)
+
+    assert task.instruction == state.original_question
+    assert task.session_id == "session-1"
+    assert task.iteration == 0
+    assert [claim.text for claim in task.claims] == [
+        "Logical error rates fell below break-even in 2025."
+    ]
+    assert task.limitations == ["low_confidence_sources"]
+    assert "No cost data." in task.guidance
+
+
+@pytest.mark.asyncio
+async def test_a_run_writes_the_report_and_records_its_counts(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    memory = FakeMemory()
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft()]),
+        synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.result.path == "report-session-1-0.md"
+    assert (tmp_path / "report-session-1-0.md").read_text(encoding="utf-8") == (
+        outcome.result.markdown
+    )
+    assert outcome.state_update["report"] == outcome.result.markdown
+    assert "## Executive summary" in outcome.result.markdown
+    assert "Break-even was reached in 2025." in outcome.result.markdown
+    assert "Vendor numbers remain unaudited." in outcome.result.markdown
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.errors == []
+    # One high-confidence verified claim was kept for future sessions.
+    assert [content for content, _ in memory.saved] == [
+        "Logical error rates fell below break-even in 2025."
+    ]
+    assert outcome.result.saved_findings == 1
+
+
+@pytest.mark.asyncio
+async def test_a_run_emits_the_counts_the_spec_requires(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft()]),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_state())
+
+    events = outcome.state_update["events"]
+    assert [event.event_type for event in events] == [
+        "synthesizer.synthesis.started",
+        "synthesizer.synthesis.completed",
+    ]
+    completed = events[-1].metadata
+    assert completed["section_count"] == 1
+    assert completed["citation_count"] == 1
+    assert completed["source_appendix_count"] == 1
+    assert completed["output_path"] == "report-session-1-0.md"
+    assert completed["saved_findings"] == 1
+    assert completed["limitations"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_invented_section_url_is_dropped_and_recorded(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft(urls=["https://invented.test/x"])]),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert "https://invented.test/x" not in outcome.result.markdown
+    assert "Sources: none cited" in outcome.result.markdown
+    assert [error.error_type for error in outcome.errors] == [
+        "synthesizer_invalid_section"
+    ]
+    assert outcome.errors[0].recoverable is True
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_still_produces_a_cited_report(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[OpenAIProviderError("down")]),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert REPORT_SUMMARY_FALLBACK in outcome.result.markdown
+    assert "[1] (confidence 0.80)" in outcome.result.markdown
+    assert "The model provider failed while this report was written" in (
+        outcome.result.markdown
+    )
+    assert outcome.react.stop_reason == "provider_error"
+    errors = {error.error_type: error for error in outcome.errors}
+    assert errors["synthesizer_report_provider_error"].recoverable is False
+    assert errors["synthesizer_report_provider_error"].details == {
+        "exception_type": "OpenAIProviderError"
+    }
+    assert (tmp_path / "report-session-1-0.md").is_file()
+
+
+@pytest.mark.asyncio
+async def test_no_evidence_skips_the_provider_and_says_so(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    completer = ScriptedCompleter()
+    agent = _synthesizer(
+        tracker, completer, synthesizer_tools(tracker, output_root=tmp_path)
+    )
+    state = _state(raw_findings=[], evaluated_sources=[], verified_claims=[])
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert completer.calls == []
+    assert outcome.result is not None
+    assert "(no claim reached a verified verdict)" in outcome.result.markdown
+    assert "no_evidence" in {
+        error.error_type.removeprefix("synthesizer_") for error in outcome.errors
+    }
+    assert "No source behind these findings was scored" in outcome.result.markdown
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_keeps_the_report_in_state(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    # A directory where the report file must go makes the real tool fail.
+    (tmp_path / "report-session-1-0.md").mkdir()
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft()]),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.result.path is None
+    assert outcome.state_update["report"] == outcome.result.markdown
+    assert [error.error_type for error in outcome.errors] == [
+        "synthesizer_report_not_written"
+    ]
+    assert outcome.errors[0].details["reason"] == "tool_failed"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_memory_write_never_blocks_the_report(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    memory = FakeMemory(error=RuntimeError("memory down"))
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft()]),
+        synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.result.path == "report-session-1-0.md"
+    assert outcome.result.saved_findings == 0
+    error = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "synthesizer_memory_save_failed"
+    )
+    assert error.recoverable is True
+    assert error.details == {"failures": 1, "attempted": 1}
+
+
+@pytest.mark.asyncio
+async def test_only_capped_high_confidence_claims_reach_memory(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    memory = FakeMemory()
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft()]),
+        synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
+        max_memory_findings=1,
+    )
+    state = _state(
+        verified_claims=[
+            _claim(text="First.", confidence=0.9),
+            _claim(text="Second.", confidence=0.9),
+            _claim(text="Weak.", confidence=0.2),
+        ]
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert [content for content, _ in memory.saved] == ["First."]
+    assert outcome.result is not None
+    assert outcome.result.saved_findings == 1
+
+
+@pytest.mark.asyncio
+async def test_finalize_requires_a_synthesis_task(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft()]),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+
+    with pytest.raises(AgentConfigurationError, match="SynthesisTask"):
+        await agent.finalize(
+            AgentTask(instruction="anything"),
+            ReActRun(agent_name="synthesizer", stop_reason="finished"),
+        )
+
+
+def test_the_synthesizer_declares_its_two_writes(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+
+    assert SynthesizerAgent.name == "synthesizer"
+    assert SynthesizerAgent.allowed_tools == ("write_document", "save_to_memory")
+    assert agent.output_schema is SynthesizedReport

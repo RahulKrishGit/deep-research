@@ -23,6 +23,7 @@ from deep_research.tools.document_reader import DocumentReaderTool
 from deep_research.tools.memory_tools import QueryMemoryTool, SaveToMemoryTool
 from deep_research.tools.web_scraper import WebScraperTool
 from deep_research.tools.web_search import WebSearchTool
+from deep_research.tools.write_document import WriteDocumentTool
 
 
 class FakeSearchClient:
@@ -270,3 +271,21 @@ class FakeReputationSource:
             observations=3,
             notes="",
         )
+
+
+def synthesizer_tools(
+    tracker: Tracker,
+    *,
+    output_root: Path,
+    memory: FakeMemory | None = None,
+) -> list[BaseTool]:
+    """Build the two tools ``SynthesizerAgent`` declares, all offline.
+
+    ``WriteDocumentTool`` is the real class writing under a pytest
+    ``tmp_path``, so the agent is exercised against the same path
+    validation production uses.
+    """
+    return [
+        WriteDocumentTool(tracker, output_root),
+        SaveToMemoryTool(tracker, memory or FakeMemory()),
+    ]

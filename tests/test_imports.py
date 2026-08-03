@@ -147,6 +147,7 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         REACT_RESPONSE_CONTRACT,
         SOURCE_EVALUATOR_NAME,
         VERDICT_VALUES,
+        WRITE_FAILURE_REASONS,
         AgentConfigurationError,
         AgentError,
         AgentRun,
@@ -185,6 +186,7 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         SubTopicFindingsDraft,
         SubTopicTask,
         SufficiencyCallback,
+        SynthesizerAgent,
         ToolDescriptor,
         VerifiedClaims,
         agent_error,
@@ -196,8 +198,11 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         existing_sources_for,
         extraction_provider_error,
         group_findings_by_url,
+        invalid_section_error,
         is_high_priority,
+        memory_save_error,
         merge_react_runs,
+        no_evidence_error,
         normalize_source_url,
         normalize_verdict,
         parse_tool_input,
@@ -205,12 +210,16 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         render_react_messages,
         render_scratchpad,
         render_tool_catalog,
+        report_not_written_error,
+        report_provider_error,
         resolve_verdict,
         retrieved_source_urls,
         run_react_loop,
         select_sub_topics,
         source_domain,
         summarize_text,
+        synthesis_completed_event,
+        synthesis_started_event,
         validate_plan_draft,
         verdict_counts,
     )
@@ -320,6 +329,7 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
         PlannerAgent,
         ResearcherAgent,
         SourceEvaluatorAgent,
+        SynthesizerAgent,
     )
 
     assert PlannerAgent.name == "planner"
@@ -341,3 +351,5 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
         "document_reader",
         "query_memory",
     }
+    assert SynthesizerAgent.name == "synthesizer"
+    assert SynthesizerAgent.allowed_tools == ("write_document", "save_to_memory")
