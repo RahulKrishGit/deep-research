@@ -54,7 +54,7 @@ Foundation phase — package skeleton, typed configuration/state, the LangSmith 
 ```
 src/deep_research/     # Package root
 |-- main.py            # run_research() entry point
-|-- graph/             # LangGraph orchestration (Phase 3)
+|-- graph/             # LangGraph orchestration: state, nodes, routing, runner
 |-- agents/            # Research agents (Phase 3)
 |-- memory/            # Short-term, long-term, procedural memory (Phase 2)
 |-- tools/             # Web search, scraping, etc. (Phase 2)
@@ -487,6 +487,102 @@ async with tracker.session_span(session_id, state.original_question):
 | `critic.critique.started` | Critic | `iteration`, `max_iterations`, `claim_count`, `has_report` |
 | `critic.critique.completed` | Critic | `score`, `gap_count`, `unsupported_claim_count`, `recommended_query_count`, `should_continue`, `reason`, `tool_calls` |
 
+## LangGraph Orchestration
+
+`deep_research.graph` wires the six agents into one state graph:
+
+```text
+START -> planner -> researcher -> source_evaluator -> fact_checker
+      -> synthesizer -> critic -> {refine -> researcher | END}
+```
+
+The LangGraph channel carries the whole `ResearchState` as one JSON-safe
+mapping under the key `state`, and every node merges its agent's
+`ResearchStateUpdate` with `merge_research_state` — the same append/replace
+rules and the same "`iteration` moves only through
+`advance_research_iteration`" guard the agents already run under. There are
+no per-field LangGraph reducers, so there is exactly one implementation of
+the merge rules.
+
+`refine` is the hop that carries the macro-iteration increment. It exists
+because a conditional edge routes but cannot write state.
+
+Routing is `graph_route`, a pure function of state: a halted run ends, a run
+with no critique ends, `Critique.should_continue` being false ends the run,
+`state.iteration >= state.max_iterations` ends the run **whatever the critic
+recommended**, and only then does the graph loop back. The bound is checked
+by the graph itself rather than trusted to the critic, so no model judgement
+can make the loop run forever. `graph_status` reads the same decision and
+names the outcome `completed`, `max_iterations`, `incomplete`, or `failed`.
+
+Failure is a halt mark in state, not an exception out of `ainvoke`.
+`PlanningError`, `AgentConfigurationError`, and `ProviderConfigurationError`
+become enumerated `HALTING_ERROR_TYPES` entries; every later node records
+`graph.node.skipped` and returns without invoking its agent; the router ends
+the run with status `failed` and **everything collected before the failure
+survives**. Recoverable agent and tool errors — including the
+non-recoverable provider outages agents record for themselves — stay in
+`state.errors` and never stop the graph. Any other exception propagates: an
+unhandled failure is a defect, not a research outcome.
+
+```python
+from deep_research.graph import (
+    ResearchAgents,
+    build_checkpointer,
+    compile_research_graph,
+    resume_research_graph,
+    run_research_graph,
+)
+
+agents = ResearchAgents(
+    planner=planner,
+    researcher=researcher,
+    source_evaluator=source_evaluator,
+    fact_checker=fact_checker,
+    synthesizer=synthesizer,
+    critic=critic,
+)
+graph = compile_research_graph(
+    agents, checkpointer=build_checkpointer(enabled=settings.graph.checkpointing_enabled)
+)
+
+run = await run_research_graph(
+    graph=graph,
+    tracker=tracker,
+    session_id=session_id,
+    question="How mature is quantum error correction?",
+    max_iterations=settings.graph.max_iterations,
+    checkpointing=settings.graph.checkpointing_enabled,
+)
+print(run.status, run.state.report, run.trace_url)
+
+# Later, same process, same session id:
+resumed = await resume_research_graph(
+    graph=graph, tracker=tracker, session_id=session_id
+)
+```
+
+`run_research_graph` opens the existing `Tracker` session span, so every
+agent inside a node produces its own `agent.<name>` span under
+`research.session`; the session span's outputs carry the session id, the
+final status, the full list of route decisions, the macro iteration, the
+per-collection counts, the critic score, and the error count. Graph
+configuration lives in `config.yaml` under `graph:` (`max_iterations`,
+`checkpointing_enabled`), overridable with `GRAPH_MAX_ITERATIONS` and
+`GRAPH_CHECKPOINTING_ENABLED`. Checkpointing uses an in-process
+`InMemorySaver`; a durable saver drops into `compile_research_graph`
+without touching a node.
+
+| Event type | Emitted by | Key metadata |
+| --- | --- | --- |
+| `graph.session.started` | Runner | `session_id`, `max_iterations`, `checkpointing` |
+| `graph.node.started` | Every node | `node`, `iteration` |
+| `graph.node.completed` | Every node | `node`, `iteration`, `event_count`, `error_count` |
+| `graph.node.skipped` | Every node after a halt | `node`, `iteration`, `reason` |
+| `graph.route.decided` | Critic node | `destination`, `reason`, `iteration`, `max_iterations`, `should_continue` |
+| `graph.refinement.started` | Refine node | `iteration`, `max_iterations` |
+| `graph.session.completed` | Runner | `status`, `iteration`, `error_count`, `has_report` |
+
 ## Development
 
 ```bash
@@ -501,6 +597,6 @@ ruff check src/
 
 - Phase 1: Core package foundation, config, types, providers
 - Phase 2: Memory and tools
-- Phase 3: Agents and LangGraph orchestration ← current (runtime and all six agents complete; the graph pending)
+- Phase 3: Agents and LangGraph orchestration ← complete (all six agents and the graph)
 - Phase 4: CLI, API, and UI interfaces
 - Phase 5: Tests and verification
