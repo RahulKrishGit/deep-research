@@ -271,6 +271,7 @@ def test_agent_submodule_public_names_all_reach_all() -> None:
         "source_evaluator",
         "sources",
         "steps",
+        "synthesizer",
         "toolset",
         "validation",
     ]
