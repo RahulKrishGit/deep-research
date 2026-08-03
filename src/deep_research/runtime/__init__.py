@@ -10,6 +10,15 @@ from deep_research.runtime.memory_bridge import (
     DEFAULT_BRIDGE_ENTRY_TYPE,
     LongTermMemoryBridge,
 )
+from deep_research.runtime.outcome import (
+    REPORT_WRITTEN_EVENT,
+    ResearchOutcome,
+    ToolCallSummary,
+    build_outcome,
+    report_path_from_state,
+    tool_call_summaries,
+    total_token_usage,
+)
 from deep_research.runtime.recall import (
     DEFAULT_RECALL_TOP_K,
     MAX_SUGGESTED_STRATEGIES,
@@ -24,8 +33,15 @@ __all__ = [
     "DEFAULT_RECALL_TOP_K",
     "MAX_SUGGESTED_STRATEGIES",
     "RECALLED_SUB_TOPIC",
+    "REPORT_WRITTEN_EVENT",
     "LongTermMemoryBridge",
     "ResearchConfigurationError",
+    "ResearchOutcome",
+    "ToolCallSummary",
+    "build_outcome",
     "configuration_error",
     "recall_memory_context",
+    "report_path_from_state",
+    "tool_call_summaries",
+    "total_token_usage",
 ]
