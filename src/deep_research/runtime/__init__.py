@@ -1,7 +1,11 @@
 """Assembly of a runnable research session from loaded configuration."""
 
 from deep_research.runtime.assembly import (
+    AGENT_NAMES,
     TAVILY_API_KEY_VARIABLE,
+    ResearchRuntime,
+    build_agents,
+    build_runtime,
     build_tools,
 )
 from deep_research.runtime.errors import (
@@ -31,6 +35,7 @@ from deep_research.runtime.recall import (
 )
 
 __all__ = [
+    "AGENT_NAMES",
     "CONFIGURATION_HINTS",
     "DEFAULT_BRIDGE_AGENT_ID",
     "DEFAULT_BRIDGE_ENTRY_TYPE",
@@ -42,8 +47,11 @@ __all__ = [
     "LongTermMemoryBridge",
     "ResearchConfigurationError",
     "ResearchOutcome",
+    "ResearchRuntime",
     "ToolCallSummary",
+    "build_agents",
     "build_outcome",
+    "build_runtime",
     "build_tools",
     "configuration_error",
     "recall_memory_context",
