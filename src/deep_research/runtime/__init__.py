@@ -1,5 +1,9 @@
 """Assembly of a runnable research session from loaded configuration."""
 
+from deep_research.runtime.assembly import (
+    TAVILY_API_KEY_VARIABLE,
+    build_tools,
+)
 from deep_research.runtime.errors import (
     CONFIGURATION_HINTS,
     ResearchConfigurationError,
@@ -34,11 +38,13 @@ __all__ = [
     "MAX_SUGGESTED_STRATEGIES",
     "RECALLED_SUB_TOPIC",
     "REPORT_WRITTEN_EVENT",
+    "TAVILY_API_KEY_VARIABLE",
     "LongTermMemoryBridge",
     "ResearchConfigurationError",
     "ResearchOutcome",
     "ToolCallSummary",
     "build_outcome",
+    "build_tools",
     "configuration_error",
     "recall_memory_context",
     "report_path_from_state",
