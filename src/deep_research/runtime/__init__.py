@@ -10,12 +10,22 @@ from deep_research.runtime.memory_bridge import (
     DEFAULT_BRIDGE_ENTRY_TYPE,
     LongTermMemoryBridge,
 )
+from deep_research.runtime.recall import (
+    DEFAULT_RECALL_TOP_K,
+    MAX_SUGGESTED_STRATEGIES,
+    RECALLED_SUB_TOPIC,
+    recall_memory_context,
+)
 
 __all__ = [
     "CONFIGURATION_HINTS",
     "DEFAULT_BRIDGE_AGENT_ID",
     "DEFAULT_BRIDGE_ENTRY_TYPE",
+    "DEFAULT_RECALL_TOP_K",
+    "MAX_SUGGESTED_STRATEGIES",
+    "RECALLED_SUB_TOPIC",
     "LongTermMemoryBridge",
     "ResearchConfigurationError",
     "configuration_error",
+    "recall_memory_context",
 ]
