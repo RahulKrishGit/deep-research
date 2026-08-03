@@ -15,9 +15,11 @@ defect and is deliberately allowed to propagate.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, TypeAlias
 from uuid import uuid4
+
+from pydantic import JsonValue
 
 from deep_research.graph.errors import GraphResumeError
 from deep_research.graph.orchestrator import (
@@ -33,6 +35,7 @@ from deep_research.utils.config import (
     MissingSecretsError,
     load_config,
 )
+from deep_research.utils.types import ResearchEvent
 
 DEFAULT_CONFIG_PATH = "config.yaml"
 
@@ -64,7 +67,14 @@ def resolve_output_format(requested: str | None, *, configured: str) -> str:
     return chosen
 
 
-def load_settings(config_path: str) -> ConfigSettings:
+ProgressHandler: TypeAlias = Callable[[ResearchEvent], None]
+
+
+def load_settings(
+    config_path: str,
+    *,
+    config_overrides: Mapping[str, JsonValue] | None = None,
+) -> ConfigSettings:
     """Load configuration in strict mode, or refuse to start.
 
     Strict mode is not optional: the parent design requires missing API
@@ -72,7 +82,9 @@ def load_settings(config_path: str) -> ConfigSettings:
     than surfacing as a provider failure inside a research pass.
     """
     try:
-        return load_config(config_path, strict=True)
+        return load_config(
+            config_path, strict=True, overrides=config_overrides
+        )
     except FileNotFoundError as error:
         raise configuration_error(
             reason="config_file_missing", message=str(error)
@@ -87,6 +99,24 @@ def load_settings(config_path: str) -> ConfigSettings:
         raise configuration_error(reason=reason, message=message) from error
 
 
+def prepare_research_settings(
+    *,
+    config_path: str,
+    output_format: str | None,
+    config_overrides: Mapping[str, JsonValue] | None = None,
+) -> ConfigSettings:
+    """Load strict settings with request overrides and validate the format."""
+    settings = load_settings(
+        config_path,
+        config_overrides=config_overrides,
+    )
+    resolve_output_format(
+        output_format,
+        configured=settings.output.default_format,
+    )
+    return settings
+
+
 async def run_research(
     question: str | None = None,
     *,
@@ -95,12 +125,15 @@ async def run_research(
     config_path: str = DEFAULT_CONFIG_PATH,
     max_iterations: int | None = None,
     output_format: str | None = None,
+    config_overrides: Mapping[str, JsonValue] | None = None,
     runtime_builder: RuntimeBuilder = build_runtime,
 ) -> ResearchOutcome:
     """Run one research session, or continue a checkpointed one.
 
     ``runtime_builder`` is injected rather than imported at the call site so
     a test can drive the real graph with scripted agents and no provider.
+    ``config_overrides`` are request-scoped settings applied after the YAML
+    and environment values; callers that omit them keep the file behavior.
 
     Inputs are normalized and validated before any configuration or runtime
     setup: outer whitespace is stripped, and blank questions and session ids
@@ -143,9 +176,10 @@ async def run_research(
             ),
         )
 
-    settings = load_settings(config_path)
-    resolve_output_format(
-        output_format, configured=settings.output.default_format
+    settings = prepare_research_settings(
+        config_path=config_path,
+        output_format=output_format,
+        config_overrides=config_overrides,
     )
 
     effective_session_id = resume_session_id or session_id or new_session_id()

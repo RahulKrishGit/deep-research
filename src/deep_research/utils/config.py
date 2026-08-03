@@ -1,12 +1,14 @@
 """Typed configuration loading with environment variable overrides."""
 
 import os
+from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 
 class MissingSecretsError(ValueError):
@@ -167,16 +169,66 @@ _LANGSMITH_ENVIRONMENT_VARIABLES = (
 )
 
 
-def load_config(config_path: str, strict: bool = False) -> ConfigSettings:
+_FREE_FORM_MAPPING_PATHS = frozenset({("llm", "model_overrides")})
+
+
+def _merge_override_payload(
+    target: dict[str, Any],
+    overrides: Mapping[str, JsonValue],
+    *,
+    path: tuple[str, ...] = (),
+) -> None:
+    for key, value in overrides.items():
+        current_path = (*path, key)
+        if key not in target:
+            raise ValueError(
+                f"unknown config override: {'.'.join(current_path)}"
+            )
+
+        current = target[key]
+        if current_path in _FREE_FORM_MAPPING_PATHS:
+            if isinstance(current, dict) and isinstance(value, Mapping):
+                current.update(deepcopy(dict(value)))
+            else:
+                target[key] = deepcopy(value)
+        elif isinstance(current, dict) and isinstance(value, Mapping):
+            _merge_override_payload(current, value, path=current_path)
+        else:
+            target[key] = deepcopy(value)
+
+
+def apply_config_overrides(
+    settings: ConfigSettings,
+    overrides: Mapping[str, JsonValue],
+) -> ConfigSettings:
+    """Return a copy of ``settings`` with request-scoped overrides applied.
+
+    Unknown paths raise ``ValueError`` so a caller can never silently
+    override a setting that does not exist. The original settings are never
+    mutated: the merged payload is validated into a fresh instance.
+    """
+    payload = settings.model_dump(mode="python")
+    _merge_override_payload(payload, overrides)
+    return ConfigSettings.model_validate(payload)
+
+
+def load_config(
+    config_path: str,
+    strict: bool = False,
+    *,
+    overrides: Mapping[str, JsonValue] | None = None,
+) -> ConfigSettings:
     """Load YAML config, apply environment overrides, and validate its types.
 
     Args:
         config_path: Path to a YAML configuration file.
         strict: Require all runtime secrets to be non-empty when true.
+        overrides: Request-scoped overrides applied after environment
+            values and validated against the final settings.
 
     Raises:
         FileNotFoundError: If ``config_path`` does not exist.
-        ValueError: If YAML is invalid.
+        ValueError: If YAML is invalid or an override names an unknown path.
         MissingSecretsError: If strict mode finds required runtime secrets
             absent.
     """
@@ -197,7 +249,8 @@ def load_config(config_path: str, strict: bool = False) -> ConfigSettings:
 
     _apply_environment_overrides(raw_config)
     settings = ConfigSettings.model_validate(raw_config)
-
+    if overrides:
+        settings = apply_config_overrides(settings, overrides)
     if strict:
         _validate_runtime_secrets(tracing_enabled=settings.langsmith.tracing_enabled)
 

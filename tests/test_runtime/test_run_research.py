@@ -361,3 +361,24 @@ def test_run_research_sync_drives_the_async_entry_point(
     )
 
     assert outcome.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_run_research_applies_config_overrides(
+    config_file,
+    tracker,
+) -> None:
+    observed = {}
+
+    async def builder(settings, *, session_id, **_ignored):
+        observed["directory"] = settings.output.directory
+        return await fake_builder(tracker)(settings, session_id=session_id)
+
+    await run_research(
+        QUESTION,
+        config_path=config_file,
+        config_overrides={"output": {"directory": "request-output/"}},
+        runtime_builder=builder,
+    )
+
+    assert observed == {"directory": "request-output/"}
