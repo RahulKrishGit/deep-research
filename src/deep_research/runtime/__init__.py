@@ -1,5 +1,7 @@
 """Assembly of a runnable research session from loaded configuration."""
 
+from __future__ import annotations
+
 from deep_research.runtime.assembly import (
     AGENT_NAMES,
     TAVILY_API_KEY_VARIABLE,

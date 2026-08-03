@@ -12,6 +12,7 @@ cannot remember anything is a worse session, not a failed one.
 
 from __future__ import annotations
 
+from deep_research.memory.entries import MemoryEntry
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
 from deep_research.utils.types import Finding, MemorySnapshot
@@ -25,7 +26,7 @@ DEFAULT_RECALL_TOP_K = 5
 MAX_SUGGESTED_STRATEGIES = 10
 
 
-def _recalled_finding(entry) -> Finding | None:  # noqa: ANN001 - MemoryEntry
+def _recalled_finding(entry: MemoryEntry) -> Finding | None:
     """Render one stored entry as a ``Finding``, or drop it.
 
     An entry with no source is dropped rather than given a placeholder URL:
