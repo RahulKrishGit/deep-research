@@ -395,3 +395,131 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
     }
     assert SynthesizerAgent.name == "synthesizer"
     assert SynthesizerAgent.allowed_tools == ("write_document", "save_to_memory")
+
+
+def test_graph_contracts_import_from_package() -> None:
+    from deep_research.graph import (  # noqa: F401
+        AGENT_NODE_ORDER,
+        CRITIC_NODE,
+        DEFAULT_MAX_ITERATIONS,
+        FACT_CHECKER_NODE,
+        GRAPH_ERROR_REASONS,
+        GRAPH_ROUTES,
+        GRAPH_SOURCE,
+        GRAPH_STATUSES,
+        HALTING_ERROR_TYPES,
+        NODE_NAMES,
+        PLANNER_NODE,
+        REFINE_NODE,
+        RESEARCHER_NODE,
+        ROUTE_END,
+        ROUTE_REFINE,
+        SOURCE_EVALUATOR_NODE,
+        SYNTHESIZER_NODE,
+        GraphConfigurationError,
+        GraphError,
+        GraphNode,
+        GraphResumeError,
+        GraphRun,
+        ResearchAgent,
+        ResearchAgents,
+        ResearchGraphState,
+        agent_configuration_error,
+        agent_node,
+        build_checkpointer,
+        build_research_graph,
+        compile_research_graph,
+        critic_node,
+        dump_state,
+        graph_error,
+        graph_event,
+        graph_recursion_limit,
+        graph_route,
+        graph_status,
+        initial_graph_state,
+        invalid_agent_state_error,
+        invalid_route_error,
+        is_halted,
+        load_state,
+        node_completed_event,
+        node_skipped_event,
+        node_started_event,
+        planning_failed_error,
+        provider_configuration_error,
+        refine_node,
+        refinement_started_event,
+        resume_research_graph,
+        route_after_critic,
+        route_decided_event,
+        run_research_graph,
+        session_completed_event,
+        session_config,
+        session_started_event,
+    )
+
+
+def test_graph_all_surface_is_fully_covered() -> None:
+    """Every name in ``deep_research.graph.__all__`` must actually resolve."""
+    import deep_research.graph as graph_pkg
+
+    missing = [name for name in graph_pkg.__all__ if not hasattr(graph_pkg, name)]
+    assert not missing, f"__all__ entries missing from package: {missing}"
+
+
+def test_graph_submodule_public_names_all_reach_all() -> None:
+    """Every public module-level name in ``graph/*.py`` must be exported.
+
+    The graph twin of ``test_agent_submodule_public_names_all_reach_all``:
+    it catches a public name that exists in a submodule but was never wired
+    into ``__all__``, which the import list above cannot.
+    """
+    import ast
+    from pathlib import Path
+
+    import deep_research.graph as graph_pkg
+
+    graph_dir = Path(graph_pkg.__file__).parent
+    submodules = ["errors", "events", "nodes", "orchestrator", "state"]
+
+    missing: list[str] = []
+    for module_name in submodules:
+        path = graph_dir / f"{module_name}.py"
+        assert path.is_file(), f"expected submodule file missing: {path}"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            name: str | None = None
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                name = node.name
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        name = target.id
+                        break
+            elif isinstance(node, ast.AnnAssign) and isinstance(
+                node.target, ast.Name
+            ):
+                name = node.target.id
+
+            if name is None or name.startswith("_"):
+                continue
+            if name not in graph_pkg.__all__:
+                missing.append(f"{module_name}.{name}")
+
+    assert not missing, (
+        "public submodule names missing from `deep_research.graph.__all__`: "
+        f"{missing}"
+    )
+
+
+def test_the_graph_nodes_cover_the_designed_sequence() -> None:
+    from deep_research.graph import AGENT_NODE_ORDER, CRITIC_NODE, NODE_NAMES
+
+    assert AGENT_NODE_ORDER == (
+        "planner",
+        "researcher",
+        "source_evaluator",
+        "fact_checker",
+        "synthesizer",
+    )
+    assert CRITIC_NODE == "critic"
+    assert NODE_NAMES[-1] == "refine"
