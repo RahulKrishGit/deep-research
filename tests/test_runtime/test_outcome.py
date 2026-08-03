@@ -52,6 +52,22 @@ def test_report_path_is_none_when_no_report_was_written() -> None:
     assert report_path_from_state(base_state(events=[synthesis_event(None)])) is None
 
 
+def test_a_failed_refinement_write_clears_the_previous_path() -> None:
+    """The last synthesis event wins even when it records no output path.
+
+    A successful write followed by a failed write must not leave the CLI
+    advertising a file that is not the final ``state.report``.
+    """
+    state = base_state(
+        events=[
+            synthesis_event("report-session-1-0.md"),
+            synthesis_event(None),
+        ]
+    )
+
+    assert report_path_from_state(state) is None
+
+
 def test_tool_call_summaries_group_by_tool_and_count_failures() -> None:
     metrics = [
         ToolMetric(
@@ -114,6 +130,62 @@ def test_total_token_usage_is_zero_when_nothing_reported() -> None:
     assert total_token_usage([]).total_tokens == 0
 
 
+def test_tool_call_summaries_can_be_limited_to_one_session() -> None:
+    metrics = [
+        ToolMetric(
+            session_id="session-1",
+            tool_name="web_search",
+            latency_ms=1.0,
+            success=True,
+        ),
+        ToolMetric(
+            session_id="session-2",
+            tool_name="web_search",
+            latency_ms=1.0,
+            success=True,
+        ),
+        ToolMetric(
+            session_id="session-1",
+            tool_name="query_memory",
+            latency_ms=1.0,
+            success=True,
+        ),
+    ]
+
+    assert tool_call_summaries(metrics, session_id="session-1") == [
+        ToolCallSummary(tool_name="query_memory", calls=1, failures=0),
+        ToolCallSummary(tool_name="web_search", calls=1, failures=0),
+    ]
+
+
+def test_total_token_usage_can_be_limited_to_one_session() -> None:
+    metrics = [
+        TokenUsageMetric(
+            session_id="session-1",
+            model="gpt-4o",
+            input_tokens=100,
+            output_tokens=20,
+            total_tokens=120,
+            latency_ms=1.0,
+            success=True,
+        ),
+        TokenUsageMetric(
+            session_id="session-2",
+            model="gpt-4o",
+            input_tokens=5,
+            output_tokens=1,
+            total_tokens=6,
+            latency_ms=1.0,
+            success=True,
+        ),
+    ]
+
+    usage = total_token_usage(metrics, session_id="session-1")
+
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 20
+
+
 def test_build_outcome_carries_everything_a_front_end_needs() -> None:
     state = base_state(
         report="# Research report",
@@ -144,6 +216,38 @@ def test_build_outcome_carries_everything_a_front_end_needs() -> None:
     assert outcome.report == "# Research report"
     assert len(outcome.errors) == 1
     assert outcome.failed is False
+
+
+def test_build_outcome_ignores_metrics_from_other_sessions() -> None:
+    """A resumed run shares its tracker with the run that made the checkpoint."""
+    run = GraphRun(
+        session_id="session-1",
+        state=base_state(),
+        status="completed",
+        trace_url=None,
+    )
+    metrics = [
+        ToolMetric(
+            session_id="session-2",
+            tool_name="web_search",
+            latency_ms=1.0,
+            success=True,
+        ),
+        TokenUsageMetric(
+            session_id="session-2",
+            model="gpt-4o",
+            input_tokens=100,
+            output_tokens=20,
+            total_tokens=120,
+            latency_ms=1.0,
+            success=True,
+        ),
+    ]
+
+    outcome = build_outcome(run, metrics=metrics)
+
+    assert outcome.tool_calls == ()
+    assert outcome.token_usage.total_tokens == 0
 
 
 def test_a_failed_run_is_reported_as_failed() -> None:

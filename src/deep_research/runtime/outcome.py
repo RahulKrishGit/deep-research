@@ -41,25 +41,36 @@ def report_path_from_state(state: ResearchState) -> str | None:
 
     The *last* synthesis event wins: a refinement pass rewrites the report
     under a new filename, and the newest file is the one that matches
-    ``state.report``.
+    ``state.report``. Every matching event sets the current value — one that
+    records no ``output_path`` (a failed refinement write) clears the
+    previous one, so the CLI never advertises a file that is not the
+    session's final report.
     """
     path: str | None = None
     for event in state.events:
         if event.event_type != REPORT_WRITTEN_EVENT:
             continue
         candidate = event.metadata.get("output_path")
-        if isinstance(candidate, str) and candidate:
-            path = candidate
+        path = candidate if isinstance(candidate, str) and candidate else None
     return path
 
 
 def tool_call_summaries(
     metrics: Sequence[MetricRecord],
+    *,
+    session_id: str | None = None,
 ) -> list[ToolCallSummary]:
-    """Group the run's tool spans by tool name, alphabetically."""
+    """Group one session's tool spans by tool name, alphabetically.
+
+    Pass ``session_id`` to exclude spans the tracker accumulated for other
+    sessions — a resumed run shares its tracker with the run that made the
+    checkpoint, and mixing the two would double-count.
+    """
     counts: dict[str, list[int]] = {}
     for metric in metrics:
         if not isinstance(metric, ToolMetric):
+            continue
+        if session_id is not None and metric.session_id != session_id:
             continue
         entry = counts.setdefault(metric.tool_name, [0, 0])
         entry[0] += 1
@@ -71,19 +82,27 @@ def tool_call_summaries(
     ]
 
 
-def total_token_usage(metrics: Sequence[MetricRecord]) -> TokenUsage:
-    """Sum every LLM span's token usage.
+def total_token_usage(
+    metrics: Sequence[MetricRecord],
+    *,
+    session_id: str | None = None,
+) -> TokenUsage:
+    """Sum one session's LLM spans' token usage.
 
     Zero totals mean "no provider reported usage", which is exactly what a
     fully mocked run produces — callers render that as "not available"
-    rather than as "zero tokens".
+    rather than as "zero tokens". Pass ``session_id`` to exclude spans the
+    tracker accumulated for other sessions.
     """
     input_tokens = 0
     output_tokens = 0
     for metric in metrics:
-        if isinstance(metric, TokenUsageMetric):
-            input_tokens += metric.input_tokens
-            output_tokens += metric.output_tokens
+        if not isinstance(metric, TokenUsageMetric):
+            continue
+        if session_id is not None and metric.session_id != session_id:
+            continue
+        input_tokens += metric.input_tokens
+        output_tokens += metric.output_tokens
     return TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
 
 
@@ -129,6 +148,8 @@ def build_outcome(
         state=run.state,
         trace_url=run.trace_url,
         report_path=report_path_from_state(run.state),
-        token_usage=total_token_usage(metrics),
-        tool_calls=tuple(tool_call_summaries(metrics)),
+        token_usage=total_token_usage(metrics, session_id=run.session_id),
+        tool_calls=tuple(
+            tool_call_summaries(metrics, session_id=run.session_id)
+        ),
     )
