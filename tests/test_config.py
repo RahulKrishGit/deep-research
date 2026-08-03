@@ -463,3 +463,47 @@ def test_agent_runtime_config_rejects_unbounded_values(
 
     with pytest.raises(ValidationError):
         AgentRuntimeConfig(**{field_name: invalid_value})
+
+
+def test_graph_settings_default_to_a_bounded_uncheckpointed_run() -> None:
+    settings = ConfigSettings()
+
+    assert settings.graph.max_iterations == 3
+    assert settings.graph.checkpointing_enabled is False
+
+
+def test_graph_settings_load_from_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {"graph": {"max_iterations": 5, "checkpointing_enabled": True}}
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_config(str(path))
+
+    assert settings.graph.max_iterations == 5
+    assert settings.graph.checkpointing_enabled is True
+
+
+def test_graph_settings_take_environment_overrides(
+    config_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_MAX_ITERATIONS", "7")
+    monkeypatch.setenv("GRAPH_CHECKPOINTING_ENABLED", "true")
+
+    settings = load_config(str(config_path))
+
+    assert settings.graph.max_iterations == 7
+    assert settings.graph.checkpointing_enabled is True
+
+
+def test_a_zero_iteration_budget_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump({"graph": {"max_iterations": 0}}), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError):
+        load_config(str(path))

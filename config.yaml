@@ -35,6 +35,10 @@ agents:
   prompt_context_entries: 8
   observation_summary_chars: 200
 
+graph:
+  max_iterations: 3
+  checkpointing_enabled: false
+
 output:
   directory: output/
   default_format: markdown

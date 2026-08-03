@@ -84,6 +84,22 @@ class AgentRuntimeConfig(BaseModel):
     observation_summary_chars: int = Field(default=200, ge=1)
 
 
+class GraphConfig(BaseModel):
+    """Bounds and durability for the macro research loop.
+
+    ``max_iterations`` is the macro refinement budget the Critic spends;
+    ``AgentRuntimeConfig.max_iterations`` is the *micro* ReAct bound inside
+    one agent. They are deliberately separate numbers.
+
+    There is no ``recursion_limit`` setting: LangGraph's superstep bound is
+    derived from ``max_iterations`` and the graph's node count, and a second
+    knob that could contradict the first is a bug waiting to happen.
+    """
+
+    max_iterations: int = Field(default=3, ge=1)
+    checkpointing_enabled: bool = False
+
+
 class OutputConfig(BaseModel):
     """Output settings."""
 
@@ -99,6 +115,7 @@ class ConfigSettings(BaseModel):
     tavily: TavilyConfig = TavilyConfig()
     memory: MemoryConfig = MemoryConfig()
     agents: AgentRuntimeConfig = AgentRuntimeConfig()
+    graph: GraphConfig = GraphConfig()
     output: OutputConfig = OutputConfig()
 
 
@@ -126,6 +143,8 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_TOOL_BUDGET": ("agents", "tool_budget"),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
+    "GRAPH_MAX_ITERATIONS": ("graph", "max_iterations"),
+    "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),
     "OUTPUT_DIRECTORY": ("output", "directory"),
     "OUTPUT_DEFAULT_FORMAT": ("output", "default_format"),
 }

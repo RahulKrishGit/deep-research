@@ -24,6 +24,11 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from deep_research.graph.errors import GraphResumeError
+from deep_research.graph.events import (
+    session_completed_event,
+    session_started_event,
+)
 from deep_research.graph.nodes import (
     ResearchAgent,
     agent_node,
@@ -33,6 +38,7 @@ from deep_research.graph.nodes import (
 )
 from deep_research.graph.state import (
     CRITIC_NODE,
+    DEFAULT_MAX_ITERATIONS,
     FACT_CHECKER_NODE,
     PLANNER_NODE,
     REFINE_NODE,
@@ -42,7 +48,18 @@ from deep_research.graph.state import (
     SOURCE_EVALUATOR_NODE,
     SYNTHESIZER_NODE,
     ResearchGraphState,
+    dump_state,
     graph_recursion_limit,
+    graph_route,
+    graph_status,
+    initial_graph_state,
+    load_state,
+)
+from deep_research.observability import Tracker
+from deep_research.utils.types import (
+    MemorySnapshot,
+    ResearchState,
+    merge_research_state,
 )
 
 # The five agent nodes that run before the Critic, in order. The Critic and
@@ -145,3 +162,174 @@ def session_config(session_id: str, *, max_iterations: int) -> dict[str, Any]:
         "configurable": {"thread_id": session_id},
         "recursion_limit": graph_recursion_limit(max_iterations),
     }
+
+
+@dataclass(frozen=True)
+class GraphRun:
+    """Everything one research session produced."""
+
+    session_id: str
+    state: ResearchState
+    status: str
+    trace_url: str | None
+
+
+def _session_outputs(state: ResearchState, *, status: str) -> dict[str, Any]:
+    """The session metadata this run attaches to its LangSmith span.
+
+    Counts, identifiers, and enumerated reasons only — never provider text
+    and never a report body. ``route_decisions`` is the whole macro history
+    of the run, which is what makes "graph route decisions are observable"
+    true from the trace alone.
+    """
+    critique = state.critique
+    return {
+        "session_id": state.session_id,
+        "status": status,
+        "route_reason": graph_route(state)[1],
+        "route_decisions": [
+            event.metadata["reason"]
+            for event in state.events
+            if event.event_type == "graph.route.decided"
+        ],
+        "iteration": state.iteration,
+        "max_iterations": state.max_iterations,
+        "sub_topic_count": len(state.sub_topics),
+        "finding_count": len(state.raw_findings),
+        "source_count": len(state.evaluated_sources),
+        "claim_count": len(state.verified_claims),
+        "critic_score": None if critique is None else critique.score,
+        "has_report": state.report is not None,
+        "error_count": len(state.errors),
+    }
+
+
+async def _invoke(
+    *,
+    graph: Any,
+    tracker: Tracker,
+    channel: ResearchGraphState | None,
+    session_id: str,
+    question: str,
+    max_iterations: int,
+) -> GraphRun:
+    """Run or resume the compiled graph inside one session span.
+
+    ``channel`` is ``None`` when resuming: LangGraph reads the thread's
+    checkpoint instead of an input. The session span is what gives every
+    agent inside a node an active trace context — ``Tracker.agent_span``
+    raises without one.
+    """
+    async with tracker.session_span(session_id, question) as span:
+        result = await graph.ainvoke(
+            channel, session_config(session_id, max_iterations=max_iterations)
+        )
+        final = load_state(result)
+        status = graph_status(final)
+        final = merge_research_state(
+            final,
+            {
+                "events": [
+                    session_completed_event(
+                        status=status,
+                        iteration=final.iteration,
+                        error_count=len(final.errors),
+                        has_report=final.report is not None,
+                    )
+                ]
+            },
+        )
+        span.set_outputs(_session_outputs(final, status=status))
+        trace_url = span.trace_url
+
+    return GraphRun(
+        session_id=session_id,
+        state=final,
+        status=status,
+        trace_url=trace_url,
+    )
+
+
+async def run_research_graph(
+    *,
+    graph: Any,
+    tracker: Tracker,
+    session_id: str,
+    question: str,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    memory_context: MemorySnapshot | None = None,
+    checkpointing: bool = False,
+) -> GraphRun:
+    """Run one research session from the question to a final status.
+
+    ``session_started_event`` is written into the initial state *before* the
+    graph runs, so it is checkpointed with everything else.
+    ``session_completed_event`` is appended after, so it is not: the
+    checkpoint is written by the graph, and a completion recorded by the
+    runner belongs to the run rather than to the durable state.
+    """
+    state = load_state(
+        initial_graph_state(
+            session_id=session_id,
+            question=question,
+            max_iterations=max_iterations,
+            memory_context=memory_context,
+        )
+    )
+    state = merge_research_state(
+        state,
+        {
+            "events": [
+                session_started_event(
+                    session_id=session_id,
+                    max_iterations=max_iterations,
+                    checkpointing=checkpointing,
+                )
+            ]
+        },
+    )
+    return await _invoke(
+        graph=graph,
+        tracker=tracker,
+        channel=dump_state(state),
+        session_id=session_id,
+        question=state.original_question,
+        max_iterations=max_iterations,
+    )
+
+
+async def resume_research_graph(
+    *,
+    graph: Any,
+    tracker: Tracker,
+    session_id: str,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+) -> GraphRun:
+    """Continue a checkpointed session from where it stopped.
+
+    The question is read back out of the checkpoint rather than re-supplied,
+    so a resume cannot silently research something else under a session id
+    that already means something.
+    """
+    config = session_config(session_id, max_iterations=max_iterations)
+    try:
+        snapshot = await graph.aget_state(config)
+    except ValueError as error:
+        raise GraphResumeError(
+            "resuming a session requires a graph compiled with a checkpointer"
+        ) from error
+
+    values = snapshot.values
+    if not isinstance(values, dict) or "state" not in values:
+        raise GraphResumeError(
+            f"no checkpoint was recorded for session {session_id}"
+        )
+
+    return await _invoke(
+        graph=graph,
+        tracker=tracker,
+        channel=None,
+        session_id=session_id,
+        question=load_state(values).original_question,
+        max_iterations=max_iterations,
+    )
