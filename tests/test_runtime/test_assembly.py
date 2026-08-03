@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import deep_research.runtime.assembly as assembly
@@ -80,6 +82,30 @@ def test_build_tools_covers_the_union_of_every_agent_allowlist(tracker) -> None:
     )
 
     assert declared <= {tool.name for tool in tools}
+
+
+def test_build_tools_does_not_fall_back_to_the_environment_for_a_blank_key(
+    tracker, monkeypatch
+) -> None:
+    """An explicitly supplied empty key is honoured, not treated as absent."""
+    monkeypatch.setenv("TAVILY_API_KEY", "env-tavily-key")
+    received: list[object] = []
+
+    class RecordingWebSearchTool(assembly.WebSearchTool):
+        def __init__(self, *args, **kwargs):
+            received.append(kwargs.get("api_key"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(assembly, "WebSearchTool", RecordingWebSearchTool)
+
+    build_tools(
+        ConfigSettings(),
+        tracker=tracker,
+        memory=build_bridge(),
+        tavily_api_key="",
+    )
+
+    assert received == [""]
 
 
 @pytest.mark.asyncio
@@ -290,6 +316,65 @@ async def test_build_runtime_compiles_a_graph_from_injected_collaborators(
     assert runtime.procedural is procedural
     assert procedural.loaded is True
     assert runtime.graph is not None
+
+
+class CountingProceduralMemory(ProceduralMemory):
+    """A strategy store that counts how many times it was loaded."""
+
+    def __init__(self, path: Path | str) -> None:
+        super().__init__(path)
+        self.load_calls = 0
+
+    async def load(self) -> None:
+        self.load_calls += 1
+        await super().load()
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_does_not_reload_an_injected_loaded_store(
+    tracker, tmp_path
+) -> None:
+    """An injected store that is already loaded is left alone."""
+    procedural = CountingProceduralMemory(tmp_path / "strategies.json")
+    await procedural.load()
+    assert procedural.loaded is True
+
+    await build_runtime(
+        ConfigSettings.model_validate({"output": {"directory": str(tmp_path)}}),
+        session_id="session-1",
+        tracker=tracker,
+        chat_provider=RecordingProvider(),
+        long_term=LongTermMemory(
+            collection=FakeCollection(), embeddings=FakeEmbeddings()
+        ),
+        procedural=procedural,
+        search_client=FakeSearchClient(),
+    )
+
+    assert procedural.load_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_honours_disabled_checkpointing(
+    tracker, tmp_path
+) -> None:
+    settings = ConfigSettings.model_validate(
+        {"output": {"directory": str(tmp_path)}}
+    )
+
+    runtime = await build_runtime(
+        settings,
+        session_id="session-1",
+        tracker=tracker,
+        chat_provider=RecordingProvider(),
+        long_term=LongTermMemory(
+            collection=FakeCollection(), embeddings=FakeEmbeddings()
+        ),
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+        search_client=FakeSearchClient(),
+    )
+
+    assert runtime.graph.checkpointer is None
 
 
 @pytest.mark.asyncio

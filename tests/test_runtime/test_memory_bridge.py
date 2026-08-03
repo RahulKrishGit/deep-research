@@ -118,6 +118,16 @@ async def test_query_returns_json_safe_mappings() -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_rejects_a_non_string_entry_type_filter() -> None:
+    """A malformed filter is a tool failure, not a silently broadened query."""
+    memory, _ = build_memory()
+    bridge = LongTermMemoryBridge(memory, session_id="session-1")
+
+    with pytest.raises(ValueError, match="entry_type"):
+        await bridge.query("error correction", filters={"entry_type": 42})
+
+
+@pytest.mark.asyncio
 async def test_query_filters_by_entry_type() -> None:
     memory, _ = build_memory()
     bridge = LongTermMemoryBridge(memory, session_id="session-1")

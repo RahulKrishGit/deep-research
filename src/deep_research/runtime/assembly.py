@@ -71,7 +71,11 @@ def build_tools(
     return [
         WebSearchTool(
             tracker,
-            api_key=tavily_api_key or os.getenv(TAVILY_API_KEY_VARIABLE),
+            api_key=(
+                tavily_api_key
+                if tavily_api_key is not None
+                else os.getenv(TAVILY_API_KEY_VARIABLE)
+            ),
             client=search_client,
             search_depth=settings.tavily.search_depth,
             max_results=settings.tavily.max_results,
@@ -229,7 +233,9 @@ async def build_runtime(
             procedural = ProceduralMemory.from_config(
                 settings.memory.procedural, tracker=tracker
             )
-        await procedural.load()
+            await procedural.load()
+        elif not procedural.loaded:
+            await procedural.load()
     except MemoryInitializationError as error:
         raise configuration_error(
             reason="memory_unavailable",

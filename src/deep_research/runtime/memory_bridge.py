@@ -107,13 +107,25 @@ class LongTermMemoryBridge:
         top_k: int = 5,
         filters: Mapping[str, JsonValue] | None = None,
     ) -> list[dict[str, JsonValue]]:
-        """Search long-term memory and render hits as JSON mappings."""
+        """Search long-term memory and render hits as JSON mappings.
+
+        A non-string ``entry_type`` filter is rejected rather than dropped:
+        a model that emits one is misbehaving, and silently broadening the
+        query would hand it results it did not ask for. ``BaseTool.execute``
+        turns the ``ValueError`` into a failed ``ToolResult`` the agent can
+        see.
+        """
         where = dict(filters or {})
         entry_type = where.pop("entry_type", None)
+        if entry_type is not None and not isinstance(entry_type, str):
+            raise ValueError(
+                "the memory query was rejected because its entry_type "
+                f"filter is {type(entry_type).__name__}, not a string"
+            )
         results = await self._memory.query(
             query,
             top_k=top_k,
-            entry_type=entry_type if isinstance(entry_type, str) else None,
+            entry_type=entry_type,
             where=where or None,
         )
         return [
