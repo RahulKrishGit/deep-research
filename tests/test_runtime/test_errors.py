@@ -34,3 +34,9 @@ def test_every_hint_is_a_non_blank_sentence() -> None:
         assert reason.strip() == reason
         assert hint.strip()
         assert hint.endswith(".")
+
+
+def test_blank_inputs_and_conflicts_have_enumerated_hints() -> None:
+    for reason in ("blank_session_id", "question_and_resume"):
+        assert reason in CONFIGURATION_HINTS
+        assert CONFIGURATION_HINTS[reason].endswith(".")

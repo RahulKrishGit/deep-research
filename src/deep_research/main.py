@@ -28,7 +28,11 @@ from deep_research.runtime.assembly import ResearchRuntime, build_runtime
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome, build_outcome
 from deep_research.runtime.recall import recall_memory_context
-from deep_research.utils.config import ConfigSettings, load_config
+from deep_research.utils.config import (
+    ConfigSettings,
+    MissingSecretsError,
+    load_config,
+)
 
 DEFAULT_CONFIG_PATH = "config.yaml"
 
@@ -77,7 +81,7 @@ def load_settings(config_path: str) -> ConfigSettings:
         message = str(error)
         reason = (
             "missing_secrets"
-            if "environment variables" in message
+            if isinstance(error, MissingSecretsError)
             else "config_invalid"
         )
         raise configuration_error(reason=reason, message=message) from error
@@ -97,15 +101,42 @@ async def run_research(
 
     ``runtime_builder`` is injected rather than imported at the call site so
     a test can drive the real graph with scripted agents and no provider.
+
+    Inputs are normalized and validated before any configuration or runtime
+    setup: outer whitespace is stripped, and blank questions and session ids
+    fail as enumerated configuration errors instead of reaching state or
+    memory validation as an uncaught exception.
     """
+    if isinstance(question, str):
+        question = question.strip()
+    if isinstance(session_id, str):
+        session_id = session_id.strip()
+    if isinstance(resume_session_id, str):
+        resume_session_id = resume_session_id.strip()
+
     if question is None and resume_session_id is None:
         raise configuration_error(
             reason="no_question",
             message="No research question was supplied.",
         )
-    if question is not None and resume_session_id is not None:
+    if question is not None and not question:
         raise configuration_error(
             reason="no_question",
+            message="The research question was blank.",
+        )
+    if resume_session_id is not None and not resume_session_id:
+        raise configuration_error(
+            reason="blank_session_id",
+            message="The session id supplied for resume was blank.",
+        )
+    if session_id is not None and not session_id:
+        raise configuration_error(
+            reason="blank_session_id",
+            message="The supplied session id was blank.",
+        )
+    if question is not None and resume_session_id is not None:
+        raise configuration_error(
+            reason="question_and_resume",
             message=(
                 "A research question and a resumed session cannot be "
                 "combined; a resumed session already has its question."

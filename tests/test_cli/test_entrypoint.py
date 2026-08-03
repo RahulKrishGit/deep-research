@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 
 import pytest
+import yaml
 
 from deep_research.cli import (
     EXIT_CONFIGURATION_ERROR,
@@ -13,6 +14,7 @@ from deep_research.cli import (
     EXIT_OK,
     main,
 )
+from deep_research.main import run_research_sync
 from deep_research.observability import TokenUsage
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome
@@ -128,6 +130,66 @@ def test_an_empty_interactive_answer_is_a_configuration_failure() -> None:
     assert "error:" in stream.getvalue()
 
 
+def test_a_whitespace_only_question_is_a_configuration_failure() -> None:
+    """A blank positional question never claims a run started."""
+    runner = RecordingRunner()
+    stream = io.StringIO()
+
+    code = main(["   "], runner=runner, stream=stream)
+
+    assert code == EXIT_CONFIGURATION_ERROR
+    assert runner.calls == []
+    printed = stream.getvalue()
+    assert "error:" in printed
+    assert "Preparing" not in printed
+
+
+def test_positional_question_whitespace_is_normalized() -> None:
+    runner = RecordingRunner()
+
+    main(["  AI in healthcare  "], runner=runner, stream=io.StringIO())
+
+    assert runner.calls[0]["question"] == "AI in healthcare"
+
+
+def test_interactive_eof_is_a_configuration_failure() -> None:
+    runner = RecordingRunner()
+
+    def prompt(_message: str) -> str:
+        raise EOFError
+
+    code = main(
+        ["--interactive"], runner=runner, prompt=prompt, stream=io.StringIO()
+    )
+
+    assert code == EXIT_CONFIGURATION_ERROR
+    assert runner.calls == []
+
+
+def test_a_blank_resume_session_id_is_rejected_end_to_end(
+    tmp_path, monkeypatch
+) -> None:
+    """The CLI hands --resume to run_research, which rejects a blank id."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({}), encoding="utf-8")
+
+    async def builder(settings, *, session_id, **_ignored):
+        raise AssertionError("a blank resume must fail before runtime setup")
+
+    def runner(**kwargs):
+        return run_research_sync(runtime_builder=builder, **kwargs)
+
+    stream = io.StringIO()
+    code = main(["--resume", "   "], runner=runner, stream=stream)
+
+    assert code == EXIT_CONFIGURATION_ERROR
+    printed = stream.getvalue()
+    assert "error:" in printed
+    assert "session id" in printed
+
+
 def test_resume_passes_the_session_id_and_no_question() -> None:
     runner = RecordingRunner()
 
@@ -186,6 +248,16 @@ def test_a_limited_run_still_exits_zero() -> None:
     code = main([QUESTION], runner=runner, stream=io.StringIO())
 
     assert code == EXIT_OK
+
+
+def test_an_incomplete_run_still_exits_zero_and_says_why() -> None:
+    runner = RecordingRunner(result=outcome(status="incomplete"))
+    stream = io.StringIO()
+
+    code = main([QUESTION], runner=runner, stream=stream)
+
+    assert code == EXIT_OK
+    assert "ended without an accepted critique" in stream.getvalue()
 
 
 def test_recoverable_errors_are_printed_as_warnings_not_failures() -> None:

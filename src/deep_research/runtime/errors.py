@@ -33,6 +33,9 @@ CONFIGURATION_HINTS = {
         "This is a wiring defect rather than a setup problem; report it "
         "with the command that produced it."
     ),
+    "blank_session_id": (
+        "Pass a non-blank session id, or omit it to start a fresh session."
+    ),
     "unsupported_output_format": (
         "Only markdown is supported in this build."
     ),
@@ -42,6 +45,10 @@ CONFIGURATION_HINTS = {
     "no_checkpoint": (
         "Resume only works inside the process that started the session; "
         "in-memory checkpoints do not survive a new command."
+    ),
+    "question_and_resume": (
+        "A resumed session already has its question; pass either a "
+        "question or --resume, not both."
     ),
 }
 

@@ -277,8 +277,8 @@ EXIT_INTERRUPTED = 130
 INTERACTIVE_PROMPT = "Research question: "
 
 _STARTING_NOTICE = (
-    "Researching. A full session runs the six agents and can take several "
-    "minutes."
+    "Preparing the research run. A full session runs the six agents and "
+    "can take several minutes."
 )
 
 
@@ -292,11 +292,23 @@ def resolve_question(
     Interactive mode asks once and runs once. The design's Testing section
     names a single "interactive input path"; a REPL is not asked for and is
     not built.
+
+    Outer whitespace is stripped and a blank question is a configuration
+    failure, matching ``run_research``'s own normalization so a rejected
+    command never claims a run started.
     """
     if options.resume is not None:
         return None
     if not options.interactive:
-        return options.question
+        question = options.question
+        if question is not None:
+            question = question.strip()
+            if not question:
+                raise configuration_error(
+                    reason="no_question",
+                    message="No research question was entered.",
+                )
+        return question
 
     try:
         answer = prompt(INTERACTIVE_PROMPT)

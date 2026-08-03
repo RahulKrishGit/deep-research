@@ -181,6 +181,23 @@ async def test_missing_api_keys_fail_fast(tmp_path, monkeypatch, tracker) -> Non
 
 
 @pytest.mark.asyncio
+async def test_invalid_yaml_is_a_configuration_failure(
+    tmp_path, monkeypatch, tracker
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
+    path = tmp_path / "config.yaml"
+    path.write_text("not: [valid", encoding="utf-8")
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await run_research(
+            QUESTION, config_path=str(path), runtime_builder=fake_builder(tracker)
+        )
+
+    assert caught.value.reason == "config_invalid"
+
+
+@pytest.mark.asyncio
 async def test_no_question_and_no_resume_is_a_configuration_failure(
     config_file, tracker
 ) -> None:
@@ -190,6 +207,82 @@ async def test_no_question_and_no_resume_is_a_configuration_failure(
         )
 
     assert caught.value.reason == "no_question"
+
+
+@pytest.mark.asyncio
+async def test_a_whitespace_only_question_is_a_configuration_failure(
+    config_file, tracker
+) -> None:
+    async def builder(settings, *, session_id, **_ignored):
+        raise AssertionError("blank inputs must fail before runtime setup")
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await run_research(
+            "   ", config_path=config_file, runtime_builder=builder
+        )
+
+    assert caught.value.reason == "no_question"
+    assert "blank" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_a_whitespace_only_resume_session_id_is_a_configuration_failure(
+    config_file, tracker
+) -> None:
+    async def builder(settings, *, session_id, **_ignored):
+        raise AssertionError("blank inputs must fail before runtime setup")
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await run_research(
+            resume_session_id="   ", config_path=config_file, runtime_builder=builder
+        )
+
+    assert caught.value.reason == "blank_session_id"
+    assert "resume" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_a_whitespace_only_session_id_is_a_configuration_failure(
+    config_file, tracker
+) -> None:
+    async def builder(settings, *, session_id, **_ignored):
+        raise AssertionError("blank inputs must fail before runtime setup")
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await run_research(
+            QUESTION, session_id="   ", config_path=config_file, runtime_builder=builder
+        )
+
+    assert caught.value.reason == "blank_session_id"
+
+
+@pytest.mark.asyncio
+async def test_question_whitespace_is_normalized_before_the_run(
+    config_file, tracker
+) -> None:
+    outcome = await run_research(
+        f"  {QUESTION}  ",
+        config_path=config_file,
+        runtime_builder=fake_builder(tracker),
+    )
+
+    assert outcome.question == QUESTION
+
+
+@pytest.mark.asyncio
+async def test_question_and_resume_together_get_their_own_reason(
+    config_file, tracker
+) -> None:
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await run_research(
+            QUESTION,
+            resume_session_id="session-1",
+            config_path=config_file,
+            runtime_builder=fake_builder(tracker),
+        )
+
+    assert caught.value.reason == "question_and_resume"
+    assert "already has its question" in caught.value.hint
 
 
 @pytest.mark.asyncio
