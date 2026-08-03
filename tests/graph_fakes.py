@@ -110,6 +110,22 @@ def fake_claim(text: str = "Break-even was reached in 2025.") -> Claim:
     )
 
 
+def fake_research_state(**overrides: object) -> ResearchState:
+    """A bare research state for graph unit tests, ready for overrides.
+
+    Only the identity fields the graph needs to exist are set; everything
+    else takes the model defaults, and any field can be overridden by
+    keyword. Shared by the state and node unit tests so their fixtures
+    cannot drift from each other.
+    """
+    payload: dict[str, object] = {
+        "session_id": "session-1",
+        "original_question": "How mature is quantum error correction?",
+    }
+    payload.update(overrides)
+    return ResearchState.model_validate(payload)
+
+
 def fake_critique(*, should_continue: bool, score: int = 5) -> Critique:
     return Critique(
         score=score,

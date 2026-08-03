@@ -71,7 +71,8 @@ def graph_error(
     reason = GRAPH_ERROR_REASONS.get(error_type)
     if reason is None:
         raise ValueError(f"unknown graph error type: {error_type}")
-    source = GRAPH_SOURCE if node is None else f"{GRAPH_SOURCE}.{node.strip()}"
+    node = node.strip() if node else None
+    source = GRAPH_SOURCE if not node else f"{GRAPH_SOURCE}.{node}"
     return ResearchError(
         error_type=error_type,
         source=source,

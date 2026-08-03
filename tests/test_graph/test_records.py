@@ -63,6 +63,13 @@ def test_a_node_free_graph_error_is_attributed_to_the_graph() -> None:
     assert graph_error(error_type="graph_planning_failed").source == "graph"
 
 
+def test_a_blank_node_is_attributed_to_the_graph() -> None:
+    assert (
+        graph_error(error_type="graph_planning_failed", node="   ").source
+        == "graph"
+    )
+
+
 @pytest.mark.parametrize(
     ("builder", "expected_type"),
     [
@@ -111,6 +118,16 @@ def test_a_graph_event_names_its_node_in_the_source() -> None:
 def test_a_blank_event_type_is_rejected() -> None:
     with pytest.raises(ValueError, match="event_type"):
         graph_event(event_type="  ", message="Node started.")
+
+
+def test_a_blank_event_node_is_attributed_to_the_graph() -> None:
+    event = graph_event(
+        event_type="graph.node.started",
+        message="Node started.",
+        node="   ",
+    )
+
+    assert event.source == "graph"
 
 
 def test_node_lifecycle_events_carry_their_counts() -> None:

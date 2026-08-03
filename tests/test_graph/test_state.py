@@ -20,42 +20,8 @@ from deep_research.graph.state import (
     is_halted,
     load_state,
 )
-from deep_research.utils.types import (
-    Critique,
-    MemorySnapshot,
-    ResearchError,
-    ResearchState,
-    SubTopic,
-)
-
-
-def _critique(*, should_continue: bool, score: int = 5) -> Critique:
-    return Critique(
-        score=score,
-        gaps=["No cost data."] if should_continue else [],
-        unsupported_claims=[],
-        recommended_queries=[],
-        should_continue=should_continue,
-        rationale="Recorded for routing tests.",
-    )
-
-
-def _state(**overrides: object) -> ResearchState:
-    payload: dict[str, object] = {
-        "session_id": "session-1",
-        "original_question": "How mature is quantum error correction?",
-    }
-    payload.update(overrides)
-    return ResearchState.model_validate(payload)
-
-
-def _halting_error() -> ResearchError:
-    return ResearchError(
-        error_type="graph_invalid_agent_state",
-        source="graph.researcher",
-        message="An agent returned a state update the research state rejected.",
-        recoverable=False,
-    )
+from deep_research.utils.types import MemorySnapshot, ResearchError, SubTopic
+from tests.graph_fakes import fake_critique, fake_research_state, halting_error
 
 
 def test_the_initial_channel_carries_the_question_and_the_budget() -> None:
@@ -85,7 +51,7 @@ def test_the_initial_channel_defaults_to_an_empty_memory_snapshot() -> None:
 
 
 def test_the_channel_round_trips_a_populated_state_as_plain_json() -> None:
-    state = _state(
+    state = fake_research_state(
         sub_topics=[
             SubTopic(
                 title="Error correction",
@@ -96,7 +62,7 @@ def test_the_channel_round_trips_a_populated_state_as_plain_json() -> None:
             )
         ],
         report="# Research report",
-        critique=_critique(should_continue=False, score=8),
+        critique=fake_critique(should_continue=False, score=8),
     )
 
     channel = dump_state(state)
@@ -115,15 +81,15 @@ def test_only_enumerated_error_types_halt_a_run() -> None:
         recoverable=False,
     )
 
-    assert not is_halted(_state())
-    assert not is_halted(_state(errors=[survivable]))
-    assert is_halted(_state(errors=[_halting_error()]))
+    assert not is_halted(fake_research_state())
+    assert not is_halted(fake_research_state(errors=[survivable]))
+    assert is_halted(fake_research_state(errors=[halting_error()]))
 
 
 def test_a_halted_run_ends_whatever_the_critic_recommended() -> None:
-    state = _state(
-        errors=[_halting_error()],
-        critique=_critique(should_continue=True),
+    state = fake_research_state(
+        errors=[halting_error()],
+        critique=fake_critique(should_continue=True),
     )
 
     assert graph_route(state) == (ROUTE_END, "halted")
@@ -131,20 +97,20 @@ def test_a_halted_run_ends_whatever_the_critic_recommended() -> None:
 
 
 def test_a_run_with_no_critique_ends_as_incomplete() -> None:
-    assert graph_route(_state()) == (ROUTE_END, "missing_critique")
-    assert graph_status(_state()) == "incomplete"
+    assert graph_route(fake_research_state()) == (ROUTE_END, "missing_critique")
+    assert graph_status(fake_research_state()) == "incomplete"
 
 
 def test_a_satisfied_critic_ends_the_run() -> None:
-    state = _state(critique=_critique(should_continue=False, score=9))
+    state = fake_research_state(critique=fake_critique(should_continue=False, score=9))
 
     assert graph_route(state) == (ROUTE_END, "critique_satisfied")
     assert graph_status(state) == "completed"
 
 
 def test_an_unsatisfied_critic_buys_a_refinement_while_budget_remains() -> None:
-    state = _state(
-        critique=_critique(should_continue=True),
+    state = fake_research_state(
+        critique=fake_critique(should_continue=True),
         iteration=1,
         max_iterations=3,
     )
@@ -153,8 +119,8 @@ def test_an_unsatisfied_critic_buys_a_refinement_while_budget_remains() -> None:
 
 
 def test_the_iteration_bound_beats_the_critics_recommendation() -> None:
-    state = _state(
-        critique=_critique(should_continue=True),
+    state = fake_research_state(
+        critique=fake_critique(should_continue=True),
         iteration=2,
         max_iterations=2,
     )
@@ -167,12 +133,15 @@ def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
     reasons = {
         graph_route(state)[1]
         for state in (
-            _state(errors=[_halting_error()]),
-            _state(),
-            _state(critique=_critique(should_continue=False)),
-            _state(critique=_critique(should_continue=True), max_iterations=2),
-            _state(
-                critique=_critique(should_continue=True),
+            fake_research_state(errors=[halting_error()]),
+            fake_research_state(),
+            fake_research_state(critique=fake_critique(should_continue=False)),
+            fake_research_state(
+                critique=fake_critique(should_continue=True),
+                max_iterations=2,
+            ),
+            fake_research_state(
+                critique=fake_critique(should_continue=True),
                 iteration=1,
                 max_iterations=1,
             ),

@@ -552,7 +552,6 @@ run = await run_research_graph(
     session_id=session_id,
     question="How mature is quantum error correction?",
     max_iterations=settings.graph.max_iterations,
-    checkpointing=settings.graph.checkpointing_enabled,
 )
 print(run.status, run.state.report, run.trace_url)
 

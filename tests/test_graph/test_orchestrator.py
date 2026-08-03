@@ -13,6 +13,7 @@ from deep_research.graph.orchestrator import (
 )
 from deep_research.graph.state import (
     CRITIC_NODE,
+    DEFAULT_MAX_ITERATIONS,
     NODE_NAMES,
     REFINE_NODE,
     graph_status,
@@ -66,7 +67,9 @@ def test_the_agent_node_order_matches_the_designed_sequence() -> None:
         "fact_checker",
         "synthesizer",
     )
-    assert set(AGENT_NODE_ORDER) | {CRITIC_NODE, REFINE_NODE} == set(NODE_NAMES)
+    # Order matters, not just membership: the graph's real edges read
+    # ``AGENT_NODE_ORDER``, so it must be exactly the head of ``NODE_NAMES``.
+    assert NODE_NAMES == (*AGENT_NODE_ORDER, CRITIC_NODE, REFINE_NODE)
 
 
 @pytest.mark.asyncio
@@ -208,6 +211,32 @@ async def test_the_iteration_bound_forces_an_end_the_critic_did_not_want(
     assert graph_status(state) == "max_iterations"
     assert state.critique is not None
     assert state.critique.should_continue is True
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_default_budget_exhausts_without_a_recursion_error(
+) -> None:
+    agents = fake_research_agents(
+        critic=FakeAgent(
+            "critic", [{"critique": fake_critique(should_continue=True, score=3)}]
+        )
+    )
+
+    state = await _run(agents, max_iterations=DEFAULT_MAX_ITERATIONS)
+
+    # The default budget buys exactly three refinement passes; the fourth
+    # critic pass ends the run. The _RECURSION_MARGIN head-room must cover
+    # this shape through a real ainvoke, or the halt discipline dies in a
+    # GraphRecursionError instead.
+    refinements = [
+        event
+        for event in state.events
+        if event.event_type == "graph.refinement.started"
+    ]
+    assert [event.metadata["iteration"] for event in refinements] == [1, 2, 3]
+    assert state.iteration == DEFAULT_MAX_ITERATIONS
+    assert graph_status(state) == "max_iterations"
+    assert len(agents.researcher.calls) == DEFAULT_MAX_ITERATIONS + 1
 
 
 @pytest.mark.asyncio

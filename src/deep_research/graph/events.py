@@ -35,7 +35,8 @@ def graph_event(
     """
     if not event_type.strip():
         raise ValueError("event_type must not be blank")
-    source = GRAPH_SOURCE if node is None else f"{GRAPH_SOURCE}.{node.strip()}"
+    node = node.strip() if node else None
+    source = GRAPH_SOURCE if not node else f"{GRAPH_SOURCE}.{node}"
     return ResearchEvent(
         event_type=event_type.strip(),
         source=source,

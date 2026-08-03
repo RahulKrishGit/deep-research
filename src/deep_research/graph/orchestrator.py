@@ -40,6 +40,7 @@ from deep_research.graph.state import (
     CRITIC_NODE,
     DEFAULT_MAX_ITERATIONS,
     FACT_CHECKER_NODE,
+    NODE_NAMES,
     PLANNER_NODE,
     REFINE_NODE,
     RESEARCHER_NODE,
@@ -64,14 +65,9 @@ from deep_research.utils.types import (
 
 # The five agent nodes that run before the Critic, in order. The Critic and
 # the refinement hop are named separately because they are wired by
-# different calls: one conditional edge, one plain edge back.
-AGENT_NODE_ORDER = (
-    PLANNER_NODE,
-    RESEARCHER_NODE,
-    SOURCE_EVALUATOR_NODE,
-    FACT_CHECKER_NODE,
-    SYNTHESIZER_NODE,
-)
+# different calls: one conditional edge, one plain edge back. Derived from
+# ``NODE_NAMES`` so the execution order lives in exactly one place.
+AGENT_NODE_ORDER = NODE_NAMES[:5]
 
 
 @dataclass(frozen=True)
@@ -258,7 +254,6 @@ async def run_research_graph(
     question: str,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     memory_context: MemorySnapshot | None = None,
-    checkpointing: bool = False,
 ) -> GraphRun:
     """Run one research session from the question to a final status.
 
@@ -267,7 +262,12 @@ async def run_research_graph(
     ``session_completed_event`` is appended after, so it is not: the
     checkpoint is written by the graph, and a completion recorded by the
     runner belongs to the run rather than to the durable state.
+
+    ``checkpointing`` is read off the compiled graph rather than taken from
+    the caller: the graph either has a checkpointer or it does not, and the
+    started event must record the truth either way.
     """
+    checkpointing = getattr(graph, "checkpointer", None) is not None
     state = load_state(
         initial_graph_state(
             session_id=session_id,
@@ -303,15 +303,20 @@ async def resume_research_graph(
     graph: Any,
     tracker: Tracker,
     session_id: str,
-    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    max_iterations: int | None = None,
 ) -> GraphRun:
     """Continue a checkpointed session from where it stopped.
 
-    The question is read back out of the checkpoint rather than re-supplied,
-    so a resume cannot silently research something else under a session id
-    that already means something.
+    The question and the iteration budget are read back out of the
+    checkpoint rather than re-supplied, so a resume cannot silently research
+    something else under a session id that already means something, and it
+    cannot die at a recursion bound smaller than the one the session started
+    with. ``max_iterations`` is an explicit override for callers who want a
+    different budget than the one the checkpoint records.
     """
-    config = session_config(session_id, max_iterations=max_iterations)
+    config = session_config(
+        session_id, max_iterations=max_iterations or DEFAULT_MAX_ITERATIONS
+    )
     try:
         snapshot = await graph.aget_state(config)
     except ValueError as error:
@@ -325,11 +330,13 @@ async def resume_research_graph(
             f"no checkpoint was recorded for session {session_id}"
         )
 
+    checkpointed = load_state(values)
+    budget = checkpointed.max_iterations if max_iterations is None else max_iterations
     return await _invoke(
         graph=graph,
         tracker=tracker,
         channel=None,
         session_id=session_id,
-        question=load_state(values).original_question,
-        max_iterations=max_iterations,
+        question=checkpointed.original_question,
+        max_iterations=budget,
     )

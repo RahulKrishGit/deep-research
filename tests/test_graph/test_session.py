@@ -17,9 +17,16 @@ from deep_research.graph.orchestrator import (
 )
 from deep_research.graph.state import DEFAULT_MAX_ITERATIONS
 from deep_research.observability import AgentMetric, Tracker
+from deep_research.observability.context import LangSmithRuntimeConfig
 from deep_research.utils.config import GraphConfig
 from deep_research.utils.types import MemorySnapshot, ResearchState
-from tests.graph_fakes import FakeAgent, fake_critique, fake_research_agents
+from tests.graph_fakes import (
+    FakeAgent,
+    fake_critique,
+    fake_finding,
+    fake_research_agents,
+)
+from tests.test_observability_tracker import RecordingTraceFactory
 
 QUESTION = "How mature is quantum error correction?"
 
@@ -106,9 +113,17 @@ async def test_a_run_carries_the_callers_memory_context_to_the_planner(
 
 
 @pytest.mark.asyncio
-async def test_a_run_attaches_session_metadata_and_routes_to_the_trace(
-    tracker: Tracker,
-) -> None:
+async def test_a_run_attaches_session_metadata_and_routes_to_the_trace() -> None:
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=trace_factory,
+    )
     agents = fake_research_agents(
         critic=FakeAgent(
             "critic",
@@ -119,7 +134,7 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace(
         )
     )
 
-    await run_research_graph(
+    run = await run_research_graph(
         graph=compile_research_graph(agents),
         tracker=tracker,
         session_id="session-1",
@@ -135,6 +150,27 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace(
     assert len(completed) == 1
     assert completed[0].metadata["session_id"] == "session-1"
     assert completed[0].metadata["success"] is True
+
+    # The whole trace surface the spec asks for lands on the session run:
+    # identity, final status, the route decisions, and every count. A wrong
+    # key or a dropped field fails here rather than shipping silently.
+    session_run = trace_factory.managers[0].run
+    assert run.trace_url == session_run.trace_url
+    assert session_run.end_calls[-1]["outputs"] == {
+        "session_id": "session-1",
+        "status": "completed",
+        "route_reason": "critique_satisfied",
+        "route_decisions": ["refinement_requested", "critique_satisfied"],
+        "iteration": 1,
+        "max_iterations": DEFAULT_MAX_ITERATIONS,
+        "sub_topic_count": 1,
+        "finding_count": 2,
+        "source_count": 2,
+        "claim_count": 2,
+        "critic_score": 9,
+        "has_report": True,
+        "error_count": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -183,7 +219,6 @@ async def test_a_checkpointed_session_can_be_resumed_by_its_session_id(
         tracker=tracker,
         session_id="session-1",
         question=QUESTION,
-        checkpointing=True,
     )
     call_counts = [len(agents.planner.calls), len(agents.critic.calls)]
 
@@ -199,7 +234,49 @@ async def test_a_checkpointed_session_can_be_resumed_by_its_session_id(
 
 
 @pytest.mark.asyncio
-async def test_a_checkpointed_run_records_that_checkpointing_was_on(
+async def test_a_resume_uses_the_checkpointed_iteration_budget(
+    tracker: Tracker,
+) -> None:
+    agents = fake_research_agents(
+        researcher=FakeAgent(
+            "researcher",
+            [RuntimeError("crash"), {"raw_findings": [fake_finding()]}],
+        ),
+        critic=FakeAgent(
+            "critic", [{"critique": fake_critique(should_continue=True, score=3)}]
+        ),
+    )
+    graph = compile_research_graph(
+        agents, checkpointer=build_checkpointer(enabled=True)
+    )
+
+    # A mid-run crash leaves the thread checkpointed but unfinished. The
+    # budget the session started with must survive in the checkpoint, or a
+    # resume dies at a recursion bound derived from the runner's own
+    # default (3) instead of the session's real budget (6).
+    with pytest.raises(RuntimeError, match="crash"):
+        await run_research_graph(
+            graph=graph,
+            tracker=tracker,
+            session_id="session-1",
+            question=QUESTION,
+            max_iterations=6,
+        )
+
+    resumed = await resume_research_graph(
+        graph=graph, tracker=tracker, session_id="session-1"
+    )
+
+    assert resumed.state.max_iterations == 6
+    assert resumed.state.iteration == 6
+    assert resumed.status == "max_iterations"
+    # Passes 0-6 of a budget-6 run, with the crashed pass re-run on resume:
+    # eight researcher calls in all.
+    assert len(agents.researcher.calls) == 8
+
+
+@pytest.mark.asyncio
+async def test_the_started_event_reads_checkpointing_off_the_compiled_graph(
     tracker: Tracker,
 ) -> None:
     graph = compile_research_graph(
@@ -211,10 +288,23 @@ async def test_a_checkpointed_run_records_that_checkpointing_was_on(
         tracker=tracker,
         session_id="session-1",
         question=QUESTION,
-        checkpointing=True,
     )
 
     assert run.state.events[0].metadata["checkpointing"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_graph_without_a_checkpointer_never_claims_resumability(
+    tracker: Tracker,
+) -> None:
+    run = await run_research_graph(
+        graph=compile_research_graph(fake_research_agents()),
+        tracker=tracker,
+        session_id="session-1",
+        question=QUESTION,
+    )
+
+    assert run.state.events[0].metadata["checkpointing"] is False
 
 
 @pytest.mark.asyncio
