@@ -15,6 +15,7 @@ from typing import Any
 
 from deep_research.agents.base import AgentRun
 from deep_research.agents.steps import ReActRun
+from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.utils.types import (
     Claim,
     Critique,
@@ -128,3 +129,32 @@ def halting_error(node: str = "researcher") -> ResearchError:
         message="An agent returned a state update the research state rejected.",
         recoverable=False,
     )
+
+
+def fake_research_agents(**overrides: FakeAgent) -> ResearchAgents:
+    """A full set of agents whose default pass answers the question once.
+
+    Every slot can be replaced by keyword, which is how a test scripts a
+    critic that asks for a refinement or a fact checker that fails.
+    """
+    defaults = {
+        "planner": FakeAgent("planner", [{"sub_topics": [fake_sub_topic()]}]),
+        "researcher": FakeAgent(
+            "researcher", [{"raw_findings": [fake_finding()]}]
+        ),
+        "source_evaluator": FakeAgent(
+            "source_evaluator", [{"evaluated_sources": [fake_scored_source()]}]
+        ),
+        "fact_checker": FakeAgent(
+            "fact_checker", [{"verified_claims": [fake_claim()]}]
+        ),
+        "synthesizer": FakeAgent(
+            "synthesizer", [{"report": "# Research report: pass 1"}]
+        ),
+        "critic": FakeAgent(
+            "critic",
+            [{"critique": fake_critique(should_continue=False, score=9)}],
+        ),
+    }
+    defaults.update(overrides)
+    return ResearchAgents(**defaults)
