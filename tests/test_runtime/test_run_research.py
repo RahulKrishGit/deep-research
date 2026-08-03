@@ -208,6 +208,25 @@ async def test_resume_without_a_checkpoint_reports_the_known_limitation(
 
 
 @pytest.mark.asyncio
+async def test_resume_of_a_session_that_never_ran_reports_no_checkpoint(
+    config_file, tracker
+) -> None:
+    """A checkpointer is active, but no checkpoint exists for the session."""
+    from deep_research.graph.orchestrator import build_checkpointer
+
+    builder = fake_builder(tracker, checkpointer=build_checkpointer(enabled=True))
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await run_research(
+            resume_session_id="never-ran",
+            config_path=config_file,
+            runtime_builder=builder,
+        )
+
+    assert caught.value.reason == "no_checkpoint"
+
+
+@pytest.mark.asyncio
 async def test_resume_works_against_a_live_checkpoint(config_file, tracker) -> None:
     """Resume is real; only its cross-process durability is missing."""
     from deep_research.graph.orchestrator import build_checkpointer
