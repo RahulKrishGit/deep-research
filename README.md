@@ -639,38 +639,6 @@ pytest
 ruff check src/
 ```
 
-## Codex DeepSeek routing
-
-The repository includes a localhost Responses-to-Chat bridge so Codex can
-launch DeepSeek workers while the normal Codex session keeps its GPT provider.
-The bridge uses Node.js built-ins only and binds to `127.0.0.1`; it never writes
-the API key to a file. Set the key in the current process and run a child with
-an explicit profile:
-
-```powershell
-$env:DEEPSEEK_API_KEY = '<from a secure secret manager>'
-.\scripts\invoke-codex-deepseek.ps1 `
-  -Profile deepseek-flash `
-  -Sandbox read-only `
-  -Prompt 'Inspect this repository and summarize its current state.'
-```
-
-Use `deepseek-pro` for higher-effort work. The launcher preflights the exact
-model against DeepSeek, starts the bridge for the child only, pipes the prompt
-to an isolated ephemeral `codex exec`, and stops only the bridge process it
-started. The child disables Codex apps and multi-agent features because the
-DeepSeek bridge supports function tools, not Codex-specific namespace tools;
-the parent GPT session keeps its normal capabilities.
-Runtime metadata is written under `.deepseek-runs/` and excludes prompts,
-outputs, tool results, and credentials. The unprofiled Codex default remains
-unchanged; use `-PreflightOnly` to test reachability without launching Codex.
-
-If Windows blocks local script execution, invoke the launcher explicitly with
-`powershell.exe -NoProfile -ExecutionPolicy Bypass -File`.
-
-Do not use `setx` for the key and do not commit it to TOML, `.env`, logs, or
-the repository.
-
 ## Phases
 
 - Phase 1: Core package foundation, config, types, providers
