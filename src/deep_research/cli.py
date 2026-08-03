@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from deep_research.main import DEFAULT_CONFIG_PATH, SUPPORTED_OUTPUT_FORMATS
+from deep_research.runtime.outcome import ResearchOutcome
 
 PROGRAM_NAME = "python -m deep_research"
 
@@ -145,3 +146,113 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
         config=namespace.config,
         verbose=bool(namespace.verbose),
     )
+
+
+# The events a plain run shows: the session's boundaries, which agent is
+# running, and every macro routing decision. Enough to see progress without
+# reading a log, which is exactly what the design asks for.
+PROGRESS_EVENT_TYPES = (
+    "graph.session.started",
+    "graph.node.started",
+    "graph.refinement.started",
+    "graph.route.decided",
+    "graph.session.completed",
+)
+
+# Span lifecycle events the tracker writes for itself. Excluded from even
+# the verbose log: there are two per span and they would bury everything.
+SPAN_EVENT_PREFIX = "observability.span."
+
+# What a non-failing but non-ideal ending means, in one sentence.
+STATUS_NOTES = {
+    "max_iterations": (
+        "Research completed with limitations: the refinement budget was "
+        "exhausted before the critic accepted the report."
+    ),
+    "incomplete": (
+        "Research completed with limitations: the run ended without an "
+        "accepted critique."
+    ),
+    "failed": (
+        "The research run stopped on a non-recoverable failure; everything "
+        "collected before it survives in the report state."
+    ),
+}
+
+
+def render_progress(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
+    """Render the recorded event log as a progress summary.
+
+    A summary rather than a live stream: ``run_research_graph`` invokes the
+    graph to completion and returns one result, so the events exist only
+    once the run is over. Live streaming belongs to the API's SSE endpoint.
+    """
+    lines = ["Progress log:"]
+    for event in outcome.state.events:
+        if event.event_type.startswith(SPAN_EVENT_PREFIX):
+            continue
+        if not verbose and event.event_type not in PROGRESS_EVENT_TYPES:
+            continue
+        iteration = event.metadata.get("iteration", 0)
+        lines.append(f"  [{iteration}] {event.message}")
+    return lines
+
+
+def render_warnings(outcome: ResearchOutcome) -> list[str]:
+    """Render recoverable research errors as warnings.
+
+    These are also disclosed inside the report itself:
+    ``agents.synthesizer.limitation_reasons`` records ``errors_recorded``
+    whenever state carries any error, and the report's Limitations section
+    renders it.
+    """
+    return [
+        f"warning: [{error.error_type}] {error.message}"
+        for error in outcome.errors
+    ]
+
+
+def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
+    """Render the run's identity, outcome, artifacts, and (verbose) costs."""
+    lines = [
+        f"Session ID: {outcome.session_id}",
+        f"Status: {outcome.status}",
+    ]
+    note = STATUS_NOTES.get(outcome.status)
+    if note is not None:
+        lines.append(note)
+
+    if outcome.report_path is None:
+        lines.append(
+            "Report: not written to disk; the report text is in the session "
+            "state only."
+        )
+    else:
+        lines.append(f"Report: {outcome.report_path}")
+
+    if outcome.trace_url is not None:
+        lines.append(f"Trace: {outcome.trace_url}")
+
+    if verbose:
+        if outcome.tool_calls:
+            lines.append("Tool calls:")
+            for summary in outcome.tool_calls:
+                failures = (
+                    f" ({summary.failures} failed)" if summary.failures else ""
+                )
+                lines.append(
+                    f"  {summary.tool_name}: {summary.calls} calls{failures}"
+                )
+        else:
+            lines.append("Tool calls: none recorded")
+
+        usage = outcome.token_usage
+        total = usage.total_tokens or 0
+        if total:
+            lines.append(
+                f"Tokens: {total} total ({usage.input_tokens} in / "
+                f"{usage.output_tokens} out)"
+            )
+        else:
+            lines.append("Tokens: not available")
+    return lines
