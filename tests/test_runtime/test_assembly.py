@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import deep_research.runtime.assembly as assembly
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
@@ -159,6 +160,21 @@ class RecordingProvider:
     async def complete_structured(self, messages, schema, *, agent_name=None):
         self.calls.append((messages, schema, agent_name))
         raise AssertionError("assembly must not call the provider")
+
+
+def _recording_agent_class(real_class, *, kwarg: str, captured: list[object]):
+    """A subclass that records one constructor kwarg, then builds for real.
+
+    Lets a test see exactly what ``build_agents`` handed each agent's
+    constructor without touching ``AgentToolset`` or the compiled graph.
+    """
+
+    class RecordingAgent(real_class):
+        def __init__(self, **kwargs):
+            captured.append(kwargs[kwarg])
+            super().__init__(**kwargs)
+
+    return RecordingAgent
 
 
 def test_build_agents_fills_every_slot_with_the_right_agent(tracker) -> None:
@@ -324,3 +340,121 @@ async def test_build_runtime_reports_a_missing_openai_key_cleanly(
         )
 
     assert caught.value.reason == "provider_unconfigured"
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_reports_an_unreadable_procedural_store_cleanly(
+    tracker, tmp_path
+) -> None:
+    """A store ``load()`` cannot open is a configuration error, not a traceback."""
+    unreadable = tmp_path / "strategies.json"
+    unreadable.mkdir()  # a directory cannot be read as a file
+    settings = ConfigSettings.model_validate(
+        {"output": {"directory": str(tmp_path)}}
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(
+            settings,
+            session_id="session-1",
+            tracker=tracker,
+            chat_provider=RecordingProvider(),
+            long_term=LongTermMemory(
+                collection=FakeCollection(), embeddings=FakeEmbeddings()
+            ),
+            procedural=ProceduralMemory(unreadable),
+            search_client=FakeSearchClient(),
+        )
+
+    assert caught.value.reason == "memory_unavailable"
+    assert str(caught.value).startswith("Memory could not be initialized")
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_wires_the_raw_memory_not_the_bridge_as_reputation(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """The source evaluator reads reputations from ``LongTermMemory`` itself.
+
+    The bridge is built in the same function for the memory tools; handing
+    it over as the reputation source instead of the raw memory would be a
+    silent degradation no call site would complain about.
+    """
+    received: list[object] = []
+    monkeypatch.setattr(
+        assembly,
+        "SourceEvaluatorAgent",
+        _recording_agent_class(
+            assembly.SourceEvaluatorAgent,
+            kwarg="reputation",
+            captured=received,
+        ),
+    )
+
+    memory = LongTermMemory(
+        collection=FakeCollection(), embeddings=FakeEmbeddings()
+    )
+    settings = ConfigSettings.model_validate(
+        {"output": {"directory": str(tmp_path)}}
+    )
+
+    await build_runtime(
+        settings,
+        session_id="session-1",
+        tracker=tracker,
+        chat_provider=RecordingProvider(),
+        long_term=memory,
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+        search_client=FakeSearchClient(),
+    )
+
+    assert len(received) == 1
+    assert received[0] is memory
+    assert received[0] is not None
+    assert not isinstance(received[0], LongTermMemoryBridge)
+
+
+def test_all_six_agents_receive_the_same_shared_tool_registry(
+    tracker, monkeypatch
+) -> None:
+    """One registry for every agent, not six hand-filtered lists.
+
+    ``AgentToolset`` only notices a list that dropped a declared tool; a
+    hand-filtered list that drifted sideways would silently change what an
+    agent can call. Pinning the constructor wire keeps the six in lockstep.
+    """
+    received: list[object] = []
+    for class_name in (
+        "PlannerAgent",
+        "ResearcherAgent",
+        "SourceEvaluatorAgent",
+        "FactCheckerAgent",
+        "SynthesizerAgent",
+        "CriticAgent",
+    ):
+        monkeypatch.setattr(
+            assembly,
+            class_name,
+            _recording_agent_class(
+                getattr(assembly, class_name), kwarg="tools", captured=received
+            ),
+        )
+
+    tools = build_tools(
+        ConfigSettings(),
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+    build_agents(
+        ConfigSettings(),
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    assert len(received) == 6
+    assert all(tool_list is tools for tool_list in received)
+    assert {tool.name for tool in received[0]} == EXPECTED_TOOL_NAMES

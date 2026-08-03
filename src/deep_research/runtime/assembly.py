@@ -229,13 +229,12 @@ async def build_runtime(
             procedural = ProceduralMemory.from_config(
                 settings.memory.procedural, tracker=tracker
             )
+        await procedural.load()
     except MemoryInitializationError as error:
         raise configuration_error(
             reason="memory_unavailable",
-            message=f"Long-term memory could not be opened: {error}",
+            message=f"Memory could not be initialized: {error}",
         ) from error
-
-    await procedural.load()
 
     try:
         provider = chat_provider or OpenAIChatProvider(settings.llm, tracker)
