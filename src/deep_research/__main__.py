@@ -1,12 +1,8 @@
-"""Entry point for `python -m deep_research`."""
+"""Entry point for ``python -m deep_research``."""
 
-from deep_research.main import run_research  # noqa: F401
+from deep_research.cli import main
 
-
-def main() -> None:
-    """Stub CLI entry. Raises NotImplementedError."""
-    raise NotImplementedError("CLI entry point not implemented")
-
+__all__ = ["main"]
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

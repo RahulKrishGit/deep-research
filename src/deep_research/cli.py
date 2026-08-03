@@ -9,10 +9,20 @@ choose an exit code.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TextIO
 
-from deep_research.main import DEFAULT_CONFIG_PATH, SUPPORTED_OUTPUT_FORMATS
+from deep_research.main import (
+    DEFAULT_CONFIG_PATH,
+    SUPPORTED_OUTPUT_FORMATS,
+    run_research_sync,
+)
+from deep_research.runtime.errors import (
+    ResearchConfigurationError,
+    configuration_error,
+)
 from deep_research.runtime.outcome import ResearchOutcome
 
 PROGRAM_NAME = "python -m deep_research"
@@ -256,3 +266,94 @@ def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
         else:
             lines.append("Tokens: not available")
     return lines
+
+
+EXIT_OK = 0
+EXIT_CONFIGURATION_ERROR = 1
+# 2 is argparse's usage error and is never returned from here.
+EXIT_GRAPH_FAILED = 3
+EXIT_INTERRUPTED = 130
+
+INTERACTIVE_PROMPT = "Research question: "
+
+_STARTING_NOTICE = (
+    "Researching. A full session runs the six agents and can take several "
+    "minutes."
+)
+
+
+def resolve_question(
+    options: CliOptions,
+    *,
+    prompt: Callable[[str], str],
+) -> str | None:
+    """Return the question this invocation researches, or ``None`` to resume.
+
+    Interactive mode asks once and runs once. The design's Testing section
+    names a single "interactive input path"; a REPL is not asked for and is
+    not built.
+    """
+    if options.resume is not None:
+        return None
+    if not options.interactive:
+        return options.question
+
+    try:
+        answer = prompt(INTERACTIVE_PROMPT)
+    except EOFError as error:
+        raise configuration_error(
+            reason="no_question",
+            message="No research question was entered.",
+        ) from error
+    answer = answer.strip()
+    if not answer:
+        raise configuration_error(
+            reason="no_question",
+            message="No research question was entered.",
+        )
+    return answer
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    runner: Callable[..., ResearchOutcome] = run_research_sync,
+    prompt: Callable[[str], str] = input,
+    stream: TextIO | None = None,
+) -> int:
+    """Run one command and return its exit code.
+
+    Exit codes: 0 the run produced a report, 1 a configuration failure,
+    2 a usage error (raised by argparse), 3 the graph failed, 130 the user
+    interrupted. Any other exception propagates: an unhandled exception is
+    a defect, not a research outcome.
+    """
+    out = stream if stream is not None else sys.stdout
+    options = parse_arguments(argv)
+
+    def emit(lines: Sequence[str]) -> None:
+        for line in lines:
+            print(line, file=out)
+
+    try:
+        question = resolve_question(options, prompt=prompt)
+        print(_STARTING_NOTICE, file=out)
+        outcome = runner(
+            question=question,
+            resume_session_id=options.resume,
+            config_path=options.config,
+            max_iterations=options.max_iterations,
+            output_format=options.output_format,
+        )
+    except ResearchConfigurationError as error:
+        print(f"error: {error}", file=out)
+        print(f"hint: {error.hint}", file=out)
+        return EXIT_CONFIGURATION_ERROR
+    except KeyboardInterrupt:
+        print("The research run was cancelled.", file=out)
+        return EXIT_INTERRUPTED
+
+    emit(render_progress(outcome, verbose=options.verbose))
+    emit(render_warnings(outcome))
+    emit(render_summary(outcome, verbose=options.verbose))
+    return EXIT_GRAPH_FAILED if outcome.failed else EXIT_OK
