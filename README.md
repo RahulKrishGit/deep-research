@@ -430,6 +430,63 @@ async with tracker.session_span(session_id, state.original_question):
 | `fact_checker.claim.checked` | Fact Checker | `claim`, `verdict`, `confidence`, `contradictions`, `independent_sources`, `tool_calls`, `reason` |
 | `fact_checker.fact_check.completed` | Fact Checker | `claim_count`, `verified`, `unverified`, `contradicted`, `insufficient_evidence`, `contradiction_count`, `tool_calls` |
 
+## Synthesizer And Critic
+
+`SynthesizerAgent` turns `verified_claims`, `evaluated_sources`, and
+`raw_findings` into the final Markdown report. The report's skeleton is
+rendered locally by `agents.report` — all seven sections in
+`REPORT_SECTIONS`, in order, whether or not they have content — so a report
+always carries an executive summary, findings, verified claims, an
+uncertainty section, limitations, numbered citations, and a source
+appendix. Citations are numbered locally: evaluated sources first, then any
+claim source not already numbered, and a URL the model attached that never
+reached the evidence is dropped rather than cited. The model supplies only
+prose. The composed Markdown is written through `write_document` and lands
+in `state.report`; a failed write records a recoverable
+`synthesizer_report_not_written` error and keeps the report in state
+anyway. Verified claims at or above `DEFAULT_MEMORY_CONFIDENCE` (0.7) are
+kept for future sessions through `save_to_memory`, capped at
+`DEFAULT_MAX_MEMORY_FINDINGS` (10). This agent runs no ReAct loop: report
+generation is one structured call, and both tool calls are deterministic
+consequences of having produced a report.
+
+Limitations are explicit and enumerated, never prose invented by a model:
+recorded errors, an exhausted iteration budget, unscored or low-confidence
+sources, no verified claim, a contradicted claim, and a failed report call
+each add their own `LIMITATION_REASONS` line.
+
+`CriticAgent` reviews that report. It may spot-check a suspected gap with
+`web_search` or compare against prior sessions with `query_memory` in one
+bounded ReAct loop, then asks for one structured review and computes the
+routing decision itself. `route_decision` checks the iteration bound
+first — `state.iteration >= state.max_iterations` always ends the run,
+whatever the model said — then a missing report, then the score against
+`ACCEPTANCE_SCORE` (7), then gaps, then unsupported claims. Every gap the
+model lists counts as critical, because the prompt asks it to list a gap
+only when closing it would materially change the answer. A provider failure
+ends the run with the lowest score rather than buying another cycle; a
+missing report buys one while budget remains. `Critique.should_continue` is
+a recommendation record — nothing in the agent layer acts on it.
+
+```python
+from deep_research.agents import CriticAgent, SynthesizerAgent
+from deep_research.utils.types import merge_research_state
+
+async with tracker.session_span(session_id, state.original_question):
+    synthesis = await synthesizer.run(state)
+    state = merge_research_state(state, synthesis.state_update)
+
+    review = await critic.run(state)
+    state = merge_research_state(state, review.state_update)
+```
+
+| Event type | Emitted by | Key metadata |
+| --- | --- | --- |
+| `synthesizer.synthesis.started` | Synthesizer | `claim_count`, `source_count`, `finding_count`, `limitation_count` |
+| `synthesizer.synthesis.completed` | Synthesizer | `section_count`, `citation_count`, `source_appendix_count`, `output_path`, `saved_findings`, `report_chars`, `limitations` |
+| `critic.critique.started` | Critic | `iteration`, `max_iterations`, `claim_count`, `has_report` |
+| `critic.critique.completed` | Critic | `score`, `gap_count`, `unsupported_claim_count`, `recommended_query_count`, `should_continue`, `reason`, `tool_calls` |
+
 ## Development
 
 ```bash
@@ -444,6 +501,6 @@ ruff check src/
 
 - Phase 1: Core package foundation, config, types, providers
 - Phase 2: Memory and tools
-- Phase 3: Agents and LangGraph orchestration ← current (runtime, Planner, Researcher, Source Evaluator, and Fact Checker complete; Synthesizer, Critic, and the graph pending)
+- Phase 3: Agents and LangGraph orchestration ← current (runtime and all six agents complete; the graph pending)
 - Phase 4: CLI, API, and UI interfaces
 - Phase 5: Tests and verification
