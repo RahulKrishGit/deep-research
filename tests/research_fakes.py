@@ -289,3 +289,18 @@ def synthesizer_tools(
         WriteDocumentTool(tracker, output_root),
         SaveToMemoryTool(tracker, memory or FakeMemory()),
     ]
+
+
+def critic_tools(
+    tracker: Tracker,
+    *,
+    search: FakeSearchClient | None = None,
+    memory: FakeMemory | None = None,
+) -> list[BaseTool]:
+    """Build the two tools ``CriticAgent`` declares, all offline.
+
+    The same pair ``PlannerAgent`` declares — spot-checking a suspected gap
+    is scoping work, not research — so this delegates rather than
+    re-listing them.
+    """
+    return planner_tools(tracker, search=search, memory=memory)

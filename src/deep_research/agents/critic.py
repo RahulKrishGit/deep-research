@@ -17,20 +17,33 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
+from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
+from deep_research.agents.errors import AgentConfigurationError, agent_error
+from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
     CRITIC_SYSTEM_PROMPT,
     CRITIQUE_INSTRUCTION,
     AgentTask,
     render_claim_digest,
+    render_react_messages,
     render_source_quality,
 )
+from deep_research.agents.react import run_react_loop
 from deep_research.agents.researcher import render_evidence
-from deep_research.agents.steps import ReActRun
-from deep_research.providers import ChatMessage
+from deep_research.agents.steps import ReActDecision, ReActRun, ReActStep
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import Tracker
+from deep_research.providers import ChatMessage, OpenAIProviderError
+from deep_research.tools.base import BaseTool
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
     ContractModel,
     Critique,
+    ResearchError,
+    ResearchEvent,
+    ResearchState,
+    ResearchStateUpdate,
     ScoredSource,
 )
 
@@ -295,3 +308,334 @@ def critique_messages(
         ChatMessage(role="developer", content=CRITIC_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
+
+
+def critique_provider_error(error: Exception) -> ResearchError:
+    """Record that the review call could not reach the provider.
+
+    Non-recoverable: no review of this report exists. The run still ends
+    with a routing decision, because a graph with no critique cannot route
+    at all.
+    """
+    return agent_error(
+        agent_name=CRITIC_NAME,
+        error_type="critic_review_provider_error",
+        message=(
+            "The model provider failed while the report was reviewed; the "
+            "research pass was ended rather than repeated."
+        ),
+        recoverable=False,
+        details={"exception_type": type(error).__name__},
+    )
+
+
+def missing_report_error() -> ResearchError:
+    """Warn that there was no report to review."""
+    return agent_error(
+        agent_name=CRITIC_NAME,
+        error_type="critic_missing_report",
+        message="No report was available to review.",
+    )
+
+
+def critique_started_event(
+    *,
+    iteration: int,
+    max_iterations: int,
+    claim_count: int,
+    has_report: bool,
+) -> ResearchEvent:
+    """Announce that the review began, before any provider call."""
+    return agent_event(
+        agent_name=CRITIC_NAME,
+        event_type="critic.critique.started",
+        message="Report review started.",
+        metadata={
+            "iteration": iteration,
+            "max_iterations": max_iterations,
+            "claim_count": claim_count,
+            "has_report": has_report,
+        },
+    )
+
+
+def critique_completed_event(
+    critique: Critique,
+    run: ReActRun,
+    *,
+    reason: str,
+    iteration: int,
+    max_iterations: int,
+) -> ResearchEvent:
+    """Report the score, the counts, and the routing recommendation.
+
+    ``reason`` is a ``ROUTING_REASONS`` key, never provider text, so a
+    consumer can group runs by *why* they continued or stopped rather than
+    parsing a rationale.
+    """
+    return agent_event(
+        agent_name=CRITIC_NAME,
+        event_type="critic.critique.completed",
+        message="Report review complete.",
+        metadata={
+            "score": critique.score,
+            "gap_count": len(critique.gaps),
+            "unsupported_claim_count": len(critique.unsupported_claims),
+            "recommended_query_count": len(critique.recommended_queries),
+            "should_continue": critique.should_continue,
+            "reason": reason,
+            "iteration": iteration,
+            "max_iterations": max_iterations,
+            "tool_calls": run.tool_calls,
+            "stop_reason": run.stop_reason,
+        },
+    )
+
+
+class CriticAgent(BaseAgent[Critique]):
+    """Review the report, score it, and recommend a route.
+
+    ``run`` is overridden to emit progress events and to skip the
+    spot-check loop when there is no report or no tool budget; everything
+    below it — bounds, tracing, tool execution, scratchpad writes — is
+    still the shared runtime's.
+    """
+
+    name = CRITIC_NAME
+    description = "Judge the report and recommend whether research continues."
+    allowed_tools = ("web_search", "query_memory")
+
+    def __init__(
+        self,
+        *,
+        provider: StructuredCompleter,
+        tracker: Tracker,
+        scratchpad: ScratchpadMemory,
+        tools: Sequence[BaseTool] = (),
+        config: AgentRuntimeConfig | None = None,
+        report_chars: int = CRITIC_REPORT_CHARS,
+        claim_digest: int = CRITIC_CLAIM_DIGEST,
+    ) -> None:
+        super().__init__(
+            provider=provider,
+            tracker=tracker,
+            scratchpad=scratchpad,
+            tools=tools,
+            config=config,
+        )
+        if report_chars < 1:
+            raise ValueError("report_chars must be at least 1")
+        if claim_digest < 1:
+            raise ValueError("claim_digest must be at least 1")
+        self._report_chars = report_chars
+        self._claim_digest = claim_digest
+
+    @property
+    def output_schema(self) -> type[Critique]:
+        """The validated critique. Never sent to the provider.
+
+        ``review`` asks for ``CritiqueDraft`` instead, because ``Critique``
+        carries ``CriticScore`` bounds and a non-blank rationale that do not
+        survive strict JSON schema conversion. Do not route this agent
+        through ``complete_output``.
+        """
+        return Critique
+
+    def system_prompt(self, task: AgentTask) -> str:
+        del task
+        return CRITIC_SYSTEM_PROMPT
+
+    def build_task(self, state: ResearchState) -> CritiqueTask:
+        """Bind this review to the report and the remaining budget."""
+        return CritiqueTask(
+            instruction=state.original_question,
+            report=state.report or "",
+            iteration=state.iteration,
+            max_iterations=state.max_iterations,
+            claims=list(state.verified_claims),
+            sources=list(state.evaluated_sources),
+            sub_topics=[sub_topic.title for sub_topic in state.sub_topics],
+            error_count=len(state.errors),
+        )
+
+    async def review(
+        self,
+        task: CritiqueTask,
+        run: ReActRun,
+    ) -> tuple[Critique, str, list[ResearchError], bool]:
+        """Judge one report from one finished spot-check loop.
+
+        Returns ``(critique, reason, errors, provider_failed)``. No provider
+        call is made when there is no report, so a score is never invented
+        over an empty review.
+        """
+        if not task.report.strip():
+            critique, reason = fallback_critique(
+                reason="missing_report",
+                iteration=task.iteration,
+                max_iterations=task.max_iterations,
+            )
+            return critique, reason, [missing_report_error()], False
+
+        try:
+            draft = await self.provider.complete_structured(
+                critique_messages(
+                    task,
+                    run,
+                    report_chars=self._report_chars,
+                    claim_digest=self._claim_digest,
+                ),
+                CritiqueDraft,
+                agent_name=self.name,
+            )
+        except OpenAIProviderError as error:
+            critique, reason = fallback_critique(
+                reason="provider_unavailable",
+                iteration=task.iteration,
+                max_iterations=task.max_iterations,
+            )
+            return critique, reason, [critique_provider_error(error)], True
+
+        critique, reason = build_critique(
+            draft,
+            iteration=task.iteration,
+            max_iterations=task.max_iterations,
+        )
+        return critique, reason, [], False
+
+    async def finalize(
+        self,
+        task: AgentTask,
+        run: ReActRun,
+    ) -> Critique | None:
+        """Adapt ``review`` to the ``BaseAgent`` hook.
+
+        ``run`` calls ``review`` directly so it can keep the routing reason
+        and the errors this hook signature has nowhere to return.
+        """
+        if not isinstance(task, CritiqueTask):
+            raise AgentConfigurationError(
+                "CriticAgent.finalize requires a CritiqueTask"
+            )
+        critique, _, _, _ = await self.review(task, run)
+        return critique
+
+    def state_update(
+        self,
+        result: Critique | None,
+        run: ReActRun,
+    ) -> ResearchStateUpdate:
+        """The critique and errors only. ``run`` adds the progress events."""
+        update: ResearchStateUpdate = {"errors": list(run.errors)}
+        if result is not None:
+            update["critique"] = result
+        return update
+
+    async def _spot_check(self, task: CritiqueTask) -> ReActRun:
+        """Run one bounded ReAct loop inside the caller's agent span.
+
+        The scratchpad is cleared first: notes from a previous iteration's
+        review are noise in this one's prompt.
+        """
+        self.scratchpad.clear()
+        toolset = self.toolset
+
+        async def decide(
+            iteration: int,
+            steps: Sequence[ReActStep],
+        ) -> ReActDecision:
+            del steps
+            return await self.provider.complete_structured(
+                render_react_messages(
+                    system_prompt=self.system_prompt(task),
+                    task=task,
+                    descriptors=toolset.descriptors(),
+                    scratchpad=self.scratchpad.recent(
+                        self.config.prompt_context_entries
+                    ),
+                    iteration=iteration,
+                    max_iterations=self.config.max_iterations,
+                ),
+                ReActDecision,
+                agent_name=self.name,
+            )
+
+        react = await run_react_loop(
+            agent_name=self.name,
+            tracker=self.tracker,
+            tools=toolset,
+            decide=decide,
+            max_iterations=self.config.max_iterations,
+            tool_budget=self.config.tool_budget,
+            on_step=self._record_step,
+            is_sufficient=self.is_sufficient,
+            summary_limit=self.config.observation_summary_chars,
+        )
+        return react.model_copy(
+            update={"errors": [*react.errors, *self.scratchpad.drain_errors()]}
+        )
+
+    async def run(self, state: ResearchState) -> AgentRun[Critique]:
+        """Spot-check what is worth checking, then score and route."""
+        task = self.build_task(state)
+        has_report = bool(task.report.strip())
+        events: list[ResearchEvent] = [
+            critique_started_event(
+                iteration=task.iteration,
+                max_iterations=task.max_iterations,
+                claim_count=len(task.claims),
+                has_report=has_report,
+            )
+        ]
+        errors: list[ResearchError] = []
+
+        async with self.tracker.agent_span(self.name) as span:
+            if has_report and self.config.tool_budget > 0:
+                react = await self._spot_check(task)
+            else:
+                # Nothing to check against (no report) or nothing to check
+                # with (no tool budget): spending a provider call here would
+                # buy no information the review could use.
+                react = ReActRun(agent_name=self.name, stop_reason="finished")
+            errors.extend(react.errors)
+            critique, reason, review_errors, provider_failed = await self.review(
+                task, react
+            )
+            errors.extend(review_errors)
+            if provider_failed:
+                # Mirror the loop-level provider_error path so a caller
+                # reading react.succeeded never sees "finished" over an
+                # abort that happened during the review.
+                react = react.model_copy(update={"stop_reason": "provider_error"})
+            react = react.model_copy(update={"errors": errors})
+            events.append(
+                critique_completed_event(
+                    critique,
+                    react,
+                    reason=reason,
+                    iteration=task.iteration,
+                    max_iterations=task.max_iterations,
+                )
+            )
+            span.set_outputs(
+                {
+                    "agent_name": self.name,
+                    "score": critique.score,
+                    "gap_count": len(critique.gaps),
+                    "should_continue": critique.should_continue,
+                    "reason": reason,
+                    "tool_calls": react.tool_calls,
+                    "stop_reason": react.stop_reason,
+                }
+            )
+
+        return AgentRun(
+            agent_name=self.name,
+            result=critique,
+            react=react,
+            errors=errors,
+            state_update={
+                **self.state_update(critique, react),
+                "events": events,
+            },
+        )

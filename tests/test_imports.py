@@ -168,6 +168,7 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         ClaimsDraft,
         ClaimTask,
         ClaimVerdictDraft,
+        CriticAgent,
         CritiqueDraft,
         CritiqueTask,
         DecideCallback,
@@ -209,7 +210,10 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         build_scored_source,
         clamp_score,
         corroboration_score,
+        critique_completed_event,
         critique_messages,
+        critique_provider_error,
+        critique_started_event,
         existing_sources_for,
         extraction_provider_error,
         fallback_critique,
@@ -218,6 +222,7 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         is_high_priority,
         memory_save_error,
         merge_react_runs,
+        missing_report_error,
         no_evidence_error,
         normalize_notes,
         normalize_source_url,
@@ -344,6 +349,7 @@ def test_agent_runtime_config_imports_from_utils_config() -> None:
 
 def test_concrete_agents_expose_their_identity_and_tools() -> None:
     from deep_research.agents import (
+        CriticAgent,
         FactCheckerAgent,
         PlannerAgent,
         ResearcherAgent,
@@ -351,6 +357,8 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
         SynthesizerAgent,
     )
 
+    assert CriticAgent.name == "critic"
+    assert CriticAgent.allowed_tools == ("web_search", "query_memory")
     assert PlannerAgent.name == "planner"
     assert PlannerAgent.allowed_tools == ("query_memory", "web_search")
     assert ResearcherAgent.name == "researcher"
