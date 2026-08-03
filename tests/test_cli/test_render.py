@@ -161,3 +161,13 @@ def test_verbose_summary_says_tokens_are_unavailable_when_none_were_seen() -> No
     joined = "\n".join(render_summary(build_outcome(), verbose=True))
 
     assert "Tokens: not available" in joined
+
+
+def test_progress_with_no_events_is_just_the_heading() -> None:
+    assert render_progress(build_outcome(), verbose=False) == ["Progress log:"]
+
+
+def test_verbose_summary_is_explicit_when_no_tool_calls_were_recorded() -> None:
+    joined = "\n".join(render_summary(build_outcome(), verbose=True))
+
+    assert "Tool calls: none recorded" in joined
