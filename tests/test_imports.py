@@ -266,6 +266,7 @@ def test_agent_submodule_public_names_all_reach_all() -> None:
         "planner",
         "prompts",
         "react",
+        "report",
         "researcher",
         "source_evaluator",
         "sources",
