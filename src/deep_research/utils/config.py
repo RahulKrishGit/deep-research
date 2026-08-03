@@ -9,6 +9,15 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 
+class MissingSecretsError(ValueError):
+    """Strict-mode loading failed: required runtime secrets are absent.
+
+    A ``ValueError`` subclass so existing ``except ValueError`` callers keep
+    working, and a distinguishable type so a caller can tell a missing
+    secret apart from an invalid configuration file without parsing text.
+    """
+
+
 class LLMConfig(BaseModel):
     """OpenAI model and request settings."""
 
@@ -167,7 +176,9 @@ def load_config(config_path: str, strict: bool = False) -> ConfigSettings:
 
     Raises:
         FileNotFoundError: If ``config_path`` does not exist.
-        ValueError: If YAML is invalid or strict runtime secrets are missing.
+        ValueError: If YAML is invalid.
+        MissingSecretsError: If strict mode finds required runtime secrets
+            absent.
     """
     path = Path(config_path)
     if not path.is_file():
@@ -222,6 +233,6 @@ def _validate_runtime_secrets(*, tracing_enabled: bool) -> None:
     ]
     if missing:
         names = ", ".join(missing)
-        raise ValueError(
+        raise MissingSecretsError(
             f"Missing required environment variables in strict mode: {names}"
         )

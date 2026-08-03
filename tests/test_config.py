@@ -8,7 +8,12 @@ import pytest
 import yaml
 
 from deep_research.observability import Tracker
-from deep_research.utils.config import ConfigSettings, LLMConfig, load_config
+from deep_research.utils.config import (
+    ConfigSettings,
+    LLMConfig,
+    MissingSecretsError,
+    load_config,
+)
 
 
 @pytest.fixture
@@ -272,6 +277,29 @@ def test_environment_overrides_every_yaml_leaf(
         actual_value = getattr(actual_value, attribute)
 
     assert actual_value == expected_value
+
+
+@pytest.mark.parametrize(
+    "missing_environment_name",
+    ["OPENAI_API_KEY", "TAVILY_API_KEY"],
+)
+def test_load_config_strict_missing_secrets_raise_the_typed_error(
+    monkeypatch: pytest.MonkeyPatch,
+    config_path: Path,
+    missing_environment_name: str,
+) -> None:
+    """Strict-mode missing secrets surface as ``MissingSecretsError``."""
+    for environment_name in (
+        "OPENAI_API_KEY",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_PROJECT",
+        "TAVILY_API_KEY",
+    ):
+        monkeypatch.setenv(environment_name, "configured")
+    monkeypatch.delenv(missing_environment_name)
+
+    with pytest.raises(MissingSecretsError, match=missing_environment_name):
+        load_config(str(config_path), strict=True)
 
 
 @pytest.mark.parametrize(
