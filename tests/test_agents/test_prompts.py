@@ -9,11 +9,16 @@ from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
     CLAIM_VERIFICATION_INSTRUCTION,
     CLAIM_VERIFICATION_SYSTEM_PROMPT,
+    CRITIC_SYSTEM_PROMPT,
+    CRITIQUE_INSTRUCTION,
     FACT_CHECKER_SYSTEM_PROMPT,
     REACT_RESPONSE_CONTRACT,
+    REPORT_INSTRUCTION,
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
+    SYNTHESIZER_SYSTEM_PROMPT,
     AgentTask,
+    render_claim_digest,
     render_finding_digest,
     render_react_messages,
     render_scratchpad,
@@ -24,7 +29,7 @@ from deep_research.agents.prompts import (
 from deep_research.agents.sources import SourceGroup
 from deep_research.agents.toolset import ToolDescriptor
 from deep_research.memory.entries import ScratchpadEntry
-from deep_research.utils.types import Finding, ScoredSource
+from deep_research.utils.types import Claim, Finding, ScoredSource
 
 
 def _descriptor(name: str = "echo") -> ToolDescriptor:
@@ -392,3 +397,68 @@ def test_new_prompt_constants_state_their_contracts() -> None:
     for verdict in ("verified", "unverified", "contradicted",
                     "insufficient_evidence"):
         assert verdict in CLAIM_VERIFICATION_INSTRUCTION
+
+
+def _digest_claim(
+    *,
+    text: str = "Logical error rates fell below break-even.",
+    verdict: str = "verified",
+    confidence: float = 0.8,
+    urls: list[str] | None = None,
+) -> Claim:
+    return Claim(
+        text=text,
+        source_urls=urls or ["https://example.org/a"],
+        verdict=verdict,
+        confidence=confidence,
+        evidence=[],
+        contradictions=[],
+    )
+
+
+def test_claim_digest_shows_verdict_confidence_and_sources() -> None:
+    rendered = render_claim_digest(
+        [
+            _digest_claim(),
+            _digest_claim(
+                text="Adoption is broad.",
+                verdict="insufficient_evidence",
+                confidence=0.0,
+                urls=["https://other.test/b", "https://third.test/c"],
+            ),
+        ]
+    )
+
+    assert "1. [verified 0.80] Logical error rates fell below break-even." in rendered
+    assert "(https://example.org/a)" in rendered
+    assert "2. [insufficient_evidence 0.00] Adoption is broad." in rendered
+    assert "(https://other.test/b, https://third.test/c)" in rendered
+
+
+def test_claim_digest_clamps_long_claims_and_handles_an_empty_list() -> None:
+    rendered = render_claim_digest([_digest_claim(text="x" * 500)], limit=50)
+
+    assert "x" * 500 not in rendered
+    assert "..." in rendered
+    assert render_claim_digest([]) == "(no claims were checked)"
+
+
+def test_the_synthesizer_prompt_forbids_inventing_evidence() -> None:
+    assert "verified" in SYNTHESIZER_SYSTEM_PROMPT
+    assert "invent" in SYNTHESIZER_SYSTEM_PROMPT
+    # The skeleton is rendered locally; asking the model for it would let
+    # the two disagree.
+    assert "citation" in REPORT_INSTRUCTION
+    assert "exactly" in REPORT_INSTRUCTION
+    assert "executive summary" in REPORT_INSTRUCTION
+    assert "uncertainty" in REPORT_INSTRUCTION
+
+
+def test_the_critic_prompt_states_the_gap_and_score_contracts() -> None:
+    assert "spot-check" in CRITIC_SYSTEM_PROMPT
+    assert "1 to 10" in CRITIQUE_INSTRUCTION
+    # Decision 9: every listed gap is treated as critical, so the prompt
+    # must say only material gaps belong in the list.
+    assert "materially" in CRITIQUE_INSTRUCTION
+    assert "routing" not in CRITIQUE_INSTRUCTION
+    assert "recommended" in CRITIQUE_INSTRUCTION
