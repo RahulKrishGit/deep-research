@@ -18,8 +18,9 @@ can see.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeAlias
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -59,6 +60,7 @@ from deep_research.graph.state import (
 from deep_research.observability import Tracker
 from deep_research.utils.types import (
     MemorySnapshot,
+    ResearchEvent,
     ResearchState,
     merge_research_state,
 )
@@ -160,6 +162,13 @@ def session_config(session_id: str, *, max_iterations: int) -> dict[str, Any]:
     }
 
 
+# The local mirror of ``main.ProgressHandler``. Defined here rather than
+# imported so the orchestrator never imports ``main`` (the entry point owns
+# ``main``, not the other way around), and ``main`` re-exports its own alias
+# of the same shape for front-end callers.
+ProgressHandler: TypeAlias = Callable[[ResearchEvent], None]
+
+
 @dataclass(frozen=True)
 class GraphRun:
     """Everything one research session produced."""
@@ -200,6 +209,46 @@ def _session_outputs(state: ResearchState, *, status: str) -> dict[str, Any]:
     }
 
 
+async def _stream_graph_result(
+    *,
+    graph: Any,
+    channel: ResearchGraphState | None,
+    config: dict[str, Any],
+    event_handler: ProgressHandler,
+) -> ResearchGraphState:
+    """Run the graph in values mode, publishing only newly appended events.
+
+    Each ``stream_mode="values"`` snapshot is the cumulative channel, so the
+    slice after the last published index is exactly the events this superstep
+    appended — nothing is published twice, and order within a snapshot is the
+    order the graph recorded it. On a resume the first snapshot carries the
+    checkpointed events, so a fresh handler still sees the whole session.
+    """
+    latest: ResearchGraphState | None = None
+    published = 0
+
+    if channel is not None:
+        initial = load_state(channel)
+        for event in initial.events:
+            event_handler(event)
+        published = len(initial.events)
+
+    async for snapshot in graph.astream(
+        channel,
+        config,
+        stream_mode="values",
+    ):
+        latest = snapshot
+        state = load_state(snapshot)
+        for event in state.events[published:]:
+            event_handler(event)
+        published = len(state.events)
+
+    if latest is None:
+        raise RuntimeError("research graph produced no state")
+    return latest
+
+
 async def _invoke(
     *,
     graph: Any,
@@ -208,18 +257,28 @@ async def _invoke(
     session_id: str,
     question: str,
     max_iterations: int,
+    event_handler: ProgressHandler | None = None,
 ) -> GraphRun:
     """Run or resume the compiled graph inside one session span.
 
     ``channel`` is ``None`` when resuming: LangGraph reads the thread's
     checkpoint instead of an input. The session span is what gives every
     agent inside a node an active trace context — ``Tracker.agent_span``
-    raises without one.
+    raises without one. With a handler, execution streams so each cumulative
+    state event reaches it live; without one, the plain ``ainvoke`` path is
+    unchanged.
     """
     async with tracker.session_span(session_id, question) as span:
-        result = await graph.ainvoke(
-            channel, session_config(session_id, max_iterations=max_iterations)
-        )
+        config = session_config(session_id, max_iterations=max_iterations)
+        if event_handler is None:
+            result = await graph.ainvoke(channel, config)
+        else:
+            result = await _stream_graph_result(
+                graph=graph,
+                channel=channel,
+                config=config,
+                event_handler=event_handler,
+            )
         final = load_state(result)
         status = graph_status(final)
         final = merge_research_state(
@@ -235,6 +294,8 @@ async def _invoke(
                 ]
             },
         )
+        if event_handler is not None:
+            event_handler(final.events[-1])
         span.set_outputs(_session_outputs(final, status=status))
         trace_url = span.trace_url
 
@@ -254,6 +315,7 @@ async def run_research_graph(
     question: str,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     memory_context: MemorySnapshot | None = None,
+    event_handler: ProgressHandler | None = None,
 ) -> GraphRun:
     """Run one research session from the question to a final status.
 
@@ -266,6 +328,11 @@ async def run_research_graph(
     ``checkpointing`` is read off the compiled graph rather than taken from
     the caller: the graph either has a checkpointer or it does not, and the
     started event must record the truth either way.
+
+    When ``event_handler`` is supplied, the run streams and every cumulative
+    state event is delivered once, in state order, with the terminal
+    ``graph.session.completed`` last. Without one, execution is the plain
+    ``ainvoke`` path and nothing else changes.
     """
     checkpointing = getattr(graph, "checkpointer", None) is not None
     state = load_state(
@@ -295,6 +362,7 @@ async def run_research_graph(
         session_id=session_id,
         question=state.original_question,
         max_iterations=max_iterations,
+        event_handler=event_handler,
     )
 
 
@@ -304,6 +372,7 @@ async def resume_research_graph(
     tracker: Tracker,
     session_id: str,
     max_iterations: int | None = None,
+    event_handler: ProgressHandler | None = None,
 ) -> GraphRun:
     """Continue a checkpointed session from where it stopped.
 
@@ -313,6 +382,9 @@ async def resume_research_graph(
     cannot die at a recursion bound smaller than the one the session started
     with. ``max_iterations`` is an explicit override for callers who want a
     different budget than the one the checkpoint records.
+
+    With ``event_handler`` the resumed supersteps stream the same way a
+    fresh run does; without one, execution is the plain ``ainvoke`` path.
     """
     config = session_config(
         session_id, max_iterations=max_iterations or DEFAULT_MAX_ITERATIONS
@@ -339,4 +411,5 @@ async def resume_research_graph(
         session_id=session_id,
         question=checkpointed.original_question,
         max_iterations=budget,
+        event_handler=event_handler,
     )

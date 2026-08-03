@@ -16,6 +16,7 @@ from deep_research.main import (
 from deep_research.runtime.assembly import ResearchRuntime
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.outcome import ResearchOutcome
+from deep_research.utils.types import ResearchEvent
 from tests.graph_fakes import FakeAgent, fake_critique, fake_research_agents
 
 QUESTION = "How mature is quantum error correction?"
@@ -382,3 +383,29 @@ async def test_run_research_applies_config_overrides(
     )
 
     assert observed == {"directory": "request-output/"}
+
+
+@pytest.mark.asyncio
+async def test_run_research_publishes_typed_progress_in_order(
+    config_file,
+    tracker,
+) -> None:
+    received = []
+
+    outcome = await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=fake_builder(tracker),
+        event_handler=received.append,
+    )
+
+    assert received
+    assert all(isinstance(event, ResearchEvent) for event in received)
+    assert received[0].event_type == "graph.session.started"
+    assert any(
+        event.event_type == "graph.node.started"
+        and event.metadata["node"] == "planner"
+        for event in received
+    )
+    assert received[-1].event_type == "graph.session.completed"
+    assert received == outcome.state.events

@@ -127,6 +127,7 @@ async def run_research(
     output_format: str | None = None,
     config_overrides: Mapping[str, JsonValue] | None = None,
     runtime_builder: RuntimeBuilder = build_runtime,
+    event_handler: ProgressHandler | None = None,
 ) -> ResearchOutcome:
     """Run one research session, or continue a checkpointed one.
 
@@ -134,6 +135,10 @@ async def run_research(
     a test can drive the real graph with scripted agents and no provider.
     ``config_overrides`` are request-scoped settings applied after the YAML
     and environment values; callers that omit them keep the file behavior.
+    ``event_handler`` receives each ``ResearchEvent`` as the graph produces
+    it — the session's events exactly, in order, ending with
+    ``graph.session.completed`` — and the run otherwise proceeds unchanged
+    when it is omitted.
 
     Inputs are normalized and validated before any configuration or runtime
     setup: outer whitespace is stripped, and blank questions and session ids
@@ -194,6 +199,7 @@ async def run_research(
                 tracker=runtime.tracker,
                 session_id=resume_session_id,
                 max_iterations=max_iterations,
+                event_handler=event_handler,
             )
         except GraphResumeError as error:
             raise configuration_error(
@@ -220,6 +226,7 @@ async def run_research(
                 else max_iterations
             ),
             memory_context=memory_context,
+            event_handler=event_handler,
         )
 
     return build_outcome(run, metrics=runtime.tracker.metrics)
