@@ -523,3 +523,82 @@ def test_the_graph_nodes_cover_the_designed_sequence() -> None:
     )
     assert CRITIC_NODE == "critic"
     assert NODE_NAMES[-1] == "refine"
+
+
+def test_runtime_contracts_import_from_package() -> None:
+    from deep_research.runtime import (  # noqa: F401
+        AGENT_NAMES,
+        CONFIGURATION_HINTS,
+        DEFAULT_BRIDGE_AGENT_ID,
+        DEFAULT_BRIDGE_ENTRY_TYPE,
+        DEFAULT_RECALL_TOP_K,
+        MAX_SUGGESTED_STRATEGIES,
+        RECALLED_SUB_TOPIC,
+        REPORT_WRITTEN_EVENT,
+        TAVILY_API_KEY_VARIABLE,
+        LongTermMemoryBridge,
+        ResearchConfigurationError,
+        ResearchOutcome,
+        ResearchRuntime,
+        ToolCallSummary,
+        build_agents,
+        build_outcome,
+        build_runtime,
+        build_tools,
+        configuration_error,
+        recall_memory_context,
+        report_path_from_state,
+        tool_call_summaries,
+        total_token_usage,
+    )
+
+
+def test_runtime_all_surface_is_fully_covered() -> None:
+    """Every name in ``deep_research.runtime.__all__`` must actually resolve."""
+    import deep_research.runtime as runtime_pkg
+
+    missing = [
+        name for name in runtime_pkg.__all__ if not hasattr(runtime_pkg, name)
+    ]
+    assert not missing, f"__all__ entries missing from package: {missing}"
+
+
+def test_the_research_entry_point_is_importable() -> None:
+    from deep_research.main import (  # noqa: F401
+        DEFAULT_CONFIG_PATH,
+        SUPPORTED_OUTPUT_FORMATS,
+        load_settings,
+        new_session_id,
+        resolve_output_format,
+        run_research,
+        run_research_sync,
+    )
+
+
+def test_the_cli_surface_is_importable() -> None:
+    from deep_research.cli import (  # noqa: F401
+        EXIT_CONFIGURATION_ERROR,
+        EXIT_GRAPH_FAILED,
+        EXIT_INTERRUPTED,
+        EXIT_OK,
+        INTERACTIVE_PROMPT,
+        PROGRAM_NAME,
+        PROGRESS_EVENT_TYPES,
+        SPAN_EVENT_PREFIX,
+        STATUS_NOTES,
+        CliOptions,
+        build_parser,
+        main,
+        parse_arguments,
+        render_progress,
+        render_summary,
+        render_warnings,
+        resolve_question,
+    )
+
+
+def test_the_agent_names_match_the_graph_node_names() -> None:
+    from deep_research.graph import NODE_NAMES
+    from deep_research.runtime import AGENT_NAMES
+
+    assert AGENT_NAMES == NODE_NAMES[:6]

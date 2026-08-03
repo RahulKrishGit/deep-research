@@ -582,6 +582,53 @@ without touching a node.
 | `graph.refinement.started` | Refine node | `iteration`, `max_iterations` |
 | `graph.session.completed` | Runner | `status`, `iteration`, `error_count`, `has_report` |
 
+## Command Line Interface
+
+```bash
+python -m deep_research "What are the security implications of quantum computing?"
+python -m deep_research "AI in healthcare" --max-iterations 5 --output-format markdown --verbose
+python -m deep_research --interactive
+python -m deep_research --resume <session_id>
+```
+
+| Option | Meaning |
+| --- | --- |
+| `question` | The research question. Mutually exclusive with `--interactive` and `--resume`. |
+| `--interactive` | Prompt once for the question, run once, exit. |
+| `--resume SESSION_ID` | Continue a checkpointed session. See the limitation below. |
+| `--max-iterations N` | Macro refinement passes the critic may request. Defaults to `graph.max_iterations`. |
+| `--output-format` | Report format. Only `markdown` is supported in this build. |
+| `--config PATH` | YAML config file. Defaults to `config.yaml`. |
+| `--verbose` | Print every progress event, tool call counts, and token totals. |
+
+Every interface calls the same `deep_research.main.run_research()`, which loads
+configuration in **strict** mode: `OPENAI_API_KEY` and `TAVILY_API_KEY` (plus
+`LANGSMITH_API_KEY` and `LANGSMITH_PROJECT` when `langsmith.tracing_enabled` is
+true) must be present in the environment or in a `.env` file next to
+`config.yaml`, or the command exits 1 before any model is called.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | The run produced a report (`completed`, `max_iterations`, or `incomplete`) |
+| 1 | Configuration failure — bad config path, missing keys, unsupported format, no resumable checkpoint |
+| 2 | Usage error |
+| 3 | The graph failed (`failed`) |
+| 130 | Interrupted with Ctrl-C |
+
+Recoverable research errors never fail the command. They are printed as
+`warning:` lines and disclosed inside the report's Limitations section.
+
+**Progress is a post-run log, not a live stream.** `run_research_graph` invokes
+the graph to completion and returns one result, so the CLI prints
+`ResearchState.events` once the run is over. Live progress arrives with the
+API's server-sent-events endpoint.
+
+**`--resume` only works inside one process.** `build_checkpointer` returns
+LangGraph's `InMemorySaver`, which does not survive the process that created
+it, so resuming from a new command exits 1 with a clear message rather than
+pretending a checkpoint exists. A durable saver drops into
+`compile_research_graph` without touching a node.
+
 ## Development
 
 ```bash
@@ -597,5 +644,5 @@ ruff check src/
 - Phase 1: Core package foundation, config, types, providers
 - Phase 2: Memory and tools
 - Phase 3: Agents and LangGraph orchestration ← complete (all six agents and the graph)
-- Phase 4: CLI, API, and UI interfaces
+- Phase 4: CLI ← complete; FastAPI API and Streamlit UI next
 - Phase 5: Tests and verification
