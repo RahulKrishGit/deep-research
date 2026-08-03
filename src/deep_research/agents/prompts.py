@@ -18,6 +18,7 @@ from deep_research.agents.toolset import ToolDescriptor
 from deep_research.memory.entries import ScratchpadEntry
 from deep_research.providers import ChatMessage
 from deep_research.utils.types import (
+    Claim,
     ContractModel,
     Finding,
     MemorySnapshot,
@@ -132,6 +133,72 @@ CLAIM_VERIFICATION_INSTRUCTION = (
     "your verdict, and a contradictions list holding every independent "
     "passage that conflicts with the claim. Leave a list empty rather than "
     "filling it with restatements of the claim."
+)
+
+SYNTHESIZER_SYSTEM_PROMPT = (
+    "You are the synthesizer of a multi-agent research system. You write "
+    "the prose of the final report from evidence this system already "
+    "collected and checked.\n"
+    "You are shown the research question, every claim with its verification "
+    "verdict, the retrieved findings, the quality score of every source, "
+    "and the limitations this pass already knows about.\n"
+    "Report only what that evidence states. Never invent a source, a "
+    "number, or a claim that is not in front of you, and never present a "
+    "claim that was not verified as though it were settled.\n"
+    "The report's headings, citation numbering, claim lists, limitations, "
+    "and source appendix are assembled by this system. Write the prose; do "
+    "not write the skeleton."
+)
+
+REPORT_INSTRUCTION = (
+    "Return an executive summary, a list of narrative sections, and "
+    "uncertainty notes.\n"
+    "executive_summary: three to six sentences answering the research "
+    "question directly, naming what is settled and what is not. Do not open "
+    "with a heading.\n"
+    "sections: one per theme worth its own heading, ordered as a reader "
+    "should meet them. Each carries a short title, a body of plain "
+    "paragraphs, and the source urls that body rests on, copied exactly "
+    "from the evidence above. Do not write Markdown headings, citation "
+    "markers, or a source list inside a body — the citation line is added "
+    "for you from the urls you attach.\n"
+    "uncertainty_notes: what a reader should distrust and why — thin "
+    "sourcing, conflicting evidence, questions the research did not reach. "
+    "Return an empty string when there is nothing to add.\n"
+    "A url you attach that is not in the evidence above is dropped, and the "
+    "section loses that citation. Copy urls exactly."
+)
+
+CRITIC_SYSTEM_PROMPT = (
+    "You are the critic of a multi-agent research system. You judge one "
+    "finished report and say what another research pass would have to fix.\n"
+    "Use web_search to spot-check a suspected gap or a figure that looks "
+    "wrong, and query_memory to compare this report against what previous "
+    "sessions established. Finish without calling a tool when the report "
+    "and the evidence summary are enough to judge.\n"
+    "Judge completeness against the research question, accuracy against the "
+    "claim verdicts, source diversity and strength against the source "
+    "scores, and whether uncertainty is disclosed rather than hidden.\n"
+    "Report what the evidence in front of you supports. Do not invent a gap "
+    "to look thorough, and do not excuse a thin report to look agreeable."
+)
+
+CRITIQUE_INSTRUCTION = (
+    "Return a score, the gaps, the unsupported claims, the queries a "
+    "further pass should run, and a rationale.\n"
+    "score: an integer from 1 to 10. 1 is unusable; 10 answers the question "
+    "completely from strong, diverse, well-cited sources.\n"
+    "gaps: list a gap only when closing it would materially change the "
+    "answer to the research question. A missing nicety is not a gap. Return "
+    "an empty list when the report is materially complete.\n"
+    "unsupported_claims: statements the report makes that no cited source "
+    "or verified claim backs. Quote or closely paraphrase each one.\n"
+    "recommended_queries: concrete search queries that would close the gaps "
+    "you listed, in the order they should be run.\n"
+    "rationale: two to four sentences naming the concrete signals behind "
+    "the score. Never restate the score alone.\n"
+    "Do not decide whether research continues — this system computes that "
+    "from your score, your gaps, and the remaining budget."
 )
 
 
@@ -282,3 +349,20 @@ def render_source_quality(sources: Sequence[ScoredSource]) -> str:
         flag = " (LOW CONFIDENCE)" if source.low_confidence else ""
         lines.append(f"- {source.url}: {source.overall_score:.2f}{flag}")
     return "\n".join(lines) or "(no sources scored)"
+
+
+def render_claim_digest(
+    claims: Sequence[Claim],
+    *,
+    limit: int = 240,
+) -> str:
+    """Render checked claims as one verdict-tagged, cited line each."""
+    lines: list[str] = []
+    for position, claim in enumerate(claims, start=1):
+        text = summarize_text(claim.text, limit=limit)
+        urls = ", ".join(claim.source_urls)
+        lines.append(
+            f"{position}. [{claim.verdict} {claim.confidence:.2f}] {text} "
+            f"({urls})"
+        )
+    return "\n".join(lines) or "(no claims were checked)"
