@@ -265,4 +265,3 @@ def resolve_request_settings(
         reasoning_effort=capability.disabled_effort,
         include_temperature=mode in capability.temperature_modes,
     )
-
