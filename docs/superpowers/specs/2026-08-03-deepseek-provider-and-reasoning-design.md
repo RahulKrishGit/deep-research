@@ -1,7 +1,7 @@
 # DeepSeek Provider and Model Reasoning Design
 
 Date: 2026-08-03
-Status: Design approved; written spec pending review
+Status: Approved
 
 ## Goal
 
