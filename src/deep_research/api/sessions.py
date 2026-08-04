@@ -159,6 +159,11 @@ class SessionStore:
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+        for session in self._sessions.values():
+            task = session.task
+            if session.finished_at is None and task is not None and task.done():
+                session.finished_at = datetime.now(timezone.utc)
+                session.changed.set()
 
     async def _run(
         self,

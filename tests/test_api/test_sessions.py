@@ -409,6 +409,36 @@ async def test_iter_events_terminates_after_a_running_task_is_cancelled() -> Non
 
 
 @pytest.mark.asyncio
+async def test_iter_events_terminates_after_immediate_start_to_close() -> None:
+    """A stream must close when a session is closed before it ever ran.
+
+    ``close()`` cancels the task before the event loop has stepped it, so
+    the task's ``finally`` cleanup never executes and the session is left
+    with no ``finished_at``; the iterator must still terminate instead of
+    waiting on ``changed`` forever.
+    """
+    store = SessionStore(runner=GateRunner())
+    start_session(store)
+    session = store.require("session-1")
+
+    await store.close()
+
+    received: list[ResearchEvent] = []
+
+    async def consume() -> None:
+        async for event in store.iter_events("session-1"):
+            received.append(event)
+
+    consumer = asyncio.create_task(consume())
+    await asyncio.wait_for(consumer, timeout=5)
+
+    assert received == []
+    assert session.finished_at is not None
+    assert session.task is not None
+    assert session.task.cancelled()
+
+
+@pytest.mark.asyncio
 async def test_require_rejects_unknown_session_ids() -> None:
     store = SessionStore(runner=ScriptedRunner())
 
