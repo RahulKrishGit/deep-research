@@ -15,14 +15,16 @@ from typing import TypeAlias
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from deep_research.api.events import api_error_event
+from deep_research.api.events import api_error_event, encode_sse
 from deep_research.api.models import (
     ApiErrorBody,
     ApiErrorResponse,
     ResearchRequest,
     ResearchSessionResponse,
+    TraceMetadata,
+    TraceResponse,
     ValidationIssue,
 )
 from deep_research.api.sessions import (
@@ -46,6 +48,8 @@ _SAFE_MESSAGES = {
     "validation_error": "Request validation failed.",
     "session_not_found": "Research session not found.",
     "configuration_error": "Research service configuration is unavailable.",
+    "session_not_complete": "Research session has not produced a report yet.",
+    "report_unavailable": "Research session finished without a report.",
 }
 _DEFAULT_ERROR_MESSAGE = "API request failed."
 
@@ -194,6 +198,96 @@ def create_app(
                 status_code=404,
             ) from None
         return _session_response(session)
+
+    @router.get("/research/{session_id}/stream")
+    async def research_stream(request: Request) -> StreamingResponse:
+        """Stream the session's progress as server-sent events.
+
+        The session must exist *before* the response starts, so an unknown
+        id gets the same safe 404 as every other route instead of a failure
+        halfway through a stream. Each subscriber replays the retained
+        events from id one and then follows live progress until the session
+        reaches a terminal state; only enumerated event types, event ids,
+        and typed ``ResearchEvent`` JSON leave this route.
+        """
+        try:
+            store.require(request.state.session_id)
+        except KeyError:
+            raise ApiProblem(
+                code="session_not_found",
+                status_code=404,
+            ) from None
+
+        async def body() -> AsyncIterator[str]:
+            event_id = 0
+            async for event in store.iter_events(request.state.session_id):
+                event_id += 1
+                yield encode_sse(event, event_id=event_id)
+
+        return StreamingResponse(
+            body(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @router.get("/research/{session_id}/report")
+    async def research_report(request: Request) -> Response:
+        """Return the authoritative Markdown report of a finished session.
+
+        A running session has no report yet and a finished session may have
+        finished without one, so both are explicit 409 conflicts — never a
+        fabricated body and never a fake 404.
+        """
+        try:
+            session = store.require(request.state.session_id)
+        except KeyError:
+            raise ApiProblem(
+                code="session_not_found",
+                status_code=404,
+            ) from None
+        if session.outcome is None:
+            raise ApiProblem(
+                code="session_not_complete",
+                status_code=409,
+            )
+        if session.outcome.report is None:
+            raise ApiProblem(
+                code="report_unavailable",
+                status_code=409,
+            )
+        return Response(session.outcome.report, media_type="text/markdown")
+
+    @router.get(
+        "/research/{session_id}/trace",
+        response_model=TraceResponse,
+    )
+    async def research_trace(request: Request) -> TraceResponse:
+        """Expose the session's trace URL and route metadata.
+
+        Known sessions always answer, running or finished: a running session
+        simply has no ``trace_url`` yet. The recorded route is the template,
+        not the concrete path, so a trace URL can never be mistaken for a
+        stream or report URL.
+        """
+        try:
+            session = store.require(request.state.session_id)
+        except KeyError:
+            raise ApiProblem(
+                code="session_not_found",
+                status_code=404,
+            ) from None
+        return TraceResponse(
+            session_id=session.session_id,
+            trace_url=session.trace_url,
+            metadata=TraceMetadata(
+                session_id=session.session_id,
+                route=request.state.route,
+                status=session.status,
+            ),
+        )
 
     app.include_router(router)
 

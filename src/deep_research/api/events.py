@@ -11,6 +11,22 @@ from __future__ import annotations
 from deep_research.utils.types import ResearchEvent
 
 
+def encode_sse(event: ResearchEvent, *, event_id: int) -> str:
+    """Render one typed progress record as one server-sent-event frame.
+
+    The frame carries the record's id, its enumerated event type, and the
+    full ``ResearchEvent`` JSON — nothing else. Event ids start at one per
+    stream so a late subscriber can see where the replay began.
+    """
+    if event_id < 1:
+        raise ValueError("event_id must be at least 1")
+    return (
+        f"id: {event_id}\n"
+        f"event: {event.event_type}\n"
+        f"data: {event.model_dump_json()}\n\n"
+    )
+
+
 def api_error_event(
     *,
     session_id: str | None = None,

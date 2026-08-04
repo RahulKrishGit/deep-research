@@ -582,6 +582,74 @@ without touching a node.
 | `graph.refinement.started` | Refine node | `iteration`, `max_iterations` |
 | `graph.session.completed` | Runner | `status`, `iteration`, `error_count`, `has_report` |
 
+## FastAPI Interface
+
+The in-process API exposes one research start endpoint and four read
+endpoints, all served by a process-local `SessionStore`:
+
+| Method | Path | Response |
+| --- | --- | --- |
+| `POST` | `/research` | `202` `ResearchSessionResponse` |
+| `GET` | `/research/{session_id}/status` | `200` `ResearchSessionResponse` |
+| `GET` | `/research/{session_id}/stream` | `200` `text/event-stream` |
+| `GET` | `/research/{session_id}/report` | `200` `text/markdown` |
+| `GET` | `/research/{session_id}/trace` | `200` `TraceResponse` |
+
+Start a session:
+
+```bash
+curl -X POST http://localhost:8000/research \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "How mature is quantum error correction?",
+    "max_iterations": 3,
+    "output_format": "markdown",
+    "config_overrides": {
+      "output": {"directory": "api-output/"},
+      "llm": {"model_overrides": {"critic": "gpt-4.1-mini"}}
+    }
+  }'
+```
+
+The `202` response carries the session snapshot: `session_id`, `status`,
+`current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
+`trace_url`, and `errors`. Sessions start immediately in a background task;
+`status` is `running` until the run reaches `completed`, `max_iterations`,
+`incomplete`, or `failed`. Poll `status` or subscribe to the stream —
+nothing blocks on research work.
+
+Streams are server-sent events: each frame is one typed `ResearchEvent` as
+JSON, preceded by its id and event type:
+
+```text
+id: 1
+event: graph.node.started
+data: {"event_type":"graph.node.started","source":"graph.planner","message":"Node planner started.","timestamp":"...","metadata":{"node":"planner","iteration":0}}
+
+```
+
+A subscriber that connects late replays the session's retained events from
+id one, then follows live progress; the stream ends when the session
+reaches a terminal state. The report endpoint returns the authoritative
+Markdown body with `Content-Type: text/markdown` once the session is
+finished. The trace endpoint returns `session_id`, `trace_url`, and
+`metadata` carrying the `session_id`, the route template, and the current
+`status`.
+
+Errors are structured and safe:
+
+| Status | Meaning |
+| --- | --- |
+| `422` | Invalid request body or override shape; the error body lists field locations and types only, never rejected values |
+| `404` | Unknown `session_id`, identical for all four GET routes |
+| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) |
+| `500` | Missing or invalid service configuration (`configuration_error`), without file contents, secret values, provider text, or tracebacks |
+
+Sessions, background tasks, and event history are process-local memory:
+everything disappears when the process exits. Authentication, multi-tenant
+authorization, durable queues, databases, and deployment setup remain out of
+scope — running the app is left to the caller.
+
 ## Command Line Interface
 
 ```bash
@@ -644,5 +712,5 @@ ruff check src/
 - Phase 1: Core package foundation, config, types, providers
 - Phase 2: Memory and tools
 - Phase 3: Agents and LangGraph orchestration ← complete (all six agents and the graph)
-- Phase 4: CLI ← complete; FastAPI API and Streamlit UI next
+- Phase 4: CLI ← complete; FastAPI API ← complete; Streamlit UI next
 - Phase 5: Tests and verification

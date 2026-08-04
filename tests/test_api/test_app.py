@@ -162,14 +162,23 @@ def test_status_reports_running_then_completed_lifecycle() -> None:
     assert completed["report_path"] == "report-session-1.md"
 
 
-def test_status_returns_safe_404_for_unknown_sessions() -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/research/no-such-session/status",
+        "/research/no-such-session/stream",
+        "/research/no-such-session/report",
+        "/research/no-such-session/trace",
+    ],
+)
+def test_unknown_sessions_return_the_same_safe_404(path: str) -> None:
     app = create_app(
         runner=ScriptedRunner(),
         preflight=valid_preflight,
     )
 
     with TestClient(app) as client:
-        response = client.get("/research/no-such-session/status")
+        response = client.get(path)
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "session_not_found"
