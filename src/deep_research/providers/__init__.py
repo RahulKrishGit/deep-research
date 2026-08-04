@@ -1,5 +1,11 @@
 """Model and embedding providers. OpenAI only in the first build."""
 
+from deep_research.providers.capabilities import (
+    ModelCapability,
+    ResolvedRequestSettings,
+    capability_for,
+    resolve_request_settings,
+)
 from deep_research.providers.contracts import (
     ChatMessage,
     ChatResult,
@@ -21,6 +27,7 @@ __all__ = [
     "ChatMessage",
     "ChatResult",
     "DEFAULT_EMBEDDING_MODEL",
+    "ModelCapability",
     "OpenAIChatProvider",
     "OpenAIEmbeddingProvider",
     "OpenAIProviderError",
@@ -29,5 +36,8 @@ __all__ = [
     "ProviderRateLimitError",
     "ProviderResponseError",
     "ProviderTimeoutError",
+    "ResolvedRequestSettings",
     "StructuredOutputError",
+    "capability_for",
+    "resolve_request_settings",
 ]
