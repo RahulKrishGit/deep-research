@@ -26,7 +26,7 @@ from deep_research.agents.steps import (
 )
 from deep_research.agents.toolset import AgentToolset
 from deep_research.observability import Tracker
-from deep_research.providers import OpenAIProviderError
+from deep_research.providers import ProviderError
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import ResearchError
 
@@ -233,7 +233,7 @@ async def run_react_loop(
                         "success": True if observation is None else observation.success,
                     }
                 )
-        except OpenAIProviderError as error:
+        except ProviderError as error:
             errors.append(
                 agent_error(
                     agent_name=agent_name,

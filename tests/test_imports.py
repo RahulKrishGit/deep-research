@@ -119,6 +119,7 @@ def test_provider_public_api_imports() -> None:
         OpenAIEmbeddingProvider,
         OpenAIProviderError,
         ProviderConfigurationError,
+        ProviderError,
         ProviderRateLimitError,
         ProviderResponseError,
         ProviderTimeoutError,
@@ -130,6 +131,7 @@ def test_provider_public_api_imports() -> None:
     assert ChatMessage.__name__ == "ChatMessage"
     assert ChatResult.__name__ == "ChatResult"
     assert DEFAULT_EMBEDDING_MODEL
+    assert OpenAIProviderError is ProviderError
     assert issubclass(ProviderConfigurationError, OpenAIProviderError)
     assert issubclass(ProviderRateLimitError, OpenAIProviderError)
     assert issubclass(ProviderResponseError, OpenAIProviderError)

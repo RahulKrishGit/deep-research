@@ -43,7 +43,7 @@ from deep_research.agents.steps import (
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import ChatMessage, OpenAIProviderError
+from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -693,7 +693,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 ClaimsDraft,
                 agent_name=self.name,
             )
-        except OpenAIProviderError as error:
+        except ProviderError as error:
             return [], [claim_extraction_provider_error(error)], True
 
         claims, rejected = build_claim_drafts(
@@ -742,7 +742,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 ClaimVerdictDraft,
                 agent_name=self.name,
             )
-        except OpenAIProviderError as error:
+        except ProviderError as error:
             return (
                 insufficient_claim(task.claim, reason="provider_unavailable"),
                 "provider_unavailable",

@@ -11,14 +11,23 @@ import math
 import os
 from collections.abc import Sequence
 from types import SimpleNamespace
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers.contracts import (
+    ChatMessage,
+    ChatResult,
+    OpenAIProviderError,
+    ProviderConfigurationError,
+    ProviderRateLimitError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+    StructuredOutputError,
+)
 from deep_research.utils.config import LLMConfig
 
-MessageRole = Literal["developer", "system", "user", "assistant"]
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 _openai_sdk: SimpleNamespace | None = None
@@ -46,45 +55,6 @@ def _openai_errors() -> SimpleNamespace:
             RateLimitError=RateLimitError,
         )
     return _openai_sdk
-
-
-class ProviderContract(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-
-class ChatMessage(ProviderContract):
-    role: MessageRole
-    content: str = Field(min_length=1)
-
-
-class ChatResult(ProviderContract):
-    text: str = Field(min_length=1)
-    model: str = Field(min_length=1)
-    usage: TokenUsage
-
-
-class OpenAIProviderError(RuntimeError):
-    """Base caller-facing error for the OpenAI provider boundary."""
-
-
-class ProviderConfigurationError(OpenAIProviderError):
-    """Provider configuration is absent or invalid."""
-
-
-class ProviderTimeoutError(OpenAIProviderError):
-    """An OpenAI request exceeded its timeout."""
-
-
-class ProviderRateLimitError(OpenAIProviderError):
-    """OpenAI rejected a request due to rate limiting."""
-
-
-class ProviderResponseError(OpenAIProviderError):
-    """OpenAI returned an unusable response or status error."""
-
-
-class StructuredOutputError(OpenAIProviderError):
-    """Structured output remained invalid after one repair request."""
 
 
 def _build_client(

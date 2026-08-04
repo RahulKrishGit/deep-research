@@ -40,7 +40,7 @@ from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.memory.entries import SourceReputation
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import ChatMessage, OpenAIProviderError
+from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -575,7 +575,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 SourceScoresDraft,
                 agent_name=self.name,
             )
-        except OpenAIProviderError as error:
+        except ProviderError as error:
             provider_failed = True
             errors.append(
                 scoring_provider_error(error, sources=len(scored_groups))
