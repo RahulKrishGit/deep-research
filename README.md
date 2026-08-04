@@ -1,10 +1,10 @@
 # Deep Research
 
-Multi-agent deep research system using LangGraph, OpenAI, ChromaDB, and LangSmith.
+Multi-agent deep research system using LangGraph, selectable DeepSeek/OpenAI chat, OpenAI embeddings, ChromaDB, and LangSmith.
 
 ## Project Status
 
-Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, OpenAI chat/embedding providers, core tools, the three-layer memory stack, and the shared agent ReAct runtime.
+Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, chat and embedding providers, core tools, the three-layer memory stack, and the shared agent ReAct runtime.
 
 ## Setup
 
@@ -106,20 +106,62 @@ Each completed span appends a typed metric and structured event. A LangSmith
 transport failure appends a recoverable `ResearchError` and research work
 continues locally.
 
-## OpenAI Providers
+## Chat and Embedding Providers
 
-Set `OPENAI_API_KEY` in the process environment or the repository-root `.env`.
-Chat and embedding defaults live under `llm` in `config.yaml`; `LLM_MODEL`,
-`LLM_EMBEDDING_MODEL`, `LLM_TIMEOUT`, and `LLM_RETRY_COUNT` override the
-corresponding YAML values.
+Chat defaults are committed under `llm` in `config.yaml`: provider `deepseek`,
+model `deepseek-v4-flash`, thinking mode `enabled`, and reasoning effort
+`high`. `LLM_PROVIDER`, `LLM_MODEL`, `LLM_THINKING_MODE`,
+`LLM_REASONING_EFFORT`, `LLM_EMBEDDING_MODEL`, `LLM_TIMEOUT`, and
+`LLM_RETRY_COUNT` override the corresponding YAML values.
 
-Chat callers use project-owned messages and results, not OpenAI SDK types:
+Set `DEEPSEEK_API_KEY` for the default DeepSeek chat and `OPENAI_API_KEY` for
+embeddings, in the process environment or the repository-root `.env`. OpenAI
+embeddings remain active in DeepSeek mode — memory always embeds through
+`OpenAIEmbeddingProvider`, whatever chat provider is selected.
+
+A complete DeepSeek configuration with per-agent overrides:
+
+```yaml
+llm:
+  provider: deepseek
+  model: deepseek-v4-flash
+  thinking_mode: enabled
+  reasoning_effort: high
+  model_overrides:
+    planner: deepseek-v4-flash
+    critic:
+      model: deepseek-v4-flash
+      thinking_mode: enabled
+      reasoning_effort: max
+```
+
+The `planner` override is the legacy string form — model only, inheriting the
+global thinking mode and reasoning effort. The `critic` override is the
+structured form with its own model, thinking mode, and reasoning effort. Both
+forms remain valid.
+
+To switch chat to OpenAI explicitly, set provider `openai` with a model,
+thinking mode, and reasoning effort the OpenAI capability registry supports —
+for example:
+
+```dotenv
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-5.6
+LLM_THINKING_MODE=enabled
+LLM_REASONING_EFFORT=high
+```
+
+The same `OPENAI_API_KEY` then serves both chat and embeddings.
+
+Chat callers use project-owned messages and results, not provider SDK types.
+Build the configured adapter through the factory rather than constructing a
+default adapter directly:
 
 ```python
-from deep_research.providers import ChatMessage, OpenAIChatProvider
+from deep_research.providers import ChatMessage, build_chat_provider
 
 settings = load_config("config.yaml")
-chat = OpenAIChatProvider(settings.llm, tracker)
+chat = build_chat_provider(settings.llm, tracker)
 
 async with tracker.session_span("session-123", "Why is the sky blue?"):
     result = await chat.complete(
@@ -132,6 +174,31 @@ Use `complete_structured(messages, Schema)` for validated Pydantic output. The
 provider performs one repair request if validation fails. `OpenAIEmbeddingProvider`
 is the synchronous embedding client memory uses — see `embed_query(...)` and
 `embed_documents(...)` below.
+
+Provider selection fails fast and never falls back: an unknown provider or an
+unsupported model/thinking/effort combination raises
+`ProviderConfigurationError` before any request is made, and a selected
+provider that fails stays failed — the other provider is never constructed in
+its place.
+
+### Secrets and migration
+
+Strict mode (`load_config("config.yaml", strict=True)`, used by the CLI and
+API) requires these secrets before any model is called:
+
+| Selected chat provider | Required for a full research run |
+| --- | --- |
+| DeepSeek | `DEEPSEEK_API_KEY`, `OPENAI_API_KEY` (embeddings), `TAVILY_API_KEY` |
+| OpenAI | `OPENAI_API_KEY`, `TAVILY_API_KEY` |
+
+LangSmith requirements remain conditional on tracing: `LANGSMITH_API_KEY` and
+`LANGSMITH_PROJECT` are required only when `LANGSMITH_TRACING=true`.
+
+**Migration note.** The committed default changed from OpenAI to DeepSeek by
+design. Existing OpenAI users must explicitly set `provider: openai`, an
+OpenAI model, and a compatible thinking/effort pair after this intentional
+default change. Legacy string model overrides remain valid and inherit the
+global thinking mode and reasoning effort.
 
 ## Core Tools
 
@@ -243,7 +310,7 @@ and may override up to three more:
 from deep_research.agents import AgentTask, BaseAgent, ReActRun
 from deep_research.memory import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import OpenAIChatProvider
+from deep_research.providers import build_chat_provider
 from deep_research.tools import WebSearchTool
 from deep_research.utils.config import load_config
 from deep_research.utils.types import merge_research_state
@@ -272,7 +339,7 @@ class BriefAgent(BaseAgent[Brief]):
 
 
 agent = BriefAgent(
-    provider=OpenAIChatProvider(settings.llm, tracker),
+    provider=build_chat_provider(settings.llm, tracker),
     tracker=tracker,
     scratchpad=ScratchpadMemory.from_config(
         settings.memory.short_term, session_id="session-123", agent_name="brief"
@@ -373,7 +440,7 @@ Both agents append progress events to `state.events`:
 | `researcher.sub_topic.completed` | Researcher | `stop_reason`, `iterations`, `tool_calls`, `findings` |
 | `researcher.research.completed` | Researcher | `sub_topics_planned`, `sub_topics_researched`, `sub_topics_skipped`, `findings` |
 
-Neither agent sends a domain type to OpenAI. `SubTopic` and `Finding` declare
+Neither agent sends a domain type to the chat provider. `SubTopic` and `Finding` declare
 `Field(min_length=1)` constraints that render as `minLength`/`minItems`, which
 strict structured outputs reject, so the provider is asked for
 `ResearchPlanDraft` and `SubTopicFindingsDraft` — constraint-free mirrors —
@@ -606,7 +673,7 @@ curl -X POST http://localhost:8000/research \
     "output_format": "markdown",
     "config_overrides": {
       "output": {"directory": "api-output/"},
-      "llm": {"model_overrides": {"critic": "gpt-4.1-mini"}}
+      "llm": {"model_overrides": {"critic": "deepseek-v4-pro"}}
     }
   }'
 ```
@@ -670,9 +737,10 @@ python -m deep_research --resume <session_id>
 | `--verbose` | Print every progress event, tool call counts, and token totals. |
 
 Every interface calls the same `deep_research.main.run_research()`, which loads
-configuration in **strict** mode: `OPENAI_API_KEY` and `TAVILY_API_KEY` (plus
+configuration in **strict** mode: the required secrets for the selected chat
+provider (see the secret matrix under Chat and Embedding Providers) plus
 `LANGSMITH_API_KEY` and `LANGSMITH_PROJECT` when `langsmith.tracing_enabled` is
-true) must be present in the environment or in a `.env` file next to
+true must be present in the environment or in a `.env` file next to
 `config.yaml`, or the command exits 1 before any model is called.
 
 | Exit code | Meaning |
@@ -705,6 +773,26 @@ pytest
 
 # Lint
 ruff check src/
+```
+
+## Live DeepSeek Smoke Test
+
+The live smoke test is opt-in and excluded from a normal `python -m pytest`
+run. Set `DEEPSEEK_API_KEY` in the environment first — the test makes one
+bounded structured adapter call with at most one repair, and it does not use
+embeddings or Tavily.
+
+PowerShell:
+
+```powershell
+$env:RUN_DEEPSEEK_LIVE_TESTS="1"
+python -m pytest -o addopts= -m live tests/live/test_deepseek_live.py -v
+```
+
+POSIX:
+
+```bash
+RUN_DEEPSEEK_LIVE_TESTS=1 python -m pytest -o addopts= -m live tests/live/test_deepseek_live.py -v
 ```
 
 ## Phases

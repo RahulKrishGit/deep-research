@@ -1,4 +1,4 @@
-"""Model and embedding providers with OpenAI-compatible adapters."""
+"""Selectable chat providers (DeepSeek, OpenAI) and OpenAI embeddings."""
 
 from deep_research.providers.capabilities import (
     ModelCapability,
