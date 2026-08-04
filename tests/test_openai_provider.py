@@ -114,12 +114,24 @@ def local_tracker() -> Tracker:
     return Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
 
 
+def openai_config(**updates: object) -> LLMConfig:
+    return LLMConfig.model_validate(
+        {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "thinking_mode": "disabled",
+            "reasoning_effort": "none",
+            **updates,
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_complete_parses_text_and_records_usage() -> None:
     responses = RecordingResponses(response())
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(model_overrides={"planner": "gpt-4o-mini"}),
+        openai_config(model_overrides={"planner": "gpt-4o-mini"}),
         tracker,
         client=FakeOpenAIClient(responses=responses),
     )
@@ -156,7 +168,7 @@ def test_missing_api_key_fails_before_client_construction(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     with pytest.raises(ProviderConfigurationError, match="OPENAI_API_KEY"):
-        OpenAIChatProvider(LLMConfig(), local_tracker())
+        OpenAIChatProvider(openai_config(), local_tracker())
 
 
 def test_explicit_empty_api_key_does_not_fall_back_to_environment(
@@ -165,7 +177,7 @@ def test_explicit_empty_api_key_does_not_fall_back_to_environment(
     monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
 
     with pytest.raises(ProviderConfigurationError, match="OPENAI_API_KEY"):
-        OpenAIChatProvider(LLMConfig(), local_tracker(), api_key="")
+        OpenAIChatProvider(openai_config(), local_tracker(), api_key="")
 
 
 class Outline(BaseModel):
@@ -179,7 +191,7 @@ async def test_complete_structured_returns_parsed_model() -> None:
     responses = RecordingResponses(response(parsed=parsed))
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(), tracker, client=FakeOpenAIClient(responses=responses)
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -202,7 +214,7 @@ async def test_complete_structured_repairs_once_then_succeeds() -> None:
     )
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(), tracker, client=FakeOpenAIClient(responses=responses)
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -228,7 +240,7 @@ async def test_complete_structured_raises_after_one_failed_repair() -> None:
     )
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(), tracker, client=FakeOpenAIClient(responses=responses)
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -246,7 +258,7 @@ async def test_complete_structured_raises_after_one_failed_repair() -> None:
 async def test_empty_text_response_is_a_typed_provider_error() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(),
+        openai_config(),
         tracker,
         client=FakeOpenAIClient(responses=RecordingResponses(response(text="   "))),
     )
@@ -295,7 +307,7 @@ async def test_complete_translates_sdk_errors(
 ) -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(),
+        openai_config(),
         tracker,
         client=FakeOpenAIClient(responses=RecordingResponses(sdk_error)),
     )
@@ -319,7 +331,7 @@ async def test_complete_structured_repairs_pydantic_validation_error() -> None:
     )
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(), tracker, client=FakeOpenAIClient(responses=responses)
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -340,7 +352,7 @@ async def test_complete_structured_raises_after_two_pydantic_validation_errors()
     )
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(), tracker, client=FakeOpenAIClient(responses=responses)
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -427,7 +439,7 @@ async def test_embed_texts_rejects_empty_batches_without_api_call() -> None:
 async def test_complete_translates_connection_errors() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(),
+        openai_config(),
         tracker,
         client=FakeOpenAIClient(
             responses=RecordingResponses(
@@ -447,7 +459,7 @@ async def test_complete_translates_connection_errors() -> None:
 async def test_complete_structured_translates_connection_errors() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(),
+        openai_config(),
         tracker,
         client=FakeOpenAIClient(
             responses=RecordingResponses(
@@ -566,7 +578,7 @@ async def test_embed_texts_rejects_invalid_indices_and_nonfinite_values(
 async def test_complete_structured_translates_finish_reason_error() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(),
+        openai_config(),
         tracker,
         client=FakeOpenAIClient(
             responses=RecordingResponses(ContentFilterFinishReasonError())
@@ -585,7 +597,7 @@ async def test_complete_structured_translates_finish_reason_error() -> None:
 async def test_complete_rejects_non_string_output_text(output_text: object) -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(),
+        openai_config(),
         tracker,
         client=FakeOpenAIClient(
             responses=RecordingResponses(response(text=output_text))
@@ -620,7 +632,7 @@ async def test_provider_methods_reject_malformed_usage(
 ) -> None:
     tracker = local_tracker()
     chat = OpenAIChatProvider(
-        LLMConfig(),
+        openai_config(),
         tracker,
         client=FakeOpenAIClient(responses=RecordingResponses(malformed_response)),
     )
@@ -647,7 +659,7 @@ async def test_provider_methods_reject_malformed_usage(
 async def test_complete_translates_generic_openai_errors() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        LLMConfig(),
+        openai_config(),
         tracker,
         client=FakeOpenAIClient(responses=RecordingResponses(OpenAIError("invalid"))),
     )

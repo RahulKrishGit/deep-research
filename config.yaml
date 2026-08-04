@@ -3,9 +3,11 @@
 # LLM_MODEL or MEMORY_LONG_TERM_PERSIST_DIRECTORY).
 
 llm:
-  provider: openai
-  model: gpt-4o
+  provider: deepseek
+  model: deepseek-v4-flash
   embedding_model: text-embedding-3-small
+  thinking_mode: enabled
+  reasoning_effort: high
   model_overrides: {}
   timeout: 60.0
   retry_count: 2

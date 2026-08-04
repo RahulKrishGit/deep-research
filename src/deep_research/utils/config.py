@@ -4,11 +4,11 @@ import os
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class MissingSecretsError(ValueError):
@@ -20,26 +20,78 @@ class MissingSecretsError(ValueError):
     """
 
 
+ProviderName = Literal["deepseek", "openai"]
+ThinkingMode = Literal["enabled", "disabled"]
+ReasoningEffort = Literal[
+    "none", "minimal", "low", "medium", "high", "xhigh", "max"
+]
+
+
+class AgentModelOverride(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+    model: str | None = Field(default=None, min_length=1)
+    thinking_mode: ThinkingMode | None = None
+    reasoning_effort: ReasoningEffort | None = None
+
+
+class EffectiveModelConfig(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+    model: str = Field(min_length=1)
+    thinking_mode: ThinkingMode
+    reasoning_effort: ReasoningEffort
+
+
 class LLMConfig(BaseModel):
     """OpenAI model and request settings."""
 
-    provider: str = Field(default="openai", min_length=1)
-    model: str = Field(default="gpt-4o", min_length=1)
+    provider: ProviderName = "deepseek"
+    model: str = Field(default="deepseek-v4-flash", min_length=1)
     embedding_model: str = Field(
         default="text-embedding-3-small",
         min_length=1,
     )
-    model_overrides: dict[str, str] = Field(default_factory=dict)
+    thinking_mode: ThinkingMode = "enabled"
+    reasoning_effort: ReasoningEffort = "high"
+    model_overrides: dict[str, str | AgentModelOverride] = Field(
+        default_factory=dict
+    )
     timeout: float = Field(default=60.0, gt=0)
     retry_count: int = Field(default=2, ge=0)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1)
 
+    def resolve_for(self, agent_name: str | None) -> EffectiveModelConfig:
+        override = None if agent_name is None else self.model_overrides.get(agent_name)
+        if isinstance(override, str):
+            return EffectiveModelConfig(
+                model=override,
+                thinking_mode=self.thinking_mode,
+                reasoning_effort=self.reasoning_effort,
+            )
+        return EffectiveModelConfig(
+            model=(
+                self.model
+                if override is None or override.model is None
+                else override.model
+            ),
+            thinking_mode=(
+                self.thinking_mode
+                if override is None or override.thinking_mode is None
+                else override.thinking_mode
+            ),
+            reasoning_effort=(
+                self.reasoning_effort
+                if override is None or override.reasoning_effort is None
+                else override.reasoning_effort
+            ),
+        )
+
     def model_for(self, agent_name: str | None) -> str:
-        """Return an agent override when configured, otherwise the default."""
-        if agent_name is None:
-            return self.model
-        return self.model_overrides.get(agent_name, self.model)
+        return self.resolve_for(agent_name).model
 
 class LangSmithConfig(BaseModel):
     """LangSmith tracing settings."""
@@ -133,6 +185,8 @@ class ConfigSettings(BaseModel):
 _ENVIRONMENT_OVERRIDES = {
     "LLM_PROVIDER": ("llm", "provider"),
     "LLM_MODEL": ("llm", "model"),
+    "LLM_THINKING_MODE": ("llm", "thinking_mode"),
+    "LLM_REASONING_EFFORT": ("llm", "reasoning_effort"),
     "LLM_EMBEDDING_MODEL": ("llm", "embedding_model"),
     "LLM_TIMEOUT": ("llm", "timeout"),
     "LLM_RETRY_COUNT": ("llm", "retry_count"),
@@ -159,10 +213,11 @@ _ENVIRONMENT_OVERRIDES = {
     "OUTPUT_DIRECTORY": ("output", "directory"),
     "OUTPUT_DEFAULT_FORMAT": ("output", "default_format"),
 }
-_REQUIRED_ENVIRONMENT_VARIABLES = (
-    "OPENAI_API_KEY",
-    "TAVILY_API_KEY",
-)
+_COMMON_REQUIRED_ENVIRONMENT_VARIABLES = ("OPENAI_API_KEY", "TAVILY_API_KEY")
+_CHAT_PROVIDER_ENVIRONMENT_VARIABLES = {
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "openai": (),
+}
 _LANGSMITH_ENVIRONMENT_VARIABLES = (
     "LANGSMITH_API_KEY",
     "LANGSMITH_PROJECT",
@@ -252,7 +307,10 @@ def load_config(
     if overrides:
         settings = apply_config_overrides(settings, overrides)
     if strict:
-        _validate_runtime_secrets(tracing_enabled=settings.langsmith.tracing_enabled)
+        _validate_runtime_secrets(
+            provider=settings.llm.provider,
+            tracing_enabled=settings.langsmith.tracing_enabled,
+        )
 
     return settings
 
@@ -274,9 +332,14 @@ def _apply_environment_overrides(config: dict[str, Any]) -> None:
         target[path[-1]] = value
 
 
-def _validate_runtime_secrets(*, tracing_enabled: bool) -> None:
+def _validate_runtime_secrets(
+    *, provider: ProviderName, tracing_enabled: bool
+) -> None:
     """Raise when strict-mode runtime secrets are absent or blank."""
-    required = list(_REQUIRED_ENVIRONMENT_VARIABLES)
+    required = [
+        *_CHAT_PROVIDER_ENVIRONMENT_VARIABLES[provider],
+        *_COMMON_REQUIRED_ENVIRONMENT_VARIABLES,
+    ]
     if tracing_enabled:
         required.extend(_LANGSMITH_ENVIRONMENT_VARIABLES)
     missing = [

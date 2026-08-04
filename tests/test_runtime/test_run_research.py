@@ -24,6 +24,7 @@ QUESTION = "How mature is quantum error correction?"
 
 @pytest.fixture
 def config_file(tmp_path, monkeypatch) -> str:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
     monkeypatch.setenv("LANGSMITH_TRACING", "false")
