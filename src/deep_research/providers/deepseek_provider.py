@@ -138,7 +138,7 @@ def _validation_summary(error: BaseException, *, limit: int = 1000) -> str:
     errors = getattr(error, "errors", None)
     if callable(errors):
         lines: list[str] = []
-        for item in errors():
+        for item in errors(include_input=False):
             location = ".".join(str(part) for part in item.get("loc", ()))
             message = item.get("msg", "")
             lines.append(f"{location}: {message}" if location else message)
@@ -381,9 +381,12 @@ class DeepSeekChatProvider:
             try:
                 return schema.model_validate_json(text)
             except (json.JSONDecodeError, ValidationError) as error:
+                # from None: the original ValidationError embeds the provider
+                # output in its string and error items, so it must not remain
+                # reachable through the public __cause__ chain.
                 raise _StructuredValidationFailure(
                     schema.__name__, _validation_summary(error)
-                ) from error
+                ) from None
 
     async def complete_structured(
         self,

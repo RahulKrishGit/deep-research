@@ -627,6 +627,22 @@ async def test_deepseek_structured_output_prompts_json_and_validates_locally() -
 
 
 @pytest.mark.asyncio
+async def test_deepseek_structured_rejects_empty_messages_before_sdk_call() -> None:
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    with pytest.raises(ValueError, match="messages must contain at least one item"):
+        await provider.complete_structured([], TinyAnswer)
+
+    assert completions.calls == []
+
+
+@pytest.mark.asyncio
 async def test_deepseek_structured_repairs_once_then_succeeds() -> None:
     completions = RecordingCompletions(
         chat_response(text='{"answer":3}'),
@@ -720,6 +736,25 @@ async def test_deepseek_structured_sdk_errors_are_not_repaired(
 
     async with tracker.session_span("session-1", "question"):
         with pytest.raises(expected):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    assert len(completions.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_generic_openai_errors_are_not_repaired() -> None:
+    completions = RecordingCompletions(OpenAIError("invalid"))
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(
+            ProviderResponseError, match="structured output request failed"
+        ):
             await provider.complete_structured(
                 [ChatMessage(role="user", content="decide")], TinyAnswer
             )
@@ -837,3 +872,63 @@ async def test_deepseek_structured_telemetry_is_safe_and_attempted() -> None:
         "previous JSON response failed",
     ):
         assert sensitive not in serialized
+
+
+def test_deepseek_validation_summary_excludes_inputs_and_stays_capped() -> None:
+    class RecordingValidationFailure:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def errors(self, **kwargs):
+            self.calls.append(kwargs)
+            return [
+                {
+                    "type": "string_type",
+                    "loc": ("answer",),
+                    "msg": "should be a string",
+                    "input": "secret-provider-output",
+                    "ctx": {"expected": "str"},
+                },
+                {
+                    "type": "int_type",
+                    "loc": ("confidence",),
+                    "msg": "x" * 1200,
+                    "input": 3,
+                },
+            ]
+
+    error = RecordingValidationFailure()
+    summary = deepseek_module._validation_summary(error)
+    assert error.calls == [{"include_input": False}]
+    assert summary.startswith("answer: should be a string; confidence: ")
+    assert "secret-provider-output" not in summary
+    assert len(summary) == 1000
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_public_cause_chain_hides_provider_output() -> None:
+    completions = RecordingCompletions(
+        chat_response(text="not-json"),
+        chat_response(text="still invalid"),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    assert str(caught.value) == (
+        "DeepSeek output failed TinyAnswer validation after one repair attempt"
+    )
+    failure = caught.value.__cause__
+    assert isinstance(failure, deepseek_module._StructuredValidationFailure)
+    assert failure.__cause__ is None
+    assert failure.__suppress_context__ is True
+    for link in (caught.value, failure):
+        for sensitive in ("not-json", "still invalid", "decide"):
+            assert sensitive not in str(link)
