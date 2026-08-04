@@ -112,13 +112,19 @@ def deepseek_config(**updates: object) -> LLMConfig:
 
 def test_deepseek_requires_key_without_injected_client(monkeypatch) -> None:
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    with pytest.raises(ProviderConfigurationError, match="DEEPSEEK_API_KEY"):
+    with pytest.raises(
+        ProviderConfigurationError,
+        match=r"^DEEPSEEK_API_KEY is required when no DeepSeek client is injected",
+    ):
         DeepSeekChatProvider(deepseek_config(), local_tracker())
 
 
 def test_explicit_blank_deepseek_key_does_not_fall_back(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "environment-key")
-    with pytest.raises(ProviderConfigurationError, match="DEEPSEEK_API_KEY"):
+    with pytest.raises(
+        ProviderConfigurationError,
+        match=r"^DEEPSEEK_API_KEY is required when no DeepSeek client is injected",
+    ):
         DeepSeekChatProvider(deepseek_config(), local_tracker(), api_key="")
 
 
@@ -240,6 +246,20 @@ async def test_deepseek_translation_preserves_system_user_assistant_order() -> N
 
 
 @pytest.mark.asyncio
+async def test_deepseek_complete_rejects_empty_messages() -> None:
+    completions = RecordingCompletions(chat_response(text="answer"))
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    with pytest.raises(ValueError, match="messages must contain at least one item"):
+        await provider.complete([])
+
+    assert completions.calls == []
+
+
+@pytest.mark.asyncio
 async def test_deepseek_absent_usage_maps_to_zero_tokens() -> None:
     completions = RecordingCompletions(
         SimpleNamespace(
@@ -277,6 +297,7 @@ async def test_deepseek_absent_usage_maps_to_zero_tokens() -> None:
         SimpleNamespace(prompt_tokens="8", completion_tokens=2),
         SimpleNamespace(prompt_tokens=8, completion_tokens=-1),
         SimpleNamespace(prompt_tokens=None, completion_tokens=2),
+        SimpleNamespace(prompt_tokens=8, completion_tokens=None),
         SimpleNamespace(prompt_tokens=8, completion_tokens=2, total_tokens=5),
         SimpleNamespace(prompt_tokens=8, completion_tokens=2, total_tokens="11"),
         SimpleNamespace(prompt_tokens=8, completion_tokens=True),

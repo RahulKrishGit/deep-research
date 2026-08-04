@@ -154,7 +154,13 @@ def _choice_text(response: Any, *, allow_empty: bool = False) -> str:
 
 
 def _raise_deepseek_error(error: Exception) -> None:
-    """Translate SDK operational failures to safe typed provider errors."""
+    """Translate SDK operational failures to safe typed provider errors.
+
+    Any exception outside the handled SDK types falls through and is
+    re-raised unchanged; callers decide how to classify it. In
+    ``complete`` only the handled types can reach this helper, so the
+    fallthrough is defensive rather than reachable there.
+    """
     sdk = _openai_errors()
     if isinstance(error, sdk.APITimeoutError):
         raise ProviderTimeoutError("DeepSeek request timed out") from error
@@ -270,4 +276,8 @@ class DeepSeekChatProvider:
                 _set_span_result(span, response, usage)
                 return ChatResult(text=text, model=effective.model, usage=usage)
         except ProviderError:
+            # Documentary guard: project-owned errors are already typed,
+            # safe, and content-free, so they pass through untouched. The
+            # span context manager above finalizes telemetry on every path;
+            # this clause only makes the typed-error contract explicit.
             raise
