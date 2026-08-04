@@ -327,6 +327,36 @@ async def test_bad_critic_override_fails_before_any_runtime_collaborator(
 
 
 @pytest.mark.asyncio
+async def test_bad_critic_override_fails_before_the_default_tracker(
+    monkeypatch,
+) -> None:
+    """The non-injected tracker path is preflighted too.
+
+    Leaves ``tracker=None`` so ``Tracker.from_config`` would run before
+    validation on the current implementation; an invalid critic-only
+    override must fail with the safe provider/agent error before the
+    tracker factory is ever called.
+    """
+    tracker_calls: list[object] = []
+    monkeypatch.setattr(
+        assembly.Tracker,
+        "from_config",
+        classmethod(lambda cls, config: tracker_calls.append(config)),
+    )
+    settings = ConfigSettings.model_validate(
+        {"llm": {"model_overrides": {"critic": {"reasoning_effort": "medium"}}}}
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(settings, session_id="session-1")
+
+    assert caught.value.reason == "provider_unconfigured"
+    assert "deepseek" in str(caught.value)
+    assert "critic" in str(caught.value)
+    assert tracker_calls == []
+
+
+@pytest.mark.asyncio
 async def test_build_runtime_compiles_a_graph_from_injected_collaborators(
     tracker, tmp_path
 ) -> None:

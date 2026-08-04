@@ -46,7 +46,7 @@ class EffectiveModelConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """OpenAI model and request settings."""
+    """Chat and embedding model and request settings."""
 
     provider: ProviderName = "deepseek"
     model: str = Field(default="deepseek-v4-flash", min_length=1)

@@ -219,8 +219,6 @@ async def build_runtime(
     ``ResearchConfigurationError`` here rather than an exception the user
     sees as a traceback.
     """
-    tracker = tracker or Tracker.from_config(settings.langsmith)
-
     try:
         validate_agent_model_configs(settings.llm, AGENT_NAMES)
     except ProviderConfigurationError as error:
@@ -231,6 +229,8 @@ async def build_runtime(
                 f"configured: {error}"
             ),
         ) from error
+
+    tracker = tracker or Tracker.from_config(settings.langsmith)
 
     try:
         if long_term is None:
