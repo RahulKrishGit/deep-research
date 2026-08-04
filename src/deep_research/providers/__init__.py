@@ -1,4 +1,4 @@
-"""Model and embedding providers. OpenAI only in the first build."""
+"""Model and embedding providers with OpenAI-compatible adapters."""
 
 from deep_research.providers.capabilities import (
     ModelCapability,
@@ -17,6 +17,10 @@ from deep_research.providers.contracts import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
+from deep_research.providers.deepseek_provider import (
+    DEEPSEEK_BASE_URL,
+    DeepSeekChatProvider,
+)
 from deep_research.providers.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     OpenAIEmbeddingProvider,
@@ -26,7 +30,9 @@ from deep_research.providers.openai_provider import OpenAIChatProvider
 __all__ = [
     "ChatMessage",
     "ChatResult",
+    "DEEPSEEK_BASE_URL",
     "DEFAULT_EMBEDDING_MODEL",
+    "DeepSeekChatProvider",
     "ModelCapability",
     "OpenAIChatProvider",
     "OpenAIEmbeddingProvider",
