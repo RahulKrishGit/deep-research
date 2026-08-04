@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -114,6 +115,16 @@ def local_tracker() -> Tracker:
     return Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
 
 
+class CapturingTracker(Tracker):
+    def __init__(self) -> None:
+        super().__init__(LangSmithRuntimeConfig(tracing_enabled=False))
+        self.llm_inputs: list[dict[str, object]] = []
+
+    def llm_span(self, model, inputs):
+        self.llm_inputs.append(dict(inputs))
+        return super().llm_span(model, inputs)
+
+
 def openai_config(**updates: object) -> LLMConfig:
     return LLMConfig.model_validate(
         {
@@ -160,6 +171,114 @@ async def test_complete_parses_text_and_records_usage() -> None:
     assert token_metric.model == "gpt-4o-mini"
     assert token_metric.total_tokens == 11
     assert tracker.events[-1].metadata["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_openai_reasoning_model_sends_resolved_effort_without_temperature() -> (
+    None
+):
+    responses = RecordingResponses(response(text="Answer"))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(
+            model="gpt-5.6",
+            thinking_mode="enabled",
+            reasoning_effort="high",
+        ),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete(
+            [ChatMessage(role="user", content="Answer")],
+            agent_name="planner",
+        )
+
+    call = responses.create_calls[0]
+    assert call["reasoning"] == {"effort": "high"}
+    assert "temperature" not in call
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_call_uses_structured_agent_override() -> None:
+    parsed = Outline(title="Answer", points=[])
+    responses = RecordingResponses(response(parsed=parsed))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(
+            model="gpt-5.6",
+            thinking_mode="enabled",
+            reasoning_effort="low",
+            model_overrides={"critic": {"reasoning_effort": "max"}},
+        ),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="Review")],
+            Outline,
+            agent_name="critic",
+        )
+
+    assert responses.parse_calls[0]["model"] == "gpt-5.6"
+    assert responses.parse_calls[0]["reasoning"] == {"effort": "max"}
+    assert "temperature" not in responses.parse_calls[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "expected_reasoning"),
+    [("gpt-5.6", {"effort": "none"}), ("gpt-4o", None)],
+)
+async def test_openai_disabled_mode_sends_only_supported_controls(
+    model: str, expected_reasoning: dict[str, str] | None
+) -> None:
+    responses = RecordingResponses(response(text="Answer"))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(
+            model=model,
+            thinking_mode="disabled",
+            reasoning_effort="high",
+            temperature=0.25,
+        ),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete([ChatMessage(role="user", content="Answer")])
+
+    call = responses.create_calls[0]
+    assert call["temperature"] == 0.25
+    if expected_reasoning is None:
+        assert "reasoning" not in call
+    else:
+        assert call["reasoning"] == expected_reasoning
+
+
+@pytest.mark.asyncio
+async def test_openai_rejects_unsupported_effort_before_request() -> None:
+    responses = RecordingResponses(response(text="must not be consumed"))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(
+            model="gpt-5.5",
+            thinking_mode="enabled",
+            reasoning_effort="max",
+        ),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderConfigurationError, match="gpt-5.5"):
+            await provider.complete([ChatMessage(role="user", content="Answer")])
+
+    assert responses.create_calls == []
 
 
 def test_missing_api_key_fails_before_client_construction(
@@ -230,6 +349,53 @@ async def test_complete_structured_repairs_once_then_succeeds() -> None:
     token_metrics = [m for m in tracker.metrics if isinstance(m, TokenUsageMetric)]
     assert [metric.total_tokens for metric in token_metrics] == [7, 10]
     assert [metric.success for metric in token_metrics] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_openai_span_metadata_is_safe_and_capability_driven() -> None:
+    responses = RecordingResponses(response(text="Answer"))
+    tracker = CapturingTracker()
+    provider = OpenAIChatProvider(
+        openai_config(
+            model="gpt-5.6",
+            thinking_mode="enabled",
+            reasoning_effort="high",
+        ),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete([ChatMessage(role="user", content="Answer")])
+
+    serialized = json.dumps(tracker.llm_inputs[0], sort_keys=True)
+    assert '"provider": "openai"' in serialized
+    assert '"thinking_mode": "enabled"' in serialized
+    assert '"requested_reasoning_effort": "high"' in serialized
+    assert "Answer" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_repair_spans_record_attempt_and_schema() -> None:
+    repaired = Outline(title="Repaired", points=["Valid"])
+    responses = RecordingResponses(
+        response(text='{"title": 3}', parsed=None),
+        response(parsed=repaired),
+    )
+    tracker = CapturingTracker()
+    provider = OpenAIChatProvider(
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="Create an outline")], Outline
+        )
+
+    assert result == repaired
+    assert [span["attempt"] for span in tracker.llm_inputs] == [1, 2]
+    assert responses.parse_calls[0]["text_format"] is Outline
+    assert responses.parse_calls[1]["text_format"] is Outline
 
 
 @pytest.mark.asyncio
