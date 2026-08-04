@@ -409,3 +409,39 @@ async def test_run_research_publishes_typed_progress_in_order(
     )
     assert received[-1].event_type == "graph.session.completed"
     assert received == outcome.state.events
+
+
+@pytest.mark.asyncio
+async def test_resume_forwards_the_event_handler_and_streams_the_terminal_session(
+    config_file, tracker
+) -> None:
+    from deep_research.graph.orchestrator import build_checkpointer
+
+    builder = fake_builder(tracker, checkpointer=build_checkpointer(enabled=True))
+    shared: dict[str, object] = {}
+
+    async def remembering_builder(settings, *, session_id, **kwargs):
+        runtime = shared.get("runtime")
+        if runtime is None:
+            runtime = await builder(settings, session_id=session_id, **kwargs)
+            shared["runtime"] = runtime
+        return runtime
+
+    await run_research(
+        QUESTION,
+        session_id="session-1",
+        config_path=config_file,
+        runtime_builder=remembering_builder,
+    )
+
+    received = []
+    resumed = await run_research(
+        resume_session_id="session-1",
+        config_path=config_file,
+        runtime_builder=remembering_builder,
+        event_handler=received.append,
+    )
+
+    assert resumed.status == "completed"
+    assert received == resumed.state.events
+    assert received[-1].event_type == "graph.session.completed"

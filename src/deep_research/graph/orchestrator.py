@@ -215,6 +215,7 @@ async def _stream_graph_result(
     channel: ResearchGraphState | None,
     config: dict[str, Any],
     event_handler: ProgressHandler,
+    terminal_checkpoint: ResearchState | None = None,
 ) -> ResearchGraphState:
     """Run the graph in values mode, publishing only newly appended events.
 
@@ -223,6 +224,14 @@ async def _stream_graph_result(
     appended — nothing is published twice, and order within a snapshot is the
     order the graph recorded it. On a resume the first snapshot carries the
     checkpointed events, so a fresh handler still sees the whole session.
+
+    A terminal checkpoint has no pending nodes, so its resumed stream can be
+    empty and there is no first snapshot to carry the checkpointed events.
+    When the caller knows the resume hit such a checkpoint
+    (``terminal_checkpoint`` is not ``None``), the checkpoint itself is the
+    run's only result: its events are published once, in state order, and the
+    channel is returned unchanged. Every other empty stream is a defect and
+    keeps failing with the exact ``RuntimeError``.
     """
     latest: ResearchGraphState | None = None
     published = 0
@@ -245,7 +254,11 @@ async def _stream_graph_result(
         published = len(state.events)
 
     if latest is None:
-        raise RuntimeError("research graph produced no state")
+        if terminal_checkpoint is None:
+            raise RuntimeError("research graph produced no state")
+        for event in terminal_checkpoint.events:
+            event_handler(event)
+        return dump_state(terminal_checkpoint)
     return latest
 
 
@@ -258,6 +271,7 @@ async def _invoke(
     question: str,
     max_iterations: int,
     event_handler: ProgressHandler | None = None,
+    terminal_checkpoint: ResearchState | None = None,
 ) -> GraphRun:
     """Run or resume the compiled graph inside one session span.
 
@@ -266,7 +280,9 @@ async def _invoke(
     agent inside a node an active trace context — ``Tracker.agent_span``
     raises without one. With a handler, execution streams so each cumulative
     state event reaches it live; without one, the plain ``ainvoke`` path is
-    unchanged.
+    unchanged. ``terminal_checkpoint`` is the resume-only fallback for a
+    terminal checkpoint whose stream is legitimately empty (see
+    ``_stream_graph_result``).
     """
     async with tracker.session_span(session_id, question) as span:
         config = session_config(session_id, max_iterations=max_iterations)
@@ -278,6 +294,7 @@ async def _invoke(
                 channel=channel,
                 config=config,
                 event_handler=event_handler,
+                terminal_checkpoint=terminal_checkpoint,
             )
         final = load_state(result)
         status = graph_status(final)
@@ -384,7 +401,9 @@ async def resume_research_graph(
     different budget than the one the checkpoint records.
 
     With ``event_handler`` the resumed supersteps stream the same way a
-    fresh run does; without one, execution is the plain ``ainvoke`` path.
+    fresh run does, except that a terminal checkpoint — no pending nodes —
+    can yield an empty stream, and then the checkpoint itself is the run's
+    only result. Without one, execution is the plain ``ainvoke`` path.
     """
     config = session_config(
         session_id, max_iterations=max_iterations or DEFAULT_MAX_ITERATIONS
@@ -404,6 +423,11 @@ async def resume_research_graph(
 
     checkpointed = load_state(values)
     budget = checkpointed.max_iterations if max_iterations is None else max_iterations
+    # An empty ``next`` means the checkpoint is terminal: the graph has no
+    # pending nodes, so a resumed stream is legitimately empty and the
+    # checkpoint is the fallback result. Any other checkpoint must produce
+    # snapshots or fail exactly as before.
+    terminal_checkpoint = checkpointed if not snapshot.next else None
     return await _invoke(
         graph=graph,
         tracker=tracker,
@@ -412,4 +436,5 @@ async def resume_research_graph(
         question=checkpointed.original_question,
         max_iterations=budget,
         event_handler=event_handler,
+        terminal_checkpoint=terminal_checkpoint,
     )
