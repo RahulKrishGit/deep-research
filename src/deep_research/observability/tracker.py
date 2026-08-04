@@ -34,6 +34,7 @@ from deep_research.observability.context import (
 )
 from deep_research.observability.metrics import (
     AgentMetric,
+    ApiMetric,
     MemoryLayer,
     MemoryMetric,
     MetricRecord,
@@ -51,6 +52,7 @@ SpanKind: TypeAlias = Literal[
     "llm",
     "tool",
     "memory",
+    "api",
 ]
 RunType: TypeAlias = Literal["chain", "llm", "tool"]
 Redactor: TypeAlias = Callable[[Any], JsonValue]
@@ -282,6 +284,14 @@ class Tracker:
     def metrics(self) -> Sequence[MetricRecord]:
         return tuple(self._metrics)
 
+    def record_event(self, event: ResearchEvent) -> None:
+        """Record one typed event exactly as it was published.
+
+        A deep copy keeps a caller's later mutation from rewriting the
+        recorded history, mirroring how span events are stored.
+        """
+        self._events.append(event.model_copy(deep=True))
+
     def session_span(
         self,
         session_id: str,
@@ -313,6 +323,42 @@ class Tracker:
             run_type="chain",
             context=context,
             inputs={"question": question},
+            metric_factory=metric_factory,
+        )
+
+    def api_request_span(
+        self,
+        session_id: str,
+        route: str,
+        method: str,
+    ) -> AbstractAsyncContextManager[SpanHandle]:
+        context = TraceContext(session_id=session_id, route=route)
+        normalized_method = _validate_non_empty_string(method).upper()
+
+        def metric_factory(
+            ctx: TraceContext,
+            latency: float,
+            success: bool,
+            error_type: str | None,
+            trace_url: str | None,
+            handle: SpanHandle,
+        ) -> MetricRecord:
+            del trace_url, handle
+            return ApiMetric(
+                session_id=ctx.session_id,
+                route=route,
+                method=normalized_method,
+                latency_ms=latency,
+                success=success,
+                error_type=error_type,
+            )
+
+        return self._span(
+            kind="api",
+            name=f"api.{normalized_method.casefold()}",
+            run_type="chain",
+            context=context,
+            inputs={},
             metric_factory=metric_factory,
         )
 

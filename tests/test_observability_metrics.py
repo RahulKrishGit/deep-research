@@ -5,6 +5,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from deep_research.observability.metrics import (
     AgentMetric,
+    ApiMetric,
     MemoryMetric,
     MetricRecord,
     SessionMetric,
@@ -77,6 +78,19 @@ def test_token_usage_requires_consistent_total() -> None:
         )
 
 
+def test_api_metric_serializes_route_and_method() -> None:
+    metric = ApiMetric(
+        session_id="session-1",
+        route="/research",
+        method="POST",
+        latency_ms=2.5,
+        success=True,
+    )
+
+    assert metric.metric_type == "api"
+    assert metric.method == "POST"
+
+
 def test_metric_union_round_trips_each_record() -> None:
     metrics: list[MetricRecord] = [
         ToolMetric(
@@ -108,6 +122,13 @@ def test_metric_union_round_trips_each_record() -> None:
             top_k=5,
             result_count=3,
             latency_ms=12.5,
+            success=True,
+        ),
+        ApiMetric(
+            session_id="session-1",
+            route="/research",
+            method="POST",
+            latency_ms=2.5,
             success=True,
         ),
     ]

@@ -16,12 +16,14 @@ from deep_research.observability.context import (
 )
 from deep_research.observability.metrics import (
     AgentMetric,
+    ApiMetric,
     SessionMetric,
     TokenUsageMetric,
     ToolMetric,
 )
 from deep_research.observability.tracker import Tracker
 from deep_research.tools.base import ToolExecutionError
+from deep_research.utils.types import ResearchEvent
 
 
 class ForbiddenClientFactory:
@@ -32,6 +34,55 @@ class ForbiddenClientFactory:
 class ForbiddenTraceFactory:
     def __call__(self, *args: Any, **kwargs: Any) -> object:
         raise AssertionError("disabled tracing must not open a LangSmith trace")
+
+
+@pytest.mark.asyncio
+async def test_api_request_span_binds_session_and_route() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+
+    async with tracker.api_request_span(
+        "session-1",
+        "/research/{session_id}/status",
+        "GET",
+    ):
+        context = current_trace_context()
+        assert context is not None
+        assert context.session_id == "session-1"
+        assert context.route == "/research/{session_id}/status"
+
+    assert isinstance(tracker.metrics[-1], ApiMetric)
+    assert tracker.metrics[-1].method == "GET"
+    assert tracker.events[-1].metadata["route"] == (
+        "/research/{session_id}/status"
+    )
+
+
+@pytest.mark.asyncio
+async def test_api_request_span_normalizes_the_method() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+
+    async with tracker.api_request_span("session-1", "/research", "post"):
+        pass
+
+    assert tracker.metrics[-1].method == "POST"
+
+
+@pytest.mark.asyncio
+async def test_record_event_appends_a_deep_copy() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    event = ResearchEvent(
+        event_type="api.request.error",
+        source="api",
+        message="API request failed.",
+        metadata={"code": "session_not_found", "status_code": 404},
+    )
+
+    tracker.record_event(event)
+    event.metadata["status_code"] = 500
+
+    recorded = tracker.events[-1]
+    assert recorded.event_type == "api.request.error"
+    assert recorded.metadata["status_code"] == 404
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,7 @@ class TraceContext(BaseModel):
     )
 
     session_id: str = Field(min_length=1)
+    route: str | None = Field(default=None, min_length=1)
     agent_name: str | None = Field(default=None, min_length=1)
     tool_name: str | None = Field(default=None, min_length=1)
     iteration: int | None = Field(default=None, ge=0)
