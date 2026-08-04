@@ -125,9 +125,11 @@ class SessionStore:
         """Replay one session's events from the first, then live progress.
 
         A subscriber always sees the whole history from index zero — the
-        retained log, not a delta — and the iterator exits only after every
-        recorded event has been yielded and the session has reached a
-        terminal status. Unknown sessions raise ``KeyError`` immediately.
+        retained log, not a delta — and the iterator exits after every
+        recorded event has been yielded and either the session has reached a
+        terminal status or the session has been closed out by cancellation
+        (``finished_at`` set, task done) while its public status still reads
+        ``running``. Unknown sessions raise ``KeyError`` immediately.
         """
         session = self.require(session_id)
         yielded = 0
@@ -137,6 +139,11 @@ class SessionStore:
                 yielded += 1
                 yield event
             if session.status in TERMINAL_STATUSES:
+                return
+            task = session.task
+            if session.finished_at is not None and (
+                task is None or task.done()
+            ):
                 return
             await session.changed.wait()
             session.changed.clear()

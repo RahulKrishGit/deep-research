@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -371,6 +372,40 @@ async def test_close_cancels_running_tasks_without_failing_the_session() -> None
     assert session.status == "running"
     assert session.finished_at is not None
     assert session.current_agent is None
+
+
+@pytest.mark.asyncio
+async def test_iter_events_terminates_after_a_running_task_is_cancelled() -> None:
+    """A cancelled finished session must close a live event stream.
+
+    Cancellation has no public status value, so the session still reads
+    ``running``; the iterator must still drain every stored event and stop
+    instead of waiting on ``changed`` forever after ``close()``.
+    """
+    runner = GateRunner()
+    store = SessionStore(runner=runner)
+    start_session(store)
+    await runner.started.wait()
+    session = store.require("session-1")
+
+    received: list[ResearchEvent] = []
+
+    async def consume() -> None:
+        async for event in store.iter_events("session-1"):
+            received.append(event)
+
+    consumer = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    await store.close()
+    await asyncio.wait_for(consumer, timeout=5)
+
+    assert session.status == "running"
+    assert session.finished_at is not None
+    assert session.task is not None
+    assert session.task.cancelled()
+    assert received == session.events
 
 
 @pytest.mark.asyncio
