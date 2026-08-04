@@ -54,6 +54,13 @@ class AgentMetric(OutcomeMetric):
         return self
 
 
+class ApiMetric(OutcomeMetric):
+    metric_type: Literal["api"] = "api"
+    session_id: str = Field(min_length=1)
+    route: str = Field(min_length=1)
+    method: str = Field(min_length=1)
+
+
 class ToolMetric(OutcomeMetric):
     metric_type: Literal["tool"] = "tool"
     session_id: str = Field(min_length=1)
@@ -97,5 +104,10 @@ class MemoryMetric(OutcomeMetric):
 
 
 MetricRecord: TypeAlias = (
-    SessionMetric | AgentMetric | ToolMetric | TokenUsageMetric | MemoryMetric
+    SessionMetric
+    | AgentMetric
+    | ApiMetric
+    | ToolMetric
+    | TokenUsageMetric
+    | MemoryMetric
 )

@@ -12,6 +12,7 @@ from deep_research.utils.config import (
     ConfigSettings,
     LLMConfig,
     MissingSecretsError,
+    apply_config_overrides,
     load_config,
 )
 
@@ -535,3 +536,44 @@ def test_a_zero_iteration_budget_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         load_config(str(path))
+
+
+def test_request_overrides_deep_merge_after_environment(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_MAX_ITERATIONS", "4")
+
+    settings = load_config(
+        str(config_path),
+        overrides={
+            "graph": {"max_iterations": 2},
+            "llm": {"model_overrides": {"critic": "gpt-4.1-mini"}},
+        },
+    )
+
+    assert settings.graph.max_iterations == 2
+    assert settings.llm.model == "gpt-4o"
+    assert settings.llm.model_overrides == {
+        "planner": "gpt-4o-mini",
+        "critic": "gpt-4.1-mini",
+    }
+
+
+def test_unknown_config_override_is_rejected(config_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"graph\.iteration_limit"):
+        load_config(
+            str(config_path),
+            overrides={"graph": {"iteration_limit": 5}},
+        )
+
+
+def test_config_override_does_not_mutate_the_original_settings() -> None:
+    original = ConfigSettings()
+    overridden = apply_config_overrides(
+        original,
+        {"output": {"directory": "api-output/"}},
+    )
+
+    assert original.output.directory == "output/"
+    assert overridden.output.directory == "api-output/"

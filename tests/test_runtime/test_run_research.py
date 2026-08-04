@@ -16,6 +16,7 @@ from deep_research.main import (
 from deep_research.runtime.assembly import ResearchRuntime
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.outcome import ResearchOutcome
+from deep_research.utils.types import ResearchEvent
 from tests.graph_fakes import FakeAgent, fake_critique, fake_research_agents
 
 QUESTION = "How mature is quantum error correction?"
@@ -361,3 +362,86 @@ def test_run_research_sync_drives_the_async_entry_point(
     )
 
     assert outcome.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_run_research_applies_config_overrides(
+    config_file,
+    tracker,
+) -> None:
+    observed = {}
+
+    async def builder(settings, *, session_id, **_ignored):
+        observed["directory"] = settings.output.directory
+        return await fake_builder(tracker)(settings, session_id=session_id)
+
+    await run_research(
+        QUESTION,
+        config_path=config_file,
+        config_overrides={"output": {"directory": "request-output/"}},
+        runtime_builder=builder,
+    )
+
+    assert observed == {"directory": "request-output/"}
+
+
+@pytest.mark.asyncio
+async def test_run_research_publishes_typed_progress_in_order(
+    config_file,
+    tracker,
+) -> None:
+    received = []
+
+    outcome = await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=fake_builder(tracker),
+        event_handler=received.append,
+    )
+
+    assert received
+    assert all(isinstance(event, ResearchEvent) for event in received)
+    assert received[0].event_type == "graph.session.started"
+    assert any(
+        event.event_type == "graph.node.started"
+        and event.metadata["node"] == "planner"
+        for event in received
+    )
+    assert received[-1].event_type == "graph.session.completed"
+    assert received == outcome.state.events
+
+
+@pytest.mark.asyncio
+async def test_resume_forwards_the_event_handler_and_streams_the_terminal_session(
+    config_file, tracker
+) -> None:
+    from deep_research.graph.orchestrator import build_checkpointer
+
+    builder = fake_builder(tracker, checkpointer=build_checkpointer(enabled=True))
+    shared: dict[str, object] = {}
+
+    async def remembering_builder(settings, *, session_id, **kwargs):
+        runtime = shared.get("runtime")
+        if runtime is None:
+            runtime = await builder(settings, session_id=session_id, **kwargs)
+            shared["runtime"] = runtime
+        return runtime
+
+    await run_research(
+        QUESTION,
+        session_id="session-1",
+        config_path=config_file,
+        runtime_builder=remembering_builder,
+    )
+
+    received = []
+    resumed = await run_research(
+        resume_session_id="session-1",
+        config_path=config_file,
+        runtime_builder=remembering_builder,
+        event_handler=received.append,
+    )
+
+    assert resumed.status == "completed"
+    assert received == resumed.state.events
+    assert received[-1].event_type == "graph.session.completed"

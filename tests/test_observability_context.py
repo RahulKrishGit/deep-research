@@ -69,6 +69,17 @@ def test_nested_trace_context_restores_parent() -> None:
     assert current_trace_context() is None
 
 
+def test_trace_context_includes_api_route_metadata() -> None:
+    context = TraceContext(
+        session_id="session-1",
+        route="/research/{session_id}/status",
+    )
+
+    assert build_trace_metadata(context)["route"] == (
+        "/research/{session_id}/status"
+    )
+
+
 def test_build_trace_metadata_filters_none_and_protects_context_keys() -> None:
     context = TraceContext(session_id="session-1", agent_name="planner", iteration=2)
     metadata = build_trace_metadata(

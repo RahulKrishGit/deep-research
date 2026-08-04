@@ -10,6 +10,7 @@ from deep_research.observability.context import (
 )
 from deep_research.observability.metrics import (
     AgentMetric,
+    ApiMetric,
     MemoryLayer,
     MemoryMetric,
     MetricRecord,
@@ -21,6 +22,7 @@ from deep_research.observability.tracker import SpanHandle, TokenUsage, Tracker
 
 __all__ = [
     "AgentMetric",
+    "ApiMetric",
     "LangSmithRuntimeConfig",
     "MemoryLayer",
     "MemoryMetric",

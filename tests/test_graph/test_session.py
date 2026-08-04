@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,7 +17,12 @@ from deep_research.graph.orchestrator import (
     resume_research_graph,
     run_research_graph,
 )
-from deep_research.graph.state import DEFAULT_MAX_ITERATIONS
+from deep_research.graph.state import (
+    DEFAULT_MAX_ITERATIONS,
+    PLANNER_NODE,
+    ResearchGraphState,
+    dump_state,
+)
 from deep_research.observability import AgentMetric, Tracker
 from deep_research.observability.context import LangSmithRuntimeConfig
 from deep_research.utils.config import GraphConfig
@@ -25,6 +32,7 @@ from tests.graph_fakes import (
     fake_critique,
     fake_finding,
     fake_research_agents,
+    fake_research_state,
 )
 from tests.test_observability_tracker import RecordingTraceFactory
 
@@ -46,6 +54,42 @@ class SpanningFakeAgent(FakeAgent):
     async def run(self, state: ResearchState) -> AgentRun[Any]:
         async with self._tracker.agent_span(self.name):
             return await super().run(state)
+
+
+class EmptyValuesGraph:
+    """A compiled-graph stand-in whose values stream is always empty.
+
+    LangGraph can legally yield no snapshots when a resumed thread has no
+    pending nodes, so the empty-stream boundary has to be pinned by tests:
+    a terminal checkpoint is the only empty stream a resume may fall back
+    to. ``aget_state`` serves the scripted snapshot each test supplies.
+    """
+
+    def __init__(self, *, snapshot: Any | None = None) -> None:
+        self._snapshot = snapshot
+
+    async def astream(
+        self,
+        channel: ResearchGraphState | None,
+        config: dict[str, Any],
+        *,
+        stream_mode: str | None = None,
+    ) -> AsyncIterator[ResearchGraphState]:
+        """Yield nothing, ever: a stream with zero snapshots."""
+        return
+        yield  # pragma: no cover
+
+    async def ainvoke(
+        self,
+        channel: ResearchGraphState | None,
+        config: dict[str, Any],
+    ) -> ResearchGraphState:
+        raise AssertionError("the empty-stream graph must never be invoked")
+
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        if self._snapshot is None:
+            raise ValueError("a resumable graph needs a checkpointer")
+        return self._snapshot
 
 
 def _event_types(state: ResearchState) -> list[str]:
@@ -329,6 +373,176 @@ async def test_resuming_without_a_checkpointer_is_refused(
         await resume_research_graph(
             graph=graph, tracker=tracker, session_id="session-1"
         )
+
+
+@pytest.mark.asyncio
+async def test_a_completed_checkpoint_resumes_with_a_handler_without_rerunning_nodes(
+    tracker: Tracker,
+) -> None:
+    agents = fake_research_agents()
+    graph = compile_research_graph(
+        agents, checkpointer=build_checkpointer(enabled=True)
+    )
+    first = await run_research_graph(
+        graph=graph,
+        tracker=tracker,
+        session_id="session-1",
+        question=QUESTION,
+    )
+    call_counts = [len(agents.planner.calls), len(agents.researcher.calls)]
+
+    received = []
+    resumed = await resume_research_graph(
+        graph=graph,
+        tracker=tracker,
+        session_id="session-1",
+        event_handler=received.append,
+    )
+
+    assert resumed.status == "completed"
+    assert resumed.state.report == first.state.report
+    # A finished session replays its checkpoint; no agent runs again.
+    assert [len(agents.planner.calls), len(agents.researcher.calls)] == call_counts
+    # Every checkpointed event is delivered once, in state order, and the
+    # runner's single completion event closes the stream.
+    assert received == resumed.state.events
+    assert received[-1].event_type == "graph.session.completed"
+    assert (
+        sum(
+            event.event_type == "graph.session.completed"
+            for event in received
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_zero_snapshot_terminal_resume_publishes_the_checkpoint(
+    tracker: Tracker,
+) -> None:
+    """The acceptance case: an empty values stream on a terminal checkpoint.
+
+    A resumed thread with no pending nodes can yield zero snapshots. The
+    checkpoint itself is then the run's only result: it must be returned
+    and its events published exactly once, in state order, with one
+    completion event last — never a RuntimeError and never a node rerun.
+    """
+    agents = fake_research_agents()
+    graph = compile_research_graph(
+        agents, checkpointer=build_checkpointer(enabled=True)
+    )
+    first = await run_research_graph(
+        graph=graph,
+        tracker=tracker,
+        session_id="session-1",
+        question=QUESTION,
+    )
+    call_counts = [len(agents.planner.calls), len(agents.researcher.calls)]
+    # The durable checkpoint holds everything except the runner-appended
+    # completion event, and has no pending nodes.
+    checkpointed = first.state.model_copy(
+        update={"events": first.state.events[:-1]}
+    )
+    empty = EmptyValuesGraph(
+        snapshot=SimpleNamespace(values=dump_state(checkpointed), next=())
+    )
+
+    received = []
+    resumed = await resume_research_graph(
+        graph=empty,
+        tracker=tracker,
+        session_id="session-1",
+        event_handler=received.append,
+    )
+
+    assert [len(agents.planner.calls), len(agents.researcher.calls)] == call_counts
+    assert resumed.status == "completed"
+    assert resumed.state.report == first.state.report
+    assert received == resumed.state.events
+    assert received[-1].event_type == "graph.session.completed"
+    assert (
+        sum(
+            event.event_type == "graph.session.completed"
+            for event in received
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_empty_values_stream_on_a_fresh_run_is_still_an_error(
+    tracker: Tracker,
+) -> None:
+    with pytest.raises(
+        RuntimeError, match="research graph produced no state"
+    ):
+        await run_research_graph(
+            graph=EmptyValuesGraph(),
+            tracker=tracker,
+            session_id="session-1",
+            question=QUESTION,
+            event_handler=lambda event: None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_empty_values_stream_on_a_nonterminal_resume_is_still_an_error(
+    tracker: Tracker,
+) -> None:
+    checkpointed = SimpleNamespace(
+        values=dump_state(fake_research_state(max_iterations=2)),
+        next=(PLANNER_NODE,),
+    )
+
+    with pytest.raises(
+        RuntimeError, match="research graph produced no state"
+    ):
+        await resume_research_graph(
+            graph=EmptyValuesGraph(snapshot=checkpointed),
+            tracker=tracker,
+            session_id="session-1",
+            event_handler=lambda event: None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_unfinished_resume_streams_events_in_order_without_duplicates(
+    tracker: Tracker,
+) -> None:
+    agents = fake_research_agents(
+        researcher=FakeAgent(
+            "researcher",
+            [RuntimeError("crash"), {"raw_findings": [fake_finding()]}],
+        ),
+        critic=FakeAgent(
+            "critic", [{"critique": fake_critique(should_continue=True, score=3)}]
+        ),
+    )
+    graph = compile_research_graph(
+        agents, checkpointer=build_checkpointer(enabled=True)
+    )
+    with pytest.raises(RuntimeError, match="crash"):
+        await run_research_graph(
+            graph=graph,
+            tracker=tracker,
+            session_id="session-1",
+            question=QUESTION,
+            max_iterations=6,
+        )
+
+    received = []
+    resumed = await resume_research_graph(
+        graph=graph,
+        tracker=tracker,
+        session_id="session-1",
+        event_handler=received.append,
+    )
+
+    assert resumed.status == "max_iterations"
+    # The crashed pass re-runs on resume, exactly as without a handler.
+    assert len(agents.researcher.calls) == 8
+    assert received == resumed.state.events
+    assert received[-1].event_type == "graph.session.completed"
 
 
 @pytest.mark.asyncio

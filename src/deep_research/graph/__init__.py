@@ -33,6 +33,7 @@ from deep_research.graph.nodes import (
 from deep_research.graph.orchestrator import (
     AGENT_NODE_ORDER,
     GraphRun,
+    ProgressHandler,
     ResearchAgents,
     build_checkpointer,
     build_research_graph,
@@ -90,6 +91,7 @@ __all__ = [
     "GraphNode",
     "GraphResumeError",
     "GraphRun",
+    "ProgressHandler",
     "ResearchAgent",
     "ResearchAgents",
     "ResearchGraphState",
