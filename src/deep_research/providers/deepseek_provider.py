@@ -9,12 +9,13 @@ capability-driven reasoning and temperature settings.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Sequence
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TypeVar
 
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers.capabilities import resolve_request_settings
@@ -26,8 +27,11 @@ from deep_research.providers.contracts import (
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
+    StructuredOutputError,
 )
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
+
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
@@ -92,6 +96,56 @@ def _translated_messages(messages: Sequence[ChatMessage]) -> list[dict[str, str]
         }
         for message in messages
     ]
+
+
+def _json_instruction(schema: type[BaseModel]) -> ChatMessage:
+    """Build the deterministic JSON Schema system instruction for one schema.
+
+    The canonical schema is emitted with sorted keys and no whitespace so
+    identical schemas always produce byte-identical instructions.
+    """
+    schema_json = json.dumps(
+        schema.model_json_schema(), sort_keys=True, separators=(",", ":")
+    )
+    content = (
+        "Return only one JSON object that validates against this JSON Schema. "
+        "Do not add Markdown or explanatory text. JSON Schema:\n"
+        f"{schema_json}"
+    )
+    return ChatMessage(role="system", content=content)
+
+
+class _StructuredValidationFailure(RuntimeError):
+    """Carry validation diagnostics for the repair prompt only.
+
+    The message names the schema but never the provider output, and the
+    summary is sanitized to pydantic error locations and messages, which do
+    not embed the invalid text.
+    """
+
+    def __init__(self, schema_name: str, summary: str) -> None:
+        super().__init__(f"DeepSeek output failed {schema_name} validation")
+        self.summary = summary
+
+
+def _validation_summary(error: BaseException, *, limit: int = 1000) -> str:
+    """Format validation diagnostics without any provider output.
+
+    ``str(ValidationError)`` embeds input values, so the summary is built
+    from the structured error items instead and capped at ``limit``
+    characters for a bounded repair prompt.
+    """
+    errors = getattr(error, "errors", None)
+    if callable(errors):
+        lines: list[str] = []
+        for item in errors():
+            location = ".".join(str(part) for part in item.get("loc", ()))
+            message = item.get("msg", "")
+            lines.append(f"{location}: {message}" if location else message)
+        summary = "; ".join(lines)
+    else:
+        summary = str(error)
+    return summary[:limit]
 
 
 def _usage_from_response(response: Any) -> TokenUsage:
@@ -281,3 +335,102 @@ class DeepSeekChatProvider:
             # span context manager above finalizes telemetry on every path;
             # this clause only makes the typed-error contract explicit.
             raise
+
+    async def _structured_attempt(
+        self,
+        messages: list[dict[str, str]],
+        schema: type[SchemaT],
+        *,
+        model: str,
+        request: dict[str, object],
+        metadata: dict[str, JsonValue],
+        attempt: int,
+    ) -> SchemaT:
+        async with self._tracker.llm_span(
+            model,
+            {
+                **metadata,
+                "operation": "structured_output",
+                "attempt": attempt,
+                "message_count": len(messages),
+            },
+        ) as span:
+            _sdk = _openai_errors()
+            try:
+                response = await self._client.chat.completions.create(
+                    **{
+                        **request,
+                        "messages": messages,
+                        "response_format": {"type": "json_object"},
+                    }
+                )
+            except (
+                _sdk.APITimeoutError,
+                _sdk.RateLimitError,
+                _sdk.APIConnectionError,
+                _sdk.APIStatusError,
+            ) as error:
+                _raise_deepseek_error(error)
+            except _sdk.OpenAIError as error:
+                raise ProviderResponseError(
+                    "DeepSeek structured output request failed"
+                ) from error
+            text = _choice_text(response, allow_empty=True)
+            usage = _usage_from_response(response)
+            _set_span_result(span, response, usage)
+            try:
+                return schema.model_validate_json(text)
+            except (json.JSONDecodeError, ValidationError) as error:
+                raise _StructuredValidationFailure(
+                    schema.__name__, _validation_summary(error)
+                ) from error
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[SchemaT],
+        *,
+        agent_name: str | None = None,
+    ) -> SchemaT:
+        if not messages:
+            raise ValueError("messages must contain at least one item")
+        effective, request, metadata = self._request_options(agent_name)
+        instruction = _json_instruction(schema)
+        current_messages = [
+            *_translated_messages(messages),
+            {"role": "system", "content": instruction.content},
+        ]
+
+        for attempt in (1, 2):
+            try:
+                return await self._structured_attempt(
+                    current_messages,
+                    schema,
+                    model=effective.model,
+                    request=request,
+                    metadata=metadata,
+                    attempt=attempt,
+                )
+            except _StructuredValidationFailure as error:
+                if attempt == 2:
+                    raise StructuredOutputError(
+                        f"DeepSeek output failed {schema.__name__} validation "
+                        "after one repair attempt"
+                    ) from error
+                schema_json = json.dumps(
+                    schema.model_json_schema(), sort_keys=True, separators=(",", ":")
+                )
+                repair = (
+                    f"The previous JSON response failed {schema.__name__} "
+                    "validation. Return only one JSON object that validates "
+                    "against the supplied JSON Schema. Do not add Markdown or "
+                    "explanatory text. "
+                    f"Validation summary: {error.summary}\n"
+                    f"JSON Schema:\n{schema_json}"
+                )
+                current_messages = [
+                    *current_messages,
+                    {"role": "system", "content": repair},
+                ]
+
+        raise AssertionError("structured output attempt loop did not return")

@@ -14,6 +14,7 @@ from openai import (
     OpenAIError,
     RateLimitError,
 )
+from pydantic import BaseModel
 
 import deep_research.providers.deepseek_provider as deepseek_module
 from deep_research.observability import (
@@ -29,6 +30,7 @@ from deep_research.providers.deepseek_provider import (
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
+    StructuredOutputError,
 )
 from deep_research.utils.config import LLMConfig
 
@@ -108,6 +110,11 @@ def deepseek_config(**updates: object) -> LLMConfig:
             **updates,
         }
     )
+
+
+class TinyAnswer(BaseModel):
+    answer: str
+    confidence: int
 
 
 def test_deepseek_requires_key_without_injected_client(monkeypatch) -> None:
@@ -591,3 +598,242 @@ async def test_deepseek_plain_failure_records_typed_metric_without_leak() -> Non
     assert "hidden chain of thought" not in serialized
     assert "question" not in serialized
     assert str(caught.value) == "DeepSeek response contained malformed content"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_output_prompts_json_and_validates_locally() -> None:
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert result == TinyAnswer(answer="yes", confidence=9)
+    call = completions.calls[0]
+    assert call["response_format"] == {"type": "json_object"}
+    assert call["messages"][-1]["role"] == "system"
+    instruction = call["messages"][-1]["content"]
+    assert "JSON" in instruction
+    assert json.dumps(
+        TinyAnswer.model_json_schema(), sort_keys=True, separators=(",", ":")
+    ) in instruction
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_repairs_once_then_succeeds() -> None:
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":3}'),
+        chat_response(text='{"answer":"yes","confidence":8}'),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert result.confidence == 8
+    assert len(completions.calls) == 2
+    assert (
+        "previous JSON response failed TinyAnswer validation"
+        in completions.calls[1]["messages"][-1]["content"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["", "not-json", '{"answer":3}'])
+async def test_deepseek_structured_raises_after_exactly_one_failed_repair(
+    first: str,
+) -> None:
+    completions = RecordingCompletions(
+        chat_response(text=first), chat_response(text="still invalid")
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(StructuredOutputError, match="TinyAnswer") as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    assert len(completions.calls) == 2
+    assert str(caught.value) == (
+        "DeepSeek output failed TinyAnswer validation after one repair attempt"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [
+        (
+            APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+            ProviderTimeoutError,
+        ),
+        (
+            RateLimitError(
+                "limited",
+                response=httpx.Response(
+                    429, request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+                ),
+                body=None,
+            ),
+            ProviderRateLimitError,
+        ),
+        (
+            APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+            ProviderResponseError,
+        ),
+        (
+            APIStatusError(
+                "bad",
+                response=httpx.Response(
+                    401, request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+                ),
+                body=None,
+            ),
+            ProviderResponseError,
+        ),
+    ],
+)
+async def test_deepseek_structured_sdk_errors_are_not_repaired(
+    raised, expected
+) -> None:
+    completions = RecordingCompletions(raised)
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(expected):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    assert len(completions.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "finish_reason", ["length", "content_filter", "insufficient_system_resource"]
+)
+async def test_deepseek_structured_terminal_finish_reasons_are_not_repaired(
+    finish_reason: str,
+) -> None:
+    completions = RecordingCompletions(
+        chat_response(text="partial output", finish_reason=finish_reason)
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    assert len(completions.calls) == 1
+    assert "partial output" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_telemetry_is_safe_and_attempted() -> None:
+    completions = RecordingCompletions(
+        chat_response(
+            text='{"answer":3}',
+            reasoning_content="hidden chain of thought",
+        ),
+        chat_response(
+            text='{"answer":"yes","confidence":8}',
+            reasoning_content="hidden chain of thought",
+        ),
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            agent_name="planner",
+        )
+
+    assert result == TinyAnswer(answer="yes", confidence=8)
+    metrics = [m for m in tracker.metrics if isinstance(m, TokenUsageMetric)]
+    assert [metric.success for metric in metrics] == [False, True]
+    assert tracker.llm_inputs == [
+        {
+            "provider": "deepseek",
+            "thinking_mode": "enabled",
+            "requested_reasoning_effort": "high",
+            "effective_reasoning_effort": "high",
+            "agent_name": "planner",
+            "operation": "structured_output",
+            "attempt": 1,
+            "message_count": 2,
+        },
+        {
+            "provider": "deepseek",
+            "thinking_mode": "enabled",
+            "requested_reasoning_effort": "high",
+            "effective_reasoning_effort": "high",
+            "agent_name": "planner",
+            "operation": "structured_output",
+            "attempt": 2,
+            "message_count": 3,
+        },
+    ]
+
+    exhausted = RecordingCompletions(
+        chat_response(text="not-json"),
+        chat_response(text="still invalid"),
+    )
+    failed_tracker = local_tracker()
+    failed_provider = DeepSeekChatProvider(
+        deepseek_config(), failed_tracker, client=FakeDeepSeekClient(exhausted)
+    )
+    async with failed_tracker.session_span("session-2", "question"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await failed_provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    serialized = json.dumps(
+        {
+            "llm_inputs": tracker.llm_inputs,
+            "events": [event.model_dump(mode="json") for event in tracker.events],
+            "errors": [error.model_dump(mode="json") for error in tracker.errors],
+            "metrics": [
+                metric.model_dump(mode="json") for metric in tracker.metrics
+            ],
+            "public_error": str(caught.value),
+        },
+        sort_keys=True,
+    )
+    for sensitive in (
+        "deepseek-secret",
+        "decide",
+        '{"answer":3}',
+        '{"answer":"yes","confidence":8}',
+        "hidden chain of thought",
+        "previous JSON response failed",
+    ):
+        assert sensitive not in serialized
