@@ -25,9 +25,15 @@ from deep_research.providers.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     OpenAIEmbeddingProvider,
 )
+from deep_research.providers.factory import (
+    ChatAdapter,
+    build_chat_provider,
+    validate_agent_model_configs,
+)
 from deep_research.providers.openai_provider import OpenAIChatProvider
 
 __all__ = [
+    "ChatAdapter",
     "ChatMessage",
     "ChatResult",
     "DEEPSEEK_BASE_URL",
@@ -44,6 +50,8 @@ __all__ = [
     "ProviderTimeoutError",
     "ResolvedRequestSettings",
     "StructuredOutputError",
+    "build_chat_provider",
     "capability_for",
     "resolve_request_settings",
+    "validate_agent_model_configs",
 ]

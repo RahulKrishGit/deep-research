@@ -10,6 +10,7 @@ import deep_research.runtime.assembly as assembly
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
+from deep_research.providers import validate_agent_model_configs
 from deep_research.runtime.assembly import (
     AGENT_NAMES,
     ResearchRuntime,
@@ -19,7 +20,7 @@ from deep_research.runtime.assembly import (
 )
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
-from deep_research.utils.config import ConfigSettings
+from deep_research.utils.config import ConfigSettings, LLMConfig
 from tests.memory_fakes import FakeCollection, FakeEmbeddings
 from tests.research_fakes import FakeSearchClient, search_response
 
@@ -287,6 +288,44 @@ def test_build_agents_reports_a_missing_tool_as_a_configuration_failure(
     assert caught.value.reason == "agents_misconfigured"
 
 
+def test_validate_agent_models_resolves_all_six_before_runtime() -> None:
+    config = LLMConfig(
+        model_overrides={
+            "critic": {"model": "deepseek-v4-pro", "reasoning_effort": "max"}
+        }
+    )
+
+    resolved = validate_agent_model_configs(config, AGENT_NAMES)
+
+    assert tuple(resolved) == AGENT_NAMES
+    assert resolved["planner"].effective.model == "deepseek-v4-flash"
+    assert resolved["critic"].effective.model == "deepseek-v4-pro"
+    assert resolved["critic"].reasoning_effort == "max"
+
+
+@pytest.mark.asyncio
+async def test_bad_critic_override_fails_before_any_runtime_collaborator(
+    tracker, monkeypatch
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        assembly,
+        "OpenAIEmbeddingProvider",
+        lambda **_kwargs: calls.append("embeddings"),
+    )
+    settings = ConfigSettings.model_validate(
+        {"llm": {"model_overrides": {"critic": {"reasoning_effort": "medium"}}}}
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(settings, session_id="session-1", tracker=tracker)
+
+    assert caught.value.reason == "provider_unconfigured"
+    assert "deepseek" in str(caught.value)
+    assert "critic" in str(caught.value)
+    assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_build_runtime_compiles_a_graph_from_injected_collaborators(
     tracker, tmp_path
@@ -404,12 +443,109 @@ async def test_build_runtime_honours_the_checkpointing_setting(
 
 
 @pytest.mark.asyncio
+async def test_deepseek_chat_still_builds_openai_embeddings(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    built: list[tuple[str, object]] = []
+    provider = RecordingProvider()
+    embeddings = FakeEmbeddings()
+    monkeypatch.setattr(
+        assembly,
+        "build_chat_provider",
+        lambda config, received_tracker: (
+            built.append((config.provider, received_tracker)) or provider
+        ),
+    )
+    monkeypatch.setattr(
+        assembly,
+        "OpenAIEmbeddingProvider",
+        lambda *, model: built.append(("embedding", model)) or embeddings,
+    )
+    monkeypatch.setattr(
+        assembly.LongTermMemory,
+        "from_config",
+        lambda config, *, embeddings, tracker: LongTermMemory(
+            collection=FakeCollection(), embeddings=embeddings
+        ),
+    )
+
+    await build_runtime(
+        ConfigSettings.model_validate(
+            {"output": {"directory": str(tmp_path)}}
+        ),
+        session_id="session-1",
+        tracker=tracker,
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+        search_client=FakeSearchClient(),
+    )
+
+    assert built[0] == ("embedding", "text-embedding-3-small")
+    assert built[1] == ("deepseek", tracker)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_key_failure_never_falls_back_to_openai_chat(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """A DeepSeek construction failure stays failed: no cross-provider fallback."""
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    factory_calls: list[str] = []
+    real_build = assembly.build_chat_provider
+
+    def recording_build(config, received_tracker):
+        factory_calls.append(config.provider)
+        return real_build(config, received_tracker)
+
+    monkeypatch.setattr(assembly, "build_chat_provider", recording_build)
+
+    import deep_research.providers.factory as factory_module
+
+    openai_constructed: list[object] = []
+
+    class RecordingOpenAIChatProvider:
+        def __init__(self, *_args, **_kwargs):
+            openai_constructed.append("openai")
+
+    monkeypatch.setattr(
+        factory_module, "OpenAIChatProvider", RecordingOpenAIChatProvider
+    )
+
+    settings = ConfigSettings.model_validate(
+        {"output": {"directory": str(tmp_path)}}
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(
+            settings,
+            session_id="session-1",
+            tracker=tracker,
+            long_term=LongTermMemory(
+                collection=FakeCollection(), embeddings=FakeEmbeddings()
+            ),
+            procedural=ProceduralMemory(tmp_path / "strategies.json"),
+            search_client=FakeSearchClient(),
+        )
+
+    assert caught.value.reason == "provider_unconfigured"
+    assert factory_calls == ["deepseek"]
+    assert openai_constructed == []
+
+
+@pytest.mark.asyncio
 async def test_build_runtime_reports_a_missing_openai_key_cleanly(
     tracker, tmp_path, monkeypatch
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     settings = ConfigSettings.model_validate(
-        {"output": {"directory": str(tmp_path)}}
+        {
+            "llm": {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "thinking_mode": "disabled",
+                "reasoning_effort": "none",
+            },
+            "output": {"directory": str(tmp_path)},
+        }
     )
 
     with pytest.raises(ResearchConfigurationError) as caught:

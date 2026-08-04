@@ -112,9 +112,11 @@ def test_memory_contracts_import_from_package() -> None:
 
 def test_provider_public_api_imports() -> None:
     from deep_research.providers import (
+        DEEPSEEK_BASE_URL,
         DEFAULT_EMBEDDING_MODEL,
         ChatMessage,
         ChatResult,
+        DeepSeekChatProvider,
         OpenAIChatProvider,
         OpenAIEmbeddingProvider,
         OpenAIProviderError,
@@ -124,13 +126,23 @@ def test_provider_public_api_imports() -> None:
         ProviderResponseError,
         ProviderTimeoutError,
         StructuredOutputError,
+        build_chat_provider,
+        capability_for,
+        resolve_request_settings,
+        validate_agent_model_configs,
     )
 
     assert OpenAIChatProvider.__name__ == "OpenAIChatProvider"
     assert OpenAIEmbeddingProvider.__name__ == "OpenAIEmbeddingProvider"
+    assert DeepSeekChatProvider.__name__ == "DeepSeekChatProvider"
     assert ChatMessage.__name__ == "ChatMessage"
     assert ChatResult.__name__ == "ChatResult"
+    assert DEEPSEEK_BASE_URL.startswith("https://")
     assert DEFAULT_EMBEDDING_MODEL
+    assert build_chat_provider.__name__ == "build_chat_provider"
+    assert capability_for.__name__ == "capability_for"
+    assert resolve_request_settings.__name__ == "resolve_request_settings"
+    assert validate_agent_model_configs.__name__ == "validate_agent_model_configs"
     assert OpenAIProviderError is ProviderError
     assert issubclass(ProviderConfigurationError, OpenAIProviderError)
     assert issubclass(ProviderRateLimitError, OpenAIProviderError)

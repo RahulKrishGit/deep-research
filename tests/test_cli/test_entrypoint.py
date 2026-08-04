@@ -214,7 +214,7 @@ def test_a_configuration_failure_prints_its_hint_and_exits_one() -> None:
     assert code == EXIT_CONFIGURATION_ERROR
     printed = stream.getvalue()
     assert "error: Missing required environment variables" in printed
-    assert "hint: Set OPENAI_API_KEY" in printed
+    assert "hint: Set the selected chat provider's API key" in printed
     assert "Traceback" not in printed
 
 
