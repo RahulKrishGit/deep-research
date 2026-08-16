@@ -8,7 +8,7 @@ from typing import Any, Literal, TypeAlias
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 class MissingSecretsError(ValueError):
@@ -143,6 +143,69 @@ class OutputConfig(BaseModel):
     default_format: str = "markdown"
 
 
+EVALUATION_AGENT_KEYS = (
+    "planner",
+    "researcher",
+    "source_evaluator",
+    "fact_checker",
+    "synthesizer",
+    "critic",
+)
+
+_DEFAULT_TARGET_EFFORTS: dict[str, ReasoningEffort] = {
+    "planner": "medium",
+    "researcher": "low",
+    "source_evaluator": "low",
+    "fact_checker": "medium",
+    "synthesizer": "medium",
+    "critic": "medium",
+}
+
+
+class EvaluationConfig(BaseModel):
+    """Non-secret defaults for the individual-agent evaluation harness."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    controlled_repetitions: int = Field(default=3, ge=1)
+    controlled_case_average_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    controlled_repetition_floor: float = Field(default=0.65, ge=0.0, le=1.0)
+    live_repetitions: int = Field(default=1, ge=1)
+    live_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    target_model: str = Field(default="gpt-5.6-luna", min_length=1)
+    target_reasoning_effort: ReasoningEffort = "medium"
+    target_reasoning_effort_overrides: dict[str, ReasoningEffort] = Field(
+        default_factory=lambda: dict(_DEFAULT_TARGET_EFFORTS)
+    )
+    judge_model: str = Field(default="gpt-5.6-luna", min_length=1)
+    judge_reasoning_effort: ReasoningEffort = "high"
+    reasoning_mode: Literal["standard"] = "standard"
+    embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
+    # ``None`` omits the parameter for models that reject it; the spec pins
+    # the judge at 0.0 and that is the default.
+    judge_temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
+    # Fixed at 1: repetition indexing in ``targets.py`` is only exact when
+    # LangSmith runs the target sequentially.
+    max_concurrency: int = Field(default=1, ge=1, le=1)
+    output_directory: str = Field(default="output/evaluations/", min_length=1)
+    dataset_version: int = Field(default=1, ge=1)
+    rubric_version: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def validate_override_keys(self) -> "EvaluationConfig":
+        unknown = sorted(
+            set(self.target_reasoning_effort_overrides)
+            - set(EVALUATION_AGENT_KEYS)
+        )
+        if unknown:
+            valid = ", ".join(EVALUATION_AGENT_KEYS)
+            raise ValueError(
+                "unknown target_reasoning_effort_overrides keys: "
+                f"{', '.join(unknown)}; expected any of: {valid}"
+            )
+        return self
+
+
 class ConfigSettings(BaseModel):
     """All non-secret application configuration."""
 
@@ -153,6 +216,7 @@ class ConfigSettings(BaseModel):
     agents: AgentRuntimeConfig = AgentRuntimeConfig()
     graph: GraphConfig = GraphConfig()
     output: OutputConfig = OutputConfig()
+    evaluation: EvaluationConfig = EvaluationConfig()
 
 
 _ENVIRONMENT_OVERRIDES = {
@@ -183,6 +247,17 @@ _ENVIRONMENT_OVERRIDES = {
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),
     "OUTPUT_DIRECTORY": ("output", "directory"),
     "OUTPUT_DEFAULT_FORMAT": ("output", "default_format"),
+    "EVALUATION_TARGET_MODEL": ("evaluation", "target_model"),
+    "EVALUATION_TARGET_REASONING_EFFORT": (
+        "evaluation",
+        "target_reasoning_effort",
+    ),
+    "EVALUATION_JUDGE_MODEL": ("evaluation", "judge_model"),
+    "EVALUATION_JUDGE_REASONING_EFFORT": (
+        "evaluation",
+        "judge_reasoning_effort",
+    ),
+    "EVALUATION_OUTPUT_DIRECTORY": ("evaluation", "output_directory"),
 }
 _REQUIRED_ENVIRONMENT_VARIABLES = (
     "OPENAI_API_KEY",
