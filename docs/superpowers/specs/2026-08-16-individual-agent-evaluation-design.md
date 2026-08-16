@@ -515,6 +515,32 @@ chain-of-thought.
 - Judge model, configuration, rubric version, raw structured score, and concise
   rationale are recorded as LangSmith feedback and in the local artifact.
 
+### LangSmith Judge Visibility
+
+Each judge is registered as a named LangSmith evaluator attached to the
+experiment. For every completed judge evaluation, the LangSmith experiment UI
+must provide:
+
+- a **Source** link that exposes the versioned judge prompt template, rubric,
+  output schema, and evaluator definition;
+- an **Evaluator trace** link that exposes the sanitized, fully formatted judge
+  input, judge model invocation, structured score, and concise rationale;
+- latency and token-usage data when the judge provider reports them; and
+- evaluator metadata containing the prompt identifier, rubric version, prompt
+  fingerprint, judge model, and judge configuration fingerprint.
+
+The same prompt identifier, rubric version, and fingerprints are stored in the
+local JSON artifact so a local result can be matched to the exact evaluator
+source shown in LangSmith. Prompt and evaluator traces must pass the same
+redaction rules as target traces: they contain no API keys, raw clients, local
+production paths, production memory, or hidden chain-of-thought.
+
+If a judge is expected to run but its evaluator source or evaluator trace cannot
+be opened in LangSmith, the repetition fails the trace-availability requirement.
+Runs correctly classified as `judge_not_run` because no evaluable target output
+exists retain their typed reason and are exempt from creating a nonexistent
+judge trace.
+
 ### Judge Dimensions
 
 All agents are scored for:
@@ -827,6 +853,8 @@ a real OpenAI, Tavily, web, Chroma-cloud, or LangSmith call.
 - `max_concurrency=1`.
 - Experiment metadata and links.
 - Code evaluator and judge feedback attachment.
+- Judge evaluator identity, prompt version, rubric version, and fingerprints.
+- Judge inputs and outputs are sanitized before evaluator tracing.
 - Trace correlation with the existing project tracker.
 - LangSmith failure produces exit code `3` or a failed repetition as appropriate.
 
@@ -850,6 +878,10 @@ tests pass. Verification order is:
 2. the selected agent's full controlled dataset;
 3. one live case for that agent;
 4. the six-agent controlled suite only after focused runs are sound.
+
+The first manual controlled run also verifies in the LangSmith UI that the
+judge score exposes both its **Source** and **Evaluator trace**, and that neither
+view contains a known secret or hidden chain-of-thought.
 
 ## User Workflow
 
@@ -876,6 +908,11 @@ When one agent appears weak:
   evaluations.
 - A live command produces one target run and one judge evaluation.
 - Every evaluable run has deterministic feedback, judge feedback, and a trace.
+- Every completed judge evaluation has an openable LangSmith **Source** and
+  **Evaluator trace** showing the versioned, sanitized prompt and structured
+  result.
+- LangSmith feedback and the local JSON artifact identify the same judge prompt,
+  rubric version, and fingerprints.
 - Dataset and experiment metadata contain no known secret.
 - Repetitions do not share mutable state, memory, output paths, or tools.
 - Controlled runs cannot reach prohibited external application services.
@@ -908,3 +945,7 @@ whole-report quality criteria.
   <https://docs.langchain.com/langsmith/compare-experiment-results>
 - Trace metadata and tags:
   <https://docs.langchain.com/langsmith/add-metadata-tags>
+- Analyze an experiment, including evaluator source and traces:
+  <https://docs.langchain.com/langsmith/analyze-an-experiment>
+- Manage evaluators:
+  <https://docs.langchain.com/langsmith/evaluators>
