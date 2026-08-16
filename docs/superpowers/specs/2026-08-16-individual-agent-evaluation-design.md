@@ -128,7 +128,8 @@ src/deep_research/evaluation/
 
 `config.py`
 : Resolves evaluation settings from `ConfigSettings`, CLI arguments, and
-  environment variables. It never serializes provider secrets.
+  environment variables, including the effective per-agent and judge reasoning
+  efforts. It never serializes provider secrets.
 
 `factory.py`
 : Constructs exactly one production-configured agent. Production
@@ -340,6 +341,53 @@ function-calling, and structured-output requirements:
 | LLM-as-judge evaluator | `gpt-5.6-luna` |
 | Live evaluation embeddings | `text-embedding-3-small` |
 
+### Reasoning-Effort Policy
+
+Reasoning effort is explicit and independently configurable for every target
+agent and for the judge. The approved initial baseline is:
+
+| Component | Effective effort |
+|---|---|
+| Planner | `medium` |
+| Researcher | `low` |
+| Source Evaluator | `low` |
+| Fact Checker | `medium` |
+| Synthesizer | `medium` |
+| Critic | `medium` |
+| LLM-as-judge evaluator | `high` |
+
+All calls use standard reasoning mode; Pro mode is not part of the initial
+evaluation harness. The typed configuration accepts only `none`, `low`,
+`medium`, `high`, `xhigh`, or `max`. Canonical configuration-map keys use the
+internal underscore names `planner`, `researcher`, `source_evaluator`,
+`fact_checker`, `synthesizer`, and `critic`.
+
+Target effort resolves in this order:
+
+1. an invocation-level `--reasoning-effort` override for the selected agent;
+2. that agent's `target_reasoning_effort_overrides` entry;
+3. the global `target_reasoning_effort` default.
+
+Judge effort resolves from an invocation-level `--judge-reasoning-effort`
+override, then `judge_reasoning_effort`. The effective target and judge efforts
+are frozen before experiment creation. One experiment never mixes reasoning
+profiles across repetitions. Changing either effort produces a distinct
+configuration fingerprint and experiment, while reusing the same dataset.
+
+The baseline deliberately assigns `low` to the repeated, tool-heavy Researcher
+and structured Source Evaluator; it assigns `medium` to the agents that perform
+decomposition, reconciliation, synthesis, or holistic review. The judge uses
+`high` because it supplies most of the numerical quality score and otherwise
+uses the same model as the target. `xhigh`, `max`, and Pro mode are not baseline
+settings; they require a measured quality gain in focused experiments before
+adoption.
+
+The target provider applies the resolved agent effort to both ordinary and
+structured-output calls, including a structured-output repair attempt. The
+separate judge provider applies only the resolved judge effort. No prompt asks a
+model to simulate a reasoning level; the value is sent through the Responses
+API reasoning configuration.
+
 OpenAI currently lists only the `gpt-5.6-luna` alias and no dated Luna snapshot.
 Every experiment therefore records the requested alias and provider-returned
 model identifier, along with the complete model configuration. This preserves
@@ -437,8 +485,8 @@ Experiment metadata includes:
 
 - agent and tier;
 - Git commit and dirty-worktree flag;
-- target model and effective model configuration;
-- judge model;
+- target model, effective reasoning effort, and effective model configuration;
+- judge model, effective reasoning effort, and effective judge configuration;
 - case registry version;
 - rubric version;
 - tool/dependency mode;
@@ -552,6 +600,8 @@ chain-of-thought.
 - Its baseline value is the model from the Model and Cost Policy.
 - An explicit override is recorded in experiment metadata and the local
   artifact; there is no implicit fallback to another model.
+- `evaluation.judge_reasoning_effort` is independent from every target-agent
+  effort and defaults to the approved `high` baseline.
 - Judge temperature is fixed at `0.0`.
 - Judge output uses a strict structured schema.
 - The rubric prompt and schema are versioned and fingerprinted.
@@ -694,6 +744,10 @@ python -m deep_research.evaluation agent researcher `
 # Run the selected agent's single live case once.
 python -m deep_research.evaluation agent researcher --tier live
 
+# Compare one agent at a different effort without editing the baseline config.
+python -m deep_research.evaluation agent researcher `
+  --reasoning-effort medium
+
 # Run controlled experiments for all six agents.
 python -m deep_research.evaluation suite
 ```
@@ -705,6 +759,10 @@ python -m deep_research.evaluation suite
 - `--case <case-id>`: only valid for `agent`.
 - `--output-directory <path>`: override evaluation artifact root.
 - `--experiment-prefix <text>`: optional human-readable prefix.
+- `--reasoning-effort <level>`: target-agent override for `agent`; invalid for
+  `suite` so a suite cannot silently mix the approved per-agent profile.
+- `--judge-reasoning-effort <level>`: judge override for `agent` or `suite`; a
+  suite override applies uniformly to every judge call in that invocation.
 - `--verbose`: print per-repetition gate and evaluator summaries without
   printing secrets or complete model payloads.
 
@@ -771,6 +829,8 @@ The artifact contains:
 - schema version;
 - experiment and dataset identifiers and URLs;
 - Git and configuration metadata;
+- requested and provider-returned model identifiers, effective target and judge
+  reasoning efforts, reasoning mode, and configuration fingerprints;
 - case and repetition results;
 - hard-gate results;
 - deterministic and judge scores;
@@ -795,7 +855,17 @@ evaluation:
   live_repetitions: 1
   live_threshold: 0.75
   target_model: gpt-5.6-luna
+  target_reasoning_effort: medium
+  target_reasoning_effort_overrides:
+    planner: medium
+    researcher: low
+    source_evaluator: low
+    fact_checker: medium
+    synthesizer: medium
+    critic: medium
   judge_model: gpt-5.6-luna
+  judge_reasoning_effort: high
+  reasoning_mode: standard
   embedding_model: text-embedding-3-small
   judge_temperature: 0.0
   max_concurrency: 1
@@ -826,6 +896,8 @@ Fail before creating an experiment when:
 - a requested agent or case does not exist;
 - required credentials are absent;
 - the configured target, judge, or applicable embedding model is inaccessible;
+- a reasoning effort is invalid, an override key is unknown, or Pro mode is
+  requested by the initial harness;
 - the agent cannot be built with production-parity wiring;
 - the dataset cannot be resolved or safely synchronized;
 - the output root cannot be created;
@@ -872,6 +944,8 @@ a real OpenAI, Tavily, web, Chroma-cloud, or LangSmith call.
 ### Unit Tests
 
 - Strict model validation and JSON round trips.
+- Reasoning-effort enum validation, known agent-key validation, precedence,
+  and immutable per-experiment resolution.
 - Canonical agent and tier parsing.
 - Case-registry uniqueness and version rules.
 - Three controlled and one live case per agent.
@@ -898,6 +972,7 @@ a real OpenAI, Tavily, web, Chroma-cloud, or LangSmith call.
 - `num_repetitions=3` for controlled and `1` for live.
 - `max_concurrency=1`.
 - Experiment metadata and links.
+- Effective target and judge reasoning efforts and configuration fingerprints.
 - Code evaluator and judge feedback attachment.
 - Judge evaluator identity, prompt version, rubric version, and fingerprints.
 - Judge inputs and outputs are sanitized before evaluator tracing.
@@ -909,6 +984,8 @@ a real OpenAI, Tavily, web, Chroma-cloud, or LangSmith call.
 - `list`, `agent`, and `suite` happy paths.
 - Focused case selection.
 - Controlled and live selection.
+- Target and judge reasoning overrides, including target-suite rejection and
+  uniform judge-suite application.
 - Unknown agent, case, or tier.
 - Missing credentials and invalid configuration.
 - Partial experiment failure.
@@ -936,7 +1013,7 @@ When one agent appears weak:
 1. Run its controlled experiment.
 2. Open the lowest-scoring trace for each case.
 3. Identify prompt, reasoning, tool-selection, grounding, or output problems.
-4. Change only the relevant agent or shared contract.
+4. Change only the relevant agent, its reasoning effort, or a shared contract.
 5. Rerun the same case and compare experiments in LangSmith.
 6. Run all three controlled cases for the agent.
 7. Manually review the lowest-scoring trace for each case.
@@ -955,6 +1032,12 @@ When one agent appears weak:
 - A live command produces one target run and one judge evaluation.
 - The default target and judge models are `gpt-5.6-luna`; live
   embeddings use `text-embedding-3-small` when applicable.
+- The effective baseline efforts are Planner `medium`, Researcher `low`, Source
+  Evaluator `low`, Fact Checker `medium`, Synthesizer `medium`, Critic `medium`,
+  and judge `high`, all in standard mode.
+- Every agent and the judge can be configured independently, and reasoning
+  overrides create a separately fingerprinted experiment without changing the
+  dataset or mixing profiles across repetitions.
 - Model access is checked before experiment execution, and model identifiers are
   recorded in LangSmith metadata and local JSON without silent fallback.
 - Every evaluable run has deterministic feedback, judge feedback, and a trace.
