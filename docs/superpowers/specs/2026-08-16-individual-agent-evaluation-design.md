@@ -328,6 +328,43 @@ Live evaluation must never use the normal research collection, procedural
 registry, or report directory. It receives an experiment-specific namespace
 under the evaluation output root.
 
+## Model and Cost Policy
+
+The initial evaluation baseline uses the lowest-priced currently available
+OpenAI text model that supports the project's Responses API, function-calling,
+and structured-output requirements:
+
+| Role | Model |
+|---|---|
+| All six target agents | `gpt-5-nano-2025-08-07` |
+| LLM-as-judge evaluator | `gpt-5-nano-2025-08-07` |
+| Live evaluation embeddings | `text-embedding-3-small` |
+
+The dated `gpt-5-nano` snapshot is pinned instead of the moving
+`gpt-5-nano` alias so repeated experiments use the same model version. No
+agent-specific model overrides are enabled in the initial baseline. Controlled
+and live tiers use the same target and judge models so the tier comparison does
+not introduce a model change.
+
+At the time of this design, OpenAI lists GPT-5 nano at $0.05 per million input
+tokens, $0.005 per million cached input tokens, and $0.40 per million output
+tokens. It lists `text-embedding-3-small` at $0.02 per million input tokens.
+These prices are informational and must be rechecked before implementation or
+when a model change is proposed.
+
+Using the same small model as both target and judge minimizes cost but can
+produce correlated weaknesses and less reliable grading than a stronger judge.
+The deterministic gates, fixed rubric, three controlled repetitions, score
+floors, and mandatory manual trace review remain required safeguards. A future
+experiment may explicitly override the judge model for comparison, but a model
+override never changes the stored baseline result.
+
+Preflight verifies that the configured model identifiers are accessible to the
+current OpenAI project. If the pinned snapshot is unavailable, evaluation fails
+with a configuration error and does not silently fall back to a moving alias or
+more expensive model. Selecting a replacement requires an explicit configuration
+and rubric-version change so comparisons remain interpretable.
+
 ## LangSmith Datasets
 
 Create two versioned datasets per agent:
@@ -508,7 +545,9 @@ chain-of-thought.
 ### Judge Configuration
 
 - `evaluation.judge_model` is configurable.
-- An empty value falls back to `llm.model`.
+- Its baseline value is the pinned model from the Model and Cost Policy.
+- An explicit override is recorded in experiment metadata and the local
+  artifact; there is no implicit fallback to another model.
 - Judge temperature is fixed at `0.0`.
 - Judge output uses a strict structured schema.
 - The rubric prompt and schema are versioned and fingerprinted.
@@ -751,7 +790,9 @@ evaluation:
   controlled_repetition_floor: 0.65
   live_repetitions: 1
   live_threshold: 0.75
-  judge_model: ""
+  target_model: gpt-5-nano-2025-08-07
+  judge_model: gpt-5-nano-2025-08-07
+  embedding_model: text-embedding-3-small
   judge_temperature: 0.0
   max_concurrency: 1
   output_directory: output/evaluations/
@@ -780,6 +821,7 @@ Fail before creating an experiment when:
 - the case registry is invalid or duplicated;
 - a requested agent or case does not exist;
 - required credentials are absent;
+- the configured target, judge, or applicable embedding model is inaccessible;
 - the agent cannot be built with production-parity wiring;
 - the dataset cannot be resolved or safely synchronized;
 - the output root cannot be created;
@@ -907,6 +949,10 @@ When one agent appears weak:
 - A focused controlled case produces three target runs and three judge
   evaluations.
 - A live command produces one target run and one judge evaluation.
+- The default target and judge models are `gpt-5-nano-2025-08-07`; live
+  embeddings use `text-embedding-3-small` when applicable.
+- Model access is checked before experiment execution, and model identifiers are
+  recorded in LangSmith metadata and local JSON without silent fallback.
 - Every evaluable run has deterministic feedback, judge feedback, and a trace.
 - Every completed judge evaluation has an openable LangSmith **Source** and
   **Evaluator trace** showing the versioned, sanitized prompt and structured
@@ -949,3 +995,7 @@ whole-report quality criteria.
   <https://docs.langchain.com/langsmith/analyze-an-experiment>
 - Manage evaluators:
   <https://docs.langchain.com/langsmith/evaluators>
+- GPT-5 nano model capabilities and pricing:
+  <https://developers.openai.com/api/docs/models/gpt-5-nano>
+- `text-embedding-3-small` capabilities and pricing:
+  <https://developers.openai.com/api/docs/models/text-embedding-3-small>
