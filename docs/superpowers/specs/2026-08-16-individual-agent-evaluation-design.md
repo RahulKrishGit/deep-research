@@ -330,24 +330,28 @@ under the evaluation output root.
 
 ## Model and Cost Policy
 
-The initial evaluation baseline uses the lowest-priced currently available
-OpenAI text model that supports the project's Responses API, function-calling,
-and structured-output requirements:
+The initial evaluation baseline uses OpenAI's current GPT-5.6 model for
+cost-sensitive, high-volume workloads. It supports the project's Responses API,
+function-calling, and structured-output requirements:
 
 | Role | Model |
 |---|---|
-| All six target agents | `gpt-5-nano-2025-08-07` |
-| LLM-as-judge evaluator | `gpt-5-nano-2025-08-07` |
+| All six target agents | `gpt-5.6-luna` |
+| LLM-as-judge evaluator | `gpt-5.6-luna` |
 | Live evaluation embeddings | `text-embedding-3-small` |
 
-The dated `gpt-5-nano` snapshot is pinned instead of the moving
-`gpt-5-nano` alias so repeated experiments use the same model version. No
-agent-specific model overrides are enabled in the initial baseline. Controlled
-and live tiers use the same target and judge models so the tier comparison does
-not introduce a model change.
+OpenAI currently lists only the `gpt-5.6-luna` alias and no dated Luna snapshot.
+Every experiment therefore records the requested alias and provider-returned
+model identifier, along with the complete model configuration. This preserves
+the strongest available comparison evidence but cannot guarantee an unchanged
+backend if OpenAI moves the alias. If a dated Luna snapshot becomes available,
+adopting it requires an explicit configuration and evaluation-version change.
+No agent-specific model overrides are enabled in the initial baseline.
+Controlled and live tiers use the same target and judge models so the tier
+comparison does not introduce a model change.
 
-At the time of this design, OpenAI lists GPT-5 nano at $0.05 per million input
-tokens, $0.005 per million cached input tokens, and $0.40 per million output
+At the time of this design, OpenAI lists GPT-5.6 Luna at $0.20 per million input
+tokens, $0.02 per million cached input tokens, and $1.20 per million output
 tokens. It lists `text-embedding-3-small` at $0.02 per million input tokens.
 These prices are informational and must be rechecked before implementation or
 when a model change is proposed.
@@ -360,10 +364,10 @@ experiment may explicitly override the judge model for comparison, but a model
 override never changes the stored baseline result.
 
 Preflight verifies that the configured model identifiers are accessible to the
-current OpenAI project. If the pinned snapshot is unavailable, evaluation fails
-with a configuration error and does not silently fall back to a moving alias or
-more expensive model. Selecting a replacement requires an explicit configuration
-and rubric-version change so comparisons remain interpretable.
+current OpenAI project. If `gpt-5.6-luna` is unavailable, evaluation fails with
+a configuration error and does not silently fall back to another model.
+Selecting a replacement requires an explicit configuration and rubric-version
+change so comparisons remain interpretable.
 
 ## LangSmith Datasets
 
@@ -545,7 +549,7 @@ chain-of-thought.
 ### Judge Configuration
 
 - `evaluation.judge_model` is configurable.
-- Its baseline value is the pinned model from the Model and Cost Policy.
+- Its baseline value is the model from the Model and Cost Policy.
 - An explicit override is recorded in experiment metadata and the local
   artifact; there is no implicit fallback to another model.
 - Judge temperature is fixed at `0.0`.
@@ -790,8 +794,8 @@ evaluation:
   controlled_repetition_floor: 0.65
   live_repetitions: 1
   live_threshold: 0.75
-  target_model: gpt-5-nano-2025-08-07
-  judge_model: gpt-5-nano-2025-08-07
+  target_model: gpt-5.6-luna
+  judge_model: gpt-5.6-luna
   embedding_model: text-embedding-3-small
   judge_temperature: 0.0
   max_concurrency: 1
@@ -949,7 +953,7 @@ When one agent appears weak:
 - A focused controlled case produces three target runs and three judge
   evaluations.
 - A live command produces one target run and one judge evaluation.
-- The default target and judge models are `gpt-5-nano-2025-08-07`; live
+- The default target and judge models are `gpt-5.6-luna`; live
   embeddings use `text-embedding-3-small` when applicable.
 - Model access is checked before experiment execution, and model identifiers are
   recorded in LangSmith metadata and local JSON without silent fallback.
@@ -995,7 +999,9 @@ whole-report quality criteria.
   <https://docs.langchain.com/langsmith/analyze-an-experiment>
 - Manage evaluators:
   <https://docs.langchain.com/langsmith/evaluators>
-- GPT-5 nano model capabilities and pricing:
-  <https://developers.openai.com/api/docs/models/gpt-5-nano>
+- GPT-5.6 Luna model capabilities and pricing:
+  <https://developers.openai.com/api/docs/models/gpt-5.6-luna>
+- GPT-5.6 model and reasoning-effort guidance:
+  <https://developers.openai.com/api/docs/guides/latest-model>
 - `text-embedding-3-small` capabilities and pricing:
   <https://developers.openai.com/api/docs/models/text-embedding-3-small>
