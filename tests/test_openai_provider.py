@@ -39,6 +39,7 @@ def response(
     *,
     text: str = "A concise answer.",
     parsed: object | None = None,
+    model: str | None = None,
     input_tokens: int = 8,
     output_tokens: int = 3,
 ) -> SimpleNamespace:
@@ -46,6 +47,7 @@ def response(
         id="resp-1",
         output_text=text,
         output_parsed=parsed,
+        model=model,
         usage=SimpleNamespace(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -240,6 +242,107 @@ async def test_complete_structured_raises_after_one_failed_repair() -> None:
     assert len(responses.parse_calls) == 2
     token_metrics = [m for m in tracker.metrics if isinstance(m, TokenUsageMetric)]
     assert [metric.success for metric in token_metrics] == [False, False]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_is_sent_on_ordinary_calls() -> None:
+    responses = RecordingResponses(response(text="hello"))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(model="gpt-5.6-luna", reasoning_effort="medium"),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("s1", "q"):
+        await provider.complete([ChatMessage(role="user", content="hi")])
+
+    assert responses.create_calls[0]["reasoning"] == {"effort": "medium"}
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_is_sent_on_structured_calls_and_the_repair() -> None:
+    repaired = Outline(title="Answer", points=["One"])
+    responses = RecordingResponses(
+        response(text="invalid", parsed=None),
+        response(parsed=repaired),
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(model="gpt-5.6-luna", reasoning_effort="high"),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("s1", "q"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="hi")], Outline
+        )
+
+    assert len(responses.parse_calls) == 2
+    assert all(
+        call["reasoning"] == {"effort": "high"} for call in responses.parse_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_reasoning_key_is_sent_when_effort_is_unset() -> None:
+    """gpt-4o and friends reject an unexpected ``reasoning`` parameter."""
+    responses = RecordingResponses(response(text="hello"))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+
+    async with tracker.session_span("s1", "q"):
+        await provider.complete([ChatMessage(role="user", content="hi")])
+
+    assert "reasoning" not in responses.create_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_temperature_is_omitted_when_configured_as_none() -> None:
+    responses = RecordingResponses(response(text="hello"))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(temperature=None),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("s1", "q"):
+        await provider.complete([ChatMessage(role="user", content="hi")])
+
+    assert "temperature" not in responses.create_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_the_provider_records_the_model_the_response_reported() -> None:
+    responses = RecordingResponses(
+        response(text="hello", model="gpt-5.6-luna-2026-08-01")
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        LLMConfig(model="gpt-5.6-luna"),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+    assert provider.last_model_returned is None
+
+    async with tracker.session_span("s1", "q"):
+        await provider.complete([ChatMessage(role="user", content="hi")])
+
+    assert provider.last_model_returned == "gpt-5.6-luna-2026-08-01"
+
+
+def test_reasoning_effort_rejects_an_unknown_level() -> None:
+    with pytest.raises(ValueError):
+        LLMConfig(reasoning_effort="turbo")
+
+
+def test_reasoning_mode_rejects_pro() -> None:
+    with pytest.raises(ValueError):
+        LLMConfig(reasoning_mode="pro")
 
 
 @pytest.mark.asyncio

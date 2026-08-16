@@ -136,6 +136,7 @@ def _set_span_result(span: Any, response: Any, usage: TokenUsage) -> None:
         {
             "provider": "openai",
             "response_id": getattr(response, "id", "unknown"),
+            "model_returned": getattr(response, "model", None),
         }
     )
     span.set_token_usage(
@@ -180,6 +181,17 @@ class OpenAIChatProvider:
         self._config = config
         self._tracker = tracker
         self._client = _build_client(config, api_key=api_key, client=client)
+        self._last_model_returned: str | None = None
+
+    @property
+    def last_model_returned(self) -> str | None:
+        """The model identifier the last successful response reported.
+
+        The evaluation harness records the requested alias *and* what the
+        provider actually served, because ``gpt-5.6-luna`` is an alias with
+        no dated snapshot.
+        """
+        return self._last_model_returned
 
     async def complete(
         self,
@@ -205,8 +217,7 @@ class OpenAIChatProvider:
                     response = await self._client.responses.create(
                         model=model,
                         input=payload,
-                        temperature=self._config.temperature,
-                        max_output_tokens=self._config.max_tokens,
+                        **self._config.request_options(),
                     )
                 except (
                     _sdk.APITimeoutError,
@@ -229,6 +240,7 @@ class OpenAIChatProvider:
                     )
                 usage = _usage_from_response(response)
                 _set_span_result(span, response, usage)
+                self._last_model_returned = getattr(response, "model", None) or model
                 return ChatResult(text=text, model=model, usage=usage)
         except OpenAIProviderError:
             raise
@@ -258,8 +270,7 @@ class OpenAIChatProvider:
                     model=model,
                     input=payload,
                     text_format=schema,
-                    temperature=self._config.temperature,
-                    max_output_tokens=self._config.max_tokens,
+                    **self._config.request_options(),
                 )
             except (
                 _sdk.APITimeoutError,
@@ -283,6 +294,7 @@ class OpenAIChatProvider:
                 raise _StructuredValidationFailure(
                     schema.__name__, str(getattr(response, "output_text", ""))
                 )
+            self._last_model_returned = getattr(response, "model", None) or model
             return parsed
 
     async def complete_structured(

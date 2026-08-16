@@ -4,7 +4,7 @@ import os
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 import yaml
 from dotenv import load_dotenv
@@ -20,6 +20,11 @@ class MissingSecretsError(ValueError):
     """
 
 
+ReasoningEffort: TypeAlias = Literal[
+    "none", "low", "medium", "high", "xhigh", "max"
+]
+
+
 class LLMConfig(BaseModel):
     """OpenAI model and request settings."""
 
@@ -32,14 +37,34 @@ class LLMConfig(BaseModel):
     model_overrides: dict[str, str] = Field(default_factory=dict)
     timeout: float = Field(default=60.0, gt=0)
     retry_count: int = Field(default=2, ge=0)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    # ``None`` omits the parameter entirely: reasoning models reject it.
+    temperature: float | None = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1)
+    # ``None`` omits the Responses ``reasoning`` block entirely, which is
+    # required for non-reasoning models such as gpt-4o.
+    reasoning_effort: ReasoningEffort | None = None
+    # Pro mode is deliberately unrepresentable in this build.
+    reasoning_mode: Literal["standard"] = "standard"
 
     def model_for(self, agent_name: str | None) -> str:
         """Return an agent override when configured, otherwise the default."""
         if agent_name is None:
             return self.model
         return self.model_overrides.get(agent_name, self.model)
+
+    def request_options(self) -> dict[str, Any]:
+        """The optional Responses parameters this configuration sends.
+
+        Built once here rather than at three call sites so an ordinary
+        call, a structured call, and a structured repair can never drift
+        apart — the spec requires the resolved effort on all three.
+        """
+        options: dict[str, Any] = {"max_output_tokens": self.max_tokens}
+        if self.temperature is not None:
+            options["temperature"] = self.temperature
+        if self.reasoning_effort is not None:
+            options["reasoning"] = {"effort": self.reasoning_effort}
+        return options
 
 class LangSmithConfig(BaseModel):
     """LangSmith tracing settings."""
