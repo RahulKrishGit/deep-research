@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -2123,3 +2124,264 @@ def partially_failing_harness(tracker, settings):
             secrets=(),
         ),
     )
+
+
+# --- Task 25: CLI runner fixtures -------------------------------------------
+#
+# cli.main's `runner` keyword is injected with a callable matching the
+# calling convention cli._dispatch uses for the `agent` command:
+# keyword-only agent_name, tier, case_id, config, reasoning_effort,
+# judge_reasoning_effort, output_directory, experiment_prefix, verbose --
+# returning (or raising in place of) an ExperimentResult. Each fixture
+# below is a fake standing in for the real production pipeline (preflight
+# + run_agent_evaluation), scripted to one outcome the CLI's exit-code
+# mapping must handle.
+
+
+def _cli_repetition(
+    case_id: str,
+    version: int,
+    repetition: int,
+    *,
+    quality: float = 0.9,
+    gate_passed: bool = True,
+    gate_id: str = "run_completed",
+) -> RepetitionResult:
+    return RepetitionResult(
+        case_id=case_id,
+        case_version=version,
+        repetition=repetition,
+        completed=True,
+        gates=GateReport(
+            results=[GateResult(gate_id=gate_id, passed=gate_passed, detail="")]
+        ),
+        deterministic_quality=quality,
+        judge=_scored_judge(quality),
+        aggregate_quality=quality,
+        trace_url=f"https://smith.langchain.com/o/x/r/{case_id}-{repetition}",
+        errors=[],
+    )
+
+
+def _cli_experiment_result(
+    *,
+    agent_name: str = "researcher",
+    tier: str = "controlled",
+    status: str = "REVIEW REQUIRED",
+    cases: list[CaseResult] | None = None,
+    errors: list[EvaluationFailure] | None = None,
+) -> ExperimentResult:
+    if cases is None:
+        repetitions = [
+            _cli_repetition("conflicting-evidence", 1, n) for n in range(1, 4)
+        ]
+        cases = [
+            CaseResult(
+                case_id="conflicting-evidence",
+                case_version=1,
+                repetitions=repetitions,
+                average_quality=0.9,
+                passed=status != "FAILED",
+                lowest_scoring_trace_url=repetitions[0].trace_url,
+            )
+        ]
+    kebab = agent_name.replace("_", "-")
+    return ExperimentResult(
+        agent_name=agent_name,
+        tier=tier,
+        experiment_name=f"{kebab}-{tier}-20260817T000000Z-abc1234",
+        experiment_url=f"https://smith.langchain.com/o/x/experiments/{kebab}-1",
+        dataset_name=f"deep-research-{kebab}-{tier}-v1",
+        dataset_url=f"https://smith.langchain.com/o/x/datasets/{kebab}-1",
+        cases=cases,
+        status=status,
+        metadata=dict(_REPORTING_METADATA),
+        errors=errors or [],
+    )
+
+
+@pytest.fixture
+def passing_runner():
+    """A clean REVIEW REQUIRED run: every repetition and gate passes."""
+
+    def runner(**kwargs):
+        del kwargs
+        return _cli_experiment_result(status="REVIEW REQUIRED")
+
+    return runner
+
+
+@pytest.fixture
+def failing_runner():
+    """One case fails its gate, so the overall status is FAILED."""
+
+    def runner(**kwargs):
+        del kwargs
+        repetitions = [
+            _cli_repetition("conflicting-evidence", 1, n, gate_passed=(n != 1))
+            for n in range(1, 4)
+        ]
+        case = CaseResult(
+            case_id="conflicting-evidence",
+            case_version=1,
+            repetitions=repetitions,
+            average_quality=0.9,
+            passed=False,
+            lowest_scoring_trace_url=repetitions[0].trace_url,
+        )
+        return _cli_experiment_result(status="FAILED", cases=[case])
+
+    return runner
+
+
+@pytest.fixture
+def preflight_failing_runner():
+    """A missing-credentials preflight failure -- exit 3, not exit 2."""
+    from deep_research.evaluation.runner import PreflightError
+
+    def runner(**kwargs):
+        del kwargs
+        raise PreflightError(
+            "missing_credentials",
+            "missing required credentials: OPENAI_API_KEY, LANGSMITH_API_KEY",
+        )
+
+    return runner
+
+
+@pytest.fixture
+def registry_failing_runner():
+    """An invalid local case registry -- a local-input error, exit 2."""
+    from deep_research.evaluation.runner import PreflightError
+
+    def runner(**kwargs):
+        del kwargs
+        raise PreflightError(
+            "invalid_registry", "duplicate case identities: focused-decomposition"
+        )
+
+    return runner
+
+
+@pytest.fixture
+def interrupting_runner():
+    """The user cancels mid-run."""
+
+    def runner(**kwargs):
+        del kwargs
+        raise KeyboardInterrupt
+
+    return runner
+
+
+@pytest.fixture
+def partially_failing_runner():
+    """9 repetitions across 3 cases, all completed, one case failing.
+
+    Repetitions: 9/9 completed must still be printed even though the
+    overall status is FAILED: a partial failure never hides the
+    repetitions that did complete.
+    """
+
+    def runner(**kwargs):
+        del kwargs
+        case_specs = [
+            ("multi-source-coverage", True),
+            ("conflicting-evidence", True),
+            ("partial-search-failure", False),
+        ]
+        cases = []
+        for case_id, passes in case_specs:
+            repetitions = [
+                _cli_repetition(case_id, 1, n, gate_passed=(passes or n != 1))
+                for n in range(1, 4)
+            ]
+            cases.append(
+                CaseResult(
+                    case_id=case_id,
+                    case_version=1,
+                    repetitions=repetitions,
+                    average_quality=0.9,
+                    passed=passes,
+                    lowest_scoring_trace_url=repetitions[0].trace_url,
+                )
+            )
+        return _cli_experiment_result(status="FAILED", cases=cases)
+
+    return runner
+
+
+@pytest.fixture
+def live_runner():
+    """The single live case, one repetition, a clean pass."""
+
+    def runner(**kwargs):
+        del kwargs
+        repetition = _cli_repetition("researcher-live-case", 1, 1)
+        case = CaseResult(
+            case_id="researcher-live-case",
+            case_version=1,
+            repetitions=[repetition],
+            average_quality=0.9,
+            passed=True,
+            lowest_scoring_trace_url=repetition.trace_url,
+        )
+        return _cli_experiment_result(
+            agent_name="researcher",
+            tier="live",
+            status="REVIEW REQUIRED",
+            cases=[case],
+        )
+
+    return runner
+
+
+@pytest.fixture
+def recording_runner():
+    """Records every keyword argument main calls it with, then passes."""
+
+    class _RecordingRunner:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def __call__(self, **kwargs):
+            self.calls.append(kwargs)
+            return _cli_experiment_result(status="REVIEW REQUIRED")
+
+    return _RecordingRunner()
+
+
+@pytest.fixture
+def leaking_runner():
+    """Embeds a real-looking secret in data the CLI's rendering path never
+    surfaces (ExperimentResult.errors / RepetitionResult.errors), proving
+    redaction holds through the CLI's own rendering path: it reads the
+    secret from OPENAI_API_KEY at call time (not fixture-setup time), so
+    it picks up whatever value the test's monkeypatch.setenv call sets
+    before main ever invokes this runner.
+    """
+
+    def runner(**kwargs):
+        del kwargs
+        secret = os.environ.get("OPENAI_API_KEY", "sk-abcdefghijklmnop")
+        failure = EvaluationFailure(
+            stage="provider",
+            reason="provider_error",
+            message=f"unredacted for this test only: {secret}",
+            exception_type="OpenAIProviderError",
+        )
+        repetition = _cli_repetition("conflicting-evidence", 1, 1)
+        repetition = repetition.model_copy(update={"errors": [failure]})
+        case = CaseResult(
+            case_id="conflicting-evidence",
+            case_version=1,
+            repetitions=[repetition],
+            average_quality=0.9,
+            passed=True,
+            lowest_scoring_trace_url=repetition.trace_url,
+        )
+        return _cli_experiment_result(
+            status="REVIEW REQUIRED", cases=[case], errors=[failure]
+        )
+
+    return runner
