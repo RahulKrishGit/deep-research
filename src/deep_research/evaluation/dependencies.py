@@ -1316,16 +1316,116 @@ def _synthesizer_scenarios() -> dict[str, ScenarioScript]:
 
 
 def _critic_scenarios() -> dict[str, ScenarioScript]:
+    """Three scripted Critic scenarios: one spot-check loop that can
+    corroborate the strong report, one that surfaces the gaps in the
+    gappy report, and one at the final allowed iteration whose memory
+    backend is down while its search still succeeds."""
     return {
         "critic-strong-report": ScenarioScript(
+            search_responses={
+                "measured effect of urban tree canopy on summer surface "
+                "temperature": {
+                    "results": [
+                        {
+                            "url": (
+                                "https://sciencedirect.com/tree-canopy-"
+                                "surface-temperature-review"
+                            ),
+                            "title": "ScienceDirect: tree canopy surface "
+                            "temperature review",
+                            "content": (
+                                "Peer-reviewed field measurements find "
+                                "urban tree canopy lowers summer surface "
+                                "temperatures by 1 to 5 degrees Celsius, "
+                                "with the largest reductions at midday "
+                                "and over impervious surfaces."
+                            ),
+                        },
+                    ],
+                },
+            },
             memory_entries=(
                 {
                     "content": (
-                        "The report answers the question, cites per-claim "
-                        "sources, and flags its uncertainty."
+                        "Prior sessions established that mature urban "
+                        "tree canopy measurably lowers daytime surface "
+                        "temperatures in warm climates."
                     ),
                     "entry_type": "finding",
                 },
+            ),
+            scripted_search_urls=(
+                "https://sciencedirect.com/tree-canopy-surface-"
+                "temperature-review",
+            ),
+        ),
+        "critic-gappy-report": ScenarioScript(
+            search_responses={
+                "municipal composting mandates participation rates": {
+                    "results": [
+                        {
+                            "url": (
+                                "https://citiesclimate.example.org/"
+                                "composting-participation"
+                            ),
+                            "title": "Cities Climate: composting "
+                            "participation study",
+                            "content": (
+                                "A survey of municipal composting "
+                                "mandates finds participation rates "
+                                "between 20 and 60 percent of eligible "
+                                "households, with curbside pickup and "
+                                "clear enforcement driving uptake."
+                            ),
+                        },
+                    ],
+                },
+            },
+            memory_entries=(
+                {
+                    "content": (
+                        "Prior sessions noted that participation rates "
+                        "drive the climate effect of organics mandates, "
+                        "and that landfill methane estimates depend on "
+                        "measurement methodology."
+                    ),
+                    "entry_type": "finding",
+                },
+            ),
+            scripted_search_urls=(
+                "https://citiesclimate.example.org/composting-"
+                "participation",
+            ),
+        ),
+        "critic-budget-exhausted": ScenarioScript(
+            search_responses={
+                "congestion pricing particulate pollution evidence": {
+                    "results": [
+                        {
+                            "url": (
+                                "https://wri.org/congestion-pricing-"
+                                "air-quality-evidence"
+                            ),
+                            "title": "WRI: congestion pricing and air "
+                            "quality evidence",
+                            "content": (
+                                "World Resources Institute analysis "
+                                "finds congestion pricing reduced "
+                                "particulate pollution in Stockholm and "
+                                "London, with measurable air-quality "
+                                "co-benefits in priced zones."
+                            ),
+                        },
+                    ],
+                },
+            },
+            failures={
+                "query_memory": RuntimeError(
+                    "long-term memory is unavailable"
+                ),
+            },
+            scripted_search_urls=(
+                "https://wri.org/congestion-pricing-air-quality-evidence",
             ),
         ),
     }

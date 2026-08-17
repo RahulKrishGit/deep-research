@@ -79,12 +79,10 @@ LIVE_IDS = {
 # cases made them pass.
 
 
-@pytest.mark.xfail(reason="cases land in Tasks 10-15", strict=True)
 def test_the_registry_is_valid() -> None:
     validate_registry()
 
 
-@pytest.mark.xfail(reason="cases land in Tasks 10-15", strict=True)
 def test_every_agent_has_exactly_three_controlled_cases() -> None:
     for agent_name in AGENT_NAMES:
         controlled = cases_for(agent_name, "controlled")
@@ -94,7 +92,6 @@ def test_every_agent_has_exactly_three_controlled_cases() -> None:
         )
 
 
-@pytest.mark.xfail(reason="cases land in Tasks 10-15", strict=True)
 def test_every_agent_has_exactly_one_live_case() -> None:
     for agent_name in AGENT_NAMES:
         live = cases_for(agent_name, "live")
@@ -102,7 +99,6 @@ def test_every_agent_has_exactly_one_live_case() -> None:
         assert live[0].case_id == LIVE_IDS[agent_name]
 
 
-@pytest.mark.xfail(reason="cases land in Tasks 10-15", strict=True)
 def test_the_registry_holds_twenty_four_cases() -> None:
     assert len(all_cases()) == 24
 
