@@ -57,7 +57,8 @@ from deep_research.observability import Tracker
 from deep_research.providers import OpenAIEmbeddingProvider
 from deep_research.runtime.assembly import build_tools
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
-from deep_research.tools.base import BaseTool
+from deep_research.tools.base import BaseTool, ToolResult
+from deep_research.tools.write_document import WriteDocumentTool
 from deep_research.utils.config import ConfigSettings
 
 # Mirrors ``memory.entries._RESERVED_METADATA_KEYS``; duplicated here the
@@ -213,9 +214,12 @@ class ScenarioScript:
     Failure injection is expressed by storing an ``Exception`` instance as
     the value: a scripted search query or page URL mapped to an exception
     raises it when fetched. ``failures`` is keyed by tool name and is
-    consumed by the memory double (``query_memory``, ``save_to_memory``);
-    ``reputation_failures`` is keyed by registrable domain and is consumed
-    by the reputation double (``get_source_reputation``).
+    consumed by the memory double (``query_memory``, ``save_to_memory``)
+    and by ``build_controlled_dependencies`` itself (``write_document``,
+    which turns the document directory into a plain file so the tool's
+    ``mkdir`` fails deterministically); ``reputation_failures`` is keyed
+    by registrable domain and is consumed by the reputation double
+    (``get_source_reputation``).
     """
 
     search_responses: Mapping[str, Mapping[str, Any] | Exception] = field(
@@ -634,6 +638,37 @@ def isolated_settings(
     )
 
 
+class _RecordingDocumentWriter(WriteDocumentTool):
+    """``WriteDocumentTool`` that records every outcome in the ledger.
+
+    Task 18's ``persistence_truthful`` gate reads the ledger's
+    ``write_document`` summary, so controlled mode must record both
+    successes and failures — exactly what ``_ScriptedMemoryDouble``
+    already does for ``save_to_memory``. ``BaseTool.execute`` converts
+    every exception into a ``ToolResult`` (never raising), so the wrapper
+    records whatever came back. Live runs record real tool spans instead
+    (Task 21), which is why this wrapper exists only in controlled
+    bundles.
+    """
+
+    def __init__(
+        self,
+        tracker: Tracker,
+        output_root: Path | str,
+        *,
+        recorder: DependencyRecorder,
+    ) -> None:
+        super().__init__(tracker, output_root)
+        self._recorder = recorder
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        result = await super().execute(**kwargs)
+        self._recorder.record_tool_call("write_document", success=result.success)
+        if result.success:
+            self._recorder.record_document_write()
+        return result
+
+
 def build_controlled_dependencies(
     runtime: EvaluationRuntimeConfig,
     case: Any,
@@ -669,7 +704,18 @@ def build_controlled_dependencies(
         root=root,
     )
     document_directory = Path(isolated.output.directory)
-    document_directory.mkdir(parents=True, exist_ok=True)
+    if "write_document" in script.failures:
+        # The brief's deterministic failure hook: put a plain *file* where
+        # the document directory should be. ``WriteDocumentTool`` resolves
+        # its output root and calls ``root.mkdir(parents=True,
+        # exist_ok=True)``, which raises ``FileExistsError`` against an
+        # existing file on every platform — so the write fails before any
+        # content is produced, and the recording wrapper below records it
+        # in the ledger.
+        document_directory.parent.mkdir(parents=True, exist_ok=True)
+        document_directory.touch()
+    else:
+        document_directory.mkdir(parents=True, exist_ok=True)
     session_id = evaluation_session_id(
         runtime, case_id=case.case_id, repetition=repetition
     )
@@ -700,6 +746,14 @@ def build_controlled_dependencies(
         search_client=_ScriptedSearchClient(script, recorder=recorder),
         http_client=_ScriptedHTTPClient(script, recorder=recorder),
     )
+    tools = [
+        (
+            _RecordingDocumentWriter(tracker, document_directory, recorder=recorder)
+            if tool.name == "write_document"
+            else tool
+        )
+        for tool in tools
+    ]
     procedural = ProceduralMemory.from_config(
         isolated.memory.procedural, tracker=tracker
     )
@@ -1238,24 +1292,25 @@ def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
 
 
 def _synthesizer_scenarios() -> dict[str, ScenarioScript]:
+    # The Synthesizer never queries memory and never queries reputation:
+    # its only declared tools are write_document and save_to_memory. The
+    # two happy scenarios therefore script nothing at all, and the
+    # failure scenario scripts exactly the two tools that must fail —
+    # write_document via the document-directory hook in
+    # ``build_controlled_dependencies``, save_to_memory via the memory
+    # double. Both tools stay *present*; they just fail when called,
+    # which is the case's point (the agent's ``_require_tool`` raises on
+    # a missing declared tool).
     return {
-        "synthesizer-complete": ScenarioScript(
-            memory_entries=(
-                {
-                    "content": (
-                        "Efficiency gains are modest but real across three "
-                        "peer-reviewed studies."
-                    ),
-                    "entry_type": "finding",
-                },
-                {
-                    "content": (
-                        "Deployment is growing fastest in China and Europe."
-                    ),
-                    "entry_type": "finding",
-                },
-            ),
-            reputations={"nrel.gov": 0.9},
+        "synthesizer-complete": ScenarioScript(),
+        "synthesizer-conflicted": ScenarioScript(),
+        "synthesizer-write-failure": ScenarioScript(
+            failures={
+                "write_document": OSError("read-only file system"),
+                "save_to_memory": RuntimeError(
+                    "long-term memory is unavailable"
+                ),
+            }
         ),
     }
 
