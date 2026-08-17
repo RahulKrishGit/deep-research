@@ -40,6 +40,7 @@ from deep_research.agents.source_evaluator import (
     ReputationSource,
     SourceEvaluatorAgent,
 )
+from deep_research.agents.sources import source_domain
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.evaluation.config import EvaluationRuntimeConfig
 from deep_research.evaluation.factory import evaluation_session_id
@@ -212,7 +213,9 @@ class ScenarioScript:
     Failure injection is expressed by storing an ``Exception`` instance as
     the value: a scripted search query or page URL mapped to an exception
     raises it when fetched. ``failures`` is keyed by tool name and is
-    consumed by the memory double (``query_memory``, ``save_to_memory``).
+    consumed by the memory double (``query_memory``, ``save_to_memory``);
+    ``reputation_failures`` is keyed by registrable domain and is consumed
+    by the reputation double (``get_source_reputation``).
     """
 
     search_responses: Mapping[str, Mapping[str, Any] | Exception] = field(
@@ -223,6 +226,7 @@ class ScenarioScript:
         default_factory=tuple
     )
     reputations: Mapping[str, float] = field(default_factory=dict)
+    reputation_failures: Mapping[str, Exception] = field(default_factory=dict)
     failures: dict[str, Exception] = field(default_factory=dict)
     scripted_search_urls: Sequence[str] = field(default_factory=tuple)
 
@@ -431,6 +435,41 @@ class _ScriptedHTTPClient:
             headers={"content-type": "text/html; charset=utf-8"},
             request=request,
         )
+
+
+class _ScriptedReputationDouble:
+    """Domain-keyed reputation double for the Source Evaluator.
+
+    The scenarios script reputations and reputation failures by registrable
+    domain, but the agent calls ``get_source_reputation`` with a full URL.
+    This double keys both maps by the same domain ``source_domain`` derives
+    (``https://www.ipcc.ch/ar6-wg1`` -> ``ipcc.ch``): a listed failing
+    domain raises its mapped exception, a listed domain returns a fresh
+    ``SourceReputation`` at the scripted score, and every other URL falls
+    through to the seeded memory, which the controlled tier leaves unseeded
+    at full-URL granularity (``None``).
+    """
+
+    def __init__(
+        self,
+        memory: LongTermMemory,
+        script: ScenarioScript,
+    ) -> None:
+        self._memory = memory
+        self._scores = dict(script.reputations)
+        self._failures = dict(script.reputation_failures)
+
+    async def get_source_reputation(self, url: str) -> SourceReputation | None:
+        domain = source_domain(url)
+        failure = self._failures.get(domain)
+        if failure is not None:
+            raise failure
+        score = self._scores.get(domain)
+        if score is not None:
+            return SourceReputation(
+                url=url, title=url, reputation_score=score, observations=1
+            )
+        return await self._memory.get_source_reputation(url)
 
 
 class _ScriptedMemoryDouble:
@@ -669,7 +708,11 @@ def build_controlled_dependencies(
         tools=tuple(tools),
         long_term=long_term,
         procedural=procedural,
-        reputation=long_term if script.reputations else None,
+        reputation=(
+            _ScriptedReputationDouble(long_term, script)
+            if script.reputations or script.reputation_failures
+            else None
+        ),
         recorder=recorder,
         document_directory=document_directory,
         collection_name=isolated.memory.long_term.collection_name,
@@ -1065,6 +1108,16 @@ def _source_evaluator_scenarios() -> dict[str, ScenarioScript]:
     return {
         "source-evaluator-mixed": ScenarioScript(
             reputations={"ipcc.ch": 0.95, "noaa.gov": 0.92},
+        ),
+        "source-evaluator-competing-signals": ScenarioScript(
+            reputations={"ingaa.org": 0.55, "edf.org": 0.70},
+        ),
+        "source-evaluator-reputation-failure": ScenarioScript(
+            reputations={"nist.gov": 0.80, "colorado.edu": 0.75},
+            reputation_failures={
+                "epa.gov": RuntimeError("reputation lookup failed"),
+                "aqmd.gov": RuntimeError("reputation lookup failed"),
+            },
         ),
     }
 
