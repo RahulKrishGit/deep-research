@@ -176,28 +176,50 @@ def test_the_source_evaluator_gate_requires_the_expected_low_confidence_flag(
 
 
 def test_the_fact_checker_gate_enforces_independent_domains(
-    fact_checker_case, fact_checker_output
+    fact_checker_dependent_case, fact_checker_dependent_output
 ) -> None:
-    """Three hostnames under one registrable domain are one source."""
-    output = fact_checker_output.with_verified_claim_sources(
-        [
-            "https://news.example.com/a",
-            "https://www.news.example.com/b",
-            "https://syndication.news.example.com/c",
-        ]
-    )
-
+    """The dependent case declares minimum_independent_domains: a claim
+    whose corroboration is only same-family stays rejected even when the
+    evidence strings paraphrase without pasting URLs — the scripted
+    same-family results the trajectory recorded still resolve to the
+    claim's own family."""
     assert gate(
-        evaluate_agent_gates(output, fact_checker_case),
+        evaluate_agent_gates(
+            fact_checker_dependent_output, fact_checker_dependent_case
+        ),
         "independent_domains",
     ).passed is False
 
 
 def test_two_genuinely_independent_domains_pass_the_gate(
+    fact_checker_dependent_case, fact_checker_dependent_output
+) -> None:
+    """Trajectory-recorded URLs count toward independence when the evidence
+    strings quote rather than paste URLs."""
+    output = fact_checker_dependent_output.with_trajectory_urls(
+        [
+            "https://cern.example.int/outage-audit",
+            "https://eia.example.gov/outage-bulletin",
+        ]
+    )
+
+    assert gate(
+        evaluate_agent_gates(output, fact_checker_dependent_case),
+        "independent_domains",
+    ).passed is True
+
+
+def test_the_mixed_verdicts_case_passes_without_a_declared_minimum(
     fact_checker_case, fact_checker_output
 ) -> None:
-    output = fact_checker_output.with_verified_claim_sources(
-        ["https://news.example.com/a", "https://regulator.example.gov/b"]
+    """The ordinary case never declares minimum_independent_domains, so the
+    gate cannot fail a well-supported verified claim whose evidence
+    paraphrases instead of pasting URLs."""
+    output = fact_checker_output.with_evidence_texts(
+        [
+            "The IAEA framework covers SMR designs and the NRC applies the "
+            "same review."
+        ]
     )
 
     assert gate(

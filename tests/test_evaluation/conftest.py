@@ -27,6 +27,7 @@ from deep_research.evaluation.models import (
     ReActSummary,
     RepetitionResult,
     TargetOutput,
+    TrajectoryStep,
 )
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.utils.config import ConfigSettings
@@ -443,6 +444,29 @@ class FactCheckerOutput(TargetOutput):
             update={"result": {**result, "verified_claims": claims}}
         )
 
+    def with_evidence_texts(self, texts: Sequence[str]) -> "FactCheckerOutput":
+        result = dict(self.result or {})
+        claims = [dict(item) for item in (result.get("verified_claims") or [])]
+        claims[0]["evidence"] = list(texts)
+        return self.model_copy(
+            update={"result": {**result, "verified_claims": claims}}
+        )
+
+    def with_trajectory_urls(self, urls: Sequence[str]) -> "FactCheckerOutput":
+        """Record one web_search step per URL, the shape a verification
+        loop's tool calls take in the repetition's trajectory."""
+        trajectory = [
+            TrajectoryStep(
+                iteration=index,
+                thought="",
+                tool_name="web_search",
+                succeeded=True,
+                observation_summary=f"Retrieved {url}.",
+            )
+            for index, url in enumerate(urls)
+        ]
+        return self.model_copy(update={"trajectory": trajectory})
+
     def with_empty_evidence(self) -> "FactCheckerOutput":
         result = dict(self.result or {})
         claims = [dict(item) for item in (result.get("verified_claims") or [])]
@@ -545,6 +569,12 @@ def source_evaluator_case(controlled_case_for):
 @pytest.fixture
 def fact_checker_case(controlled_case_for):
     return controlled_case_for("fact_checker")
+
+
+@pytest.fixture
+def fact_checker_dependent_case(controlled_case_for_id):
+    """The case that genuinely declares minimum_independent_domains."""
+    return controlled_case_for_id("fact_checker", "independent-domain-evidence")
 
 
 @pytest.fixture
@@ -832,6 +862,94 @@ def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
         dependencies=DependencyLedger(),
         evidence=EvidenceContext(),
         trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="low",
+    )
+
+
+@pytest.fixture
+def fact_checker_dependent_output(
+    fact_checker_dependent_case,
+) -> FactCheckerOutput:
+    """One verified claim whose corroboration is only same-family: the
+    claim's own sources are the four outage findings (three news.example.com
+    hats plus the regulator), the evidence strings paraphrase without
+    pasting URLs, and the scripted verification search's two results —
+    both news-family — are the only URLs the trajectory recorded."""
+    return FactCheckerOutput(
+        case_id=fact_checker_dependent_case.case_id,
+        case_version=fact_checker_dependent_case.version,
+        agent_name=fact_checker_dependent_case.agent_name,
+        tier=fact_checker_dependent_case.tier,
+        repetition=1,
+        session_id="evaluation-independent-domain-evidence",
+        experiment_name="fact-checker-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/fact-checker-2",
+        completed=True,
+        failure=None,
+        result={
+            "verified_claims": [
+                {
+                    "text": (
+                        "The 2025 grid upgrade reduced outage minutes by "
+                        "40 percent."
+                    ),
+                    "source_urls": [
+                        "https://news.example.com/outage-coverage",
+                        "https://news.example.com/outage-verification",
+                        (
+                            "https://syndication.news.example.com/"
+                            "outage-syndication"
+                        ),
+                        "https://regulator.example.gov/outage-report",
+                    ],
+                    "verdict": "verified",
+                    "confidence": 0.80,
+                    "evidence": [
+                        "A follow-up report confirms outage minutes fell "
+                        "40 percent after the 2025 grid upgrade.",
+                        "Syndicated outage statistics repeat the same "
+                        "40 percent figure.",
+                    ],
+                    "contradictions": [],
+                }
+            ]
+        },
+        state_update={},
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=2,
+            tool_calls=4,
+            stop_reason="completed",
+            max_iterations=fact_checker_dependent_case.expectations.max_iterations,
+            tool_budget=fact_checker_dependent_case.expectations.max_tool_calls,
+        ),
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(),
+        trajectory=[
+            TrajectoryStep(
+                iteration=0,
+                thought="",
+                tool_name="web_search",
+                succeeded=True,
+                observation_summary=(
+                    "Retrieved https://news.example.com/outage-minutes-fall "
+                    "which confirms the 40 percent figure."
+                ),
+            ),
+            TrajectoryStep(
+                iteration=1,
+                thought="",
+                tool_name="web_search",
+                succeeded=True,
+                observation_summary=(
+                    "Retrieved https://syndication.news.example.com/"
+                    "outage-minutes-fall, the same 40 percent figure."
+                ),
+            ),
+        ],
         target_model_requested="gpt-5.6-luna",
         target_model_returned="gpt-5.6-luna",
         target_reasoning_effort="low",

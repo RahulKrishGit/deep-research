@@ -914,9 +914,39 @@ def _independent_domains_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
     reference = case.expectations.reference
-    minimum = _reference_int(case, "minimum_independent_domains", 2)
+    # The gate enforces a minimum only for cases that pin one: the ordinary
+    # mixed-verdicts case never declares ``minimum_independent_domains`` and
+    # exercises verdict logic, not the independence rule. Same
+    # auto-pass-on-absent-key pattern as ``_low_confidence_flagged_passes``.
+    minimum = reference.get("minimum_independent_domains")
+    if isinstance(minimum, bool) or not isinstance(minimum, (int, float)):
+        return True
+    minimum = int(minimum)
     family = reference.get("dependent_domain_family")
     family = family if isinstance(family, str) else None
+    # What counts as retrieved evidence: the verification prompt only asks
+    # the model to "quote or closely paraphrase" the retrieved passages
+    # (``CLAIM_VERIFICATION_INSTRUCTION``), so URLs in the evidence strings
+    # are optional. Count every URL the repetition recorded instead, the
+    # way ``_no_invented_sources_passes`` does:
+    #   - URL-like strings in trajectory thoughts/observation summaries
+    #     (the verification loop's web_search results land there), and
+    #   - ``scripted_search_urls`` on the evidence context (controlled
+    #     runs).
+    # Deliberately NOT counted: ``EvidenceContext.sources/findings/claims``
+    # — those are the input evidence the agent was given, i.e. the claim's
+    # own source set, which must never double as corroboration.
+    recorded_urls: list[str] = []
+    for step in output.trajectory:
+        recorded_urls.extend(_url_like_strings(_field(step, "thought")))
+        recorded_urls.extend(
+            _url_like_strings(_field(step, "observation_summary"))
+        )
+    recorded_urls.extend(
+        url
+        for url in (_field(output.evidence, "scripted_search_urls") or ())
+        if isinstance(url, str)
+    )
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
         return False
@@ -936,6 +966,7 @@ def _independent_domains_passes(
                     url.rstrip(_URL_TRAILING_PUNCTUATION)
                     for url in _URL_PATTERN.findall(string)
                 )
+        evidence_urls.extend(recorded_urls)
         independent = independent_domains(
             evidence_urls, claimed_domains=claimed
         )
