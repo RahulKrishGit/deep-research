@@ -1200,3 +1200,65 @@ def critic_budget_output(critic_budget_case) -> CriticOutput:
         target_model_returned="gpt-5.6-luna",
         target_reasoning_effort="medium",
     )
+
+
+# --- Task 19: judge fixtures ---
+
+
+@pytest.fixture
+def clean_gate_report() -> GateReport:
+    """Every deterministic gate passed; the judge must still run."""
+    return GateReport(
+        results=[
+            GateResult(gate_id="run_completed", passed=True, detail=""),
+            GateResult(
+                gate_id="required_output_fields", passed=True, detail=""
+            ),
+        ]
+    )
+
+
+@pytest.fixture
+def failing_gate_report() -> GateReport:
+    """A hard gate failed, but the run still produced evaluable output.
+
+    A gate failure is information for the judge, never a zero score.
+    """
+    return GateReport(
+        results=[
+            GateResult(gate_id="run_completed", passed=True, detail=""),
+            GateResult(
+                gate_id="required_output_fields",
+                passed=False,
+                detail="sub_topics missing",
+            ),
+        ]
+    )
+
+
+@pytest.fixture
+def failed_target_output(planner_case) -> TargetOutput:
+    """A repetition with no evaluable output: the judge must not run."""
+    return TargetOutput(
+        case_id=planner_case.case_id,
+        case_version=planner_case.version,
+        agent_name=planner_case.agent_name,
+        tier=planner_case.tier,
+        repetition=1,
+        session_id="evaluation-focused-decomposition",
+        experiment_name="planner-controlled-20260816T101500Z-abc1234",
+        trace_url=None,
+        completed=False,
+        failure=None,
+        result=None,
+        state_update={},
+        errors=[],
+        tracker_errors=[],
+        react=None,
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(),
+        trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned=None,
+        target_reasoning_effort="medium",
+    )
