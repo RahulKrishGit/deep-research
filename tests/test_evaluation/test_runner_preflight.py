@@ -71,6 +71,31 @@ async def test_a_missing_credential_fails_with_its_reason(
 
 
 @pytest.mark.asyncio
+async def test_a_live_run_missing_tavily_fails_before_model_access(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """Researcher's live tier also needs Tavily; step 4 must catch that
+    before step 5's real model-access call, not defer it to step 7's
+    ``guards_uninstallable``."""
+    environ = dict(ENVIRONMENT)
+    client = FakeOpenAIClient(available=["gpt-5.6-luna", "text-embedding-3-small"])
+
+    with pytest.raises(PreflightError) as caught:
+        await run(
+            settings,
+            runtime_config_for("researcher", tier="live"),
+            tmp_path,
+            cases=cases_for("researcher", "live"),
+            environ=environ,
+            openai_client=client,
+        )
+
+    assert caught.value.reason == "missing_credentials"
+    assert "TAVILY_API_KEY" in str(caught.value)
+    assert client.models.requested == []
+
+
+@pytest.mark.asyncio
 async def test_an_inaccessible_target_model_never_falls_back(
     settings, runtime_config_for, tmp_path
 ) -> None:
@@ -111,7 +136,7 @@ async def test_a_live_run_checks_the_embedding_model(
             runtime_config_for("planner", tier="live"),
             tmp_path,
             cases=cases_for("planner", "live"),
-            environ={**ENVIRONMENT},
+            environ={**ENVIRONMENT, "TAVILY_API_KEY": "tvly-abcdefghijklmnop"},
             openai_client=client,
         )
 

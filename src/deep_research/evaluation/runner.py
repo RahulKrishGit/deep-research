@@ -29,6 +29,7 @@ from deep_research.evaluation.datasets import DatasetSyncError, synchronize_data
 from deep_research.evaluation.dependencies import (
     build_controlled_dependencies,
     build_live_dependencies,
+    required_credentials,
 )
 from deep_research.evaluation.factory import evaluation_session_id
 from deep_research.evaluation.models import EvaluationCase
@@ -179,20 +180,25 @@ async def preflight(
     except ValueError as error:
         raise PreflightError("invalid_reasoning_effort", str(error)) from error
 
-    # 4. The two credentials every tier needs are present and non-blank:
-    # OpenAI for model access below, LangSmith for the dataset sync at the
-    # end. Deliberately *not* ``dependencies.required_credentials`` here:
-    # that function adds ``TAVILY_API_KEY`` for any agent whose declared
-    # tools reach it, independent of tier, but a controlled bundle never
+    # 4. Every credential this run will actually need is present and
+    # non-blank. OpenAI and LangSmith are required for every tier (model
+    # access below, dataset sync at the end). For a live-tier run,
+    # ``required_credentials`` also names ``TAVILY_API_KEY`` for any agent
+    # whose declared tools reach it -- a controlled bundle never
     # constructs a real Tavily client (it always injects the scripted
-    # search double), and a live bundle's own ``TAVILY_API_KEY``
-    # requirement is already enforced by ``build_live_dependencies`` at
-    # step 7 (surfacing as ``"guards_uninstallable"``) -- checking it again
-    # here would fail a live run before its cheaper model-access check
-    # even ran.
+    # search double), so the controlled tier only needs the fixed pair.
+    # Checking the live tier's full credential set here, before step 5's
+    # real network call, means a missing Tavily key is caught as
+    # ``missing_credentials`` up front instead of surfacing later, at
+    # step 7, as the less-specific ``guards_uninstallable``.
+    required = (
+        required_credentials(runtime.agent_name)
+        if runtime.tier == "live"
+        else ("OPENAI_API_KEY", "LANGSMITH_API_KEY")
+    )
     missing = [
         variable
-        for variable in ("OPENAI_API_KEY", "LANGSMITH_API_KEY")
+        for variable in required
         if not environ.get(variable, "").strip()
     ]
     if missing:
