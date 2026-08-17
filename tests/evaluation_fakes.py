@@ -1,0 +1,194 @@
+"""Offline doubles for the evaluation harness.
+
+Not collected by pytest: the filename does not match ``test_*.py``.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+from uuid import uuid4
+
+
+class FakeDataset:
+    def __init__(self, name: str, dataset_id: str) -> None:
+        self.name = name
+        self.id = dataset_id
+        self.url = f"https://smith.langchain.test/datasets/{dataset_id}"
+
+
+class FakeExample:
+    def __init__(self, example_id, inputs, outputs, metadata):
+        self.id = example_id
+        self.inputs = dict(inputs)
+        self.outputs = dict(outputs)
+        self.metadata = dict(metadata)
+
+
+class FakeLangSmithClient:
+    """Records every dataset call; deletion methods raise on sight."""
+
+    def __init__(self, *, datasets: Sequence[FakeDataset] = ()) -> None:
+        self._datasets = {dataset.name: dataset for dataset in datasets}
+        self._examples: dict[str, list[FakeExample]] = {
+            dataset.name: [] for dataset in datasets
+        }
+        self.created_datasets: list[str] = []
+        self.created_examples: list[dict[str, Any]] = []
+        self.updated_examples: list[dict[str, Any]] = []
+        self.feedback: list[dict[str, Any]] = []
+
+    def has_dataset(self, *, dataset_name: str) -> bool:
+        return dataset_name in self._datasets
+
+    def read_dataset(self, *, dataset_name: str) -> FakeDataset:
+        if dataset_name not in self._datasets:
+            raise LookupError(dataset_name)
+        return self._datasets[dataset_name]
+
+    def create_dataset(self, dataset_name: str, **kwargs: Any) -> FakeDataset:
+        dataset = FakeDataset(dataset_name, uuid4().hex[:8])
+        self._datasets[dataset_name] = dataset
+        self._examples[dataset_name] = []
+        self.created_datasets.append(dataset_name)
+        return dataset
+
+    def list_examples(self, *, dataset_name: str, **kwargs: Any):
+        return list(self._examples.get(dataset_name, []))
+
+    def create_examples(self, *, dataset_id: str, examples: Sequence[Mapping]):
+        name = next(
+            key
+            for key, dataset in self._datasets.items()
+            if dataset.id == dataset_id
+        )
+        for payload in examples:
+            self.created_examples.append(dict(payload))
+            self._examples[name].append(
+                FakeExample(
+                    uuid4().hex[:8],
+                    payload.get("inputs", {}),
+                    payload.get("outputs", {}),
+                    payload.get("metadata", {}),
+                )
+            )
+
+    def update_examples(self, *, updates: Sequence[Mapping]):
+        for payload in updates:
+            self.updated_examples.append(dict(payload))
+
+    def create_feedback(self, run_id, key, **kwargs: Any) -> None:
+        self.feedback.append({"run_id": run_id, "key": key, **kwargs})
+
+    def delete_dataset(self, *args: Any, **kwargs: Any) -> None:
+        raise AssertionError("evaluation must never delete a dataset")
+
+    def delete_example(self, *args: Any, **kwargs: Any) -> None:
+        raise AssertionError("evaluation must never delete an example")
+
+    def delete_feedback(self, *args: Any, **kwargs: Any) -> None:
+        raise AssertionError("evaluation must never delete feedback")
+
+
+@dataclass
+class FakeExperimentResults:
+    experiment_name: str
+    url: str
+    rows: list[dict[str, Any]] = field(default_factory=list)
+
+
+class FakeEvaluateRunner:
+    """A stand-in for ``langsmith.evaluation.aevaluate``.
+
+    Records its keyword arguments, then drives the target and every
+    evaluator ``num_repetitions`` times per example, sequentially.
+    """
+
+    def __init__(self, *, examples: Sequence[Mapping] = ()) -> None:
+        self.examples = [dict(example) for example in examples]
+        self.calls: list[dict[str, Any]] = []
+        self.rows: list[dict[str, Any]] = []
+
+    async def __call__(self, target, /, **kwargs: Any):
+        self.calls.append(dict(kwargs))
+        evaluators = kwargs.get("evaluators") or []
+        for _ in range(kwargs.get("num_repetitions", 1)):
+            for example in self.examples:
+                outputs = await target(example["inputs"])
+                run = FakeRun(outputs=outputs)
+                feedback = []
+                for evaluator in evaluators:
+                    result = evaluator(run, FakeExampleRow(example))
+                    if hasattr(result, "__await__"):
+                        result = await result
+                    feedback.append(result)
+                self.rows.append({"outputs": outputs, "feedback": feedback})
+        return FakeExperimentResults(
+            experiment_name=kwargs.get("experiment_prefix", "experiment"),
+            url="https://smith.langchain.test/experiments/1",
+            rows=self.rows,
+        )
+
+
+@dataclass
+class FakeRun:
+    outputs: dict[str, Any]
+    id: str = "run-1"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class FakeExampleRow:
+    payload: Mapping[str, Any]
+
+    @property
+    def inputs(self) -> dict[str, Any]:
+        return dict(self.payload.get("inputs", {}))
+
+    @property
+    def outputs(self) -> dict[str, Any]:
+        return dict(self.payload.get("outputs", {}))
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return dict(self.payload.get("metadata", {}))
+
+
+class FakeStructuredProvider:
+    """Serves queued structured responses; never touches the network."""
+
+    def __init__(self, responses: Sequence[Any] = ()) -> None:
+        self.responses = list(responses)
+        self.calls: list[tuple[Any, Any, str | None]] = []
+        self.last_model_returned: str | None = "gpt-5.6-luna-fake"
+
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None
+    ):
+        self.calls.append((list(messages), schema, agent_name))
+        if not self.responses:
+            raise AssertionError(f"no scripted response left for {schema}")
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class FakeModelsClient:
+    """Stands in for ``AsyncOpenAI.models`` during preflight."""
+
+    def __init__(self, *, available: Sequence[str] = ()) -> None:
+        self.available = set(available)
+        self.requested: list[str] = []
+
+    async def retrieve(self, model: str):
+        self.requested.append(model)
+        if model not in self.available:
+            raise LookupError(f"model {model} is not available")
+        return type("Model", (), {"id": model})()
+
+
+class FakeOpenAIClient:
+    def __init__(self, *, available: Sequence[str] = ()) -> None:
+        self.models = FakeModelsClient(available=available)

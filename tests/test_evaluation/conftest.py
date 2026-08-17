@@ -6,6 +6,12 @@ from datetime import datetime, timezone
 
 import pytest
 
+from deep_research.evaluation.cases import (
+    all_cases as _all_cases,
+)
+from deep_research.evaluation.cases import (
+    cases_for,
+)
 from deep_research.evaluation.config import GitMetadata, build_runtime_config
 from deep_research.evaluation.models import (
     CaseResult,
@@ -36,6 +42,47 @@ def tracker() -> Tracker:
 @pytest.fixture
 def settings() -> ConfigSettings:
     return ConfigSettings()
+
+
+@pytest.fixture
+def all_cases():
+    return _all_cases()
+
+
+@pytest.fixture
+def controlled_case_for():
+    """The registry's first controlled case for an agent.
+
+    The registry is empty until Tasks 10–15 land the case files, so an
+    empty lookup skips rather than failing: the tests that need a case
+    start running the moment that agent's cases exist.
+    """
+
+    def factory(agent_name):
+        available = cases_for(agent_name, "controlled")
+        if not available:
+            pytest.skip(
+                f"no controlled cases registered for {agent_name} yet; "
+                "cases land in Tasks 10-15"
+            )
+        return available[0]
+
+    return factory
+
+
+@pytest.fixture
+def planner_case(controlled_case_for):
+    return controlled_case_for("planner")
+
+
+@pytest.fixture
+def researcher_case(controlled_case_for):
+    return controlled_case_for("researcher")
+
+
+@pytest.fixture
+def synthesizer_case(controlled_case_for):
+    return controlled_case_for("synthesizer")
 
 
 @pytest.fixture
