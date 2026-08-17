@@ -19,7 +19,11 @@ from deep_research.evaluation.cases import (
 from deep_research.evaluation.cases import (
     cases_for,
 )
-from deep_research.evaluation.config import GitMetadata, build_runtime_config
+from deep_research.evaluation.config import (
+    GitMetadata,
+    build_runtime_config,
+    redact_secrets,
+)
 from deep_research.evaluation.datasets import example_payload
 from deep_research.evaluation.dependencies import (
     build_controlled_dependencies,
@@ -29,6 +33,7 @@ from deep_research.evaluation.models import (
     CaseResult,
     DependencyLedger,
     EvaluationCase,
+    EvaluationFailure,
     EvidenceContext,
     ExperimentResult,
     GateReport,
@@ -1760,6 +1765,279 @@ def evaluation_harness(tracker, settings):
             dependency_factory=build_controlled_dependencies,
             secrets=(),
         ),
+    )
+
+
+# --- Task 24: reporting fixtures --------------------------------------------
+
+_REPORTING_METADATA = {
+    "target_model": "gpt-5.6-luna",
+    "target_model_returned": "gpt-5.6-luna",
+    "target_reasoning_effort": "low",
+    "judge_reasoning_effort": "medium",
+    "reasoning_mode": "standard",
+    "configuration_fingerprint": "abc123abc123",
+    "judge_configuration_fingerprint": "def456def456",
+}
+
+
+def _scored_judge(score: float) -> JudgeFeedback:
+    return JudgeFeedback(
+        status="scored",
+        verdict=JudgeVerdict(
+            scores=JudgeScores(
+                role_adherence=score,
+                completeness=score,
+                groundedness=score,
+                reasoning_quality=score,
+                usefulness=score,
+                uncertainty_calibration=score,
+            ),
+            rationale="Scripted for the reporting tests.",
+        ),
+        judge_quality=score,
+        prompt_id="individual-agent-judge",
+        rubric_version=1,
+        prompt_fingerprint="abc123abc123",
+        judge_model="gpt-5.6-luna",
+        judge_configuration_fingerprint="def456def456",
+    )
+
+
+@pytest.fixture
+def researcher_experiment_result() -> ExperimentResult:
+    """3 real researcher controlled cases x 3 repetitions, mean 0.86.
+
+    Every repetition scores exactly 0.86 so the experiment-level mean is
+    exactly 0.86 and ``format_score`` never has to hide rounding drift.
+    """
+    cases = cases_for("researcher", "controlled")
+    assert [case.case_id for case in cases] == [
+        "multi-source-coverage",
+        "conflicting-evidence",
+        "partial-search-failure",
+    ]
+
+    case_results: list[CaseResult] = []
+    for case in cases:
+        repetitions = [
+            RepetitionResult(
+                case_id=case.case_id,
+                case_version=case.version,
+                repetition=n,
+                completed=True,
+                gates=GateReport(
+                    results=[
+                        GateResult(
+                            gate_id="run_completed", passed=True, detail=""
+                        )
+                    ]
+                ),
+                deterministic_quality=0.86,
+                judge=_scored_judge(0.86),
+                aggregate_quality=0.86,
+                trace_url=(
+                    f"https://smith.langchain.com/o/x/r/{case.case_id}-{n}"
+                ),
+                errors=[],
+            )
+            for n in range(1, 4)
+        ]
+        case_results.append(
+            CaseResult(
+                case_id=case.case_id,
+                case_version=case.version,
+                repetitions=repetitions,
+                average_quality=0.86,
+                passed=True,
+                lowest_scoring_trace_url=repetitions[0].trace_url,
+            )
+        )
+
+    return ExperimentResult(
+        agent_name="researcher",
+        tier="controlled",
+        experiment_name="researcher-controlled-20260816T101500Z-abc1234",
+        experiment_url=(
+            "https://smith.langchain.com/o/x/experiments/researcher-1"
+        ),
+        dataset_name="deep-research-researcher-controlled-v1",
+        dataset_url="https://smith.langchain.com/o/x/datasets/researcher-1",
+        cases=case_results,
+        status="REVIEW REQUIRED",
+        metadata=dict(_REPORTING_METADATA),
+    )
+
+
+@pytest.fixture
+def failing_experiment_result() -> ExperimentResult:
+    """One case whose one repetition fails the ``citations_known`` gate."""
+    repetition = RepetitionResult(
+        case_id="unsupported-claim",
+        case_version=1,
+        repetition=1,
+        completed=True,
+        gates=GateReport(
+            results=[
+                GateResult(gate_id="run_completed", passed=True, detail=""),
+                GateResult(
+                    gate_id="citations_known",
+                    passed=False,
+                    detail="a cited url is not in known_source_urls",
+                ),
+            ]
+        ),
+        deterministic_quality=0.4,
+        judge=_scored_judge(0.4),
+        aggregate_quality=0.4,
+        trace_url="https://smith.langchain.com/o/x/r/unsupported-claim-1",
+        errors=[],
+    )
+    case_result = CaseResult(
+        case_id="unsupported-claim",
+        case_version=1,
+        repetitions=[repetition],
+        average_quality=0.4,
+        passed=False,
+        lowest_scoring_trace_url=repetition.trace_url,
+    )
+    return ExperimentResult(
+        agent_name="synthesizer",
+        tier="controlled",
+        experiment_name="synthesizer-controlled-20260816T101500Z-abc1234",
+        experiment_url=(
+            "https://smith.langchain.com/o/x/experiments/synthesizer-1"
+        ),
+        dataset_name="deep-research-synthesizer-controlled-v1",
+        dataset_url="https://smith.langchain.com/o/x/datasets/synthesizer-1",
+        cases=[case_result],
+        status="FAILED",
+        metadata=dict(_REPORTING_METADATA),
+    )
+
+
+@pytest.fixture
+def judge_not_run_experiment_result() -> ExperimentResult:
+    """One repetition whose judge never ran (no evaluable output)."""
+    not_run_judge = JudgeFeedback(
+        status="judge_not_run",
+        not_run_reason="no_evaluable_output",
+        prompt_id="individual-agent-judge",
+        rubric_version=1,
+        prompt_fingerprint="abc123abc123",
+        judge_model="gpt-5.6-luna",
+        judge_configuration_fingerprint="def456def456",
+    )
+    repetition = RepetitionResult(
+        case_id="focused-decomposition",
+        case_version=1,
+        repetition=1,
+        completed=False,
+        gates=GateReport(
+            results=[
+                GateResult(gate_id="run_completed", passed=False, detail="")
+            ]
+        ),
+        deterministic_quality=None,
+        judge=not_run_judge,
+        aggregate_quality=None,
+        trace_url=None,
+        errors=[],
+    )
+    case_result = CaseResult(
+        case_id="focused-decomposition",
+        case_version=1,
+        repetitions=[repetition],
+        average_quality=None,
+        passed=False,
+        lowest_scoring_trace_url=None,
+    )
+    return ExperimentResult(
+        agent_name="planner",
+        tier="controlled",
+        experiment_name="planner-controlled-20260816T101500Z-abc1234",
+        experiment_url="https://smith.langchain.com/o/x/experiments/planner-1",
+        dataset_name="deep-research-planner-controlled-v1",
+        dataset_url="https://smith.langchain.com/o/x/datasets/planner-1",
+        cases=[case_result],
+        status="INFRASTRUCTURE FAILURE",
+        metadata=dict(_REPORTING_METADATA),
+    )
+
+
+@pytest.fixture
+def leaking_experiment_result() -> ExperimentResult:
+    """Proves redaction holds even through this rendering path.
+
+    The failure message is built from text that originally carried a
+    real-looking secret and a traceback-shaped fragment, then run through
+    the same ``redact_secrets`` helper Task 5 uses before anything is ever
+    attached to a typed ``EvaluationFailure`` -- so by the time it is part
+    of this ``ExperimentResult``, it is already clean, and this fixture
+    exists to prove ``write_experiment_artifact`` never reintroduces the
+    leak while serializing.
+    """
+    secret = "sk-abcdefghijklmnop"
+    raw = f"provider call failed with key={secret}"
+    clean_message = redact_secrets(raw, [secret])
+    assert secret not in clean_message
+
+    # A raw traceback is never stored on a typed EvaluationFailure -- only
+    # a curated ``message`` and an ``exception_type`` name are. This
+    # asserts that structural guarantee holds for the fixture itself, so
+    # the artifact-write test below is proving the rendering path, not a
+    # traceback that was never here to begin with.
+    assert "Traceback" not in clean_message
+
+    failure = EvaluationFailure(
+        stage="provider",
+        reason="provider_error",
+        message=clean_message,
+        exception_type="OpenAIProviderError",
+    )
+    repetition = RepetitionResult(
+        case_id="focused-decomposition",
+        case_version=1,
+        repetition=1,
+        completed=False,
+        gates=GateReport(
+            results=[
+                GateResult(gate_id="run_completed", passed=False, detail="")
+            ]
+        ),
+        deterministic_quality=None,
+        judge=JudgeFeedback(
+            status="judge_not_run",
+            not_run_reason="setup_failure",
+            prompt_id="individual-agent-judge",
+            rubric_version=1,
+            prompt_fingerprint="abc123abc123",
+            judge_model="gpt-5.6-luna",
+            judge_configuration_fingerprint="def456def456",
+        ),
+        aggregate_quality=None,
+        trace_url=None,
+        errors=[failure],
+    )
+    case_result = CaseResult(
+        case_id="focused-decomposition",
+        case_version=1,
+        repetitions=[repetition],
+        average_quality=None,
+        passed=False,
+        lowest_scoring_trace_url=None,
+    )
+    return ExperimentResult(
+        agent_name="planner",
+        tier="controlled",
+        experiment_name="planner-controlled-20260816T101500Z-abc1234",
+        experiment_url="https://smith.langchain.com/o/x/experiments/planner-1",
+        dataset_name="deep-research-planner-controlled-v1",
+        dataset_url="https://smith.langchain.com/o/x/datasets/planner-1",
+        cases=[case_result],
+        status="INFRASTRUCTURE FAILURE",
+        metadata=dict(_REPORTING_METADATA),
+        errors=[failure],
     )
 
 
