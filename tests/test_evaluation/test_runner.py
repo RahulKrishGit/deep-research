@@ -57,6 +57,43 @@ def test_a_case_passes_when_both_rules_are_satisfied(repetitions_at) -> None:
     assert case_result.passed is True
 
 
+def test_a_case_passes_when_the_floor_and_threshold_are_wired_independently(
+    repetitions_at,
+) -> None:
+    """Every repetition scores between the 0.65 floor and the 0.80
+    threshold-clearing average: each repetition clears an explicit
+    ``floor=0.65`` on its own, and the 0.8167 average clears a separate
+    ``threshold=0.80``. If ``floor``/``threshold`` were ever swapped at a
+    call site, every repetition (0.70, 0.85, 0.90) would have to clear an
+    0.80 floor instead, and 0.70 would fail it -- so this case flips to
+    failing under a swap, making it a genuine regression test for the
+    two-threshold wiring, not just a restatement of the single-threshold
+    tests above.
+    """
+    case_result = build_case_result(
+        None, repetitions_at([0.70, 0.85, 0.90]), threshold=0.80, floor=0.65
+    )
+
+    assert case_result.average_quality == pytest.approx(0.816666, abs=1e-5)
+    assert case_result.passed is True
+
+
+def test_a_repetition_below_the_floor_fails_the_case_despite_a_passing_average(
+    repetitions_at,
+) -> None:
+    """The floor is checked per repetition, independently of the average:
+    one repetition at 0.50 is below an explicit ``floor=0.65`` even though
+    the case's average (0.80) clears a lower ``threshold=0.60`` -- the
+    floor violation must still fail the case.
+    """
+    case_result = build_case_result(
+        None, repetitions_at([0.50, 0.95, 0.95]), threshold=0.60, floor=0.65
+    )
+
+    assert case_result.average_quality == pytest.approx(0.80, abs=1e-9)
+    assert case_result.passed is False
+
+
 def test_the_lowest_scoring_repetition_trace_is_selected(
     repetitions_at,
 ) -> None:
@@ -209,6 +246,63 @@ async def test_a_focused_case_run_produces_three_repetitions(
     judges = [r.judge for r in result.cases[0].repetitions]
     assert len(judges) == 3
     assert all(judge.status == "scored" for judge in judges)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_evaluation_wires_the_threshold_and_floor_correctly(
+    settings, runtime_config_for, tmp_path, evaluation_harness, monkeypatch
+) -> None:
+    """Spies on ``build_case_result`` to capture the exact ``threshold=``
+    and ``floor=`` keywords ``run_agent_evaluation`` passes for a
+    controlled run, and asserts they equal ``runtime.case_average_threshold``
+    (0.80) and ``runtime.repetition_floor`` (0.65) respectively -- two
+    genuinely different runtime values, not the same one twice.
+
+    A ``case.passed`` assertion cannot exercise this: every repetition in
+    this offline harness fails the ``trace_available`` gate (the fake
+    target never runs inside real LangSmith tracing, so ``trace_url`` is
+    always blank), which forces ``passed`` to ``False`` regardless of the
+    quality thresholds -- a swapped or collapsed ``threshold=``/``floor=``
+    would be invisible to a ``case.passed`` assertion in this harness. The
+    call-site keywords themselves are the one place a swap or collapse is
+    actually observable end to end, without touching the confirmed-correct
+    logic inside ``build_case_result`` itself.
+    """
+    import deep_research.evaluation.runner as runner_module
+
+    captured_calls: list[dict[str, float | None]] = []
+    original_build_case_result = runner_module.build_case_result
+
+    def spying_build_case_result(case, repetitions, *, threshold, floor=None):
+        captured_calls.append({"threshold": threshold, "floor": floor})
+        return original_build_case_result(
+            case, repetitions, threshold=threshold, floor=floor
+        )
+
+    monkeypatch.setattr(
+        runner_module, "build_case_result", spying_build_case_result
+    )
+
+    runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
+    runtime = runtime_config_for("planner")
+
+    await run_agent_evaluation(
+        settings,
+        runtime,
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        **evaluation_harness.kwargs(tmp_path),
+    )
+
+    assert captured_calls, "build_case_result was never invoked"
+    assert runtime.case_average_threshold == pytest.approx(0.80)
+    assert runtime.repetition_floor == pytest.approx(0.65)
+    assert runtime.case_average_threshold != runtime.repetition_floor
+    for call in captured_calls:
+        assert call["threshold"] == pytest.approx(
+            runtime.case_average_threshold
+        )
+        assert call["floor"] == pytest.approx(runtime.repetition_floor)
 
 
 @pytest.mark.asyncio
