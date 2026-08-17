@@ -15,13 +15,17 @@ from deep_research.evaluation.cases import (
 from deep_research.evaluation.config import GitMetadata, build_runtime_config
 from deep_research.evaluation.models import (
     CaseResult,
+    DependencyLedger,
+    EvidenceContext,
     ExperimentResult,
     GateReport,
     GateResult,
     JudgeFeedback,
     JudgeScores,
     JudgeVerdict,
+    ReActSummary,
     RepetitionResult,
+    TargetOutput,
 )
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.utils.config import ConfigSettings
@@ -104,6 +108,122 @@ def researcher_case(controlled_case_for):
 @pytest.fixture
 def synthesizer_case(controlled_case_for):
     return controlled_case_for("synthesizer")
+
+
+@pytest.fixture
+def clean_target_output(planner_case) -> TargetOutput:
+    """A fully populated planner repetition that passes every general gate.
+
+    The result carries the required ``sub_topics`` field and no URL-looking
+    strings (the planner's controlled cases declare no known source urls),
+    the ReAct summary stays within the case budgets, the ledger is empty,
+    and a non-blank trace url is present.
+    """
+    return TargetOutput(
+        case_id=planner_case.case_id,
+        case_version=planner_case.version,
+        agent_name=planner_case.agent_name,
+        tier=planner_case.tier,
+        repetition=1,
+        session_id="evaluation-focused-decomposition",
+        experiment_name="planner-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/planner-1",
+        completed=True,
+        failure=None,
+        result={
+            "sub_topics": [
+                {
+                    "title": "Solid-state electrolyte degradation",
+                    "rationale": "Electrolyte stability dominates cycle life.",
+                    "search_queries": [
+                        "solid-state electrolyte degradation mechanism"
+                    ],
+                    "success_criteria": ["Crack propagation data"],
+                    "priority": 1,
+                },
+                {
+                    "title": "Cathode interface resistance",
+                    "rationale": "Interface resistance limits capacity retention.",
+                    "search_queries": [
+                        "cathode solid-state interface resistance"
+                    ],
+                    "success_criteria": ["Quantified resistance growth"],
+                    "priority": 2,
+                },
+            ]
+        },
+        state_update={"note": "planned three subtopics"},
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=2,
+            tool_calls=3,
+            stop_reason="completed",
+            max_iterations=planner_case.expectations.max_iterations,
+            tool_budget=planner_case.expectations.max_tool_calls,
+        ),
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(),
+        trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+
+@pytest.fixture
+def researcher_target_output(researcher_case) -> TargetOutput:
+    """A fully populated researcher repetition citing only known sources."""
+    urls = researcher_case.expectations.known_source_urls
+    return TargetOutput(
+        case_id=researcher_case.case_id,
+        case_version=researcher_case.version,
+        agent_name=researcher_case.agent_name,
+        tier=researcher_case.tier,
+        repetition=1,
+        session_id="evaluation-multi-source-coverage",
+        experiment_name="researcher-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/researcher-1",
+        completed=True,
+        failure=None,
+        result={
+            "findings": [
+                {
+                    "content": "COP stays above 2.0 at -15C in field trials.",
+                    "source_url": urls[0],
+                    "source_title": "NREL cold-climate heat pump study",
+                },
+                {
+                    "content": "IEA reports broad cold-climate uptake.",
+                    "source_url": urls[1],
+                    "source_title": "IEA heat pump report",
+                },
+                {
+                    "content": "Backup heating adds 15% annual energy use.",
+                    "source_url": urls[2],
+                    "source_title": (
+                        "ScienceDirect backup heating analysis"
+                    ),
+                },
+            ]
+        },
+        state_update={},
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=4,
+            tool_calls=6,
+            stop_reason="completed",
+            max_iterations=researcher_case.expectations.max_iterations,
+            tool_budget=researcher_case.expectations.max_tool_calls,
+        ),
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(scripted_search_urls=list(urls)),
+        trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="low",
+    )
 
 
 @pytest.fixture
