@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +20,7 @@ from deep_research.evaluation.cases import (
     cases_for,
 )
 from deep_research.evaluation.config import GitMetadata, build_runtime_config
+from deep_research.evaluation.datasets import example_payload
 from deep_research.evaluation.dependencies import (
     build_controlled_dependencies,
     build_live_dependencies,
@@ -25,6 +28,7 @@ from deep_research.evaluation.dependencies import (
 from deep_research.evaluation.models import (
     CaseResult,
     DependencyLedger,
+    EvaluationCase,
     EvidenceContext,
     ExperimentResult,
     GateReport,
@@ -1499,3 +1503,345 @@ def live_target_harness(tracker, settings, tmp_path):
         )
 
     return factory
+
+
+# --- Task 23: runner harnesses -----------------------------------------------
+
+
+@pytest.fixture
+def repetitions_at():
+    """Build scored, gate-passing ``RepetitionResult``s at given scores.
+
+    Every repetition uses the same fixed case identity and a fresh trace
+    url ``.../r{n}`` (1-based), so the lowest-scoring-trace test can assert
+    on the exact suffix.
+    """
+
+    def factory(scores: Sequence[float]) -> list[RepetitionResult]:
+        results = []
+        for index, score in enumerate(scores):
+            repetition = index + 1
+            results.append(
+                RepetitionResult(
+                    case_id="focused-decomposition",
+                    case_version=1,
+                    repetition=repetition,
+                    completed=True,
+                    gates=GateReport(
+                        results=[
+                            GateResult(
+                                gate_id="run_completed", passed=True, detail=""
+                            )
+                        ]
+                    ),
+                    deterministic_quality=score,
+                    judge=JudgeFeedback(
+                        status="scored",
+                        verdict=JudgeVerdict(
+                            scores=JudgeScores(
+                                role_adherence=score,
+                                completeness=score,
+                                groundedness=score,
+                                reasoning_quality=score,
+                                usefulness=score,
+                                uncertainty_calibration=score,
+                            ),
+                            rationale="Scripted for aggregation tests.",
+                        ),
+                        judge_quality=score,
+                        prompt_id="individual-agent-judge",
+                        rubric_version=1,
+                        prompt_fingerprint="abc123abc123",
+                        judge_model="gpt-5.6-luna",
+                        judge_configuration_fingerprint="def456def456",
+                    ),
+                    aggregate_quality=score,
+                    trace_url=f"https://smith.langchain.com/o/x/r/r{repetition}",
+                    errors=[],
+                )
+            )
+        return results
+
+    return factory
+
+
+@pytest.fixture
+def repetition_without_judge() -> RepetitionResult:
+    """A completed, gate-passing repetition whose judge never ran.
+
+    ``aggregate_quality`` must be ``None``: a repetition with no aggregate
+    score never passes, regardless of a strong deterministic score.
+    """
+    return RepetitionResult(
+        case_id="focused-decomposition",
+        case_version=1,
+        repetition=99,
+        completed=True,
+        gates=GateReport(
+            results=[GateResult(gate_id="run_completed", passed=True, detail="")]
+        ),
+        deterministic_quality=0.9,
+        judge=JudgeFeedback(
+            status="judge_not_run",
+            not_run_reason="no_evaluable_output",
+            prompt_id="individual-agent-judge",
+            rubric_version=1,
+            prompt_fingerprint="abc123abc123",
+            judge_model="gpt-5.6-luna",
+            judge_configuration_fingerprint="def456def456",
+        ),
+        aggregate_quality=None,
+        trace_url="https://smith.langchain.com/o/x/r/no-judge",
+        errors=[],
+    )
+
+
+@pytest.fixture
+def repetition_with_failed_gate() -> RepetitionResult:
+    """A repetition with a very high score but one failed hard gate.
+
+    ``passed`` on the enclosing case must never be offset by the score: a
+    failed hard gate is an independent, non-negotiable AND-condition.
+    """
+    return RepetitionResult(
+        case_id="focused-decomposition",
+        case_version=1,
+        repetition=98,
+        completed=True,
+        gates=GateReport(
+            results=[
+                GateResult(
+                    gate_id="no_prohibited_calls",
+                    passed=False,
+                    detail="a prohibited call was recorded",
+                )
+            ]
+        ),
+        deterministic_quality=1.0,
+        judge=JudgeFeedback(
+            status="scored",
+            verdict=JudgeVerdict(
+                scores=JudgeScores(
+                    role_adherence=1.0,
+                    completeness=1.0,
+                    groundedness=1.0,
+                    reasoning_quality=1.0,
+                    usefulness=1.0,
+                    uncertainty_calibration=1.0,
+                ),
+                rationale="Scripted: a high score that must not offset a gate.",
+            ),
+            judge_quality=1.0,
+            prompt_id="individual-agent-judge",
+            rubric_version=1,
+            prompt_fingerprint="abc123abc123",
+            judge_model="gpt-5.6-luna",
+            judge_configuration_fingerprint="def456def456",
+        ),
+        aggregate_quality=1.0,
+        trace_url="https://smith.langchain.com/o/x/r/failed-gate",
+        errors=[],
+    )
+
+
+@pytest.fixture
+def passing_cases(repetitions_at):
+    """Two ``CaseResult``s, both passing under a 0.80 threshold."""
+    from deep_research.evaluation.runner import build_case_result
+
+    return [
+        build_case_result(
+            None, repetitions_at([0.90, 0.90, 0.90]), threshold=0.80
+        ),
+        build_case_result(
+            None, repetitions_at([0.85, 0.85, 0.85]), threshold=0.80
+        ),
+    ]
+
+
+@pytest.fixture
+def failing_case(repetitions_at):
+    """One ``CaseResult`` that fails under a 0.80 threshold."""
+    from deep_research.evaluation.runner import build_case_result
+
+    return build_case_result(
+        None, repetitions_at([0.10, 0.10, 0.10]), threshold=0.80
+    )
+
+
+def _judge_verdict(value: float = 0.85) -> JudgeVerdict:
+    """A generic, schema-valid judge verdict for the async harness tests.
+
+    The exact score is not asserted by any Task 23 test; only
+    ``status == "scored"`` is. Kept high and uniform on purpose so nothing
+    here accidentally trips a threshold test elsewhere.
+    """
+    return JudgeVerdict(
+        scores=JudgeScores(
+            role_adherence=value,
+            completeness=value,
+            groundedness=value,
+            reasoning_quality=value,
+            usefulness=value,
+            uncertainty_calibration=value,
+        ),
+        agent_specific={"decomposition_quality": value},
+        rationale="Scripted judge verdict for the runner harness tests.",
+    )
+
+
+class _FakePlannerSearchClient:
+    """A live-tier search double the planner's scripted flow never calls.
+
+    The scripted decision always finishes immediately, so this only needs
+    to exist to satisfy ``build_live_dependencies``' constructive guard.
+    """
+
+    def search(self, *, query, search_depth, max_results):
+        del query, search_depth, max_results
+        return {"results": []}
+
+
+@dataclass
+class _EvaluationHarness:
+    """A bundle of cases, LangSmith-shaped examples, and ``run_agent_evaluation``
+    kwargs, consistent enough with each other that ``FakeEvaluateRunner``
+    driving them through the real ``build_target`` chain produces one
+    scored repetition per case per repetition.
+    """
+
+    cases: list[EvaluationCase]
+    examples: list[dict]
+    factory_kwargs: dict = field(default_factory=dict)
+
+    def kwargs(self, tmp_path: Path) -> dict:
+        return {**self.factory_kwargs, "root": tmp_path / "runs"}
+
+    def for_case(self, case_id: str) -> "_EvaluationHarness":
+        case = next(item for item in self.cases if item.case_id == case_id)
+        examples = [
+            example
+            for example in self.examples
+            if example["inputs"]["case_id"] == case_id
+        ]
+        return _EvaluationHarness(
+            cases=[case], examples=examples, factory_kwargs=self.factory_kwargs
+        )
+
+
+@pytest.fixture
+def evaluation_harness(tracker, settings):
+    """The three planner controlled cases, ready for a real controlled run.
+
+    The target provider is scripted identically for every repetition (one
+    "finish" decision, then a valid three-subtopic plan draft) -- the same
+    script ``target_harness`` already proves works end to end for the
+    focused-decomposition case; the fake provider never inspects the
+    prompt, so the same script is agent-flow-shape-valid for the other two
+    controlled cases too. The judge provider is a fresh, three-verdict
+    queue per case, matching the controlled tier's three repetitions.
+    """
+    cases = list(cases_for("planner", "controlled"))
+    examples = [example_payload(case, rubric_version=1) for case in cases]
+
+    def target_provider_factory():
+        return FakeStructuredProvider(_planner_responses())
+
+    def judge_provider_factory():
+        return FakeStructuredProvider([_judge_verdict() for _ in range(3)])
+
+    return _EvaluationHarness(
+        cases=cases,
+        examples=examples,
+        factory_kwargs=dict(
+            target_provider_factory=target_provider_factory,
+            judge_provider_factory=judge_provider_factory,
+            tracker_factory=lambda: tracker,
+            dependency_factory=build_controlled_dependencies,
+            secrets=(),
+        ),
+    )
+
+
+@pytest.fixture
+def live_evaluation_harness(tracker, settings):
+    """The planner's one live case, ready for a real live-tier run."""
+    case = next(
+        item
+        for item in cases_for("planner", "live")
+        if item.case_id == "planner-live-scope"
+    )
+    examples = [example_payload(case, rubric_version=1)]
+
+    def target_provider_factory():
+        return FakeStructuredProvider(_planner_responses())
+
+    def judge_provider_factory():
+        return FakeStructuredProvider([_judge_verdict()])
+
+    environ = {
+        "OPENAI_API_KEY": "sk-abcdefghijklmnop",
+        "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
+        "TAVILY_API_KEY": "tvly-abcdefghijklmnop",
+    }
+    dependency_factory = functools.partial(
+        build_live_dependencies,
+        environ=environ,
+        search_client=_FakePlannerSearchClient(),
+        embeddings=object(),
+    )
+
+    return _EvaluationHarness(
+        cases=[case],
+        examples=examples,
+        factory_kwargs=dict(
+            target_provider_factory=target_provider_factory,
+            judge_provider_factory=judge_provider_factory,
+            tracker_factory=lambda: tracker,
+            dependency_factory=dependency_factory,
+            secrets=(),
+        ),
+    )
+
+
+@pytest.fixture
+def partially_failing_harness(tracker, settings):
+    """The three planner controlled cases, with one repetition scripted to
+    fail during the model call (a provider failure, the same shape
+    ``failing_target_harness`` already proves the target captures as a
+    typed, non-escaping failure) -- so the case owning that repetition
+    fails while the other two cases, and the other eight repetitions,
+    complete normally.
+    """
+    cases = list(cases_for("planner", "controlled"))
+    examples = [example_payload(case, rubric_version=1) for case in cases]
+
+    call_count = {"n": 0}
+
+    def target_provider_factory():
+        call_count["n"] += 1
+        if call_count["n"] == 4:
+            return FakeStructuredProvider(
+                [
+                    _finish_decision(),
+                    OpenAIProviderError(
+                        "the model provider is unavailable"
+                    ),
+                ]
+            )
+        return FakeStructuredProvider(_planner_responses())
+
+    def judge_provider_factory():
+        return FakeStructuredProvider([_judge_verdict() for _ in range(3)])
+
+    return _EvaluationHarness(
+        cases=cases,
+        examples=examples,
+        factory_kwargs=dict(
+            target_provider_factory=target_provider_factory,
+            judge_provider_factory=judge_provider_factory,
+            tracker_factory=lambda: tracker,
+            dependency_factory=build_controlled_dependencies,
+            secrets=(),
+        ),
+    )
