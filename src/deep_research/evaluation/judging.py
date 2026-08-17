@@ -13,11 +13,12 @@ LangSmith evaluator trace.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from string import Template
-from typing import cast
+from typing import TypeAlias, cast
 
-from pydantic import Field
+from langsmith.run_helpers import traceable
+from pydantic import Field, ValidationError
 
 from deep_research.agents.base import StructuredCompleter
 from deep_research.evaluation.config import (
@@ -337,4 +338,215 @@ async def run_judge(
         ),
         judge_model=runtime.judge_model,
         judge_configuration_fingerprint=runtime.judge_configuration_fingerprint,
+    )
+
+
+# --- The LangSmith evaluator adapter -----------------------------------------
+
+_JudgedCallable: TypeAlias = Callable[..., Awaitable[JudgeVerdict]]
+TraceFactory: TypeAlias = Callable[..., Callable[[_JudgedCallable], _JudgedCallable]]
+
+
+def judge_evaluator_metadata(
+    runtime: EvaluationRuntimeConfig,
+) -> dict[str, JsonValue]:
+    """The exact evaluator definition the Source view must expose.
+
+    The identical values go into the ``judge_quality`` feedback entry and
+    the traced judge run, so a local artifact row can be matched to the
+    exact evaluator definition that produced it. ``rubric_version``
+    resolves through the same ``runtime.rubric_version`` path ``run_judge``
+    uses to render the rubric, so the metadata never names a different
+    version than the prompt the judge was actually shown.
+    """
+    return {
+        "prompt_id": JUDGE_PROMPT_ID,
+        "rubric_version": runtime.rubric_version,
+        "prompt_fingerprint": judge_prompt_fingerprint(
+            rubric_version=runtime.rubric_version
+        ),
+        "judge_model": runtime.judge_model,
+        "judge_configuration_fingerprint": runtime.judge_configuration_fingerprint,
+        "judge_reasoning_effort": runtime.judge_reasoning_effort,
+        "judge_temperature": runtime.judge_temperature,
+        "reasoning_mode": runtime.reasoning_mode,
+    }
+
+
+def judge_feedback_payload(feedback: JudgeFeedback) -> dict[str, JsonValue]:
+    """The traceability fields one typed feedback carries, as a JSON block.
+
+    Only fields ``JudgeFeedback`` itself carries are emitted — the identity
+    a local artifact row can match to a LangSmith feedback entry — never a
+    secret or a free-form value.
+    """
+    return {
+        "prompt_id": feedback.prompt_id,
+        "rubric_version": feedback.rubric_version,
+        "prompt_fingerprint": feedback.prompt_fingerprint,
+        "judge_model": feedback.judge_model,
+        "judge_configuration_fingerprint": feedback.judge_configuration_fingerprint,
+    }
+
+
+class JudgeEvaluator:
+    """The judge as a callable LangSmith evaluator for ``aevaluate``.
+
+    ``__name__`` is ``JUDGE_PROMPT_ID``, so the experiment's feedback
+    column is named after the evaluator definition instead of an anonymous
+    lambda. The judge invocation is traced with the sanitized ``JudgeInput``
+    as the trace's input and the structured ``JudgeVerdict`` as its output;
+    that pairing is what makes the Evaluator trace show the fully formatted
+    judge prompt, the model invocation, the structured score, and the
+    rationale.
+    """
+
+    def __init__(
+        self,
+        provider: StructuredCompleter,
+        case: EvaluationCase,
+        *,
+        runtime: EvaluationRuntimeConfig,
+        secrets: Sequence[str],
+        gate_lookup: Callable[[TargetOutput], GateReport | None],
+        trace_factory: TraceFactory = traceable,
+    ) -> None:
+        self.__name__ = JUDGE_PROMPT_ID
+        self._provider = provider
+        self._case = case
+        self._runtime = runtime
+        self._secrets = tuple(secrets)
+        self._gate_lookup = gate_lookup
+
+        async def trace_judge(*, judge_input: JudgeInput) -> JudgeVerdict:
+            messages = render_judge_messages(judge_input)
+            return await provider.complete_structured(
+                messages, JudgeVerdict, agent_name="judge"
+            )
+
+        self._trace_judge = trace_factory(
+            name=JUDGE_PROMPT_ID,
+            run_type="llm",
+            metadata=judge_evaluator_metadata(runtime),
+        )(trace_judge)
+
+    async def __call__(self, run, example) -> dict[str, JsonValue]:
+        """Score one row: ``(run, example) -> {"results": [...]}``.
+
+        A run that cannot be parsed, a missing gate report, or a judge
+        failure all produce ``judge_status == "judge_not_run"`` with a
+        typed comment and no ``judge_quality`` key: the harness never
+        fabricates a quality score at the LangSmith layer either.
+        """
+        try:
+            output = TargetOutput.model_validate(run.outputs)
+        except ValidationError as error:
+            return self._not_run(
+                f"target output failed validation: {error}",
+            )
+        gates = self._gate_lookup(output)
+        if gates is None:
+            return self._not_run("no gate report recorded for this run")
+        if not output.has_evaluable_output:
+            return self._not_run("no_evaluable_output")
+        try:
+            judge_input = build_judge_input(
+                output, self._case, gates, secrets=self._secrets
+            )
+            verdict = await self._trace_judge(judge_input=judge_input)
+        except SecretLeakError as error:
+            return self._not_run(str(error))
+        except StructuredOutputError:
+            return self._not_run("judge_schema_failure")
+        except OpenAIProviderError:
+            return self._not_run("judge_provider_failure")
+        except Exception:
+            return self._not_run("unhandled_exception")
+
+        feedback = JudgeFeedback(
+            status="scored",
+            verdict=verdict,
+            judge_quality=judge_quality(verdict.scores),
+            prompt_id=JUDGE_PROMPT_ID,
+            rubric_version=self._runtime.rubric_version,
+            prompt_fingerprint=judge_prompt_fingerprint(
+                rubric_version=self._runtime.rubric_version
+            ),
+            judge_model=self._runtime.judge_model,
+            judge_configuration_fingerprint=(
+                self._runtime.judge_configuration_fingerprint
+            ),
+        )
+        return self._scored(verdict, feedback)
+
+    @staticmethod
+    def _not_run(comment: str) -> dict[str, JsonValue]:
+        """The ``judge_not_run`` result: status only, no fabricated score."""
+        return {
+            "results": [
+                {"key": "judge_status", "value": "judge_not_run", "comment": comment}
+            ]
+        }
+
+    def _scored(
+        self, verdict: JudgeVerdict, feedback: JudgeFeedback
+    ) -> dict[str, JsonValue]:
+        metadata: dict[str, JsonValue] = judge_evaluator_metadata(self._runtime)
+        model_returned = getattr(self._provider, "last_model_returned", None)
+        if isinstance(model_returned, str) and model_returned:
+            metadata["judge_model_returned"] = model_returned
+        if feedback.latency_ms is not None:
+            metadata["latency_ms"] = feedback.latency_ms
+        if feedback.input_tokens is not None:
+            metadata["input_tokens"] = feedback.input_tokens
+        if feedback.output_tokens is not None:
+            metadata["output_tokens"] = feedback.output_tokens
+
+        results: list[dict[str, JsonValue]] = [
+            {
+                "key": "judge_quality",
+                "score": feedback.judge_quality,
+                "comment": verdict.rationale,
+                "metadata": metadata,
+            }
+        ]
+        for name in COMMON_DIMENSION_WEIGHTS:
+            results.append(
+                {
+                    "key": f"judge:{name}",
+                    "score": getattr(verdict.scores, name),
+                    "comment": "",
+                }
+            )
+        for dimension, score in verdict.agent_specific.items():
+            results.append(
+                {"key": f"judge:{dimension}", "score": score, "comment": ""}
+            )
+        results.append({"key": "judge_status", "value": "scored", "comment": ""})
+        return {"results": results}
+
+
+def build_judge_evaluator(
+    provider: StructuredCompleter,
+    case: EvaluationCase,
+    *,
+    runtime: EvaluationRuntimeConfig,
+    secrets: Sequence[str],
+    gate_lookup: Callable[[TargetOutput], GateReport | None],
+    trace_factory: TraceFactory = traceable,
+) -> JudgeEvaluator:
+    """Wrap the versioned judge as a named, traced LangSmith evaluator.
+
+    ``gate_lookup`` injects the deterministic half's already-computed
+    ``GateReport`` for the run (or ``None`` when the deterministic half did
+    not run), so the judge is shown exactly the verdict the deterministic
+    evaluator produced — never a second, possibly divergent computation.
+    """
+    return JudgeEvaluator(
+        provider,
+        case,
+        runtime=runtime,
+        secrets=secrets,
+        gate_lookup=gate_lookup,
+        trace_factory=trace_factory,
     )
