@@ -165,18 +165,82 @@ def test_known_citations_pass_the_citation_gate(
     assert gate(results, "citations_known").passed is True
 
 
-def test_a_live_case_without_known_urls_skips_the_citation_gate(
+def test_a_url_embedded_in_prose_with_trailing_punctuation_passes(
+    researcher_case, researcher_target_output
+) -> None:
+    """Markdown parens, commas, and periods must not mangle extracted URLs."""
+    known = researcher_case.expectations.known_source_urls
+    result = dict(researcher_target_output.result)
+    result["findings"] = [
+        {
+            "content": (
+                "See (the [NREL study]"
+                f"({known[0]})), which is extended in "
+                f"[the IEA report]({known[1]}), and the "
+                f"ScienceDirect analysis at {known[2]}."
+            ),
+            "source_url": known[0],
+            "source_title": "NREL cold-climate heat pump study",
+        }
+    ]
+    output = researcher_target_output.model_copy(update={"result": result})
+
+    results = evaluate_general_gates(output, researcher_case, secrets=())
+
+    assert gate(results, "citations_known").passed is True
+
+
+def test_a_live_case_without_known_urls_fails_on_unknown_citations(
     live_case_for, researcher_target_output
 ) -> None:
+    """A live case with no known urls must not auto-pass the citation gate."""
     live_case = live_case_for("researcher")
     assert live_case.expectations.known_source_urls == []
 
-    results = evaluate_general_gates(
-        researcher_target_output, live_case, secrets=()
+    result = dict(researcher_target_output.result)
+    result["findings"] = [
+        {"source_url": "https://invented.example.com/page"}
+    ]
+    output = researcher_target_output.model_copy(
+        update={"result": result, "trajectory": []}
     )
 
+    results = evaluate_general_gates(output, live_case, secrets=())
+
+    assert gate(results, "citations_known").passed is False
+    assert "invented.example.com" in gate(results, "citations_known").detail
+
+
+def test_a_live_case_without_known_urls_accepts_trajectory_urls(
+    live_case_for, researcher_target_output
+) -> None:
+    """The trajectory check must run even when no known urls are declared."""
+    live_case = live_case_for("researcher")
+    assert live_case.expectations.known_source_urls == []
+    discovered = "https://discovered.example.com/page"
+
+    result = dict(researcher_target_output.result)
+    result["findings"] = [
+        {"source_url": discovered, "source_title": "Discovered source"}
+    ]
+    output = researcher_target_output.model_copy(
+        update={
+            "result": result,
+            "trajectory": [
+                TrajectoryStep(
+                    iteration=1,
+                    thought=f"open {discovered}",
+                    observation_summary=f"retrieved {discovered}",
+                )
+            ],
+        }
+    )
+
+    results = evaluate_general_gates(output, live_case, secrets=())
+
     assert gate(results, "citations_known").passed is True
-    assert "skipped" in gate(results, "citations_known").detail
+    # Not the old auto-pass skip: the trajectory branch really ran.
+    assert "skipped" not in gate(results, "citations_known").detail
 
 
 def test_a_live_case_accepts_urls_from_the_recorded_trajectory(

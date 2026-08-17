@@ -40,6 +40,10 @@ _RESEARCH_ERROR_KEYS = frozenset(
     {"error_type", "source", "message", "timestamp"}
 )
 _URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+")
+# Greedy URL matching keeps trailing punctuation that belongs to prose
+# (markdown parens, commas, periods, ...). Strip it so the extracted string
+# compares equal to the canonical ``known_source_urls`` entry.
+_URL_TRAILING_PUNCTUATION = ".,;:!?)]}'\"'"
 _TRANSPORT_FAILURE_TYPE = "langsmith_tracing_failure"
 
 
@@ -60,10 +64,18 @@ def _field(value: object, name: str) -> object:
 
 
 def _url_like_strings(payload: object) -> set[str]:
-    """Every URL-looking substring, recursively, in ``payload``."""
+    """Every URL-looking substring, recursively, in ``payload``.
+
+    Trailing punctuation is trimmed off each match so a URL embedded in
+    prose (``...report).``) compares equal to the bare canonical entry;
+    ``rstrip`` removes stacked punctuation in one pass.
+    """
     found: set[str] = set()
     if isinstance(payload, str):
-        found.update(_URL_PATTERN.findall(payload))
+        found.update(
+            url.rstrip(_URL_TRAILING_PUNCTUATION)
+            for url in _URL_PATTERN.findall(payload)
+        )
     elif isinstance(payload, Mapping):
         for item in payload.values():
             found.update(_url_like_strings(item))
@@ -191,13 +203,10 @@ def _gate_errors_typed(output: TargetOutput, case: EvaluationCase) -> GateResult
 def _gate_citations_known(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
+    # Live cases fall through to the trajectory check even when no known
+    # source urls are declared: for those cases the recorded tool trajectory
+    # is the only evidence a cited url was genuinely retrieved.
     expectations = case.expectations
-    if case.tier == "live" and not expectations.known_source_urls:
-        return GateResult(
-            gate_id="citations_known",
-            passed=True,
-            detail="skipped: live case declares no known source urls",
-        )
     allowed: set[str] = set(expectations.known_source_urls)
     scripted = _field(output.evidence, "scripted_search_urls") or ()
     allowed.update(url for url in scripted if isinstance(url, str))
