@@ -278,6 +278,49 @@ def render_judge_messages(judge_input: JudgeInput) -> list[ChatMessage]:
     ]
 
 
+async def _invoke_judge(
+    provider: StructuredCompleter, messages: list[ChatMessage]
+) -> JudgeVerdict:
+    """The one model-invocation step both ``run_judge`` and the LangSmith
+    evaluator path use. ``JudgeEvaluator`` wraps this in its tracing
+    decorator; ``run_judge`` calls it directly.
+    """
+    return await provider.complete_structured(
+        messages, JudgeVerdict, agent_name="judge"
+    )
+
+
+def _judge_not_run_reason(error: Exception) -> JudgeNotRunReason:
+    """Map a judge-invocation exception to its typed not-run reason.
+
+    Order matters: ``StructuredOutputError`` is a subclass of
+    ``OpenAIProviderError``, so it must be checked first.
+    """
+    if isinstance(error, StructuredOutputError):
+        return "judge_schema_failure"
+    if isinstance(error, OpenAIProviderError):
+        return "judge_provider_failure"
+    return "unhandled_exception"
+
+
+def _build_scored_feedback(
+    verdict: JudgeVerdict, runtime: EvaluationRuntimeConfig
+) -> JudgeFeedback:
+    """The scored ``JudgeFeedback``, shared by both call paths."""
+    return JudgeFeedback(
+        status="scored",
+        verdict=verdict,
+        judge_quality=judge_quality(verdict.scores),
+        prompt_id=JUDGE_PROMPT_ID,
+        rubric_version=runtime.rubric_version,
+        prompt_fingerprint=judge_prompt_fingerprint(
+            rubric_version=runtime.rubric_version
+        ),
+        judge_model=runtime.judge_model,
+        judge_configuration_fingerprint=runtime.judge_configuration_fingerprint,
+    )
+
+
 async def run_judge(
     provider: StructuredCompleter,
     output: TargetOutput,
@@ -317,28 +360,11 @@ async def run_judge(
     judge_input = build_judge_input(output, case, gates, secrets=secrets)
     messages = render_judge_messages(judge_input)
     try:
-        verdict = await provider.complete_structured(
-            messages, JudgeVerdict, agent_name="judge"
-        )
-    except StructuredOutputError:
-        return not_run("judge_schema_failure")
-    except OpenAIProviderError:
-        return not_run("judge_provider_failure")
-    except Exception:
-        return not_run("unhandled_exception")
+        verdict = await _invoke_judge(provider, messages)
+    except Exception as error:
+        return not_run(_judge_not_run_reason(error))
 
-    return JudgeFeedback(
-        status="scored",
-        verdict=verdict,
-        judge_quality=judge_quality(verdict.scores),
-        prompt_id=JUDGE_PROMPT_ID,
-        rubric_version=runtime.rubric_version,
-        prompt_fingerprint=judge_prompt_fingerprint(
-            rubric_version=runtime.rubric_version
-        ),
-        judge_model=runtime.judge_model,
-        judge_configuration_fingerprint=runtime.judge_configuration_fingerprint,
-    )
+    return _build_scored_feedback(verdict, runtime)
 
 
 # --- The LangSmith evaluator adapter -----------------------------------------
@@ -420,9 +446,7 @@ class JudgeEvaluator:
 
         async def trace_judge(*, judge_input: JudgeInput) -> JudgeVerdict:
             messages = render_judge_messages(judge_input)
-            return await provider.complete_structured(
-                messages, JudgeVerdict, agent_name="judge"
-            )
+            return await _invoke_judge(provider, messages)
 
         self._trace_judge = trace_factory(
             name=JUDGE_PROMPT_ID,
@@ -436,14 +460,17 @@ class JudgeEvaluator:
         A run that cannot be parsed, a missing gate report, or a judge
         failure all produce ``judge_status == "judge_not_run"`` with a
         typed comment and no ``judge_quality`` key: the harness never
-        fabricates a quality score at the LangSmith layer either.
+        fabricates a quality score at the LangSmith layer either. A
+        ``ValidationError`` is reported with a static reason
+        (``"target_output_invalid"``) rather than ``str(error)``: pydantic
+        embeds the raw, unredacted ``input_value`` for every failing field
+        in its error text, and that text would otherwise reach a
+        LangSmith-visible comment unredacted.
         """
         try:
             output = TargetOutput.model_validate(run.outputs)
-        except ValidationError as error:
-            return self._not_run(
-                f"target output failed validation: {error}",
-            )
+        except ValidationError:
+            return self._not_run("target_output_invalid")
         gates = self._gate_lookup(output)
         if gates is None:
             return self._not_run("no gate report recorded for this run")
@@ -456,35 +483,28 @@ class JudgeEvaluator:
             verdict = await self._trace_judge(judge_input=judge_input)
         except SecretLeakError as error:
             return self._not_run(str(error))
-        except StructuredOutputError:
-            return self._not_run("judge_schema_failure")
-        except OpenAIProviderError:
-            return self._not_run("judge_provider_failure")
-        except Exception:
-            return self._not_run("unhandled_exception")
+        except Exception as error:
+            return self._not_run(_judge_not_run_reason(error))
 
-        feedback = JudgeFeedback(
-            status="scored",
-            verdict=verdict,
-            judge_quality=judge_quality(verdict.scores),
-            prompt_id=JUDGE_PROMPT_ID,
-            rubric_version=self._runtime.rubric_version,
-            prompt_fingerprint=judge_prompt_fingerprint(
-                rubric_version=self._runtime.rubric_version
-            ),
-            judge_model=self._runtime.judge_model,
-            judge_configuration_fingerprint=(
-                self._runtime.judge_configuration_fingerprint
-            ),
-        )
+        feedback = _build_scored_feedback(verdict, self._runtime)
         return self._scored(verdict, feedback)
 
-    @staticmethod
-    def _not_run(comment: str) -> dict[str, JsonValue]:
-        """The ``judge_not_run`` result: status only, no fabricated score."""
+    def _not_run(self, comment: str) -> dict[str, JsonValue]:
+        """The ``judge_not_run`` result: status only, no fabricated score.
+
+        The metadata mirrors the scored path's ``judge_quality`` entry
+        (``judge_evaluator_metadata(self._runtime)``), so a ``judge_not_run``
+        row in LangSmith is traceable to the exact evaluator definition the
+        same way a local ``judge_not_run`` artifact already is.
+        """
         return {
             "results": [
-                {"key": "judge_status", "value": "judge_not_run", "comment": comment}
+                {
+                    "key": "judge_status",
+                    "value": "judge_not_run",
+                    "comment": comment,
+                    "metadata": judge_evaluator_metadata(self._runtime),
+                }
             ]
         }
 

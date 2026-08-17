@@ -192,6 +192,68 @@ async def test_judge_not_run_is_reported_without_a_score(
     assert entries["judge_status"]["comment"] == "no_evaluable_output"
 
 
+@pytest.mark.asyncio
+async def test_a_validation_error_does_not_leak_the_raw_field_value(
+    planner_case, clean_target_output, runtime_config_for
+) -> None:
+    """A ``ValidationError``'s ``str(error)`` embeds pydantic's raw,
+    unredacted ``input_value`` for the failing field. The not-run comment
+    must be a static reason, never that raw text.
+    """
+    secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+    bad_outputs = clean_target_output.model_dump(mode="json")
+    bad_outputs["case_version"] = secret
+    evaluator = build_judge_evaluator(
+        FakeStructuredProvider(responses=[]),
+        planner_case,
+        runtime=runtime_config_for("planner"),
+        secrets=(),
+        gate_lookup=lambda output: None,
+    )
+
+    result = await evaluator(
+        FakeRun(outputs=bad_outputs),
+        FakeExampleRow({"inputs": {"case_id": planner_case.case_id}}),
+    )
+
+    entries = {item["key"]: item for item in result["results"]}
+    assert entries["judge_status"]["value"] == "judge_not_run"
+    assert entries["judge_status"]["comment"] == "target_output_invalid"
+    assert secret not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_judge_not_run_entry_carries_evaluator_metadata(
+    planner_case, failed_target_output, failing_gate_report, runtime_config_for
+) -> None:
+    """A ``judge_not_run`` row must be traceable to the exact evaluator
+    definition, the same way a scored ``judge_quality`` row already is.
+    """
+    runtime = runtime_config_for("planner")
+    evaluator = build_judge_evaluator(
+        FakeStructuredProvider(responses=[]),
+        planner_case,
+        runtime=runtime,
+        secrets=(),
+        gate_lookup=lambda output: failing_gate_report,
+    )
+
+    result = await evaluator(
+        FakeRun(outputs=failed_target_output.model_dump(mode="json")),
+        FakeExampleRow({"inputs": {"case_id": planner_case.case_id}}),
+    )
+
+    entries = {item["key"]: item for item in result["results"]}
+    expected = judge_evaluator_metadata(runtime)
+    metadata = entries["judge_status"]["metadata"]
+    assert metadata["prompt_id"] == expected["prompt_id"]
+    assert metadata["prompt_fingerprint"] == expected["prompt_fingerprint"]
+    assert (
+        metadata["judge_configuration_fingerprint"]
+        == expected["judge_configuration_fingerprint"]
+    )
+
+
 def test_the_feedback_payload_round_trips_the_typed_feedback(
     judge_feedback,
 ) -> None:
