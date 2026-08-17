@@ -790,7 +790,57 @@ _MULTI_SOURCE_RESULTS = (
 
 def _planner_scenarios() -> dict[str, ScenarioScript]:
     return {
-        "planner-clean-memory": ScenarioScript(),
+        "planner-clean-memory": ScenarioScript(
+            search_responses={},
+            http_pages={},
+            memory_entries=(),
+            reputations={},
+            scripted_search_urls=(),
+        ),
+        "planner-ambiguous-scope": ScenarioScript(
+            search_responses={},
+            http_pages={},
+            memory_entries=(
+                {
+                    "content": "Hospital triage pilots reported mixed results.",
+                    "entry_type": "finding",
+                },
+                {
+                    "content": "Diagnostic imaging models improved recall.",
+                    "entry_type": "finding",
+                },
+            ),
+            reputations={},
+            scripted_search_urls=(),
+        ),
+        "planner-memory-failure": ScenarioScript(
+            search_responses={
+                "intermittent fasting metabolic health review": {
+                    "results": [
+                        {
+                            "url": "https://www.nih.gov/fasting-review",
+                            "title": "NIH review of intermittent fasting",
+                            "content": "Meta-analysis of 24 trials.",
+                        },
+                        {
+                            "url": "https://www.bmj.com/fasting-trial",
+                            "title": "BMJ randomized trial",
+                            "content": "12-month randomized comparison.",
+                        },
+                    ]
+                }
+            },
+            http_pages={},
+            memory_entries=(),
+            reputations={},
+            failures={"query_memory": RuntimeError(
+                "long-term memory is unavailable"
+            )},
+            scripted_search_urls=(
+                "https://www.nih.gov/fasting-review",
+                "https://www.bmj.com/fasting-trial",
+            ),
+        ),
     }
 
 

@@ -72,10 +72,11 @@ LIVE_IDS = {
 }
 
 
-# The count-, lookup-, and content-dependent tests below are expected red
-# until Tasks 10-15 land the case files. strict=True turns the marker into
-# a failure the moment a case lands, which Task 15's marker cleanup must
-# account for. Delete every marker in Task 15.
+# The four count tests below are expected red until all six case files
+# land. strict=True turns the marker into a failure the moment a case
+# lands, so Task 15 must delete the remaining markers. The four
+# lookup/validation tests lost their markers in Task 10, when the Planner
+# cases made them pass.
 
 
 @pytest.mark.xfail(reason="cases land in Tasks 10-15", strict=True)
@@ -133,7 +134,6 @@ def test_every_case_state_uses_an_evaluation_session_id() -> None:
         assert case.state.session_id.startswith("evaluation-")
 
 
-@pytest.mark.xfail(reason="cases land in Tasks 10-15", strict=True)
 def test_lookup_by_id_and_by_identity() -> None:
     case = case_by_id("planner", "controlled", "focused-decomposition")
 
@@ -141,7 +141,6 @@ def test_lookup_by_id_and_by_identity() -> None:
     assert case_by_identity(case.case_id, case.version) == case
 
 
-@pytest.mark.xfail(reason="cases land in Tasks 10-15", strict=True)
 def test_an_unknown_case_id_lists_the_valid_ones() -> None:
     with pytest.raises(UnknownCaseError) as caught:
         case_by_id("planner", "controlled", "not-a-case")
@@ -152,7 +151,6 @@ def test_an_unknown_case_id_lists_the_valid_ones() -> None:
         assert case_id in message
 
 
-@pytest.mark.xfail(reason="cases land in Tasks 10-15", strict=True)
 def test_a_duplicate_case_id_fails_validation() -> None:
     cases = list(all_cases())
     cases.append(cases[0])
@@ -163,7 +161,6 @@ def test_a_duplicate_case_id_fails_validation() -> None:
     assert "duplicate" in str(caught.value)
 
 
-@pytest.mark.xfail(reason="cases land in Tasks 10-15", strict=True)
 def test_two_versions_of_one_case_id_fail_validation() -> None:
     """The same id at two versions is ambiguous for dataset matching."""
     cases = list(all_cases())
