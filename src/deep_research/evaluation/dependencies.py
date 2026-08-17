@@ -1123,24 +1123,116 @@ def _source_evaluator_scenarios() -> dict[str, ScenarioScript]:
 
 
 def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
+    # The scenario search keys are exactly the claim texts the cases pin as
+    # expected verdicts (or failing-query anchors) in their references; the
+    # case tests assert equality between the two sides.
     return {
         "fact-checker-mixed": ScenarioScript(
-            memory_entries=(
-                {
-                    "content": (
-                        "Grid-scale batteries provide fast frequency response, "
-                        "a claim the sources support."
-                    ),
-                    "entry_type": "finding",
+            search_responses={
+                (
+                    "Small modular reactor designs must satisfy the same "
+                    "international safety standards as large reactors."
+                ): {
+                    "results": [
+                        {
+                            "url": "https://nrc.gov/smr-licensing-framework",
+                            "title": "NRC: SMR licensing framework",
+                            "content": (
+                                "SMR designs undergo the same safety "
+                                "assessment and licensing requirements as "
+                                "large reactors."
+                            ),
+                        },
+                        {
+                            "url": "https://ans.org/smr-safety-assessment",
+                            "title": "ANS: SMR safety assessment",
+                            "content": (
+                                "The ANS confirms that international safety "
+                                "standards apply equally to SMR designs."
+                            ),
+                        },
+                    ]
                 },
-                {
-                    "content": (
-                        "Battery costs fell 90% since 2010, a claim the "
-                        "sources contradict."
-                    ),
-                    "entry_type": "finding",
+                "No small modular reactor has operated commercially.": {
+                    "results": [
+                        {
+                            "url": "https://nei.org/pevek-floating-plant",
+                            "title": "NEI: Pevek floating plant",
+                            "content": (
+                                "The Akademik Lomonosov floating plant has "
+                                "operated commercially at Pevek since 2020, "
+                                "powered by two KLT-40S small modular "
+                                "reactor units."
+                            ),
+                        },
+                    ]
                 },
-            ),
+                (
+                    "Small modular reactors will be cheaper to build than "
+                    "large reactors at scale."
+                ): {
+                    "results": [],
+                },
+            },
+        ),
+        "fact-checker-dependent-domains": ScenarioScript(
+            search_responses={
+                "The 2025 grid upgrade reduced outage minutes by 40 percent.": {
+                    "results": [
+                        {
+                            "url": "https://news.example.com/outage-minutes-fall",
+                            "title": "News: outage minutes fall after upgrade",
+                            "content": (
+                                "A follow-up confirms outage minutes fell "
+                                "40 percent after the 2025 grid upgrade."
+                            ),
+                        },
+                        {
+                            "url": (
+                                "https://syndication.news.example.com/"
+                                "outage-minutes-fall"
+                            ),
+                            "title": "Syndicated: outage statistics",
+                            "content": (
+                                "The same 40 percent figure appears in the "
+                                "syndicated outage statistics."
+                            ),
+                        },
+                    ]
+                },
+            },
+        ),
+        "fact-checker-search-failure": ScenarioScript(
+            search_responses={
+                "Ocean heat content is still rising at the rate reported in 2023.": (
+                    RuntimeError("search backend unavailable")
+                ),
+                (
+                    "The recent acceleration in ocean heat content is "
+                    "driven primarily by greenhouse gas forcing."
+                ): {
+                    "results": [
+                        {
+                            "url": "https://agu.org/ocean-heat-attribution",
+                            "title": "AGU: ocean heat attribution study",
+                            "content": (
+                                "An AGU study attributes the post-2020 "
+                                "ocean heat acceleration primarily to "
+                                "greenhouse gas forcing."
+                            ),
+                        },
+                        {
+                            "url": "https://gcos.wmo.int/ocean-heat-bulletin",
+                            "title": "GCOS: ocean heat bulletin",
+                            "content": (
+                                "The GCOS bulletin reports greenhouse gas "
+                                "forcing as the dominant driver of the "
+                                "recent ocean heat increase."
+                            ),
+                        },
+                    ]
+                },
+            },
         ),
     }
 
