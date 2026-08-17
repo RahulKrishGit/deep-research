@@ -80,6 +80,16 @@ _FAILURE_URLS = (
     _CU_SENSOR_URL,
 )
 
+_EPA_DATA_URL = "https://www.epa.gov/outdoor-air-quality-data"
+_WHO_DATA_URL = "https://www.who.int/health-topics/air-pollution"
+_BLOG_DATA_URL = (
+    "https://medium.com/@urbanairwatcher/public-air-quality-datasets"
+)
+_FORUM_DATA_URL = (
+    "https://www.reddit.com/r/AirQuality/comments/dataset_reliability/"
+)
+_LIVE_URLS = (_EPA_DATA_URL, _WHO_DATA_URL, _BLOG_DATA_URL, _FORUM_DATA_URL)
+
 _REFERENCES = {
     "strong-and-weak-sources": {
         "authoritative_urls": [_IPCC_URL, _AMETSOC_URL, _NOAA_URL],
@@ -95,6 +105,11 @@ _REFERENCES = {
     "reputation-provider-failure": {
         "failing_domains": ["epa.gov", "aqmd.gov"],
         "succeeding_domains": ["nist.gov", "colorado.edu"],
+    },
+    "source-evaluator-live-ranking": {
+        "authoritative_urls": [_EPA_DATA_URL, _WHO_DATA_URL],
+        "weak_urls": [_BLOG_DATA_URL, _FORUM_DATA_URL],
+        "expected_low_confidence_urls": [_FORUM_DATA_URL],
     },
 }
 
@@ -261,6 +276,14 @@ def test_the_reputation_failure_case_cites_exactly_its_four_urls() -> None:
     ) == _FAILURE_URLS
 
 
+def test_the_live_case_cites_exactly_its_four_urls() -> None:
+    case = _case("source-evaluator-live-ranking")
+
+    assert tuple(
+        finding.source_url for finding in case.state.raw_findings
+    ) == _LIVE_URLS
+
+
 def test_the_live_case_cites_four_real_stable_domains() -> None:
     case = _case("source-evaluator-live-ranking")
 
@@ -269,6 +292,26 @@ def test_the_live_case_cites_four_real_stable_domains() -> None:
         source_domain(finding.source_url)
         for finding in case.state.raw_findings
     } == _LIVE_DOMAINS
+
+
+def test_the_live_case_pins_reference_partitions_to_its_findings() -> None:
+    """The Source Evaluator declares no tools and derives its canonical
+    source set from state.raw_findings, so the URLs a live run scores are
+    exactly the case's own finding URLs — the reference's partitions are the
+    same four URLs, partitioned exactly, no more, no less."""
+    case = _case("source-evaluator-live-ranking")
+    reference = case.expectations.reference
+
+    authoritative = reference["authoritative_urls"]
+    weak = reference["weak_urls"]
+    expected_low_confidence = reference["expected_low_confidence_urls"]
+
+    assert authoritative == [_EPA_DATA_URL, _WHO_DATA_URL]
+    assert weak == [_BLOG_DATA_URL, _FORUM_DATA_URL]
+    assert expected_low_confidence == [_FORUM_DATA_URL]
+    assert set(authoritative) | set(weak) == set(_LIVE_URLS)
+    assert set(authoritative) & set(weak) == set()
+    assert set(expected_low_confidence) <= set(weak)
 
 
 def test_the_mixed_case_scripts_reputations_for_authoritative_domains() -> None:

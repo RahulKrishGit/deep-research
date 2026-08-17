@@ -422,7 +422,19 @@ _LIVE = build_case(
     dependency_scenario="live",
     expectations=CaseExpectations(
         required_output_fields=["evaluated_sources"],
-        reference={},
+        # Live-run note for Task 18's evaluator: the Source Evaluator
+        # declares no tools and derives its canonical source set from
+        # state.raw_findings (group_findings_by_url), so the URLs a live
+        # run scores are exactly the four fixed findings below — only the
+        # reputation reads are live (required_live_dependencies=["memory"]).
+        # The reference therefore partitions those same URLs, in case 1's
+        # shape, and score_ordering / low_confidence_flagged are checked
+        # URL-exactly against them, with no auto-pass fallback.
+        reference={
+            "authoritative_urls": [_EPA_DATA_URL, _WHO_DATA_URL],
+            "weak_urls": [_BLOG_DATA_URL, _FORUM_DATA_URL],
+            "expected_low_confidence_urls": [_FORUM_DATA_URL],
+        },
         max_iterations=1,
         max_tool_calls=0,
         deterministic_metrics=metrics(
