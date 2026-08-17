@@ -71,6 +71,27 @@ def controlled_case_for():
 
 
 @pytest.fixture
+def live_case_for():
+    """The registry's first live case for an agent.
+
+    Same empty-registry contract as ``controlled_case_for``: an empty
+    lookup skips rather than failing, so the tests that need a case start
+    running the moment that agent's live cases exist.
+    """
+
+    def factory(agent_name):
+        available = cases_for(agent_name, "live")
+        if not available:
+            pytest.skip(
+                f"no live cases registered for {agent_name} yet; "
+                "cases land in Tasks 10-15"
+            )
+        return available[0]
+
+    return factory
+
+
+@pytest.fixture
 def planner_case(controlled_case_for):
     return controlled_case_for("planner")
 

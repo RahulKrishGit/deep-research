@@ -1,17 +1,22 @@
-"""Controlled dependency bundles: scripted, isolated, and guarded.
+"""Controlled and live dependency bundles: scripted or real, always isolated.
 
 One repetition of one controlled case gets its own fresh bundle: scripted
 search and HTTP clients, an in-process long-term memory double, an isolated
-document sink, and a per-repetition ledger. Nothing here can construct a
-real Tavily client, a real httpx client, a ChromaDB collection, or an
-OpenAI embedding call — the scripted collaborators are always injected and
-``tavily_api_key=""`` is always passed, so even an accidentally
-constructed client could not authenticate. Unscripted search queries and
-HTTP fetches raise ``ProhibitedDependencyError``, which
+document sink, and a per-repetition ledger. Nothing in the controlled half
+can construct a real Tavily client, a real httpx client, a ChromaDB
+collection, or an OpenAI embedding call — the scripted collaborators are
+always injected and ``tavily_api_key=""`` is always passed, so even an
+accidentally constructed client could not authenticate. Unscripted search
+queries and HTTP fetches raise ``ProhibitedDependencyError``, which
 ``BaseTool.execute`` converts into a failed ``ToolResult`` the agent can
 see and the gates can count.
 
-Live bundles (Task 8) build on this module's ledger and bundle contracts.
+The live half builds production-parity bundles: real Chroma-backed
+``LongTermMemory`` under a per-repetition persist path, real document
+writes to an evaluation-only directory, and real Tavily/httpx clients where
+the selected agent declares those tools — requiring only the credentials
+that agent can actually use. Both halves share the ledger and bundle
+contracts.
 """
 
 from __future__ import annotations
@@ -27,14 +32,28 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import JsonValue
 
-from deep_research.agents.source_evaluator import ReputationSource
+from deep_research.agents.critic import CriticAgent
+from deep_research.agents.fact_checker import FactCheckerAgent
+from deep_research.agents.planner import PlannerAgent
+from deep_research.agents.researcher import ResearcherAgent
+from deep_research.agents.source_evaluator import (
+    ReputationSource,
+    SourceEvaluatorAgent,
+)
+from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.evaluation.config import EvaluationRuntimeConfig
 from deep_research.evaluation.factory import evaluation_session_id
-from deep_research.evaluation.models import DependencyLedger, ToolCallSummary
+from deep_research.evaluation.models import (
+    AGENT_NAMES,
+    AgentName,
+    DependencyLedger,
+    ToolCallSummary,
+)
 from deep_research.memory.entries import MemoryEntry, SourceReputation
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
 from deep_research.observability import Tracker
+from deep_research.providers import OpenAIEmbeddingProvider
 from deep_research.runtime.assembly import build_tools
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
 from deep_research.tools.base import BaseTool
@@ -65,6 +84,73 @@ class ProhibitedDependencyError(RuntimeError):
         super().__init__(
             f"{service}.{operation} is prohibited in controlled evaluation"
         )
+
+
+class MissingCredentialError(RuntimeError):
+    """A live bundle cannot be built without an applicable credential."""
+
+    def __init__(self, variables: Sequence[str]) -> None:
+        self.reason = "missing_credentials"
+        self.variables = tuple(variables)
+        super().__init__(f"missing credentials: {', '.join(self.variables)}")
+
+
+# Tool name to the real service it reaches, one entry per tool the shared
+# registry builds. ``allowed_tools`` is the source of truth: an agent that
+# declares a tool neither maps to a service nor is omitted here is loud at
+# import time, so a change to an agent's declarations cannot silently leave
+# the live tier requiring the wrong credentials.
+_TOOL_SERVICES: Mapping[str, str] = {
+    "web_search": "tavily",
+    "web_scraper": "http",
+    "document_reader": "http",
+    "query_memory": "memory",
+    "save_to_memory": "memory",
+    "write_document": "documents",
+}
+
+_AGENT_CLASSES: dict[AgentName, type[Any]] = {
+    "planner": PlannerAgent,
+    "researcher": ResearcherAgent,
+    "source_evaluator": SourceEvaluatorAgent,
+    "fact_checker": FactCheckerAgent,
+    "synthesizer": SynthesizerAgent,
+    "critic": CriticAgent,
+}
+
+
+def _live_services(agent_name: AgentName) -> tuple[str, ...]:
+    """The real services one agent's declared tools can reach.
+
+    Computed once at import from each agent class's ``allowed_tools``,
+    deduplicated in declaration order.
+    """
+    services: list[str] = []
+    for tool in _AGENT_CLASSES[agent_name].allowed_tools:
+        service = _TOOL_SERVICES.get(tool)
+        if service is None:
+            raise KeyError(f"no live service mapped for tool {tool!r}")
+        if service not in services:
+            services.append(service)
+    return tuple(services)
+
+
+LIVE_DEPENDENCIES: dict[AgentName, tuple[str, ...]] = {
+    name: _live_services(name) for name in AGENT_NAMES
+}
+
+
+def required_credentials(agent_name: AgentName) -> tuple[str, ...]:
+    """The environment variables one live run of ``agent_name`` must provide.
+
+    OpenAI and LangSmith are required for every agent; Tavily only for
+    agents whose declared tools reach it. ``LANGSMITH_PROJECT`` is
+    validated by the tracker's own runtime config, so it is not duplicated
+    here.
+    """
+    if "tavily" in LIVE_DEPENDENCIES[agent_name]:
+        return ("OPENAI_API_KEY", "LANGSMITH_API_KEY", "TAVILY_API_KEY")
+    return ("OPENAI_API_KEY", "LANGSMITH_API_KEY")
 
 
 class DependencyRecorder:
@@ -154,6 +240,10 @@ class DependencyBundle:
     document_directory: Path
     collection_name: str
     strategies_path: Path
+    # The real services this bundle can reach: ``LIVE_DEPENDENCIES[agent]``
+    # for live, ``()`` for controlled. What a run actually touched is
+    # recorded separately, in ``real_services_used``.
+    available_services: tuple[str, ...] = ()
 
 
 def _vector(text: str, dimension: int) -> list[float]:
@@ -458,6 +548,7 @@ def isolated_settings(
     case_id: str,
     repetition: int,
     root: Path,
+    persist_directory: Path | None = None,
 ) -> ConfigSettings:
     """A deep copy of ``settings`` with every external path isolated.
 
@@ -465,6 +556,11 @@ def isolated_settings(
     must run the agent under production bounds. Everything else that could
     collide with a production session or another repetition is redirected
     beneath ``root``.
+
+    ``persist_directory`` overrides where Chroma persists. The live tier
+    passes a per-repetition path so repetitions never share a backing
+    store; controlled mode keeps the shared ``root/memory`` default, which
+    its in-memory collection never touches.
     """
     long_term = settings.memory.long_term.model_copy(
         deep=True,
@@ -474,7 +570,7 @@ def isolated_settings(
                     "-", "_"
                 )
             ),
-            "persist_directory": str(root / "memory"),
+            "persist_directory": str(persist_directory or (root / "memory")),
         },
     )
     procedural = settings.memory.procedural.model_copy(
@@ -578,6 +674,94 @@ def build_controlled_dependencies(
         document_directory=document_directory,
         collection_name=isolated.memory.long_term.collection_name,
         strategies_path=Path(isolated.memory.procedural.strategies_path),
+    )
+
+
+def build_live_dependencies(
+    runtime: EvaluationRuntimeConfig,
+    case: Any,
+    *,
+    tracker: Tracker,
+    settings: ConfigSettings,
+    root: Path,
+    environ: Mapping[str, str],
+    repetition: int = 1,
+    search_client: Any | None = None,
+    http_client: Any | None = None,
+    embeddings: Any | None = None,
+) -> DependencyBundle:
+    """Build one live, production-parity dependency bundle for a repetition.
+
+    Only the credentials applicable to the selected agent are required: an
+    agent that never declares ``web_search`` needs no ``TAVILY_API_KEY``,
+    and an absent applicable credential raises ``MissingCredentialError``
+    before anything is constructed. Memory is the real Chroma-backed
+    ``LongTermMemory`` at a per-repetition persist path, document writes
+    land in an evaluation-only directory beneath ``root``, and the tools
+    carry the real Tavily/httpx clients unless a double is injected —
+    offline tests always inject doubles, so nothing here ever touches the
+    network. ``real_services_used`` stays empty on purpose: what a live run
+    actually exercised is recorded from real tool spans (Task 21), not from
+    what this bundle wired.
+    """
+    missing = [
+        variable
+        for variable in required_credentials(runtime.agent_name)
+        if not environ.get(variable, "").strip()
+    ]
+    if missing:
+        raise MissingCredentialError(missing)
+
+    services = LIVE_DEPENDENCIES[runtime.agent_name]
+    isolated = isolated_settings(
+        settings,
+        runtime,
+        case_id=case.case_id,
+        repetition=repetition,
+        root=root,
+        persist_directory=root / "memory" / f"{case.case_id}-r{repetition}",
+    )
+    document_directory = Path(isolated.output.directory)
+    document_directory.mkdir(parents=True, exist_ok=True)
+    session_id = evaluation_session_id(
+        runtime, case_id=case.case_id, repetition=repetition
+    )
+
+    recorder = DependencyRecorder()
+    long_term = LongTermMemory.from_config(
+        isolated.memory.long_term,
+        embeddings=embeddings
+        or OpenAIEmbeddingProvider(model=runtime.embedding_model),
+        tracker=tracker,
+    )
+    bridge = LongTermMemoryBridge(long_term, session_id=session_id)
+    tools = build_tools(
+        isolated,
+        tracker=tracker,
+        memory=bridge,
+        # Only an agent that can reach Tavily receives the real key; the
+        # others get an empty key, so a live bundle never holds credentials
+        # its agent cannot use.
+        tavily_api_key=(
+            environ.get("TAVILY_API_KEY") if "tavily" in services else ""
+        ),
+        search_client=search_client,
+        http_client=http_client,
+    )
+    procedural = ProceduralMemory.from_config(
+        isolated.memory.procedural, tracker=tracker
+    )
+    return DependencyBundle(
+        settings=isolated,
+        tools=tuple(tools),
+        long_term=long_term,
+        procedural=procedural,
+        reputation=long_term,
+        recorder=recorder,
+        document_directory=document_directory,
+        collection_name=isolated.memory.long_term.collection_name,
+        strategies_path=Path(isolated.memory.procedural.strategies_path),
+        available_services=services,
     )
 
 
