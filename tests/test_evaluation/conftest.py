@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Sequence
 from datetime import datetime, timezone
 
 import pytest
 
+from deep_research.agents.planner import ResearchPlanDraft, SubTopicDraft
+from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
+from deep_research.agents.steps import ReActDecision
 from deep_research.evaluation.cases import (
     all_cases as _all_cases,
 )
@@ -14,6 +18,10 @@ from deep_research.evaluation.cases import (
     cases_for,
 )
 from deep_research.evaluation.config import GitMetadata, build_runtime_config
+from deep_research.evaluation.dependencies import (
+    build_controlled_dependencies,
+    build_live_dependencies,
+)
 from deep_research.evaluation.models import (
     CaseResult,
     DependencyLedger,
@@ -29,8 +37,11 @@ from deep_research.evaluation.models import (
     TargetOutput,
     TrajectoryStep,
 )
+from deep_research.evaluation.targets import RepetitionCounter, build_target
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
+from deep_research.providers import OpenAIProviderError
 from deep_research.utils.config import ConfigSettings
+from tests.evaluation_fakes import FakeStructuredProvider
 
 
 @pytest.fixture
@@ -1262,3 +1273,229 @@ def failed_target_output(planner_case) -> TargetOutput:
         target_model_returned=None,
         target_reasoning_effort="medium",
     )
+
+
+# --- Task 21: build_target harnesses ----------------------------------------
+
+
+def _finish_decision(answer: str = "Scoping complete.") -> ReActDecision:
+    return ReActDecision(
+        thought="I have enough context to proceed.",
+        action="finish",
+        tool_input_json="{}",
+        final_answer=answer,
+    )
+
+
+def _planner_draft(*titles: str) -> ResearchPlanDraft:
+    return ResearchPlanDraft(
+        sub_topics=[
+            SubTopicDraft(
+                title=title,
+                rationale=f"Rationale for {title}.",
+                search_queries=[f"query about {title}"],
+                success_criteria=[f"evidence about {title}"],
+                priority=index,
+            )
+            for index, title in enumerate(titles, start=1)
+        ]
+    )
+
+
+def _planner_responses(*, leak: str | None = None) -> list:
+    """One finishing decision, then a valid three-subtopic plan draft.
+
+    When ``leak`` is given, it is embedded in the first subtopic's
+    rationale so the target's redaction step has a real secret to catch.
+    """
+    draft = _planner_draft(
+        "Solid-state electrolyte degradation",
+        "Cathode interface resistance",
+        "Mechanical stress and cracking",
+    )
+    if leak is not None:
+        first = draft.sub_topics[0].model_copy(
+            update={"rationale": f"{draft.sub_topics[0].rationale} key={leak}"}
+        )
+        draft = draft.model_copy(
+            update={"sub_topics": [first, *draft.sub_topics[1:]]}
+        )
+    return [_finish_decision(), draft]
+
+
+@pytest.fixture
+def target_harness(tracker, settings, tmp_path):
+    """A real ``build_target`` over a controlled planner case.
+
+    The provider is a ``FakeStructuredProvider`` scripted with the
+    planner's real schemas (``ReActDecision``, then ``ResearchPlanDraft``);
+    nothing here is a hand-built fixture.
+    """
+
+    def factory(case, runtime, *, secrets: Sequence[str] = ()):
+        del case
+        counter = RepetitionCounter(max_concurrency=1)
+        return build_target(
+            runtime,
+            settings,
+            tracker_factory=lambda: tracker,
+            dependency_factory=build_controlled_dependencies,
+            provider_factory=lambda: FakeStructuredProvider(
+                _planner_responses()
+            ),
+            counter=counter,
+            secrets=secrets,
+            root=tmp_path,
+        )
+
+    return factory
+
+
+@pytest.fixture
+def failing_target_harness(tracker, settings, tmp_path):
+    """A ``build_target`` whose provider fails while the plan is requested.
+
+    The ReAct loop itself finishes cleanly (the decide call succeeds), but
+    the finalize-stage plan request raises ``OpenAIProviderError``, which
+    the planner re-raises chained as ``PlanningError`` — exercising the
+    target's cause-chain classification, not just a bare isinstance check.
+    """
+
+    def factory(case, runtime, *, secrets: Sequence[str] = ()):
+        del case
+        counter = RepetitionCounter(max_concurrency=1)
+
+        def provider_factory():
+            return FakeStructuredProvider(
+                [
+                    _finish_decision(),
+                    OpenAIProviderError(
+                        "the model provider is unavailable"
+                    ),
+                ]
+            )
+
+        return build_target(
+            runtime,
+            settings,
+            tracker_factory=lambda: tracker,
+            dependency_factory=build_controlled_dependencies,
+            provider_factory=provider_factory,
+            counter=counter,
+            secrets=secrets,
+            root=tmp_path,
+        )
+
+    return factory
+
+
+@pytest.fixture
+def leaking_target_harness(tracker, settings, tmp_path):
+    """A ``build_target`` whose scripted plan carries a real secret value."""
+
+    def factory(case, runtime, *, secrets: Sequence[str] = ()):
+        del case
+        counter = RepetitionCounter(max_concurrency=1)
+        leak = secrets[0] if secrets else None
+        return build_target(
+            runtime,
+            settings,
+            tracker_factory=lambda: tracker,
+            dependency_factory=build_controlled_dependencies,
+            provider_factory=lambda: FakeStructuredProvider(
+                _planner_responses(leak=leak)
+            ),
+            counter=counter,
+            secrets=secrets,
+            root=tmp_path,
+        )
+
+    return factory
+
+
+_LIVE_FINDING_URL = "https://example.com/sodium-ion-energy-density"
+
+
+@pytest.fixture
+def live_target_harness(tracker, settings, tmp_path):
+    """A ``build_target`` over a live researcher case.
+
+    ``search_client`` is a fake so no network call is ever made;
+    ``embeddings=object()`` mirrors Task 8's own live-dependency tests
+    (memory is never queried by this scripted run, so the placeholder is
+    never called).
+    """
+
+    class _FakeSearchClient:
+        def search(self, *, query, search_depth, max_results):
+            del query, search_depth, max_results
+            return {
+                "results": [
+                    {
+                        "url": _LIVE_FINDING_URL,
+                        "title": "Sodium-ion energy density report",
+                        "content": (
+                            "Cell-level energy density reported at "
+                            "160 Wh/kg."
+                        ),
+                        "score": 0.9,
+                    }
+                ]
+            }
+
+    def factory(case, runtime, *, secrets: Sequence[str] = ()):
+        del case
+        counter = RepetitionCounter(max_concurrency=1)
+        environ = {
+            "OPENAI_API_KEY": "sk-abcdefghijklmnop",
+            "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
+            "TAVILY_API_KEY": "tvly-abcdefghijklmnop",
+        }
+        dependency_factory = functools.partial(
+            build_live_dependencies,
+            environ=environ,
+            search_client=_FakeSearchClient(),
+            embeddings=object(),
+        )
+
+        def provider_factory():
+            return FakeStructuredProvider(
+                [
+                    ReActDecision(
+                        thought="Search for the reported energy density.",
+                        action="use_tool",
+                        tool_name="web_search",
+                        tool_input_json=(
+                            '{"query": '
+                            '"sodium-ion battery energy density Wh/kg 2026"}'
+                        ),
+                    ),
+                    _finish_decision("Found relevant data."),
+                    SubTopicFindingsDraft(
+                        findings=[
+                            FindingDraft(
+                                content=(
+                                    "Cell-level energy density reported at "
+                                    "160 Wh/kg."
+                                ),
+                                source_url=_LIVE_FINDING_URL,
+                                source_title="Sodium-ion energy density report",
+                                confidence=0.8,
+                            )
+                        ]
+                    ),
+                ]
+            )
+
+        return build_target(
+            runtime,
+            settings,
+            tracker_factory=lambda: tracker,
+            dependency_factory=dependency_factory,
+            provider_factory=provider_factory,
+            counter=counter,
+            secrets=secrets,
+            root=tmp_path,
+        )
+
+    return factory
