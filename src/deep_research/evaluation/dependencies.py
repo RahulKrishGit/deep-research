@@ -769,22 +769,31 @@ def build_live_dependencies(
 # bundle tests have something real to drive; the per-agent task (10-15)
 # replaces the helper with the full three-scenario script.
 
-_MULTI_SOURCE_RESULTS = (
-    (
-        "https://www.nrel.gov/solar-basics",
-        "NREL solar basics",
-        "Two-sentence extract on solar panel conversion efficiency.",
-    ),
-    (
-        "https://www.iea.org/solar-report",
-        "IEA solar market report",
-        "Two-sentence extract on installed capacity growth.",
-    ),
-    (
-        "https://www.sciencedirect.com/solar-review",
-        "ScienceDirect solar review",
-        "Two-sentence extract from a peer-reviewed survey.",
-    ),
+# The scripted URLs mirror cases/researcher.py's known_source_urls: the
+# gates check every finding's source_url against the case's declared list,
+# so a drift between the two lists would make every finding look invented.
+# The case tests pin both sides to the same literal.
+_MULTI_SOURCE_URLS = (
+    "https://www.nrel.gov/heat-pump-cop-below-freezing",
+    "https://www.iea.org/heat-pump-cop-report",
+    "https://www.sciencedirect.com/heat-pump-cop-review",
+    "https://www.nrel.gov/cold-climate-field-trial",
+    "https://www.iea.org/cold-climate-heat-pumps",
+    "https://www.sciencedirect.com/cold-climate-trial-results",
+    "https://www.nrel.gov/backup-heating-guidance",
+    "https://www.iea.org/backup-heating-report",
+    "https://www.sciencedirect.com/backup-heating-analysis",
+)
+
+_CONFLICT_URLS = (
+    "https://www.aeaweb.org/four-day-work-week-trial",
+    "https://www.aeaweb.org/four-day-work-week-replication",
+    "https://www.nber.org/four-day-self-selection",
+)
+
+_FAILURE_URLS = (
+    "https://www.nrel.gov/perovskite-encapsulation-study",
+    "https://www.sciencedirect.com/perovskite-encapsulation-review",
 )
 
 
@@ -845,19 +854,209 @@ def _planner_scenarios() -> dict[str, ScenarioScript]:
 
 
 def _researcher_scenarios() -> dict[str, ScenarioScript]:
-    http_pages = {url: content for url, _, content in _MULTI_SOURCE_RESULTS}
     return {
         "researcher-multi-source": ScenarioScript(
             search_responses={
-                "solar panel efficiency trends": {
+                "heat pump COP -15C field data": {
                     "results": [
-                        {"url": url, "title": title, "content": content}
-                        for url, title, content in _MULTI_SOURCE_RESULTS
+                        {
+                            "url": "https://www.nrel.gov/heat-pump-cop-below-freezing",
+                            "title": "NREL cold-climate COP field data",
+                            "content": "Field COP near 2.0 at -15C.",
+                        },
+                        {
+                            "url": "https://www.iea.org/heat-pump-cop-report",
+                            "title": "IEA heat pump performance report",
+                            "content": "Median COP of 1.9 at -15C across "
+                            "seven programs.",
+                        },
+                        {
+                            "url": "https://www.sciencedirect.com/heat-pump-cop-review",
+                            "title": "ScienceDirect heat pump COP review",
+                            "content": "Modern units retain 70-80% of rated "
+                            "capacity at -15C.",
+                        },
                     ]
-                }
+                },
+                "cold climate heat pump field trial results": {
+                    "results": [
+                        {
+                            "url": "https://www.nrel.gov/cold-climate-field-trial",
+                            "title": "NREL cold-climate field trial",
+                            "content": "100-home Minnesota trial cut heating "
+                            "energy by a third.",
+                        },
+                        {
+                            "url": "https://www.iea.org/cold-climate-heat-pumps",
+                            "title": "IEA cold-climate heat pump assessment",
+                            "content": "Reliable heating through -30C events.",
+                        },
+                        {
+                            "url": "https://www.sciencedirect.com/cold-climate-trial-results",
+                            "title": "ScienceDirect cold-climate trial "
+                            "outcomes",
+                            "content": "Higher comfort scores than resistance "
+                            "heating in two trials.",
+                        },
+                    ]
+                },
+                "heat pump backup resistance heating cold climate": {
+                    "results": [
+                        {
+                            "url": "https://www.nrel.gov/backup-heating-guidance",
+                            "title": "NREL backup heating guidance",
+                            "content": "Backup sized for the coldest design "
+                            "day.",
+                        },
+                        {
+                            "url": "https://www.iea.org/backup-heating-report",
+                            "title": "IEA backup heating requirements",
+                            "content": "Some backup capacity needed below "
+                            "-20C design temperatures.",
+                        },
+                        {
+                            "url": "https://www.sciencedirect.com/backup-heating-analysis",
+                            "title": "ScienceDirect backup heating analysis",
+                            "content": "Backup adds 5-15% to annual energy "
+                            "use in simulations.",
+                        },
+                    ]
+                },
             },
-            http_pages=http_pages,
-            scripted_search_urls=tuple(http_pages),
+            http_pages={
+                "https://www.nrel.gov/heat-pump-cop-below-freezing": (
+                    "Field measurements at -15C show a coefficient of "
+                    "performance near 2.0 for a cold-climate heat pump. "
+                    "COP stayed above 1.5 even at -25C."
+                ),
+                "https://www.iea.org/heat-pump-cop-report": (
+                    "The report compiles COP measurements below freezing "
+                    "from seven national programs. Median COP at -15C was "
+                    "1.9 across the tested units."
+                ),
+                "https://www.sciencedirect.com/heat-pump-cop-review": (
+                    "A review of cold-climate COP studies finds modern "
+                    "units retain 70-80% of rated capacity at -15C. Older "
+                    "units fell below 1.5 COP at the same temperature."
+                ),
+                "https://www.nrel.gov/cold-climate-field-trial": (
+                    "A 100-home field trial in Minnesota measured seasonal "
+                    "performance over two winters. Homes using cold-climate "
+                    "heat pumps cut heating energy use by a third."
+                ),
+                "https://www.iea.org/cold-climate-heat-pumps": (
+                    "Field trials in Canada and Scandinavia report reliable "
+                    "heating through -30C events. Backup demand stayed "
+                    "below 10% of total heating energy."
+                ),
+                "https://www.sciencedirect.com/cold-climate-trial-results": (
+                    "Two randomized trials report higher comfort scores "
+                    "for heat pumps than resistance heating. Electricity "
+                    "use rose modestly during extreme cold snaps."
+                ),
+                "https://www.nrel.gov/backup-heating-guidance": (
+                    "Backup resistance heating is sized for the coldest "
+                    "design day in cold climates. A correctly sized heat "
+                    "pump covers 90% of the annual heating load."
+                ),
+                "https://www.iea.org/backup-heating-report": (
+                    "Systems designed for below -20C temperatures "
+                    "typically need some backup capacity. The report "
+                    "recommends dual-fuel controls to limit resistance use."
+                ),
+                "https://www.sciencedirect.com/backup-heating-analysis": (
+                    "Simulations show backup heating adds 5-15% to annual "
+                    "energy use in cold climates. Oversized backup units "
+                    "cost more without improving comfort."
+                ),
+            },
+            scripted_search_urls=_MULTI_SOURCE_URLS,
+        ),
+        "researcher-conflicting": ScenarioScript(
+            search_responses={
+                "four-day work week trial productivity results": {
+                    "results": [
+                        {
+                            "url": "https://www.aeaweb.org/four-day-work-week-trial",
+                            "title": "AEA four-day work week trial",
+                            "content": "Six-month trial reported a 22% "
+                            "productivity gain.",
+                        },
+                        {
+                            "url": "https://www.aeaweb.org/four-day-work-week-replication",
+                            "title": "AEA four-day work week replication",
+                            "content": "Matched-control replication found no "
+                            "significant change.",
+                        },
+                    ]
+                },
+                "four-day work week productivity measurement methodology": {
+                    "results": [
+                        {
+                            "url": "https://www.nber.org/four-day-self-selection",
+                            "title": "NBER four-day self-selection analysis",
+                            "content": "Apparent gain confounded by a "
+                            "self-selected sample.",
+                        },
+                    ]
+                },
+            },
+            http_pages={
+                "https://www.aeaweb.org/four-day-work-week-trial": (
+                    "The six-month trial reported a 22% productivity gain "
+                    "for the four-day group. Output per employee rose while "
+                    "absenteeism fell by a third."
+                ),
+                "https://www.aeaweb.org/four-day-work-week-replication": (
+                    "A replication with matched control firms found no "
+                    "significant change in productivity. The results "
+                    "disagree with the earlier trial's headline gain."
+                ),
+                "https://www.nber.org/four-day-self-selection": (
+                    "The apparent gain was confounded by self-selection: "
+                    "the sample was self-selected from firms already "
+                    "committed to a four-day week. The full sample shows "
+                    "mixed results, suggesting the reported gain does not "
+                    "generalize."
+                ),
+            },
+            scripted_search_urls=_CONFLICT_URLS,
+        ),
+        "researcher-partial-failure": ScenarioScript(
+            search_responses={
+                "perovskite moisture-driven degradation": RuntimeError(
+                    "search backend unavailable"
+                ),
+                "perovskite encapsulation approaches lifetime": {
+                    "results": [
+                        {
+                            "url": "https://www.nrel.gov/perovskite-encapsulation-study",
+                            "title": "NREL perovskite encapsulation study",
+                            "content": "Glass-on-glass barrier passed 1,000 "
+                            "hours of damp heat.",
+                        },
+                        {
+                            "url": "https://www.sciencedirect.com/perovskite-encapsulation-review",
+                            "title": "ScienceDirect perovskite "
+                            "encapsulation review",
+                            "content": "Peer-reviewed survey of "
+                            "encapsulation approaches.",
+                        },
+                    ]
+                },
+            },
+            http_pages={
+                "https://www.nrel.gov/perovskite-encapsulation-study": (
+                    "Glass-on-glass encapsulation kept perovskite cells "
+                    "above 90% of initial efficiency after 1,000 hours of "
+                    "damp heat. The barrier stack blocked moisture ingress "
+                    "without adding opaque layers."
+                ),
+                "https://www.sciencedirect.com/perovskite-encapsulation-review": (
+                    RuntimeError("connection reset")
+                ),
+            },
+            scripted_search_urls=_FAILURE_URLS,
         ),
     }
 
