@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
+from deep_research.evaluation.config import GitMetadata, build_runtime_config
 from deep_research.evaluation.models import (
     CaseResult,
     ExperimentResult,
@@ -33,6 +36,29 @@ def tracker() -> Tracker:
 @pytest.fixture
 def settings() -> ConfigSettings:
     return ConfigSettings()
+
+
+@pytest.fixture
+def runtime_config_for(settings):
+    """Build an ``EvaluationRuntimeConfig`` with a frozen clock and SHA."""
+
+    def factory(agent_name, *, tier="controlled", case_id=None, **kwargs):
+        return build_runtime_config(
+            settings,
+            agent_name=agent_name,
+            tier=tier,
+            case_id=case_id,
+            reasoning_effort=kwargs.get("reasoning_effort"),
+            judge_reasoning_effort=kwargs.get("judge_reasoning_effort"),
+            output_directory=kwargs.get("output_directory"),
+            experiment_prefix=kwargs.get("experiment_prefix"),
+            now=datetime(2026, 8, 16, 10, 15, tzinfo=timezone.utc),
+            git=GitMetadata(
+                commit="abc1234def", short_sha="abc1234", dirty=False
+            ),
+        )
+
+    return factory
 
 
 @pytest.fixture
