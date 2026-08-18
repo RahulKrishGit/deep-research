@@ -697,6 +697,83 @@ it, so resuming from a new command exits 1 with a clear message rather than
 pretending a checkpoint exists. A durable saver drops into
 `compile_research_graph` without touching a node.
 
+## Individual Agent Evaluation
+
+A separate, dedicated CLI at `python -m deep_research.evaluation` runs
+per-agent controlled and live experiments against LangSmith, scored by
+deterministic gates and a judge model. It is independent of the graph-level
+CLI above: it never imports `deep_research.graph`, and evaluates each of the
+six agents (`planner`, `researcher`, `source-evaluator`, `fact-checker`,
+`synthesizer`, `critic`) in isolation against 24 code-backed cases.
+
+```powershell
+# List agents, tiers, cases, repetitions, and dataset names.
+python -m deep_research.evaluation list
+
+# Run all three controlled cases for one agent, three times each.
+python -m deep_research.evaluation agent researcher
+
+# Run one controlled case, still with three repetitions.
+python -m deep_research.evaluation agent researcher --case conflicting-evidence
+
+# Run the selected agent's single live case once.
+python -m deep_research.evaluation agent researcher --tier live
+
+# Compare one agent at a different effort without editing the baseline config.
+python -m deep_research.evaluation agent researcher --reasoning-effort medium
+
+# Run controlled experiments for all six agents.
+python -m deep_research.evaluation suite
+```
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Automated pass |
+| 1 | Completed but failed gates or scores |
+| 2 | Invalid usage / unknown agent, tier, or case / invalid local case registry |
+| 3 | Configuration / credential / dataset-sync / LangSmith infrastructure failure |
+| 130 | Interrupted with Ctrl-C |
+
+**Controlled evaluation makes real OpenAI and LangSmith calls and costs real
+money.** There is no dry-run or mock mode for `agent` or `suite` — every
+invocation creates a real LangSmith experiment and calls the real OpenAI API
+with the configured target and judge models. Live-tier runs additionally
+exercise real tools (e.g. Tavily web search) for agents that declare them.
+Run `list` first, and read the live-verification runbook linked below before
+running anything that spends money.
+
+### Environment Variables
+
+Runtime secrets stay environment-only, exactly like the graph CLI above:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | Always | Target and judge model calls. |
+| `LANGSMITH_API_KEY` | Always | Experiment creation, dataset sync, tracing. |
+| `LANGSMITH_PROJECT` | Always | The LangSmith project experiments are recorded under. |
+| `LANGSMITH_ENDPOINT` | Optional | Override the LangSmith API region, e.g. the EU endpoint `https://eu.api.smith.langchain.com`. |
+| `LANGSMITH_WORKSPACE_ID` | Optional | Disambiguate a workspace when the API key has access to more than one. |
+| `TAVILY_API_KEY` | Only for live cases whose agent declares `web_search` | Real web search during live-tier evaluation. |
+
+### Artifacts
+
+Every `agent` invocation writes a durable, round-trippable JSON artifact in
+addition to the LangSmith experiment:
+
+- `output/evaluations/<agent>/<experiment-name>/results.json`
+- `output/evaluations/suite/<suite-id>/summary.json` for `suite` runs
+
+`--output-directory` overrides the `output/evaluations/` root.
+
+### Manual Live Verification
+
+Because this CLI spends real money and makes real network calls, it is never
+exercised by the automated test suite beyond scope-guarding unit tests. See
+[`docs/superpowers/plans/2026-08-16-individual-agent-evaluation-live-verification.md`](docs/superpowers/plans/2026-08-16-individual-agent-evaluation-live-verification.md)
+for the fixed manual verification order, the exact commands, the confirmation
+checklists, and the open questions a human must resolve in the LangSmith UI
+before trusting this harness's output.
+
 ## Development
 
 ```bash

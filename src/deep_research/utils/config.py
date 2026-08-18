@@ -4,11 +4,11 @@ import os
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 class MissingSecretsError(ValueError):
@@ -18,6 +18,11 @@ class MissingSecretsError(ValueError):
     working, and a distinguishable type so a caller can tell a missing
     secret apart from an invalid configuration file without parsing text.
     """
+
+
+ReasoningEffort: TypeAlias = Literal[
+    "none", "low", "medium", "high", "xhigh", "max"
+]
 
 
 class LLMConfig(BaseModel):
@@ -32,14 +37,34 @@ class LLMConfig(BaseModel):
     model_overrides: dict[str, str] = Field(default_factory=dict)
     timeout: float = Field(default=60.0, gt=0)
     retry_count: int = Field(default=2, ge=0)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    # ``None`` omits the parameter entirely: reasoning models reject it.
+    temperature: float | None = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1)
+    # ``None`` omits the Responses ``reasoning`` block entirely, which is
+    # required for non-reasoning models such as gpt-4o.
+    reasoning_effort: ReasoningEffort | None = None
+    # Pro mode is deliberately unrepresentable in this build.
+    reasoning_mode: Literal["standard"] = "standard"
 
     def model_for(self, agent_name: str | None) -> str:
         """Return an agent override when configured, otherwise the default."""
         if agent_name is None:
             return self.model
         return self.model_overrides.get(agent_name, self.model)
+
+    def request_options(self) -> dict[str, Any]:
+        """The optional Responses parameters this configuration sends.
+
+        Built once here rather than at three call sites so an ordinary
+        call, a structured call, and a structured repair can never drift
+        apart — the spec requires the resolved effort on all three.
+        """
+        options: dict[str, Any] = {"max_output_tokens": self.max_tokens}
+        if self.temperature is not None:
+            options["temperature"] = self.temperature
+        if self.reasoning_effort is not None:
+            options["reasoning"] = {"effort": self.reasoning_effort}
+        return options
 
 class LangSmithConfig(BaseModel):
     """LangSmith tracing settings."""
@@ -118,6 +143,69 @@ class OutputConfig(BaseModel):
     default_format: str = "markdown"
 
 
+EVALUATION_AGENT_KEYS = (
+    "planner",
+    "researcher",
+    "source_evaluator",
+    "fact_checker",
+    "synthesizer",
+    "critic",
+)
+
+_DEFAULT_TARGET_EFFORTS: dict[str, ReasoningEffort] = {
+    "planner": "medium",
+    "researcher": "low",
+    "source_evaluator": "low",
+    "fact_checker": "medium",
+    "synthesizer": "medium",
+    "critic": "medium",
+}
+
+
+class EvaluationConfig(BaseModel):
+    """Non-secret defaults for the individual-agent evaluation harness."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    controlled_repetitions: int = Field(default=3, ge=1)
+    controlled_case_average_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    controlled_repetition_floor: float = Field(default=0.65, ge=0.0, le=1.0)
+    live_repetitions: int = Field(default=1, ge=1)
+    live_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    target_model: str = Field(default="gpt-5.6-luna", min_length=1)
+    target_reasoning_effort: ReasoningEffort = "medium"
+    target_reasoning_effort_overrides: dict[str, ReasoningEffort] = Field(
+        default_factory=lambda: dict(_DEFAULT_TARGET_EFFORTS)
+    )
+    judge_model: str = Field(default="gpt-5.6-luna", min_length=1)
+    judge_reasoning_effort: ReasoningEffort = "high"
+    reasoning_mode: Literal["standard"] = "standard"
+    embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
+    # ``None`` omits the parameter for models that reject it; the spec pins
+    # the judge at 0.0 and that is the default.
+    judge_temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
+    # Fixed at 1: repetition indexing in ``targets.py`` is only exact when
+    # LangSmith runs the target sequentially.
+    max_concurrency: int = Field(default=1, ge=1, le=1)
+    output_directory: str = Field(default="output/evaluations/", min_length=1)
+    dataset_version: int = Field(default=1, ge=1)
+    rubric_version: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def validate_override_keys(self) -> "EvaluationConfig":
+        unknown = sorted(
+            set(self.target_reasoning_effort_overrides)
+            - set(EVALUATION_AGENT_KEYS)
+        )
+        if unknown:
+            valid = ", ".join(EVALUATION_AGENT_KEYS)
+            raise ValueError(
+                "unknown target_reasoning_effort_overrides keys: "
+                f"{', '.join(unknown)}; expected any of: {valid}"
+            )
+        return self
+
+
 class ConfigSettings(BaseModel):
     """All non-secret application configuration."""
 
@@ -128,6 +216,7 @@ class ConfigSettings(BaseModel):
     agents: AgentRuntimeConfig = AgentRuntimeConfig()
     graph: GraphConfig = GraphConfig()
     output: OutputConfig = OutputConfig()
+    evaluation: EvaluationConfig = EvaluationConfig()
 
 
 _ENVIRONMENT_OVERRIDES = {
@@ -158,6 +247,17 @@ _ENVIRONMENT_OVERRIDES = {
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),
     "OUTPUT_DIRECTORY": ("output", "directory"),
     "OUTPUT_DEFAULT_FORMAT": ("output", "default_format"),
+    "EVALUATION_TARGET_MODEL": ("evaluation", "target_model"),
+    "EVALUATION_TARGET_REASONING_EFFORT": (
+        "evaluation",
+        "target_reasoning_effort",
+    ),
+    "EVALUATION_JUDGE_MODEL": ("evaluation", "judge_model"),
+    "EVALUATION_JUDGE_REASONING_EFFORT": (
+        "evaluation",
+        "judge_reasoning_effort",
+    ),
+    "EVALUATION_OUTPUT_DIRECTORY": ("evaluation", "output_directory"),
 }
 _REQUIRED_ENVIRONMENT_VARIABLES = (
     "OPENAI_API_KEY",

@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 
 import deep_research.runtime.assembly as assembly
+from deep_research.agents.errors import AgentConfigurationError
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
 from deep_research.runtime.assembly import (
     AGENT_NAMES,
     ResearchRuntime,
+    build_agent,
     build_agents,
     build_runtime,
     build_tools,
@@ -285,6 +287,139 @@ def test_build_agents_reports_a_missing_tool_as_a_configuration_failure(
         )
 
     assert caught.value.reason == "agents_misconfigured"
+
+
+def test_build_agent_matches_production_build_agents_for_every_agent(
+    tracker,
+) -> None:
+    """One agent built alone must be configured exactly like the same agent
+    built by production ``build_agents``."""
+    settings = ConfigSettings()
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+    provider = RecordingProvider()
+    memory = LongTermMemory(
+        collection=FakeCollection(), embeddings=FakeEmbeddings()
+    )
+    production = build_agents(
+        settings,
+        tracker=tracker,
+        provider=provider,
+        tools=tools,
+        session_id="session-1",
+        reputation=memory,
+    )
+
+    for name in AGENT_NAMES:
+        single = build_agent(
+            name,
+            settings,
+            tracker=tracker,
+            provider=provider,
+            tools=tools,
+            session_id="session-1",
+            reputation=memory,
+        )
+        expected = getattr(production, name)
+        assert type(single) is type(expected)
+        assert single.name == expected.name
+        assert single.config == expected.config
+        assert single.provider is provider
+        assert single.tracker is tracker
+        assert single.toolset.names == expected.toolset.names
+        assert single.scratchpad.session_id == "session-1"
+        assert single.scratchpad.agent_name == name
+        assert single.scratchpad.max_entries == expected.scratchpad.max_entries
+
+
+def test_build_agent_gives_the_source_evaluator_the_reputation_source(
+    tracker,
+) -> None:
+    memory = LongTermMemory(
+        collection=FakeCollection(), embeddings=FakeEmbeddings()
+    )
+    tools = build_tools(
+        ConfigSettings(),
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    agent = build_agent(
+        "source_evaluator",
+        ConfigSettings(),
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=memory,
+    )
+
+    assert agent._reputation is memory
+
+
+def test_build_agent_rejects_an_unknown_agent_name(tracker) -> None:
+    with pytest.raises(AgentConfigurationError) as caught:
+        build_agent(
+            "librarian",
+            ConfigSettings(),
+            tracker=tracker,
+            provider=RecordingProvider(),
+            tools=[],
+            session_id="session-1",
+            reputation=None,
+        )
+
+    assert "librarian" in str(caught.value)
+
+
+def test_build_agent_fails_when_a_declared_tool_is_missing(tracker) -> None:
+    """Matches ``AgentToolset``: construction fails, not the first tool call."""
+    with pytest.raises(AgentConfigurationError):
+        build_agent(
+            "planner",
+            ConfigSettings(),
+            tracker=tracker,
+            provider=RecordingProvider(),
+            tools=[],
+            session_id="session-1",
+            reputation=None,
+        )
+
+
+def test_build_agents_uses_the_shared_constructor_mapping(
+    tracker, monkeypatch
+) -> None:
+    """Production must go through the same mapping evaluation uses."""
+    calls: list[str] = []
+    real = assembly.build_agent
+
+    def recording_build_agent(name, settings, **kwargs):
+        calls.append(name)
+        return real(name, settings, **kwargs)
+
+    monkeypatch.setattr(assembly, "build_agent", recording_build_agent)
+
+    tools = build_tools(
+        ConfigSettings(),
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+    build_agents(
+        ConfigSettings(),
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    assert calls == list(AGENT_NAMES)
 
 
 @pytest.mark.asyncio

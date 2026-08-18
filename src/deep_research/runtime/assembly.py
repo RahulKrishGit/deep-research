@@ -8,7 +8,7 @@ injectable so this module can be tested without an API key or a network.
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -113,6 +113,60 @@ def _scratchpad(
     )
 
 
+# Keyed by the six canonical agent names. Every entry receives the identical
+# shared kwargs; only the Source Evaluator consumes ``reputation``. Bodies
+# name the agent classes rather than capturing them, so a test that patches
+# a class on this module still sees its own class constructed.
+_AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
+    "planner": lambda reputation, **shared: PlannerAgent(**shared),
+    "researcher": lambda reputation, **shared: ResearcherAgent(**shared),
+    "source_evaluator": lambda reputation, **shared: SourceEvaluatorAgent(
+        reputation=reputation, **shared
+    ),
+    "fact_checker": lambda reputation, **shared: FactCheckerAgent(**shared),
+    "synthesizer": lambda reputation, **shared: SynthesizerAgent(**shared),
+    "critic": lambda reputation, **shared: CriticAgent(**shared),
+}
+
+
+def build_agent(
+    name: str,
+    settings: ConfigSettings,
+    *,
+    tracker: Tracker,
+    provider: StructuredCompleter,
+    tools: Sequence[BaseTool],
+    session_id: str,
+    reputation: ReputationSource | None,
+) -> Any:
+    """Construct exactly one production-configured agent.
+
+    The single place any agent is wired. ``build_agents`` calls it six
+    times; the evaluation harness calls it once. Sharing the mapping is
+    what keeps evaluation from drifting away from production wiring.
+
+    ``AgentConfigurationError`` is raised, not converted: the graph path
+    wants a ``ResearchConfigurationError`` and converts in ``build_agents``,
+    while evaluation preflight wants the raw error.
+    """
+    constructor = _AGENT_CONSTRUCTORS.get(name)
+    if constructor is None:
+        valid = ", ".join(AGENT_NAMES)
+        raise AgentConfigurationError(
+            f"unknown agent name {name!r}; expected one of: {valid}"
+        )
+    return constructor(
+        reputation=reputation,
+        provider=provider,
+        tracker=tracker,
+        tools=tools,
+        config=settings.agents,
+        scratchpad=_scratchpad(
+            settings, session_id=session_id, agent_name=name
+        ),
+    )
+
+
 def build_agents(
     settings: ConfigSettings,
     *,
@@ -125,58 +179,25 @@ def build_agents(
     """Construct the six agents one graph runs.
 
     A tool an agent declares but nobody injected is an
-    ``AgentConfigurationError`` raised here at construction, not a failure
+    ``AgentConfigurationError`` raised at construction, not a failure
     deferred to the first tool call. That is converted into a
     ``ResearchConfigurationError`` so the CLI can print it without a
     traceback.
     """
-    shared = {
-        "provider": provider,
-        "tracker": tracker,
-        "tools": tools,
-        "config": settings.agents,
-    }
     try:
         return ResearchAgents(
-            planner=PlannerAgent(
-                scratchpad=_scratchpad(
-                    settings, session_id=session_id, agent_name="planner"
-                ),
-                **shared,
-            ),
-            researcher=ResearcherAgent(
-                scratchpad=_scratchpad(
-                    settings, session_id=session_id, agent_name="researcher"
-                ),
-                **shared,
-            ),
-            source_evaluator=SourceEvaluatorAgent(
-                scratchpad=_scratchpad(
+            **{
+                name: build_agent(
+                    name,
                     settings,
+                    tracker=tracker,
+                    provider=provider,
+                    tools=tools,
                     session_id=session_id,
-                    agent_name="source_evaluator",
-                ),
-                reputation=reputation,
-                **shared,
-            ),
-            fact_checker=FactCheckerAgent(
-                scratchpad=_scratchpad(
-                    settings, session_id=session_id, agent_name="fact_checker"
-                ),
-                **shared,
-            ),
-            synthesizer=SynthesizerAgent(
-                scratchpad=_scratchpad(
-                    settings, session_id=session_id, agent_name="synthesizer"
-                ),
-                **shared,
-            ),
-            critic=CriticAgent(
-                scratchpad=_scratchpad(
-                    settings, session_id=session_id, agent_name="critic"
-                ),
-                **shared,
-            ),
+                    reputation=reputation,
+                )
+                for name in AGENT_NAMES
+            }
         )
     except AgentConfigurationError as error:
         raise configuration_error(

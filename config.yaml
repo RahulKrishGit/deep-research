@@ -11,6 +11,8 @@ llm:
   retry_count: 2
   temperature: 0.7
   max_tokens: 4096
+  reasoning_effort:
+  reasoning_mode: standard
 
 langsmith:
   tracing_enabled: false
@@ -42,3 +44,28 @@ graph:
 output:
   directory: output/
   default_format: markdown
+
+evaluation:
+  controlled_repetitions: 3
+  controlled_case_average_threshold: 0.80
+  controlled_repetition_floor: 0.65
+  live_repetitions: 1
+  live_threshold: 0.75
+  target_model: gpt-5.6-luna
+  target_reasoning_effort: medium
+  target_reasoning_effort_overrides:
+    planner: medium
+    researcher: low
+    source_evaluator: low
+    fact_checker: medium
+    synthesizer: medium
+    critic: medium
+  judge_model: gpt-5.6-luna
+  judge_reasoning_effort: high
+  reasoning_mode: standard
+  embedding_model: text-embedding-3-small
+  judge_temperature: 0.0
+  max_concurrency: 1
+  output_directory: output/evaluations/
+  dataset_version: 1
+  rubric_version: 1
