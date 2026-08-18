@@ -25,25 +25,32 @@ def normalize_source_url(url: str) -> str:
     """Return a canonical form of ``url``, or the collapsed input verbatim.
 
     Total by design: a model may report a source that is not a URL at all
-    (a book title, a file name). Those are returned whitespace-collapsed
-    rather than rejected, so no finding is ever dropped for having an
-    unusual source.
+    (a book title, a file name), or a malformed URL (an out-of-range or
+    non-numeric port, a malformed IPv6 host, ...). Both are returned
+    whitespace-collapsed rather than rejected, so no finding is ever
+    dropped for having an unusual or malformed source. ``urlsplit`` parses
+    eagerly but its ``.hostname``/``.port`` properties can raise
+    ``ValueError`` lazily on access for a malformed authority; any such
+    failure falls back to the collapsed input, same as a non-URL string.
     """
     collapsed = " ".join(url.split())
-    parts = urlsplit(collapsed)
-    if not parts.scheme or not parts.hostname:
-        return collapsed
+    try:
+        parts = urlsplit(collapsed)
+        if not parts.scheme or not parts.hostname:
+            return collapsed
 
-    scheme = parts.scheme.lower()
-    host = parts.hostname.lower()
-    if host.startswith("www."):
-        host = host[4:]
-    netloc = host
-    port = parts.port
-    if port is not None and str(port) != _DEFAULT_PORTS.get(scheme):
-        netloc = f"{host}:{port}"
-    path = parts.path.rstrip("/")
-    return urlunsplit((scheme, netloc, path, parts.query, ""))
+        scheme = parts.scheme.lower()
+        host = parts.hostname.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        netloc = host
+        port = parts.port
+        if port is not None and str(port) != _DEFAULT_PORTS.get(scheme):
+            netloc = f"{host}:{port}"
+        path = parts.path.rstrip("/")
+        return urlunsplit((scheme, netloc, path, parts.query, ""))
+    except ValueError:
+        return collapsed
 
 
 def source_domain(url: str) -> str:

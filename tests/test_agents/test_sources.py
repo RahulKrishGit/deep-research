@@ -58,6 +58,58 @@ def test_url_normalization_is_canonical_and_total(raw: str, expected: str) -> No
     assert normalize_source_url(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Out-of-range port: urlsplit(...).port raises ValueError.
+        "https://example.org:99999/page",
+        "https://example.org:65536/page",
+        # Non-numeric / negative port: same property, different message.
+        "https://example.org:not-a-port/page",
+        "https://example.org:-1/page",
+        # Malformed IPv6 host: urlsplit() itself, or .hostname, raises.
+        "http://[::1:2:3:4:5:6:7:8:9]/page",
+        "http://[gg::1]/page",
+        "http://[::1/page",
+    ],
+)
+def test_normalize_source_url_is_total_on_malformed_urls(raw: str) -> None:
+    """Finding 16 root cause: the docstring claims ``normalize_source_url``
+    is total, but pre-fix ``urlsplit(...).port`` (and friends) raised
+    ``ValueError`` for every one of these malformed authorities. The
+    function must now return a plain string -- never raise -- for any
+    string input, matching its own documented contract."""
+    result = normalize_source_url(raw)
+
+    assert isinstance(result, str)
+    # A malformed URL degrades to the whitespace-collapsed input verbatim,
+    # the same fallback already used for a non-URL string like a book
+    # title -- it is never silently mangled into something that looks
+    # like a valid normalized URL.
+    assert result == " ".join(raw.split())
+
+
+def test_normalize_source_url_never_raises_for_arbitrary_strings() -> None:
+    """A broader sweep of adversarial inputs, proving totality is not an
+    artifact of the specific cases above."""
+    adversarial = [
+        "",
+        " ",
+        "://",
+        "http://",
+        "http://:::",
+        "http://[",
+        "http://]",
+        "ftp://example.org:99999999999999999999/page",
+        "https://example.org:" + "9" * 40 + "/page",
+        "not a url at all",
+        "https://example.org:0x1F/page",
+    ]
+    for raw in adversarial:
+        result = normalize_source_url(raw)
+        assert isinstance(result, str)
+
+
 def test_source_domain_strips_scheme_port_and_www() -> None:
     assert source_domain("https://www.Example.ORG:443/a") == "example.org"
     assert source_domain("opaque source") == "opaque source"

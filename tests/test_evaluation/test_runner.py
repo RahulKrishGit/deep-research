@@ -249,6 +249,53 @@ async def test_a_focused_case_run_produces_three_repetitions(
 
 
 @pytest.mark.asyncio
+async def test_a_gate_evaluation_exception_is_recorded_not_dropped(
+    settings, runtime_config_for, tmp_path, evaluation_harness, monkeypatch
+) -> None:
+    """Finding 16's defense in depth: even though the root-cause fix makes
+    ``normalize_source_url`` total, ``_dispatch_code``'s ``try`` around
+    ``evaluate_target`` must widen past ``ValidationError`` so that ANY
+    unexpected exception from gate evaluation is caught, rather than
+    relying solely on ``normalize_source_url`` never raising again.
+
+    Pre-fix, an exception escaping ``evaluate_target`` here would leave
+    ``pending_gates[key]`` unset, and ``_dispatch_judge``'s
+    ``if gates is not None`` guard would then silently omit the repetition
+    from ``repetitions_by_case`` -- finding 14's failure mode, reachable
+    through any exception, not only the one this round's root-cause fix
+    closes. Post-fix, the repetition must still appear, scored as a
+    failed gate, never silently dropped.
+    """
+    import deep_research.evaluation.runner as runner_module
+
+    def _boom(output, case, *, secrets):
+        raise ValueError("simulated: Port out of range 0-65535")
+
+    monkeypatch.setattr(runner_module, "evaluate_target", _boom)
+
+    focused = evaluation_harness.for_case("focused-decomposition")
+    runner = FakeEvaluateRunner(examples=focused.examples)
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner", case_id="focused-decomposition"),
+        cases=focused.cases,
+        evaluate=runner,
+        **focused.kwargs(tmp_path),
+    )
+
+    assert len(result.cases) == 1
+    repetitions = result.cases[0].repetitions
+    # Not dropped: all three repetitions are still present.
+    assert len(repetitions) == 3
+    assert all(r.gates.passed is False for r in repetitions)
+    assert all(
+        "gate_evaluation_error" in r.gates.failed_ids for r in repetitions
+    )
+    assert all(r.deterministic_quality == 0.0 for r in repetitions)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_evaluation_wires_the_threshold_and_floor_correctly(
     settings, runtime_config_for, tmp_path, evaluation_harness, monkeypatch
 ) -> None:

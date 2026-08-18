@@ -63,6 +63,7 @@ from deep_research.evaluation.models import (
     EvaluationTier,
     ExperimentResult,
     GateReport,
+    GateResult,
     JudgeFeedback,
     JudgeNotRunReason,
     JudgeScores,
@@ -713,7 +714,43 @@ async def run_agent_evaluation(
             output = TargetOutput.model_validate(run.outputs)
         except ValidationError:
             return code_evaluators[case_identity](run, example)
-        gates, deterministic = evaluate_target(output, case, secrets=secrets)
+        try:
+            gates, deterministic = evaluate_target(output, case, secrets=secrets)
+        except Exception as error:
+            # Defense in depth for finding 16: a gate that raises (e.g. a
+            # malformed source URL reaching an unguarded
+            # ``normalize_source_url`` call) must never leave ``key`` out
+            # of ``pending_gates`` -- that would make ``_dispatch_judge``'s
+            # ``if gates is not None`` guard silently drop the whole
+            # repetition from ``repetitions_by_case``, exactly like finding
+            # 14. Recording a failed gate here means the repetition is
+            # still reported, just as failed/errored rather than missing.
+            message = _safe_error_message(error, secrets)
+            detail = f"gate evaluation raised {type(error).__name__}: {message}"
+            pending_gates[key] = GateReport(
+                results=[
+                    GateResult(
+                        gate_id="gate_evaluation_error",
+                        passed=False,
+                        detail=detail,
+                    )
+                ]
+            )
+            pending_deterministic[key] = 0.0
+            return {
+                "results": [
+                    {
+                        "key": "hard_gates_passed",
+                        "score": 0,
+                        "comment": detail,
+                    },
+                    {
+                        "key": "deterministic_quality",
+                        "score": 0.0,
+                        "comment": "gate evaluation raised an unhandled exception",
+                    },
+                ]
+            }
         pending_gates[key] = gates
         pending_deterministic[key] = deterministic
         return code_evaluators[case_identity](run, example)

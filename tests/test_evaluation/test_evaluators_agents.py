@@ -136,6 +136,47 @@ def test_the_researcher_gate_rejects_an_invented_source_url(
     ).passed is False
 
 
+def test_the_researcher_gate_rejects_a_malformed_source_url_without_raising(
+    researcher_case, researcher_output
+) -> None:
+    """Finding 16: this is the reviewer-found path itself --
+    ``_gate_no_invented_sources`` -> ``_no_invented_sources_passes`` ->
+    ``agents/sources.py``'s unguarded ``normalize_source_url`` call, for
+    the Researcher agent, reached directly through ``evaluate_agent_gates``
+    with no local fallback in the way (unlike ``_gate_citations_known``'s
+    round-2 ``_normalized`` helper). Pre-root-cause-fix this raised
+    ``ValueError: Port out of range 0-65535`` here; post-fix it must
+    return a clean failing ``GateResult`` instead.
+    """
+    output = researcher_output.with_finding_url("https://ex.com:99999/page")
+
+    result = gate(
+        evaluate_agent_gates(output, researcher_case), "no_invented_sources"
+    )
+
+    assert result.passed is False
+
+
+def test_evaluate_target_never_raises_on_a_malformed_researcher_source_url(
+    researcher_case, researcher_target_output
+) -> None:
+    """The same malformed URL, driven through ``evaluate_target`` (general
+    gates + agent gates + deterministic quality together) -- the actual
+    call shape ``runner.py``'s ``_dispatch_code`` uses in production.
+    """
+    result = dict(researcher_target_output.result)
+    findings = [dict(item) for item in result["findings"]]
+    findings[0]["source_url"] = "https://ex.com:99999/page"
+    output = researcher_target_output.model_copy(
+        update={"result": {**result, "findings": findings}}
+    )
+
+    report, quality = evaluate_target(output, researcher_case, secrets=())
+
+    assert gate(report.results, "no_invented_sources").passed is False
+    assert 0.0 <= quality <= 1.0
+
+
 # --- Source Evaluator ------------------------------------------------------
 
 
