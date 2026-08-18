@@ -370,6 +370,56 @@ def test_the_code_evaluator_never_raises_on_a_malformed_run(
     assert scores["deterministic_quality"] == 0.0
 
 
+def test_the_code_evaluator_never_raises_on_a_malformed_cited_url(
+    planner_case, clean_target_output
+) -> None:
+    """Finding 14, traced through the actual runner dispatch path.
+
+    ``code_evaluator``'s inner ``evaluate`` closure is exactly what
+    ``runner.py``'s ``_dispatch_code`` wraps in a LangSmith evaluator call,
+    and ``runner.py`` only catches ``ValidationError`` around that
+    dispatch — never ``ValueError``. Pre-fix, a malformed cited URL (e.g.
+    an out-of-range port) made ``_gate_citations_known`` raise
+    ``ValueError`` from ``normalize_source_url``'s ``urlsplit(...).port``,
+    which would escape here uncaught, and in the real runner that means
+    ``pending_gates[key]`` is never set and the whole repetition silently
+    vanishes from ``repetitions_by_case`` instead of failing its gates.
+    This must now return a normal, fully populated gate report with
+    ``citations_known`` scored 0 -- not raise.
+
+    Uses the planner (no agent-specific gate touches
+    ``normalize_source_url``) so this test isolates ``citations_known``'s
+    own resilience rather than the separately-scoped, pre-existing
+    ``normalize_source_url`` non-totality reachable from other gates
+    (e.g. ``no_invented_sources``'s ``source_domain`` call, out of scope
+    for this fix per the finding).
+    """
+    from tests.evaluation_fakes import FakeExampleRow, FakeRun
+
+    result = dict(clean_target_output.result)
+    result["sub_topics"] = [
+        {
+            **result["sub_topics"][0],
+            "rationale": "See https://ex.com:99999/page for details.",
+        },
+        *result["sub_topics"][1:],
+    ]
+    output = clean_target_output.model_copy(update={"result": result})
+
+    evaluator = code_evaluator(planner_case, secrets=())
+    results = evaluator(
+        FakeRun(outputs=output.model_dump(mode="json")),
+        FakeExampleRow({"inputs": {"case_id": planner_case.case_id}}),
+    )
+
+    scores = {item["key"]: item["score"] for item in results["results"]}
+    assert scores["gate:citations_known"] == 0
+    assert scores["hard_gates_passed"] == 0
+    # The repetition was scored, not silently dropped: every other gate
+    # still ran and reported a real result.
+    assert len(results["results"]) > 2
+
+
 def test_evaluate_target_combines_general_and_agent_gates(
     planner_case, clean_target_output
 ) -> None:

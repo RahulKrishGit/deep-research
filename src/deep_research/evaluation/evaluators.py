@@ -216,6 +216,25 @@ def _gate_errors_typed(output: TargetOutput, case: EvaluationCase) -> GateResult
     )
 
 
+def _normalized(url: str) -> str:
+    """``normalize_source_url(url)``, falling back to the raw string.
+
+    ``normalize_source_url`` is documented as total but is not: it defers to
+    ``urlsplit(...).port``, which raises ``ValueError`` lazily on malformed
+    input (out-of-range ports, unparseable IPv6 hosts, non-numeric ports).
+    ``cited`` URLs come from arbitrary agent-generated prose, so a
+    hallucinated malformed URL must still make ``citations_known`` fail
+    cleanly as "not in the known set" rather than crash the gate — a crash
+    here escapes uncaught in the runner's dispatch path and silently drops
+    the whole repetition from scoring instead of failing it, which is worse
+    than a crash.
+    """
+    try:
+        return normalize_source_url(url)
+    except ValueError:
+        return url
+
+
 def _gate_citations_known(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
@@ -231,34 +250,50 @@ def _gate_citations_known(
     # or a declared known-source URL, so they belong in ``allowed`` too.
     expectations = case.expectations
     allowed: set[str] = {
-        normalize_source_url(url) for url in expectations.known_source_urls
+        _normalized(url) for url in expectations.known_source_urls
     }
     scripted = _field(output.evidence, "scripted_search_urls") or ()
     allowed.update(
-        normalize_source_url(url) for url in scripted if isinstance(url, str)
+        _normalized(url) for url in scripted if isinstance(url, str)
     )
     evidence_sources = _field(output.evidence, "sources") or ()
     for source in evidence_sources:
         url = _field(source, "url")
         if isinstance(url, str):
-            allowed.add(normalize_source_url(url))
+            allowed.add(_normalized(url))
     evidence_findings = _field(output.evidence, "findings") or ()
     for finding in evidence_findings:
         url = _field(finding, "source_url")
         if isinstance(url, str):
-            allowed.add(normalize_source_url(url))
+            allowed.add(_normalized(url))
+    # ``evidence.claims`` is populated from ``state.verified_claims`` (see
+    # targets.py), each of which carries ``source_urls`` (plural — a claim
+    # may be corroborated by more than one source). Those are just as
+    # "known" as sources/findings URLs and belong in ``allowed`` too.
+    #
+    # Latent-only: no currently-registered case exercises a claim-only URL
+    # (one not already surfaced via sources/findings), so the golden-output
+    # regression test below cannot yet cover this branch end-to-end without
+    # a new case. Covered directly instead by a focused unit test.
+    evidence_claims = _field(output.evidence, "claims") or ()
+    for claim in evidence_claims:
+        claim_urls = _field(claim, "source_urls") or ()
+        if isinstance(claim_urls, (list, tuple)):
+            allowed.update(
+                _normalized(url) for url in claim_urls if isinstance(url, str)
+            )
     if case.tier == "live":
         for step in output.trajectory:
             allowed.update(
-                normalize_source_url(url)
+                _normalized(url)
                 for url in _url_like_strings(_field(step, "thought"))
             )
             allowed.update(
-                normalize_source_url(url)
+                _normalized(url)
                 for url in _url_like_strings(_field(step, "observation_summary"))
             )
     cited = {
-        normalize_source_url(url)
+        _normalized(url)
         for url in (
             _url_like_strings(output.result)
             | _url_like_strings(output.state_update)

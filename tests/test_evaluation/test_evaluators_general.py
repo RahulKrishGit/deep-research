@@ -274,6 +274,68 @@ def test_a_live_case_accepts_urls_from_the_recorded_trajectory(
     assert gate(results, "citations_known").passed is True
 
 
+def test_a_malformed_cited_url_fails_the_citation_gate_without_raising(
+    researcher_case, researcher_target_output
+) -> None:
+    """Finding 14: a hallucinated malformed URL must fail cleanly.
+
+    ``normalize_source_url`` defers to ``urlsplit(...).port``, which raises
+    ``ValueError`` lazily on an out-of-range port. ``cited`` URLs come from
+    arbitrary agent-generated prose, so this is reachable in production —
+    and pre-fix, it escaped ``_gate_citations_known`` uncaught, which in
+    ``runner.py`` silently drops the whole repetition from scoring instead
+    of failing it (worse than a crash: it inflates the pass rate).
+    """
+    result = dict(researcher_target_output.result)
+    result["findings"] = [
+        {"source_url": "https://ex.com:99999/page"}
+    ]
+    output = researcher_target_output.model_copy(update={"result": result})
+
+    results = evaluate_general_gates(output, researcher_case, secrets=())
+
+    assert gate(results, "citations_known").passed is False
+    assert "99999" in gate(results, "citations_known").detail
+
+
+def test_claim_source_urls_are_folded_into_the_known_url_set(
+    researcher_case, researcher_target_output
+) -> None:
+    """Finding 15: ``evidence.claims[].source_urls`` must count as known.
+
+    ``targets.py`` populates ``evidence.claims`` from
+    ``state.verified_claims``, each of which carries ``source_urls``. Those
+    are just as legitimate to cite as ``evidence.sources`` /
+    ``evidence.findings`` URLs.
+    """
+    claim_only_url = "https://claim-only.example.com/evidence"
+    result = dict(researcher_target_output.result)
+    result["findings"] = [{"source_url": claim_only_url}]
+    output = researcher_target_output.model_copy(
+        update={
+            "result": result,
+            "evidence": researcher_target_output.evidence.model_copy(
+                update={
+                    "claims": [
+                        {
+                            "text": "A plausible claim.",
+                            "source_urls": [claim_only_url],
+                            "verdict": "verified",
+                            "confidence": 0.8,
+                            "evidence": [],
+                            "contradictions": [],
+                        }
+                    ]
+                }
+            ),
+        }
+    )
+
+    results = evaluate_general_gates(output, researcher_case, secrets=())
+
+    assert gate(results, "citations_known").passed is True
+
+
 def test_a_secret_anywhere_in_the_output_fails_the_secret_gate(
     planner_case, clean_target_output
 ) -> None:
