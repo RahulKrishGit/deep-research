@@ -222,19 +222,48 @@ def _gate_citations_known(
     # Live cases fall through to the trajectory check even when no known
     # source urls are declared: for those cases the recorded tool trajectory
     # is the only evidence a cited url was genuinely retrieved.
+    #
+    # Some agents (e.g. the Source Evaluator) never search at all: their
+    # sources arrive pre-populated on ``state.raw_findings`` /
+    # ``state.evaluated_sources`` and are surfaced to the target via
+    # ``output.evidence.sources`` / ``output.evidence.findings`` (see
+    # targets.py). Those URLs are just as "known" as a scripted search hit
+    # or a declared known-source URL, so they belong in ``allowed`` too.
     expectations = case.expectations
-    allowed: set[str] = set(expectations.known_source_urls)
+    allowed: set[str] = {
+        normalize_source_url(url) for url in expectations.known_source_urls
+    }
     scripted = _field(output.evidence, "scripted_search_urls") or ()
-    allowed.update(url for url in scripted if isinstance(url, str))
+    allowed.update(
+        normalize_source_url(url) for url in scripted if isinstance(url, str)
+    )
+    evidence_sources = _field(output.evidence, "sources") or ()
+    for source in evidence_sources:
+        url = _field(source, "url")
+        if isinstance(url, str):
+            allowed.add(normalize_source_url(url))
+    evidence_findings = _field(output.evidence, "findings") or ()
+    for finding in evidence_findings:
+        url = _field(finding, "source_url")
+        if isinstance(url, str):
+            allowed.add(normalize_source_url(url))
     if case.tier == "live":
         for step in output.trajectory:
-            allowed.update(_url_like_strings(_field(step, "thought")))
             allowed.update(
-                _url_like_strings(_field(step, "observation_summary"))
+                normalize_source_url(url)
+                for url in _url_like_strings(_field(step, "thought"))
             )
-    cited = _url_like_strings(output.result) | _url_like_strings(
-        output.state_update
-    )
+            allowed.update(
+                normalize_source_url(url)
+                for url in _url_like_strings(_field(step, "observation_summary"))
+            )
+    cited = {
+        normalize_source_url(url)
+        for url in (
+            _url_like_strings(output.result)
+            | _url_like_strings(output.state_update)
+        )
+    }
     unknown = sorted(cited - allowed)
     return GateResult(
         gate_id="citations_known",

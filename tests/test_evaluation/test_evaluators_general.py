@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.sources import normalize_source_url
+from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.evaluators import (
     GENERAL_GATE_IDS,
     MissingMetricError,
@@ -11,7 +13,14 @@ from deep_research.evaluation.evaluators import (
     evaluate_general_gates,
     evaluate_target,
 )
-from deep_research.evaluation.models import TrajectoryStep
+from deep_research.evaluation.models import (
+    DependencyLedger,
+    EvaluationCase,
+    EvidenceContext,
+    ReActSummary,
+    TargetOutput,
+    TrajectoryStep,
+)
 
 
 def gate(results, gate_id):
@@ -420,3 +429,225 @@ def test_evaluate_target_returns_a_populated_report_and_score(
     # This fixture only satisfies the general gates; the agent gates follow.
     assert all(item.passed for item in report.results[: len(GENERAL_GATE_IDS)])
     assert score == pytest.approx(1.0)
+
+
+# --- Golden-output regression test over the real case registry -------------
+#
+# Every gate test above builds a hand-crafted ``TargetOutput`` whose URLs
+# were chosen, by construction, to match a hand-crafted case. That is
+# exactly why two Critical defects in ``_gate_citations_known`` survived 28
+# scoped task reviews and 1549 passing tests: nothing pinned a case's own
+# declared/derived "known" URLs to the gate that consumes them.
+#
+# This test builds a plausible correct output for every case actually
+# registered in ``deep_research.evaluation.cases.all_cases()`` — the real
+# registry, not a synthetic fixture — using only that case's own state and
+# expectations, and asserts every general gate passes.
+
+
+def _known_urls_for(case: EvaluationCase) -> list[str]:
+    """Every URL this case's own state or expectations makes legitimate.
+
+    Mirrors what a correct agent may cite: the case's declared
+    ``known_source_urls``, plus any URL already present on the seeded
+    ``ResearchState`` (``raw_findings`` / ``evaluated_sources``) — exactly
+    the data ``targets.py`` copies onto ``output.evidence.findings`` /
+    ``output.evidence.sources`` for a real repetition. URLs are normalized
+    the way a production agent normalizes them before citing (finding 2),
+    so a case declaring a ``www.``-prefixed URL still yields a bare,
+    citable form.
+    """
+    raw = [
+        *case.expectations.known_source_urls,
+        *(finding.source_url for finding in case.state.raw_findings),
+        *(source.url for source in case.state.evaluated_sources),
+    ]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for url in raw:
+        normalized = normalize_source_url(url)
+        if normalized not in seen:
+            seen.add(normalized)
+            ordered.append(normalized)
+    return ordered
+
+
+def _golden_result(case: EvaluationCase, urls: list[str]) -> dict:
+    """A plausible, agent-shaped correct ``result`` citing only ``urls``."""
+    if case.agent_name == "planner":
+        return {
+            "sub_topics": [
+                {
+                    "title": "Golden sub-topic",
+                    "rationale": "A plausible rationale for this case.",
+                    "search_queries": ["golden query"],
+                    "success_criteria": ["golden criterion"],
+                    "priority": 1,
+                }
+            ]
+        }
+    if case.agent_name == "researcher":
+        return {
+            "findings": [
+                {
+                    "content": f"Evidence drawn from {url}.",
+                    "source_url": url,
+                    "source_title": "Golden source",
+                }
+                for url in urls[:2]
+            ]
+        }
+    if case.agent_name == "source_evaluator":
+        return {
+            "evaluated_sources": [
+                {
+                    "url": url,
+                    "title": "Golden source",
+                    "authority_score": 0.8,
+                    "recency_score": 0.8,
+                    "relevance_score": 0.8,
+                    "corroboration_score": 0.8,
+                    "overall_score": 0.8,
+                    "rationale": "Plausible, well-corroborated source.",
+                    "low_confidence": False,
+                }
+                for url in urls
+            ]
+        }
+    if case.agent_name == "fact_checker":
+        claim_urls = urls[:1]
+        return {
+            "verified_claims": [
+                {
+                    "text": "A plausible, correctly verified claim.",
+                    "source_urls": claim_urls,
+                    "verdict": "verified" if claim_urls else "insufficient_evidence",
+                    "confidence": 0.8 if claim_urls else 0.3,
+                    "evidence": [],
+                    "contradictions": [],
+                }
+            ]
+        }
+    if case.agent_name == "synthesizer":
+        if urls:
+            report = (
+                "## Summary\n\n"
+                f"A plausible, fully cited summary ({urls[0]}).\n\n"
+                "## Limitations\n\nThe evidence base is limited."
+            )
+        else:
+            report = (
+                "## Summary\n\nA plausible summary with no external "
+                "sources to cite.\n\n## Limitations\n\nThe evidence base "
+                "is limited."
+            )
+        return {"report": report}
+    if case.agent_name == "critic":
+        return {
+            "critique": {
+                "score": 8,
+                "gaps": [],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "should_continue": False,
+                "rationale": "A plausible, well-supported critique.",
+            }
+        }
+    raise AssertionError(f"no golden result builder for {case.agent_name!r}")
+
+
+def _build_golden_output(case: EvaluationCase) -> TargetOutput:
+    """A plausible correct ``TargetOutput`` for ``case``, from its own data.
+
+    A live case that legitimately has no known URLs anywhere (state or
+    expectations) still needs a citable URL to be plausible: this mirrors
+    ``_gate_citations_known``'s own live-trajectory fallback by recording a
+    "discovered" URL in the trajectory and citing that.
+    """
+    urls = _known_urls_for(case)
+    trajectory: list[TrajectoryStep] = []
+    if not urls and case.tier == "live":
+        discovered = f"https://discovered.example.com/{case.case_id}"
+        urls = [discovered]
+        trajectory = [
+            TrajectoryStep(
+                iteration=0,
+                thought=f"Open {discovered}.",
+                tool_name="web_search",
+                succeeded=True,
+                observation_summary=f"Retrieved {discovered}.",
+            )
+        ]
+
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id=f"evaluation-golden-{case.case_id}",
+        experiment_name=f"{case.agent_name}-{case.tier}-golden-test",
+        trace_url="https://smith.langchain.com/o/x/r/golden-1",
+        completed=True,
+        failure=None,
+        result=_golden_result(case, urls),
+        state_update={},
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=1,
+            tool_calls=1 if trajectory else 0,
+            stop_reason="completed",
+            max_iterations=case.expectations.max_iterations,
+            tool_budget=case.expectations.max_tool_calls,
+        ),
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(
+            sources=[
+                source.model_dump(mode="json")
+                for source in case.state.evaluated_sources
+            ],
+            findings=[
+                finding.model_dump(mode="json")
+                for finding in case.state.raw_findings
+            ],
+            claims=[
+                claim.model_dump(mode="json")
+                for claim in case.state.verified_claims
+            ],
+            scripted_search_urls=[],
+        ),
+        trajectory=trajectory,
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    all_cases(),
+    ids=lambda case: f"{case.agent_name}/{case.tier}/{case.case_id}",
+)
+def test_a_plausible_correct_output_passes_every_general_gate_for_every_registered_case(
+    case: EvaluationCase,
+) -> None:
+    """Every case in the real registry, not a synthetic fixture.
+
+    This is the regression test for both Critical findings in
+    ``_gate_citations_known``: the Source Evaluator declares no
+    ``known_source_urls`` and no ``scripted_search_urls`` at all — its
+    sources arrive only through ``state.raw_findings`` /
+    ``state.evaluated_sources`` — and several cases declare their known
+    URLs in ``www.``-prefixed form while a correct agent cites the
+    normalized, bare form. A production-shaped, correct output must still
+    pass ``citations_known`` (and every other general gate) for both
+    reasons.
+    """
+    output = _build_golden_output(case)
+
+    results = evaluate_general_gates(output, case, secrets=())
+
+    assert [item.gate_id for item in results] == list(GENERAL_GATE_IDS)
+    failed = [item for item in results if not item.passed]
+    assert not failed, [(item.gate_id, item.detail) for item in failed]
