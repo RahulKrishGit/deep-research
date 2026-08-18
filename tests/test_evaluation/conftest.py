@@ -196,6 +196,72 @@ def clean_target_output(planner_case) -> TargetOutput:
 
 
 @pytest.fixture
+def leaking_target_output(planner_case) -> TargetOutput:
+    """A planner repetition whose raw fields carry real-looking secrets.
+
+    Nothing here is pre-redacted: the point of this fixture is to prove
+    that ``build_judge_input`` redacts every block itself rather than
+    trusting the target output to already be clean.
+    """
+    return TargetOutput(
+        case_id=planner_case.case_id,
+        case_version=planner_case.version,
+        agent_name=planner_case.agent_name,
+        tier=planner_case.tier,
+        repetition=1,
+        session_id="evaluation-focused-decomposition",
+        experiment_name="planner-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/planner-leak-1",
+        completed=True,
+        failure=None,
+        result={
+            "sub_topics": [
+                {
+                    "title": "Solid-state electrolyte degradation",
+                    "rationale": (
+                        "Electrolyte stability dominates cycle life. "
+                        "key=sk-abcdefghijklmnop"
+                    ),
+                    "search_queries": [
+                        "solid-state electrolyte degradation mechanism"
+                    ],
+                    "success_criteria": ["Crack propagation data"],
+                    "priority": 1,
+                },
+            ]
+        },
+        state_update={
+            "note": "planned one subtopic token=ls-abcdefghijklmnop"
+        },
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=2,
+            tool_calls=3,
+            stop_reason="completed",
+            max_iterations=planner_case.expectations.max_iterations,
+            tool_budget=planner_case.expectations.max_tool_calls,
+        ),
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(),
+        trajectory=[
+            TrajectoryStep(
+                iteration=0,
+                thought="",
+                tool_name="web_search",
+                succeeded=True,
+                observation_summary=(
+                    "Retrieved data using key tvly-abcdefghij for lookup."
+                ),
+            ),
+        ],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+
+@pytest.fixture
 def researcher_target_output(researcher_case) -> TargetOutput:
     """A fully populated researcher repetition citing only known sources."""
     urls = researcher_case.expectations.known_source_urls
