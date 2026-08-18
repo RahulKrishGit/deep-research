@@ -8,12 +8,23 @@ import pytest
 
 from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.config import contains_secret
+from deep_research.evaluation.runner import run_agent_evaluation
 from deep_research.utils.config import ConfigSettings
 
 SECRETS = ("sk-abcdefghijklmnop", "ls-abcdefghijklmnop", "tvly-abcdefghij")
 
 
 def test_no_case_fixture_mentions_a_production_memory_collection() -> None:
+    """A defensive fixture-authoring guard, not a coverage seam.
+
+    No field on ``ResearchState``/``EvaluationCase`` can ever hold a
+    memory-collection name, so this assertion can never actually fail even
+    if collection-naming isolation regressed -- it is harmless to keep as a
+    guard against a future field addition, but the real isolation seam
+    (a controlled run never constructing the production collection name)
+    is covered by
+    ``test_a_controlled_repetition_never_touches_production_memory`` below.
+    """
     production = ConfigSettings().memory.long_term.collection_name
     for case in all_cases():
         assert production not in case.state.model_dump_json()
@@ -85,6 +96,12 @@ def test_every_experiment_metadata_block_is_secret_free(
 
 
 def test_every_dataset_example_is_secret_free() -> None:
+    """A regression guard against a case author hardcoding secret-shaped
+    text into a case fixture, not proof that redaction ran for this seam:
+    ``example_payload`` builds its payload from an explicit field
+    allow-list, so it is secret-free by construction rather than because
+    anything here was redacted.
+    """
     from deep_research.evaluation.datasets import example_payload
 
     for case in all_cases():
@@ -130,6 +147,59 @@ def test_the_artifact_of_a_leaking_run_is_redacted(
     assert contains_secret(
         json.loads(path.read_text(encoding="utf-8")), SECRETS
     ) == []
+
+
+@pytest.mark.asyncio
+async def test_a_leaking_transport_failure_is_redacted_through_the_real_path(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    """Drives a real secret-carrying exception through ``runner.py``'s own
+    ``str(error)`` -> ``EvaluationFailure`` -> artifact-write path, rather
+    than through ``leaking_experiment_result`` (which manually calls
+    ``redact_secrets`` at fixture-construction time, before the
+    ``EvaluationFailure`` even exists -- structurally unable to prove the
+    production seam redacts anything).
+
+    This exercises the ``reason="langsmith_unavailable"`` catch-all around
+    ``evaluate()`` in ``run_agent_evaluation`` (``runner.py``): a caught
+    ``ConnectionError`` whose message embeds a real-looking secret must
+    come out of ``result.errors[0].message`` clean, and the ``results.json``
+    artifact written from that same ``ExperimentResult`` must be clean too.
+    """
+    secret = SECRETS[0]
+
+    async def exploding(target, /, **kwargs):
+        raise ConnectionError(
+            f"langsmith rejected the request: invalid api key {secret}"
+        )
+
+    runtime = runtime_config_for("planner", output_directory=str(tmp_path))
+    harness_kwargs = {**evaluation_harness.kwargs(tmp_path), "secrets": (secret,)}
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime,
+        cases=evaluation_harness.cases,
+        evaluate=exploding,
+        **harness_kwargs,
+    )
+
+    # The exception's raw message really did carry the secret -- otherwise
+    # this test would prove nothing about redaction.
+    assert secret in str(ConnectionError(
+        f"langsmith rejected the request: invalid api key {secret}"
+    ))
+
+    assert result.status == "INFRASTRUCTURE FAILURE"
+    assert result.errors[0].stage == "trace"
+    assert result.errors[0].reason == "langsmith_unavailable"
+    assert secret not in result.errors[0].message
+    assert contains_secret(result.model_dump(mode="json"), (secret,)) == []
+
+    path = runtime.output_root / "results.json"
+    written_text = path.read_text(encoding="utf-8")
+    assert secret not in written_text
+    assert contains_secret(json.loads(written_text), (secret,)) == []
 
 
 def test_the_tracker_redactor_still_covers_evaluation_spans(tracker) -> None:

@@ -30,9 +30,11 @@ from deep_research.evaluation.config import (
     EvaluationRuntimeConfig,
     GitMetadata,
     build_runtime_config,
+    contains_secret,
     experiment_metadata,
     judge_llm_config,
     known_secret_values,
+    redact_secrets,
     resolve_judge_effort,
     resolve_target_effort,
     target_llm_config,
@@ -343,6 +345,29 @@ EXPERIMENT_EXIT_CODES: dict[EvaluationStatus, int] = {
 EvaluateCallable = Callable[..., Awaitable[Any]]
 
 _JUDGE_NOT_RUN_REASONS = frozenset(get_args(JudgeNotRunReason))
+
+
+def _safe_error_message(error: Exception, secrets: Sequence[str]) -> str:
+    """A caught exception's message, safe to embed in a persisted or
+    traced ``EvaluationFailure``.
+
+    Belt-and-braces, matching ``targets.py``'s ``_finish`` and
+    ``judging.py``'s ``build_judge_input``: ``redact_secrets`` runs first,
+    then ``contains_secret`` re-checks the result. An arbitrary caught
+    exception's ``str()`` is untrusted -- a provider or transport error can
+    surface an API key verbatim in its message text -- so every
+    ``EvaluationFailure(message=...)`` built from one must go through this
+    helper rather than embedding ``str(error)`` directly. If a secret
+    somehow survives redaction, the message is replaced outright rather
+    than letting the leak escape into ``results.json`` or the suite
+    artifact.
+    """
+    raw = str(error) or type(error).__name__
+    redacted = redact_secrets(raw, secrets)
+    assert isinstance(redacted, str)
+    if contains_secret(redacted, secrets):
+        return "[REDACTED] (error message withheld: contained a known secret value)"
+    return redacted
 
 
 def aggregate_quality(deterministic: float, judge: float) -> float:
@@ -732,7 +757,7 @@ async def run_agent_evaluation(
             EvaluationFailure(
                 stage="trace",
                 reason="langsmith_unavailable",
-                message=str(error) or type(error).__name__,
+                message=_safe_error_message(error, secrets),
                 exception_type=type(error).__name__,
             )
         )
@@ -783,7 +808,7 @@ async def run_agent_evaluation(
                     EvaluationFailure(
                         stage="artifact",
                         reason="artifact_write_failed",
-                        message=str(error) or type(error).__name__,
+                        message=_safe_error_message(error, secrets),
                         exception_type=type(error).__name__,
                     ),
                 ]
@@ -820,7 +845,7 @@ def _suite_status(experiments: Sequence[ExperimentResult]) -> EvaluationStatus:
 
 
 def _suite_agent_setup_failure(
-    agent_name: AgentName, error: Exception
+    agent_name: AgentName, error: Exception, *, secrets: Sequence[str] = ()
 ) -> ExperimentResult:
     """One agent's own ``ExperimentResult`` for a failure that happened
     before -- or entirely outside -- ``run_agent_evaluation``'s own
@@ -828,6 +853,11 @@ def _suite_agent_setup_failure(
     case registry subset, or any other setup failure specific to this one
     agent). One broken agent must not erase five completed ones, so the
     suite loop catches this here and keeps going.
+
+    ``error`` may be an arbitrary runtime-config or case-registry
+    construction failure, so its message is redacted the same way as every
+    other caught-exception message this module embeds in an
+    ``EvaluationFailure`` -- see ``_safe_error_message``.
     """
     kebab = cli_agent_name(agent_name)
     return ExperimentResult(
@@ -842,7 +872,7 @@ def _suite_agent_setup_failure(
             EvaluationFailure(
                 stage="setup",
                 reason="suite_agent_setup_failed",
-                message=str(error) or type(error).__name__,
+                message=_safe_error_message(error, secrets),
                 exception_type=type(error).__name__,
             )
         ],
@@ -884,6 +914,7 @@ async def run_suite_evaluation(
     from openai import AsyncOpenAI
 
     environ = dict(os.environ)
+    suite_secrets = known_secret_values(environ)
     experiments: list[ExperimentResult] = []
 
     for agent_name in AGENT_NAMES:
@@ -932,7 +963,9 @@ async def run_suite_evaluation(
         except Exception as error:
             # One broken agent must not abort the rest of the suite --
             # see ``_suite_agent_setup_failure``.
-            result = _suite_agent_setup_failure(agent_name, error)
+            result = _suite_agent_setup_failure(
+                agent_name, error, secrets=suite_secrets
+            )
         experiments.append(result)
 
     result = SuiteResult(
