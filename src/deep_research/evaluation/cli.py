@@ -69,6 +69,7 @@ from deep_research.evaluation.runner import (
     preflight,
     preflight_exit_code,
     run_agent_evaluation,
+    run_suite_evaluation,
 )
 from deep_research.observability import Tracker
 from deep_research.providers import OpenAIChatProvider
@@ -370,27 +371,27 @@ def _default_suite_runner(
 ) -> Any:
     """The real ``suite`` command execution path.
 
-    ``run_suite_evaluation`` is Task 26's deliverable ("The suite
-    command") and does not exist in ``runner.py`` yet -- Task 26 comes
-    after this task in the plan's own numbering. The import below is
-    deferred into this function body (never at module import time) so
-    ``cli.py`` and ``deep_research.evaluation`` import cleanly today; the
-    ``ImportError`` would only surface if something actually invoked the
-    ``suite`` command past argument parsing with no ``runner`` injected,
-    which no test in ``test_cli.py`` does (every ``suite`` test is an
-    argparse-level rejection). Once Task 26 lands ``run_suite_evaluation``,
-    this import starts resolving with no further change required here --
-    its implementer should just confirm the keyword arguments below still
-    match its real signature.
+    Mirrors ``_default_agent_runner``: load the config file into
+    ``ConfigSettings``, resolve git provenance, and hand everything to
+    ``run_suite_evaluation`` (Task 26), which builds a fresh
+    ``EvaluationRuntimeConfig`` and real target/judge providers per agent
+    itself -- this function does no per-agent wiring of its own. Not
+    exercised by any test in ``test_cli.py``: every ``suite`` test is an
+    argparse-level rejection (``--case``/``--reasoning-effort`` on
+    ``suite``) that never reaches a runner call.
     """
-    from deep_research.evaluation.runner import run_suite_evaluation
-
-    return run_suite_evaluation(
-        config=config,
-        judge_reasoning_effort=judge_reasoning_effort,
-        output_directory=output_directory,
-        experiment_prefix=experiment_prefix,
-        verbose=verbose,
+    del verbose  # rendering-only; it does not change what is executed
+    settings = load_config(config)
+    return asyncio.run(
+        run_suite_evaluation(
+            settings,
+            judge_reasoning_effort=judge_reasoning_effort,
+            output_directory=output_directory,
+            experiment_prefix=experiment_prefix,
+            config_path=config,
+            now=datetime.now(timezone.utc),
+            git=resolve_git_metadata(),
+        )
     )
 
 

@@ -44,6 +44,7 @@ from deep_research.evaluation.models import (
     JudgeVerdict,
     ReActSummary,
     RepetitionResult,
+    SuiteResult,
     TargetOutput,
     TrajectoryStep,
 )
@@ -51,7 +52,7 @@ from deep_research.evaluation.targets import RepetitionCounter, build_target
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import OpenAIProviderError
 from deep_research.utils.config import ConfigSettings
-from tests.evaluation_fakes import FakeStructuredProvider
+from tests.evaluation_fakes import FakeEvaluateRunner, FakeStructuredProvider
 
 
 @pytest.fixture
@@ -2385,3 +2386,132 @@ def leaking_runner():
         )
 
     return runner
+
+
+# --- Task 26: suite harnesses and fixtures ----------------------------------
+#
+# ``run_suite_evaluation`` builds its own per-agent ``EvaluationRuntimeConfig``,
+# real cases (via ``cases_for``), and real target/judge ``OpenAIChatProvider``
+# instances internally -- there is no per-agent injection point in its public
+# signature, mirroring the CLI's own production wiring. What *is* injectable
+# is ``evaluate`` (the ``aevaluate``-shaped callable), so every harness below
+# hands it a shared ``FakeEvaluateRunner`` with an empty example list: an
+# empty example list means the fake never actually invokes the real target
+# callable, so the real (but offline-safe -- object construction only, no
+# network) providers ``run_suite_evaluation`` builds are constructed but
+# never called, and each agent's run still completes and writes its own
+# ``results.json``.
+
+
+@dataclass
+class _SuiteHarness:
+    """A shared fake LangSmith runner plus ``run_suite_evaluation`` kwargs,
+    scoped across all six agents -- the suite-level analogue of
+    ``_EvaluationHarness`` (Task 23), which was scoped to one agent."""
+
+    runner: FakeEvaluateRunner
+    factory_kwargs: dict = field(default_factory=dict)
+
+    def kwargs(self, tmp_path: Path) -> dict:
+        return {
+            **self.factory_kwargs,
+            "evaluate": self.runner,
+            "output_directory": str(tmp_path),
+        }
+
+
+def _suite_factory_kwargs() -> dict:
+    return dict(
+        judge_reasoning_effort=None,
+        experiment_prefix=None,
+        config_path="config.yaml",
+        now=datetime(2026, 8, 16, 10, 15, tzinfo=timezone.utc),
+        git=GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False),
+    )
+
+
+@pytest.fixture
+def suite_harness() -> _SuiteHarness:
+    """All six agents build and run cleanly; nothing is scripted to fail."""
+    return _SuiteHarness(
+        runner=FakeEvaluateRunner(examples=()),
+        factory_kwargs=_suite_factory_kwargs(),
+    )
+
+
+@pytest.fixture
+def partially_failing_suite_harness(monkeypatch) -> _SuiteHarness:
+    """The fact-checker's own runtime-config build fails; the other five
+    agents build and run normally.
+
+    ``agent_prompt_fingerprint`` is the seam ``build_runtime_config``
+    always calls while resolving one agent's ``EvaluationRuntimeConfig`` --
+    patching it to fail for exactly one agent name exercises
+    ``run_suite_evaluation``'s own try/except (not
+    ``run_agent_evaluation``'s internal ``evaluate()`` guard, which never
+    escapes to its caller), the same "one repetition's failure doesn't
+    abort the others" discipline scaled up to one *agent's* failure not
+    stopping the rest of the suite.
+    """
+    from deep_research.evaluation import config as config_module
+
+    real_fingerprint = config_module.agent_prompt_fingerprint
+
+    def flaky_fingerprint(agent_name: str) -> str:
+        if agent_name == "fact_checker":
+            raise RuntimeError("scripted agent-prompt-fingerprint failure")
+        return real_fingerprint(agent_name)
+
+    monkeypatch.setattr(
+        config_module, "agent_prompt_fingerprint", flaky_fingerprint
+    )
+
+    return _SuiteHarness(
+        runner=FakeEvaluateRunner(examples=()),
+        factory_kwargs=_suite_factory_kwargs(),
+    )
+
+
+@pytest.fixture
+def critic_experiment_result(repetition_result) -> ExperimentResult:
+    """A minimal, real critic ``ExperimentResult`` for the suite rendering
+    tests -- same shape as the ``experiment_result`` (planner) fixture."""
+    return ExperimentResult(
+        agent_name="critic",
+        tier="controlled",
+        experiment_name="critic-controlled-20260816T101500Z-abc1234",
+        experiment_url="https://smith.langchain.com/o/x/experiments/critic-1",
+        dataset_name="deep-research-critic-controlled-v1",
+        dataset_url="https://smith.langchain.com/o/x/datasets/critic-1",
+        cases=[
+            CaseResult(
+                case_id="approve-strong-report",
+                case_version=1,
+                repetitions=[repetition_result],
+                average_quality=0.9,
+                passed=True,
+                lowest_scoring_trace_url="https://smith.langchain.com/o/x/r/1",
+            )
+        ],
+        status="REVIEW REQUIRED",
+        metadata={"git_sha": "abc1234"},
+    )
+
+
+@pytest.fixture
+def suite_result(
+    experiment_result, researcher_experiment_result, critic_experiment_result
+) -> SuiteResult:
+    """A three-agent ``SuiteResult`` (planner, researcher, critic), all
+    ``REVIEW REQUIRED`` -- enough for the rendering test's assertions
+    without needing all six agents represented."""
+    return SuiteResult(
+        suite_id="suite-20260816T101500Z-abc1234",
+        experiments=[
+            experiment_result,
+            researcher_experiment_result,
+            critic_experiment_result,
+        ],
+        status="REVIEW REQUIRED",
+        metadata={"git_commit": "abc1234def", "git_dirty": False},
+    )

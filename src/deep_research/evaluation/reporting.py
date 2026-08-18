@@ -159,12 +159,38 @@ def render_experiment(result: ExperimentResult, *, verbose: bool) -> list[str]:
     return lines
 
 
+def _suite_summary_path(result: SuiteResult) -> str:
+    return f"output/evaluations/suite/{result.suite_id}/summary.json"
+
+
 def render_suite(result: SuiteResult, *, verbose: bool) -> list[str]:
-    """The terminal summary for a suite: one block per experiment."""
-    lines = [f"Suite {result.suite_id} - {result.status}"]
+    """The terminal summary for a six-agent suite.
+
+    One compact line per agent (``format_score`` is the only rounding
+    site, same as ``render_experiment``), then the suite's overall status,
+    then the summary artifact path, then each agent's experiment url --
+    the fixed order a human skimming the terminal needs before any
+    per-agent detail. ``verbose=True`` appends each agent's full
+    ``render_experiment`` block, in the same order the suite ran them.
+    """
+    lines: list[str] = []
     for experiment in result.experiments:
-        lines.append("")
-        lines.extend(render_experiment(experiment, verbose=verbose))
+        agent_title = _title(experiment.agent_name)
+        lines.append(
+            f"{agent_title:<18} {experiment.status:<22} "
+            f"mean {format_score(experiment.mean_quality)}"
+        )
+    lines.append(f"Suite status: {result.status}")
+    lines.append(f"Summary: {_suite_summary_path(result)}")
+    for experiment in result.experiments:
+        lines.append(
+            f"{cli_agent_name(experiment.agent_name)}: "
+            f"{experiment.experiment_url or 'n/a'}"
+        )
+    if verbose:
+        for experiment in result.experiments:
+            lines.append("")
+            lines.extend(render_experiment(experiment, verbose=True))
     return lines
 
 

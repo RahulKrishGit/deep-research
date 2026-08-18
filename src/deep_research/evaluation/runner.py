@@ -8,7 +8,9 @@ that is Task 23's job, once ``preflight`` has passed.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any, get_args
 
@@ -21,14 +23,19 @@ from deep_research.evaluation.cases import (
     CaseRegistryError,
     UnknownCaseError,
     case_by_id,
+    cases_for,
     validate_registry,
 )
 from deep_research.evaluation.config import (
     EvaluationRuntimeConfig,
+    GitMetadata,
+    build_runtime_config,
     experiment_metadata,
+    judge_llm_config,
     known_secret_values,
     resolve_judge_effort,
     resolve_target_effort,
+    target_llm_config,
 )
 from deep_research.evaluation.datasets import DatasetSyncError, synchronize_dataset
 from deep_research.evaluation.dependencies import (
@@ -45,6 +52,8 @@ from deep_research.evaluation.judging import (
     judge_prompt_fingerprint,
 )
 from deep_research.evaluation.models import (
+    AGENT_NAMES,
+    AgentName,
     CaseResult,
     EvaluationCase,
     EvaluationFailure,
@@ -57,8 +66,11 @@ from deep_research.evaluation.models import (
     JudgeScores,
     JudgeVerdict,
     RepetitionResult,
+    SuiteResult,
     TargetOutput,
+    cli_agent_name,
 )
+from deep_research.evaluation.reporting import write_suite_artifact
 from deep_research.evaluation.targets import (
     DependencyFactory,
     RepetitionCounter,
@@ -68,7 +80,7 @@ from deep_research.evaluation.targets import (
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import OpenAIChatProvider
 from deep_research.runtime.assembly import build_agent
-from deep_research.utils.config import ConfigSettings
+from deep_research.utils.config import ConfigSettings, ReasoningEffort
 from deep_research.utils.types import JsonValue
 
 PREFLIGHT_REASONS: tuple[str, ...] = (
@@ -777,5 +789,164 @@ async def run_agent_evaluation(
                 ]
             }
         )
+
+    return result
+
+
+# --- Task 26: the six-agent controlled suite --------------------------------
+
+
+def suite_id(*, now: datetime, git_sha: str) -> str:
+    """The suite-level identifier: same timestamp/SHA shape as
+    ``experiment_name`` (Task 5), but prefixed ``suite-`` instead of an
+    agent/tier pair, since one suite id names a whole six-agent run."""
+    return f"suite-{now.strftime('%Y%m%dT%H%M%SZ')}-{git_sha}"
+
+
+def _suite_status(experiments: Sequence[ExperimentResult]) -> EvaluationStatus:
+    """The suite's own pass/fail verdict, one level up from
+    ``decide_status``: infrastructure failure only if every experiment
+    failed at that level, failed if any experiment did not clear its own
+    bar, otherwise review required. Mirrors ``decide_status``'s refusal to
+    ever report an automatic "approved" status.
+    """
+    if experiments and all(
+        item.status == "INFRASTRUCTURE FAILURE" for item in experiments
+    ):
+        return "INFRASTRUCTURE FAILURE"
+    if any(item.status != "REVIEW REQUIRED" for item in experiments):
+        return "FAILED"
+    return "REVIEW REQUIRED"
+
+
+def _suite_agent_setup_failure(
+    agent_name: AgentName, error: Exception
+) -> ExperimentResult:
+    """One agent's own ``ExperimentResult`` for a failure that happened
+    before -- or entirely outside -- ``run_agent_evaluation``'s own
+    ``evaluate()`` guard (an unbuildable runtime config, an unreadable
+    case registry subset, or any other setup failure specific to this one
+    agent). One broken agent must not erase five completed ones, so the
+    suite loop catches this here and keeps going.
+    """
+    kebab = cli_agent_name(agent_name)
+    return ExperimentResult(
+        agent_name=agent_name,
+        tier="controlled",
+        experiment_name=f"{kebab}-controlled-suite-setup-failed",
+        dataset_name=f"deep-research-{kebab}-controlled-unknown",
+        cases=[],
+        status="INFRASTRUCTURE FAILURE",
+        metadata={"agent": agent_name, "tier": "controlled"},
+        errors=[
+            EvaluationFailure(
+                stage="setup",
+                reason="suite_agent_setup_failed",
+                message=str(error) or type(error).__name__,
+                exception_type=type(error).__name__,
+            )
+        ],
+    )
+
+
+async def run_suite_evaluation(
+    settings: ConfigSettings,
+    *,
+    judge_reasoning_effort: ReasoningEffort | None,
+    output_directory: str | None,
+    experiment_prefix: str | None,
+    config_path: str,
+    evaluate: EvaluateCallable = aevaluate,
+    now: datetime,
+    git: GitMetadata,
+) -> SuiteResult:
+    """Run all six agents' controlled experiments in one pass.
+
+    Tier is hardcoded to ``"controlled"`` for every agent: there is no
+    path for a suite run to reach the live tier, and each agent keeps its
+    own approved target-reasoning-effort profile (``reasoning_effort=
+    None`` per agent, resolved independently by ``build_runtime_config``)
+    -- only ``judge_reasoning_effort`` is a uniform override across all
+    six. An exception anywhere in one agent's setup (config, case lookup,
+    provider construction) or its ``run_agent_evaluation`` call becomes
+    that agent's own ``ExperimentResult`` with status
+    ``"INFRASTRUCTURE FAILURE"``; the loop always continues for the
+    remaining agents. Live runs are manually invoked per-agent, after
+    controlled review -- this function never launches one.
+
+    Every agent still writes its own ``results.json`` (via
+    ``run_agent_evaluation``); this function additionally writes the
+    suite-level ``output/evaluations/suite/<suite-id>/summary.json``.
+    """
+    # Imported lazily: constructing a real OpenAI client is a meaningfully
+    # heavier import than anything else this module needs at load time,
+    # mirroring ``cli.py``'s own deferred import for the same reason.
+    from openai import AsyncOpenAI
+
+    environ = dict(os.environ)
+    experiments: list[ExperimentResult] = []
+
+    for agent_name in AGENT_NAMES:
+        try:
+            runtime = build_runtime_config(
+                settings,
+                agent_name=agent_name,
+                tier="controlled",
+                case_id=None,
+                reasoning_effort=None,
+                judge_reasoning_effort=judge_reasoning_effort,
+                output_directory=output_directory,
+                experiment_prefix=experiment_prefix,
+                now=now,
+                git=git,
+            )
+            cases = list(cases_for(agent_name, "controlled"))
+
+            tracker = Tracker.from_config(settings.langsmith, environ=environ)
+            openai_client = AsyncOpenAI(
+                api_key=environ.get("OPENAI_API_KEY") or "sk-not-configured"
+            )
+            target_provider = OpenAIChatProvider(
+                target_llm_config(runtime, settings.llm),
+                tracker,
+                client=openai_client,
+            )
+            judge_provider = OpenAIChatProvider(
+                judge_llm_config(runtime, settings.llm),
+                tracker,
+                client=openai_client,
+            )
+
+            result = await run_agent_evaluation(
+                settings,
+                runtime,
+                cases=cases,
+                evaluate=evaluate,
+                target_provider_factory=lambda provider=target_provider: provider,
+                judge_provider_factory=lambda provider=judge_provider: provider,
+                tracker_factory=lambda tracker=tracker: tracker,
+                dependency_factory=build_controlled_dependencies,
+                secrets=known_secret_values(environ),
+                root=runtime.output_root,
+            )
+        except Exception as error:
+            # One broken agent must not abort the rest of the suite --
+            # see ``_suite_agent_setup_failure``.
+            result = _suite_agent_setup_failure(agent_name, error)
+        experiments.append(result)
+
+    result = SuiteResult(
+        suite_id=suite_id(now=now, git_sha=git.short_sha),
+        experiments=experiments,
+        status=_suite_status(experiments),
+        metadata={
+            "config_path": config_path,
+            "git_commit": git.commit,
+            "git_dirty": git.dirty,
+        },
+    )
+
+    root = Path(output_directory or settings.evaluation.output_directory)
+    write_suite_artifact(result, root=root / "suite" / result.suite_id)
 
     return result
