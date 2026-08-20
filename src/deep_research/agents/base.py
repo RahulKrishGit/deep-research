@@ -43,9 +43,10 @@ _SchemaT = TypeVar("_SchemaT", bound=BaseModel)
 class StructuredCompleter(Protocol):
     """The one provider capability the agent runtime needs.
 
-    ``OpenAIChatProvider`` satisfies it. Keeping the protocol to a single
-    method keeps test doubles small; agents that also need free-text
-    completion may type their own constructor against the concrete provider.
+    ``OpenAIChatProvider`` and ``DeepSeekChatProvider`` satisfy it. Keeping
+    the protocol to a single method keeps test doubles small; agents that
+    also need free-text completion may type their own constructor against
+    the concrete provider.
     """
 
     async def complete_structured(

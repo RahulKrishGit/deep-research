@@ -24,7 +24,7 @@ from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActRun
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import OpenAIProviderError
+from deep_research.providers import ProviderError
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -482,7 +482,7 @@ async def test_a_provider_failure_still_routes_and_stops(
     tracker: Tracker,
 ) -> None:
     agent = _critic(
-        tracker, ScriptedCompleter(outputs=[OpenAIProviderError("down")])
+        tracker, ScriptedCompleter(outputs=[ProviderError("down")])
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -499,7 +499,7 @@ async def test_a_provider_failure_still_routes_and_stops(
         if error.error_type == "critic_review_provider_error"
     )
     assert error.recoverable is False
-    assert error.details == {"exception_type": "OpenAIProviderError"}
+    assert error.details == {"exception_type": "ProviderError"}
 
 
 @pytest.mark.asyncio

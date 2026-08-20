@@ -20,7 +20,7 @@ from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import AgentTask, render_memory_guidance
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.validation import _invalid_fields
-from deep_research.providers import ChatMessage, OpenAIProviderError
+from deep_research.providers import ChatMessage, ProviderError
 from deep_research.utils.types import (
     ContractModel,
     MemorySnapshot,
@@ -275,7 +275,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 ResearchPlanDraft,
                 agent_name=self.name,
             )
-        except OpenAIProviderError as error:
+        except ProviderError as error:
             raise PlanningError(
                 "The planner could not reach the model provider while a "
                 "plan was requested.",

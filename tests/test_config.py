@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from deep_research.observability import Tracker
 from deep_research.utils.config import (
     ConfigSettings,
+    EffectiveModelConfig,
     EvaluationConfig,
     LLMConfig,
     MissingSecretsError,
@@ -29,6 +31,8 @@ def config_path(tmp_path: Path) -> Path:
                     "provider": "openai",
                     "model": "gpt-4o",
                     "embedding_model": "text-embedding-3-small",
+                    "thinking_mode": "disabled",
+                    "reasoning_effort": "none",
                     "model_overrides": {"planner": "gpt-4o-mini"},
                     "timeout": 45.0,
                     "retry_count": 2,
@@ -138,6 +142,59 @@ def test_llm_config_resolves_agent_model_override(config_path: Path) -> None:
     assert settings.llm.retry_count == 2
 
 
+def test_llm_defaults_select_deepseek_reasoning() -> None:
+    llm = LLMConfig()
+
+    assert llm.provider == "deepseek"
+    assert llm.resolve_for(None) == EffectiveModelConfig(
+        model="deepseek-v4-flash",
+        thinking_mode="enabled",
+        reasoning_effort="high",
+    )
+
+
+def test_agent_model_overrides_support_string_and_structured_forms() -> None:
+    llm = LLMConfig(
+        model_overrides={
+            "planner": "deepseek-v4-pro",
+            "critic": {
+                "thinking_mode": "enabled",
+                "reasoning_effort": "max",
+            },
+        }
+    )
+
+    assert llm.resolve_for("planner") == EffectiveModelConfig(
+        model="deepseek-v4-pro",
+        thinking_mode="enabled",
+        reasoning_effort="high",
+    )
+    assert llm.resolve_for("critic") == EffectiveModelConfig(
+        model="deepseek-v4-flash",
+        thinking_mode="enabled",
+        reasoning_effort="max",
+    )
+    assert llm.resolve_for("researcher") == llm.resolve_for(None)
+
+
+def test_effective_model_config_is_immutable() -> None:
+    effective = LLMConfig().resolve_for("planner")
+
+    with pytest.raises(ValidationError):
+        effective.model = "changed"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "", "DEEPSEEK"])
+def test_provider_is_a_closed_lowercase_configuration_value(provider: str) -> None:
+    with pytest.raises(ValidationError):
+        LLMConfig(provider=provider)
+
+
+def test_structured_agent_override_rejects_provider_field() -> None:
+    with pytest.raises(ValidationError, match="provider"):
+        LLMConfig(model_overrides={"critic": {"provider": "openai"}})
+
+
 @pytest.mark.parametrize(
     ("environment_name", "expected_value"),
     [
@@ -185,6 +242,26 @@ def test_llm_config_rejects_invalid_runtime_values(
         LLMConfig(**{field_name: invalid_value})
 
 
+@pytest.mark.parametrize(
+    ("name", "value", "attribute"),
+    [
+        ("LLM_PROVIDER", "openai", "provider"),
+        ("LLM_MODEL", "gpt-5.6", "model"),
+        ("LLM_THINKING_MODE", "disabled", "thinking_mode"),
+        ("LLM_REASONING_EFFORT", "max", "reasoning_effort"),
+    ],
+)
+def test_chat_environment_overrides(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+    attribute: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+    assert getattr(load_config(str(config_path)).llm, attribute) == value
+
+
 def test_load_config_missing_file() -> None:
     """Missing config files raise FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
@@ -212,7 +289,7 @@ def test_load_config_empty_yaml(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("environment_name", "expected_path", "value", "expected_value"),
     [
-        ("LLM_PROVIDER", ("llm", "provider"), "anthropic", "anthropic"),
+        ("LLM_PROVIDER", ("llm", "provider"), "deepseek", "deepseek"),
         ("LLM_MODEL", ("llm", "model"), "gpt-4.1", "gpt-4.1"),
         ("LLM_TEMPERATURE", ("llm", "temperature"), "0.25", 0.25),
         ("LLM_MAX_TOKENS", ("llm", "max_tokens"), "2048", 2048),
@@ -365,10 +442,34 @@ def test_load_config_strict_env_ok(
     assert settings.llm.provider == "openai"
 
 
+def test_strict_deepseek_requires_both_chat_and_embedding_keys(
+    config_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily")
+    monkeypatch.setenv("OPENAI_API_KEY", "embeddings")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    config_path.write_text(yaml.safe_dump({}), encoding="utf-8")
+
+    with pytest.raises(MissingSecretsError, match="DEEPSEEK_API_KEY"):
+        load_config(str(config_path), strict=True)
+
+
+def test_strict_openai_does_not_require_deepseek_key(
+    config_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+
+    assert load_config(str(config_path), strict=True).llm.provider == "openai"
+
+
 def test_config_settings_excludes_provider_secrets(config_path: Path) -> None:
     """Provider secrets are validated at runtime, not stored in settings."""
     settings = load_config(str(config_path))
 
+    assert "DEEPSEEK_API_KEY" not in settings.model_dump()
     assert "OPENAI_API_KEY" not in settings.model_dump()
     assert "LANGSMITH_API_KEY" not in settings.model_dump()
     assert "TAVILY_API_KEY" not in settings.model_dump()
@@ -380,11 +481,13 @@ async def test_dotenv_api_keys_are_absent_from_settings_and_tracker_records(
 ) -> None:
     """Loaded API-key values never enter serializable config or telemetry."""
     secret_values = (
+        "dotenv-deepseek-secret",
         "dotenv-openai-secret",
         "dotenv-tavily-secret",
         "dotenv-langsmith-secret",
     )
     for environment_name in (
+        "DEEPSEEK_API_KEY",
         "OPENAI_API_KEY",
         "TAVILY_API_KEY",
         "LANGSMITH_API_KEY",
@@ -394,9 +497,10 @@ async def test_dotenv_api_keys_are_absent_from_settings_and_tracker_records(
     (config_path.parent / ".env").write_text(
         "\n".join(
             (
-                f"OPENAI_API_KEY={secret_values[0]}",
-                f"TAVILY_API_KEY={secret_values[1]}",
-                f"LANGSMITH_API_KEY={secret_values[2]}",
+                f"DEEPSEEK_API_KEY={secret_values[0]}",
+                f"OPENAI_API_KEY={secret_values[1]}",
+                f"TAVILY_API_KEY={secret_values[2]}",
+                f"LANGSMITH_API_KEY={secret_values[3]}",
                 "LANGSMITH_PROJECT=dotenv-project",
             )
         ),

@@ -20,51 +20,79 @@ class MissingSecretsError(ValueError):
     """
 
 
+ProviderName = Literal["deepseek", "openai"]
+ThinkingMode = Literal["enabled", "disabled"]
 ReasoningEffort: TypeAlias = Literal[
-    "none", "low", "medium", "high", "xhigh", "max"
+    "none", "minimal", "low", "medium", "high", "xhigh", "max"
 ]
 
 
-class LLMConfig(BaseModel):
-    """OpenAI model and request settings."""
+class AgentModelOverride(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+    model: str | None = Field(default=None, min_length=1)
+    thinking_mode: ThinkingMode | None = None
+    reasoning_effort: ReasoningEffort | None = None
 
-    provider: str = Field(default="openai", min_length=1)
-    model: str = Field(default="gpt-4o", min_length=1)
+
+class EffectiveModelConfig(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+    model: str = Field(min_length=1)
+    thinking_mode: ThinkingMode
+    reasoning_effort: ReasoningEffort
+
+
+class LLMConfig(BaseModel):
+    """Chat and embedding model and request settings."""
+
+    provider: ProviderName = "deepseek"
+    model: str = Field(default="deepseek-v4-flash", min_length=1)
     embedding_model: str = Field(
         default="text-embedding-3-small",
         min_length=1,
     )
-    model_overrides: dict[str, str] = Field(default_factory=dict)
+    thinking_mode: ThinkingMode = "enabled"
+    reasoning_effort: ReasoningEffort = "high"
+    model_overrides: dict[str, str | AgentModelOverride] = Field(
+        default_factory=dict
+    )
     timeout: float = Field(default=60.0, gt=0)
     retry_count: int = Field(default=2, ge=0)
-    # ``None`` omits the parameter entirely: reasoning models reject it.
-    temperature: float | None = Field(default=0.7, ge=0.0, le=2.0)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1)
-    # ``None`` omits the Responses ``reasoning`` block entirely, which is
-    # required for non-reasoning models such as gpt-4o.
-    reasoning_effort: ReasoningEffort | None = None
-    # Pro mode is deliberately unrepresentable in this build.
-    reasoning_mode: Literal["standard"] = "standard"
+
+    def resolve_for(self, agent_name: str | None) -> EffectiveModelConfig:
+        override = None if agent_name is None else self.model_overrides.get(agent_name)
+        if isinstance(override, str):
+            return EffectiveModelConfig(
+                model=override,
+                thinking_mode=self.thinking_mode,
+                reasoning_effort=self.reasoning_effort,
+            )
+        return EffectiveModelConfig(
+            model=(
+                self.model
+                if override is None or override.model is None
+                else override.model
+            ),
+            thinking_mode=(
+                self.thinking_mode
+                if override is None or override.thinking_mode is None
+                else override.thinking_mode
+            ),
+            reasoning_effort=(
+                self.reasoning_effort
+                if override is None or override.reasoning_effort is None
+                else override.reasoning_effort
+            ),
+        )
 
     def model_for(self, agent_name: str | None) -> str:
-        """Return an agent override when configured, otherwise the default."""
-        if agent_name is None:
-            return self.model
-        return self.model_overrides.get(agent_name, self.model)
+        return self.resolve_for(agent_name).model
 
-    def request_options(self) -> dict[str, Any]:
-        """The optional Responses parameters this configuration sends.
-
-        Built once here rather than at three call sites so an ordinary
-        call, a structured call, and a structured repair can never drift
-        apart — the spec requires the resolved effort on all three.
-        """
-        options: dict[str, Any] = {"max_output_tokens": self.max_tokens}
-        if self.temperature is not None:
-            options["temperature"] = self.temperature
-        if self.reasoning_effort is not None:
-            options["reasoning"] = {"effort": self.reasoning_effort}
-        return options
 
 class LangSmithConfig(BaseModel):
     """LangSmith tracing settings."""
@@ -222,6 +250,8 @@ class ConfigSettings(BaseModel):
 _ENVIRONMENT_OVERRIDES = {
     "LLM_PROVIDER": ("llm", "provider"),
     "LLM_MODEL": ("llm", "model"),
+    "LLM_THINKING_MODE": ("llm", "thinking_mode"),
+    "LLM_REASONING_EFFORT": ("llm", "reasoning_effort"),
     "LLM_EMBEDDING_MODEL": ("llm", "embedding_model"),
     "LLM_TIMEOUT": ("llm", "timeout"),
     "LLM_RETRY_COUNT": ("llm", "retry_count"),
@@ -259,10 +289,11 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "EVALUATION_OUTPUT_DIRECTORY": ("evaluation", "output_directory"),
 }
-_REQUIRED_ENVIRONMENT_VARIABLES = (
-    "OPENAI_API_KEY",
-    "TAVILY_API_KEY",
-)
+_COMMON_REQUIRED_ENVIRONMENT_VARIABLES = ("OPENAI_API_KEY", "TAVILY_API_KEY")
+_CHAT_PROVIDER_ENVIRONMENT_VARIABLES = {
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "openai": (),
+}
 _LANGSMITH_ENVIRONMENT_VARIABLES = (
     "LANGSMITH_API_KEY",
     "LANGSMITH_PROJECT",
@@ -352,7 +383,10 @@ def load_config(
     if overrides:
         settings = apply_config_overrides(settings, overrides)
     if strict:
-        _validate_runtime_secrets(tracing_enabled=settings.langsmith.tracing_enabled)
+        _validate_runtime_secrets(
+            provider=settings.llm.provider,
+            tracing_enabled=settings.langsmith.tracing_enabled,
+        )
 
     return settings
 
@@ -374,9 +408,14 @@ def _apply_environment_overrides(config: dict[str, Any]) -> None:
         target[path[-1]] = value
 
 
-def _validate_runtime_secrets(*, tracing_enabled: bool) -> None:
+def _validate_runtime_secrets(
+    *, provider: ProviderName, tracing_enabled: bool
+) -> None:
     """Raise when strict-mode runtime secrets are absent or blank."""
-    required = list(_REQUIRED_ENVIRONMENT_VARIABLES)
+    required = [
+        *_CHAT_PROVIDER_ENVIRONMENT_VARIABLES[provider],
+        *_COMMON_REQUIRED_ENVIRONMENT_VARIABLES,
+    ]
     if tracing_enabled:
         required.extend(_LANGSMITH_ENVIRONMENT_VARIABLES)
     missing = [

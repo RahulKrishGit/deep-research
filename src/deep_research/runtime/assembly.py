@@ -34,9 +34,10 @@ from deep_research.memory.procedural import ProceduralMemory
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import (
-    OpenAIChatProvider,
     OpenAIEmbeddingProvider,
     ProviderConfigurationError,
+    build_chat_provider,
+    validate_agent_model_configs,
 )
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
@@ -239,6 +240,17 @@ async def build_runtime(
     ``ResearchConfigurationError`` here rather than an exception the user
     sees as a traceback.
     """
+    try:
+        validate_agent_model_configs(settings.llm, AGENT_NAMES)
+    except ProviderConfigurationError as error:
+        raise configuration_error(
+            reason="provider_unconfigured",
+            message=(
+                f"The selected {settings.llm.provider} chat provider is not "
+                f"configured: {error}"
+            ),
+        ) from error
+
     tracker = tracker or Tracker.from_config(settings.langsmith)
 
     try:
@@ -264,11 +276,14 @@ async def build_runtime(
         ) from error
 
     try:
-        provider = chat_provider or OpenAIChatProvider(settings.llm, tracker)
+        provider = chat_provider or build_chat_provider(settings.llm, tracker)
     except ProviderConfigurationError as error:
         raise configuration_error(
             reason="provider_unconfigured",
-            message=f"The OpenAI provider is not configured: {error}",
+            message=(
+                f"The selected {settings.llm.provider} chat provider is not "
+                f"configured: {error}"
+            ),
         ) from error
 
     bridge = LongTermMemoryBridge(long_term, session_id=session_id)

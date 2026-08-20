@@ -29,7 +29,7 @@ from deep_research.agents.synthesizer import (
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import OpenAIProviderError
+from deep_research.providers import ProviderError
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -514,7 +514,7 @@ async def test_a_provider_failure_still_produces_a_cited_report(
 ) -> None:
     agent = _synthesizer(
         tracker,
-        ScriptedCompleter(outputs=[OpenAIProviderError("down")]),
+        ScriptedCompleter(outputs=[ProviderError("down")]),
         synthesizer_tools(tracker, output_root=tmp_path),
     )
 
@@ -531,7 +531,7 @@ async def test_a_provider_failure_still_produces_a_cited_report(
     errors = {error.error_type: error for error in outcome.errors}
     assert errors["synthesizer_report_provider_error"].recoverable is False
     assert errors["synthesizer_report_provider_error"].details == {
-        "exception_type": "OpenAIProviderError"
+        "exception_type": "ProviderError"
     }
     assert (tmp_path / "report-session-1-0.md").is_file()
 
