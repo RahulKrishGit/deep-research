@@ -83,7 +83,9 @@ EXIT_USAGE = 2
 EXIT_INFRASTRUCTURE = 3
 EXIT_INTERRUPTED = 130
 
-_REASONING_EFFORT_CHOICES = ("none", "low", "medium", "high", "xhigh", "max")
+_REASONING_EFFORT_CHOICES = (
+    "none", "minimal", "low", "medium", "high", "xhigh", "max",
+)
 
 _DESCRIPTION = (
     "Run the individual-agent evaluation harness: controlled or live "

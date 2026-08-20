@@ -57,7 +57,7 @@ def _validated_effort(value: str) -> ReasoningEffort:
     except ValidationError as error:
         raise ValueError(
             f"invalid reasoning effort {value!r}; expected one of: "
-            "none, low, medium, high, xhigh, max"
+            "none, minimal, low, medium, high, xhigh, max"
         ) from error
 
 
@@ -196,7 +196,9 @@ class EvaluationRuntimeConfig(ContractModel):
     judge_model: str
     judge_reasoning_effort: ReasoningEffort
     judge_temperature: float | None
-    reasoning_mode: Literal["standard"]
+    # Every evaluation case runs with thinking on; no case needs it off, so
+    # the field is deliberately single-valued rather than a free toggle.
+    thinking_mode: Literal["enabled"]
     embedding_model: str
     dataset_name: str
     dataset_version: int
@@ -280,7 +282,7 @@ def build_runtime_config(
         judge_model=evaluation.judge_model,
         judge_reasoning_effort=judge_effort,
         judge_temperature=evaluation.judge_temperature,
-        reasoning_mode="standard",
+        thinking_mode="enabled",
         embedding_model=evaluation.embedding_model,
         dataset_name=resolved_dataset_name,
         dataset_version=evaluation.dataset_version,
@@ -303,16 +305,19 @@ def target_llm_config(
 ) -> LLMConfig:
     """The LLM config the target agent actually runs under.
 
+    ``provider`` is inherited from the application config, so an
+    evaluation run always talks to the same vendor production does.
     ``model_overrides`` is cleared on purpose: the spec enables no
     agent-specific model overrides in the baseline, and an inherited
     production override would silently change the target model.
     """
     return base.model_copy(
         update={
+            "provider": base.provider,
             "model": runtime.target_model,
             "model_overrides": {},
             "reasoning_effort": runtime.target_reasoning_effort,
-            "reasoning_mode": runtime.reasoning_mode,
+            "thinking_mode": runtime.thinking_mode,
         }
     )
 
@@ -320,16 +325,23 @@ def target_llm_config(
 def judge_llm_config(
     runtime: EvaluationRuntimeConfig, base: LLMConfig
 ) -> LLMConfig:
-    """The judge's LLM config, independent of every target-agent setting."""
-    return base.model_copy(
-        update={
-            "model": runtime.judge_model,
-            "model_overrides": {},
-            "reasoning_effort": runtime.judge_reasoning_effort,
-            "reasoning_mode": runtime.reasoning_mode,
-            "temperature": runtime.judge_temperature,
-        }
-    )
+    """The judge's LLM config, independent of every target-agent setting.
+
+    ``temperature`` is applied only when the evaluation config actually
+    pins one: ``LLMConfig.temperature`` is non-optional, and the selected
+    provider's capability table — not a ``None`` here — decides whether the
+    parameter is sent at all. For DeepSeek with thinking enabled it never is.
+    """
+    update: dict[str, object] = {
+        "provider": base.provider,
+        "model": runtime.judge_model,
+        "model_overrides": {},
+        "reasoning_effort": runtime.judge_reasoning_effort,
+        "thinking_mode": runtime.thinking_mode,
+    }
+    if runtime.judge_temperature is not None:
+        update["temperature"] = runtime.judge_temperature
+    return base.model_copy(update=update)
 
 
 def known_secret_values(environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -406,7 +418,7 @@ def experiment_metadata(
         "git_dirty": runtime.git.dirty,
         "target_model": runtime.target_model,
         "target_reasoning_effort": runtime.target_reasoning_effort,
-        "reasoning_mode": runtime.reasoning_mode,
+        "thinking_mode": runtime.thinking_mode,
         "target_model_configuration": target_llm_config(
             runtime, settings.llm
         ).model_dump(mode="json"),

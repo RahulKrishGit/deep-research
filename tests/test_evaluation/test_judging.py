@@ -275,3 +275,12 @@ async def test_an_overlong_rationale_is_a_schema_failure_not_a_truncation(
             agent_specific={},
             rationale="x" * 3000,
         )
+
+
+def test_judge_evaluator_metadata_records_thinking_mode(runtime_config_for) -> None:
+    from deep_research.evaluation.judging import judge_evaluator_metadata
+
+    metadata = judge_evaluator_metadata(runtime_config_for("planner"))
+
+    assert metadata["thinking_mode"] == "enabled"
+    assert "reasoning_mode" not in metadata

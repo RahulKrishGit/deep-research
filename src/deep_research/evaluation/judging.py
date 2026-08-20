@@ -395,7 +395,7 @@ def judge_evaluator_metadata(
         "judge_configuration_fingerprint": runtime.judge_configuration_fingerprint,
         "judge_reasoning_effort": runtime.judge_reasoning_effort,
         "judge_temperature": runtime.judge_temperature,
-        "reasoning_mode": runtime.reasoning_mode,
+        "thinking_mode": runtime.thinking_mode,
     }
 
 

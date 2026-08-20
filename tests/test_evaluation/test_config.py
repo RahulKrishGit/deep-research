@@ -131,7 +131,7 @@ def test_the_runtime_config_freezes_both_efforts() -> None:
 
     assert runtime.target_reasoning_effort == "high"
     assert runtime.judge_reasoning_effort == "max"
-    assert runtime.reasoning_mode == "standard"
+    assert runtime.thinking_mode == "enabled"
     with pytest.raises(ValueError):
         runtime.target_reasoning_effort = "high"
 
@@ -186,10 +186,24 @@ def test_experiment_names_follow_the_agreed_shape() -> None:
 def test_the_target_llm_config_carries_the_frozen_effort_and_model() -> None:
     llm = target_llm_config(build(agent_name="planner"), ConfigSettings().llm)
 
+    assert llm.provider == "deepseek"
     assert llm.model == "deepseek-v4-flash"
     assert llm.reasoning_effort == "max"
-    assert llm.reasoning_mode == "standard"
+    assert llm.thinking_mode == "enabled"
     assert llm.model_overrides == {}
+
+
+def test_the_target_llm_config_is_accepted_by_the_capability_registry() -> None:
+    """Fail-closed: the baseline profile must be a combination DeepSeek
+    actually supports, checked against the local table, not assumed."""
+    from deep_research.providers import resolve_request_settings
+
+    for agent_name in ("planner", "researcher", "source_evaluator",
+                       "fact_checker", "synthesizer", "critic"):
+        llm = target_llm_config(build(agent_name=agent_name), ConfigSettings().llm)
+        resolved = resolve_request_settings(llm.provider, llm.resolve_for(None))
+        assert resolved.reasoning_effort in ("high", "max")
+        assert resolved.include_temperature is False
 
 
 def test_the_judge_llm_config_is_independent_of_the_target() -> None:
@@ -197,9 +211,38 @@ def test_the_judge_llm_config_is_independent_of_the_target() -> None:
         build(agent_name="researcher"), ConfigSettings().llm
     )
 
+    assert llm.provider == "deepseek"
     assert llm.model == "deepseek-v4-flash"
     assert llm.reasoning_effort == "max"
+    assert llm.thinking_mode == "enabled"
     assert llm.temperature == 0.0
+
+
+def test_the_judge_llm_config_keeps_the_base_temperature_when_unset() -> None:
+    """``temperature`` is non-optional on ``LLMConfig``; a ``None`` judge
+    temperature means "do not override", never "send null"."""
+    settings = ConfigSettings()
+    settings = settings.model_copy(
+        update={
+            "evaluation": settings.evaluation.model_copy(
+                update={"judge_temperature": None}
+            )
+        }
+    )
+    runtime = build_runtime_config(
+        settings,
+        agent_name="researcher",
+        tier="controlled",
+        case_id=None,
+        reasoning_effort=None,
+        judge_reasoning_effort=None,
+        output_directory=None,
+        experiment_prefix=None,
+        now=NOW,
+        git=GIT,
+    )
+
+    assert judge_llm_config(runtime, settings.llm).temperature == 0.7
 
 
 def test_the_output_root_is_per_agent_and_per_experiment() -> None:
@@ -222,7 +265,7 @@ def test_experiment_metadata_records_everything_the_spec_names() -> None:
         "git_dirty",
         "target_model",
         "target_reasoning_effort",
-        "reasoning_mode",
+        "thinking_mode",
         "configuration_fingerprint",
         "judge_model",
         "judge_reasoning_effort",
