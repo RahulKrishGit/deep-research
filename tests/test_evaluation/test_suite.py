@@ -127,3 +127,28 @@ def test_the_suite_summary_lists_every_agent_and_its_status(
         assert agent_name in body
     assert "REVIEW REQUIRED" in body
     assert "summary.json" in body
+
+
+def test_the_suite_builds_providers_through_the_provider_factory() -> None:
+    """No direct OpenAI construction survives in the production wiring."""
+    import inspect
+
+    from deep_research.evaluation import runner
+
+    source = inspect.getsource(runner)
+
+    assert "AsyncOpenAI" not in source
+    assert "OpenAIChatProvider" not in source
+    assert "build_chat_provider" in source
+
+
+def test_the_evaluation_cli_builds_providers_through_the_provider_factory() -> None:
+    import inspect
+
+    from deep_research.evaluation import cli
+
+    source = inspect.getsource(cli)
+
+    assert "AsyncOpenAI" not in source
+    assert "OpenAIChatProvider" not in source
+    assert "build_chat_provider" in source

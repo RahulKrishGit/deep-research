@@ -83,7 +83,6 @@ from deep_research.evaluation.targets import (
 )
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import (
-    OpenAIChatProvider,
     ProviderConfigurationError,
     build_chat_provider,
     resolve_request_settings,
@@ -965,11 +964,6 @@ async def run_suite_evaluation(
     ``run_agent_evaluation``); this function additionally writes the
     suite-level ``output/evaluations/suite/<suite-id>/summary.json``.
     """
-    # Imported lazily: constructing a real OpenAI client is a meaningfully
-    # heavier import than anything else this module needs at load time,
-    # mirroring ``cli.py``'s own deferred import for the same reason.
-    from openai import AsyncOpenAI
-
     environ = dict(os.environ)
     suite_secrets = known_secret_values(environ)
     experiments: list[ExperimentResult] = []
@@ -991,18 +985,18 @@ async def run_suite_evaluation(
             cases = list(cases_for(agent_name, "controlled"))
 
             tracker = Tracker.from_config(settings.langsmith, environ=environ)
-            openai_client = AsyncOpenAI(
-                api_key=environ.get("OPENAI_API_KEY") or "sk-not-configured"
+            chat_key = environ.get(
+                CHAT_PROVIDER_CREDENTIALS[settings.llm.provider]
             )
-            target_provider = OpenAIChatProvider(
+            target_provider = build_chat_provider(
                 target_llm_config(runtime, settings.llm),
                 tracker,
-                client=openai_client,
+                api_key=chat_key,
             )
-            judge_provider = OpenAIChatProvider(
+            judge_provider = build_chat_provider(
                 judge_llm_config(runtime, settings.llm),
                 tracker,
-                client=openai_client,
+                api_key=chat_key,
             )
 
             result = await run_agent_evaluation(

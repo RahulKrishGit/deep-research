@@ -45,6 +45,7 @@ from deep_research.evaluation.config import (
 )
 from deep_research.evaluation.datasets import DatasetSyncError
 from deep_research.evaluation.dependencies import (
+    CHAT_PROVIDER_CREDENTIALS,
     build_controlled_dependencies,
     build_live_dependencies,
 )
@@ -72,7 +73,7 @@ from deep_research.evaluation.runner import (
     run_suite_evaluation,
 )
 from deep_research.observability import Tracker
-from deep_research.providers import OpenAIChatProvider
+from deep_research.providers import build_chat_provider
 from deep_research.utils.config import load_config
 
 PROGRAM_NAME = "python -m deep_research.evaluation"
@@ -279,23 +280,20 @@ async def _run_agent_pipeline(
     cases: Sequence[EvaluationCase],
     environ: dict[str, str],
 ) -> ExperimentResult:
-    # Imported lazily: constructing a real OpenAI/LangSmith client is a
+    # Imported lazily: constructing a real LangSmith client is a
     # meaningfully heavier import than anything else this module needs at
     # load time, and every test here injects a fake runner instead of ever
     # reaching this function.
     from langsmith import Client as LangSmithClient
-    from openai import AsyncOpenAI
 
-    openai_client = AsyncOpenAI(
-        api_key=environ.get("OPENAI_API_KEY") or "sk-not-configured"
-    )
     langsmith_client = LangSmithClient()
     tracker = Tracker.from_config(settings.langsmith, environ=environ)
-    target_provider = OpenAIChatProvider(
-        target_llm_config(runtime, settings.llm), tracker, client=openai_client
+    chat_key = environ.get(CHAT_PROVIDER_CREDENTIALS[settings.llm.provider])
+    target_provider = build_chat_provider(
+        target_llm_config(runtime, settings.llm), tracker, api_key=chat_key
     )
-    judge_provider = OpenAIChatProvider(
-        judge_llm_config(runtime, settings.llm), tracker, client=openai_client
+    judge_provider = build_chat_provider(
+        judge_llm_config(runtime, settings.llm), tracker, api_key=chat_key
     )
     dependency_factory = (
         build_controlled_dependencies
