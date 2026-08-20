@@ -199,24 +199,27 @@ def test_live_memory_and_documents_stay_in_the_evaluation_namespace(
     assert tmp_path in bundle.strategies_path.parents
 
 
-def test_the_live_embedding_model_is_the_configured_one(
+def test_a_live_bundle_builds_the_local_embedding_provider_by_default(
     tracker, settings, tmp_path, runtime_config_for, live_case_for, monkeypatch
 ) -> None:
-    captured: list[str] = []
+    """``embedding_model: local`` selects the offline provider, and the
+    real ONNX model is never constructed in an offline test."""
+    captured: list[tuple[str, str]] = []
 
     class RecordingEmbeddings:
-        def __init__(self, *, model: str, **kwargs) -> None:
-            captured.append(model)
-
         def embed_query(self, text):  # pragma: no cover - never called offline
             raise AssertionError("offline tests must not embed")
 
         def embed_documents(self, texts):  # pragma: no cover
             raise AssertionError("offline tests must not embed")
 
+    def recording_build(provider, *, model):
+        captured.append((provider, model))
+        return RecordingEmbeddings()
+
     monkeypatch.setattr(
-        "deep_research.evaluation.dependencies.OpenAIEmbeddingProvider",
-        RecordingEmbeddings,
+        "deep_research.evaluation.dependencies.build_embedding_provider",
+        recording_build,
     )
 
     build_live_dependencies(
@@ -228,7 +231,36 @@ def test_the_live_embedding_model_is_the_configured_one(
         environ=FULL_ENVIRONMENT,
     )
 
-    assert captured == ["local"]
+    assert captured == [("local", "local")]
+
+
+def test_a_live_bundle_selects_openai_for_a_named_embedding_model(
+    tracker, settings, tmp_path, runtime_config_for, live_case_for, monkeypatch
+) -> None:
+    captured: list[tuple[str, str]] = []
+
+    def recording_build(provider, *, model):
+        captured.append((provider, model))
+        return object()
+
+    monkeypatch.setattr(
+        "deep_research.evaluation.dependencies.build_embedding_provider",
+        recording_build,
+    )
+    runtime = runtime_config_for("planner", tier="live").model_copy(
+        update={"embedding_model": "text-embedding-3-small"}
+    )
+
+    build_live_dependencies(
+        runtime,
+        live_case_for("planner"),
+        tracker=tracker,
+        settings=settings,
+        root=tmp_path,
+        environ=FULL_ENVIRONMENT,
+    )
+
+    assert captured == [("openai", "text-embedding-3-small")]
 
 
 def test_live_bundles_record_the_real_services_they_expose(

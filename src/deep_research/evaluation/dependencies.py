@@ -54,7 +54,10 @@ from deep_research.memory.entries import MemoryEntry, SourceReputation
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
 from deep_research.observability import Tracker
-from deep_research.providers import OpenAIEmbeddingProvider
+from deep_research.providers import (
+    LOCAL_EMBEDDING_PROVIDER,
+    build_embedding_provider,
+)
 from deep_research.runtime.assembly import build_tools
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
 from deep_research.tools.base import BaseTool, ToolResult
@@ -837,10 +840,21 @@ def build_live_dependencies(
     )
 
     recorder = DependencyRecorder()
+    # ``embedding_model`` carries one of two things: the sentinel "local",
+    # which selects the offline provider, or an OpenAI embedding model
+    # name. There is only ever one local model, so it needs no name of its
+    # own and the sentinel doubles as the provider selector.
+    embedding_provider_name = (
+        "local"
+        if runtime.embedding_model == LOCAL_EMBEDDING_PROVIDER
+        else "openai"
+    )
     long_term = LongTermMemory.from_config(
         isolated.memory.long_term,
         embeddings=embeddings
-        or OpenAIEmbeddingProvider(model=runtime.embedding_model),
+        or build_embedding_provider(
+            embedding_provider_name, model=runtime.embedding_model
+        ),
         tracker=tracker,
     )
     bridge = LongTermMemoryBridge(long_term, session_id=session_id)
