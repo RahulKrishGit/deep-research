@@ -331,15 +331,36 @@ under the evaluation output root.
 
 ## Model and Cost Policy
 
-The initial evaluation baseline uses OpenAI's current GPT-5.6 model for
-cost-sensitive, high-volume workloads. It supports the project's Responses API,
-function-calling, and structured-output requirements:
+> **Superseded 2026-08-20** by
+> `docs/superpowers/specs/2026-08-20-deepseek-evaluation-cutover-design.md`.
+> This section records the current policy after that cutover; the rest of
+> this document is unchanged and remains the architectural record.
+
+The evaluation baseline uses DeepSeek V4 Flash for both the target agents and
+the judge, and a local, offline embedding model for live-tier memory.
 
 | Role | Model |
 |---|---|
-| All six target agents | `gpt-5.6-luna` |
-| LLM-as-judge evaluator | `gpt-5.6-luna` |
-| Live evaluation embeddings | `text-embedding-3-small` |
+| All six target agents | `deepseek-v4-flash` |
+| LLM-as-judge evaluator | `deepseek-v4-flash` |
+| Live evaluation embeddings | local (chromadb default ONNX model, 384 dimensions) |
+
+Pricing, looked up against `https://api-docs.deepseek.com/quick_start/pricing`
+— informational, and subject to a recheck before any run that spends money:
+
+| | Cache hit | Cache miss | Output |
+|---|---|---|---|
+| Off-peak | $0.007 / M tokens | $0.22 / M tokens | $0.66 / M tokens |
+| Peak (01:00-04:00, 06:00-10:00 UTC) | $0.014 / M tokens | $0.44 / M tokens | $1.32 / M tokens |
+
+There is no embeddings pricing row: the local embedding provider has no API
+key and no per-call cost.
+
+The dated model identifier observed on the pricing page is
+`DeepSeek-V4-Flash-0731`, distinct from the bare `deepseek-v4-flash` alias
+used in requests. Whichever identifier the provider actually returns is
+recorded in experiment metadata as `target_model_returned`; there is no
+silent fallback between the two.
 
 ### Reasoning-Effort Policy
 
@@ -348,19 +369,18 @@ agent and for the judge. The approved initial baseline is:
 
 | Component | Effective effort |
 |---|---|
-| Planner | `medium` |
-| Researcher | `low` |
-| Source Evaluator | `low` |
-| Fact Checker | `medium` |
-| Synthesizer | `medium` |
-| Critic | `medium` |
-| LLM-as-judge evaluator | `high` |
+| Planner | `max` |
+| Researcher | `high` |
+| Source Evaluator | `high` |
+| Fact Checker | `max` |
+| Synthesizer | `max` |
+| Critic | `max` |
+| LLM-as-judge evaluator | `max` |
 
-All calls use standard reasoning mode; Pro mode is not part of the initial
-evaluation harness. The typed configuration accepts only `none`, `low`,
-`medium`, `high`, `xhigh`, or `max`. Canonical configuration-map keys use the
-internal underscore names `planner`, `researcher`, `source_evaluator`,
-`fact_checker`, `synthesizer`, and `critic`.
+Thinking mode is `enabled` for every call; no evaluation case uses `disabled`,
+and the typed runtime configuration makes `disabled` unrepresentable. DeepSeek
+V4 Flash supports exactly `high` and `max` with thinking enabled, which is why
+the original `low`/`medium` levels map onto them as above.
 
 Target effort resolves in this order:
 
@@ -854,19 +874,14 @@ evaluation:
   controlled_repetition_floor: 0.65
   live_repetitions: 1
   live_threshold: 0.75
-  target_model: gpt-5.6-luna
-  target_reasoning_effort: medium
+  target_model: deepseek-v4-flash
+  target_reasoning_effort: max
   target_reasoning_effort_overrides:
-    planner: medium
-    researcher: low
-    source_evaluator: low
-    fact_checker: medium
-    synthesizer: medium
-    critic: medium
-  judge_model: gpt-5.6-luna
-  judge_reasoning_effort: high
-  reasoning_mode: standard
-  embedding_model: text-embedding-3-small
+    researcher: high
+    source_evaluator: high
+  judge_model: deepseek-v4-flash
+  judge_reasoning_effort: max
+  embedding_model: local
   judge_temperature: 0.0
   max_concurrency: 1
   output_directory: output/evaluations/
@@ -876,15 +891,17 @@ evaluation:
 
 Runtime secrets remain environment-only:
 
-- `OPENAI_API_KEY`
+- `DEEPSEEK_API_KEY`
 - `LANGSMITH_API_KEY`
 - `LANGSMITH_PROJECT`
 - `LANGSMITH_ENDPOINT`, including the EU endpoint when applicable
 - optional `LANGSMITH_WORKSPACE_ID`
 - `TAVILY_API_KEY` for live cases that require search
 
-Controlled mode requires OpenAI and LangSmith credentials. Live mode also
-requires only the external credentials applicable to the selected agent.
+Controlled mode requires the selected chat provider's key and LangSmith
+credentials. Live mode also requires only the external credentials applicable
+to the selected agent. `OPENAI_API_KEY` is no longer required anywhere in the
+evaluation harness.
 
 ## Error Handling
 

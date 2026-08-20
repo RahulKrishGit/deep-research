@@ -1,10 +1,10 @@
 # Deep Research
 
-Multi-agent deep research system using LangGraph, selectable DeepSeek/OpenAI chat, OpenAI embeddings, ChromaDB, and LangSmith.
+Multi-agent deep research system using LangGraph, DeepSeek, ChromaDB, and LangSmith.
 
 ## Project Status
 
-Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, chat and embedding providers, core tools, the three-layer memory stack, and the shared agent ReAct runtime.
+Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, selectable DeepSeek/OpenAI chat providers, local and OpenAI embedding providers, core tools, the three-layer memory stack, and the shared agent ReAct runtime.
 
 ## Setup
 
@@ -41,6 +41,11 @@ Foundation phase — package skeleton, typed configuration/state, the LangSmith 
    deployment platform take precedence over `.env`, so the same loader is safe
    for local development and deployed environments. Keep personal keys only in
    `.env`; it is ignored by Git.
+
+   The default stack is DeepSeek chat with local embeddings, so
+   `DEEPSEEK_API_KEY` and `TAVILY_API_KEY` are the only keys a research run
+   needs. `OPENAI_API_KEY` is required only when `provider` or
+   `embedding_provider` is set to `openai`.
 
 5. **Verify setup**
 
@@ -110,14 +115,17 @@ continues locally.
 
 Chat defaults are committed under `llm` in `config.yaml`: provider `deepseek`,
 model `deepseek-v4-flash`, thinking mode `enabled`, and reasoning effort
-`high`. `LLM_PROVIDER`, `LLM_MODEL`, `LLM_THINKING_MODE`,
-`LLM_REASONING_EFFORT`, `LLM_EMBEDDING_MODEL`, `LLM_TIMEOUT`, and
-`LLM_RETRY_COUNT` override the corresponding YAML values.
+`high`. Embedding defaults are also committed under `llm`: `embedding_provider`
+`local`, backed by chromadb's default ONNX model at 384 dimensions, with no
+API key and no per-call cost. `LLM_PROVIDER`, `LLM_MODEL`, `LLM_THINKING_MODE`,
+`LLM_REASONING_EFFORT`, `LLM_EMBEDDING_PROVIDER`, `LLM_EMBEDDING_MODEL`,
+`LLM_TIMEOUT`, and `LLM_RETRY_COUNT` override the corresponding YAML values.
 
-Set `DEEPSEEK_API_KEY` for the default DeepSeek chat and `OPENAI_API_KEY` for
-embeddings, in the process environment or the repository-root `.env`. OpenAI
-embeddings remain active in DeepSeek mode — memory always embeds through
-`OpenAIEmbeddingProvider`, whatever chat provider is selected.
+Set `DEEPSEEK_API_KEY` for the default DeepSeek chat, in the process
+environment or the repository-root `.env`. Embeddings default to
+`LocalEmbeddingProvider`, which runs entirely offline and needs no API key.
+Set `OPENAI_API_KEY` only when `provider` or `embedding_provider` is set to
+`openai`.
 
 A complete DeepSeek configuration with per-agent overrides:
 
@@ -151,7 +159,9 @@ LLM_THINKING_MODE=enabled
 LLM_REASONING_EFFORT=high
 ```
 
-The same `OPENAI_API_KEY` then serves both chat and embeddings.
+`OPENAI_API_KEY` is then required for chat. Embeddings still default to the
+local provider unless `embedding_provider` is also set to `openai`, in which
+case the same key serves both.
 
 Chat callers use project-owned messages and results, not provider SDK types.
 Build the configured adapter through the factory rather than constructing a
@@ -171,9 +181,10 @@ async with tracker.session_span("session-123", "Why is the sky blue?"):
 ```
 
 Use `complete_structured(messages, Schema)` for validated Pydantic output. The
-provider performs one repair request if validation fails. `OpenAIEmbeddingProvider`
-is the synchronous embedding client memory uses — see `embed_query(...)` and
-`embed_documents(...)` below.
+provider performs one repair request if validation fails. `LocalEmbeddingProvider`
+is the default synchronous embedding client memory uses; `OpenAIEmbeddingProvider`
+is available when `embedding_provider: openai` is selected — see
+`embed_query(...)` and `embed_documents(...)` below.
 
 Provider selection fails fast and never falls back: an unknown provider or an
 unsupported model/thinking/effort combination raises
@@ -186,19 +197,23 @@ its place.
 Strict mode (`load_config("config.yaml", strict=True)`, used by the CLI and
 API) requires these secrets before any model is called:
 
-| Selected chat provider | Required for a full research run |
+| Selected providers | Required for a full research run |
 | --- | --- |
-| DeepSeek | `DEEPSEEK_API_KEY`, `OPENAI_API_KEY` (embeddings), `TAVILY_API_KEY` |
-| OpenAI | `OPENAI_API_KEY`, `TAVILY_API_KEY` |
+| DeepSeek chat + local embeddings (default) | `DEEPSEEK_API_KEY`, `TAVILY_API_KEY` |
+| DeepSeek chat + OpenAI embeddings | `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `TAVILY_API_KEY` |
+| OpenAI chat + local embeddings | `OPENAI_API_KEY`, `TAVILY_API_KEY` |
+| OpenAI chat + OpenAI embeddings | `OPENAI_API_KEY`, `TAVILY_API_KEY` |
 
 LangSmith requirements remain conditional on tracing: `LANGSMITH_API_KEY` and
 `LANGSMITH_PROJECT` are required only when `LANGSMITH_TRACING=true`.
 
-**Migration note.** The committed default changed from OpenAI to DeepSeek by
-design. Existing OpenAI users must explicitly set `provider: openai`, an
-OpenAI model, and a compatible thinking/effort pair after this intentional
-default change. Legacy string model overrides remain valid and inherit the
-global thinking mode and reasoning effort.
+**Migration note.** The committed defaults changed from OpenAI to DeepSeek
+chat and from OpenAI to local embeddings by design. Existing OpenAI users
+must explicitly set `provider: openai` (and, for embeddings,
+`embedding_provider: openai`), an OpenAI model, and a compatible
+thinking/effort pair after this intentional default change. Legacy string
+model overrides remain valid and inherit the global thinking mode and
+reasoning effort.
 
 ## Core Tools
 
@@ -249,7 +264,7 @@ Three layers, each independently usable:
 
 ```python
 from deep_research.memory import LongTermMemory, ProceduralMemory, ScratchpadMemory
-from deep_research.providers import OpenAIEmbeddingProvider
+from deep_research.providers import LocalEmbeddingProvider
 from deep_research.utils.config import load_config
 from deep_research.utils.types import merge_research_state
 
@@ -261,7 +276,7 @@ pad = ScratchpadMemory.from_config(
 pad.add("Tavily returned 5 results.", kind="observation")
 
 long_term = LongTermMemory.from_config(
-    settings.memory.long_term, embeddings=OpenAIEmbeddingProvider()
+    settings.memory.long_term, embeddings=LocalEmbeddingProvider()
 )
 hits = await long_term.query("quantum error correction", top_k=5)
 
@@ -802,9 +817,9 @@ python -m deep_research.evaluation suite
 | 3 | Configuration / credential / dataset-sync / LangSmith infrastructure failure |
 | 130 | Interrupted with Ctrl-C |
 
-**Controlled evaluation makes real OpenAI and LangSmith calls and costs real
+**Controlled evaluation makes real DeepSeek and LangSmith calls and costs real
 money.** There is no dry-run or mock mode for `agent` or `suite` — every
-invocation creates a real LangSmith experiment and calls the real OpenAI API
+invocation creates a real LangSmith experiment and calls the real DeepSeek API
 with the configured target and judge models. Live-tier runs additionally
 exercise real tools (e.g. Tavily web search) for agents that declare them.
 Run `list` first, and read the live-verification runbook linked below before
@@ -816,12 +831,16 @@ Runtime secrets stay environment-only, exactly like the graph CLI above:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | Always | Target and judge model calls. |
+| `DEEPSEEK_API_KEY` | Always | Target and judge model calls. |
 | `LANGSMITH_API_KEY` | Always | Experiment creation, dataset sync, tracing. |
 | `LANGSMITH_PROJECT` | Always | The LangSmith project experiments are recorded under. |
 | `LANGSMITH_ENDPOINT` | Optional | Override the LangSmith API region, e.g. the EU endpoint `https://eu.api.smith.langchain.com`. |
 | `LANGSMITH_WORKSPACE_ID` | Optional | Disambiguate a workspace when the API key has access to more than one. |
 | `TAVILY_API_KEY` | Only for live cases whose agent declares `web_search` | Real web search during live-tier evaluation. |
+
+`OPENAI_API_KEY` is not required: the evaluation baseline runs chat on
+DeepSeek and embeddings locally. It is needed only if `config.yaml` selects
+an OpenAI chat provider or an OpenAI embedding model.
 
 ### Artifacts
 
@@ -849,7 +868,7 @@ before trusting this harness's output.
 pytest
 
 # Lint
-ruff check src/
+ruff check src/ tests/
 ```
 
 ## Live DeepSeek Smoke Test
