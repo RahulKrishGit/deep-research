@@ -781,10 +781,19 @@ def test_strict_mode_requires_no_openai_key_for_the_default_stack(
 def test_strict_mode_requires_the_openai_key_only_for_openai_embeddings(
     monkeypatch, config_path
 ) -> None:
+    """Selecting ``embedding_provider: openai`` requires OPENAI_API_KEY even
+    when the chat provider is not openai, proving embedding-provider
+    selection is validated independently of the chat provider."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek")
     monkeypatch.setenv("TAVILY_API_KEY", "tavily")
     monkeypatch.setenv("LLM_EMBEDDING_PROVIDER", "openai")
+    # ``config_path`` configures ``provider: openai`` for the other tests in
+    # this file; reset it to the schema defaults (chat provider deepseek) so
+    # this test exercises deepseek chat + openai embeddings, not openai chat
+    # + openai embeddings, the same way
+    # ``test_strict_mode_requires_no_openai_key_for_the_default_stack`` does.
+    config_path.write_text(yaml.safe_dump({}), encoding="utf-8")
 
     with pytest.raises(MissingSecretsError, match="OPENAI_API_KEY"):
         load_config(str(config_path), strict=True)
