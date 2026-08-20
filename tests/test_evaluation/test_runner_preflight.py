@@ -165,12 +165,19 @@ async def test_a_live_run_with_a_typo_d_openai_embedding_model_fails_closed(
 
 
 @pytest.mark.asyncio
-async def test_a_live_run_with_an_openai_model_name_for_local_embeddings_fails_closed(
+async def test_a_live_run_with_any_model_name_under_local_embeddings_still_passes(
     settings, runtime_config_for, tmp_path
 ) -> None:
-    """A real OpenAI model name is still wrong for the local provider: the
-    local adapter takes no model name at all, so an explicit override that
-    names one can never take effect and must fail preflight."""
+    """Replaces the deleted
+    ``test_a_live_run_with_an_openai_model_name_for_local_embeddings_fails_closed``,
+    which rejected a real OpenAI model name under ``embedding_provider ==
+    "local"``. That rejection was the design error this correction fixes,
+    not a real safeguard: ``LocalEmbeddingProvider`` takes no model
+    argument at all, so no name it is given can ever be "wrong" for it --
+    there is no such thing as a mismatched local model name to catch. Under
+    ``local`` the model string is inert, so any value must pass preflight,
+    and the local adapter is selected regardless (no ``OPENAI_API_KEY`` is
+    present in ``ENVIRONMENT`` and this must still succeed)."""
     runtime = runtime_config_for("source_evaluator", tier="live").model_copy(
         update={
             "embedding_provider": "local",
@@ -179,18 +186,13 @@ async def test_a_live_run_with_an_openai_model_name_for_local_embeddings_fails_c
     )
     client = FakeLangSmithClient()
 
-    with pytest.raises(PreflightError) as caught:
-        await run(
-            settings,
-            runtime,
-            tmp_path,
-            cases=cases_for("source_evaluator", "live"),
-            langsmith_client=client,
-        )
-
-    assert caught.value.reason == "model_unavailable"
-    assert "text-embedding-3-large" in str(caught.value)
-    assert client.created_datasets == []
+    await run(
+        settings,
+        runtime,
+        tmp_path,
+        cases=cases_for("source_evaluator", "live"),
+        langsmith_client=client,
+    )
 
 
 @pytest.mark.asyncio
