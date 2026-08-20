@@ -112,21 +112,25 @@ def test_live_dependencies_are_derived_from_declared_tools() -> None:
 
 
 def test_only_applicable_credentials_are_required() -> None:
-    assert required_credentials("source_evaluator", provider="deepseek") == (
+    assert required_credentials(
+        "source_evaluator", provider="deepseek", embedding_model="local"
+    ) == (
         "DEEPSEEK_API_KEY",
         "LANGSMITH_API_KEY",
     )
     assert "TAVILY_API_KEY" in required_credentials(
-        "researcher", provider="deepseek"
+        "researcher", provider="deepseek", embedding_model="local"
     )
     assert "TAVILY_API_KEY" not in required_credentials(
-        "source_evaluator", provider="deepseek"
+        "source_evaluator", provider="deepseek", embedding_model="local"
     )
 
 
 @pytest.mark.parametrize("agent_name", AGENT_NAMES)
 def test_the_chat_provider_and_langsmith_are_always_required(agent_name) -> None:
-    required = required_credentials(agent_name, provider="deepseek")
+    required = required_credentials(
+        agent_name, provider="deepseek", embedding_model="local"
+    )
 
     assert "DEEPSEEK_API_KEY" in required
     assert "LANGSMITH_API_KEY" in required
@@ -136,8 +140,37 @@ def test_the_chat_provider_and_langsmith_are_always_required(agent_name) -> None
 @pytest.mark.parametrize("agent_name", AGENT_NAMES)
 def test_selecting_openai_chat_requires_the_openai_key(agent_name) -> None:
     assert "OPENAI_API_KEY" in required_credentials(
-        agent_name, provider="openai"
+        agent_name, provider="openai", embedding_model="local"
     )
+
+
+@pytest.mark.parametrize("agent_name", AGENT_NAMES)
+def test_a_named_embedding_model_requires_the_openai_key(agent_name) -> None:
+    """A live run selecting an OpenAI embedding model must require
+    ``OPENAI_API_KEY`` even when the chat provider is DeepSeek -- this is
+    the restored coverage for the Task 8/11 composition gap. (Guard against
+    under-fixing: ``test_the_chat_provider_and_langsmith_are_always_required``
+    above already pins that the local sentinel requires no such key.)"""
+    assert "OPENAI_API_KEY" in required_credentials(
+        agent_name,
+        provider="deepseek",
+        embedding_model="text-embedding-3-small",
+    )
+
+
+@pytest.mark.parametrize("agent_name", AGENT_NAMES)
+def test_openai_chat_and_embedding_do_not_double_the_credential(
+    agent_name,
+) -> None:
+    """Selecting OpenAI for both chat and embeddings names
+    ``OPENAI_API_KEY`` once, de-duplicated in first-seen order."""
+    required = required_credentials(
+        agent_name,
+        provider="openai",
+        embedding_model="text-embedding-3-small",
+    )
+
+    assert required.count("OPENAI_API_KEY") == 1
 
 
 def test_a_missing_applicable_credential_names_only_what_is_missing(
@@ -257,10 +290,39 @@ def test_a_live_bundle_selects_openai_for_a_named_embedding_model(
         tracker=tracker,
         settings=settings,
         root=tmp_path,
-        environ=FULL_ENVIRONMENT,
+        # Selecting an OpenAI embedding model now requires OPENAI_API_KEY
+        # (the fix for the Task 8/11 fail-open) -- present here so this
+        # test still exercises the provider selection itself.
+        environ={**FULL_ENVIRONMENT, "OPENAI_API_KEY": "sk-openai-abcdefgh"},
     )
 
     assert captured == [("openai", "text-embedding-3-small")]
+
+
+def test_a_named_embedding_model_without_the_openai_key_fails_closed(
+    tracker, settings, tmp_path, runtime_config_for, live_case_for
+) -> None:
+    """The Task 8/11 composition gap this branch fixes: a live run
+    selecting an OpenAI embedding model with no ``OPENAI_API_KEY`` must be
+    rejected by ``build_live_dependencies`` itself, before any embedding
+    provider is constructed -- not left to fail later at the first
+    ``query_memory``/``save_to_memory`` call."""
+    runtime = runtime_config_for("planner", tier="live").model_copy(
+        update={"embedding_model": "text-embedding-3-small"}
+    )
+
+    with pytest.raises(MissingCredentialError) as caught:
+        build_live_dependencies(
+            runtime,
+            live_case_for("planner"),
+            tracker=tracker,
+            settings=settings,
+            root=tmp_path,
+            environ=FULL_ENVIRONMENT,
+        )
+
+    assert caught.value.reason == "missing_credentials"
+    assert "OPENAI_API_KEY" in caught.value.variables
 
 
 def test_live_bundles_record_the_real_services_they_expose(

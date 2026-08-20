@@ -241,15 +241,22 @@ async def preflight(
     # non-blank. The selected chat provider and LangSmith are required for
     # every tier (model access below, dataset sync at the end). For a
     # live-tier run, ``required_credentials`` also names ``TAVILY_API_KEY``
-    # for any agent whose declared tools reach it -- a controlled bundle
-    # never constructs a real Tavily client (it always injects the
-    # scripted search double), so the controlled tier only needs the fixed
-    # pair. Checking the live tier's full credential set here, before
-    # step 5, means a missing Tavily key is caught as
-    # ``missing_credentials`` up front instead of surfacing later, at
-    # step 7, as the less-specific ``guards_uninstallable``.
+    # for any agent whose declared tools reach it, and ``OPENAI_API_KEY``
+    # when ``runtime.embedding_model`` resolves to the OpenAI embedding
+    # provider (the default local sentinel needs no such key) -- a
+    # controlled bundle never constructs a real Tavily client or a live
+    # embedding provider (it always injects scripted doubles), so the
+    # controlled tier only needs the fixed pair. Checking the live tier's
+    # full credential set here, before step 5, means a missing Tavily or
+    # embedding key is caught as ``missing_credentials`` up front instead
+    # of surfacing later, at step 7, as the less-specific
+    # ``guards_uninstallable``.
     required = (
-        required_credentials(runtime.agent_name, provider=settings.llm.provider)
+        required_credentials(
+            runtime.agent_name,
+            provider=settings.llm.provider,
+            embedding_model=runtime.embedding_model,
+        )
         if runtime.tier == "live"
         else (
             CHAT_PROVIDER_CREDENTIALS[settings.llm.provider],

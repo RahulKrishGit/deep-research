@@ -87,6 +87,51 @@ async def test_a_live_run_missing_tavily_fails_with_missing_credentials(
 
 
 @pytest.mark.asyncio
+async def test_a_live_run_with_an_openai_embedding_model_needs_its_key(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """Task 8 dropped ``OPENAI_API_KEY`` from ``required_credentials``
+    unconditionally; Task 11 then reintroduced a path that needs it -- a
+    live run whose ``evaluation.embedding_model`` names an OpenAI model
+    builds an ``OpenAIEmbeddingProvider`` (``dependencies.py``). Step 4
+    must catch a missing key here, as ``missing_credentials``, rather than
+    passing preflight and failing later at the first memory tool call
+    (scored as the agent failing its own gates). This is the restored
+    coverage for the deleted ``test_a_live_run_checks_the_embedding_model``.
+    """
+    runtime = runtime_config_for("source_evaluator", tier="live").model_copy(
+        update={"embedding_model": "text-embedding-3-small"}
+    )
+
+    with pytest.raises(PreflightError) as caught:
+        await run(
+            settings,
+            runtime,
+            tmp_path,
+            cases=cases_for("source_evaluator", "live"),
+        )
+
+    assert caught.value.reason == "missing_credentials"
+    assert "OPENAI_API_KEY" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_a_live_run_with_the_default_local_embedding_needs_no_openai_key(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """Guard against over-fixing: the default stack (DeepSeek chat, local
+    embeddings) must keep passing live-tier preflight with no
+    ``OPENAI_API_KEY`` present anywhere in the environment."""
+    assert "OPENAI_API_KEY" not in ENVIRONMENT
+    await run(
+        settings,
+        runtime_config_for("source_evaluator", tier="live"),
+        tmp_path,
+        cases=cases_for("source_evaluator", "live"),
+    )
+
+
+@pytest.mark.asyncio
 async def test_an_invalid_case_registry_fails_before_any_remote_call(
     settings, runtime_config_for, tmp_path
 ) -> None:

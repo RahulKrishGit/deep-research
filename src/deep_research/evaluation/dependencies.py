@@ -151,21 +151,47 @@ CHAT_PROVIDER_CREDENTIALS: dict[str, str] = {
 }
 
 
+def live_embedding_provider(embedding_model: str) -> str:
+    """Resolve which embedding provider one ``embedding_model`` value selects.
+
+    The sentinel ``LOCAL_EMBEDDING_PROVIDER`` means the offline provider;
+    any other value is an OpenAI embedding model name. This is the single
+    source of truth for that selection rule -- both ``build_live_dependencies``
+    and ``required_credentials`` call it rather than each re-deriving the
+    same conditional.
+    """
+    return (
+        LOCAL_EMBEDDING_PROVIDER
+        if embedding_model == LOCAL_EMBEDDING_PROVIDER
+        else "openai"
+    )
+
+
 def required_credentials(
-    agent_name: AgentName, *, provider: ProviderName
+    agent_name: AgentName, *, provider: ProviderName, embedding_model: str
 ) -> tuple[str, ...]:
     """The environment variables one live run of ``agent_name`` must provide.
 
     The selected chat provider's key and LangSmith are required for every
     agent; Tavily only for agents whose declared tools reach it.
     ``LANGSMITH_PROJECT`` is validated by the tracker's own runtime config,
-    so it is not duplicated here. Embeddings contribute nothing: the
-    baseline embedding provider is local and has no credential.
+    so it is not duplicated here. ``embedding_model`` contributes
+    ``OPENAI_API_KEY`` only when it resolves (via ``live_embedding_provider``)
+    to the OpenAI provider -- the baseline local embedding provider has no
+    credential, and every agent's live bundle constructs a ``LongTermMemory``
+    with that provider regardless of whether its declared tools reach
+    memory, so this is unconditional on ``LIVE_DEPENDENCIES``.
+    De-duplicated in first-seen order, mirroring ``_validate_runtime_secrets``
+    in ``utils/config.py``.
     """
-    chat_key = CHAT_PROVIDER_CREDENTIALS[provider]
+    required = [CHAT_PROVIDER_CREDENTIALS[provider], "LANGSMITH_API_KEY"]
     if "tavily" in LIVE_DEPENDENCIES[agent_name]:
-        return (chat_key, "LANGSMITH_API_KEY", "TAVILY_API_KEY")
-    return (chat_key, "LANGSMITH_API_KEY")
+        required.append("TAVILY_API_KEY")
+    if live_embedding_provider(embedding_model) != LOCAL_EMBEDDING_PROVIDER:
+        embedding_key = CHAT_PROVIDER_CREDENTIALS["openai"]
+        if embedding_key not in required:
+            required.append(embedding_key)
+    return tuple(required)
 
 
 class DependencyRecorder:
@@ -817,7 +843,9 @@ def build_live_dependencies(
     missing = [
         variable
         for variable in required_credentials(
-            runtime.agent_name, provider=settings.llm.provider
+            runtime.agent_name,
+            provider=settings.llm.provider,
+            embedding_model=runtime.embedding_model,
         )
         if not environ.get(variable, "").strip()
     ]
@@ -843,12 +871,10 @@ def build_live_dependencies(
     # ``embedding_model`` carries one of two things: the sentinel "local",
     # which selects the offline provider, or an OpenAI embedding model
     # name. There is only ever one local model, so it needs no name of its
-    # own and the sentinel doubles as the provider selector.
-    embedding_provider_name = (
-        "local"
-        if runtime.embedding_model == LOCAL_EMBEDDING_PROVIDER
-        else "openai"
-    )
+    # own and the sentinel doubles as the provider selector. Resolved
+    # through ``live_embedding_provider`` so this selection rule has one
+    # source of truth shared with ``required_credentials``.
+    embedding_provider_name = live_embedding_provider(runtime.embedding_model)
     long_term = LongTermMemory.from_config(
         isolated.memory.long_term,
         embeddings=embeddings
