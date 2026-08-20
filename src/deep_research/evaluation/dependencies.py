@@ -62,7 +62,11 @@ from deep_research.runtime.assembly import build_tools
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.tools.write_document import WriteDocumentTool
-from deep_research.utils.config import ConfigSettings, ProviderName
+from deep_research.utils.config import (
+    ConfigSettings,
+    EmbeddingProviderName,
+    ProviderName,
+)
 
 # Mirrors ``memory.entries._RESERVED_METADATA_KEYS``; duplicated here the
 # same way ``memory_bridge`` duplicates it, so seeding does not import a
@@ -151,7 +155,7 @@ CHAT_PROVIDER_CREDENTIALS: dict[str, str] = {
 }
 
 
-def live_embedding_provider(embedding_model: str) -> str:
+def live_embedding_provider(embedding_model: str) -> EmbeddingProviderName:
     """Resolve which embedding provider one ``embedding_model`` value selects.
 
     The sentinel ``LOCAL_EMBEDDING_PROVIDER`` means the offline provider;
@@ -178,9 +182,21 @@ def required_credentials(
     so it is not duplicated here. ``embedding_model`` contributes
     ``OPENAI_API_KEY`` only when it resolves (via ``live_embedding_provider``)
     to the OpenAI provider -- the baseline local embedding provider has no
-    credential, and every agent's live bundle constructs a ``LongTermMemory``
-    with that provider regardless of whether its declared tools reach
-    memory, so this is unconditional on ``LIVE_DEPENDENCIES``.
+    credential.
+
+    This is deliberately unconditional on ``LIVE_DEPENDENCIES``, i.e. not
+    gated on whether the agent's declared tools reach a memory tool.
+    ``LongTermMemory`` construction is lazy and needs no credential at build
+    time; the key is only needed at an actual embed call
+    (``LongTermMemory.save_many`` / ``.query``). Tool declarations do not
+    bound which agents can reach one: ``update_source_reputation`` calls
+    ``save`` -> ``embed_documents`` regardless of whether the agent declared
+    a memory tool, so gating this on ``"memory" in LIVE_DEPENDENCIES[agent]``
+    would reopen the original fail-open through that write path. The known
+    over-require this causes is ``source_evaluator``: it declares no tools
+    at all (``LIVE_DEPENDENCIES["source_evaluator"] == ()``) and its only
+    memory use, ``get_source_reputation``, is a lookup by id that embeds
+    nothing -- so it is asked for a credential it will never actually spend.
     De-duplicated in first-seen order, mirroring ``_validate_runtime_secrets``
     in ``utils/config.py``.
     """
