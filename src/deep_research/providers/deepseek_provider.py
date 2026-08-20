@@ -257,6 +257,18 @@ class DeepSeekChatProvider:
         self._config = config
         self._tracker = tracker
         self._client = _build_client(config, api_key=api_key, client=client)
+        self._last_model_returned: str | None = None
+
+    @property
+    def last_model_returned(self) -> str | None:
+        """The model identifier the last successful response reported.
+
+        ``deepseek-v4-flash`` is requested as a bare alias; the API may
+        answer as a dated snapshot such as ``DeepSeek-V4-Flash-0731``. The
+        evaluation harness records the requested alias *and* what was
+        actually served, and never substitutes one for the other.
+        """
+        return self._last_model_returned
 
     def _request_options(
         self, agent_name: str | None
@@ -328,6 +340,9 @@ class DeepSeekChatProvider:
                 text = _choice_text(response)
                 usage = _usage_from_response(response)
                 _set_span_result(span, response, usage)
+                self._last_model_returned = (
+                    getattr(response, "model", None) or effective.model
+                )
                 return ChatResult(text=text, model=effective.model, usage=usage)
         except ProviderError:
             # Documentary guard: project-owned errors are already typed,
@@ -378,6 +393,9 @@ class DeepSeekChatProvider:
             text = _choice_text(response, allow_empty=True)
             usage = _usage_from_response(response)
             _set_span_result(span, response, usage)
+            self._last_model_returned = (
+                getattr(response, "model", None) or model
+            )
             try:
                 return schema.model_validate_json(text)
             except (json.JSONDecodeError, ValidationError) as error:

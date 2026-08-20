@@ -906,6 +906,42 @@ def test_deepseek_validation_summary_excludes_inputs_and_stays_capped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_last_model_returned_is_none_before_any_call() -> None:
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(deepseek_config(), tracker, client=object())
+
+    assert provider.last_model_returned is None
+
+
+@pytest.mark.asyncio
+async def test_last_model_returned_records_the_dated_snapshot() -> None:
+    """The alias is requested; whatever the API answers with is recorded."""
+    completions = RecordingCompletions(
+        SimpleNamespace(
+            id="resp-1",
+            model="DeepSeek-V4-Flash-0731",
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content="answer text"),
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=4),
+        )
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete([ChatMessage(role="user", content="hello")])
+
+    assert result.model == "deepseek-v4-flash"
+    assert provider.last_model_returned == "DeepSeek-V4-Flash-0731"
+
+
+@pytest.mark.asyncio
 async def test_deepseek_structured_public_cause_chain_hides_provider_output() -> None:
     completions = RecordingCompletions(
         chat_response(text="not-json"),
