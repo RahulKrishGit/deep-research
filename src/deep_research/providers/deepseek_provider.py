@@ -393,11 +393,8 @@ class DeepSeekChatProvider:
             text = _choice_text(response, allow_empty=True)
             usage = _usage_from_response(response)
             _set_span_result(span, response, usage)
-            self._last_model_returned = (
-                getattr(response, "model", None) or model
-            )
             try:
-                return schema.model_validate_json(text)
+                parsed = schema.model_validate_json(text)
             except (json.JSONDecodeError, ValidationError) as error:
                 # from None: the original ValidationError embeds the provider
                 # output in its string and error items, so it must not remain
@@ -405,6 +402,8 @@ class DeepSeekChatProvider:
                 raise _StructuredValidationFailure(
                     schema.__name__, _validation_summary(error)
                 ) from None
+            self._last_model_returned = getattr(response, "model", None) or model
+            return parsed
 
     async def complete_structured(
         self,

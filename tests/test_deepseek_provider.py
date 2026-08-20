@@ -666,6 +666,78 @@ async def test_deepseek_structured_repairs_once_then_succeeds() -> None:
     )
 
 
+class _LastModelSpyingCompletions(RecordingCompletions):
+    """A ``RecordingCompletions`` that snapshots ``provider.last_model_returned``
+
+    right before the repair (second) request is sent. This exposes whether a
+    discarded, schema-invalid first attempt was ever recorded as "the last
+    successful response" -- even transiently -- since the final value alone
+    cannot tell: when the repair attempt goes on to succeed, its own
+    assignment overwrites whatever the first attempt left behind either way.
+    """
+
+    def __init__(self, *outcomes: object) -> None:
+        super().__init__(*outcomes)
+        self.provider: DeepSeekChatProvider | None = None
+        self.model_seen_before_repair: object = "not-observed"
+
+    async def create(self, **kwargs):
+        if len(self.calls) == 1:
+            assert self.provider is not None
+            self.model_seen_before_repair = self.provider.last_model_returned
+        return await super().create(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_last_model_returned_ignores_failed_attempt() -> (
+    None
+):
+    completions = _LastModelSpyingCompletions(
+        SimpleNamespace(
+            id="deepseek-response-1",
+            model="deepseek-first-attempt-model",
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content='{"answer":3}'),
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=4),
+        ),
+        SimpleNamespace(
+            id="deepseek-response-2",
+            model="deepseek-repair-attempt-model",
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content='{"answer":"yes","confidence":8}'
+                    ),
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=4),
+        ),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+    completions.provider = provider
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert result.confidence == 8
+    assert len(completions.calls) == 2
+    # The discarded, schema-invalid first attempt must never be observable
+    # as "the last successful response" -- not even before the repair runs.
+    assert completions.model_seen_before_repair is None
+    # And once the repair succeeds, it is what gets recorded.
+    assert provider.last_model_returned == "deepseek-repair-attempt-model"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("first", ["", "not-json", '{"answer":3}'])
 async def test_deepseek_structured_raises_after_exactly_one_failed_repair(
