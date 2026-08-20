@@ -23,7 +23,11 @@ from deep_research.evaluation.config import (
     resolve_target_effort,
     target_llm_config,
 )
-from deep_research.utils.config import ConfigSettings, EvaluationConfig
+from deep_research.utils.config import (
+    ConfigSettings,
+    EvaluationConfig,
+    LLMConfig,
+)
 
 NOW = datetime(2026, 8, 16, 10, 15, 0, tzinfo=timezone.utc)
 GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
@@ -53,7 +57,6 @@ def test_the_baseline_models_are_deepseek_v4_flash() -> None:
 
     assert config.target_model == "deepseek-v4-flash"
     assert config.judge_model == "deepseek-v4-flash"
-    assert config.embedding_model == "local"
 
 
 def test_the_evaluation_config_no_longer_carries_a_reasoning_mode() -> None:
@@ -62,6 +65,16 @@ def test_the_evaluation_config_no_longer_carries_a_reasoning_mode() -> None:
 
     with pytest.raises(ValueError):
         EvaluationConfig(reasoning_mode="standard")
+
+
+def test_embedding_override_fields_default_to_none() -> None:
+    """``None`` means inherit ``llm.embedding_provider`` /
+    ``llm.embedding_model``; the evaluation harness carries no sentinel of
+    its own."""
+    config = EvaluationConfig()
+
+    assert config.embedding_provider is None
+    assert config.embedding_model is None
 
 
 def test_an_invocation_override_beats_the_per_agent_override() -> None:
@@ -110,7 +123,7 @@ def test_an_invalid_effort_lists_the_valid_levels() -> None:
     assert "xhigh" in str(caught.value)
 
 
-def build(**kwargs):
+def build(*, settings=None, **kwargs):
     defaults = dict(
         agent_name="researcher",
         tier="controlled",
@@ -123,7 +136,7 @@ def build(**kwargs):
         git=GIT,
     )
     defaults.update(kwargs)
-    return build_runtime_config(ConfigSettings(), **defaults)
+    return build_runtime_config(settings or ConfigSettings(), **defaults)
 
 
 def test_the_runtime_config_freezes_both_efforts() -> None:
@@ -140,6 +153,61 @@ def test_controlled_and_live_repetition_counts() -> None:
     assert build(tier="controlled").repetitions == 3
     assert build(tier="live").repetitions == 1
     assert build().max_concurrency == 1
+
+
+def test_an_unset_embedding_override_inherits_the_local_llm_default() -> None:
+    """With no evaluation override, the resolved runtime config takes
+    ``llm.embedding_provider`` (default ``"local"``) and
+    ``llm.embedding_model`` unchanged."""
+    settings = ConfigSettings(llm=LLMConfig(embedding_provider="local"))
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_provider == "local"
+    assert runtime.embedding_model == settings.llm.embedding_model
+
+
+def test_an_unset_embedding_override_inherits_an_openai_llm_selection() -> None:
+    """The same inheritance rule for the OpenAI case: no evaluation
+    override, ``llm.embedding_provider: openai`` wins through unchanged."""
+    settings = ConfigSettings(llm=LLMConfig(embedding_provider="openai"))
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_provider == "openai"
+    assert runtime.embedding_model == settings.llm.embedding_model
+
+
+def test_an_explicit_evaluation_override_wins_over_an_inherited_local_default() -> (
+    None
+):
+    settings = ConfigSettings(
+        llm=LLMConfig(embedding_provider="local"),
+        evaluation=EvaluationConfig(embedding_provider="openai"),
+    )
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_provider == "openai"
+
+
+def test_an_explicit_local_override_wins_over_an_inherited_openai_default() -> (
+    None
+):
+    settings = ConfigSettings(
+        llm=LLMConfig(embedding_provider="openai"),
+        evaluation=EvaluationConfig(embedding_provider="local"),
+    )
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_provider == "local"
+
+
+def test_an_explicit_evaluation_embedding_model_wins_over_inheritance() -> None:
+    settings = ConfigSettings(
+        evaluation=EvaluationConfig(embedding_model="text-embedding-3-large")
+    )
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_model == "text-embedding-3-large"
+    assert runtime.embedding_model != settings.llm.embedding_model
 
 
 def test_changing_a_target_effort_refingerprints_but_reuses_the_dataset() -> None:

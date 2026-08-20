@@ -92,15 +92,18 @@ async def test_a_live_run_with_an_openai_embedding_model_needs_its_key(
 ) -> None:
     """Task 8 dropped ``OPENAI_API_KEY`` from ``required_credentials``
     unconditionally; Task 11 then reintroduced a path that needs it -- a
-    live run whose ``evaluation.embedding_model`` names an OpenAI model
-    builds an ``OpenAIEmbeddingProvider`` (``dependencies.py``). Step 4
-    must catch a missing key here, as ``missing_credentials``, rather than
-    passing preflight and failing later at the first memory tool call
+    live run whose ``evaluation.embedding_provider`` resolves to
+    ``"openai"`` builds an ``OpenAIEmbeddingProvider`` (``dependencies.py``).
+    Step 4 must catch a missing key here, as ``missing_credentials``, rather
+    than passing preflight and failing later at the first memory tool call
     (scored as the agent failing its own gates). This is the restored
     coverage for the deleted ``test_a_live_run_checks_the_embedding_model``.
     """
     runtime = runtime_config_for("source_evaluator", tier="live").model_copy(
-        update={"embedding_model": "text-embedding-3-small"}
+        update={
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-small",
+        }
     )
 
     with pytest.raises(PreflightError) as caught:

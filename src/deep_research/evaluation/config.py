@@ -28,6 +28,7 @@ from deep_research.evaluation.models import (
 )
 from deep_research.utils.config import (
     ConfigSettings,
+    EmbeddingProviderName,
     EvaluationConfig,
     LLMConfig,
     ReasoningEffort,
@@ -202,6 +203,7 @@ class EvaluationRuntimeConfig(ContractModel):
     # Every evaluation case runs with thinking on; no case needs it off, so
     # the field is deliberately single-valued rather than a free toggle.
     thinking_mode: Literal["enabled"]
+    embedding_provider: EmbeddingProviderName
     embedding_model: str
     dataset_name: str
     dataset_version: int
@@ -249,6 +251,22 @@ def build_runtime_config(
         git_sha=git.short_sha,
         prefix=experiment_prefix,
     )
+    # ``None`` means inherit production's selection: the evaluation harness
+    # runs agents the way production does unless an explicit override says
+    # otherwise. The two fields resolve independently of each other, the
+    # same way ``build_runtime`` (``runtime/assembly.py``) always passes
+    # both ``llm.embedding_provider`` and ``llm.embedding_model`` regardless
+    # of which provider is selected.
+    resolved_embedding_provider = (
+        evaluation.embedding_provider
+        if evaluation.embedding_provider is not None
+        else settings.llm.embedding_provider
+    )
+    resolved_embedding_model = (
+        evaluation.embedding_model
+        if evaluation.embedding_model is not None
+        else settings.llm.embedding_model
+    )
     configuration_fingerprint = fingerprint(
         {
             "application": settings.model_dump(mode="json"),
@@ -286,7 +304,8 @@ def build_runtime_config(
         judge_reasoning_effort=judge_effort,
         judge_temperature=evaluation.judge_temperature,
         thinking_mode="enabled",
-        embedding_model=evaluation.embedding_model,
+        embedding_provider=resolved_embedding_provider,
+        embedding_model=resolved_embedding_model,
         dataset_name=resolved_dataset_name,
         dataset_version=evaluation.dataset_version,
         rubric_version=evaluation.rubric_version,

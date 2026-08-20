@@ -234,10 +234,13 @@ class EvaluationConfig(BaseModel):
     )
     judge_model: str = Field(default="deepseek-v4-flash", min_length=1)
     judge_reasoning_effort: ReasoningEffort = "max"
-    # ``local`` selects the offline embedding provider; any other value is
-    # an OpenAI embedding model name. Live-tier bundles are the only
-    # consumer.
-    embedding_model: str = Field(default="local", min_length=1)
+    # ``None`` means inherit ``llm.embedding_provider`` / ``llm.embedding_model``:
+    # production is the single source of truth for the embedding selection,
+    # and an evaluation run overrides it only when it sets one of these
+    # explicitly. Live-tier bundles are the only consumer of the resolved
+    # pair.
+    embedding_provider: EmbeddingProviderName | None = None
+    embedding_model: str | None = Field(default=None, min_length=1)
     # ``None`` omits the parameter for models that reject it; the spec pins
     # the judge at 0.0 and that is the default.
     judge_temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)

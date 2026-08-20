@@ -242,20 +242,19 @@ async def preflight(
     # every tier (model access below, dataset sync at the end). For a
     # live-tier run, ``required_credentials`` also names ``TAVILY_API_KEY``
     # for any agent whose declared tools reach it, and ``OPENAI_API_KEY``
-    # when ``runtime.embedding_model`` resolves to the OpenAI embedding
-    # provider (the default local sentinel needs no such key) -- a
-    # controlled bundle never constructs a real Tavily client or a live
-    # embedding provider (it always injects scripted doubles), so the
-    # controlled tier only needs the fixed pair. Checking the live tier's
-    # full credential set here, before step 5, means a missing Tavily or
-    # embedding key is caught as ``missing_credentials`` up front instead
-    # of surfacing later, at step 7, as the less-specific
-    # ``guards_uninstallable``.
+    # when ``runtime.embedding_provider`` is ``"openai"`` (the default
+    # local provider needs no such key) -- a controlled bundle never
+    # constructs a real Tavily client or a live embedding provider (it
+    # always injects scripted doubles), so the controlled tier only needs
+    # the fixed pair. Checking the live tier's full credential set here,
+    # before step 5, means a missing Tavily or embedding key is caught as
+    # ``missing_credentials`` up front instead of surfacing later, at step
+    # 7, as the less-specific ``guards_uninstallable``.
     required = (
         required_credentials(
             runtime.agent_name,
             provider=settings.llm.provider,
-            embedding_model=runtime.embedding_model,
+            embedding_provider=runtime.embedding_provider,
         )
         if runtime.tier == "live"
         else (

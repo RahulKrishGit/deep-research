@@ -113,23 +113,23 @@ def test_live_dependencies_are_derived_from_declared_tools() -> None:
 
 def test_only_applicable_credentials_are_required() -> None:
     assert required_credentials(
-        "source_evaluator", provider="deepseek", embedding_model="local"
+        "source_evaluator", provider="deepseek", embedding_provider="local"
     ) == (
         "DEEPSEEK_API_KEY",
         "LANGSMITH_API_KEY",
     )
     assert "TAVILY_API_KEY" in required_credentials(
-        "researcher", provider="deepseek", embedding_model="local"
+        "researcher", provider="deepseek", embedding_provider="local"
     )
     assert "TAVILY_API_KEY" not in required_credentials(
-        "source_evaluator", provider="deepseek", embedding_model="local"
+        "source_evaluator", provider="deepseek", embedding_provider="local"
     )
 
 
 @pytest.mark.parametrize("agent_name", AGENT_NAMES)
 def test_the_chat_provider_and_langsmith_are_always_required(agent_name) -> None:
     required = required_credentials(
-        agent_name, provider="deepseek", embedding_model="local"
+        agent_name, provider="deepseek", embedding_provider="local"
     )
 
     assert "DEEPSEEK_API_KEY" in required
@@ -140,21 +140,21 @@ def test_the_chat_provider_and_langsmith_are_always_required(agent_name) -> None
 @pytest.mark.parametrize("agent_name", AGENT_NAMES)
 def test_selecting_openai_chat_requires_the_openai_key(agent_name) -> None:
     assert "OPENAI_API_KEY" in required_credentials(
-        agent_name, provider="openai", embedding_model="local"
+        agent_name, provider="openai", embedding_provider="local"
     )
 
 
 @pytest.mark.parametrize("agent_name", AGENT_NAMES)
 def test_a_named_embedding_model_requires_the_openai_key(agent_name) -> None:
-    """A live run selecting an OpenAI embedding model must require
+    """A live run selecting the OpenAI embedding provider must require
     ``OPENAI_API_KEY`` even when the chat provider is DeepSeek -- this is
     the restored coverage for the Task 8/11 composition gap. (Guard against
     under-fixing: ``test_the_chat_provider_and_langsmith_are_always_required``
-    above already pins that the local sentinel requires no such key.)"""
+    above already pins that the local provider requires no such key.)"""
     assert "OPENAI_API_KEY" in required_credentials(
         agent_name,
         provider="deepseek",
-        embedding_model="text-embedding-3-small",
+        embedding_provider="openai",
     )
 
 
@@ -167,7 +167,7 @@ def test_openai_chat_and_embedding_do_not_double_the_credential(
     required = required_credentials(
         agent_name,
         provider="openai",
-        embedding_model="text-embedding-3-small",
+        embedding_provider="openai",
     )
 
     assert required.count("OPENAI_API_KEY") == 1
@@ -235,8 +235,9 @@ def test_live_memory_and_documents_stay_in_the_evaluation_namespace(
 def test_a_live_bundle_builds_the_local_embedding_provider_by_default(
     tracker, settings, tmp_path, runtime_config_for, live_case_for, monkeypatch
 ) -> None:
-    """``embedding_model: local`` selects the offline provider, and the
-    real ONNX model is never constructed in an offline test."""
+    """``embedding_provider: local`` (the default, inherited from
+    ``llm.embedding_provider``) selects the offline provider, and the real
+    ONNX model is never constructed in an offline test."""
     captured: list[tuple[str, str]] = []
 
     class RecordingEmbeddings:
@@ -264,7 +265,7 @@ def test_a_live_bundle_builds_the_local_embedding_provider_by_default(
         environ=FULL_ENVIRONMENT,
     )
 
-    assert captured == [("local", "local")]
+    assert captured == [("local", settings.llm.embedding_model)]
 
 
 def test_a_live_bundle_selects_openai_for_a_named_embedding_model(
@@ -281,7 +282,10 @@ def test_a_live_bundle_selects_openai_for_a_named_embedding_model(
         recording_build,
     )
     runtime = runtime_config_for("planner", tier="live").model_copy(
-        update={"embedding_model": "text-embedding-3-small"}
+        update={
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-small",
+        }
     )
 
     build_live_dependencies(
@@ -290,9 +294,9 @@ def test_a_live_bundle_selects_openai_for_a_named_embedding_model(
         tracker=tracker,
         settings=settings,
         root=tmp_path,
-        # Selecting an OpenAI embedding model now requires OPENAI_API_KEY
-        # (the fix for the Task 8/11 fail-open) -- present here so this
-        # test still exercises the provider selection itself.
+        # Selecting the OpenAI embedding provider now requires
+        # OPENAI_API_KEY (the fix for the Task 8/11 fail-open) -- present
+        # here so this test still exercises the provider selection itself.
         environ={**FULL_ENVIRONMENT, "OPENAI_API_KEY": "sk-openai-abcdefgh"},
     )
 
@@ -303,12 +307,15 @@ def test_a_named_embedding_model_without_the_openai_key_fails_closed(
     tracker, settings, tmp_path, runtime_config_for, live_case_for
 ) -> None:
     """The Task 8/11 composition gap this branch fixes: a live run
-    selecting an OpenAI embedding model with no ``OPENAI_API_KEY`` must be
-    rejected by ``build_live_dependencies`` itself, before any embedding
+    selecting the OpenAI embedding provider with no ``OPENAI_API_KEY`` must
+    be rejected by ``build_live_dependencies`` itself, before any embedding
     provider is constructed -- not left to fail later at the first
     ``query_memory``/``save_to_memory`` call."""
     runtime = runtime_config_for("planner", tier="live").model_copy(
-        update={"embedding_model": "text-embedding-3-small"}
+        update={
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-small",
+        }
     )
 
     with pytest.raises(MissingCredentialError) as caught:

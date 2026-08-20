@@ -59,7 +59,6 @@ evaluation:
     source_evaluator: high
   judge_model: deepseek-v4-flash
   judge_reasoning_effort: max
-  embedding_model: local
   judge_temperature: 0.0
   max_concurrency: 1
   output_directory: output/evaluations/

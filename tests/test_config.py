@@ -726,7 +726,8 @@ def test_evaluation_defaults_match_the_approved_baseline() -> None:
     }
     assert evaluation.judge_model == "deepseek-v4-flash"
     assert evaluation.judge_reasoning_effort == "max"
-    assert evaluation.embedding_model == "local"
+    assert evaluation.embedding_provider is None
+    assert evaluation.embedding_model is None
     assert evaluation.judge_temperature == 0.0
     assert evaluation.max_concurrency == 1
     assert evaluation.output_directory == "output/evaluations/"

@@ -155,55 +155,43 @@ CHAT_PROVIDER_CREDENTIALS: dict[str, str] = {
 }
 
 
-def live_embedding_provider(embedding_model: str) -> EmbeddingProviderName:
-    """Resolve which embedding provider one ``embedding_model`` value selects.
-
-    The sentinel ``LOCAL_EMBEDDING_PROVIDER`` means the offline provider;
-    any other value is an OpenAI embedding model name. This is the single
-    source of truth for that selection rule -- both ``build_live_dependencies``
-    and ``required_credentials`` call it rather than each re-deriving the
-    same conditional.
-    """
-    return (
-        LOCAL_EMBEDDING_PROVIDER
-        if embedding_model == LOCAL_EMBEDDING_PROVIDER
-        else "openai"
-    )
-
-
 def required_credentials(
-    agent_name: AgentName, *, provider: ProviderName, embedding_model: str
+    agent_name: AgentName,
+    *,
+    provider: ProviderName,
+    embedding_provider: EmbeddingProviderName,
 ) -> tuple[str, ...]:
     """The environment variables one live run of ``agent_name`` must provide.
 
     The selected chat provider's key and LangSmith are required for every
     agent; Tavily only for agents whose declared tools reach it.
     ``LANGSMITH_PROJECT`` is validated by the tracker's own runtime config,
-    so it is not duplicated here. ``embedding_model`` contributes
-    ``OPENAI_API_KEY`` only when it resolves (via ``live_embedding_provider``)
-    to the OpenAI provider -- the baseline local embedding provider has no
-    credential.
+    so it is not duplicated here. ``embedding_provider`` contributes
+    ``OPENAI_API_KEY`` only when it is ``"openai"`` -- the baseline local
+    embedding provider has no credential.
 
     This is deliberately unconditional on ``LIVE_DEPENDENCIES``, i.e. not
     gated on whether the agent's declared tools reach a memory tool.
     ``LongTermMemory`` construction is lazy and needs no credential at build
     time; the key is only needed at an actual embed call
     (``LongTermMemory.save_many`` / ``.query``). Tool declarations do not
-    bound which agents can reach one: ``update_source_reputation`` calls
-    ``save`` -> ``embed_documents`` regardless of whether the agent declared
-    a memory tool, so gating this on ``"memory" in LIVE_DEPENDENCIES[agent]``
-    would reopen the original fail-open through that write path. The known
-    over-require this causes is ``source_evaluator``: it declares no tools
-    at all (``LIVE_DEPENDENCIES["source_evaluator"] == ()``) and its only
-    memory use, ``get_source_reputation``, is a lookup by id that embeds
-    nothing -- so it is asked for a credential it will never actually spend.
-    De-duplicated in first-seen order, mirroring ``_validate_runtime_secrets``
-    in ``utils/config.py``.
+    bound which agents can reach one: ``update_source_reputation`` is an
+    existing capability on ``LongTermMemory`` (``save`` -> ``embed_documents``)
+    that any future agent could call without declaring a memory tool, so
+    gating this on ``"memory" in LIVE_DEPENDENCIES[agent]`` would be a
+    fragile invariant rather than a real bound -- narrowing to declared
+    tools would reopen the original fail-open the moment such a call was
+    added. The known over-require this causes today is ``source_evaluator``:
+    it declares no tools at all (``LIVE_DEPENDENCIES["source_evaluator"] ==
+    ()``) and its only memory use, ``get_source_reputation``, is a lookup by
+    id that embeds nothing -- so it is asked for a credential it will never
+    actually spend. De-duplicated in first-seen order, mirroring
+    ``_validate_runtime_secrets`` in ``utils/config.py``.
     """
     required = [CHAT_PROVIDER_CREDENTIALS[provider], "LANGSMITH_API_KEY"]
     if "tavily" in LIVE_DEPENDENCIES[agent_name]:
         required.append("TAVILY_API_KEY")
-    if live_embedding_provider(embedding_model) != LOCAL_EMBEDDING_PROVIDER:
+    if embedding_provider != LOCAL_EMBEDDING_PROVIDER:
         embedding_key = CHAT_PROVIDER_CREDENTIALS["openai"]
         if embedding_key not in required:
             required.append(embedding_key)
@@ -861,7 +849,7 @@ def build_live_dependencies(
         for variable in required_credentials(
             runtime.agent_name,
             provider=settings.llm.provider,
-            embedding_model=runtime.embedding_model,
+            embedding_provider=runtime.embedding_provider,
         )
         if not environ.get(variable, "").strip()
     ]
@@ -884,18 +872,11 @@ def build_live_dependencies(
     )
 
     recorder = DependencyRecorder()
-    # ``embedding_model`` carries one of two things: the sentinel "local",
-    # which selects the offline provider, or an OpenAI embedding model
-    # name. There is only ever one local model, so it needs no name of its
-    # own and the sentinel doubles as the provider selector. Resolved
-    # through ``live_embedding_provider`` so this selection rule has one
-    # source of truth shared with ``required_credentials``.
-    embedding_provider_name = live_embedding_provider(runtime.embedding_model)
     long_term = LongTermMemory.from_config(
         isolated.memory.long_term,
         embeddings=embeddings
         or build_embedding_provider(
-            embedding_provider_name, model=runtime.embedding_model
+            runtime.embedding_provider, model=runtime.embedding_model
         ),
         tracker=tracker,
     )
