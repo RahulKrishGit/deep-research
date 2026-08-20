@@ -85,6 +85,7 @@ from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import (
     ProviderConfigurationError,
     build_chat_provider,
+    embedding_capability_for,
     resolve_request_settings,
 )
 from deep_research.runtime.assembly import build_agent
@@ -146,9 +147,11 @@ def validate_model_capabilities(
     call, for either provider. There is no fallback -- a rejected
     combination fails preflight by name.
 
-    The embedding model is deliberately not checked: it is not a chat
-    model, it is not in the chat capability table, and the baseline
-    embedding provider is local, with nothing to entitle.
+    Chat capability validation lives here, unconditionally, for both
+    tiers. The embedding selection is validated separately, live-tier only,
+    by ``validate_embedding_model``: the controlled tier never constructs a
+    real embedding provider, so its embedding model string is inert and
+    nothing is checked for it.
     """
     for label, config in (
         ("target", target_llm_config(runtime, settings.llm)),
@@ -158,6 +161,27 @@ def validate_model_capabilities(
             resolve_request_settings(config.provider, config.resolve_for(None))
         except ProviderConfigurationError as error:
             raise PreflightError("model_unavailable", f"{label}: {error}") from error
+
+
+def validate_embedding_model(runtime: EvaluationRuntimeConfig) -> None:
+    """Check the live-tier embedding selection against the local registry.
+
+    Live runs construct a real embedding provider, so a typo'd model name
+    must fail here, cheaply and offline, instead of at the first live-tier
+    embed mid-run. Controlled runs never construct a real embedding
+    provider (``_DeterministicEmbeddings`` in ``dependencies.py`` is a
+    hash-based double), so their embedding model string is inert and this
+    check deliberately does nothing for them -- the pre-cutover test
+    ``test_the_embedding_model_is_only_checked_for_live_runs`` asserted
+    exactly this asymmetry, and a controlled run must never be blocked by
+    a value it does not use.
+    """
+    if runtime.tier != "live":
+        return
+    try:
+        embedding_capability_for(runtime.embedding_provider, runtime.embedding_model)
+    except ProviderConfigurationError as error:
+        raise PreflightError("model_unavailable", f"embedding: {error}") from error
 
 
 def _validate_case_identities(cases: Sequence[EvaluationCase]) -> None:
@@ -276,8 +300,12 @@ async def preflight(
     # 5. Every model and effort this run will send is one the selected
     # provider actually supports, checked against the local capability
     # table. Never a substitute: an unsupported combination fails preflight
-    # by name, full stop, and no network call is made to find out.
+    # by name, full stop, and no network call is made to find out. The
+    # live-tier embedding selection is checked here too, against its own
+    # registry; a controlled run's embedding model string is inert (its
+    # memory double is hash-based) and is deliberately not checked.
     validate_model_capabilities(settings, runtime)
+    validate_embedding_model(runtime)
 
     # 6. The output root can be created and actually written to.
     try:

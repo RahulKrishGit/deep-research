@@ -135,6 +135,82 @@ async def test_a_live_run_with_the_default_local_embedding_needs_no_openai_key(
 
 
 @pytest.mark.asyncio
+async def test_a_live_run_with_a_typo_d_openai_embedding_model_fails_closed(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """A typo'd OpenAI embedding model name must fail preflight by name,
+    before any dataset write, instead of at the first live-tier embed."""
+    runtime = runtime_config_for("source_evaluator", tier="live").model_copy(
+        update={
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-large-typo",
+        }
+    )
+    environ = {**ENVIRONMENT, "OPENAI_API_KEY": "sk-openai-abcdefgh"}
+    client = FakeLangSmithClient()
+
+    with pytest.raises(PreflightError) as caught:
+        await run(
+            settings,
+            runtime,
+            tmp_path,
+            cases=cases_for("source_evaluator", "live"),
+            environ=environ,
+            langsmith_client=client,
+        )
+
+    assert caught.value.reason == "model_unavailable"
+    assert "text-embedding-3-large-typo" in str(caught.value)
+    assert client.created_datasets == []
+
+
+@pytest.mark.asyncio
+async def test_a_live_run_with_an_openai_model_name_for_local_embeddings_fails_closed(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """A real OpenAI model name is still wrong for the local provider: the
+    local adapter takes no model name at all, so an explicit override that
+    names one can never take effect and must fail preflight."""
+    runtime = runtime_config_for("source_evaluator", tier="live").model_copy(
+        update={
+            "embedding_provider": "local",
+            "embedding_model": "text-embedding-3-large",
+        }
+    )
+    client = FakeLangSmithClient()
+
+    with pytest.raises(PreflightError) as caught:
+        await run(
+            settings,
+            runtime,
+            tmp_path,
+            cases=cases_for("source_evaluator", "live"),
+            langsmith_client=client,
+        )
+
+    assert caught.value.reason == "model_unavailable"
+    assert "text-embedding-3-large" in str(caught.value)
+    assert client.created_datasets == []
+
+
+@pytest.mark.asyncio
+async def test_the_embedding_model_is_only_checked_for_live_runs(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """Restored prior art, deleted by the cutover: a controlled run's
+    embedding model string is inert -- its memory double is hash-based, so
+    nothing ever embeds with it -- and preflight must not reject it."""
+    runtime = runtime_config_for("planner").model_copy(
+        update={
+            "embedding_provider": "openai",
+            "embedding_model": "not-a-real-model",
+        }
+    )
+
+    await run(settings, runtime, tmp_path)
+
+
+@pytest.mark.asyncio
 async def test_an_invalid_case_registry_fails_before_any_remote_call(
     settings, runtime_config_for, tmp_path
 ) -> None:

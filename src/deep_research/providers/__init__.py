@@ -21,6 +21,10 @@ from deep_research.providers.deepseek_provider import (
     DEEPSEEK_BASE_URL,
     DeepSeekChatProvider,
 )
+from deep_research.providers.embedding_capabilities import (
+    EmbeddingModelCapability,
+    embedding_capability_for,
+)
 from deep_research.providers.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     LOCAL_EMBEDDING_DIMENSION,
@@ -45,6 +49,7 @@ __all__ = [
     "DEFAULT_EMBEDDING_MODEL",
     "DeepSeekChatProvider",
     "EmbeddingAdapter",
+    "EmbeddingModelCapability",
     "LOCAL_EMBEDDING_DIMENSION",
     "LOCAL_EMBEDDING_PROVIDER",
     "LocalEmbeddingProvider",
@@ -62,6 +67,7 @@ __all__ = [
     "build_chat_provider",
     "build_embedding_provider",
     "capability_for",
+    "embedding_capability_for",
     "resolve_request_settings",
     "validate_agent_model_configs",
 ]
