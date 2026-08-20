@@ -96,7 +96,7 @@ def live_case_for():
 
 
 FULL_ENVIRONMENT = {
-    "OPENAI_API_KEY": "sk-abcdefghijklmnop",
+    "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
     "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
     "LANGSMITH_PROJECT": "evaluation",
     "TAVILY_API_KEY": "tvly-abcdefghijklmnop",
@@ -112,20 +112,32 @@ def test_live_dependencies_are_derived_from_declared_tools() -> None:
 
 
 def test_only_applicable_credentials_are_required() -> None:
-    assert required_credentials("source_evaluator") == (
-        "OPENAI_API_KEY",
+    assert required_credentials("source_evaluator", provider="deepseek") == (
+        "DEEPSEEK_API_KEY",
         "LANGSMITH_API_KEY",
     )
-    assert "TAVILY_API_KEY" in required_credentials("researcher")
-    assert "TAVILY_API_KEY" not in required_credentials("source_evaluator")
+    assert "TAVILY_API_KEY" in required_credentials(
+        "researcher", provider="deepseek"
+    )
+    assert "TAVILY_API_KEY" not in required_credentials(
+        "source_evaluator", provider="deepseek"
+    )
 
 
 @pytest.mark.parametrize("agent_name", AGENT_NAMES)
-def test_openai_and_langsmith_are_always_required(agent_name) -> None:
-    required = required_credentials(agent_name)
+def test_the_chat_provider_and_langsmith_are_always_required(agent_name) -> None:
+    required = required_credentials(agent_name, provider="deepseek")
 
-    assert "OPENAI_API_KEY" in required
+    assert "DEEPSEEK_API_KEY" in required
     assert "LANGSMITH_API_KEY" in required
+    assert "OPENAI_API_KEY" not in required
+
+
+@pytest.mark.parametrize("agent_name", AGENT_NAMES)
+def test_selecting_openai_chat_requires_the_openai_key(agent_name) -> None:
+    assert "OPENAI_API_KEY" in required_credentials(
+        agent_name, provider="openai"
+    )
 
 
 def test_a_missing_applicable_credential_names_only_what_is_missing(

@@ -338,3 +338,19 @@ def test_a_secret_leak_error_never_repeats_the_secret() -> None:
     assert "sk-" not in str(error)
     assert "metadata.notes[0]" in str(error)
 
+
+def test_known_secret_values_covers_deepseek() -> None:
+    environ = {
+        "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
+        "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
+    }
+
+    assert "sk-deepseek-abcdefgh" in known_secret_values(environ)
+
+
+def test_known_secret_values_still_redacts_a_present_openai_key() -> None:
+    """No longer required, but still scrubbed if the environment has one."""
+    environ = {"OPENAI_API_KEY": "sk-abcdefghijklmnop"}
+
+    assert known_secret_values(environ) == ("sk-abcdefghijklmnop",)
+

@@ -1524,7 +1524,7 @@ def live_target_harness(tracker, settings, tmp_path):
         del case
         counter = RepetitionCounter(max_concurrency=1)
         environ = {
-            "OPENAI_API_KEY": "sk-abcdefghijklmnop",
+            "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
             "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
             "TAVILY_API_KEY": "tvly-abcdefghijklmnop",
         }
@@ -2126,7 +2126,7 @@ def live_evaluation_harness(tracker, settings):
         return FakeStructuredProvider([_judge_verdict()])
 
     environ = {
-        "OPENAI_API_KEY": "sk-abcdefghijklmnop",
+        "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
         "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
         "TAVILY_API_KEY": "tvly-abcdefghijklmnop",
     }
@@ -2310,7 +2310,7 @@ def preflight_failing_runner():
         del kwargs
         raise PreflightError(
             "missing_credentials",
-            "missing required credentials: OPENAI_API_KEY, LANGSMITH_API_KEY",
+            "missing required credentials: DEEPSEEK_API_KEY, LANGSMITH_API_KEY",
         )
 
     return runner

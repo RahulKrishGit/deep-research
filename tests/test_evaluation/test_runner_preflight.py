@@ -14,7 +14,7 @@ from deep_research.evaluation.runner import (
 from tests.evaluation_fakes import FakeLangSmithClient, FakeOpenAIClient
 
 ENVIRONMENT = {
-    "OPENAI_API_KEY": "sk-abcdefghijklmnop",
+    "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
     "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
     "LANGSMITH_PROJECT": "evaluation",
 }

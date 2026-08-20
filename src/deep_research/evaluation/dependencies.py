@@ -59,7 +59,7 @@ from deep_research.runtime.assembly import build_tools
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.tools.write_document import WriteDocumentTool
-from deep_research.utils.config import ConfigSettings
+from deep_research.utils.config import ConfigSettings, ProviderName
 
 # Mirrors ``memory.entries._RESERVED_METADATA_KEYS``; duplicated here the
 # same way ``memory_bridge`` duplicates it, so seeding does not import a
@@ -142,17 +142,27 @@ LIVE_DEPENDENCIES: dict[AgentName, tuple[str, ...]] = {
 }
 
 
-def required_credentials(agent_name: AgentName) -> tuple[str, ...]:
+CHAT_PROVIDER_CREDENTIALS: dict[str, str] = {
+    "deepseek": "DEEPSEEK_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
+
+def required_credentials(
+    agent_name: AgentName, *, provider: ProviderName
+) -> tuple[str, ...]:
     """The environment variables one live run of ``agent_name`` must provide.
 
-    OpenAI and LangSmith are required for every agent; Tavily only for
-    agents whose declared tools reach it. ``LANGSMITH_PROJECT`` is
-    validated by the tracker's own runtime config, so it is not duplicated
-    here.
+    The selected chat provider's key and LangSmith are required for every
+    agent; Tavily only for agents whose declared tools reach it.
+    ``LANGSMITH_PROJECT`` is validated by the tracker's own runtime config,
+    so it is not duplicated here. Embeddings contribute nothing: the
+    baseline embedding provider is local and has no credential.
     """
+    chat_key = CHAT_PROVIDER_CREDENTIALS[provider]
     if "tavily" in LIVE_DEPENDENCIES[agent_name]:
-        return ("OPENAI_API_KEY", "LANGSMITH_API_KEY", "TAVILY_API_KEY")
-    return ("OPENAI_API_KEY", "LANGSMITH_API_KEY")
+        return (chat_key, "LANGSMITH_API_KEY", "TAVILY_API_KEY")
+    return (chat_key, "LANGSMITH_API_KEY")
 
 
 class DependencyRecorder:
@@ -803,7 +813,9 @@ def build_live_dependencies(
     """
     missing = [
         variable
-        for variable in required_credentials(runtime.agent_name)
+        for variable in required_credentials(
+            runtime.agent_name, provider=settings.llm.provider
+        )
         if not environ.get(variable, "").strip()
     ]
     if missing:

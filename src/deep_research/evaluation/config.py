@@ -41,6 +41,9 @@ EVALUATION_PACKAGE_VERSION = "1.0.0"
 _CASE_REGISTRY_VERSION = 1
 
 _SECRET_ENVIRONMENT_VARIABLES = (
+    "DEEPSEEK_API_KEY",
+    # Not required by the DeepSeek baseline, but still redacted whenever it
+    # is present: this tuple defines what gets scrubbed, not what is needed.
     "OPENAI_API_KEY",
     "LANGSMITH_API_KEY",
     "TAVILY_API_KEY",

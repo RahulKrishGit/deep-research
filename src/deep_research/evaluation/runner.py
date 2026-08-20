@@ -41,6 +41,7 @@ from deep_research.evaluation.config import (
 )
 from deep_research.evaluation.datasets import DatasetSyncError, synchronize_dataset
 from deep_research.evaluation.dependencies import (
+    CHAT_PROVIDER_CREDENTIALS,
     build_controlled_dependencies,
     build_live_dependencies,
     required_credentials,
@@ -229,20 +230,23 @@ async def preflight(
         raise PreflightError("invalid_reasoning_effort", str(error)) from error
 
     # 4. Every credential this run will actually need is present and
-    # non-blank. OpenAI and LangSmith are required for every tier (model
-    # access below, dataset sync at the end). For a live-tier run,
-    # ``required_credentials`` also names ``TAVILY_API_KEY`` for any agent
-    # whose declared tools reach it -- a controlled bundle never
-    # constructs a real Tavily client (it always injects the scripted
-    # search double), so the controlled tier only needs the fixed pair.
-    # Checking the live tier's full credential set here, before step 5's
-    # real network call, means a missing Tavily key is caught as
+    # non-blank. The selected chat provider and LangSmith are required for
+    # every tier (model access below, dataset sync at the end). For a
+    # live-tier run, ``required_credentials`` also names ``TAVILY_API_KEY``
+    # for any agent whose declared tools reach it -- a controlled bundle
+    # never constructs a real Tavily client (it always injects the
+    # scripted search double), so the controlled tier only needs the fixed
+    # pair. Checking the live tier's full credential set here, before
+    # step 5, means a missing Tavily key is caught as
     # ``missing_credentials`` up front instead of surfacing later, at
     # step 7, as the less-specific ``guards_uninstallable``.
     required = (
-        required_credentials(runtime.agent_name)
+        required_credentials(runtime.agent_name, provider=settings.llm.provider)
         if runtime.tier == "live"
-        else ("OPENAI_API_KEY", "LANGSMITH_API_KEY")
+        else (
+            CHAT_PROVIDER_CREDENTIALS[settings.llm.provider],
+            "LANGSMITH_API_KEY",
+        )
     )
     missing = [
         variable
