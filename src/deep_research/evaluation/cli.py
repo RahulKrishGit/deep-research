@@ -310,7 +310,6 @@ async def _run_agent_pipeline(
         cases=cases,
         environ=environ,
         langsmith_client=langsmith_client,
-        openai_client=openai_client,
         root=root,
     )
     return await run_agent_evaluation(

@@ -173,22 +173,3 @@ class FakeStructuredProvider:
         if isinstance(response, Exception):
             raise response
         return response
-
-
-class FakeModelsClient:
-    """Stands in for ``AsyncOpenAI.models`` during preflight."""
-
-    def __init__(self, *, available: Sequence[str] = ()) -> None:
-        self.available = set(available)
-        self.requested: list[str] = []
-
-    async def retrieve(self, model: str):
-        self.requested.append(model)
-        if model not in self.available:
-            raise LookupError(f"model {model} is not available")
-        return type("Model", (), {"id": model})()
-
-
-class FakeOpenAIClient:
-    def __init__(self, *, available: Sequence[str] = ()) -> None:
-        self.models = FakeModelsClient(available=available)

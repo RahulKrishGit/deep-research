@@ -37,10 +37,11 @@ def test_factory_builds_exactly_the_selected_adapter(
     built: list[type[object]] = []
 
     class RecordingAdapter:
-        def __init__(self, config, received_tracker):
+        def __init__(self, config, received_tracker, *, api_key=None):
             built.append(expected)
             assert config.provider == provider_name
             assert received_tracker is tracker
+            assert api_key is None
 
     monkeypatch.setattr(factory, expected.__name__, RecordingAdapter)
     config = LLMConfig(
@@ -109,3 +110,33 @@ def test_build_embedding_provider_rejects_an_unknown_name_without_falling_back()
         build_embedding_provider("cohere")
 
     assert "local, openai" in str(caught.value)
+
+
+def test_build_chat_provider_passes_an_explicit_key_through(tracker) -> None:
+    """Callers holding credentials as data must not need the process env."""
+    import os
+
+    from deep_research.providers import build_chat_provider
+    from deep_research.utils.config import LLMConfig
+
+    previous = os.environ.pop("DEEPSEEK_API_KEY", None)
+    try:
+        provider = build_chat_provider(
+            LLMConfig(), tracker, api_key="sk-deepseek-abcdefgh"
+        )
+    finally:
+        if previous is not None:
+            os.environ["DEEPSEEK_API_KEY"] = previous
+
+    assert isinstance(provider, DeepSeekChatProvider)
+    # the key came from the argument, not the (popped) environment
+    #
+    # DeepSeekChatProvider does not keep the raw string on an ``_api_key``
+    # attribute -- it resolves the key immediately into a real ``AsyncOpenAI``
+    # client (see ``_build_client``/``__init__`` in
+    # ``deep_research/providers/deepseek_provider.py``) and keeps only that
+    # client, on ``_client``. The openai SDK's client stores the key it was
+    # constructed with on its own ``.api_key`` attribute, so that is what
+    # proves the explicit key -- and not the popped environment variable --
+    # reached the adapter.
+    assert provider._client.api_key == "sk-deepseek-abcdefgh"

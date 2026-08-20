@@ -82,7 +82,12 @@ from deep_research.evaluation.targets import (
     build_target,
 )
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
-from deep_research.providers import OpenAIChatProvider
+from deep_research.providers import (
+    OpenAIChatProvider,
+    ProviderConfigurationError,
+    build_chat_provider,
+    resolve_request_settings,
+)
 from deep_research.runtime.assembly import build_agent
 from deep_research.utils.config import ConfigSettings, ReasoningEffort
 from deep_research.utils.types import JsonValue
@@ -131,23 +136,29 @@ class PreflightError(RuntimeError):
         self.reason = reason
 
 
-async def verify_model_access(client: Any, model_ids: Sequence[str]) -> None:
-    """Request each model id once, in order; never fall back to another.
+def validate_model_capabilities(
+    settings: ConfigSettings, runtime: EvaluationRuntimeConfig
+) -> None:
+    """Check target and judge settings against the local capability table.
 
-    Raises ``PreflightError("model_unavailable", ...)`` naming only the
-    identifier that failed -- never a substitute that happens to be
-    available -- and stops at the first failure, so no later model in
-    ``model_ids`` is requested once one has already failed.
+    Entirely local and fail-closed: the registry does not attempt to
+    discover live account entitlements, so an unsupported model, thinking
+    mode, or reasoning effort is rejected here without a single network
+    call, for either provider. There is no fallback -- a rejected
+    combination fails preflight by name.
+
+    The embedding model is deliberately not checked: it is not a chat
+    model, it is not in the chat capability table, and the baseline
+    embedding provider is local, with nothing to entitle.
     """
-    for model_id in model_ids:
+    for label, config in (
+        ("target", target_llm_config(runtime, settings.llm)),
+        ("judge", judge_llm_config(runtime, settings.llm)),
+    ):
         try:
-            await client.models.retrieve(model_id)
-        except Exception as error:
-            raise PreflightError(
-                "model_unavailable",
-                f"model {model_id!r} is not accessible with the "
-                "configured credentials",
-            ) from error
+            resolve_request_settings(config.provider, config.resolve_for(None))
+        except ProviderConfigurationError as error:
+            raise PreflightError("model_unavailable", f"{label}: {error}") from error
 
 
 def _validate_case_identities(cases: Sequence[EvaluationCase]) -> None:
@@ -185,17 +196,15 @@ async def preflight(
     cases: Sequence[EvaluationCase],
     environ: Mapping[str, str],
     langsmith_client: Any,
-    openai_client: Any,
     root: Path,
 ) -> None:
     """Run the nine preflight checks in order; raise on the first failure.
 
     Each check is cheaper and safer than the next: local, in-process
-    checks (registry, case lookup, reasoning efforts, credential presence)
-    come before any client call, and the one client call that only reads
-    (model access) comes before every client call that could write
-    (``synchronize_dataset``). Nothing before the last step ever touches a
-    remote dataset.
+    checks (registry, case lookup, reasoning efforts, credential presence,
+    model capability) come before any client call. Every model check is
+    local, so the only client call in the whole sequence is the dataset
+    synchronization at the end, which is also the only one that can write.
     """
     # 1. The registry as a whole is sound, and this run's own case subset
     # has no duplicate or conflicting-version identities.
@@ -259,12 +268,11 @@ async def preflight(
             "missing required credentials: " + ", ".join(missing),
         )
 
-    # 5. Every model this run will call is actually reachable. Never a
-    # substitute: a missing model fails preflight by name, full stop.
-    model_ids = [runtime.target_model, runtime.judge_model]
-    if runtime.tier == "live":
-        model_ids.append(runtime.embedding_model)
-    await verify_model_access(openai_client, model_ids)
+    # 5. Every model and effort this run will send is one the selected
+    # provider actually supports, checked against the local capability
+    # table. Never a substitute: an unsupported combination fails preflight
+    # by name, full stop, and no network call is made to find out.
+    validate_model_capabilities(settings, runtime)
 
     # 6. The output root can be created and actually written to.
     try:
@@ -303,9 +311,17 @@ async def preflight(
         raise PreflightError("guards_uninstallable", str(error)) from error
 
     # 8. The agent itself builds with those tools -- never deferred to the
-    # first real repetition.
-    provider = OpenAIChatProvider(settings.llm, tracker, client=openai_client)
+    # first real repetition. The provider is built from this run's own
+    # credential mapping rather than the process environment, so preflight
+    # checks exactly the credentials step 4 verified.
     try:
+        provider = build_chat_provider(
+            target_llm_config(runtime, settings.llm),
+            tracker,
+            api_key=environ.get(
+                CHAT_PROVIDER_CREDENTIALS[settings.llm.provider]
+            ),
+        )
         build_agent(
             runtime.agent_name,
             bundle.settings,
@@ -317,7 +333,7 @@ async def preflight(
             ),
             reputation=bundle.reputation,
         )
-    except AgentConfigurationError as error:
+    except (AgentConfigurationError, ProviderConfigurationError) as error:
         raise PreflightError("agent_unbuildable", str(error)) from error
 
     # 9. The dataset itself is reachable and secret-free. The last check,

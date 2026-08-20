@@ -32,11 +32,20 @@ ChatAdapter: TypeAlias = OpenAIChatProvider | DeepSeekChatProvider
 EmbeddingAdapter: TypeAlias = LocalEmbeddingProvider | OpenAIEmbeddingProvider
 
 
-def build_chat_provider(config: LLMConfig, tracker: Tracker) -> ChatAdapter:
+def build_chat_provider(
+    config: LLMConfig, tracker: Tracker, *, api_key: str | None = None
+) -> ChatAdapter:
+    """Select the chat adapter by configured name; never infer, never fall back.
+
+    ``api_key`` lets a caller that already holds credentials as data — the
+    evaluation harness passes its own ``environ`` mapping — supply the key
+    explicitly. ``None`` keeps the adapters' default behaviour of reading
+    the process environment, which is what production wiring relies on.
+    """
     if config.provider == "deepseek":
-        return DeepSeekChatProvider(config, tracker)
+        return DeepSeekChatProvider(config, tracker, api_key=api_key)
     if config.provider == "openai":
-        return OpenAIChatProvider(config, tracker)
+        return OpenAIChatProvider(config, tracker, api_key=api_key)
     raise ProviderConfigurationError(
         f"Unsupported chat provider {config.provider!r}; "
         "accepted values: deepseek, openai"
