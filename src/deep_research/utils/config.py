@@ -49,6 +49,8 @@ class EffectiveModelConfig(BaseModel):
 class LLMConfig(BaseModel):
     """Chat and embedding model and request settings."""
 
+    model_config = ConfigDict(extra="forbid")
+
     provider: ProviderName = "deepseek"
     model: str = Field(default="deepseek-v4-flash", min_length=1)
     # Independent of ``provider``: chat and embeddings need not share a
@@ -101,12 +103,16 @@ class LLMConfig(BaseModel):
 class LangSmithConfig(BaseModel):
     """LangSmith tracing settings."""
 
+    model_config = ConfigDict(extra="forbid")
+
     tracing_enabled: bool = False
     project: str = ""
 
 
 class TavilyConfig(BaseModel):
     """Tavily search settings."""
+
+    model_config = ConfigDict(extra="forbid")
 
     search_depth: str = "basic"
     max_results: int = 5
@@ -115,6 +121,8 @@ class TavilyConfig(BaseModel):
 class LongTermMemoryConfig(BaseModel):
     """Long-term memory settings."""
 
+    model_config = ConfigDict(extra="forbid")
+
     collection_name: str = "deep_research"
     persist_directory: str = "memory/"
 
@@ -122,17 +130,23 @@ class LongTermMemoryConfig(BaseModel):
 class ShortTermMemoryConfig(BaseModel):
     """Short-term memory settings."""
 
+    model_config = ConfigDict(extra="forbid")
+
     max_turns: int = 20
 
 
 class ProceduralMemoryConfig(BaseModel):
     """Procedural strategy registry settings."""
 
+    model_config = ConfigDict(extra="forbid")
+
     strategies_path: str = "memory/strategies.json"
 
 
 class MemoryConfig(BaseModel):
     """Memory settings."""
+
+    model_config = ConfigDict(extra="forbid")
 
     long_term: LongTermMemoryConfig = LongTermMemoryConfig()
     short_term: ShortTermMemoryConfig = ShortTermMemoryConfig()
@@ -145,6 +159,8 @@ class AgentRuntimeConfig(BaseModel):
     ``tool_budget`` may be zero: an agent with no tools still gets to think
     and finish, it just may never call one.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
@@ -164,12 +180,16 @@ class GraphConfig(BaseModel):
     knob that could contradict the first is a bug waiting to happen.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     max_iterations: int = Field(default=3, ge=1)
     checkpointing_enabled: bool = False
 
 
 class OutputConfig(BaseModel):
     """Output settings."""
+
+    model_config = ConfigDict(extra="forbid")
 
     directory: str = "output/"
     default_format: str = "markdown"
@@ -245,6 +265,8 @@ class EvaluationConfig(BaseModel):
 
 class ConfigSettings(BaseModel):
     """All non-secret application configuration."""
+
+    model_config = ConfigDict(extra="forbid")
 
     llm: LLMConfig = LLMConfig()
     langsmith: LangSmithConfig = LangSmithConfig()

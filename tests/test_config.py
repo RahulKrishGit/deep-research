@@ -288,6 +288,23 @@ def test_load_config_empty_yaml(tmp_path: Path) -> None:
         load_config(str(config_path))
 
 
+def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> None:
+    """A stale ``reasoning_mode`` key under ``llm`` must fail loudly.
+
+    ``reasoning_mode`` is exactly the key this branch removed from
+    ``LLMConfig``. Before every config model set ``extra="forbid"``, a
+    config file that still carried it loaded silently with default
+    behaviour standing in for the ignored setting -- no signal that the key
+    did nothing.
+    """
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["llm"]["reasoning_mode"] = "pro"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        load_config(str(config_path))
+
+
 @pytest.mark.parametrize(
     ("environment_name", "expected_path", "value", "expected_value"),
     [
