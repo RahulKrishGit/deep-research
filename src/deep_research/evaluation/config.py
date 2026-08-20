@@ -249,7 +249,7 @@ def build_runtime_config(
             "application": settings.model_dump(mode="json"),
             "target_model": evaluation.target_model,
             "target_reasoning_effort": target_effort,
-            "reasoning_mode": evaluation.reasoning_mode,
+            "thinking_mode": "enabled",
             "dataset_version": evaluation.dataset_version,
             "rubric_version": evaluation.rubric_version,
             "package_version": EVALUATION_PACKAGE_VERSION,
@@ -260,7 +260,7 @@ def build_runtime_config(
             "judge_model": evaluation.judge_model,
             "judge_reasoning_effort": judge_effort,
             "judge_temperature": evaluation.judge_temperature,
-            "reasoning_mode": evaluation.reasoning_mode,
+            "thinking_mode": "enabled",
             "rubric_version": evaluation.rubric_version,
         }
     )
@@ -280,7 +280,7 @@ def build_runtime_config(
         judge_model=evaluation.judge_model,
         judge_reasoning_effort=judge_effort,
         judge_temperature=evaluation.judge_temperature,
-        reasoning_mode=evaluation.reasoning_mode,
+        reasoning_mode="standard",
         embedding_model=evaluation.embedding_model,
         dataset_name=resolved_dataset_name,
         dataset_version=evaluation.dataset_version,

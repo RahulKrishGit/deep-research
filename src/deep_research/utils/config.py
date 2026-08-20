@@ -184,13 +184,16 @@ EVALUATION_AGENT_KEYS = (
     "critic",
 )
 
+# DeepSeek V4 Flash supports exactly two enabled efforts: high and max. The
+# original OpenAI baseline's low/medium levels map onto them as approved in
+# the cutover spec: the two cheapest agents to high, everything else to max.
 _DEFAULT_TARGET_EFFORTS: dict[str, ReasoningEffort] = {
-    "planner": "medium",
-    "researcher": "low",
-    "source_evaluator": "low",
-    "fact_checker": "medium",
-    "synthesizer": "medium",
-    "critic": "medium",
+    "planner": "max",
+    "researcher": "high",
+    "source_evaluator": "high",
+    "fact_checker": "max",
+    "synthesizer": "max",
+    "critic": "max",
 }
 
 
@@ -204,15 +207,17 @@ class EvaluationConfig(BaseModel):
     controlled_repetition_floor: float = Field(default=0.65, ge=0.0, le=1.0)
     live_repetitions: int = Field(default=1, ge=1)
     live_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
-    target_model: str = Field(default="gpt-5.6-luna", min_length=1)
-    target_reasoning_effort: ReasoningEffort = "medium"
+    target_model: str = Field(default="deepseek-v4-flash", min_length=1)
+    target_reasoning_effort: ReasoningEffort = "max"
     target_reasoning_effort_overrides: dict[str, ReasoningEffort] = Field(
         default_factory=lambda: dict(_DEFAULT_TARGET_EFFORTS)
     )
-    judge_model: str = Field(default="gpt-5.6-luna", min_length=1)
-    judge_reasoning_effort: ReasoningEffort = "high"
-    reasoning_mode: Literal["standard"] = "standard"
-    embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
+    judge_model: str = Field(default="deepseek-v4-flash", min_length=1)
+    judge_reasoning_effort: ReasoningEffort = "max"
+    # ``local`` selects the offline embedding provider; any other value is
+    # an OpenAI embedding model name. Live-tier bundles are the only
+    # consumer.
+    embedding_model: str = Field(default="local", min_length=1)
     # ``None`` omits the parameter for models that reject it; the spec pins
     # the judge at 0.0 and that is the default.
     judge_temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)

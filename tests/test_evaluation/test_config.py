@@ -30,22 +30,38 @@ GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
 
 
 def test_the_baseline_efforts_match_the_approved_profile() -> None:
+    """Researcher and Source Evaluator at high; everyone else, and the
+    judge, at max — DeepSeek V4 Flash supports only those two levels."""
     config = EvaluationConfig()
 
-    assert resolve_target_effort(config, "planner", override=None) == "medium"
-    assert resolve_target_effort(config, "researcher", override=None) == "low"
+    assert resolve_target_effort(config, "planner", override=None) == "max"
+    assert resolve_target_effort(config, "researcher", override=None) == "high"
     assert (
         resolve_target_effort(config, "source_evaluator", override=None)
-        == "low"
+        == "high"
     )
     assert (
-        resolve_target_effort(config, "fact_checker", override=None) == "medium"
+        resolve_target_effort(config, "fact_checker", override=None) == "max"
     )
-    assert (
-        resolve_target_effort(config, "synthesizer", override=None) == "medium"
-    )
-    assert resolve_target_effort(config, "critic", override=None) == "medium"
-    assert resolve_judge_effort(config, override=None) == "high"
+    assert resolve_target_effort(config, "synthesizer", override=None) == "max"
+    assert resolve_target_effort(config, "critic", override=None) == "max"
+    assert resolve_judge_effort(config, override=None) == "max"
+
+
+def test_the_baseline_models_are_deepseek_v4_flash() -> None:
+    config = EvaluationConfig()
+
+    assert config.target_model == "deepseek-v4-flash"
+    assert config.judge_model == "deepseek-v4-flash"
+    assert config.embedding_model == "local"
+
+
+def test_the_evaluation_config_no_longer_carries_a_reasoning_mode() -> None:
+    """Thinking mode replaced it; a stale key must not load silently."""
+    assert "reasoning_mode" not in EvaluationConfig.model_fields
+
+    with pytest.raises(ValueError):
+        EvaluationConfig(reasoning_mode="standard")
 
 
 def test_an_invocation_override_beats_the_per_agent_override() -> None:
@@ -113,8 +129,8 @@ def build(**kwargs):
 def test_the_runtime_config_freezes_both_efforts() -> None:
     runtime = build()
 
-    assert runtime.target_reasoning_effort == "low"
-    assert runtime.judge_reasoning_effort == "high"
+    assert runtime.target_reasoning_effort == "high"
+    assert runtime.judge_reasoning_effort == "max"
     assert runtime.reasoning_mode == "standard"
     with pytest.raises(ValueError):
         runtime.target_reasoning_effort = "high"
@@ -138,7 +154,7 @@ def test_changing_a_target_effort_refingerprints_but_reuses_the_dataset() -> Non
 
 def test_changing_the_judge_effort_refingerprints_the_judge() -> None:
     baseline = build()
-    changed = build(judge_reasoning_effort="max")
+    changed = build(judge_reasoning_effort="high")
 
     assert (
         changed.judge_configuration_fingerprint
@@ -170,8 +186,8 @@ def test_experiment_names_follow_the_agreed_shape() -> None:
 def test_the_target_llm_config_carries_the_frozen_effort_and_model() -> None:
     llm = target_llm_config(build(agent_name="planner"), ConfigSettings().llm)
 
-    assert llm.model == "gpt-5.6-luna"
-    assert llm.reasoning_effort == "medium"
+    assert llm.model == "deepseek-v4-flash"
+    assert llm.reasoning_effort == "max"
     assert llm.reasoning_mode == "standard"
     assert llm.model_overrides == {}
 
@@ -181,8 +197,8 @@ def test_the_judge_llm_config_is_independent_of_the_target() -> None:
         build(agent_name="researcher"), ConfigSettings().llm
     )
 
-    assert llm.model == "gpt-5.6-luna"
-    assert llm.reasoning_effort == "high"
+    assert llm.model == "deepseek-v4-flash"
+    assert llm.reasoning_effort == "max"
     assert llm.temperature == 0.0
 
 

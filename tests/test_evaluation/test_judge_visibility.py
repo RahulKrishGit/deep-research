@@ -77,9 +77,9 @@ def test_evaluator_metadata_carries_the_prompt_and_fingerprints(
     assert metadata["prompt_id"] == JUDGE_PROMPT_ID
     assert metadata["rubric_version"] == 1
     assert metadata["prompt_fingerprint"]
-    assert metadata["judge_model"] == "gpt-5.6-luna"
+    assert metadata["judge_model"] == "deepseek-v4-flash"
     assert metadata["judge_configuration_fingerprint"]
-    assert metadata["judge_reasoning_effort"] == "high"
+    assert metadata["judge_reasoning_effort"] == "max"
 
 
 @pytest.mark.asyncio

@@ -162,7 +162,7 @@ async def test_a_successful_judge_produces_scored_feedback(
     assert feedback.judge_quality == pytest.approx(0.8)
     assert feedback.prompt_id == JUDGE_PROMPT_ID
     assert feedback.rubric_version == 1
-    assert feedback.judge_model == "gpt-5.6-luna"
+    assert feedback.judge_model == "deepseek-v4-flash"
 
 
 @pytest.mark.asyncio

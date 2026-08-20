@@ -310,9 +310,9 @@ def researcher_target_output(researcher_case) -> TargetOutput:
         dependencies=DependencyLedger(),
         evidence=EvidenceContext(scripted_search_urls=list(urls)),
         trajectory=[],
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="low",
+        target_model_requested="deepseek-v4-flash",
+        target_model_returned="deepseek-v4-flash",
+        target_reasoning_effort="high",
     )
 
 

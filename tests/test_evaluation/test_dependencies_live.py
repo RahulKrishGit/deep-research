@@ -216,7 +216,7 @@ def test_the_live_embedding_model_is_the_configured_one(
         environ=FULL_ENVIRONMENT,
     )
 
-    assert captured == ["text-embedding-3-small"]
+    assert captured == ["local"]
 
 
 def test_live_bundles_record_the_real_services_they_expose(

@@ -697,20 +697,19 @@ def test_evaluation_defaults_match_the_approved_baseline() -> None:
     assert evaluation.controlled_repetition_floor == 0.65
     assert evaluation.live_repetitions == 1
     assert evaluation.live_threshold == 0.75
-    assert evaluation.target_model == "gpt-5.6-luna"
-    assert evaluation.target_reasoning_effort == "medium"
+    assert evaluation.target_model == "deepseek-v4-flash"
+    assert evaluation.target_reasoning_effort == "max"
     assert evaluation.target_reasoning_effort_overrides == {
-        "planner": "medium",
-        "researcher": "low",
-        "source_evaluator": "low",
-        "fact_checker": "medium",
-        "synthesizer": "medium",
-        "critic": "medium",
+        "planner": "max",
+        "researcher": "high",
+        "source_evaluator": "high",
+        "fact_checker": "max",
+        "synthesizer": "max",
+        "critic": "max",
     }
-    assert evaluation.judge_model == "gpt-5.6-luna"
-    assert evaluation.judge_reasoning_effort == "high"
-    assert evaluation.reasoning_mode == "standard"
-    assert evaluation.embedding_model == "text-embedding-3-small"
+    assert evaluation.judge_model == "deepseek-v4-flash"
+    assert evaluation.judge_reasoning_effort == "max"
+    assert evaluation.embedding_model == "local"
     assert evaluation.judge_temperature == 0.0
     assert evaluation.max_concurrency == 1
     assert evaluation.output_directory == "output/evaluations/"
@@ -732,11 +731,6 @@ def test_evaluation_rejects_an_invalid_effort() -> None:
         EvaluationConfig(target_reasoning_effort="turbo")
 
 
-def test_evaluation_rejects_pro_reasoning_mode() -> None:
-    with pytest.raises(ValueError):
-        EvaluationConfig(reasoning_mode="pro")
-
-
 def test_evaluation_rejects_concurrency_above_one() -> None:
     """Sequential execution is the whole point; a knob that breaks it is a bug."""
     with pytest.raises(ValueError):
@@ -746,8 +740,8 @@ def test_evaluation_rejects_concurrency_above_one() -> None:
 def test_the_shipped_config_file_carries_the_evaluation_block() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["evaluation"]["target_model"] == "gpt-5.6-luna"
-    assert raw["evaluation"]["judge_reasoning_effort"] == "high"
+    assert raw["evaluation"]["target_model"] == "deepseek-v4-flash"
+    assert raw["evaluation"]["judge_reasoning_effort"] == "max"
     assert raw["evaluation"]["max_concurrency"] == 1
 
 

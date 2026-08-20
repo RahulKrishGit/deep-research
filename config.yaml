@@ -52,19 +52,14 @@ evaluation:
   controlled_repetition_floor: 0.65
   live_repetitions: 1
   live_threshold: 0.75
-  target_model: gpt-5.6-luna
-  target_reasoning_effort: medium
+  target_model: deepseek-v4-flash
+  target_reasoning_effort: max
   target_reasoning_effort_overrides:
-    planner: medium
-    researcher: low
-    source_evaluator: low
-    fact_checker: medium
-    synthesizer: medium
-    critic: medium
-  judge_model: gpt-5.6-luna
-  judge_reasoning_effort: high
-  reasoning_mode: standard
-  embedding_model: text-embedding-3-small
+    researcher: high
+    source_evaluator: high
+  judge_model: deepseek-v4-flash
+  judge_reasoning_effort: max
+  embedding_model: local
   judge_temperature: 0.0
   max_concurrency: 1
   output_directory: output/evaluations/

@@ -62,12 +62,12 @@ async def test_each_agent_keeps_its_own_target_effort_in_the_suite(
         for call in suite_harness.runner.calls
     }
     assert efforts == {
-        "planner": "medium",
-        "researcher": "low",
-        "source_evaluator": "low",
-        "fact_checker": "medium",
-        "synthesizer": "medium",
-        "critic": "medium",
+        "planner": "max",
+        "researcher": "high",
+        "source_evaluator": "high",
+        "fact_checker": "max",
+        "synthesizer": "max",
+        "critic": "max",
     }
 
 

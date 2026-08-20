@@ -26,7 +26,7 @@ async def run(settings, runtime, tmp_path, **overrides):
         environ=dict(ENVIRONMENT),
         langsmith_client=FakeLangSmithClient(),
         openai_client=FakeOpenAIClient(
-            available=["gpt-5.6-luna", "text-embedding-3-small"]
+            available=["deepseek-v4-flash", "local"]
         ),
         root=tmp_path,
     )
@@ -78,7 +78,7 @@ async def test_a_live_run_missing_tavily_fails_before_model_access(
     before step 5's real model-access call, not defer it to step 7's
     ``guards_uninstallable``."""
     environ = dict(ENVIRONMENT)
-    client = FakeOpenAIClient(available=["gpt-5.6-luna", "text-embedding-3-small"])
+    client = FakeOpenAIClient(available=["deepseek-v4-flash", "local"])
 
     with pytest.raises(PreflightError) as caught:
         await run(
@@ -108,7 +108,7 @@ async def test_an_inaccessible_target_model_never_falls_back(
         )
 
     assert caught.value.reason == "model_unavailable"
-    assert "gpt-5.6-luna" in str(caught.value)
+    assert "deepseek-v4-flash" in str(caught.value)
     assert "gpt-4o" not in str(caught.value)
 
 
@@ -116,19 +116,19 @@ async def test_an_inaccessible_target_model_never_falls_back(
 async def test_the_embedding_model_is_only_checked_for_live_runs(
     settings, runtime_config_for, tmp_path
 ) -> None:
-    client = FakeOpenAIClient(available=["gpt-5.6-luna"])
+    client = FakeOpenAIClient(available=["deepseek-v4-flash"])
 
     await run(settings, runtime_config_for("planner"), tmp_path,
               openai_client=client)
 
-    assert "text-embedding-3-small" not in client.models.requested
+    assert "local" not in client.models.requested
 
 
 @pytest.mark.asyncio
 async def test_a_live_run_checks_the_embedding_model(
     settings, runtime_config_for, tmp_path
 ) -> None:
-    client = FakeOpenAIClient(available=["gpt-5.6-luna"])
+    client = FakeOpenAIClient(available=["deepseek-v4-flash"])
 
     with pytest.raises(PreflightError) as caught:
         await run(
@@ -141,7 +141,7 @@ async def test_a_live_run_checks_the_embedding_model(
         )
 
     assert caught.value.reason == "model_unavailable"
-    assert "text-embedding-3-small" in str(caught.value)
+    assert "local" in str(caught.value)
 
 
 @pytest.mark.asyncio
@@ -190,17 +190,6 @@ async def test_an_uncreatable_output_root_fails_preflight(
         await run(settings, runtime_config_for("planner"), blocked)
 
     assert caught.value.reason == "output_root_unwritable"
-
-
-@pytest.mark.asyncio
-async def test_pro_reasoning_mode_is_rejected(
-    settings, runtime_config_for, tmp_path
-) -> None:
-    """Pro mode is not part of the initial harness."""
-    from deep_research.utils.config import EvaluationConfig
-
-    with pytest.raises(ValueError):
-        EvaluationConfig(reasoning_mode="pro")
 
 
 @pytest.mark.asyncio
