@@ -445,8 +445,8 @@ async def test_bad_critic_override_fails_before_any_runtime_collaborator(
     calls: list[str] = []
     monkeypatch.setattr(
         assembly,
-        "OpenAIEmbeddingProvider",
-        lambda **_kwargs: calls.append("embeddings"),
+        "build_embedding_provider",
+        lambda *_args, **_kwargs: calls.append("embeddings"),
     )
     settings = ConfigSettings.model_validate(
         {"llm": {"model_overrides": {"critic": {"reasoning_effort": "medium"}}}}
@@ -608,9 +608,20 @@ async def test_build_runtime_honours_the_checkpointing_setting(
 
 
 @pytest.mark.asyncio
-async def test_deepseek_chat_still_builds_openai_embeddings(
+async def test_deepseek_chat_still_builds_the_configured_embedding_provider(
     tracker, tmp_path, monkeypatch
 ) -> None:
+    """Chat and embedding vendor selection are independent of each other.
+
+    Renamed and updated from the branch's
+    ``test_deepseek_chat_still_builds_openai_embeddings``: that test
+    asserted OpenAI embeddings were built for DeepSeek chat, which assumed
+    OpenAI was the only embedding backend. Task 3 makes ``local`` the
+    default embedding provider, so the correct assertion is that
+    ``build_embedding_provider`` is called with the configured provider and
+    model -- ``local``/``text-embedding-3-small`` here -- alongside the
+    DeepSeek chat provider, not that OpenAI embeddings are always built.
+    """
     built: list[tuple[str, object]] = []
     provider = RecordingProvider()
     embeddings = FakeEmbeddings()
@@ -623,8 +634,10 @@ async def test_deepseek_chat_still_builds_openai_embeddings(
     )
     monkeypatch.setattr(
         assembly,
-        "OpenAIEmbeddingProvider",
-        lambda *, model: built.append(("embedding", model)) or embeddings,
+        "build_embedding_provider",
+        lambda embedding_provider, *, model: (
+            built.append(("embedding", embedding_provider, model)) or embeddings
+        ),
     )
     monkeypatch.setattr(
         assembly.LongTermMemory,
@@ -644,7 +657,7 @@ async def test_deepseek_chat_still_builds_openai_embeddings(
         search_client=FakeSearchClient(),
     )
 
-    assert built[0] == ("embedding", "text-embedding-3-small")
+    assert built[0] == ("embedding", "local", "text-embedding-3-small")
     assert built[1] == ("deepseek", tracker)
 
 
@@ -844,3 +857,43 @@ def test_all_six_agents_receive_the_same_shared_tool_registry(
     assert len(received) == 6
     assert all(tool_list is tools for tool_list in received)
     assert {tool.name for tool in received[0]} == EXPECTED_TOOL_NAMES
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_uses_the_local_embedding_provider_by_default(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    from deep_research.providers import LocalEmbeddingProvider
+
+    captured: list[object] = []
+
+    def recording_from_config(config, *, embeddings, tracker):
+        captured.append(embeddings)
+        return LongTermMemory(collection=FakeCollection(), embeddings=FakeEmbeddings())
+
+    monkeypatch.setattr(
+        "deep_research.runtime.assembly.LongTermMemory.from_config",
+        recording_from_config,
+    )
+    settings = ConfigSettings()
+    settings = settings.model_copy(
+        update={
+            "memory": settings.memory.model_copy(
+                update={
+                    "long_term": settings.memory.long_term.model_copy(
+                        update={"persist_directory": str(tmp_path)}
+                    )
+                }
+            )
+        }
+    )
+
+    await build_runtime(
+        settings,
+        session_id="session-1",
+        tracker=tracker,
+        chat_provider=RecordingProvider(),
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+    )
+
+    assert isinstance(captured[0], LocalEmbeddingProvider)

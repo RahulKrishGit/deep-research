@@ -130,6 +130,7 @@ def test_provider_public_api_imports() -> None:
         ProviderTimeoutError,
         StructuredOutputError,
         build_chat_provider,
+        build_embedding_provider,
         capability_for,
         resolve_request_settings,
         validate_agent_model_configs,
@@ -146,6 +147,7 @@ def test_provider_public_api_imports() -> None:
     assert LOCAL_EMBEDDING_DIMENSION == 384
     assert LOCAL_EMBEDDING_PROVIDER == "local"
     assert build_chat_provider.__name__ == "build_chat_provider"
+    assert build_embedding_provider.__name__ == "build_embedding_provider"
     assert capability_for.__name__ == "capability_for"
     assert resolve_request_settings.__name__ == "resolve_request_settings"
     assert validate_agent_model_configs.__name__ == "validate_agent_model_configs"

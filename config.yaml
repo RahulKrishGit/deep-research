@@ -5,6 +5,7 @@
 llm:
   provider: deepseek
   model: deepseek-v4-flash
+  embedding_provider: local
   embedding_model: text-embedding-3-small
   thinking_mode: enabled
   reasoning_effort: high

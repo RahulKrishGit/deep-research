@@ -78,6 +78,7 @@ def test_load_config_loads_sibling_dotenv_before_strict_validation(
     """A sibling .env supplies secrets before strict validation runs."""
     for environment_name in (
         "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
         "TAVILY_API_KEY",
         "LANGSMITH_API_KEY",
         "LANGSMITH_PROJECT",
@@ -87,6 +88,7 @@ def test_load_config_loads_sibling_dotenv_before_strict_validation(
         "\n".join(
             (
                 "OPENAI_API_KEY=dotenv-openai",
+                "DEEPSEEK_API_KEY=dotenv-deepseek",
                 "TAVILY_API_KEY=dotenv-tavily",
                 "LANGSMITH_API_KEY=dotenv-langsmith",
                 "LANGSMITH_PROJECT=dotenv-project",
@@ -360,7 +362,7 @@ def test_environment_overrides_every_yaml_leaf(
 
 @pytest.mark.parametrize(
     "missing_environment_name",
-    ["OPENAI_API_KEY", "TAVILY_API_KEY"],
+    ["DEEPSEEK_API_KEY", "TAVILY_API_KEY"],
 )
 def test_load_config_strict_missing_secrets_raise_the_typed_error(
     monkeypatch: pytest.MonkeyPatch,
@@ -368,8 +370,9 @@ def test_load_config_strict_missing_secrets_raise_the_typed_error(
     missing_environment_name: str,
 ) -> None:
     """Strict-mode missing secrets surface as ``MissingSecretsError``."""
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
     for environment_name in (
-        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
         "LANGSMITH_API_KEY",
         "LANGSMITH_PROJECT",
         "TAVILY_API_KEY",
@@ -383,7 +386,7 @@ def test_load_config_strict_missing_secrets_raise_the_typed_error(
 
 @pytest.mark.parametrize(
     "missing_environment_name",
-    ["OPENAI_API_KEY", "TAVILY_API_KEY"],
+    ["DEEPSEEK_API_KEY", "TAVILY_API_KEY"],
 )
 def test_load_config_strict_always_requires_provider_secrets(
     monkeypatch: pytest.MonkeyPatch,
@@ -391,8 +394,9 @@ def test_load_config_strict_always_requires_provider_secrets(
     missing_environment_name: str,
 ) -> None:
     """Strict mode rejects any missing required runtime secret."""
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
     for environment_name in (
-        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
         "LANGSMITH_API_KEY",
         "LANGSMITH_PROJECT",
         "TAVILY_API_KEY",
@@ -414,6 +418,7 @@ def test_load_config_strict_treats_blank_secrets_as_missing(
     """Strict mode rejects empty and whitespace-only runtime secrets."""
     for environment_name in (
         "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
         "LANGSMITH_API_KEY",
         "LANGSMITH_PROJECT",
         "TAVILY_API_KEY",
@@ -431,6 +436,7 @@ def test_load_config_strict_env_ok(
     """Strict mode accepts non-empty values for all documented secrets."""
     for environment_name in (
         "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
         "LANGSMITH_API_KEY",
         "LANGSMITH_PROJECT",
         "TAVILY_API_KEY",
@@ -442,11 +448,10 @@ def test_load_config_strict_env_ok(
     assert settings.llm.provider == "openai"
 
 
-def test_strict_deepseek_requires_both_chat_and_embedding_keys(
+def test_strict_deepseek_requires_only_the_chat_key_with_local_embeddings(
     config_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TAVILY_API_KEY", "tavily")
-    monkeypatch.setenv("OPENAI_API_KEY", "embeddings")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     config_path.write_text(yaml.safe_dump({}), encoding="utf-8")
 
@@ -744,3 +749,42 @@ def test_the_shipped_config_file_carries_the_evaluation_block() -> None:
     assert raw["evaluation"]["target_model"] == "gpt-5.6-luna"
     assert raw["evaluation"]["judge_reasoning_effort"] == "high"
     assert raw["evaluation"]["max_concurrency"] == 1
+
+
+def test_the_embedding_provider_defaults_to_local_and_is_independent_of_chat() -> None:
+    from deep_research.utils.config import LLMConfig
+
+    assert LLMConfig().embedding_provider == "local"
+    assert LLMConfig(provider="openai").embedding_provider == "local"
+    assert LLMConfig(embedding_provider="openai").provider == "deepseek"
+
+
+def test_strict_mode_requires_no_openai_key_for_the_default_stack(
+    monkeypatch, config_path
+) -> None:
+    """DeepSeek chat plus local embeddings needs no OpenAI credential."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily")
+    # ``config_path`` configures ``provider: openai`` for the other tests in
+    # this file; the default stack under test here is deepseek chat plus
+    # local embeddings, so exercise it against the schema defaults the same
+    # way ``test_strict_deepseek_requires_only_the_chat_key_with_local_embeddings``
+    # does.
+    config_path.write_text(yaml.safe_dump({}), encoding="utf-8")
+
+    settings = load_config(str(config_path), strict=True)
+
+    assert settings.llm.embedding_provider == "local"
+
+
+def test_strict_mode_requires_the_openai_key_only_for_openai_embeddings(
+    monkeypatch, config_path
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily")
+    monkeypatch.setenv("LLM_EMBEDDING_PROVIDER", "openai")
+
+    with pytest.raises(MissingSecretsError, match="OPENAI_API_KEY"):
+        load_config(str(config_path), strict=True)

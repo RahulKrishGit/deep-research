@@ -34,9 +34,9 @@ from deep_research.memory.procedural import ProceduralMemory
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import (
-    OpenAIEmbeddingProvider,
     ProviderConfigurationError,
     build_chat_provider,
+    build_embedding_provider,
     validate_agent_model_configs,
 )
 from deep_research.runtime.errors import configuration_error
@@ -251,15 +251,27 @@ async def build_runtime(
             ),
         ) from error
 
+    try:
+        embeddings = build_embedding_provider(
+            settings.llm.embedding_provider,
+            model=settings.llm.embedding_model,
+        )
+    except ProviderConfigurationError as error:
+        raise configuration_error(
+            reason="provider_unconfigured",
+            message=(
+                f"The selected {settings.llm.embedding_provider} embedding "
+                f"provider is not configured: {error}"
+            ),
+        ) from error
+
     tracker = tracker or Tracker.from_config(settings.langsmith)
 
     try:
         if long_term is None:
             long_term = LongTermMemory.from_config(
                 settings.memory.long_term,
-                embeddings=OpenAIEmbeddingProvider(
-                    model=settings.llm.embedding_model
-                ),
+                embeddings=embeddings,
                 tracker=tracker,
             )
         if procedural is None:

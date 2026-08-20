@@ -21,6 +21,7 @@ class MissingSecretsError(ValueError):
 
 
 ProviderName = Literal["deepseek", "openai"]
+EmbeddingProviderName = Literal["local", "openai"]
 ThinkingMode = Literal["enabled", "disabled"]
 ReasoningEffort: TypeAlias = Literal[
     "none", "minimal", "low", "medium", "high", "xhigh", "max"
@@ -50,6 +51,9 @@ class LLMConfig(BaseModel):
 
     provider: ProviderName = "deepseek"
     model: str = Field(default="deepseek-v4-flash", min_length=1)
+    # Independent of ``provider``: chat and embeddings need not share a
+    # vendor, and the default stack is DeepSeek chat with local embeddings.
+    embedding_provider: EmbeddingProviderName = "local"
     embedding_model: str = Field(
         default="text-embedding-3-small",
         min_length=1,
@@ -250,6 +254,7 @@ class ConfigSettings(BaseModel):
 _ENVIRONMENT_OVERRIDES = {
     "LLM_PROVIDER": ("llm", "provider"),
     "LLM_MODEL": ("llm", "model"),
+    "LLM_EMBEDDING_PROVIDER": ("llm", "embedding_provider"),
     "LLM_THINKING_MODE": ("llm", "thinking_mode"),
     "LLM_REASONING_EFFORT": ("llm", "reasoning_effort"),
     "LLM_EMBEDDING_MODEL": ("llm", "embedding_model"),
@@ -289,10 +294,14 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "EVALUATION_OUTPUT_DIRECTORY": ("evaluation", "output_directory"),
 }
-_COMMON_REQUIRED_ENVIRONMENT_VARIABLES = ("OPENAI_API_KEY", "TAVILY_API_KEY")
+_COMMON_REQUIRED_ENVIRONMENT_VARIABLES = ("TAVILY_API_KEY",)
 _CHAT_PROVIDER_ENVIRONMENT_VARIABLES = {
     "deepseek": ("DEEPSEEK_API_KEY",),
-    "openai": (),
+    "openai": ("OPENAI_API_KEY",),
+}
+_EMBEDDING_PROVIDER_ENVIRONMENT_VARIABLES = {
+    "local": (),
+    "openai": ("OPENAI_API_KEY",),
 }
 _LANGSMITH_ENVIRONMENT_VARIABLES = (
     "LANGSMITH_API_KEY",
@@ -385,6 +394,7 @@ def load_config(
     if strict:
         _validate_runtime_secrets(
             provider=settings.llm.provider,
+            embedding_provider=settings.llm.embedding_provider,
             tracing_enabled=settings.langsmith.tracing_enabled,
         )
 
@@ -409,13 +419,26 @@ def _apply_environment_overrides(config: dict[str, Any]) -> None:
 
 
 def _validate_runtime_secrets(
-    *, provider: ProviderName, tracing_enabled: bool
+    *,
+    provider: ProviderName,
+    embedding_provider: EmbeddingProviderName,
+    tracing_enabled: bool,
 ) -> None:
-    """Raise when strict-mode runtime secrets are absent or blank."""
-    required = [
+    """Raise when strict-mode runtime secrets are absent or blank.
+
+    Only the credentials the configured stack actually uses are required:
+    the default DeepSeek-chat/local-embeddings stack needs no OpenAI key
+    at all. De-duplicated in first-seen order so selecting OpenAI for both
+    chat and embeddings names ``OPENAI_API_KEY`` once.
+    """
+    required: list[str] = []
+    for name in (
         *_CHAT_PROVIDER_ENVIRONMENT_VARIABLES[provider],
+        *_EMBEDDING_PROVIDER_ENVIRONMENT_VARIABLES[embedding_provider],
         *_COMMON_REQUIRED_ENVIRONMENT_VARIABLES,
-    ]
+    ):
+        if name not in required:
+            required.append(name)
     if tracing_enabled:
         required.extend(_LANGSMITH_ENVIRONMENT_VARIABLES)
     missing = [

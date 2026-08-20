@@ -19,10 +19,17 @@ from deep_research.providers.capabilities import (
 )
 from deep_research.providers.contracts import ProviderConfigurationError
 from deep_research.providers.deepseek_provider import DeepSeekChatProvider
+from deep_research.providers.embeddings import (
+    DEFAULT_EMBEDDING_MODEL,
+    LOCAL_EMBEDDING_PROVIDER,
+    LocalEmbeddingProvider,
+    OpenAIEmbeddingProvider,
+)
 from deep_research.providers.openai_provider import OpenAIChatProvider
-from deep_research.utils.config import LLMConfig
+from deep_research.utils.config import EmbeddingProviderName, LLMConfig
 
 ChatAdapter: TypeAlias = OpenAIChatProvider | DeepSeekChatProvider
+EmbeddingAdapter: TypeAlias = LocalEmbeddingProvider | OpenAIEmbeddingProvider
 
 
 def build_chat_provider(config: LLMConfig, tracker: Tracker) -> ChatAdapter:
@@ -33,6 +40,27 @@ def build_chat_provider(config: LLMConfig, tracker: Tracker) -> ChatAdapter:
     raise ProviderConfigurationError(
         f"Unsupported chat provider {config.provider!r}; "
         "accepted values: deepseek, openai"
+    )
+
+
+def build_embedding_provider(
+    provider: EmbeddingProviderName,
+    *,
+    model: str = DEFAULT_EMBEDDING_MODEL,
+) -> EmbeddingAdapter:
+    """Select the embedding adapter by name, with no inference or fallback.
+
+    ``model`` applies to the OpenAI adapter only: the local adapter has
+    exactly one model and a fixed vector width, so naming a model for it
+    would be a setting that cannot take effect.
+    """
+    if provider == LOCAL_EMBEDDING_PROVIDER:
+        return LocalEmbeddingProvider()
+    if provider == "openai":
+        return OpenAIEmbeddingProvider(model=model)
+    raise ProviderConfigurationError(
+        f"Unsupported embedding provider {provider!r}; "
+        "accepted values: local, openai"
     )
 
 
