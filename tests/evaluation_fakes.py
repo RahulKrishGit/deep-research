@@ -161,7 +161,7 @@ class FakeStructuredProvider:
     def __init__(self, responses: Sequence[Any] = ()) -> None:
         self.responses = list(responses)
         self.calls: list[tuple[Any, Any, str | None]] = []
-        self.last_model_returned: str | None = "gpt-5.6-luna-fake"
+        self.last_model_returned: str | None = "deepseek-v4-flash-fake"
 
     async def complete_structured(
         self, messages, schema, *, agent_name=None

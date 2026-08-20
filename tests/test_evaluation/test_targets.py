@@ -221,4 +221,4 @@ async def test_the_output_records_both_model_identifiers(
     )
 
     assert output.target_model_requested == "deepseek-v4-flash"
-    assert output.target_model_returned == "gpt-5.6-luna-fake"
+    assert output.target_model_returned == "deepseek-v4-flash-fake"

@@ -1839,11 +1839,11 @@ def evaluation_harness(tracker, settings):
 # --- Task 24: reporting fixtures --------------------------------------------
 
 _REPORTING_METADATA = {
-    "target_model": "gpt-5.6-luna",
-    "target_model_returned": "gpt-5.6-luna",
-    "target_reasoning_effort": "low",
-    "judge_reasoning_effort": "medium",
-    "reasoning_mode": "standard",
+    "target_model": "deepseek-v4-flash",
+    "target_model_returned": "deepseek-v4-flash",
+    "target_reasoning_effort": "high",
+    "judge_reasoning_effort": "max",
+    "thinking_mode": "enabled",
     "configuration_fingerprint": "abc123abc123",
     "judge_configuration_fingerprint": "def456def456",
 }
@@ -1867,7 +1867,7 @@ def _scored_judge(score: float) -> JudgeFeedback:
         prompt_id="individual-agent-judge",
         rubric_version=1,
         prompt_fingerprint="abc123abc123",
-        judge_model="gpt-5.6-luna",
+        judge_model="deepseek-v4-flash",
         judge_configuration_fingerprint="def456def456",
     )
 
