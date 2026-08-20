@@ -114,9 +114,12 @@ def test_provider_public_api_imports() -> None:
     from deep_research.providers import (
         DEEPSEEK_BASE_URL,
         DEFAULT_EMBEDDING_MODEL,
+        LOCAL_EMBEDDING_DIMENSION,
+        LOCAL_EMBEDDING_PROVIDER,
         ChatMessage,
         ChatResult,
         DeepSeekChatProvider,
+        LocalEmbeddingProvider,
         OpenAIChatProvider,
         OpenAIEmbeddingProvider,
         OpenAIProviderError,
@@ -139,6 +142,9 @@ def test_provider_public_api_imports() -> None:
     assert ChatResult.__name__ == "ChatResult"
     assert DEEPSEEK_BASE_URL.startswith("https://")
     assert DEFAULT_EMBEDDING_MODEL
+    assert LocalEmbeddingProvider.__name__ == "LocalEmbeddingProvider"
+    assert LOCAL_EMBEDDING_DIMENSION == 384
+    assert LOCAL_EMBEDDING_PROVIDER == "local"
     assert build_chat_provider.__name__ == "build_chat_provider"
     assert capability_for.__name__ == "capability_for"
     assert resolve_request_settings.__name__ == "resolve_request_settings"

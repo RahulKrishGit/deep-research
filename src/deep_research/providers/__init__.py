@@ -23,6 +23,9 @@ from deep_research.providers.deepseek_provider import (
 )
 from deep_research.providers.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
+    LOCAL_EMBEDDING_DIMENSION,
+    LOCAL_EMBEDDING_PROVIDER,
+    LocalEmbeddingProvider,
     OpenAIEmbeddingProvider,
 )
 from deep_research.providers.factory import (
@@ -39,6 +42,9 @@ __all__ = [
     "DEEPSEEK_BASE_URL",
     "DEFAULT_EMBEDDING_MODEL",
     "DeepSeekChatProvider",
+    "LOCAL_EMBEDDING_DIMENSION",
+    "LOCAL_EMBEDDING_PROVIDER",
+    "LocalEmbeddingProvider",
     "ModelCapability",
     "OpenAIChatProvider",
     "OpenAIEmbeddingProvider",

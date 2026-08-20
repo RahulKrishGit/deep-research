@@ -232,3 +232,117 @@ def test_the_openai_package_is_not_imported_at_module_import_time() -> None:
     assert result.returncode == 0, (
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
+
+
+class FakeEmbeddingFunction:
+    """Stands in for chromadb's DefaultEmbeddingFunction. Never downloads."""
+
+    def __init__(self, vectors=None) -> None:
+        self.vectors = vectors
+        self.calls: list[list[str]] = []
+
+    def __call__(self, input):  # noqa: A002 - chromadb's parameter name
+        payload = list(input)
+        self.calls.append(payload)
+        if self.vectors is not None:
+            return self.vectors
+        return [[0.5, 0.25] for _ in payload]
+
+
+def test_local_embedding_provider_reports_the_models_fixed_dimension() -> None:
+    from deep_research.providers import (
+        LOCAL_EMBEDDING_DIMENSION,
+        LocalEmbeddingProvider,
+    )
+
+    assert LOCAL_EMBEDDING_DIMENSION == 384
+    assert LocalEmbeddingProvider().dimension == 384
+
+
+def test_local_embedding_provider_embeds_documents_through_the_injected_function() -> (
+    None
+):
+    from deep_research.providers import LocalEmbeddingProvider
+
+    function = FakeEmbeddingFunction()
+    provider = LocalEmbeddingProvider(embedding_function=function)
+
+    assert provider.embed_documents(["alpha", "beta"]) == [
+        [0.5, 0.25],
+        [0.5, 0.25],
+    ]
+    assert function.calls == [["alpha", "beta"]]
+
+
+def test_local_embedding_provider_embeds_a_query_as_one_document() -> None:
+    from deep_research.providers import LocalEmbeddingProvider
+
+    function = FakeEmbeddingFunction(vectors=[[1.0, 2.0]])
+    provider = LocalEmbeddingProvider(embedding_function=function)
+
+    assert provider.embed_query("alpha") == [1.0, 2.0]
+    assert function.calls == [["alpha"]]
+
+
+def test_local_embedding_provider_coerces_numpy_style_rows_to_floats() -> None:
+    """chromadb returns numpy arrays; the memory layer requires plain floats."""
+    import array
+
+    from deep_research.providers import LocalEmbeddingProvider
+
+    function = FakeEmbeddingFunction(vectors=[array.array("f", [0.5, 0.25])])
+    provider = LocalEmbeddingProvider(embedding_function=function)
+
+    vectors = provider.embed_documents(["alpha"])
+
+    assert vectors == [[0.5, 0.25]]
+    assert all(type(value) is float for value in vectors[0])
+
+
+def test_local_embedding_provider_returns_nothing_for_no_texts() -> None:
+    from deep_research.providers import LocalEmbeddingProvider
+
+    function = FakeEmbeddingFunction()
+
+    assert LocalEmbeddingProvider(embedding_function=function).embed_documents([]) == []
+    assert function.calls == []
+
+
+def test_local_embedding_provider_rejects_blank_input() -> None:
+    from deep_research.providers import LocalEmbeddingProvider
+
+    provider = LocalEmbeddingProvider(embedding_function=FakeEmbeddingFunction())
+
+    with pytest.raises(ValueError, match="must not be blank"):
+        provider.embed_documents(["alpha", "   "])
+
+
+def test_local_embedding_provider_rejects_a_short_result() -> None:
+    from deep_research.providers import LocalEmbeddingProvider
+
+    function = FakeEmbeddingFunction(vectors=[[0.1, 0.2]])
+    provider = LocalEmbeddingProvider(embedding_function=function)
+
+    with pytest.raises(ValueError, match="unexpected number of embeddings"):
+        provider.embed_documents(["alpha", "beta"])
+
+
+def test_local_embedding_provider_never_builds_the_real_model_when_injected(
+    monkeypatch,
+) -> None:
+    """The default function is what would download an ONNX model; an
+    injected function must make that path unreachable, which is what keeps
+    this suite offline."""
+    import chromadb.utils.embedding_functions as chroma_embedding_functions
+
+    from deep_research.providers import LocalEmbeddingProvider
+
+    def exploding(*args, **kwargs):
+        raise AssertionError("offline tests must not build the local model")
+
+    monkeypatch.setattr(
+        chroma_embedding_functions, "DefaultEmbeddingFunction", exploding
+    )
+    provider = LocalEmbeddingProvider(embedding_function=FakeEmbeddingFunction())
+
+    assert provider.embed_query("alpha") == [0.5, 0.25]

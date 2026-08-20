@@ -1,9 +1,11 @@
-"""OpenAI embedding provider.
+"""OpenAI and local embedding providers.
 
 Long-term memory depends only on the ``embed_query``/``embed_documents``
-protocol, so this module is the single place that knows about the OpenAI
-client. The OpenAI package is imported lazily so importing the project does
-not require it at collection time.
+protocol that both ``OpenAIEmbeddingProvider`` and ``LocalEmbeddingProvider``
+implement, so this module is the single place that knows about either
+backend. Both third-party clients (the OpenAI client, chromadb's default
+embedding function) are imported lazily so importing the project does not
+require them at collection time.
 """
 
 from __future__ import annotations
@@ -94,3 +96,65 @@ class OpenAIEmbeddingProvider:
                 ) from error
             self._client = OpenAI(api_key=self._api_key, timeout=self._timeout)
         return self._client
+
+
+LOCAL_EMBEDDING_PROVIDER = "local"
+# chromadb's bundled all-MiniLM-L6-v2 ONNX model. Fixed here rather than
+# looked up from a per-model-name table: there is exactly one local model.
+LOCAL_EMBEDDING_DIMENSION = 384
+
+
+class LocalEmbeddingProvider:
+    """Embed research text with chromadb's bundled default ONNX model.
+
+    Implements the same ``embed_query``/``embed_documents`` protocol as
+    ``OpenAIEmbeddingProvider``, so ``LongTermMemory`` cannot tell the two
+    apart. There is no API key and no per-call cost: the model is fetched
+    once into chromadb's local cache and every embedding after that is
+    computed in-process.
+
+    ``embedding_function`` is injectable so tests never construct the real
+    function, which is the object that would download the model.
+    """
+
+    def __init__(self, *, embedding_function: Any | None = None) -> None:
+        self._embedding_function = embedding_function
+
+    @property
+    def dimension(self) -> int:
+        """The model's fixed vector width, known without any call."""
+        return LOCAL_EMBEDDING_DIMENSION
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
+
+    def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
+        payload = list(texts)
+        if not payload:
+            return []
+        if any(not text.strip() for text in payload):
+            raise ValueError("embedding input must not be blank")
+        vectors = self._get_embedding_function()(payload)
+        rows = list(vectors)
+        if len(rows) != len(payload):
+            raise ValueError(
+                "the local embedding model returned an unexpected number "
+                "of embeddings"
+            )
+        # chromadb hands back numpy float32 rows; the Chroma collection and
+        # every artifact downstream want plain Python floats.
+        return [[float(value) for value in row] for row in rows]
+
+    def _get_embedding_function(self) -> Any:
+        if self._embedding_function is None:
+            try:
+                from chromadb.utils.embedding_functions import (
+                    DefaultEmbeddingFunction,
+                )
+            except ImportError as error:
+                raise RuntimeError(
+                    "the chromadb package is required for local embeddings; "
+                    'install the project with pip install -e ".[dev]"'
+                ) from error
+            self._embedding_function = DefaultEmbeddingFunction()
+        return self._embedding_function
