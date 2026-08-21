@@ -11,6 +11,7 @@ from deep_research.agents.errors import AgentConfigurationError
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
+from deep_research.providers import validate_agent_model_configs
 from deep_research.runtime.assembly import (
     AGENT_NAMES,
     ResearchRuntime,
@@ -21,7 +22,7 @@ from deep_research.runtime.assembly import (
 )
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
-from deep_research.utils.config import ConfigSettings
+from deep_research.utils.config import ConfigSettings, LLMConfig
 from tests.memory_fakes import FakeCollection, FakeEmbeddings
 from tests.research_fakes import FakeSearchClient, search_response
 
@@ -422,6 +423,74 @@ def test_build_agents_uses_the_shared_constructor_mapping(
     assert calls == list(AGENT_NAMES)
 
 
+def test_validate_agent_models_resolves_all_six_before_runtime() -> None:
+    config = LLMConfig(
+        model_overrides={
+            "critic": {"model": "deepseek-v4-pro", "reasoning_effort": "max"}
+        }
+    )
+
+    resolved = validate_agent_model_configs(config, AGENT_NAMES)
+
+    assert tuple(resolved) == AGENT_NAMES
+    assert resolved["planner"].effective.model == "deepseek-v4-flash"
+    assert resolved["critic"].effective.model == "deepseek-v4-pro"
+    assert resolved["critic"].reasoning_effort == "max"
+
+
+@pytest.mark.asyncio
+async def test_bad_critic_override_fails_before_any_runtime_collaborator(
+    tracker, monkeypatch
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        assembly,
+        "build_embedding_provider",
+        lambda *_args, **_kwargs: calls.append("embeddings"),
+    )
+    settings = ConfigSettings.model_validate(
+        {"llm": {"model_overrides": {"critic": {"reasoning_effort": "medium"}}}}
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(settings, session_id="session-1", tracker=tracker)
+
+    assert caught.value.reason == "provider_unconfigured"
+    assert "deepseek" in str(caught.value)
+    assert "critic" in str(caught.value)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_bad_critic_override_fails_before_the_default_tracker(
+    monkeypatch,
+) -> None:
+    """The non-injected tracker path is preflighted too.
+
+    Leaves ``tracker=None`` so ``Tracker.from_config`` would run before
+    validation on the current implementation; an invalid critic-only
+    override must fail with the safe provider/agent error before the
+    tracker factory is ever called.
+    """
+    tracker_calls: list[object] = []
+    monkeypatch.setattr(
+        assembly.Tracker,
+        "from_config",
+        classmethod(lambda cls, config: tracker_calls.append(config)),
+    )
+    settings = ConfigSettings.model_validate(
+        {"llm": {"model_overrides": {"critic": {"reasoning_effort": "medium"}}}}
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(settings, session_id="session-1")
+
+    assert caught.value.reason == "provider_unconfigured"
+    assert "deepseek" in str(caught.value)
+    assert "critic" in str(caught.value)
+    assert tracker_calls == []
+
+
 @pytest.mark.asyncio
 async def test_build_runtime_compiles_a_graph_from_injected_collaborators(
     tracker, tmp_path
@@ -539,12 +608,122 @@ async def test_build_runtime_honours_the_checkpointing_setting(
 
 
 @pytest.mark.asyncio
+async def test_deepseek_chat_still_builds_the_configured_embedding_provider(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """Chat and embedding vendor selection are independent of each other.
+
+    Renamed and updated from the branch's
+    ``test_deepseek_chat_still_builds_openai_embeddings``: that test
+    asserted OpenAI embeddings were built for DeepSeek chat, which assumed
+    OpenAI was the only embedding backend. Task 3 makes ``local`` the
+    default embedding provider, so the correct assertion is that
+    ``build_embedding_provider`` is called with the configured provider and
+    model -- ``local``/``text-embedding-3-small`` here -- alongside the
+    DeepSeek chat provider, not that OpenAI embeddings are always built.
+    """
+    built: list[tuple[str, object]] = []
+    provider = RecordingProvider()
+    embeddings = FakeEmbeddings()
+    monkeypatch.setattr(
+        assembly,
+        "build_chat_provider",
+        lambda config, received_tracker: (
+            built.append((config.provider, received_tracker)) or provider
+        ),
+    )
+    monkeypatch.setattr(
+        assembly,
+        "build_embedding_provider",
+        lambda embedding_provider, *, model: (
+            built.append(("embedding", embedding_provider, model)) or embeddings
+        ),
+    )
+    monkeypatch.setattr(
+        assembly.LongTermMemory,
+        "from_config",
+        lambda config, *, embeddings, tracker: LongTermMemory(
+            collection=FakeCollection(), embeddings=embeddings
+        ),
+    )
+
+    await build_runtime(
+        ConfigSettings.model_validate(
+            {"output": {"directory": str(tmp_path)}}
+        ),
+        session_id="session-1",
+        tracker=tracker,
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+        search_client=FakeSearchClient(),
+    )
+
+    assert built[0] == ("embedding", "local", "text-embedding-3-small")
+    assert built[1] == ("deepseek", tracker)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_key_failure_never_falls_back_to_openai_chat(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """A DeepSeek construction failure stays failed: no cross-provider fallback."""
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    factory_calls: list[str] = []
+    real_build = assembly.build_chat_provider
+
+    def recording_build(config, received_tracker):
+        factory_calls.append(config.provider)
+        return real_build(config, received_tracker)
+
+    monkeypatch.setattr(assembly, "build_chat_provider", recording_build)
+
+    import deep_research.providers.factory as factory_module
+
+    openai_constructed: list[object] = []
+
+    class RecordingOpenAIChatProvider:
+        def __init__(self, *_args, **_kwargs):
+            openai_constructed.append("openai")
+
+    monkeypatch.setattr(
+        factory_module, "OpenAIChatProvider", RecordingOpenAIChatProvider
+    )
+
+    settings = ConfigSettings.model_validate(
+        {"output": {"directory": str(tmp_path)}}
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(
+            settings,
+            session_id="session-1",
+            tracker=tracker,
+            long_term=LongTermMemory(
+                collection=FakeCollection(), embeddings=FakeEmbeddings()
+            ),
+            procedural=ProceduralMemory(tmp_path / "strategies.json"),
+            search_client=FakeSearchClient(),
+        )
+
+    assert caught.value.reason == "provider_unconfigured"
+    assert factory_calls == ["deepseek"]
+    assert openai_constructed == []
+
+
+@pytest.mark.asyncio
 async def test_build_runtime_reports_a_missing_openai_key_cleanly(
     tracker, tmp_path, monkeypatch
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     settings = ConfigSettings.model_validate(
-        {"output": {"directory": str(tmp_path)}}
+        {
+            "llm": {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "thinking_mode": "disabled",
+                "reasoning_effort": "none",
+            },
+            "output": {"directory": str(tmp_path)},
+        }
     )
 
     with pytest.raises(ResearchConfigurationError) as caught:
@@ -678,3 +857,43 @@ def test_all_six_agents_receive_the_same_shared_tool_registry(
     assert len(received) == 6
     assert all(tool_list is tools for tool_list in received)
     assert {tool.name for tool in received[0]} == EXPECTED_TOOL_NAMES
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_uses_the_local_embedding_provider_by_default(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    from deep_research.providers import LocalEmbeddingProvider
+
+    captured: list[object] = []
+
+    def recording_from_config(config, *, embeddings, tracker):
+        captured.append(embeddings)
+        return LongTermMemory(collection=FakeCollection(), embeddings=FakeEmbeddings())
+
+    monkeypatch.setattr(
+        "deep_research.runtime.assembly.LongTermMemory.from_config",
+        recording_from_config,
+    )
+    settings = ConfigSettings()
+    settings = settings.model_copy(
+        update={
+            "memory": settings.memory.model_copy(
+                update={
+                    "long_term": settings.memory.long_term.model_copy(
+                        update={"persist_directory": str(tmp_path)}
+                    )
+                }
+            )
+        }
+    )
+
+    await build_runtime(
+        settings,
+        session_id="session-1",
+        tracker=tracker,
+        chat_provider=RecordingProvider(),
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+    )
+
+    assert isinstance(captured[0], LocalEmbeddingProvider)

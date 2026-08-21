@@ -367,8 +367,8 @@ async def test_the_experiment_metadata_travels_to_langsmith(
     )
 
     metadata = runner.calls[0]["metadata"]
-    assert metadata["target_reasoning_effort"] == "medium"
-    assert metadata["judge_reasoning_effort"] == "high"
+    assert metadata["target_reasoning_effort"] == "max"
+    assert metadata["judge_reasoning_effort"] == "max"
     assert metadata["configuration_fingerprint"]
     assert metadata["target_prompt_fingerprint"]
     assert "api_key" not in repr(metadata).lower()

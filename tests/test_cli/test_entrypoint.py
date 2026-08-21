@@ -170,6 +170,7 @@ def test_a_blank_resume_session_id_is_rejected_end_to_end(
     tmp_path, monkeypatch
 ) -> None:
     """The CLI hands --resume to run_research, which rejects a blank id."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
     config = tmp_path / "config.yaml"
@@ -213,7 +214,7 @@ def test_a_configuration_failure_prints_its_hint_and_exits_one() -> None:
     assert code == EXIT_CONFIGURATION_ERROR
     printed = stream.getvalue()
     assert "error: Missing required environment variables" in printed
-    assert "hint: Set OPENAI_API_KEY" in printed
+    assert "hint: Set the selected chat provider's API key" in printed
     assert "Traceback" not in printed
 
 

@@ -162,7 +162,7 @@ async def test_a_successful_judge_produces_scored_feedback(
     assert feedback.judge_quality == pytest.approx(0.8)
     assert feedback.prompt_id == JUDGE_PROMPT_ID
     assert feedback.rubric_version == 1
-    assert feedback.judge_model == "gpt-5.6-luna"
+    assert feedback.judge_model == "deepseek-v4-flash"
 
 
 @pytest.mark.asyncio
@@ -275,3 +275,12 @@ async def test_an_overlong_rationale_is_a_schema_failure_not_a_truncation(
             agent_specific={},
             rationale="x" * 3000,
         )
+
+
+def test_judge_evaluator_metadata_records_thinking_mode(runtime_config_for) -> None:
+    from deep_research.evaluation.judging import judge_evaluator_metadata
+
+    metadata = judge_evaluator_metadata(runtime_config_for("planner"))
+
+    assert metadata["thinking_mode"] == "enabled"
+    assert "reasoning_mode" not in metadata

@@ -18,12 +18,15 @@ CONFIGURATION_HINTS = {
         "Check config.yaml against the settings documented in README.md."
     ),
     "missing_secrets": (
-        "Set OPENAI_API_KEY and TAVILY_API_KEY in the environment or in a "
-        ".env file next to config.yaml."
+        "Set the selected chat provider's API key (DEEPSEEK_API_KEY by "
+        "default) and TAVILY_API_KEY in the environment or in a .env file "
+        "next to config.yaml. OPENAI_API_KEY is required only when a "
+        "provider or embedding_provider of 'openai' is configured."
     ),
     "provider_unconfigured": (
-        "Set OPENAI_API_KEY in the environment or in a .env file next to "
-        "config.yaml."
+        "Check the selected provider's model, thinking, and reasoning "
+        "settings and set the selected provider's API key in the "
+        "environment or in a .env file next to config.yaml."
     ),
     "memory_unavailable": (
         "Check that the memory directory is writable and that chromadb is "

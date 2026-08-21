@@ -2,49 +2,71 @@
 
 Everything in this document is **manual and opt-in**. None of it runs in
 pytest. Every step below costs real money and makes real network calls to
-OpenAI and LangSmith (and Tavily, for live cases that need search). Do not
+DeepSeek and LangSmith (and Tavily, for live cases that need search). Do not
 run any of these commands as part of an automated CI job or an unattended
 script — a human runs each step, reads the output, and checks the boxes.
 
-Prerequisites before starting: `OPENAI_API_KEY`, `LANGSMITH_API_KEY`,
+Prerequisites before starting: `DEEPSEEK_API_KEY`, `LANGSMITH_API_KEY`,
 `LANGSMITH_PROJECT` set in the environment (or a `.env` file next to
-`config.yaml`); `TAVILY_API_KEY` set if step 3 or step 4 exercises an agent
-that declares `web_search`; the LangSmith UI open in a browser under the
-correct project/workspace.
+`config.yaml`); optionally `LANGSMITH_ENDPOINT` / `LANGSMITH_WORKSPACE_ID`;
+`TAVILY_API_KEY` set if step 3 or step 4 exercises an agent that declares
+`web_search`; the LangSmith UI open in a browser under the correct
+project/workspace. `OPENAI_API_KEY` is **not** required — chat runs on
+DeepSeek and embeddings run locally.
 
 ## Step 4 pricing findings (recorded here, not run)
 
-Looked up via `WebFetch` on 2026-08-17 against the live OpenAI docs pages:
+Looked up via `WebFetch` on 2026-08-20 against the live DeepSeek docs pages:
 
-- `https://developers.openai.com/api/docs/models/gpt-5.6-luna`
-- `https://developers.openai.com/api/docs/models/text-embedding-3-small`
+- `https://api-docs.deepseek.com/quick_start/pricing`
+- `https://api-docs.deepseek.com/quick_start/first_api_call`
+- `https://api-docs.deepseek.com/api/list-models`
 
-**GPT-5.6 Luna** — **confirmed, no change needed**:
+**DeepSeek V4 Flash pricing** — **confirmed, matches the cutover spec's
+table exactly, same-day recheck**:
 
-- Input: **$0.20** / million tokens (spec said $0.20 — confirmed)
-- Cached input: **$0.02** / million tokens (spec said $0.02 — confirmed)
-- Output: **$1.20** / million tokens (spec said $1.20 — confirmed)
-- `gpt-5.6-luna` is currently a **bare alias**, not a dated snapshot — the
-  docs page lists only `gpt-5.6-luna` as the available identifier, with no
-  versioned id (e.g. `gpt-5.6-luna-2026-XX-XX`) superseding it. **No
-  config or evaluation-version change is required or was made.** If a
-  dated snapshot appears later, re-run this recheck and follow the spec's
-  requirement for an explicit configuration and evaluation-version change
-  before adopting it — do not adopt it silently.
-- Additional facts observed (informational only, not part of the spec's
-  recorded figures): context window 1,050,000 tokens; knowledge cutoff
-  "Feb 16, 2026"; supports image input; max output 128,000 tokens; supports
-  reasoning effort levels `none, low, medium, high, xhigh, max`; requests
-  over 272,000 input tokens are billed at 2x input / 1.5x output for the
-  whole request; cache writes bill at 1.25x the standard input rate.
+| | Cache hit | Cache miss | Output |
+|---|---|---|---|
+| Off-peak | $0.007 / M tokens | $0.22 / M tokens | $0.66 / M tokens |
+| Peak (01:00-04:00, 06:00-10:00 UTC) | $0.014 / M tokens | $0.44 / M tokens | $1.32 / M tokens |
 
-**`text-embedding-3-small`** — **confirmed, no change needed**:
+No pricing correction is required in `config.yaml` or anywhere else.
 
-- Input: **$0.02** / million tokens (spec said $0.02 — confirmed)
+**Bare alias vs. dated identifier — resolved, the bare alias is what the API
+uses:**
 
-No pricing correction is required in `config.yaml` or anywhere else. Both
-figures the spec recorded as informational match the live docs exactly as of
-this check.
+- The pricing page's table uses `deepseek-v4-flash` (and `deepseek-v4-pro`)
+  as the `MODEL` column header, with `DeepSeek-V4-Flash-0731` (and
+  `DeepSeek-V4-Pro-0813`) shown in a separate `MODEL VERSION` row below it.
+  The pricing page itself does not state in words which string belongs in a
+  request body.
+- The "Your First API Call" quick-start page's curl, Python, and Node.js
+  examples all pass the bare alias (`"model": "deepseek-v4-pro"` in the
+  example shown) — not the dated form — in the request body.
+- The "List Models" API reference's example response returns `"id":
+  "deepseek-v4-flash"` (bare alias), not the dated form.
+- **Finding: the bare alias `deepseek-v4-flash` is the identifier the API
+  accepts and returns, per every example in the documentation. The dated
+  string `DeepSeek-V4-Flash-0731` is a version label shown for reference,
+  not a request-body value.** This is documentation-only evidence — no live
+  API call was made to confirm it, per this task's hard boundary. Task 4's
+  `DeepSeekChatProvider.last_model_returned` will record whatever the API
+  actually returns the first time a real call is made; if that ever
+  disagrees with this finding, treat the live response as authoritative and
+  update `config.yaml`'s capability pattern
+  (`^deepseek-v4-(flash|pro)$` in `providers/capabilities.py`) plus this
+  note — never substitute silently at request time.
+
+The four unknowns below are re-scoped to DeepSeek, not OpenAI — the original
+OpenAI-specific text described `gpt-5.6-luna`, which no longer applies. The
+`temperature` unknown is now partly answered without a live call: DeepSeek's
+capability entry only sends `temperature` when thinking is `disabled`, and no
+evaluation case uses `disabled` thinking (thinking is always `enabled`), so
+`judge_temperature` is inert for the current baseline regardless of whether
+DeepSeek would reject it. The other three unknowns (judge Source/Evaluator
+trace visibility, trace nesting, the `none` reasoning-effort value) remain
+open and must be re-resolved against DeepSeek during a live verification run,
+not assumed carried over from the OpenAI-era answers below.
 
 ## Fixed verification order
 

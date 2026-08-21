@@ -310,9 +310,9 @@ def researcher_target_output(researcher_case) -> TargetOutput:
         dependencies=DependencyLedger(),
         evidence=EvidenceContext(scripted_search_urls=list(urls)),
         trajectory=[],
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="low",
+        target_model_requested="deepseek-v4-flash",
+        target_model_returned="deepseek-v4-flash",
+        target_reasoning_effort="high",
     )
 
 
@@ -1524,7 +1524,7 @@ def live_target_harness(tracker, settings, tmp_path):
         del case
         counter = RepetitionCounter(max_concurrency=1)
         environ = {
-            "OPENAI_API_KEY": "sk-abcdefghijklmnop",
+            "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
             "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
             "TAVILY_API_KEY": "tvly-abcdefghijklmnop",
         }
@@ -1839,11 +1839,11 @@ def evaluation_harness(tracker, settings):
 # --- Task 24: reporting fixtures --------------------------------------------
 
 _REPORTING_METADATA = {
-    "target_model": "gpt-5.6-luna",
-    "target_model_returned": "gpt-5.6-luna",
-    "target_reasoning_effort": "low",
-    "judge_reasoning_effort": "medium",
-    "reasoning_mode": "standard",
+    "target_model": "deepseek-v4-flash",
+    "target_model_returned": "deepseek-v4-flash",
+    "target_reasoning_effort": "high",
+    "judge_reasoning_effort": "max",
+    "thinking_mode": "enabled",
     "configuration_fingerprint": "abc123abc123",
     "judge_configuration_fingerprint": "def456def456",
 }
@@ -1867,7 +1867,7 @@ def _scored_judge(score: float) -> JudgeFeedback:
         prompt_id="individual-agent-judge",
         rubric_version=1,
         prompt_fingerprint="abc123abc123",
-        judge_model="gpt-5.6-luna",
+        judge_model="deepseek-v4-flash",
         judge_configuration_fingerprint="def456def456",
     )
 
@@ -2126,7 +2126,7 @@ def live_evaluation_harness(tracker, settings):
         return FakeStructuredProvider([_judge_verdict()])
 
     environ = {
-        "OPENAI_API_KEY": "sk-abcdefghijklmnop",
+        "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
         "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
         "TAVILY_API_KEY": "tvly-abcdefghijklmnop",
     }
@@ -2310,7 +2310,7 @@ def preflight_failing_runner():
         del kwargs
         raise PreflightError(
             "missing_credentials",
-            "missing required credentials: OPENAI_API_KEY, LANGSMITH_API_KEY",
+            "missing required credentials: DEEPSEEK_API_KEY, LANGSMITH_API_KEY",
         )
 
     return runner

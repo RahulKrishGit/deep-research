@@ -234,7 +234,7 @@ def test_the_output_directory_override_reaches_the_runner(
 def test_nothing_printed_to_the_stream_contains_a_secret(
     leaking_runner, monkeypatch
 ) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-abcdefghijklmnop")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-abcdefgh")
 
     _, output = run(["agent", "researcher", "--verbose"], runner=leaking_runner)
 

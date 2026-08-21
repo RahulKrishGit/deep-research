@@ -7,18 +7,27 @@ package to be installed at collection time.
 
 from __future__ import annotations
 
-import math
 import os
 from collections.abc import Sequence
 from types import SimpleNamespace
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
-from deep_research.utils.config import LLMConfig
+from deep_research.providers.capabilities import resolve_request_settings
+from deep_research.providers.contracts import (
+    ChatMessage,
+    ChatResult,
+    OpenAIProviderError,
+    ProviderConfigurationError,
+    ProviderRateLimitError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+    StructuredOutputError,
+)
+from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
-MessageRole = Literal["developer", "system", "user", "assistant"]
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 _openai_sdk: SimpleNamespace | None = None
@@ -46,45 +55,6 @@ def _openai_errors() -> SimpleNamespace:
             RateLimitError=RateLimitError,
         )
     return _openai_sdk
-
-
-class ProviderContract(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-
-class ChatMessage(ProviderContract):
-    role: MessageRole
-    content: str = Field(min_length=1)
-
-
-class ChatResult(ProviderContract):
-    text: str = Field(min_length=1)
-    model: str = Field(min_length=1)
-    usage: TokenUsage
-
-
-class OpenAIProviderError(RuntimeError):
-    """Base caller-facing error for the OpenAI provider boundary."""
-
-
-class ProviderConfigurationError(OpenAIProviderError):
-    """Provider configuration is absent or invalid."""
-
-
-class ProviderTimeoutError(OpenAIProviderError):
-    """An OpenAI request exceeded its timeout."""
-
-
-class ProviderRateLimitError(OpenAIProviderError):
-    """OpenAI rejected a request due to rate limiting."""
-
-
-class ProviderResponseError(OpenAIProviderError):
-    """OpenAI returned an unusable response or status error."""
-
-
-class StructuredOutputError(OpenAIProviderError):
-    """Structured output remained invalid after one repair request."""
 
 
 def _build_client(
@@ -193,6 +163,37 @@ class OpenAIChatProvider:
         """
         return self._last_model_returned
 
+    def _request_options(
+        self, agent_name: str | None
+    ) -> tuple[EffectiveModelConfig, dict[str, object], dict[str, JsonValue]]:
+        """Resolve and validate request settings for one effective model.
+
+        The capability registry runs before any client call, so an
+        unsupported model, thinking mode, or effort raises before the SDK
+        is touched. Span metadata carries only model-span facts; message
+        content never appears.
+        """
+        effective = self._config.resolve_for(agent_name)
+        resolved = resolve_request_settings("openai", effective)
+        request: dict[str, object] = {
+            "model": effective.model,
+            "max_output_tokens": self._config.max_tokens,
+        }
+        if resolved.reasoning_effort is not None:
+            request["reasoning"] = {"effort": resolved.reasoning_effort}
+        if resolved.include_temperature:
+            request["temperature"] = self._config.temperature
+        metadata: dict[str, JsonValue] = {
+            "provider": "openai",
+            "thinking_mode": effective.thinking_mode,
+            "requested_reasoning_effort": effective.reasoning_effort,
+        }
+        if agent_name is not None:
+            metadata["agent_name"] = agent_name
+        if resolved.reasoning_effort is not None:
+            metadata["effective_reasoning_effort"] = resolved.reasoning_effort
+        return effective, request, metadata
+
     async def complete(
         self,
         messages: Sequence[ChatMessage],
@@ -201,13 +202,13 @@ class OpenAIChatProvider:
     ) -> ChatResult:
         if not messages:
             raise ValueError("messages must contain at least one item")
-        model = self._config.model_for(agent_name)
+        effective, request, metadata = self._request_options(agent_name)
         payload = [message.model_dump(mode="json") for message in messages]
         try:
             async with self._tracker.llm_span(
-                model,
+                effective.model,
                 {
-                    "provider": "openai",
+                    **metadata,
                     "operation": "chat",
                     "message_count": len(payload),
                 },
@@ -215,9 +216,7 @@ class OpenAIChatProvider:
                 _sdk = _openai_errors()
                 try:
                     response = await self._client.responses.create(
-                        model=model,
-                        input=payload,
-                        **self._config.request_options(),
+                        **{**request, "input": payload}
                     )
                 except (
                     _sdk.APITimeoutError,
@@ -240,8 +239,10 @@ class OpenAIChatProvider:
                     )
                 usage = _usage_from_response(response)
                 _set_span_result(span, response, usage)
-                self._last_model_returned = getattr(response, "model", None) or model
-                return ChatResult(text=text, model=model, usage=usage)
+                self._last_model_returned = (
+                    getattr(response, "model", None) or effective.model
+                )
+                return ChatResult(text=text, model=effective.model, usage=usage)
         except OpenAIProviderError:
             raise
 
@@ -251,15 +252,16 @@ class OpenAIChatProvider:
         schema: type[SchemaT],
         *,
         model: str,
+        request: dict[str, object],
+        metadata: dict[str, JsonValue],
         attempt: int,
     ) -> SchemaT:
         payload = [message.model_dump(mode="json") for message in messages]
         async with self._tracker.llm_span(
             model,
             {
-                "provider": "openai",
+                **metadata,
                 "operation": "structured_output",
-                "schema": schema.__name__,
                 "attempt": attempt,
                 "message_count": len(payload),
             },
@@ -267,10 +269,7 @@ class OpenAIChatProvider:
             _sdk = _openai_errors()
             try:
                 response = await self._client.responses.parse(
-                    model=model,
-                    input=payload,
-                    text_format=schema,
-                    **self._config.request_options(),
+                    **{**request, "input": payload, "text_format": schema}
                 )
             except (
                 _sdk.APITimeoutError,
@@ -306,13 +305,18 @@ class OpenAIChatProvider:
     ) -> SchemaT:
         if not messages:
             raise ValueError("messages must contain at least one item")
-        model = self._config.model_for(agent_name)
+        effective, request, metadata = self._request_options(agent_name)
         current_messages = list(messages)
 
         for attempt in (1, 2):
             try:
                 return await self._structured_attempt(
-                    current_messages, schema, model=model, attempt=attempt
+                    current_messages,
+                    schema,
+                    model=effective.model,
+                    request=request,
+                    metadata=metadata,
+                    attempt=attempt,
                 )
             except _StructuredValidationFailure as error:
                 if attempt == 2:
@@ -332,105 +336,3 @@ class OpenAIChatProvider:
                 ]
 
         raise AssertionError("structured output attempt loop did not return")
-
-
-class OpenAIEmbeddingProvider:
-    """Async single and batch embeddings through the OpenAI API."""
-
-    def __init__(
-        self,
-        config: LLMConfig,
-        tracker: Tracker,
-        *,
-        api_key: str | None = None,
-        client: Any | None = None,
-    ) -> None:
-        self._config = config
-        self._tracker = tracker
-        self._client = _build_client(config, api_key=api_key, client=client)
-        self._dimension: int | None = None
-
-    @property
-    def dimension(self) -> int | None:
-        """Return the observed vector size, or None before the first call."""
-        return self._dimension
-
-    async def embed_query(self, text: str) -> list[float]:
-        if not text.strip():
-            raise ValueError("text must not be blank")
-        return (await self.embed_texts([text]))[0]
-
-    async def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
-        if not texts:
-            raise ValueError("texts must contain at least one item")
-        if any(not text.strip() for text in texts):
-            raise ValueError("embedding texts must not be blank")
-        model = self._config.embedding_model
-        async with self._tracker.llm_span(
-            model,
-            {
-                "provider": "openai",
-                "operation": "embedding",
-                "input_count": len(texts),
-            },
-        ) as span:
-            _sdk = _openai_errors()
-            try:
-                response = await self._client.embeddings.create(
-                    model=model,
-                    input=list(texts),
-                )
-            except (
-                _sdk.APITimeoutError,
-                _sdk.RateLimitError,
-                _sdk.APIConnectionError,
-                _sdk.APIStatusError,
-            ) as error:
-                _raise_provider_error(error)
-            except _sdk.OpenAIError as error:
-                raise ProviderResponseError(
-                    "OpenAI embedding request failed"
-                ) from error
-            try:
-                rows = list(response.data)
-                indices = [item.index for item in rows]
-                if (
-                    any(
-                        isinstance(index, bool) or not isinstance(index, int)
-                        for index in indices
-                    )
-                    or len(indices) != len(texts)
-                    or set(indices) != set(range(len(texts)))
-                ):
-                    raise ProviderResponseError(
-                        "OpenAI embedding response indices did not match "
-                        "input positions"
-                    )
-                ordered = sorted(rows, key=lambda item: item.index)
-                vectors = [
-                    [float(value) for value in item.embedding] for item in ordered
-                ]
-            except ProviderResponseError:
-                raise
-            except (AttributeError, TypeError, ValueError) as error:
-                raise ProviderResponseError(
-                    "OpenAI embedding response was malformed"
-                ) from error
-            if any(not math.isfinite(value) for vector in vectors for value in vector):
-                raise ProviderResponseError(
-                    "OpenAI embedding response contained non-finite values"
-                )
-            dimensions = {len(vector) for vector in vectors}
-            if len(dimensions) != 1 or 0 in dimensions:
-                raise ProviderResponseError(
-                    "OpenAI embedding response contained inconsistent dimensions"
-                )
-            observed_dimension = dimensions.pop()
-            if self._dimension is not None and self._dimension != observed_dimension:
-                raise ProviderResponseError(
-                    "OpenAI embedding dimension changed between requests"
-                )
-            self._dimension = observed_dimension
-            usage = _usage_from_response(response)
-            _set_span_result(span, response, usage)
-            return vectors

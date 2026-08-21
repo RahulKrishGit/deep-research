@@ -54,12 +54,19 @@ from deep_research.memory.entries import MemoryEntry, SourceReputation
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
 from deep_research.observability import Tracker
-from deep_research.providers import OpenAIEmbeddingProvider
+from deep_research.providers import (
+    LOCAL_EMBEDDING_PROVIDER,
+    build_embedding_provider,
+)
 from deep_research.runtime.assembly import build_tools
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.tools.write_document import WriteDocumentTool
-from deep_research.utils.config import ConfigSettings
+from deep_research.utils.config import (
+    ConfigSettings,
+    EmbeddingProviderName,
+    ProviderName,
+)
 
 # Mirrors ``memory.entries._RESERVED_METADATA_KEYS``; duplicated here the
 # same way ``memory_bridge`` duplicates it, so seeding does not import a
@@ -142,17 +149,53 @@ LIVE_DEPENDENCIES: dict[AgentName, tuple[str, ...]] = {
 }
 
 
-def required_credentials(agent_name: AgentName) -> tuple[str, ...]:
+CHAT_PROVIDER_CREDENTIALS: dict[str, str] = {
+    "deepseek": "DEEPSEEK_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
+
+def required_credentials(
+    agent_name: AgentName,
+    *,
+    provider: ProviderName,
+    embedding_provider: EmbeddingProviderName,
+) -> tuple[str, ...]:
     """The environment variables one live run of ``agent_name`` must provide.
 
-    OpenAI and LangSmith are required for every agent; Tavily only for
-    agents whose declared tools reach it. ``LANGSMITH_PROJECT`` is
-    validated by the tracker's own runtime config, so it is not duplicated
-    here.
+    The selected chat provider's key and LangSmith are required for every
+    agent; Tavily only for agents whose declared tools reach it.
+    ``LANGSMITH_PROJECT`` is validated by the tracker's own runtime config,
+    so it is not duplicated here. ``embedding_provider`` contributes
+    ``OPENAI_API_KEY`` only when it is ``"openai"`` -- the baseline local
+    embedding provider has no credential.
+
+    This is deliberately unconditional on ``LIVE_DEPENDENCIES``, i.e. not
+    gated on whether the agent's declared tools reach a memory tool.
+    ``LongTermMemory`` construction is lazy and needs no credential at build
+    time; the key is only needed at an actual embed call
+    (``LongTermMemory.save_many`` / ``.query``). Tool declarations do not
+    bound which agents can reach one: ``update_source_reputation`` is an
+    existing capability on ``LongTermMemory`` (``save`` -> ``embed_documents``)
+    that any future agent could call without declaring a memory tool, so
+    gating this on ``"memory" in LIVE_DEPENDENCIES[agent]`` would be a
+    fragile invariant rather than a real bound -- narrowing to declared
+    tools would reopen the original fail-open the moment such a call was
+    added. The known over-require this causes today is ``source_evaluator``:
+    it declares no tools at all (``LIVE_DEPENDENCIES["source_evaluator"] ==
+    ()``) and its only memory use, ``get_source_reputation``, is a lookup by
+    id that embeds nothing -- so it is asked for a credential it will never
+    actually spend. De-duplicated in first-seen order, mirroring
+    ``_validate_runtime_secrets`` in ``utils/config.py``.
     """
+    required = [CHAT_PROVIDER_CREDENTIALS[provider], "LANGSMITH_API_KEY"]
     if "tavily" in LIVE_DEPENDENCIES[agent_name]:
-        return ("OPENAI_API_KEY", "LANGSMITH_API_KEY", "TAVILY_API_KEY")
-    return ("OPENAI_API_KEY", "LANGSMITH_API_KEY")
+        required.append("TAVILY_API_KEY")
+    if embedding_provider != LOCAL_EMBEDDING_PROVIDER:
+        embedding_key = CHAT_PROVIDER_CREDENTIALS["openai"]
+        if embedding_key not in required:
+            required.append(embedding_key)
+    return tuple(required)
 
 
 class DependencyRecorder:
@@ -803,7 +846,11 @@ def build_live_dependencies(
     """
     missing = [
         variable
-        for variable in required_credentials(runtime.agent_name)
+        for variable in required_credentials(
+            runtime.agent_name,
+            provider=settings.llm.provider,
+            embedding_provider=runtime.embedding_provider,
+        )
         if not environ.get(variable, "").strip()
     ]
     if missing:
@@ -828,7 +875,9 @@ def build_live_dependencies(
     long_term = LongTermMemory.from_config(
         isolated.memory.long_term,
         embeddings=embeddings
-        or OpenAIEmbeddingProvider(model=runtime.embedding_model),
+        or build_embedding_provider(
+            runtime.embedding_provider, model=runtime.embedding_model
+        ),
         tracker=tracker,
     )
     bridge = LongTermMemoryBridge(long_term, session_id=session_id)

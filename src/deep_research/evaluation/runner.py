@@ -41,6 +41,7 @@ from deep_research.evaluation.config import (
 )
 from deep_research.evaluation.datasets import DatasetSyncError, synchronize_dataset
 from deep_research.evaluation.dependencies import (
+    CHAT_PROVIDER_CREDENTIALS,
     build_controlled_dependencies,
     build_live_dependencies,
     required_credentials,
@@ -81,7 +82,12 @@ from deep_research.evaluation.targets import (
     build_target,
 )
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
-from deep_research.providers import OpenAIChatProvider
+from deep_research.providers import (
+    ProviderConfigurationError,
+    build_chat_provider,
+    embedding_capability_for,
+    resolve_request_settings,
+)
 from deep_research.runtime.assembly import build_agent
 from deep_research.utils.config import ConfigSettings, ReasoningEffort
 from deep_research.utils.types import JsonValue
@@ -130,23 +136,52 @@ class PreflightError(RuntimeError):
         self.reason = reason
 
 
-async def verify_model_access(client: Any, model_ids: Sequence[str]) -> None:
-    """Request each model id once, in order; never fall back to another.
+def validate_model_capabilities(
+    settings: ConfigSettings, runtime: EvaluationRuntimeConfig
+) -> None:
+    """Check target and judge settings against the local capability table.
 
-    Raises ``PreflightError("model_unavailable", ...)`` naming only the
-    identifier that failed -- never a substitute that happens to be
-    available -- and stops at the first failure, so no later model in
-    ``model_ids`` is requested once one has already failed.
+    Entirely local and fail-closed: the registry does not attempt to
+    discover live account entitlements, so an unsupported model, thinking
+    mode, or reasoning effort is rejected here without a single network
+    call, for either provider. There is no fallback -- a rejected
+    combination fails preflight by name.
+
+    Chat capability validation lives here, unconditionally, for both
+    tiers. The embedding selection is validated separately, live-tier only,
+    by ``validate_embedding_model``: the controlled tier never constructs a
+    real embedding provider, so its embedding model string is inert and
+    nothing is checked for it.
     """
-    for model_id in model_ids:
+    for label, config in (
+        ("target", target_llm_config(runtime, settings.llm)),
+        ("judge", judge_llm_config(runtime, settings.llm)),
+    ):
         try:
-            await client.models.retrieve(model_id)
-        except Exception as error:
-            raise PreflightError(
-                "model_unavailable",
-                f"model {model_id!r} is not accessible with the "
-                "configured credentials",
-            ) from error
+            resolve_request_settings(config.provider, config.resolve_for(None))
+        except ProviderConfigurationError as error:
+            raise PreflightError("model_unavailable", f"{label}: {error}") from error
+
+
+def validate_embedding_model(runtime: EvaluationRuntimeConfig) -> None:
+    """Check the live-tier embedding selection against the local registry.
+
+    Live runs construct a real embedding provider, so a typo'd model name
+    must fail here, cheaply and offline, instead of at the first live-tier
+    embed mid-run. Controlled runs never construct a real embedding
+    provider (``_DeterministicEmbeddings`` in ``dependencies.py`` is a
+    hash-based double), so their embedding model string is inert and this
+    check deliberately does nothing for them -- the pre-cutover test
+    ``test_the_embedding_model_is_only_checked_for_live_runs`` asserted
+    exactly this asymmetry, and a controlled run must never be blocked by
+    a value it does not use.
+    """
+    if runtime.tier != "live":
+        return
+    try:
+        embedding_capability_for(runtime.embedding_provider, runtime.embedding_model)
+    except ProviderConfigurationError as error:
+        raise PreflightError("model_unavailable", f"embedding: {error}") from error
 
 
 def _validate_case_identities(cases: Sequence[EvaluationCase]) -> None:
@@ -184,17 +219,15 @@ async def preflight(
     cases: Sequence[EvaluationCase],
     environ: Mapping[str, str],
     langsmith_client: Any,
-    openai_client: Any,
     root: Path,
 ) -> None:
     """Run the nine preflight checks in order; raise on the first failure.
 
     Each check is cheaper and safer than the next: local, in-process
-    checks (registry, case lookup, reasoning efforts, credential presence)
-    come before any client call, and the one client call that only reads
-    (model access) comes before every client call that could write
-    (``synchronize_dataset``). Nothing before the last step ever touches a
-    remote dataset.
+    checks (registry, case lookup, reasoning efforts, credential presence,
+    model capability) come before any client call. Every model check is
+    local, so the only client call in the whole sequence is the dataset
+    synchronization at the end, which is also the only one that can write.
     """
     # 1. The registry as a whole is sound, and this run's own case subset
     # has no duplicate or conflicting-version identities.
@@ -229,20 +262,29 @@ async def preflight(
         raise PreflightError("invalid_reasoning_effort", str(error)) from error
 
     # 4. Every credential this run will actually need is present and
-    # non-blank. OpenAI and LangSmith are required for every tier (model
-    # access below, dataset sync at the end). For a live-tier run,
-    # ``required_credentials`` also names ``TAVILY_API_KEY`` for any agent
-    # whose declared tools reach it -- a controlled bundle never
-    # constructs a real Tavily client (it always injects the scripted
-    # search double), so the controlled tier only needs the fixed pair.
-    # Checking the live tier's full credential set here, before step 5's
-    # real network call, means a missing Tavily key is caught as
-    # ``missing_credentials`` up front instead of surfacing later, at
-    # step 7, as the less-specific ``guards_uninstallable``.
+    # non-blank. The selected chat provider and LangSmith are required for
+    # every tier (model access below, dataset sync at the end). For a
+    # live-tier run, ``required_credentials`` also names ``TAVILY_API_KEY``
+    # for any agent whose declared tools reach it, and ``OPENAI_API_KEY``
+    # when ``runtime.embedding_provider`` is ``"openai"`` (the default
+    # local provider needs no such key) -- a controlled bundle never
+    # constructs a real Tavily client or a live embedding provider (it
+    # always injects scripted doubles), so the controlled tier only needs
+    # the fixed pair. Checking the live tier's full credential set here,
+    # before step 5, means a missing Tavily or embedding key is caught as
+    # ``missing_credentials`` up front instead of surfacing later, at step
+    # 7, as the less-specific ``guards_uninstallable``.
     required = (
-        required_credentials(runtime.agent_name)
+        required_credentials(
+            runtime.agent_name,
+            provider=settings.llm.provider,
+            embedding_provider=runtime.embedding_provider,
+        )
         if runtime.tier == "live"
-        else ("OPENAI_API_KEY", "LANGSMITH_API_KEY")
+        else (
+            CHAT_PROVIDER_CREDENTIALS[settings.llm.provider],
+            "LANGSMITH_API_KEY",
+        )
     )
     missing = [
         variable
@@ -255,12 +297,15 @@ async def preflight(
             "missing required credentials: " + ", ".join(missing),
         )
 
-    # 5. Every model this run will call is actually reachable. Never a
-    # substitute: a missing model fails preflight by name, full stop.
-    model_ids = [runtime.target_model, runtime.judge_model]
-    if runtime.tier == "live":
-        model_ids.append(runtime.embedding_model)
-    await verify_model_access(openai_client, model_ids)
+    # 5. Every model and effort this run will send is one the selected
+    # provider actually supports, checked against the local capability
+    # table. Never a substitute: an unsupported combination fails preflight
+    # by name, full stop, and no network call is made to find out. The
+    # live-tier embedding selection is checked here too, against its own
+    # registry; a controlled run's embedding model string is inert (its
+    # memory double is hash-based) and is deliberately not checked.
+    validate_model_capabilities(settings, runtime)
+    validate_embedding_model(runtime)
 
     # 6. The output root can be created and actually written to.
     try:
@@ -299,9 +344,17 @@ async def preflight(
         raise PreflightError("guards_uninstallable", str(error)) from error
 
     # 8. The agent itself builds with those tools -- never deferred to the
-    # first real repetition.
-    provider = OpenAIChatProvider(settings.llm, tracker, client=openai_client)
+    # first real repetition. The provider is built from this run's own
+    # credential mapping rather than the process environment, so preflight
+    # checks exactly the credentials step 4 verified.
     try:
+        provider = build_chat_provider(
+            target_llm_config(runtime, settings.llm),
+            tracker,
+            api_key=environ.get(
+                CHAT_PROVIDER_CREDENTIALS[settings.llm.provider]
+            ),
+        )
         build_agent(
             runtime.agent_name,
             bundle.settings,
@@ -313,7 +366,7 @@ async def preflight(
             ),
             reputation=bundle.reputation,
         )
-    except AgentConfigurationError as error:
+    except (AgentConfigurationError, ProviderConfigurationError) as error:
         raise PreflightError("agent_unbuildable", str(error)) from error
 
     # 9. The dataset itself is reachable and secret-free. The last check,
@@ -945,11 +998,6 @@ async def run_suite_evaluation(
     ``run_agent_evaluation``); this function additionally writes the
     suite-level ``output/evaluations/suite/<suite-id>/summary.json``.
     """
-    # Imported lazily: constructing a real OpenAI client is a meaningfully
-    # heavier import than anything else this module needs at load time,
-    # mirroring ``cli.py``'s own deferred import for the same reason.
-    from openai import AsyncOpenAI
-
     environ = dict(os.environ)
     suite_secrets = known_secret_values(environ)
     experiments: list[ExperimentResult] = []
@@ -971,18 +1019,18 @@ async def run_suite_evaluation(
             cases = list(cases_for(agent_name, "controlled"))
 
             tracker = Tracker.from_config(settings.langsmith, environ=environ)
-            openai_client = AsyncOpenAI(
-                api_key=environ.get("OPENAI_API_KEY") or "sk-not-configured"
+            chat_key = environ.get(
+                CHAT_PROVIDER_CREDENTIALS[settings.llm.provider]
             )
-            target_provider = OpenAIChatProvider(
+            target_provider = build_chat_provider(
                 target_llm_config(runtime, settings.llm),
                 tracker,
-                client=openai_client,
+                api_key=chat_key,
             )
-            judge_provider = OpenAIChatProvider(
+            judge_provider = build_chat_provider(
                 judge_llm_config(runtime, settings.llm),
                 tracker,
-                client=openai_client,
+                api_key=chat_key,
             )
 
             result = await run_agent_evaluation(

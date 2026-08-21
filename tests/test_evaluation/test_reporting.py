@@ -190,11 +190,11 @@ def test_the_artifact_records_both_model_identifiers_and_the_fingerprints(
                                      root=tmp_path)
     metadata = json.loads(path.read_text(encoding="utf-8"))["metadata"]
 
-    assert metadata["target_model"] == "gpt-5.6-luna"
+    assert metadata["target_model"] == "deepseek-v4-flash"
     assert metadata["target_model_returned"]
     assert metadata["target_reasoning_effort"]
     assert metadata["judge_reasoning_effort"]
-    assert metadata["reasoning_mode"] == "standard"
+    assert metadata["thinking_mode"] == "enabled"
     assert metadata["configuration_fingerprint"]
     assert metadata["judge_configuration_fingerprint"]
 

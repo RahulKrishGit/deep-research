@@ -62,12 +62,12 @@ async def test_each_agent_keeps_its_own_target_effort_in_the_suite(
         for call in suite_harness.runner.calls
     }
     assert efforts == {
-        "planner": "medium",
-        "researcher": "low",
-        "source_evaluator": "low",
-        "fact_checker": "medium",
-        "synthesizer": "medium",
-        "critic": "medium",
+        "planner": "max",
+        "researcher": "high",
+        "source_evaluator": "high",
+        "fact_checker": "max",
+        "synthesizer": "max",
+        "critic": "max",
     }
 
 
@@ -127,3 +127,28 @@ def test_the_suite_summary_lists_every_agent_and_its_status(
         assert agent_name in body
     assert "REVIEW REQUIRED" in body
     assert "summary.json" in body
+
+
+def test_the_suite_builds_providers_through_the_provider_factory() -> None:
+    """No direct OpenAI construction survives in the production wiring."""
+    import inspect
+
+    from deep_research.evaluation import runner
+
+    source = inspect.getsource(runner)
+
+    assert "AsyncOpenAI" not in source
+    assert "OpenAIChatProvider" not in source
+    assert "build_chat_provider" in source
+
+
+def test_the_evaluation_cli_builds_providers_through_the_provider_factory() -> None:
+    import inspect
+
+    from deep_research.evaluation import cli
+
+    source = inspect.getsource(cli)
+
+    assert "AsyncOpenAI" not in source
+    assert "OpenAIChatProvider" not in source
+    assert "build_chat_provider" in source

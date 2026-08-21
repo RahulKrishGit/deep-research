@@ -305,6 +305,13 @@ def test_target_output_round_trips_through_json() -> None:
     assert TargetOutput.model_validate_json(output.model_dump_json()) == output
 
 
+def test_target_output_records_thinking_mode_not_reasoning_mode() -> None:
+    from deep_research.evaluation.models import TargetOutput
+
+    assert "reasoning_mode" not in TargetOutput.model_fields
+    assert TargetOutput.model_fields["thinking_mode"].default == "enabled"
+
+
 def test_suite_result_round_trips_through_json(experiment_result) -> None:
     suite = SuiteResult(
         suite_id="individual-agent-baseline",

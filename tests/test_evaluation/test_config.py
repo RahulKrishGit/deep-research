@@ -23,29 +23,58 @@ from deep_research.evaluation.config import (
     resolve_target_effort,
     target_llm_config,
 )
-from deep_research.utils.config import ConfigSettings, EvaluationConfig
+from deep_research.utils.config import (
+    ConfigSettings,
+    EvaluationConfig,
+    LLMConfig,
+)
 
 NOW = datetime(2026, 8, 16, 10, 15, 0, tzinfo=timezone.utc)
 GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
 
 
 def test_the_baseline_efforts_match_the_approved_profile() -> None:
+    """Researcher and Source Evaluator at high; everyone else, and the
+    judge, at max — DeepSeek V4 Flash supports only those two levels."""
     config = EvaluationConfig()
 
-    assert resolve_target_effort(config, "planner", override=None) == "medium"
-    assert resolve_target_effort(config, "researcher", override=None) == "low"
+    assert resolve_target_effort(config, "planner", override=None) == "max"
+    assert resolve_target_effort(config, "researcher", override=None) == "high"
     assert (
         resolve_target_effort(config, "source_evaluator", override=None)
-        == "low"
+        == "high"
     )
     assert (
-        resolve_target_effort(config, "fact_checker", override=None) == "medium"
+        resolve_target_effort(config, "fact_checker", override=None) == "max"
     )
-    assert (
-        resolve_target_effort(config, "synthesizer", override=None) == "medium"
-    )
-    assert resolve_target_effort(config, "critic", override=None) == "medium"
-    assert resolve_judge_effort(config, override=None) == "high"
+    assert resolve_target_effort(config, "synthesizer", override=None) == "max"
+    assert resolve_target_effort(config, "critic", override=None) == "max"
+    assert resolve_judge_effort(config, override=None) == "max"
+
+
+def test_the_baseline_models_are_deepseek_v4_flash() -> None:
+    config = EvaluationConfig()
+
+    assert config.target_model == "deepseek-v4-flash"
+    assert config.judge_model == "deepseek-v4-flash"
+
+
+def test_the_evaluation_config_no_longer_carries_a_reasoning_mode() -> None:
+    """Thinking mode replaced it; a stale key must not load silently."""
+    assert "reasoning_mode" not in EvaluationConfig.model_fields
+
+    with pytest.raises(ValueError):
+        EvaluationConfig(reasoning_mode="standard")
+
+
+def test_embedding_override_fields_default_to_none() -> None:
+    """``None`` means inherit ``llm.embedding_provider`` /
+    ``llm.embedding_model``; the evaluation harness carries no sentinel of
+    its own."""
+    config = EvaluationConfig()
+
+    assert config.embedding_provider is None
+    assert config.embedding_model is None
 
 
 def test_an_invocation_override_beats_the_per_agent_override() -> None:
@@ -94,7 +123,7 @@ def test_an_invalid_effort_lists_the_valid_levels() -> None:
     assert "xhigh" in str(caught.value)
 
 
-def build(**kwargs):
+def build(*, settings=None, **kwargs):
     defaults = dict(
         agent_name="researcher",
         tier="controlled",
@@ -107,15 +136,15 @@ def build(**kwargs):
         git=GIT,
     )
     defaults.update(kwargs)
-    return build_runtime_config(ConfigSettings(), **defaults)
+    return build_runtime_config(settings or ConfigSettings(), **defaults)
 
 
 def test_the_runtime_config_freezes_both_efforts() -> None:
     runtime = build()
 
-    assert runtime.target_reasoning_effort == "low"
-    assert runtime.judge_reasoning_effort == "high"
-    assert runtime.reasoning_mode == "standard"
+    assert runtime.target_reasoning_effort == "high"
+    assert runtime.judge_reasoning_effort == "max"
+    assert runtime.thinking_mode == "enabled"
     with pytest.raises(ValueError):
         runtime.target_reasoning_effort = "high"
 
@@ -124,6 +153,61 @@ def test_controlled_and_live_repetition_counts() -> None:
     assert build(tier="controlled").repetitions == 3
     assert build(tier="live").repetitions == 1
     assert build().max_concurrency == 1
+
+
+def test_an_unset_embedding_override_inherits_the_local_llm_default() -> None:
+    """With no evaluation override, the resolved runtime config takes
+    ``llm.embedding_provider`` (default ``"local"``) and
+    ``llm.embedding_model`` unchanged."""
+    settings = ConfigSettings(llm=LLMConfig(embedding_provider="local"))
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_provider == "local"
+    assert runtime.embedding_model == settings.llm.embedding_model
+
+
+def test_an_unset_embedding_override_inherits_an_openai_llm_selection() -> None:
+    """The same inheritance rule for the OpenAI case: no evaluation
+    override, ``llm.embedding_provider: openai`` wins through unchanged."""
+    settings = ConfigSettings(llm=LLMConfig(embedding_provider="openai"))
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_provider == "openai"
+    assert runtime.embedding_model == settings.llm.embedding_model
+
+
+def test_an_explicit_evaluation_override_wins_over_an_inherited_local_default() -> (
+    None
+):
+    settings = ConfigSettings(
+        llm=LLMConfig(embedding_provider="local"),
+        evaluation=EvaluationConfig(embedding_provider="openai"),
+    )
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_provider == "openai"
+
+
+def test_an_explicit_local_override_wins_over_an_inherited_openai_default() -> (
+    None
+):
+    settings = ConfigSettings(
+        llm=LLMConfig(embedding_provider="openai"),
+        evaluation=EvaluationConfig(embedding_provider="local"),
+    )
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_provider == "local"
+
+
+def test_an_explicit_evaluation_embedding_model_wins_over_inheritance() -> None:
+    settings = ConfigSettings(
+        evaluation=EvaluationConfig(embedding_model="text-embedding-3-large")
+    )
+    runtime = build(settings=settings)
+
+    assert runtime.embedding_model == "text-embedding-3-large"
+    assert runtime.embedding_model != settings.llm.embedding_model
 
 
 def test_changing_a_target_effort_refingerprints_but_reuses_the_dataset() -> None:
@@ -138,7 +222,7 @@ def test_changing_a_target_effort_refingerprints_but_reuses_the_dataset() -> Non
 
 def test_changing_the_judge_effort_refingerprints_the_judge() -> None:
     baseline = build()
-    changed = build(judge_reasoning_effort="max")
+    changed = build(judge_reasoning_effort="high")
 
     assert (
         changed.judge_configuration_fingerprint
@@ -170,10 +254,24 @@ def test_experiment_names_follow_the_agreed_shape() -> None:
 def test_the_target_llm_config_carries_the_frozen_effort_and_model() -> None:
     llm = target_llm_config(build(agent_name="planner"), ConfigSettings().llm)
 
-    assert llm.model == "gpt-5.6-luna"
-    assert llm.reasoning_effort == "medium"
-    assert llm.reasoning_mode == "standard"
+    assert llm.provider == "deepseek"
+    assert llm.model == "deepseek-v4-flash"
+    assert llm.reasoning_effort == "max"
+    assert llm.thinking_mode == "enabled"
     assert llm.model_overrides == {}
+
+
+def test_the_target_llm_config_is_accepted_by_the_capability_registry() -> None:
+    """Fail-closed: the baseline profile must be a combination DeepSeek
+    actually supports, checked against the local table, not assumed."""
+    from deep_research.providers import resolve_request_settings
+
+    for agent_name in ("planner", "researcher", "source_evaluator",
+                       "fact_checker", "synthesizer", "critic"):
+        llm = target_llm_config(build(agent_name=agent_name), ConfigSettings().llm)
+        resolved = resolve_request_settings(llm.provider, llm.resolve_for(None))
+        assert resolved.reasoning_effort in ("high", "max")
+        assert resolved.include_temperature is False
 
 
 def test_the_judge_llm_config_is_independent_of_the_target() -> None:
@@ -181,9 +279,38 @@ def test_the_judge_llm_config_is_independent_of_the_target() -> None:
         build(agent_name="researcher"), ConfigSettings().llm
     )
 
-    assert llm.model == "gpt-5.6-luna"
-    assert llm.reasoning_effort == "high"
+    assert llm.provider == "deepseek"
+    assert llm.model == "deepseek-v4-flash"
+    assert llm.reasoning_effort == "max"
+    assert llm.thinking_mode == "enabled"
     assert llm.temperature == 0.0
+
+
+def test_the_judge_llm_config_keeps_the_base_temperature_when_unset() -> None:
+    """``temperature`` is non-optional on ``LLMConfig``; a ``None`` judge
+    temperature means "do not override", never "send null"."""
+    settings = ConfigSettings()
+    settings = settings.model_copy(
+        update={
+            "evaluation": settings.evaluation.model_copy(
+                update={"judge_temperature": None}
+            )
+        }
+    )
+    runtime = build_runtime_config(
+        settings,
+        agent_name="researcher",
+        tier="controlled",
+        case_id=None,
+        reasoning_effort=None,
+        judge_reasoning_effort=None,
+        output_directory=None,
+        experiment_prefix=None,
+        now=NOW,
+        git=GIT,
+    )
+
+    assert judge_llm_config(runtime, settings.llm).temperature == 0.7
 
 
 def test_the_output_root_is_per_agent_and_per_experiment() -> None:
@@ -206,7 +333,7 @@ def test_experiment_metadata_records_everything_the_spec_names() -> None:
         "git_dirty",
         "target_model",
         "target_reasoning_effort",
-        "reasoning_mode",
+        "thinking_mode",
         "configuration_fingerprint",
         "judge_model",
         "judge_reasoning_effort",
@@ -278,4 +405,20 @@ def test_a_secret_leak_error_never_repeats_the_secret() -> None:
 
     assert "sk-" not in str(error)
     assert "metadata.notes[0]" in str(error)
+
+
+def test_known_secret_values_covers_deepseek() -> None:
+    environ = {
+        "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
+        "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
+    }
+
+    assert "sk-deepseek-abcdefgh" in known_secret_values(environ)
+
+
+def test_known_secret_values_still_redacts_a_present_openai_key() -> None:
+    """No longer required, but still scrubbed if the environment has one."""
+    environ = {"OPENAI_API_KEY": "sk-abcdefghijklmnop"}
+
+    assert known_secret_values(environ) == ("sk-abcdefghijklmnop",)
 

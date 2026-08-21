@@ -1,4 +1,4 @@
-"""Preflight fails before any experiment is created."""
+"""Preflight fails before any experiment is created, without a network call."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from deep_research.evaluation.runner import (
     PREFLIGHT_REASONS,
     PreflightError,
     preflight,
-    verify_model_access,
+    validate_model_capabilities,
 )
-from tests.evaluation_fakes import FakeLangSmithClient, FakeOpenAIClient
+from tests.evaluation_fakes import FakeLangSmithClient
 
 ENVIRONMENT = {
-    "OPENAI_API_KEY": "sk-abcdefghijklmnop",
+    "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
     "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
     "LANGSMITH_PROJECT": "evaluation",
 }
@@ -25,9 +25,6 @@ async def run(settings, runtime, tmp_path, **overrides):
         cases=cases_for(runtime.agent_name, runtime.tier),
         environ=dict(ENVIRONMENT),
         langsmith_client=FakeLangSmithClient(),
-        openai_client=FakeOpenAIClient(
-            available=["gpt-5.6-luna", "text-embedding-3-small"]
-        ),
         root=tmp_path,
     )
     kwargs.update(overrides)
@@ -71,77 +68,148 @@ async def test_a_missing_credential_fails_with_its_reason(
 
 
 @pytest.mark.asyncio
-async def test_a_live_run_missing_tavily_fails_before_model_access(
+async def test_a_live_run_missing_tavily_fails_with_missing_credentials(
     settings, runtime_config_for, tmp_path
 ) -> None:
-    """Researcher's live tier also needs Tavily; step 4 must catch that
-    before step 5's real model-access call, not defer it to step 7's
+    """Researcher's live tier also needs Tavily; step 4 must catch that as
+    ``missing_credentials``, not defer it to step 7's
     ``guards_uninstallable``."""
-    environ = dict(ENVIRONMENT)
-    client = FakeOpenAIClient(available=["gpt-5.6-luna", "text-embedding-3-small"])
-
     with pytest.raises(PreflightError) as caught:
         await run(
             settings,
             runtime_config_for("researcher", tier="live"),
             tmp_path,
             cases=cases_for("researcher", "live"),
-            environ=environ,
-            openai_client=client,
         )
 
     assert caught.value.reason == "missing_credentials"
     assert "TAVILY_API_KEY" in str(caught.value)
-    assert client.models.requested == []
 
 
 @pytest.mark.asyncio
-async def test_an_inaccessible_target_model_never_falls_back(
+async def test_a_live_run_with_an_openai_embedding_model_needs_its_key(
     settings, runtime_config_for, tmp_path
 ) -> None:
+    """Task 8 dropped ``OPENAI_API_KEY`` from ``required_credentials``
+    unconditionally; Task 11 then reintroduced a path that needs it -- a
+    live run whose ``evaluation.embedding_provider`` resolves to
+    ``"openai"`` builds an ``OpenAIEmbeddingProvider`` (``dependencies.py``).
+    Step 4 must catch a missing key here, as ``missing_credentials``, rather
+    than passing preflight and failing later at the first memory tool call
+    (scored as the agent failing its own gates). This is the restored
+    coverage for the deleted ``test_a_live_run_checks_the_embedding_model``.
+    """
+    runtime = runtime_config_for("source_evaluator", tier="live").model_copy(
+        update={
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-small",
+        }
+    )
+
     with pytest.raises(PreflightError) as caught:
         await run(
             settings,
-            runtime_config_for("planner"),
+            runtime,
             tmp_path,
-            openai_client=FakeOpenAIClient(available=["gpt-4o"]),
+            cases=cases_for("source_evaluator", "live"),
+        )
+
+    assert caught.value.reason == "missing_credentials"
+    assert "OPENAI_API_KEY" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_a_live_run_with_the_default_local_embedding_needs_no_openai_key(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """Guard against over-fixing: the default stack (DeepSeek chat, local
+    embeddings) must keep passing live-tier preflight with no
+    ``OPENAI_API_KEY`` present anywhere in the environment."""
+    assert "OPENAI_API_KEY" not in ENVIRONMENT
+    await run(
+        settings,
+        runtime_config_for("source_evaluator", tier="live"),
+        tmp_path,
+        cases=cases_for("source_evaluator", "live"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_live_run_with_a_typo_d_openai_embedding_model_fails_closed(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """A typo'd OpenAI embedding model name must fail preflight by name,
+    before any dataset write, instead of at the first live-tier embed."""
+    runtime = runtime_config_for("source_evaluator", tier="live").model_copy(
+        update={
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-large-typo",
+        }
+    )
+    environ = {**ENVIRONMENT, "OPENAI_API_KEY": "sk-openai-abcdefgh"}
+    client = FakeLangSmithClient()
+
+    with pytest.raises(PreflightError) as caught:
+        await run(
+            settings,
+            runtime,
+            tmp_path,
+            cases=cases_for("source_evaluator", "live"),
+            environ=environ,
+            langsmith_client=client,
         )
 
     assert caught.value.reason == "model_unavailable"
-    assert "gpt-5.6-luna" in str(caught.value)
-    assert "gpt-4o" not in str(caught.value)
+    assert "text-embedding-3-large-typo" in str(caught.value)
+    assert client.created_datasets == []
+
+
+@pytest.mark.asyncio
+async def test_a_live_run_with_any_model_name_under_local_embeddings_still_passes(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """Replaces the deleted
+    ``test_a_live_run_with_an_openai_model_name_for_local_embeddings_fails_closed``,
+    which rejected a real OpenAI model name under ``embedding_provider ==
+    "local"``. That rejection was the design error this correction fixes,
+    not a real safeguard: ``LocalEmbeddingProvider`` takes no model
+    argument at all, so no name it is given can ever be "wrong" for it --
+    there is no such thing as a mismatched local model name to catch. Under
+    ``local`` the model string is inert, so any value must pass preflight,
+    and the local adapter is selected regardless (no ``OPENAI_API_KEY`` is
+    present in ``ENVIRONMENT`` and this must still succeed)."""
+    runtime = runtime_config_for("source_evaluator", tier="live").model_copy(
+        update={
+            "embedding_provider": "local",
+            "embedding_model": "text-embedding-3-large",
+        }
+    )
+    client = FakeLangSmithClient()
+
+    await run(
+        settings,
+        runtime,
+        tmp_path,
+        cases=cases_for("source_evaluator", "live"),
+        langsmith_client=client,
+    )
 
 
 @pytest.mark.asyncio
 async def test_the_embedding_model_is_only_checked_for_live_runs(
     settings, runtime_config_for, tmp_path
 ) -> None:
-    client = FakeOpenAIClient(available=["gpt-5.6-luna"])
+    """Restored prior art, deleted by the cutover: a controlled run's
+    embedding model string is inert -- its memory double is hash-based, so
+    nothing ever embeds with it -- and preflight must not reject it."""
+    runtime = runtime_config_for("planner").model_copy(
+        update={
+            "embedding_provider": "openai",
+            "embedding_model": "not-a-real-model",
+        }
+    )
 
-    await run(settings, runtime_config_for("planner"), tmp_path,
-              openai_client=client)
-
-    assert "text-embedding-3-small" not in client.models.requested
-
-
-@pytest.mark.asyncio
-async def test_a_live_run_checks_the_embedding_model(
-    settings, runtime_config_for, tmp_path
-) -> None:
-    client = FakeOpenAIClient(available=["gpt-5.6-luna"])
-
-    with pytest.raises(PreflightError) as caught:
-        await run(
-            settings,
-            runtime_config_for("planner", tier="live"),
-            tmp_path,
-            cases=cases_for("planner", "live"),
-            environ={**ENVIRONMENT, "TAVILY_API_KEY": "tvly-abcdefghijklmnop"},
-            openai_client=client,
-        )
-
-    assert caught.value.reason == "model_unavailable"
-    assert "text-embedding-3-small" in str(caught.value)
+    await run(settings, runtime, tmp_path)
 
 
 @pytest.mark.asyncio
@@ -193,17 +261,6 @@ async def test_an_uncreatable_output_root_fails_preflight(
 
 
 @pytest.mark.asyncio
-async def test_pro_reasoning_mode_is_rejected(
-    settings, runtime_config_for, tmp_path
-) -> None:
-    """Pro mode is not part of the initial harness."""
-    from deep_research.utils.config import EvaluationConfig
-
-    with pytest.raises(ValueError):
-        EvaluationConfig(reasoning_mode="pro")
-
-
-@pytest.mark.asyncio
 async def test_an_unknown_override_key_fails_before_execution(
     settings, runtime_config_for, tmp_path
 ) -> None:
@@ -215,28 +272,77 @@ async def test_an_unknown_override_key_fails_before_execution(
     assert "planner2" in str(caught.value)
 
 
+def _settings_with_target_model(settings, model):
+    evaluation = settings.evaluation.model_copy(update={"target_model": model})
+    return settings.model_copy(update={"evaluation": evaluation})
+
+
 @pytest.mark.asyncio
-async def test_model_access_is_verified_before_any_dataset_write(
+async def test_an_unsupported_target_model_fails_closed_with_no_network(
     settings, runtime_config_for, tmp_path
 ) -> None:
+    broken = _settings_with_target_model(settings, "deepseek-v9-imaginary")
+    runtime = runtime_config_for("planner").model_copy(
+        update={"target_model": "deepseek-v9-imaginary"}
+    )
     client = FakeLangSmithClient()
 
-    with pytest.raises(PreflightError):
-        await run(
-            settings,
-            runtime_config_for("planner"),
-            tmp_path,
-            openai_client=FakeOpenAIClient(available=[]),
-            langsmith_client=client,
-        )
+    with pytest.raises(PreflightError) as caught:
+        await run(broken, runtime, tmp_path, langsmith_client=client)
 
+    assert caught.value.reason == "model_unavailable"
+    assert "deepseek-v9-imaginary" in str(caught.value)
     assert client.created_datasets == []
 
 
 @pytest.mark.asyncio
-async def test_verify_model_access_requests_each_model_once() -> None:
-    client = FakeOpenAIClient(available=["a", "b"])
+async def test_an_unsupported_effort_for_a_supported_model_fails_closed(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """DeepSeek V4 Flash accepts only high and max with thinking enabled."""
+    runtime = runtime_config_for("planner").model_copy(
+        update={"target_reasoning_effort": "low"}
+    )
 
-    await verify_model_access(client, ["a", "b"])
+    with pytest.raises(PreflightError) as caught:
+        await run(settings, runtime, tmp_path)
 
-    assert client.models.requested == ["a", "b"]
+    assert caught.value.reason == "model_unavailable"
+    assert "low" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_judge_model_fails_closed(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    runtime = runtime_config_for("planner").model_copy(
+        update={"judge_model": "gpt-5.6-luna"}
+    )
+
+    with pytest.raises(PreflightError) as caught:
+        await run(settings, runtime, tmp_path)
+
+    assert caught.value.reason == "model_unavailable"
+    assert "gpt-5.6-luna" in str(caught.value)
+
+
+def test_capability_validation_accepts_the_openai_provider_too(
+    settings, runtime_config_for
+) -> None:
+    """Fail-closed applies symmetrically; OpenAI stays selectable."""
+    openai_settings = settings.model_copy(
+        update={
+            "llm": settings.llm.model_copy(update={"provider": "openai"}),
+            "evaluation": settings.evaluation.model_copy(
+                update={
+                    "target_model": "gpt-5.6-luna",
+                    "judge_model": "gpt-5.6-luna",
+                }
+            ),
+        }
+    )
+    runtime = runtime_config_for("planner").model_copy(
+        update={"target_model": "gpt-5.6-luna", "judge_model": "gpt-5.6-luna"}
+    )
+
+    validate_model_capabilities(openai_settings, runtime)

@@ -20,54 +20,90 @@ class MissingSecretsError(ValueError):
     """
 
 
+ProviderName = Literal["deepseek", "openai"]
+EmbeddingProviderName = Literal["local", "openai"]
+ThinkingMode = Literal["enabled", "disabled"]
 ReasoningEffort: TypeAlias = Literal[
-    "none", "low", "medium", "high", "xhigh", "max"
+    "none", "minimal", "low", "medium", "high", "xhigh", "max"
 ]
 
 
-class LLMConfig(BaseModel):
-    """OpenAI model and request settings."""
+class AgentModelOverride(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+    model: str | None = Field(default=None, min_length=1)
+    thinking_mode: ThinkingMode | None = None
+    reasoning_effort: ReasoningEffort | None = None
 
-    provider: str = Field(default="openai", min_length=1)
-    model: str = Field(default="gpt-4o", min_length=1)
+
+class EffectiveModelConfig(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+    model: str = Field(min_length=1)
+    thinking_mode: ThinkingMode
+    reasoning_effort: ReasoningEffort
+
+
+class LLMConfig(BaseModel):
+    """Chat and embedding model and request settings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: ProviderName = "deepseek"
+    model: str = Field(default="deepseek-v4-flash", min_length=1)
+    # Independent of ``provider``: chat and embeddings need not share a
+    # vendor, and the default stack is DeepSeek chat with local embeddings.
+    embedding_provider: EmbeddingProviderName = "local"
     embedding_model: str = Field(
         default="text-embedding-3-small",
         min_length=1,
     )
-    model_overrides: dict[str, str] = Field(default_factory=dict)
+    thinking_mode: ThinkingMode = "enabled"
+    reasoning_effort: ReasoningEffort = "high"
+    model_overrides: dict[str, str | AgentModelOverride] = Field(
+        default_factory=dict
+    )
     timeout: float = Field(default=60.0, gt=0)
     retry_count: int = Field(default=2, ge=0)
-    # ``None`` omits the parameter entirely: reasoning models reject it.
-    temperature: float | None = Field(default=0.7, ge=0.0, le=2.0)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1)
-    # ``None`` omits the Responses ``reasoning`` block entirely, which is
-    # required for non-reasoning models such as gpt-4o.
-    reasoning_effort: ReasoningEffort | None = None
-    # Pro mode is deliberately unrepresentable in this build.
-    reasoning_mode: Literal["standard"] = "standard"
+
+    def resolve_for(self, agent_name: str | None) -> EffectiveModelConfig:
+        override = None if agent_name is None else self.model_overrides.get(agent_name)
+        if isinstance(override, str):
+            return EffectiveModelConfig(
+                model=override,
+                thinking_mode=self.thinking_mode,
+                reasoning_effort=self.reasoning_effort,
+            )
+        return EffectiveModelConfig(
+            model=(
+                self.model
+                if override is None or override.model is None
+                else override.model
+            ),
+            thinking_mode=(
+                self.thinking_mode
+                if override is None or override.thinking_mode is None
+                else override.thinking_mode
+            ),
+            reasoning_effort=(
+                self.reasoning_effort
+                if override is None or override.reasoning_effort is None
+                else override.reasoning_effort
+            ),
+        )
 
     def model_for(self, agent_name: str | None) -> str:
-        """Return an agent override when configured, otherwise the default."""
-        if agent_name is None:
-            return self.model
-        return self.model_overrides.get(agent_name, self.model)
+        return self.resolve_for(agent_name).model
 
-    def request_options(self) -> dict[str, Any]:
-        """The optional Responses parameters this configuration sends.
-
-        Built once here rather than at three call sites so an ordinary
-        call, a structured call, and a structured repair can never drift
-        apart — the spec requires the resolved effort on all three.
-        """
-        options: dict[str, Any] = {"max_output_tokens": self.max_tokens}
-        if self.temperature is not None:
-            options["temperature"] = self.temperature
-        if self.reasoning_effort is not None:
-            options["reasoning"] = {"effort": self.reasoning_effort}
-        return options
 
 class LangSmithConfig(BaseModel):
     """LangSmith tracing settings."""
+
+    model_config = ConfigDict(extra="forbid")
 
     tracing_enabled: bool = False
     project: str = ""
@@ -76,12 +112,16 @@ class LangSmithConfig(BaseModel):
 class TavilyConfig(BaseModel):
     """Tavily search settings."""
 
+    model_config = ConfigDict(extra="forbid")
+
     search_depth: str = "basic"
     max_results: int = 5
 
 
 class LongTermMemoryConfig(BaseModel):
     """Long-term memory settings."""
+
+    model_config = ConfigDict(extra="forbid")
 
     collection_name: str = "deep_research"
     persist_directory: str = "memory/"
@@ -90,17 +130,23 @@ class LongTermMemoryConfig(BaseModel):
 class ShortTermMemoryConfig(BaseModel):
     """Short-term memory settings."""
 
+    model_config = ConfigDict(extra="forbid")
+
     max_turns: int = 20
 
 
 class ProceduralMemoryConfig(BaseModel):
     """Procedural strategy registry settings."""
 
+    model_config = ConfigDict(extra="forbid")
+
     strategies_path: str = "memory/strategies.json"
 
 
 class MemoryConfig(BaseModel):
     """Memory settings."""
+
+    model_config = ConfigDict(extra="forbid")
 
     long_term: LongTermMemoryConfig = LongTermMemoryConfig()
     short_term: ShortTermMemoryConfig = ShortTermMemoryConfig()
@@ -113,6 +159,8 @@ class AgentRuntimeConfig(BaseModel):
     ``tool_budget`` may be zero: an agent with no tools still gets to think
     and finish, it just may never call one.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
@@ -132,12 +180,16 @@ class GraphConfig(BaseModel):
     knob that could contradict the first is a bug waiting to happen.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     max_iterations: int = Field(default=3, ge=1)
     checkpointing_enabled: bool = False
 
 
 class OutputConfig(BaseModel):
     """Output settings."""
+
+    model_config = ConfigDict(extra="forbid")
 
     directory: str = "output/"
     default_format: str = "markdown"
@@ -152,13 +204,16 @@ EVALUATION_AGENT_KEYS = (
     "critic",
 )
 
+# DeepSeek V4 Flash supports exactly two enabled efforts: high and max. The
+# original OpenAI baseline's low/medium levels map onto them as approved in
+# the cutover spec: the two cheapest agents to high, everything else to max.
 _DEFAULT_TARGET_EFFORTS: dict[str, ReasoningEffort] = {
-    "planner": "medium",
-    "researcher": "low",
-    "source_evaluator": "low",
-    "fact_checker": "medium",
-    "synthesizer": "medium",
-    "critic": "medium",
+    "planner": "max",
+    "researcher": "high",
+    "source_evaluator": "high",
+    "fact_checker": "max",
+    "synthesizer": "max",
+    "critic": "max",
 }
 
 
@@ -172,15 +227,20 @@ class EvaluationConfig(BaseModel):
     controlled_repetition_floor: float = Field(default=0.65, ge=0.0, le=1.0)
     live_repetitions: int = Field(default=1, ge=1)
     live_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
-    target_model: str = Field(default="gpt-5.6-luna", min_length=1)
-    target_reasoning_effort: ReasoningEffort = "medium"
+    target_model: str = Field(default="deepseek-v4-flash", min_length=1)
+    target_reasoning_effort: ReasoningEffort = "max"
     target_reasoning_effort_overrides: dict[str, ReasoningEffort] = Field(
         default_factory=lambda: dict(_DEFAULT_TARGET_EFFORTS)
     )
-    judge_model: str = Field(default="gpt-5.6-luna", min_length=1)
-    judge_reasoning_effort: ReasoningEffort = "high"
-    reasoning_mode: Literal["standard"] = "standard"
-    embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
+    judge_model: str = Field(default="deepseek-v4-flash", min_length=1)
+    judge_reasoning_effort: ReasoningEffort = "max"
+    # ``None`` means inherit ``llm.embedding_provider`` / ``llm.embedding_model``:
+    # production is the single source of truth for the embedding selection,
+    # and an evaluation run overrides it only when it sets one of these
+    # explicitly. Live-tier bundles are the only consumer of the resolved
+    # pair.
+    embedding_provider: EmbeddingProviderName | None = None
+    embedding_model: str | None = Field(default=None, min_length=1)
     # ``None`` omits the parameter for models that reject it; the spec pins
     # the judge at 0.0 and that is the default.
     judge_temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
@@ -209,6 +269,8 @@ class EvaluationConfig(BaseModel):
 class ConfigSettings(BaseModel):
     """All non-secret application configuration."""
 
+    model_config = ConfigDict(extra="forbid")
+
     llm: LLMConfig = LLMConfig()
     langsmith: LangSmithConfig = LangSmithConfig()
     tavily: TavilyConfig = TavilyConfig()
@@ -222,6 +284,9 @@ class ConfigSettings(BaseModel):
 _ENVIRONMENT_OVERRIDES = {
     "LLM_PROVIDER": ("llm", "provider"),
     "LLM_MODEL": ("llm", "model"),
+    "LLM_EMBEDDING_PROVIDER": ("llm", "embedding_provider"),
+    "LLM_THINKING_MODE": ("llm", "thinking_mode"),
+    "LLM_REASONING_EFFORT": ("llm", "reasoning_effort"),
     "LLM_EMBEDDING_MODEL": ("llm", "embedding_model"),
     "LLM_TIMEOUT": ("llm", "timeout"),
     "LLM_RETRY_COUNT": ("llm", "retry_count"),
@@ -259,10 +324,15 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "EVALUATION_OUTPUT_DIRECTORY": ("evaluation", "output_directory"),
 }
-_REQUIRED_ENVIRONMENT_VARIABLES = (
-    "OPENAI_API_KEY",
-    "TAVILY_API_KEY",
-)
+_COMMON_REQUIRED_ENVIRONMENT_VARIABLES = ("TAVILY_API_KEY",)
+_CHAT_PROVIDER_ENVIRONMENT_VARIABLES = {
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+}
+_EMBEDDING_PROVIDER_ENVIRONMENT_VARIABLES = {
+    "local": (),
+    "openai": ("OPENAI_API_KEY",),
+}
 _LANGSMITH_ENVIRONMENT_VARIABLES = (
     "LANGSMITH_API_KEY",
     "LANGSMITH_PROJECT",
@@ -352,7 +422,11 @@ def load_config(
     if overrides:
         settings = apply_config_overrides(settings, overrides)
     if strict:
-        _validate_runtime_secrets(tracing_enabled=settings.langsmith.tracing_enabled)
+        _validate_runtime_secrets(
+            provider=settings.llm.provider,
+            embedding_provider=settings.llm.embedding_provider,
+            tracing_enabled=settings.langsmith.tracing_enabled,
+        )
 
     return settings
 
@@ -374,9 +448,27 @@ def _apply_environment_overrides(config: dict[str, Any]) -> None:
         target[path[-1]] = value
 
 
-def _validate_runtime_secrets(*, tracing_enabled: bool) -> None:
-    """Raise when strict-mode runtime secrets are absent or blank."""
-    required = list(_REQUIRED_ENVIRONMENT_VARIABLES)
+def _validate_runtime_secrets(
+    *,
+    provider: ProviderName,
+    embedding_provider: EmbeddingProviderName,
+    tracing_enabled: bool,
+) -> None:
+    """Raise when strict-mode runtime secrets are absent or blank.
+
+    Only the credentials the configured stack actually uses are required:
+    the default DeepSeek-chat/local-embeddings stack needs no OpenAI key
+    at all. De-duplicated in first-seen order so selecting OpenAI for both
+    chat and embeddings names ``OPENAI_API_KEY`` once.
+    """
+    required: list[str] = []
+    for name in (
+        *_CHAT_PROVIDER_ENVIRONMENT_VARIABLES[provider],
+        *_EMBEDDING_PROVIDER_ENVIRONMENT_VARIABLES[embedding_provider],
+        *_COMMON_REQUIRED_ENVIRONMENT_VARIABLES,
+    ):
+        if name not in required:
+            required.append(name)
     if tracing_enabled:
         required.extend(_LANGSMITH_ENVIRONMENT_VARIABLES)
     missing = [

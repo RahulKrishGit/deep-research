@@ -24,6 +24,7 @@ QUESTION = "How mature is quantum error correction?"
 
 @pytest.fixture
 def config_file(tmp_path, monkeypatch) -> str:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
     monkeypatch.setenv("LANGSMITH_TRACING", "false")
@@ -165,6 +166,11 @@ async def test_a_missing_config_file_is_a_configuration_failure(tracker) -> None
 
 @pytest.mark.asyncio
 async def test_missing_api_keys_fail_fast(tmp_path, monkeypatch, tracker) -> None:
+    # An empty config defaults to deepseek chat plus local embeddings, so
+    # the chat secret that must be missing to exercise this path is
+    # DEEPSEEK_API_KEY, not OPENAI_API_KEY (which the default stack never
+    # requires).
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     path = tmp_path / "config.yaml"
@@ -178,7 +184,7 @@ async def test_missing_api_keys_fail_fast(tmp_path, monkeypatch, tracker) -> Non
         )
 
     assert caught.value.reason == "missing_secrets"
-    assert "OPENAI_API_KEY" in str(caught.value)
+    assert "DEEPSEEK_API_KEY" in str(caught.value)
 
 
 @pytest.mark.asyncio
