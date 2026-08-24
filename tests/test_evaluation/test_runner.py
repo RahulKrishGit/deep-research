@@ -10,6 +10,7 @@ from deep_research.evaluation.runner import (
     PreflightError,
     aggregate_quality,
     build_case_result,
+    build_evaluation_status_values,
     build_evaluation_summary_feedback,
     decide_status,
     run_agent_evaluation,
@@ -20,6 +21,7 @@ from tests.evaluation_fakes import (
     FakeExample,
     FakeExperimentResults,
     FakeLangSmithClient,
+    FakeProject,
 )
 
 
@@ -180,6 +182,22 @@ def test_the_summary_feedback_matches_the_local_passing_status(
             "all cases passed automated checks; human review required"
         ),
     }
+
+
+def test_summary_feedback_uses_the_shared_status_values(
+    passing_cases, runtime_config_for
+) -> None:
+    runtime = runtime_config_for("planner")
+    status_values = build_evaluation_status_values(
+        passing_cases, tier="controlled", runtime=runtime
+    )
+    feedback_values = _summary_values(
+        build_evaluation_summary_feedback(
+            passing_cases, tier="controlled", runtime=runtime
+        )
+    )
+
+    assert feedback_values == status_values
 
 
 def test_the_summary_feedback_names_the_first_failed_gate(
@@ -427,6 +445,141 @@ async def test_summary_upload_failure_is_recorded_without_rewriting_verdict(
     assert any(
         error.stage == "trace"
         and error.reason == "langsmith_summary_unavailable"
+        for error in result.errors
+    )
+    assert secret not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_project_metadata_merges_shared_status_values_by_experiment_id(
+    settings, runtime_config_for, tmp_path, partially_failing_harness
+) -> None:
+    project = FakeProject(
+        "project-42",
+        metadata={
+            "unrelated_key": "preserve me",
+            "evaluation_status": "STALE",
+        },
+    )
+    client = FakeLangSmithClient(projects=[project])
+    runner = FakeEvaluateRunner(
+        examples=partially_failing_harness.examples,
+        results=FakeExperimentResults(
+            experiment_name="planner-controlled",
+            url="https://smith.langchain.test/experiments/42",
+            experiment_id="project-42",
+        ),
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=partially_failing_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        **partially_failing_harness.kwargs(tmp_path),
+    )
+
+    assert result.status == "FAILED"
+    assert client.read_project_calls == ["project-42"]
+    assert client.updated_projects == [
+        {
+            "project_id": "project-42",
+            "metadata": {
+                "unrelated_key": "preserve me",
+                "evaluation_status": "FAILED",
+                "evaluation_failure_reason": (
+                    "focused-decomposition repetition 2 failed provider_failure"
+                ),
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["read", "update"])
+async def test_project_metadata_failure_is_verdict_neutral_and_secret_safe(
+    settings,
+    runtime_config_for,
+    tmp_path,
+    partially_failing_harness,
+    failure_stage,
+) -> None:
+    secret = f"sk-project-metadata-{failure_stage}-secret-123456"
+    error = ConnectionError(f"project metadata failed with {secret}")
+    client = FakeLangSmithClient(
+        projects=[FakeProject("project-42", metadata={"unrelated": True})],
+        project_read_error=error if failure_stage == "read" else None,
+        project_update_error=error if failure_stage == "update" else None,
+    )
+    runner = FakeEvaluateRunner(
+        examples=partially_failing_harness.examples,
+        results=FakeExperimentResults(
+            experiment_name="planner-controlled",
+            url="https://smith.langchain.test/experiments/42",
+            experiment_id="project-42",
+        ),
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=partially_failing_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        secrets=(secret,),
+        **{
+            key: value
+            for key, value in partially_failing_harness.kwargs(tmp_path).items()
+            if key != "secrets"
+        },
+    )
+
+    assert result.status == "FAILED"
+    assert any(
+        error.stage == "trace"
+        and error.reason == "langsmith_project_metadata_unavailable"
+        for error in result.errors
+    )
+    assert secret not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_missing_experiment_id_is_verdict_neutral_and_secret_safe(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    secret = "sk-missing-project-id-secret-123456"
+    runner = FakeEvaluateRunner(
+        examples=evaluation_harness.examples,
+        results=FakeExperimentResults(
+            experiment_name="planner-controlled",
+            url="https://smith.langchain.test/experiments/42",
+            experiment_id=None,
+        ),
+    )
+    client = FakeLangSmithClient()
+    runtime = runtime_config_for("planner")
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime,
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        secrets=(secret,),
+        **{
+            key: value
+            for key, value in evaluation_harness.kwargs(tmp_path).items()
+            if key != "secrets"
+        },
+    )
+
+    assert result.status == decide_status(
+        result.cases, tier="controlled", runtime=runtime
+    )
+    assert client.read_project_calls == []
+    assert any(
+        error.reason == "langsmith_project_metadata_unavailable"
         for error in result.errors
     )
     assert secret not in result.model_dump_json()

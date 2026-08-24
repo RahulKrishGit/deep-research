@@ -26,6 +26,12 @@ class FakeExample:
         self.metadata = dict(metadata)
 
 
+class FakeProject:
+    def __init__(self, project_id: str, *, metadata: Mapping[str, Any] = ()) -> None:
+        self.id = project_id
+        self.metadata = dict(metadata)
+
+
 class FakeLangSmithClient:
     """Records every dataset call; deletion methods raise on sight."""
 
@@ -34,8 +40,14 @@ class FakeLangSmithClient:
         *,
         datasets: Sequence[FakeDataset] = (),
         project_feedback_error: Exception | None = None,
+        projects: Sequence[FakeProject] = (),
+        project_read_error: Exception | None = None,
+        project_update_error: Exception | None = None,
     ) -> None:
         self._project_feedback_error = project_feedback_error
+        self._projects = {project.id: project for project in projects}
+        self._project_read_error = project_read_error
+        self._project_update_error = project_update_error
         self._datasets = {dataset.name: dataset for dataset in datasets}
         self._examples: dict[str, list[FakeExample]] = {
             dataset.name: [] for dataset in datasets
@@ -44,6 +56,8 @@ class FakeLangSmithClient:
         self.created_examples: list[dict[str, Any]] = []
         self.updated_examples: list[dict[str, Any]] = []
         self.feedback: list[dict[str, Any]] = []
+        self.read_project_calls: list[str] = []
+        self.updated_projects: list[dict[str, Any]] = []
 
     def has_dataset(self, *, dataset_name: str) -> bool:
         return dataset_name in self._datasets
@@ -94,6 +108,25 @@ class FakeLangSmithClient:
             raise self._project_feedback_error
         self.feedback.append({"run_id": run_id, "key": key, **kwargs})
 
+    def read_project(self, project_id: str) -> FakeProject:
+        self.read_project_calls.append(project_id)
+        if self._project_read_error is not None:
+            raise self._project_read_error
+        if project_id not in self._projects:
+            raise LookupError(project_id)
+        return self._projects[project_id]
+
+    def update_project(
+        self, project_id: str, *, metadata: Mapping[str, Any]
+    ) -> FakeProject:
+        if self._project_update_error is not None:
+            raise self._project_update_error
+        payload = {"project_id": project_id, "metadata": dict(metadata)}
+        self.updated_projects.append(payload)
+        project = self._projects[project_id]
+        project.metadata = dict(metadata)
+        return project
+
     def delete_dataset(self, *args: Any, **kwargs: Any) -> None:
         raise AssertionError("evaluation must never delete a dataset")
 
@@ -111,6 +144,7 @@ class FakeExperimentResults:
     comparison_url: str | None = None
     comparison_error: Exception | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
+    experiment_id: str | None = "experiment-1"
 
     async def get_comparison_url(self) -> str | None:
         if self.comparison_error is not None:
