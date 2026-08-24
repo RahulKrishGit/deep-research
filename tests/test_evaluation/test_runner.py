@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 
 from deep_research.evaluation.cli import _focused_dataset_examples
@@ -494,6 +496,44 @@ async def test_project_metadata_merges_shared_status_values_by_experiment_id(
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_project_metadata_accepts_uuid_experiment_id(
+    settings, runtime_config_for, tmp_path, partially_failing_harness
+) -> None:
+    experiment_id = UUID("12345678-1234-5678-1234-567812345678")
+    project = FakeProject(
+        experiment_id,
+        metadata={"unrelated_key": "preserve me"},
+    )
+    client = FakeLangSmithClient(projects=[project])
+    runner = FakeEvaluateRunner(
+        examples=partially_failing_harness.examples,
+        results=FakeExperimentResults(
+            experiment_name="planner-controlled",
+            url="https://smith.langchain.test/experiments/42",
+            experiment_id=experiment_id,
+        ),
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=partially_failing_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        **partially_failing_harness.kwargs(tmp_path),
+    )
+
+    assert result.status == "FAILED"
+    assert client.read_project_calls == [experiment_id]
+    assert client.updated_projects[0]["project_id"] == experiment_id
+    assert client.updated_projects[0]["metadata"]["unrelated_key"] == "preserve me"
+    assert not any(
+        error.reason == "langsmith_project_metadata_unavailable"
+        for error in result.errors
+    )
 
 
 @pytest.mark.asyncio

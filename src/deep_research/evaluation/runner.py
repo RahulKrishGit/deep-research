@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, get_args
+from uuid import UUID
 
 from langsmith import Client as LangSmithClient
 from langsmith.evaluation import aevaluate
@@ -761,7 +762,7 @@ def merge_evaluation_status_metadata(
 def publish_evaluation_status_metadata(
     langsmith_client: Any,
     *,
-    project_id: str,
+    project_id: str | UUID,
     status_values: Mapping[str, str],
 ) -> None:
     """Read, merge, and publish status metadata for one LangSmith project."""
@@ -1172,7 +1173,7 @@ async def run_agent_evaluation(
         if langsmith_client is not None:
             try:
                 experiment_id = getattr(evaluation_results, "experiment_id", None)
-                if not isinstance(experiment_id, str) or not experiment_id:
+                if not isinstance(experiment_id, (str, UUID)) or not experiment_id:
                     raise LookupError("experiment id unavailable")
                 final_case_results = _build_case_results(
                     case_by_identity,
