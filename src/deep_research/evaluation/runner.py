@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, get_args
 
+from langsmith import Client as LangSmithClient
 from langsmith.evaluation import aevaluate
 from pydantic import ValidationError
 
@@ -397,6 +398,49 @@ EXPERIMENT_EXIT_CODES: dict[EvaluationStatus, int] = {
 }
 
 EvaluateCallable = Callable[..., Awaitable[Any]]
+
+_SUMMARY_FEEDBACK_KEYS = frozenset(
+    {"evaluation_status", "evaluation_failure_reason"}
+)
+
+
+class _SummaryFeedbackClient:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        errors: list[EvaluationFailure],
+        secrets: Sequence[str],
+    ) -> None:
+        self._client = client
+        self._errors = errors
+        self._secrets = tuple(secrets)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+    def create_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return self._client.create_feedback(*args, **kwargs)
+        except Exception as error:
+            key = kwargs.get("key")
+            run_id = kwargs.get("run_id")
+            project_id = kwargs.get("project_id")
+            if (
+                key in _SUMMARY_FEEDBACK_KEYS
+                and run_id is None
+                and project_id is not None
+            ):
+                self._errors.append(
+                    EvaluationFailure(
+                        stage="trace",
+                        reason="langsmith_summary_unavailable",
+                        message=_safe_error_message(error, self._secrets),
+                        exception_type=type(error).__name__,
+                    )
+                )
+            raise
+
 
 _JUDGE_NOT_RUN_REASONS = frozenset(get_args(JudgeNotRunReason))
 
@@ -857,6 +901,7 @@ async def run_agent_evaluation(
     dependency_factory: DependencyFactory,
     secrets: Sequence[str] = (),
     root: Path,
+    langsmith_client: Any | None = None,
 ) -> ExperimentResult:
     """Run one experiment end to end: target, gates, judge, aggregation,
     thresholds, and the local artifact.
@@ -1023,6 +1068,16 @@ async def run_agent_evaluation(
             )
             return {"results": []}
 
+    evaluation_client = (
+        _SummaryFeedbackClient(
+            langsmith_client,
+            errors=summary_errors,
+            secrets=secrets,
+        )
+        if langsmith_client is not None
+        else None
+    )
+
     try:
         evaluation_results = await evaluate(
             target,
@@ -1037,6 +1092,7 @@ async def run_agent_evaluation(
             num_repetitions=runtime.repetitions,
             max_concurrency=runtime.max_concurrency,
             metadata=experiment_metadata(runtime, settings),
+            client=evaluation_client,
         )
     except Exception as error:
         evaluation_errors.append(
@@ -1180,6 +1236,7 @@ async def run_suite_evaluation(
     experiment_prefix: str | None,
     config_path: str,
     evaluate: EvaluateCallable = aevaluate,
+    langsmith_client_factory: Callable[[], Any] = LangSmithClient,
     now: datetime,
     git: GitMetadata,
 ) -> SuiteResult:
@@ -1235,6 +1292,7 @@ async def run_suite_evaluation(
                 tracker,
                 api_key=chat_key,
             )
+            langsmith_client = langsmith_client_factory()
 
             result = await run_agent_evaluation(
                 settings,
@@ -1247,6 +1305,7 @@ async def run_suite_evaluation(
                 dependency_factory=build_controlled_dependencies,
                 secrets=known_secret_values(environ),
                 root=runtime.output_root,
+                langsmith_client=langsmith_client,
             )
         except Exception as error:
             # One broken agent must not abort the rest of the suite --

@@ -398,6 +398,41 @@ async def test_the_summary_observes_every_completed_row_before_it_runs(
 
 
 @pytest.mark.asyncio
+async def test_summary_upload_failure_is_recorded_without_rewriting_verdict(
+    settings, runtime_config_for, tmp_path, partially_failing_harness
+) -> None:
+    secret = "sk-summary-upload-secret-123456"
+    client = FakeLangSmithClient(
+        project_feedback_error=ConnectionError(
+            f"summary upload rejected credential {secret}"
+        )
+    )
+    runner = FakeEvaluateRunner(examples=partially_failing_harness.examples)
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=partially_failing_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        secrets=(secret,),
+        **{
+            key: value
+            for key, value in partially_failing_harness.kwargs(tmp_path).items()
+            if key != "secrets"
+        },
+    )
+
+    assert result.status == "FAILED"
+    assert any(
+        error.stage == "trace"
+        and error.reason == "langsmith_summary_unavailable"
+        for error in result.errors
+    )
+    assert secret not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
 async def test_a_full_controlled_run_produces_nine_repetitions(
     settings, runtime_config_for, tmp_path, evaluation_harness
 ) -> None:

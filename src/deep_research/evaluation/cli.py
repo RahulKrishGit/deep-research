@@ -359,6 +359,7 @@ async def _run_agent_pipeline(
         dependency_factory=dependency_factory,
         secrets=known_secret_values(environ),
         root=root,
+        langsmith_client=langsmith_client,
     )
 
 

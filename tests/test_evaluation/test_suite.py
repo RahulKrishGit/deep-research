@@ -72,6 +72,23 @@ async def test_each_agent_keeps_its_own_target_effort_in_the_suite(
 
 
 @pytest.mark.asyncio
+async def test_each_suite_experiment_submits_summary_feedback(
+    settings, tmp_path, suite_harness
+) -> None:
+    await run_suite_evaluation(settings, **suite_harness.kwargs(tmp_path))
+
+    clients = [call["client"]._client for call in suite_harness.runner.calls]
+
+    assert len(clients) == len(AGENT_NAMES)
+    assert len({id(client) for client in clients}) == len(AGENT_NAMES)
+    assert all(
+        [item["key"] for item in client.feedback]
+        == ["evaluation_status", "evaluation_failure_reason"]
+        for client in clients
+    )
+
+
+@pytest.mark.asyncio
 async def test_one_failing_agent_does_not_stop_the_others(
     settings, tmp_path, partially_failing_suite_harness
 ) -> None:

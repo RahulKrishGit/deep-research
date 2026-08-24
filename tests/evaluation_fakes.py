@@ -29,7 +29,13 @@ class FakeExample:
 class FakeLangSmithClient:
     """Records every dataset call; deletion methods raise on sight."""
 
-    def __init__(self, *, datasets: Sequence[FakeDataset] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        datasets: Sequence[FakeDataset] = (),
+        project_feedback_error: Exception | None = None,
+    ) -> None:
+        self._project_feedback_error = project_feedback_error
         self._datasets = {dataset.name: dataset for dataset in datasets}
         self._examples: dict[str, list[FakeExample]] = {
             dataset.name: [] for dataset in datasets
@@ -79,6 +85,13 @@ class FakeLangSmithClient:
             self.updated_examples.append(dict(payload))
 
     def create_feedback(self, run_id, key, **kwargs: Any) -> None:
+        if (
+            run_id is None
+            and kwargs.get("project_id") is not None
+            and key in {"evaluation_status", "evaluation_failure_reason"}
+            and self._project_feedback_error is not None
+        ):
+            raise self._project_feedback_error
         self.feedback.append({"run_id": run_id, "key": key, **kwargs})
 
     def delete_dataset(self, *args: Any, **kwargs: Any) -> None:
@@ -160,7 +173,16 @@ class FakeEvaluateRunner:
         for evaluator in summary_evaluators:
             try:
                 result = evaluator(runs, example_rows)
-                self.summary_feedback.extend(list(result.get("results", [])))
+                feedback = list(result.get("results", []))
+                self.summary_feedback.extend(feedback)
+                client = kwargs.get("client")
+                if client is not None:
+                    for item in feedback:
+                        client.create_feedback(
+                            run_id=None,
+                            project_id="experiment-1",
+                            **item,
+                        )
             except Exception:
                 # LangSmith 0.10.11 logs and swallows summary-evaluator failures.
                 continue
