@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 
 class FakeDataset:
@@ -27,7 +27,9 @@ class FakeExample:
 
 
 class FakeProject:
-    def __init__(self, project_id: str, *, metadata: Mapping[str, Any] = ()) -> None:
+    def __init__(
+        self, project_id: str | UUID, *, metadata: Mapping[str, Any] = ()
+    ) -> None:
         self.id = project_id
         self.metadata = dict(metadata)
 
@@ -56,7 +58,7 @@ class FakeLangSmithClient:
         self.created_examples: list[dict[str, Any]] = []
         self.updated_examples: list[dict[str, Any]] = []
         self.feedback: list[dict[str, Any]] = []
-        self.read_project_calls: list[str] = []
+        self.read_project_calls: list[str | UUID] = []
         self.updated_projects: list[dict[str, Any]] = []
 
     def has_dataset(self, *, dataset_name: str) -> bool:
@@ -108,7 +110,7 @@ class FakeLangSmithClient:
             raise self._project_feedback_error
         self.feedback.append({"run_id": run_id, "key": key, **kwargs})
 
-    def read_project(self, project_id: str) -> FakeProject:
+    def read_project(self, project_id: str | UUID) -> FakeProject:
         self.read_project_calls.append(project_id)
         if self._project_read_error is not None:
             raise self._project_read_error
@@ -117,7 +119,7 @@ class FakeLangSmithClient:
         return self._projects[project_id]
 
     def update_project(
-        self, project_id: str, *, metadata: Mapping[str, Any]
+        self, project_id: str | UUID, *, metadata: Mapping[str, Any]
     ) -> FakeProject:
         if self._project_update_error is not None:
             raise self._project_update_error
@@ -144,7 +146,7 @@ class FakeExperimentResults:
     comparison_url: str | None = None
     comparison_error: Exception | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
-    experiment_id: str | None = "experiment-1"
+    experiment_id: str | UUID | None = "experiment-1"
 
     async def get_comparison_url(self) -> str | None:
         if self.comparison_error is not None:
