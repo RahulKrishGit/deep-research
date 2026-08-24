@@ -665,6 +665,10 @@ def evaluation_failure_reason(
                     f"{case.case_id} repetition {repetition.repetition} "
                     f"failed {repetition.errors[0].reason}"
                 )
+    for case in cases:
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
             if repetition.gates.failed_ids:
                 return (
                     f"{case.case_id} repetition {repetition.repetition} "
@@ -712,21 +716,63 @@ def build_evaluation_summary_feedback(
     runtime: EvaluationRuntimeConfig,
     errors: Sequence[EvaluationFailure] = (),
 ) -> dict[str, list[dict[str, JsonValue]]]:
-    status = decide_status(cases, tier=tier, runtime=runtime, errors=errors)
+    status_values = build_evaluation_status_values(
+        cases, tier=tier, runtime=runtime, errors=errors
+    )
     return {
         "results": [
-            {"key": "evaluation_status", "value": status},
+            {"key": "evaluation_status", "value": status_values["evaluation_status"]},
             {
                 "key": "evaluation_failure_reason",
-                "value": evaluation_failure_reason(
-                    cases,
-                    status=status,
-                    runtime=runtime,
-                    errors=errors,
-                ),
+                "value": status_values["evaluation_failure_reason"],
             },
         ]
     }
+
+
+def build_evaluation_status_values(
+    cases: Sequence[CaseResult],
+    *,
+    tier: EvaluationTier,
+    runtime: EvaluationRuntimeConfig,
+    errors: Sequence[EvaluationFailure] = (),
+) -> dict[str, str]:
+    """Build the authoritative status projection for feedback and metadata."""
+    status = decide_status(cases, tier=tier, runtime=runtime, errors=errors)
+    return {
+        "evaluation_status": status,
+        "evaluation_failure_reason": evaluation_failure_reason(
+            cases,
+            status=status,
+            runtime=runtime,
+            errors=errors,
+        ),
+    }
+
+
+def merge_evaluation_status_metadata(
+    existing_metadata: Mapping[str, Any] | None,
+    status_values: Mapping[str, str],
+) -> dict[str, Any]:
+    """Return status metadata merged over existing values without mutation."""
+    return {**(existing_metadata or {}), **status_values}
+
+
+def publish_evaluation_status_metadata(
+    langsmith_client: Any,
+    *,
+    project_id: str,
+    status_values: Mapping[str, str],
+) -> None:
+    """Read, merge, and publish status metadata for one LangSmith project."""
+    project = langsmith_client.read_project(project_id=project_id)
+    metadata = merge_evaluation_status_metadata(
+        getattr(project, "metadata", None), status_values
+    )
+    langsmith_client.update_project(
+        project_id=project_id,
+        metadata=metadata,
+    )
 
 
 def _row_identity(
@@ -1039,6 +1085,7 @@ async def run_agent_evaluation(
     evaluation_errors: list[EvaluationFailure] = []
     auxiliary_errors: list[EvaluationFailure] = []
     summary_errors: list[EvaluationFailure] = []
+    metadata_errors: list[EvaluationFailure] = []
     experiment_url: str | None = None
 
     def evaluation_status(
@@ -1122,6 +1169,36 @@ async def run_agent_evaluation(
                 )
             )
 
+        if langsmith_client is not None:
+            try:
+                experiment_id = getattr(evaluation_results, "experiment_id", None)
+                if not isinstance(experiment_id, str) or not experiment_id:
+                    raise LookupError("experiment id unavailable")
+                final_case_results = _build_case_results(
+                    case_by_identity,
+                    repetitions_by_case,
+                    runtime=runtime,
+                )
+                publish_evaluation_status_metadata(
+                    langsmith_client,
+                    project_id=experiment_id,
+                    status_values=build_evaluation_status_values(
+                        final_case_results,
+                        tier=runtime.tier,
+                        runtime=runtime,
+                        errors=evaluation_errors,
+                    ),
+                )
+            except Exception as error:
+                metadata_errors.append(
+                    EvaluationFailure(
+                        stage="trace",
+                        reason="langsmith_project_metadata_unavailable",
+                        message=_safe_error_message(error, secrets),
+                        exception_type=type(error).__name__,
+                    )
+                )
+
     case_results = _build_case_results(
         case_by_identity,
         repetitions_by_case,
@@ -1142,7 +1219,12 @@ async def run_agent_evaluation(
             errors=evaluation_errors,
         ),
         metadata=experiment_metadata(runtime, settings),
-        errors=[*evaluation_errors, *auxiliary_errors, *summary_errors],
+        errors=[
+            *evaluation_errors,
+            *auxiliary_errors,
+            *summary_errors,
+            *metadata_errors,
+        ],
     )
 
     path = runtime.output_root / "results.json"
