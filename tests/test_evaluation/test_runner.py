@@ -5,10 +5,12 @@ from __future__ import annotations
 import pytest
 
 from deep_research.evaluation.cli import _focused_dataset_examples
+from deep_research.evaluation.models import EvaluationFailure, GateReport, GateResult
 from deep_research.evaluation.runner import (
     PreflightError,
     aggregate_quality,
     build_case_result,
+    build_evaluation_summary_feedback,
     decide_status,
     run_agent_evaluation,
 )
@@ -156,6 +158,105 @@ def test_controlled_status_is_failed_when_one_repetition_fails(
     )
 
     assert status == "FAILED"
+
+
+def _summary_values(payload) -> dict[str, str]:
+    return {item["key"]: item["value"] for item in payload["results"]}
+
+
+def test_the_summary_feedback_matches_the_local_passing_status(
+    passing_cases, runtime_config_for
+) -> None:
+    runtime = runtime_config_for("planner")
+    payload = build_evaluation_summary_feedback(
+        passing_cases, tier="controlled", runtime=runtime
+    )
+
+    assert _summary_values(payload) == {
+        "evaluation_status": decide_status(
+            passing_cases, tier="controlled", runtime=runtime
+        ),
+        "evaluation_failure_reason": (
+            "all cases passed automated checks; human review required"
+        ),
+    }
+
+
+def test_the_summary_feedback_names_the_first_failed_gate(
+    failing_experiment_result, runtime_config_for
+) -> None:
+    payload = build_evaluation_summary_feedback(
+        failing_experiment_result.cases,
+        tier="controlled",
+        runtime=runtime_config_for("synthesizer"),
+    )
+
+    assert _summary_values(payload) == {
+        "evaluation_status": "FAILED",
+        "evaluation_failure_reason": (
+            "unsupported-claim repetition 1 failed citations_known"
+        ),
+    }
+
+
+def test_the_summary_feedback_names_a_typed_infrastructure_reason(
+    runtime_config_for,
+) -> None:
+    errors = [
+        EvaluationFailure(
+            stage="trace",
+            reason="langsmith_unavailable",
+            message="transport text must not be summarized",
+        )
+    ]
+    payload = build_evaluation_summary_feedback(
+        [],
+        tier="controlled",
+        runtime=runtime_config_for("planner"),
+        errors=errors,
+    )
+
+    assert _summary_values(payload) == {
+        "evaluation_status": "INFRASTRUCTURE FAILURE",
+        "evaluation_failure_reason": "trace:langsmith_unavailable",
+    }
+
+
+def test_the_failure_summary_never_reads_messages_details_or_rationales(
+    repetition_with_failed_gate, runtime_config_for
+) -> None:
+    secret = "sk-summary-must-not-leak-123456"
+    failure = EvaluationFailure(
+        stage="provider",
+        reason="provider_failure",
+        message=f"provider rejected key={secret}",
+    )
+    repetition = repetition_with_failed_gate.model_copy(
+        update={
+            "errors": [failure],
+            "gates": GateReport(
+                results=[
+                    GateResult(
+                        gate_id="prioritized_subtopics",
+                        passed=False,
+                        detail=f"raw output contained {secret}",
+                    )
+                ]
+            ),
+        }
+    )
+    case = build_case_result(None, [repetition], threshold=0.80)
+
+    payload = build_evaluation_summary_feedback(
+        [case],
+        tier="controlled",
+        runtime=runtime_config_for("planner"),
+    )
+
+    assert _summary_values(payload)["evaluation_failure_reason"] == (
+        "focused-decomposition repetition 98 failed provider_failure"
+    )
+    assert secret not in repr(payload)
 
 
 def test_the_live_threshold_is_zero_point_seven_five(

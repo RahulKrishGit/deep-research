@@ -564,6 +564,106 @@ def decide_status(
     return "REVIEW REQUIRED"
 
 
+def _quality_thresholds(
+    runtime: EvaluationRuntimeConfig,
+) -> tuple[float, float]:
+    if runtime.tier == "live":
+        return runtime.live_threshold, runtime.live_threshold
+    return runtime.case_average_threshold, runtime.repetition_floor
+
+
+def evaluation_failure_reason(
+    cases: Sequence[CaseResult],
+    *,
+    status: EvaluationStatus,
+    runtime: EvaluationRuntimeConfig,
+    errors: Sequence[EvaluationFailure] = (),
+) -> str:
+    """Return one deterministic summary built only from safe identifiers."""
+    if status == "REVIEW REQUIRED":
+        return "all cases passed automated checks; human review required"
+
+    infrastructure = next(
+        (error for error in errors if error.stage in ("trace", "setup")),
+        None,
+    )
+    if infrastructure is not None:
+        return f"{infrastructure.stage}:{infrastructure.reason}"
+
+    threshold, floor = _quality_thresholds(runtime)
+    for case in cases:
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
+            if repetition.errors:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    f"failed {repetition.errors[0].reason}"
+                )
+            if repetition.gates.failed_ids:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    f"failed {repetition.gates.failed_ids[0]}"
+                )
+            if not repetition.completed:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    "failed run_incomplete"
+                )
+            if repetition.judge is None:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    "failed judge_missing"
+                )
+            if repetition.judge.status == "judge_not_run":
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    f"failed {repetition.judge.not_run_reason}"
+                )
+            if repetition.aggregate_quality is None:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    "failed aggregate_quality_unavailable"
+                )
+            if repetition.aggregate_quality < floor:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    "failed repetition_floor"
+                )
+        if case.average_quality is None:
+            return f"{case.case_id} failed case_average_unavailable"
+        if case.average_quality < threshold:
+            return f"{case.case_id} failed case_average_threshold"
+        if not case.passed:
+            return f"{case.case_id} failed case_result"
+
+    return "evaluation failed"
+
+
+def build_evaluation_summary_feedback(
+    cases: Sequence[CaseResult],
+    *,
+    tier: EvaluationTier,
+    runtime: EvaluationRuntimeConfig,
+    errors: Sequence[EvaluationFailure] = (),
+) -> dict[str, list[dict[str, JsonValue]]]:
+    status = decide_status(cases, tier=tier, runtime=runtime, errors=errors)
+    return {
+        "results": [
+            {"key": "evaluation_status", "value": status},
+            {
+                "key": "evaluation_failure_reason",
+                "value": evaluation_failure_reason(
+                    cases,
+                    status=status,
+                    runtime=runtime,
+                    errors=errors,
+                ),
+            },
+        ]
+    }
+
+
 def _row_identity(
     outputs: Mapping[str, JsonValue],
 ) -> tuple[str, int, int] | None:
