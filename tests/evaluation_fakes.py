@@ -94,8 +94,25 @@ class FakeLangSmithClient:
 @dataclass
 class FakeExperimentResults:
     experiment_name: str
-    url: str
+    url: str | None
+    comparison_url: str | None = None
+    comparison_error: Exception | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
+
+    async def get_comparison_url(self) -> str | None:
+        if self.comparison_error is not None:
+            raise self.comparison_error
+        return self.comparison_url
+
+
+def _example_payload(example: Any) -> dict[str, Any]:
+    if isinstance(example, Mapping):
+        return dict(example)
+    return {
+        "inputs": dict(example.inputs),
+        "outputs": dict(example.outputs),
+        "metadata": dict(example.metadata),
+    }
 
 
 class FakeEvaluateRunner:
@@ -105,16 +122,25 @@ class FakeEvaluateRunner:
     evaluator ``num_repetitions`` times per example, sequentially.
     """
 
-    def __init__(self, *, examples: Sequence[Mapping] = ()) -> None:
-        self.examples = [dict(example) for example in examples]
+    def __init__(
+        self,
+        *,
+        examples: Sequence[Any] = (),
+        results: FakeExperimentResults | None = None,
+    ) -> None:
+        self.examples = list(examples)
+        self.results = results
         self.calls: list[dict[str, Any]] = []
         self.rows: list[dict[str, Any]] = []
 
     async def __call__(self, target, /, **kwargs: Any):
         self.calls.append(dict(kwargs))
         evaluators = kwargs.get("evaluators") or []
+        data = kwargs.get("data")
+        raw_examples = self.examples if isinstance(data, str) else list(data)
+        examples = [_example_payload(example) for example in raw_examples]
         for _ in range(kwargs.get("num_repetitions", 1)):
-            for example in self.examples:
+            for example in examples:
                 outputs = await target(example["inputs"])
                 run = FakeRun(outputs=outputs)
                 feedback = []
@@ -124,7 +150,7 @@ class FakeEvaluateRunner:
                         result = await result
                     feedback.append(result)
                 self.rows.append({"outputs": outputs, "feedback": feedback})
-        return FakeExperimentResults(
+        return self.results or FakeExperimentResults(
             experiment_name=kwargs.get("experiment_prefix", "experiment"),
             url="https://smith.langchain.test/experiments/1",
             rows=self.rows,

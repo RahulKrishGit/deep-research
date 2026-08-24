@@ -12,15 +12,80 @@ from deep_research.evaluation.cli import (
     EXIT_INTERRUPTED,
     EXIT_OK,
     EXIT_USAGE,
+    _focused_dataset_examples,
     main,
     parse_arguments,
 )
+from deep_research.evaluation.runner import PreflightError
+from tests.evaluation_fakes import FakeDataset, FakeLangSmithClient
 
 
 def run(argv, **kwargs):
     stream = io.StringIO()
     code = main(argv, stream=stream, **kwargs)
     return code, stream.getvalue()
+
+
+def _dataset_client(name, examples):
+    dataset = FakeDataset(name, "dataset-1")
+    client = FakeLangSmithClient(datasets=[dataset])
+    client.create_examples(dataset_id=dataset.id, examples=examples)
+    return client
+
+
+def test_focused_selection_returns_only_the_requested_case_in_case_order(
+    runtime_config_for, planner_case
+) -> None:
+    other = {
+        "inputs": {"case_id": "other-case"},
+        "outputs": {},
+        "metadata": {"case_id": "other-case", "case_version": 1},
+    }
+    wanted = {
+        "inputs": {"case_id": planner_case.case_id},
+        "outputs": {},
+        "metadata": {
+            "case_id": planner_case.case_id,
+            "case_version": planner_case.version,
+        },
+    }
+    runtime = runtime_config_for("planner", case_id=planner_case.case_id)
+    client = _dataset_client(runtime.dataset_name, [other, wanted])
+
+    selected = _focused_dataset_examples(client, runtime, [planner_case])
+
+    assert selected is not None
+    assert len(selected) == 1
+    assert selected[0].metadata == wanted["metadata"]
+
+
+@pytest.mark.parametrize("copies", [0, 2])
+def test_focused_selection_rejects_missing_or_duplicate_case_rows(
+    runtime_config_for, planner_case, copies
+) -> None:
+    runtime = runtime_config_for("planner", case_id=planner_case.case_id)
+    payload = {
+        "inputs": {"case_id": planner_case.case_id},
+        "outputs": {},
+        "metadata": {
+            "case_id": planner_case.case_id,
+            "case_version": planner_case.version,
+        },
+    }
+    client = _dataset_client(runtime.dataset_name, [payload] * copies)
+
+    with pytest.raises(PreflightError) as captured:
+        _focused_dataset_examples(client, runtime, [planner_case])
+
+    assert captured.value.reason == "dataset_unavailable"
+
+
+def test_non_focused_selection_leaves_dataset_name_path_untouched(
+    runtime_config_for, planner_case
+) -> None:
+    runtime = runtime_config_for("planner")
+
+    assert _focused_dataset_examples(None, runtime, [planner_case]) is None
 
 
 # --- parsing ---------------------------------------------------------------

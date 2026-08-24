@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.evaluation.cli import _focused_dataset_examples
 from deep_research.evaluation.runner import (
+    PreflightError,
     aggregate_quality,
     build_case_result,
     decide_status,
     run_agent_evaluation,
 )
-from tests.evaluation_fakes import FakeEvaluateRunner
+from tests.evaluation_fakes import (
+    FakeDataset,
+    FakeEvaluateRunner,
+    FakeExample,
+    FakeExperimentResults,
+    FakeLangSmithClient,
+)
 
 
 def test_the_aggregate_formula_matches_the_spec_exactly() -> None:
@@ -183,6 +191,23 @@ async def test_a_controlled_experiment_requests_three_repetitions(
 
 
 @pytest.mark.asyncio
+async def test_the_langsmith_experiment_url_is_preserved(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        **evaluation_harness.kwargs(tmp_path),
+    )
+
+    assert result.experiment_url == "https://smith.langchain.test/experiments/1"
+
+
+@pytest.mark.asyncio
 async def test_a_live_experiment_requests_one_repetition(
     settings, runtime_config_for, tmp_path, live_evaluation_harness
 ) -> None:
@@ -246,6 +271,126 @@ async def test_a_focused_case_run_produces_three_repetitions(
     judges = [r.judge for r in result.cases[0].repetitions]
     assert len(judges) == 3
     assert all(judge.status == "scored" for judge in judges)
+
+
+@pytest.mark.asyncio
+async def test_a_focused_run_passes_only_selected_examples_to_langsmith(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    focused = evaluation_harness.for_case("focused-decomposition")
+    runtime = runtime_config_for("planner", case_id="focused-decomposition")
+    dataset = FakeDataset(runtime.dataset_name, "dataset-1")
+    client = FakeLangSmithClient(datasets=[dataset])
+    client.create_examples(dataset_id=dataset.id, examples=focused.examples)
+    selected = _focused_dataset_examples(client, runtime, focused.cases)
+    assert selected is not None
+
+    runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
+
+    await run_agent_evaluation(
+        settings,
+        runtime,
+        cases=focused.cases,
+        dataset_examples=selected,
+        evaluate=runner,
+        **focused.kwargs(tmp_path),
+    )
+
+    assert runner.calls[0]["data"] == selected
+    assert len(runner.rows) == 3
+    assert {
+        (row["outputs"]["case_id"], row["outputs"]["case_version"])
+        for row in runner.rows
+    } == {focused.cases[0].identity}
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_case_dataset_example_is_rejected_before_evaluation(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    focused = evaluation_harness.for_case("focused-decomposition")
+    wrong = FakeExample(
+        "wrong-example",
+        {"case_id": "other-case"},
+        {},
+        {"case_id": "other-case", "case_version": 1},
+    )
+    runner = FakeEvaluateRunner(examples=focused.examples)
+
+    with pytest.raises(PreflightError) as captured:
+        await run_agent_evaluation(
+            settings,
+            runtime_config_for("planner", case_id="focused-decomposition"),
+            cases=focused.cases,
+            dataset_examples=[wrong],
+            evaluate=runner,
+            **focused.kwargs(tmp_path),
+        )
+
+    assert captured.value.reason == "dataset_unavailable"
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_experiment_url_falls_back_to_comparison_url(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    comparison_url = "https://smith.langchain.test/compare/1"
+    results = FakeExperimentResults(
+        experiment_name="experiment",
+        url=None,
+        comparison_url=comparison_url,
+    )
+    runner = FakeEvaluateRunner(
+        examples=evaluation_harness.examples, results=results
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        **evaluation_harness.kwargs(tmp_path),
+    )
+
+    assert result.experiment_url == comparison_url
+
+
+@pytest.mark.asyncio
+async def test_experiment_url_failure_is_auxiliary_and_preserves_quality_status(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    baseline = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=FakeEvaluateRunner(examples=evaluation_harness.examples),
+        **{
+            **evaluation_harness.kwargs(tmp_path / "baseline"),
+        },
+    )
+    results = FakeExperimentResults(
+        experiment_name="experiment",
+        url=None,
+        comparison_error=ConnectionError("url unavailable"),
+    )
+    runner = FakeEvaluateRunner(
+        examples=evaluation_harness.examples, results=results
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        **evaluation_harness.kwargs(tmp_path),
+    )
+
+    assert result.status == baseline.status
+    assert result.experiment_url is None
+    assert any(
+        error.reason == "experiment_url_unavailable" for error in result.errors
+    )
 
 
 @pytest.mark.asyncio

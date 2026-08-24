@@ -689,11 +689,46 @@ def _unknown_case_judge_result() -> dict[str, JsonValue]:
     }
 
 
+def _dataset_example_identity(example: Any) -> tuple[str, int] | None:
+    if isinstance(example, Mapping):
+        metadata = example.get("metadata")
+    else:
+        metadata = getattr(example, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    case_id = metadata.get("case_id")
+    case_version = metadata.get("case_version")
+    if (
+        not isinstance(case_id, str)
+        or not isinstance(case_version, int)
+        or isinstance(case_version, bool)
+    ):
+        return None
+    return case_id, case_version
+
+
+def _validate_dataset_examples(
+    dataset_examples: Sequence[Any], cases: Sequence[EvaluationCase]
+) -> None:
+    expected = [case.identity for case in cases]
+    actual = [_dataset_example_identity(example) for example in dataset_examples]
+    if (
+        any(identity is None for identity in actual)
+        or len(actual) != len(expected)
+        or set(actual) != set(expected)
+    ):
+        raise PreflightError(
+            "dataset_unavailable",
+            "selected dataset examples do not exactly match requested cases",
+        )
+
+
 async def run_agent_evaluation(
     settings: ConfigSettings,
     runtime: EvaluationRuntimeConfig,
     *,
     cases: Sequence[EvaluationCase],
+    dataset_examples: Sequence[Any] | None = None,
     evaluate: EvaluateCallable = aevaluate,
     target_provider_factory: Callable[[], Any],
     judge_provider_factory: Callable[[], StructuredCompleter],
@@ -715,6 +750,9 @@ async def run_agent_evaluation(
     own single invocation, so the judge is never called twice for the sake
     of local bookkeeping.
     """
+    if dataset_examples is not None:
+        _validate_dataset_examples(dataset_examples, cases)
+
     case_by_identity: dict[tuple[str, int], EvaluationCase] = {
         case.identity: case for case in cases
     }
@@ -753,6 +791,7 @@ async def run_agent_evaluation(
             runtime=runtime,
             secrets=secrets,
             gate_lookup=_gate_lookup,
+            tracker=tracker_factory(),
         )
         for identity, case in case_by_identity.items()
     }
@@ -831,11 +870,17 @@ async def run_agent_evaluation(
 
     _dispatch_judge.__name__ = JUDGE_PROMPT_ID
 
-    errors: list[EvaluationFailure] = []
+    evaluation_errors: list[EvaluationFailure] = []
+    auxiliary_errors: list[EvaluationFailure] = []
+    experiment_url: str | None = None
     try:
-        await evaluate(
+        evaluation_results = await evaluate(
             target,
-            data=runtime.dataset_name,
+            data=(
+                dataset_examples
+                if dataset_examples is not None
+                else runtime.dataset_name
+            ),
             evaluators=[_dispatch_code, _dispatch_judge],
             experiment_prefix=runtime.experiment_name,
             num_repetitions=runtime.repetitions,
@@ -843,7 +888,7 @@ async def run_agent_evaluation(
             metadata=experiment_metadata(runtime, settings),
         )
     except Exception as error:
-        errors.append(
+        evaluation_errors.append(
             EvaluationFailure(
                 stage="trace",
                 reason="langsmith_unavailable",
@@ -851,6 +896,26 @@ async def run_agent_evaluation(
                 exception_type=type(error).__name__,
             )
         )
+    else:
+        try:
+            experiment_url = getattr(evaluation_results, "url", None)
+            if experiment_url is None:
+                get_comparison_url = getattr(
+                    evaluation_results, "get_comparison_url", None
+                )
+                if get_comparison_url is not None:
+                    experiment_url = await get_comparison_url()
+        except Exception as error:
+            auxiliary_errors.append(
+                EvaluationFailure(
+                    stage="trace",
+                    reason="experiment_url_unavailable",
+                    message=_safe_error_message(error, secrets),
+                    exception_type=type(error).__name__,
+                )
+            )
+
+    errors = [*evaluation_errors, *auxiliary_errors]
 
     threshold = (
         runtime.live_threshold
@@ -877,10 +942,14 @@ async def run_agent_evaluation(
         agent_name=runtime.agent_name,
         tier=runtime.tier,
         experiment_name=runtime.experiment_name,
+        experiment_url=experiment_url,
         dataset_name=runtime.dataset_name,
         cases=case_results,
         status=decide_status(
-            case_results, tier=runtime.tier, runtime=runtime, errors=errors
+            case_results,
+            tier=runtime.tier,
+            runtime=runtime,
+            errors=evaluation_errors,
         ),
         metadata=experiment_metadata(runtime, settings),
         errors=errors,

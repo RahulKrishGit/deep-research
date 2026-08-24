@@ -39,6 +39,7 @@ from deep_research.evaluation.models import (
     JudgeVerdict,
     TargetOutput,
 )
+from deep_research.observability import Tracker
 from deep_research.providers import (
     ChatMessage,
     OpenAIProviderError,
@@ -435,6 +436,7 @@ class JudgeEvaluator:
         runtime: EvaluationRuntimeConfig,
         secrets: Sequence[str],
         gate_lookup: Callable[[TargetOutput], GateReport | None],
+        tracker: Tracker | None = None,
         trace_factory: TraceFactory = traceable,
     ) -> None:
         self.__name__ = JUDGE_PROMPT_ID
@@ -443,6 +445,7 @@ class JudgeEvaluator:
         self._runtime = runtime
         self._secrets = tuple(secrets)
         self._gate_lookup = gate_lookup
+        self._tracker = tracker
 
         async def trace_judge(*, judge_input: JudgeInput) -> JudgeVerdict:
             messages = render_judge_messages(judge_input)
@@ -480,7 +483,13 @@ class JudgeEvaluator:
             judge_input = build_judge_input(
                 output, self._case, gates, secrets=self._secrets
             )
-            verdict = await self._trace_judge(judge_input=judge_input)
+            if self._tracker is None:
+                verdict = await self._trace_judge(judge_input=judge_input)
+            else:
+                async with self._tracker.session_span(
+                    output.session_id, self._case.state.original_question
+                ):
+                    verdict = await self._trace_judge(judge_input=judge_input)
         except SecretLeakError as error:
             return self._not_run(str(error))
         except Exception as error:
@@ -553,6 +562,7 @@ def build_judge_evaluator(
     runtime: EvaluationRuntimeConfig,
     secrets: Sequence[str],
     gate_lookup: Callable[[TargetOutput], GateReport | None],
+    tracker: Tracker | None = None,
     trace_factory: TraceFactory = traceable,
 ) -> JudgeEvaluator:
     """Wrap the versioned judge as a named, traced LangSmith evaluator.
@@ -568,5 +578,6 @@ def build_judge_evaluator(
         runtime=runtime,
         secrets=secrets,
         gate_lookup=gate_lookup,
+        tracker=tracker,
         trace_factory=trace_factory,
     )

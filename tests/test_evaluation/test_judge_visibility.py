@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import pytest
 
 from deep_research.evaluation.judging import (
@@ -17,6 +19,49 @@ from tests.evaluation_fakes import (
     FakeRun,
     FakeStructuredProvider,
 )
+
+
+class TrackerBoundStructuredProvider(FakeStructuredProvider):
+    """Exercise the provider contract that requires a session span."""
+
+    def __init__(self, tracker, responses):
+        super().__init__(responses=responses)
+        self._tracker = tracker
+
+    async def complete_structured(self, messages, schema, *, agent_name=None):
+        async with self._tracker.llm_span(
+            "judge-test-model", {"operation": "judge"}
+        ):
+            return await super().complete_structured(
+                messages, schema, agent_name=agent_name
+            )
+
+
+class RecordingSessionTracker:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.active = False
+
+    @asynccontextmanager
+    async def session_span(self, session_id, question):
+        self.calls.append((session_id, question))
+        self.active = True
+        try:
+            yield
+        finally:
+            self.active = False
+
+
+class SessionAwareStructuredProvider(FakeStructuredProvider):
+    def __init__(self, tracker, responses):
+        super().__init__(responses=responses)
+        self._tracker = tracker
+
+    async def complete_structured(self, messages, schema, *, agent_name=None):
+        assert self._tracker.active is True
+        return await super().complete_structured(
+            messages, schema, agent_name=agent_name
+        )
 
 
 class RecordingTraceFactory:
@@ -108,6 +153,62 @@ async def test_the_judge_invocation_is_traced_with_its_sanitized_input(
     assert traced["metadata"]["prompt_id"] == JUDGE_PROMPT_ID
     assert traced["metadata"]["rubric_version"] == 1
     assert "sk-abcdefghijklmnop" not in repr(traced)
+
+
+@pytest.mark.asyncio
+async def test_judge_opens_a_session_for_tracker_bound_provider(
+    planner_case,
+    clean_target_output,
+    clean_gate_report,
+    runtime_config_for,
+    tracker,
+) -> None:
+    evaluator = build_judge_evaluator(
+        TrackerBoundStructuredProvider(tracker, [verdict()]),
+        planner_case,
+        runtime=runtime_config_for("planner"),
+        secrets=(),
+        gate_lookup=lambda output: clean_gate_report,
+        tracker=tracker,
+    )
+
+    result = await evaluator(
+        FakeRun(outputs=clean_target_output.model_dump(mode="json")),
+        FakeExampleRow({"inputs": {"case_id": planner_case.case_id}}),
+    )
+
+    assert {item["key"] for item in result["results"]} >= {
+        "judge_quality",
+        "judge_status",
+    }
+
+
+@pytest.mark.asyncio
+async def test_judge_binds_provider_call_to_the_target_session(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    tracker = RecordingSessionTracker()
+    evaluator = build_judge_evaluator(
+        SessionAwareStructuredProvider(tracker, [verdict()]),
+        planner_case,
+        runtime=runtime_config_for("planner"),
+        secrets=(),
+        gate_lookup=lambda output: clean_gate_report,
+        tracker=tracker,
+    )
+
+    await evaluator(
+        FakeRun(outputs=clean_target_output.model_dump(mode="json")),
+        FakeExampleRow({"inputs": {"case_id": planner_case.case_id}}),
+    )
+
+    assert tracker.calls == [
+        (
+            clean_target_output.session_id,
+            planner_case.state.original_question,
+        )
+    ]
+    assert tracker.active is False
 
 
 @pytest.mark.asyncio
