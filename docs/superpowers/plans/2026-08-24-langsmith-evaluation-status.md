@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Publish the individual-agent harness's authoritative final status and one deterministic, secret-safe failure reason as experiment-level LangSmith feedback without changing the local quality verdict, row metrics, artifacts, or exit codes.
+**Goal:** Publish the individual-agent harness's authoritative final status and one deterministic, secret-safe failure reason as experiment-level LangSmith feedback and UI-visible project metadata without changing the local quality verdict, row metrics, artifacts, or exit codes.
 
-**Architecture:** Keep status authority in `evaluation.runner`: one pure summary builder calls the existing `decide_status`, while a synchronous closure reads the repetition results already populated by row evaluators and returns the two LangSmith project-feedback values. Pass that closure through `aevaluate(summary_evaluators=[...])`; wrap the injected LangSmith client only to observe project-feedback upload failures that LangSmith 0.10.11 logs and swallows, recording those failures separately so they appear in `ExperimentResult.errors` but cannot rewrite the local quality verdict.
+**Architecture:** Keep status authority in `evaluation.runner`: one pure status-value builder calls the existing `decide_status`, while a synchronous closure reads the repetition results already populated by row evaluators and returns the two LangSmith project-feedback values. Pass that closure through `aevaluate(summary_evaluators=[...])`; after evaluation, read–merge–update the same two values into the experiment project's metadata using the public `experiment_id`. Wrap both observability paths so upload/read/update failures appear in `ExperimentResult.errors` but cannot rewrite the local quality verdict.
 
 **Tech Stack:** Python 3.11+, Pydantic v2 contracts, LangSmith 0.10.11 behavior (`langsmith>=0.10` in `pyproject.toml`), pytest + pytest-asyncio, Ruff. No new dependency.
 
@@ -16,9 +16,11 @@
 - The status summary runs after the target and both existing row evaluators, when every completed repetition has been added to `repetitions_by_case`.
 - Dynamic failure-summary content is restricted to case IDs, repetition numbers, gate IDs, and typed `EvaluationFailure.reason` / `JudgeNotRunReason` values. Never read or include provider exception messages, `EvaluationFailure.message`, gate details, judge rationales, prompts, target outputs, run inputs, trace payloads, or secrets.
 - A missing or failed status-summary upload is recorded as `EvaluationFailure(stage="trace", reason="langsmith_summary_unavailable", ...)`, but is excluded from the inputs to `decide_status`; the pre-summary local quality verdict remains unchanged.
+- A missing or failed project-metadata publication is recorded as `EvaluationFailure(stage="trace", reason="langsmith_project_metadata_unavailable", ...)`, but is excluded from the inputs to `decide_status`; the pre-publication local quality verdict remains unchanged.
 - If `aevaluate` fails before it invokes the summary evaluator, preserve the existing `langsmith_unavailable` infrastructure-failure path and do not fabricate summary feedback.
 - Do not change gate definitions, judge weights, score thresholds, repetitions, exit codes, row-level feedback, artifact schema, LangSmith project names, or `LANGSMITH_ENDPOINT`.
 - Do not mark an individual target or judge run as errored merely because aggregate status is `FAILED`.
+- Project metadata publication must preserve all existing metadata and replace only `evaluation_status` and `evaluation_failure_reason`.
 - Every test is offline and fake-driven. No test may call LangSmith, DeepSeek, OpenAI, Tavily, or another live provider.
 - Do not dispatch DeepSeek for implementation or review. Use the caller-approved non-DeepSeek routing.
 - Preserve the six pre-existing worktree modifications in `src/deep_research/evaluation/cli.py`, `src/deep_research/evaluation/judging.py`, `src/deep_research/evaluation/runner.py`, `tests/evaluation_fakes.py`, `tests/test_evaluation/test_judge_visibility.py`, and `tests/test_evaluation/test_runner.py`. Do not reset or overwrite them.
@@ -41,7 +43,7 @@ The plan is based on the locally installed LangSmith 0.10.11 source, not on an a
 
 | File | Responsibility in this change |
 | --- | --- |
-| `src/deep_research/evaluation/runner.py` | Preserve focused `dataset_examples` and experiment URLs; define the pure status/failure-reason summary contract, build case results through one shared helper, pass the synchronous summary evaluator to `aevaluate`, observe project-feedback submission failures, and keep auxiliary feedback/URL failures verdict-neutral. |
+| `src/deep_research/evaluation/runner.py` | Preserve focused `dataset_examples` and experiment URLs; define the pure status/failure-reason summary contract, build case results through one shared helper, pass the synchronous summary evaluator to `aevaluate`, publish UI-visible project metadata, observe project-feedback/metadata submission failures, and keep auxiliary feedback/URL failures verdict-neutral. |
 | `src/deep_research/evaluation/cli.py` | Select exactly one LangSmith dataset example per focused case, reject missing/duplicate/wrong identities, and pass the already-created LangSmith client into `run_agent_evaluation`. |
 | `src/deep_research/evaluation/judging.py` | Bind judge-provider execution to the target repetition's session span so provider telemetry has a valid trace parent. |
 | `tests/evaluation_fakes.py` | Make `FakeEvaluateRunner` support selected mapping/object examples, preserve experiment URLs, reproduce LangSmith's post-row summary timing and swallowed upload failures, and make `FakeLangSmithClient` record or deliberately fail project feedback without network access. |
@@ -1281,3 +1283,99 @@ Remaining dirty files: <exact git status --short output, or clean>
 ```
 
 Do not claim the feedback columns are visible in a live LangSmith experiment until a separately approved live run confirms them.
+
+---
+
+## Approved UI-Visibility Extension
+
+Live verification confirmed that LangSmith stores the summary feedback, but
+the current Experiments view does not render project-level feedback as a table
+field. The same authoritative values must also be written to project metadata
+for UI monitoring. This extension keeps summary feedback, quality verdicts,
+gates, thresholds, exit codes, names, endpoint, row feedback, and artifact
+schema unchanged.
+
+### Task 6: Amend the design and implementation plan
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-08-24-langsmith-evaluation-status-design.md`
+- Modify: `docs/superpowers/plans/2026-08-24-langsmith-evaluation-status.md`
+
+- [x] Document the UI limitation, the second project-metadata publication
+  channel, public `evaluation_results.experiment_id`, read–merge–update
+  behavior, and `langsmith_project_metadata_unavailable` as a
+  verdict-neutral observability reason.
+- [x] Preserve the existing summary-feedback path and all existing evaluation
+  contracts.
+- [ ] Commit the document amendment after `git diff --check` and a placeholder
+  scan.
+
+### Task 7: Add failing tests and extend the offline LangSmith fakes
+
+**Files:**
+- Modify: `tests/test_evaluation/test_runner.py`
+- Modify: `tests/evaluation_fakes.py`
+
+- [ ] Add tests for one shared status-value builder, metadata merging that
+  preserves unrelated keys, project-ID routing through `experiment_id`, and
+  read/update/missing-ID failures that preserve the local verdict and redact
+  secrets.
+- [ ] Extend `FakeExperimentResults` with an optional `experiment_id` and
+  `FakeLangSmithClient` with fake projects, `read_project`, `update_project`,
+  call recording, and injectable read/update errors.
+- [ ] Run this focused red test command before production changes:
+
+```powershell
+python -c "import sys; sys.path.insert(0, r'src'); import pytest; raise SystemExit(pytest.main(['tests/test_evaluation/test_runner.py','-k','status_values or status_metadata or project_metadata','-q']))"
+```
+
+Expected before implementation: failure because the fake project API and
+production metadata publication do not yet exist. Commit the fake/test change
+only after the fake setup is complete and the test remains red for the missing
+runner behavior.
+
+### Task 8: Publish status metadata after every successful evaluation
+
+**Files:**
+- Modify: `src/deep_research/evaluation/runner.py`
+
+**Interfaces:**
+- Add `build_evaluation_status_values(cases, *, tier, runtime, errors=()) ->
+  dict[str, str]` and make `build_evaluation_summary_feedback` delegate to it.
+- Add a pure merge helper that returns `{**(existing_metadata or {}),
+  **status_values}` without mutating the input.
+- Add a publication helper that calls `read_project(project_id=...)`, merges
+  `project.metadata`, and calls `update_project(project_id=..., metadata=...)`.
+
+- [ ] After `evaluate` returns, build final cases and status values from
+  `evaluation_errors` only, obtain the public `evaluation_results.experiment_id`,
+  and publish through the original injected LangSmith client.
+- [ ] Record missing IDs and read/update errors as
+  `EvaluationFailure(stage="trace", reason="langsmith_project_metadata_unavailable", ...)`
+  in a separate error list. Exclude that list, summary errors, and URL errors
+  from `decide_status`; include them only in `ExperimentResult.errors`.
+- [ ] Keep local `metadata=experiment_metadata(runtime, settings)` unchanged.
+- [ ] Run the runner tests and Ruff, then commit the production wiring.
+
+### Task 9: Full offline verification and UI-contract audit
+
+**Files:**
+- Verify: `src/deep_research/evaluation/runner.py`
+- Verify: `tests/evaluation_fakes.py`
+- Verify: `tests/test_evaluation/test_runner.py`
+- Verify: the amended design and plan documents
+
+- [ ] Run:
+
+```powershell
+python -c "import sys; sys.path.insert(0, r'src'); import pytest; raise SystemExit(pytest.main([]))"
+python -m ruff check src/ tests/
+python -c "import inspect; from langsmith import Client; from langsmith.evaluation._runner import ExperimentResults; assert hasattr(ExperimentResults, 'experiment_id'); assert 'metadata' in inspect.signature(Client.update_project).parameters"
+git diff --check
+```
+
+- [ ] Audit that the two status values are shared by feedback and metadata,
+  unrelated metadata survives, no secret-bearing fields enter the reason, and
+  no target output or row feedback schema changes.
+- [ ] Record exact test/Ruff results, `Coverage: Not measured`, and the
+  distinction between offline verification and the required new live UI check.
