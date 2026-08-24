@@ -502,7 +502,7 @@ async def test_project_metadata_failure_is_verdict_neutral_and_secret_safe(
     settings,
     runtime_config_for,
     tmp_path,
-    partially_failing_harness,
+    evaluation_harness,
     failure_stage,
 ) -> None:
     secret = f"sk-project-metadata-{failure_stage}-secret-123456"
@@ -512,8 +512,9 @@ async def test_project_metadata_failure_is_verdict_neutral_and_secret_safe(
         project_read_error=error if failure_stage == "read" else None,
         project_update_error=error if failure_stage == "update" else None,
     )
+    runtime = runtime_config_for("planner")
     runner = FakeEvaluateRunner(
-        examples=partially_failing_harness.examples,
+        examples=evaluation_harness.examples,
         results=FakeExperimentResults(
             experiment_name="planner-controlled",
             url="https://smith.langchain.test/experiments/42",
@@ -523,19 +524,21 @@ async def test_project_metadata_failure_is_verdict_neutral_and_secret_safe(
 
     result = await run_agent_evaluation(
         settings,
-        runtime_config_for("planner"),
-        cases=partially_failing_harness.cases,
+        runtime,
+        cases=evaluation_harness.cases,
         evaluate=runner,
         langsmith_client=client,
         secrets=(secret,),
         **{
             key: value
-            for key, value in partially_failing_harness.kwargs(tmp_path).items()
+            for key, value in evaluation_harness.kwargs(tmp_path).items()
             if key != "secrets"
         },
     )
 
-    assert result.status == "FAILED"
+    assert result.status == decide_status(
+        result.cases, tier="controlled", runtime=runtime
+    )
     assert any(
         error.stage == "trace"
         and error.reason == "langsmith_project_metadata_unavailable"
