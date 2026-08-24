@@ -538,6 +538,27 @@ def build_case_result(
     )
 
 
+def _build_case_results(
+    case_by_identity: Mapping[tuple[str, int], EvaluationCase],
+    repetitions_by_case: Mapping[
+        tuple[str, int], Sequence[RepetitionResult]
+    ],
+    *,
+    runtime: EvaluationRuntimeConfig,
+) -> list[CaseResult]:
+    threshold, floor = _quality_thresholds(runtime)
+    return [
+        build_case_result(
+            case_by_identity[identity],
+            repetitions_by_case[identity],
+            threshold=threshold,
+            floor=floor,
+        )
+        for identity in case_by_identity
+        if repetitions_by_case[identity]
+    ]
+
+
 def decide_status(
     cases: Sequence[CaseResult],
     *,
@@ -972,7 +993,36 @@ async def run_agent_evaluation(
 
     evaluation_errors: list[EvaluationFailure] = []
     auxiliary_errors: list[EvaluationFailure] = []
+    summary_errors: list[EvaluationFailure] = []
     experiment_url: str | None = None
+
+    def evaluation_status(
+        runs: Sequence[Any], examples: Sequence[Any]
+    ) -> dict[str, list[dict[str, JsonValue]]]:
+        del runs, examples
+        try:
+            case_results = _build_case_results(
+                case_by_identity,
+                repetitions_by_case,
+                runtime=runtime,
+            )
+            return build_evaluation_summary_feedback(
+                case_results,
+                tier=runtime.tier,
+                runtime=runtime,
+                errors=evaluation_errors,
+            )
+        except Exception as error:
+            summary_errors.append(
+                EvaluationFailure(
+                    stage="trace",
+                    reason="langsmith_summary_unavailable",
+                    message=_safe_error_message(error, secrets),
+                    exception_type=type(error).__name__,
+                )
+            )
+            return {"results": []}
+
     try:
         evaluation_results = await evaluate(
             target,
@@ -982,6 +1032,7 @@ async def run_agent_evaluation(
                 else runtime.dataset_name
             ),
             evaluators=[_dispatch_code, _dispatch_judge],
+            summary_evaluators=[evaluation_status],
             experiment_prefix=runtime.experiment_name,
             num_repetitions=runtime.repetitions,
             max_concurrency=runtime.max_concurrency,
@@ -1015,28 +1066,11 @@ async def run_agent_evaluation(
                 )
             )
 
-    errors = [*evaluation_errors, *auxiliary_errors]
-
-    threshold = (
-        runtime.live_threshold
-        if runtime.tier == "live"
-        else runtime.case_average_threshold
+    case_results = _build_case_results(
+        case_by_identity,
+        repetitions_by_case,
+        runtime=runtime,
     )
-    floor = (
-        runtime.live_threshold
-        if runtime.tier == "live"
-        else runtime.repetition_floor
-    )
-    case_results = [
-        build_case_result(
-            case_by_identity[identity],
-            repetitions_by_case[identity],
-            threshold=threshold,
-            floor=floor,
-        )
-        for identity in case_by_identity
-        if repetitions_by_case[identity]
-    ]
 
     result = ExperimentResult(
         agent_name=runtime.agent_name,
@@ -1052,7 +1086,7 @@ async def run_agent_evaluation(
             errors=evaluation_errors,
         ),
         metadata=experiment_metadata(runtime, settings),
-        errors=errors,
+        errors=[*evaluation_errors, *auxiliary_errors, *summary_errors],
     )
 
     path = runtime.output_root / "results.json"

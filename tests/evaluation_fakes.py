@@ -132,24 +132,38 @@ class FakeEvaluateRunner:
         self.results = results
         self.calls: list[dict[str, Any]] = []
         self.rows: list[dict[str, Any]] = []
+        self.summary_feedback: list[dict[str, Any]] = []
 
     async def __call__(self, target, /, **kwargs: Any):
         self.calls.append(dict(kwargs))
         evaluators = kwargs.get("evaluators") or []
+        summary_evaluators = kwargs.get("summary_evaluators") or []
         data = kwargs.get("data")
         raw_examples = self.examples if isinstance(data, str) else list(data)
         examples = [_example_payload(example) for example in raw_examples]
+        runs: list[FakeRun] = []
+        example_rows: list[FakeExampleRow] = []
         for _ in range(kwargs.get("num_repetitions", 1)):
             for example in examples:
                 outputs = await target(example["inputs"])
                 run = FakeRun(outputs=outputs)
+                example_row = FakeExampleRow(example)
                 feedback = []
                 for evaluator in evaluators:
-                    result = evaluator(run, FakeExampleRow(example))
+                    result = evaluator(run, example_row)
                     if hasattr(result, "__await__"):
                         result = await result
                     feedback.append(result)
                 self.rows.append({"outputs": outputs, "feedback": feedback})
+                runs.append(run)
+                example_rows.append(example_row)
+        for evaluator in summary_evaluators:
+            try:
+                result = evaluator(runs, example_rows)
+                self.summary_feedback.extend(list(result.get("results", [])))
+            except Exception:
+                # LangSmith 0.10.11 logs and swallows summary-evaluator failures.
+                continue
         return self.results or FakeExperimentResults(
             experiment_name=kwargs.get("experiment_prefix", "experiment"),
             url="https://smith.langchain.test/experiments/1",

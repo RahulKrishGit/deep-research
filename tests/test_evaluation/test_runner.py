@@ -331,6 +331,73 @@ async def test_a_live_experiment_requests_one_repetition(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_evaluation_passes_one_named_summary_evaluator(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
+
+    await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        **evaluation_harness.kwargs(tmp_path),
+    )
+
+    summaries = runner.calls[0]["summary_evaluators"]
+    assert len(summaries) == 1
+    assert summaries[0].__name__ == "evaluation_status"
+
+
+@pytest.mark.asyncio
+async def test_the_summary_observes_every_completed_row_before_it_runs(
+    settings,
+    runtime_config_for,
+    tmp_path,
+    partially_failing_harness,
+    monkeypatch,
+) -> None:
+    import deep_research.evaluation.runner as runner_module
+
+    original_evaluate_target = runner_module.evaluate_target
+
+    def evaluate_with_available_trace(output, case, *, secrets):
+        gates, quality = original_evaluate_target(output, case, secrets=secrets)
+        return (
+            GateReport(
+                results=[
+                    gate.model_copy(update={"passed": True})
+                    if gate.gate_id == "trace_available"
+                    else gate
+                    for gate in gates.results
+                ]
+            ),
+            quality,
+        )
+
+    monkeypatch.setattr(
+        runner_module, "evaluate_target", evaluate_with_available_trace
+    )
+    runner = FakeEvaluateRunner(examples=partially_failing_harness.examples)
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=partially_failing_harness.cases,
+        evaluate=runner,
+        **partially_failing_harness.kwargs(tmp_path),
+    )
+
+    assert len(runner.rows) == 9
+    assert _summary_values({"results": runner.summary_feedback}) == {
+        "evaluation_status": result.status,
+        "evaluation_failure_reason": (
+            "focused-decomposition repetition 2 failed provider_failure"
+        ),
+    }
+
+
+@pytest.mark.asyncio
 async def test_a_full_controlled_run_produces_nine_repetitions(
     settings, runtime_config_for, tmp_path, evaluation_harness
 ) -> None:
@@ -686,3 +753,12 @@ async def test_the_artifact_is_written_and_revalidates(
     assert len(
         [r for case in restored.cases for r in case.repetitions]
     ) == 9
+    assert set(_summary_values({"results": runner.summary_feedback})) == {
+        "evaluation_status",
+        "evaluation_failure_reason",
+    }
+    assert all(
+        "evaluation_status" not in repr(row["feedback"])
+        and "evaluation_failure_reason" not in repr(row["feedback"])
+        for row in runner.rows
+    )
