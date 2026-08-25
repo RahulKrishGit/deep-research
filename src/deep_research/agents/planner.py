@@ -56,6 +56,12 @@ PLAN_INSTRUCTION = (
     "success criterion describing what evidence would settle it, and a "
     "priority where 1 is the most important.\n"
     "List the sub-topics in priority order, most important first.\n"
+    "When the question concerns a technology or intervention, ensure the "
+    "plan explicitly covers both benefits and risks (or harms) in the "
+    "subtopic titles or search queries.\n"
+    "Do not introduce any capitalized word or four-digit year in titles or "
+    "queries that the research question does not itself contain; write "
+    "queries in lowercase except for words already in the question.\n"
     "Two sub-topics must never share a title."
 )
 

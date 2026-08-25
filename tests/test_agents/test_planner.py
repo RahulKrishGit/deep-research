@@ -623,3 +623,13 @@ def test_planner_regression_plan_instruction_requires_priority_order() -> None:
     rendered = " ".join(message.content for message in messages)
     assert "priority order" in rendered
     assert "most important first" in rendered
+
+
+def test_planner_regression_plan_instruction_requires_balanced_wording() -> None:
+    task = AgentTask(instruction="Some research question.")
+    messages = plan_messages(task, _run())
+    rendered = " ".join(message.content for message in messages)
+    assert "benefits" in rendered
+    assert "risks" in rendered
+    assert "capitalized word" in rendered
+    assert "lowercase" in rendered
