@@ -599,3 +599,19 @@ async def test_planner_regression_tool_decision_with_empty_final_answer_complete
     assert outcome.react.stop_reason == "finished"
     assert outcome.react.steps[0].final_answer is None
     assert outcome.react.steps[0].tool_name == "query_memory"
+
+
+def test_planner_regression_system_prompt_forbids_search_when_terms_are_familiar(
+    tracker: Tracker,
+) -> None:
+    agent = _planner(tracker, ScriptedCompleter())
+    prompt = agent.system_prompt(
+        AgentTask(
+            instruction=(
+                "What evidence supports intermittent fasting for "
+                "metabolic health?"
+            )
+        )
+    )
+    assert "every term in the research question is familiar" in prompt
+    assert "finish without searching" in prompt

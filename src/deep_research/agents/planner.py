@@ -42,6 +42,8 @@ PLANNER_SYSTEM_PROMPT = (
     "Use query_memory to recall what previous sessions already learned. Use "
     "web_search only to scope unfamiliar terminology — a later agent "
     "gathers the evidence, so do not research the question here.\n"
+    "If every term in the research question is familiar to you, finish "
+    "without searching.\n"
     "Finish as soon as you understand the shape of the question."
 )
 
