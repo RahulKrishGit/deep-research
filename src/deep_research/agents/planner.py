@@ -55,6 +55,7 @@ PLAN_INSTRUCTION = (
     "is necessary, at least one concrete web search query, at least one "
     "success criterion describing what evidence would settle it, and a "
     "priority where 1 is the most important.\n"
+    "List the sub-topics in priority order, most important first.\n"
     "Two sub-topics must never share a title."
 )
 

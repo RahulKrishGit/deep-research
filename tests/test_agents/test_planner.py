@@ -615,3 +615,11 @@ def test_planner_regression_system_prompt_forbids_search_when_terms_are_familiar
     )
     assert "every term in the research question is familiar" in prompt
     assert "finish without searching" in prompt
+
+
+def test_planner_regression_plan_instruction_requires_priority_order() -> None:
+    task = AgentTask(instruction="Some research question.")
+    messages = plan_messages(task, _run())
+    rendered = " ".join(message.content for message in messages)
+    assert "priority order" in rendered
+    assert "most important first" in rendered
