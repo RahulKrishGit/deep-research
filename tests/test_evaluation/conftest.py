@@ -52,7 +52,11 @@ from deep_research.evaluation.targets import RepetitionCounter, build_target
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import OpenAIProviderError
 from deep_research.utils.config import ConfigSettings
-from tests.evaluation_fakes import FakeEvaluateRunner, FakeStructuredProvider
+from tests.evaluation_fakes import (
+    FakeEvaluateRunner,
+    FakeLangSmithClient,
+    FakeStructuredProvider,
+)
 
 
 @pytest.fixture
@@ -2491,6 +2495,7 @@ def _suite_factory_kwargs() -> dict:
         judge_reasoning_effort=None,
         experiment_prefix=None,
         config_path="config.yaml",
+        langsmith_client_factory=FakeLangSmithClient,
         now=datetime(2026, 8, 16, 10, 15, tzinfo=timezone.utc),
         git=GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False),
     )

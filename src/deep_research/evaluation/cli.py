@@ -25,7 +25,7 @@ import asyncio
 import functools
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, TextIO
@@ -36,6 +36,7 @@ from deep_research.evaluation.cases import (
     case_by_id,
 )
 from deep_research.evaluation.config import (
+    EvaluationRuntimeConfig,
     SecretLeakError,
     build_runtime_config,
     judge_llm_config,
@@ -274,6 +275,40 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
 # ``... suite`` do real work when nothing is injected.
 
 
+def _focused_dataset_examples(
+    langsmith_client: Any,
+    runtime: EvaluationRuntimeConfig,
+    cases: Sequence[EvaluationCase],
+) -> tuple[Any, ...] | None:
+    if runtime.case_id is None:
+        return None
+
+    selected_identities = {case.identity for case in cases}
+    examples_by_identity: dict[tuple[str, int], Any] = {}
+    for example in langsmith_client.list_examples(
+        dataset_name=runtime.dataset_name
+    ):
+        metadata = example.metadata
+        if not isinstance(metadata, Mapping):
+            continue
+        identity = (metadata.get("case_id"), metadata.get("case_version"))
+        if identity not in selected_identities:
+            continue
+        if identity in examples_by_identity:
+            raise PreflightError(
+                "dataset_unavailable",
+                "synced dataset contains a duplicate selected case",
+            )
+        examples_by_identity[identity] = example
+
+    if set(examples_by_identity) != selected_identities:
+        raise PreflightError(
+            "dataset_unavailable",
+            "synced dataset does not contain every selected case",
+        )
+    return tuple(examples_by_identity[case.identity] for case in cases)
+
+
 async def _run_agent_pipeline(
     settings: Any,
     runtime: Any,
@@ -310,16 +345,21 @@ async def _run_agent_pipeline(
         langsmith_client=langsmith_client,
         root=root,
     )
+    dataset_examples = _focused_dataset_examples(
+        langsmith_client, runtime, cases
+    )
     return await run_agent_evaluation(
         settings,
         runtime,
         cases=cases,
+        dataset_examples=dataset_examples,
         target_provider_factory=lambda: target_provider,
         judge_provider_factory=lambda: judge_provider,
         tracker_factory=lambda: tracker,
         dependency_factory=dependency_factory,
         secrets=known_secret_values(environ),
         root=root,
+        langsmith_client=langsmith_client,
     )
 
 

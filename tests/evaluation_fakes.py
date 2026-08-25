@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 
 class FakeDataset:
@@ -26,10 +26,30 @@ class FakeExample:
         self.metadata = dict(metadata)
 
 
+class FakeProject:
+    def __init__(
+        self, project_id: str | UUID, *, metadata: Mapping[str, Any] = ()
+    ) -> None:
+        self.id = project_id
+        self.metadata = dict(metadata)
+
+
 class FakeLangSmithClient:
     """Records every dataset call; deletion methods raise on sight."""
 
-    def __init__(self, *, datasets: Sequence[FakeDataset] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        datasets: Sequence[FakeDataset] = (),
+        project_feedback_error: Exception | None = None,
+        projects: Sequence[FakeProject] = (),
+        project_read_error: Exception | None = None,
+        project_update_error: Exception | None = None,
+    ) -> None:
+        self._project_feedback_error = project_feedback_error
+        self._projects = {project.id: project for project in projects}
+        self._project_read_error = project_read_error
+        self._project_update_error = project_update_error
         self._datasets = {dataset.name: dataset for dataset in datasets}
         self._examples: dict[str, list[FakeExample]] = {
             dataset.name: [] for dataset in datasets
@@ -38,6 +58,8 @@ class FakeLangSmithClient:
         self.created_examples: list[dict[str, Any]] = []
         self.updated_examples: list[dict[str, Any]] = []
         self.feedback: list[dict[str, Any]] = []
+        self.read_project_calls: list[str | UUID] = []
+        self.updated_projects: list[dict[str, Any]] = []
 
     def has_dataset(self, *, dataset_name: str) -> bool:
         return dataset_name in self._datasets
@@ -79,7 +101,33 @@ class FakeLangSmithClient:
             self.updated_examples.append(dict(payload))
 
     def create_feedback(self, run_id, key, **kwargs: Any) -> None:
+        if (
+            run_id is None
+            and kwargs.get("project_id") is not None
+            and key in {"evaluation_status", "evaluation_failure_reason"}
+            and self._project_feedback_error is not None
+        ):
+            raise self._project_feedback_error
         self.feedback.append({"run_id": run_id, "key": key, **kwargs})
+
+    def read_project(self, project_id: str | UUID) -> FakeProject:
+        self.read_project_calls.append(project_id)
+        if self._project_read_error is not None:
+            raise self._project_read_error
+        if project_id not in self._projects:
+            raise LookupError(project_id)
+        return self._projects[project_id]
+
+    def update_project(
+        self, project_id: str | UUID, *, metadata: Mapping[str, Any]
+    ) -> FakeProject:
+        if self._project_update_error is not None:
+            raise self._project_update_error
+        payload = {"project_id": project_id, "metadata": dict(metadata)}
+        self.updated_projects.append(payload)
+        project = self._projects[project_id]
+        project.metadata = dict(metadata)
+        return project
 
     def delete_dataset(self, *args: Any, **kwargs: Any) -> None:
         raise AssertionError("evaluation must never delete a dataset")
@@ -94,8 +142,26 @@ class FakeLangSmithClient:
 @dataclass
 class FakeExperimentResults:
     experiment_name: str
-    url: str
+    url: str | None
+    comparison_url: str | None = None
+    comparison_error: Exception | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
+    experiment_id: str | UUID | None = "experiment-1"
+
+    async def get_comparison_url(self) -> str | None:
+        if self.comparison_error is not None:
+            raise self.comparison_error
+        return self.comparison_url
+
+
+def _example_payload(example: Any) -> dict[str, Any]:
+    if isinstance(example, Mapping):
+        return dict(example)
+    return {
+        "inputs": dict(example.inputs),
+        "outputs": dict(example.outputs),
+        "metadata": dict(example.metadata),
+    }
 
 
 class FakeEvaluateRunner:
@@ -105,26 +171,58 @@ class FakeEvaluateRunner:
     evaluator ``num_repetitions`` times per example, sequentially.
     """
 
-    def __init__(self, *, examples: Sequence[Mapping] = ()) -> None:
-        self.examples = [dict(example) for example in examples]
+    def __init__(
+        self,
+        *,
+        examples: Sequence[Any] = (),
+        results: FakeExperimentResults | None = None,
+    ) -> None:
+        self.examples = list(examples)
+        self.results = results
         self.calls: list[dict[str, Any]] = []
         self.rows: list[dict[str, Any]] = []
+        self.summary_feedback: list[dict[str, Any]] = []
 
     async def __call__(self, target, /, **kwargs: Any):
         self.calls.append(dict(kwargs))
         evaluators = kwargs.get("evaluators") or []
+        summary_evaluators = kwargs.get("summary_evaluators") or []
+        data = kwargs.get("data")
+        raw_examples = self.examples if isinstance(data, str) else list(data)
+        examples = [_example_payload(example) for example in raw_examples]
+        runs: list[FakeRun] = []
+        example_rows: list[FakeExampleRow] = []
         for _ in range(kwargs.get("num_repetitions", 1)):
-            for example in self.examples:
+            for example in examples:
                 outputs = await target(example["inputs"])
                 run = FakeRun(outputs=outputs)
+                example_row = FakeExampleRow(example)
                 feedback = []
                 for evaluator in evaluators:
-                    result = evaluator(run, FakeExampleRow(example))
+                    result = evaluator(run, example_row)
                     if hasattr(result, "__await__"):
                         result = await result
                     feedback.append(result)
                 self.rows.append({"outputs": outputs, "feedback": feedback})
-        return FakeExperimentResults(
+                runs.append(run)
+                example_rows.append(example_row)
+        for evaluator in summary_evaluators:
+            try:
+                result = evaluator(runs, example_rows)
+                feedback = list(result.get("results", []))
+                self.summary_feedback.extend(feedback)
+                client = kwargs.get("client")
+                if client is not None:
+                    for item in feedback:
+                        client.create_feedback(
+                            run_id=None,
+                            project_id="experiment-1",
+                            **item,
+                        )
+            except Exception:
+                # LangSmith 0.10.11 logs and swallows summary-evaluator failures.
+                continue
+        return self.results or FakeExperimentResults(
             experiment_name=kwargs.get("experiment_prefix", "experiment"),
             url="https://smith.langchain.test/experiments/1",
             rows=self.rows,

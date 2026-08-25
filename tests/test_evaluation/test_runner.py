@@ -2,15 +2,29 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 
+from deep_research.evaluation.cli import _focused_dataset_examples
+from deep_research.evaluation.models import EvaluationFailure, GateReport, GateResult
 from deep_research.evaluation.runner import (
+    PreflightError,
     aggregate_quality,
     build_case_result,
+    build_evaluation_status_values,
+    build_evaluation_summary_feedback,
     decide_status,
     run_agent_evaluation,
 )
-from tests.evaluation_fakes import FakeEvaluateRunner
+from tests.evaluation_fakes import (
+    FakeDataset,
+    FakeEvaluateRunner,
+    FakeExample,
+    FakeExperimentResults,
+    FakeLangSmithClient,
+    FakeProject,
+)
 
 
 def test_the_aggregate_formula_matches_the_spec_exactly() -> None:
@@ -150,6 +164,121 @@ def test_controlled_status_is_failed_when_one_repetition_fails(
     assert status == "FAILED"
 
 
+def _summary_values(payload) -> dict[str, str]:
+    return {item["key"]: item["value"] for item in payload["results"]}
+
+
+def test_the_summary_feedback_matches_the_local_passing_status(
+    passing_cases, runtime_config_for
+) -> None:
+    runtime = runtime_config_for("planner")
+    payload = build_evaluation_summary_feedback(
+        passing_cases, tier="controlled", runtime=runtime
+    )
+
+    assert _summary_values(payload) == {
+        "evaluation_status": decide_status(
+            passing_cases, tier="controlled", runtime=runtime
+        ),
+        "evaluation_failure_reason": (
+            "all cases passed automated checks; human review required"
+        ),
+    }
+
+
+def test_summary_feedback_uses_the_shared_status_values(
+    passing_cases, runtime_config_for
+) -> None:
+    runtime = runtime_config_for("planner")
+    status_values = build_evaluation_status_values(
+        passing_cases, tier="controlled", runtime=runtime
+    )
+    feedback_values = _summary_values(
+        build_evaluation_summary_feedback(
+            passing_cases, tier="controlled", runtime=runtime
+        )
+    )
+
+    assert feedback_values == status_values
+
+
+def test_the_summary_feedback_names_the_first_failed_gate(
+    failing_experiment_result, runtime_config_for
+) -> None:
+    payload = build_evaluation_summary_feedback(
+        failing_experiment_result.cases,
+        tier="controlled",
+        runtime=runtime_config_for("synthesizer"),
+    )
+
+    assert _summary_values(payload) == {
+        "evaluation_status": "FAILED",
+        "evaluation_failure_reason": (
+            "unsupported-claim repetition 1 failed citations_known"
+        ),
+    }
+
+
+def test_the_summary_feedback_names_a_typed_infrastructure_reason(
+    runtime_config_for,
+) -> None:
+    errors = [
+        EvaluationFailure(
+            stage="trace",
+            reason="langsmith_unavailable",
+            message="transport text must not be summarized",
+        )
+    ]
+    payload = build_evaluation_summary_feedback(
+        [],
+        tier="controlled",
+        runtime=runtime_config_for("planner"),
+        errors=errors,
+    )
+
+    assert _summary_values(payload) == {
+        "evaluation_status": "INFRASTRUCTURE FAILURE",
+        "evaluation_failure_reason": "trace:langsmith_unavailable",
+    }
+
+
+def test_the_failure_summary_never_reads_messages_details_or_rationales(
+    repetition_with_failed_gate, runtime_config_for
+) -> None:
+    secret = "sk-summary-must-not-leak-123456"
+    failure = EvaluationFailure(
+        stage="provider",
+        reason="provider_failure",
+        message=f"provider rejected key={secret}",
+    )
+    repetition = repetition_with_failed_gate.model_copy(
+        update={
+            "errors": [failure],
+            "gates": GateReport(
+                results=[
+                    GateResult(
+                        gate_id="prioritized_subtopics",
+                        passed=False,
+                        detail=f"raw output contained {secret}",
+                    )
+                ]
+            ),
+        }
+    )
+    case = build_case_result(None, [repetition], threshold=0.80)
+
+    payload = build_evaluation_summary_feedback(
+        [case],
+        tier="controlled",
+        runtime=runtime_config_for("planner"),
+    )
+
+    assert _summary_values(payload)["evaluation_failure_reason"] == (
+        "focused-decomposition repetition 98 failed provider_failure"
+    )
+    assert secret not in repr(payload)
+
+
 def test_the_live_threshold_is_zero_point_seven_five(
     repetitions_at, runtime_config_for
 ) -> None:
@@ -183,6 +312,23 @@ async def test_a_controlled_experiment_requests_three_repetitions(
 
 
 @pytest.mark.asyncio
+async def test_the_langsmith_experiment_url_is_preserved(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        **evaluation_harness.kwargs(tmp_path),
+    )
+
+    assert result.experiment_url == "https://smith.langchain.test/experiments/1"
+
+
+@pytest.mark.asyncio
 async def test_a_live_experiment_requests_one_repetition(
     settings, runtime_config_for, tmp_path, live_evaluation_harness
 ) -> None:
@@ -202,6 +348,284 @@ async def test_a_live_experiment_requests_one_repetition(
     assert len(repetitions) == 1
     assert repetitions[0].judge is not None
     assert repetitions[0].judge.status == "scored"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_evaluation_passes_one_named_summary_evaluator(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
+
+    await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        **evaluation_harness.kwargs(tmp_path),
+    )
+
+    summaries = runner.calls[0]["summary_evaluators"]
+    assert len(summaries) == 1
+    assert summaries[0].__name__ == "evaluation_status"
+
+
+@pytest.mark.asyncio
+async def test_the_summary_observes_every_completed_row_before_it_runs(
+    settings,
+    runtime_config_for,
+    tmp_path,
+    partially_failing_harness,
+    monkeypatch,
+) -> None:
+    import deep_research.evaluation.runner as runner_module
+
+    original_evaluate_target = runner_module.evaluate_target
+
+    def evaluate_with_available_trace(output, case, *, secrets):
+        gates, quality = original_evaluate_target(output, case, secrets=secrets)
+        return (
+            GateReport(
+                results=[
+                    gate.model_copy(update={"passed": True})
+                    if gate.gate_id == "trace_available"
+                    else gate
+                    for gate in gates.results
+                ]
+            ),
+            quality,
+        )
+
+    monkeypatch.setattr(
+        runner_module, "evaluate_target", evaluate_with_available_trace
+    )
+    runner = FakeEvaluateRunner(examples=partially_failing_harness.examples)
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=partially_failing_harness.cases,
+        evaluate=runner,
+        **partially_failing_harness.kwargs(tmp_path),
+    )
+
+    assert len(runner.rows) == 9
+    assert _summary_values({"results": runner.summary_feedback}) == {
+        "evaluation_status": result.status,
+        "evaluation_failure_reason": (
+            "focused-decomposition repetition 2 failed provider_failure"
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_summary_upload_failure_is_recorded_without_rewriting_verdict(
+    settings, runtime_config_for, tmp_path, partially_failing_harness
+) -> None:
+    secret = "sk-summary-upload-secret-123456"
+    client = FakeLangSmithClient(
+        project_feedback_error=ConnectionError(
+            f"summary upload rejected credential {secret}"
+        )
+    )
+    runner = FakeEvaluateRunner(examples=partially_failing_harness.examples)
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=partially_failing_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        secrets=(secret,),
+        **{
+            key: value
+            for key, value in partially_failing_harness.kwargs(tmp_path).items()
+            if key != "secrets"
+        },
+    )
+
+    assert result.status == "FAILED"
+    assert any(
+        error.stage == "trace"
+        and error.reason == "langsmith_summary_unavailable"
+        for error in result.errors
+    )
+    assert secret not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_project_metadata_merges_shared_status_values_by_experiment_id(
+    settings, runtime_config_for, tmp_path, partially_failing_harness
+) -> None:
+    project = FakeProject(
+        "project-42",
+        metadata={
+            "unrelated_key": "preserve me",
+            "evaluation_status": "STALE",
+        },
+    )
+    client = FakeLangSmithClient(projects=[project])
+    runner = FakeEvaluateRunner(
+        examples=partially_failing_harness.examples,
+        results=FakeExperimentResults(
+            experiment_name="planner-controlled",
+            url="https://smith.langchain.test/experiments/42",
+            experiment_id="project-42",
+        ),
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=partially_failing_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        **partially_failing_harness.kwargs(tmp_path),
+    )
+
+    assert result.status == "FAILED"
+    assert client.read_project_calls == ["project-42"]
+    assert client.updated_projects == [
+        {
+            "project_id": "project-42",
+            "metadata": {
+                "unrelated_key": "preserve me",
+                "evaluation_status": "FAILED",
+                "evaluation_failure_reason": (
+                    "focused-decomposition repetition 2 failed provider_failure"
+                ),
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_project_metadata_accepts_uuid_experiment_id(
+    settings, runtime_config_for, tmp_path, partially_failing_harness
+) -> None:
+    experiment_id = UUID("12345678-1234-5678-1234-567812345678")
+    project = FakeProject(
+        experiment_id,
+        metadata={"unrelated_key": "preserve me"},
+    )
+    client = FakeLangSmithClient(projects=[project])
+    runner = FakeEvaluateRunner(
+        examples=partially_failing_harness.examples,
+        results=FakeExperimentResults(
+            experiment_name="planner-controlled",
+            url="https://smith.langchain.test/experiments/42",
+            experiment_id=experiment_id,
+        ),
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=partially_failing_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        **partially_failing_harness.kwargs(tmp_path),
+    )
+
+    assert result.status == "FAILED"
+    assert client.read_project_calls == [experiment_id]
+    assert client.updated_projects[0]["project_id"] == experiment_id
+    assert client.updated_projects[0]["metadata"]["unrelated_key"] == "preserve me"
+    assert not any(
+        error.reason == "langsmith_project_metadata_unavailable"
+        for error in result.errors
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["read", "update"])
+async def test_project_metadata_failure_is_verdict_neutral_and_secret_safe(
+    settings,
+    runtime_config_for,
+    tmp_path,
+    evaluation_harness,
+    failure_stage,
+) -> None:
+    secret = f"sk-project-metadata-{failure_stage}-secret-123456"
+    error = ConnectionError(f"project metadata failed with {secret}")
+    client = FakeLangSmithClient(
+        projects=[FakeProject("project-42", metadata={"unrelated": True})],
+        project_read_error=error if failure_stage == "read" else None,
+        project_update_error=error if failure_stage == "update" else None,
+    )
+    runtime = runtime_config_for("planner")
+    runner = FakeEvaluateRunner(
+        examples=evaluation_harness.examples,
+        results=FakeExperimentResults(
+            experiment_name="planner-controlled",
+            url="https://smith.langchain.test/experiments/42",
+            experiment_id="project-42",
+        ),
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime,
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        secrets=(secret,),
+        **{
+            key: value
+            for key, value in evaluation_harness.kwargs(tmp_path).items()
+            if key != "secrets"
+        },
+    )
+
+    assert result.status == decide_status(
+        result.cases, tier="controlled", runtime=runtime
+    )
+    assert any(
+        error.stage == "trace"
+        and error.reason == "langsmith_project_metadata_unavailable"
+        for error in result.errors
+    )
+    assert secret not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_missing_experiment_id_is_verdict_neutral_and_secret_safe(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    secret = "sk-missing-project-id-secret-123456"
+    runner = FakeEvaluateRunner(
+        examples=evaluation_harness.examples,
+        results=FakeExperimentResults(
+            experiment_name="planner-controlled",
+            url="https://smith.langchain.test/experiments/42",
+            experiment_id=None,
+        ),
+    )
+    client = FakeLangSmithClient()
+    runtime = runtime_config_for("planner")
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime,
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        langsmith_client=client,
+        secrets=(secret,),
+        **{
+            key: value
+            for key, value in evaluation_harness.kwargs(tmp_path).items()
+            if key != "secrets"
+        },
+    )
+
+    assert result.status == decide_status(
+        result.cases, tier="controlled", runtime=runtime
+    )
+    assert client.read_project_calls == []
+    assert any(
+        error.reason == "langsmith_project_metadata_unavailable"
+        for error in result.errors
+    )
+    assert secret not in result.model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -246,6 +670,126 @@ async def test_a_focused_case_run_produces_three_repetitions(
     judges = [r.judge for r in result.cases[0].repetitions]
     assert len(judges) == 3
     assert all(judge.status == "scored" for judge in judges)
+
+
+@pytest.mark.asyncio
+async def test_a_focused_run_passes_only_selected_examples_to_langsmith(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    focused = evaluation_harness.for_case("focused-decomposition")
+    runtime = runtime_config_for("planner", case_id="focused-decomposition")
+    dataset = FakeDataset(runtime.dataset_name, "dataset-1")
+    client = FakeLangSmithClient(datasets=[dataset])
+    client.create_examples(dataset_id=dataset.id, examples=focused.examples)
+    selected = _focused_dataset_examples(client, runtime, focused.cases)
+    assert selected is not None
+
+    runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
+
+    await run_agent_evaluation(
+        settings,
+        runtime,
+        cases=focused.cases,
+        dataset_examples=selected,
+        evaluate=runner,
+        **focused.kwargs(tmp_path),
+    )
+
+    assert runner.calls[0]["data"] == selected
+    assert len(runner.rows) == 3
+    assert {
+        (row["outputs"]["case_id"], row["outputs"]["case_version"])
+        for row in runner.rows
+    } == {focused.cases[0].identity}
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_case_dataset_example_is_rejected_before_evaluation(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    focused = evaluation_harness.for_case("focused-decomposition")
+    wrong = FakeExample(
+        "wrong-example",
+        {"case_id": "other-case"},
+        {},
+        {"case_id": "other-case", "case_version": 1},
+    )
+    runner = FakeEvaluateRunner(examples=focused.examples)
+
+    with pytest.raises(PreflightError) as captured:
+        await run_agent_evaluation(
+            settings,
+            runtime_config_for("planner", case_id="focused-decomposition"),
+            cases=focused.cases,
+            dataset_examples=[wrong],
+            evaluate=runner,
+            **focused.kwargs(tmp_path),
+        )
+
+    assert captured.value.reason == "dataset_unavailable"
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_experiment_url_falls_back_to_comparison_url(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    comparison_url = "https://smith.langchain.test/compare/1"
+    results = FakeExperimentResults(
+        experiment_name="experiment",
+        url=None,
+        comparison_url=comparison_url,
+    )
+    runner = FakeEvaluateRunner(
+        examples=evaluation_harness.examples, results=results
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        **evaluation_harness.kwargs(tmp_path),
+    )
+
+    assert result.experiment_url == comparison_url
+
+
+@pytest.mark.asyncio
+async def test_experiment_url_failure_is_auxiliary_and_preserves_quality_status(
+    settings, runtime_config_for, tmp_path, evaluation_harness
+) -> None:
+    baseline = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=FakeEvaluateRunner(examples=evaluation_harness.examples),
+        **{
+            **evaluation_harness.kwargs(tmp_path / "baseline"),
+        },
+    )
+    results = FakeExperimentResults(
+        experiment_name="experiment",
+        url=None,
+        comparison_error=ConnectionError("url unavailable"),
+    )
+    runner = FakeEvaluateRunner(
+        examples=evaluation_harness.examples, results=results
+    )
+
+    result = await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner"),
+        cases=evaluation_harness.cases,
+        evaluate=runner,
+        **evaluation_harness.kwargs(tmp_path),
+    )
+
+    assert result.status == baseline.status
+    assert result.experiment_url is None
+    assert any(
+        error.reason == "experiment_url_unavailable" for error in result.errors
+    )
 
 
 @pytest.mark.asyncio
@@ -440,3 +984,12 @@ async def test_the_artifact_is_written_and_revalidates(
     assert len(
         [r for case in restored.cases for r in case.repetitions]
     ) == 9
+    assert set(_summary_values({"results": runner.summary_feedback})) == {
+        "evaluation_status",
+        "evaluation_failure_reason",
+    }
+    assert all(
+        "evaluation_status" not in repr(row["feedback"])
+        and "evaluation_failure_reason" not in repr(row["feedback"])
+        for row in runner.rows
+    )

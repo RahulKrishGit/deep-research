@@ -13,7 +13,9 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, get_args
+from uuid import UUID
 
+from langsmith import Client as LangSmithClient
 from langsmith.evaluation import aevaluate
 from pydantic import ValidationError
 
@@ -398,6 +400,49 @@ EXPERIMENT_EXIT_CODES: dict[EvaluationStatus, int] = {
 
 EvaluateCallable = Callable[..., Awaitable[Any]]
 
+_SUMMARY_FEEDBACK_KEYS = frozenset(
+    {"evaluation_status", "evaluation_failure_reason"}
+)
+
+
+class _SummaryFeedbackClient:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        errors: list[EvaluationFailure],
+        secrets: Sequence[str],
+    ) -> None:
+        self._client = client
+        self._errors = errors
+        self._secrets = tuple(secrets)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+    def create_feedback(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return self._client.create_feedback(*args, **kwargs)
+        except Exception as error:
+            key = kwargs.get("key")
+            run_id = kwargs.get("run_id")
+            project_id = kwargs.get("project_id")
+            if (
+                key in _SUMMARY_FEEDBACK_KEYS
+                and run_id is None
+                and project_id is not None
+            ):
+                self._errors.append(
+                    EvaluationFailure(
+                        stage="trace",
+                        reason="langsmith_summary_unavailable",
+                        message=_safe_error_message(error, self._secrets),
+                        exception_type=type(error).__name__,
+                    )
+                )
+            raise
+
+
 _JUDGE_NOT_RUN_REASONS = frozenset(get_args(JudgeNotRunReason))
 
 
@@ -538,6 +583,27 @@ def build_case_result(
     )
 
 
+def _build_case_results(
+    case_by_identity: Mapping[tuple[str, int], EvaluationCase],
+    repetitions_by_case: Mapping[
+        tuple[str, int], Sequence[RepetitionResult]
+    ],
+    *,
+    runtime: EvaluationRuntimeConfig,
+) -> list[CaseResult]:
+    threshold, floor = _quality_thresholds(runtime)
+    return [
+        build_case_result(
+            case_by_identity[identity],
+            repetitions_by_case[identity],
+            threshold=threshold,
+            floor=floor,
+        )
+        for identity in case_by_identity
+        if repetitions_by_case[identity]
+    ]
+
+
 def decide_status(
     cases: Sequence[CaseResult],
     *,
@@ -562,6 +628,152 @@ def decide_status(
     if any(not case.passed for case in cases):
         return "FAILED"
     return "REVIEW REQUIRED"
+
+
+def _quality_thresholds(
+    runtime: EvaluationRuntimeConfig,
+) -> tuple[float, float]:
+    if runtime.tier == "live":
+        return runtime.live_threshold, runtime.live_threshold
+    return runtime.case_average_threshold, runtime.repetition_floor
+
+
+def evaluation_failure_reason(
+    cases: Sequence[CaseResult],
+    *,
+    status: EvaluationStatus,
+    runtime: EvaluationRuntimeConfig,
+    errors: Sequence[EvaluationFailure] = (),
+) -> str:
+    """Return one deterministic summary built only from safe identifiers."""
+    if status == "REVIEW REQUIRED":
+        return "all cases passed automated checks; human review required"
+
+    infrastructure = next(
+        (error for error in errors if error.stage in ("trace", "setup")),
+        None,
+    )
+    if infrastructure is not None:
+        return f"{infrastructure.stage}:{infrastructure.reason}"
+
+    threshold, floor = _quality_thresholds(runtime)
+    for case in cases:
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
+            if repetition.errors:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    f"failed {repetition.errors[0].reason}"
+                )
+    for case in cases:
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
+            if repetition.gates.failed_ids:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    f"failed {repetition.gates.failed_ids[0]}"
+                )
+            if not repetition.completed:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    "failed run_incomplete"
+                )
+            if repetition.judge is None:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    "failed judge_missing"
+                )
+            if repetition.judge.status == "judge_not_run":
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    f"failed {repetition.judge.not_run_reason}"
+                )
+            if repetition.aggregate_quality is None:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    "failed aggregate_quality_unavailable"
+                )
+            if repetition.aggregate_quality < floor:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    "failed repetition_floor"
+                )
+        if case.average_quality is None:
+            return f"{case.case_id} failed case_average_unavailable"
+        if case.average_quality < threshold:
+            return f"{case.case_id} failed case_average_threshold"
+        if not case.passed:
+            return f"{case.case_id} failed case_result"
+
+    return "evaluation failed"
+
+
+def build_evaluation_summary_feedback(
+    cases: Sequence[CaseResult],
+    *,
+    tier: EvaluationTier,
+    runtime: EvaluationRuntimeConfig,
+    errors: Sequence[EvaluationFailure] = (),
+) -> dict[str, list[dict[str, JsonValue]]]:
+    status_values = build_evaluation_status_values(
+        cases, tier=tier, runtime=runtime, errors=errors
+    )
+    return {
+        "results": [
+            {"key": "evaluation_status", "value": status_values["evaluation_status"]},
+            {
+                "key": "evaluation_failure_reason",
+                "value": status_values["evaluation_failure_reason"],
+            },
+        ]
+    }
+
+
+def build_evaluation_status_values(
+    cases: Sequence[CaseResult],
+    *,
+    tier: EvaluationTier,
+    runtime: EvaluationRuntimeConfig,
+    errors: Sequence[EvaluationFailure] = (),
+) -> dict[str, str]:
+    """Build the authoritative status projection for feedback and metadata."""
+    status = decide_status(cases, tier=tier, runtime=runtime, errors=errors)
+    return {
+        "evaluation_status": status,
+        "evaluation_failure_reason": evaluation_failure_reason(
+            cases,
+            status=status,
+            runtime=runtime,
+            errors=errors,
+        ),
+    }
+
+
+def merge_evaluation_status_metadata(
+    existing_metadata: Mapping[str, Any] | None,
+    status_values: Mapping[str, str],
+) -> dict[str, Any]:
+    """Return status metadata merged over existing values without mutation."""
+    return {**(existing_metadata or {}), **status_values}
+
+
+def publish_evaluation_status_metadata(
+    langsmith_client: Any,
+    *,
+    project_id: str | UUID,
+    status_values: Mapping[str, str],
+) -> None:
+    """Read, merge, and publish status metadata for one LangSmith project."""
+    project = langsmith_client.read_project(project_id=project_id)
+    metadata = merge_evaluation_status_metadata(
+        getattr(project, "metadata", None), status_values
+    )
+    langsmith_client.update_project(
+        project_id=project_id,
+        metadata=metadata,
+    )
 
 
 def _row_identity(
@@ -689,11 +901,46 @@ def _unknown_case_judge_result() -> dict[str, JsonValue]:
     }
 
 
+def _dataset_example_identity(example: Any) -> tuple[str, int] | None:
+    if isinstance(example, Mapping):
+        metadata = example.get("metadata")
+    else:
+        metadata = getattr(example, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    case_id = metadata.get("case_id")
+    case_version = metadata.get("case_version")
+    if (
+        not isinstance(case_id, str)
+        or not isinstance(case_version, int)
+        or isinstance(case_version, bool)
+    ):
+        return None
+    return case_id, case_version
+
+
+def _validate_dataset_examples(
+    dataset_examples: Sequence[Any], cases: Sequence[EvaluationCase]
+) -> None:
+    expected = [case.identity for case in cases]
+    actual = [_dataset_example_identity(example) for example in dataset_examples]
+    if (
+        any(identity is None for identity in actual)
+        or len(actual) != len(expected)
+        or set(actual) != set(expected)
+    ):
+        raise PreflightError(
+            "dataset_unavailable",
+            "selected dataset examples do not exactly match requested cases",
+        )
+
+
 async def run_agent_evaluation(
     settings: ConfigSettings,
     runtime: EvaluationRuntimeConfig,
     *,
     cases: Sequence[EvaluationCase],
+    dataset_examples: Sequence[Any] | None = None,
     evaluate: EvaluateCallable = aevaluate,
     target_provider_factory: Callable[[], Any],
     judge_provider_factory: Callable[[], StructuredCompleter],
@@ -701,6 +948,7 @@ async def run_agent_evaluation(
     dependency_factory: DependencyFactory,
     secrets: Sequence[str] = (),
     root: Path,
+    langsmith_client: Any | None = None,
 ) -> ExperimentResult:
     """Run one experiment end to end: target, gates, judge, aggregation,
     thresholds, and the local artifact.
@@ -715,6 +963,9 @@ async def run_agent_evaluation(
     own single invocation, so the judge is never called twice for the sake
     of local bookkeeping.
     """
+    if dataset_examples is not None:
+        _validate_dataset_examples(dataset_examples, cases)
+
     case_by_identity: dict[tuple[str, int], EvaluationCase] = {
         case.identity: case for case in cases
     }
@@ -753,6 +1004,7 @@ async def run_agent_evaluation(
             runtime=runtime,
             secrets=secrets,
             gate_lookup=_gate_lookup,
+            tracker=tracker_factory(),
         )
         for identity, case in case_by_identity.items()
     }
@@ -831,19 +1083,67 @@ async def run_agent_evaluation(
 
     _dispatch_judge.__name__ = JUDGE_PROMPT_ID
 
-    errors: list[EvaluationFailure] = []
+    evaluation_errors: list[EvaluationFailure] = []
+    auxiliary_errors: list[EvaluationFailure] = []
+    summary_errors: list[EvaluationFailure] = []
+    metadata_errors: list[EvaluationFailure] = []
+    experiment_url: str | None = None
+
+    def evaluation_status(
+        runs: Sequence[Any], examples: Sequence[Any]
+    ) -> dict[str, list[dict[str, JsonValue]]]:
+        del runs, examples
+        try:
+            case_results = _build_case_results(
+                case_by_identity,
+                repetitions_by_case,
+                runtime=runtime,
+            )
+            return build_evaluation_summary_feedback(
+                case_results,
+                tier=runtime.tier,
+                runtime=runtime,
+                errors=evaluation_errors,
+            )
+        except Exception as error:
+            summary_errors.append(
+                EvaluationFailure(
+                    stage="trace",
+                    reason="langsmith_summary_unavailable",
+                    message=_safe_error_message(error, secrets),
+                    exception_type=type(error).__name__,
+                )
+            )
+            return {"results": []}
+
+    evaluation_client = (
+        _SummaryFeedbackClient(
+            langsmith_client,
+            errors=summary_errors,
+            secrets=secrets,
+        )
+        if langsmith_client is not None
+        else None
+    )
+
     try:
-        await evaluate(
+        evaluation_results = await evaluate(
             target,
-            data=runtime.dataset_name,
+            data=(
+                dataset_examples
+                if dataset_examples is not None
+                else runtime.dataset_name
+            ),
             evaluators=[_dispatch_code, _dispatch_judge],
+            summary_evaluators=[evaluation_status],
             experiment_prefix=runtime.experiment_name,
             num_repetitions=runtime.repetitions,
             max_concurrency=runtime.max_concurrency,
             metadata=experiment_metadata(runtime, settings),
+            client=evaluation_client,
         )
     except Exception as error:
-        errors.append(
+        evaluation_errors.append(
             EvaluationFailure(
                 stage="trace",
                 reason="langsmith_unavailable",
@@ -851,39 +1151,81 @@ async def run_agent_evaluation(
                 exception_type=type(error).__name__,
             )
         )
+    else:
+        try:
+            experiment_url = getattr(evaluation_results, "url", None)
+            if experiment_url is None:
+                get_comparison_url = getattr(
+                    evaluation_results, "get_comparison_url", None
+                )
+                if get_comparison_url is not None:
+                    experiment_url = await get_comparison_url()
+        except Exception as error:
+            auxiliary_errors.append(
+                EvaluationFailure(
+                    stage="trace",
+                    reason="experiment_url_unavailable",
+                    message=_safe_error_message(error, secrets),
+                    exception_type=type(error).__name__,
+                )
+            )
 
-    threshold = (
-        runtime.live_threshold
-        if runtime.tier == "live"
-        else runtime.case_average_threshold
+        if langsmith_client is not None:
+            try:
+                experiment_id = getattr(evaluation_results, "experiment_id", None)
+                if not isinstance(experiment_id, (str, UUID)) or not experiment_id:
+                    raise LookupError("experiment id unavailable")
+                final_case_results = _build_case_results(
+                    case_by_identity,
+                    repetitions_by_case,
+                    runtime=runtime,
+                )
+                publish_evaluation_status_metadata(
+                    langsmith_client,
+                    project_id=experiment_id,
+                    status_values=build_evaluation_status_values(
+                        final_case_results,
+                        tier=runtime.tier,
+                        runtime=runtime,
+                        errors=evaluation_errors,
+                    ),
+                )
+            except Exception as error:
+                metadata_errors.append(
+                    EvaluationFailure(
+                        stage="trace",
+                        reason="langsmith_project_metadata_unavailable",
+                        message=_safe_error_message(error, secrets),
+                        exception_type=type(error).__name__,
+                    )
+                )
+
+    case_results = _build_case_results(
+        case_by_identity,
+        repetitions_by_case,
+        runtime=runtime,
     )
-    floor = (
-        runtime.live_threshold
-        if runtime.tier == "live"
-        else runtime.repetition_floor
-    )
-    case_results = [
-        build_case_result(
-            case_by_identity[identity],
-            repetitions_by_case[identity],
-            threshold=threshold,
-            floor=floor,
-        )
-        for identity in case_by_identity
-        if repetitions_by_case[identity]
-    ]
 
     result = ExperimentResult(
         agent_name=runtime.agent_name,
         tier=runtime.tier,
         experiment_name=runtime.experiment_name,
+        experiment_url=experiment_url,
         dataset_name=runtime.dataset_name,
         cases=case_results,
         status=decide_status(
-            case_results, tier=runtime.tier, runtime=runtime, errors=errors
+            case_results,
+            tier=runtime.tier,
+            runtime=runtime,
+            errors=evaluation_errors,
         ),
         metadata=experiment_metadata(runtime, settings),
-        errors=errors,
+        errors=[
+            *evaluation_errors,
+            *auxiliary_errors,
+            *summary_errors,
+            *metadata_errors,
+        ],
     )
 
     path = runtime.output_root / "results.json"
@@ -977,6 +1319,7 @@ async def run_suite_evaluation(
     experiment_prefix: str | None,
     config_path: str,
     evaluate: EvaluateCallable = aevaluate,
+    langsmith_client_factory: Callable[[], Any] = LangSmithClient,
     now: datetime,
     git: GitMetadata,
 ) -> SuiteResult:
@@ -1032,6 +1375,7 @@ async def run_suite_evaluation(
                 tracker,
                 api_key=chat_key,
             )
+            langsmith_client = langsmith_client_factory()
 
             result = await run_agent_evaluation(
                 settings,
@@ -1044,6 +1388,7 @@ async def run_suite_evaluation(
                 dependency_factory=build_controlled_dependencies,
                 secrets=known_secret_values(environ),
                 root=runtime.output_root,
+                langsmith_client=langsmith_client,
             )
         except Exception as error:
             # One broken agent must not abort the rest of the suite --
