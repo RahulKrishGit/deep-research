@@ -552,3 +552,50 @@ async def test_document_reader_succeeds_through_research_tools_defaults(
     assert result.data["format"] == "json"
     assert result.data["chunks"] != []
     assert result.data["failures"] == []
+
+
+@pytest.mark.asyncio
+async def test_planner_regression_finish_decision_with_empty_tool_name_completes(
+    tracker: Tracker,
+) -> None:
+    finish_with_empty_tool_name = finish(
+        "I understand the question.", "Three angles matter."
+    ).model_copy(update={"tool_name": ""})
+    completer = ScriptedCompleter(
+        decisions=[finish_with_empty_tool_name],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.steps[-1].tool_name is None
+    assert outcome.react.steps[-1].final_answer == "Three angles matter."
+
+
+@pytest.mark.asyncio
+async def test_planner_regression_tool_decision_with_empty_final_answer_completes(
+    tracker: Tracker,
+) -> None:
+    tool_with_empty_final_answer = use_tool(
+        "Recall prior work.", "query_memory", '{"query": "quantum"}'
+    ).model_copy(update={"final_answer": ""})
+    completer = ScriptedCompleter(
+        decisions=[
+            tool_with_empty_final_answer,
+            finish("I understand the question.", "Three angles matter."),
+        ],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.steps[0].final_answer is None
+    assert outcome.react.steps[0].tool_name == "query_memory"
