@@ -41,7 +41,16 @@ class ProviderRateLimitError(ProviderError):
 
 
 class ProviderResponseError(ProviderError):
-    """A provider returned an unusable response or status error."""
+    """A provider returned an unusable response or status error.
+
+    ``retryable`` marks transient failures (connection errors, 408/409/429,
+    and 5xx statuses) that the repo-owned retry policy may retry;
+    deterministic 4xx and content failures default to ``False``.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class StructuredOutputError(ProviderError):

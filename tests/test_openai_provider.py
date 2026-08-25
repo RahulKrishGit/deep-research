@@ -515,7 +515,9 @@ async def test_complete_translates_sdk_errors(
 ) -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        openai_config(),
+        # retry_count=0 isolates the translation contract from the retry
+        # policy, which has its own dedicated tests.
+        openai_config(retry_count=0),
         tracker,
         client=FakeOpenAIClient(responses=RecordingResponses(sdk_error)),
     )
@@ -576,7 +578,7 @@ async def test_complete_structured_raises_after_two_pydantic_validation_errors()
 async def test_complete_translates_connection_errors() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        openai_config(),
+        openai_config(retry_count=0),
         tracker,
         client=FakeOpenAIClient(
             responses=RecordingResponses(
@@ -596,7 +598,7 @@ async def test_complete_translates_connection_errors() -> None:
 async def test_complete_structured_translates_connection_errors() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        openai_config(),
+        openai_config(retry_count=0),
         tracker,
         client=FakeOpenAIClient(
             responses=RecordingResponses(
@@ -618,7 +620,7 @@ async def test_complete_structured_translates_connection_errors() -> None:
 async def test_complete_structured_translates_finish_reason_error() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        openai_config(),
+        openai_config(retry_count=0),
         tracker,
         client=FakeOpenAIClient(
             responses=RecordingResponses(ContentFilterFinishReasonError())
@@ -688,7 +690,7 @@ async def test_provider_methods_reject_malformed_usage(
 async def test_complete_translates_generic_openai_errors() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
-        openai_config(),
+        openai_config(retry_count=0),
         tracker,
         client=FakeOpenAIClient(responses=RecordingResponses(OpenAIError("invalid"))),
     )
@@ -696,5 +698,66 @@ async def test_complete_translates_generic_openai_errors() -> None:
     async with tracker.session_span("session-1", "question"):
         with pytest.raises(ProviderResponseError, match="request failed"):
             await provider.complete([ChatMessage(role="user", content="Answer")])
+
+
+def _recorded_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Replace ``asyncio.sleep`` with a recorder for deterministic tests."""
+    import asyncio
+
+    slept: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    return slept
+
+
+@pytest.mark.asyncio
+async def test_openai_complete_retries_transient_errors_then_succeeds(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    responses = RecordingResponses(
+        APITimeoutError(request=httpx.Request("POST", "https://api.openai.com")),
+        response(text="Answer"),
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(retry_count=3, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete([ChatMessage(role="user", content="Answer")])
+
+    assert result.text == "Answer"
+    assert len(responses.create_calls) == 2
+    assert slept == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_openai_complete_structured_raises_after_retries_exhausted(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    error = APIConnectionError(request=httpx.Request("POST", "https://api.openai.com"))
+    responses = RecordingResponses(error, error, error)
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=16.0),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="connection"):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="Create an outline")], Outline
+            )
+
+    assert len(responses.parse_calls) == 3
+    assert slept == [1.0, 2.0]
 
 

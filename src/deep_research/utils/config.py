@@ -67,6 +67,8 @@ class LLMConfig(BaseModel):
     )
     timeout: float = Field(default=60.0, gt=0)
     retry_count: int = Field(default=2, ge=0)
+    retry_initial_delay: float = Field(default=1.0, ge=0)
+    retry_max_delay: float = Field(default=16.0, ge=0)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1)
 
@@ -290,6 +292,8 @@ _ENVIRONMENT_OVERRIDES = {
     "LLM_EMBEDDING_MODEL": ("llm", "embedding_model"),
     "LLM_TIMEOUT": ("llm", "timeout"),
     "LLM_RETRY_COUNT": ("llm", "retry_count"),
+    "LLM_RETRY_INITIAL_DELAY": ("llm", "retry_initial_delay"),
+    "LLM_RETRY_MAX_DELAY": ("llm", "retry_max_delay"),
     "LLM_TEMPERATURE": ("llm", "temperature"),
     "LLM_MAX_TOKENS": ("llm", "max_tokens"),
     "LANGSMITH_TRACING": ("langsmith", "tracing_enabled"),

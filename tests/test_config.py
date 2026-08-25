@@ -142,12 +142,17 @@ def test_llm_config_resolves_agent_model_override(config_path: Path) -> None:
     assert settings.llm.embedding_model == "text-embedding-3-small"
     assert settings.llm.timeout == 45.0
     assert settings.llm.retry_count == 2
+    assert settings.llm.retry_initial_delay == 1.0
+    assert settings.llm.retry_max_delay == 16.0
 
 
 def test_llm_defaults_select_deepseek_reasoning() -> None:
     llm = LLMConfig()
 
     assert llm.provider == "deepseek"
+    assert llm.retry_count == 2
+    assert llm.retry_initial_delay == 1.0
+    assert llm.retry_max_delay == 16.0
     assert llm.resolve_for(None) == EffectiveModelConfig(
         model="deepseek-v4-flash",
         thinking_mode="enabled",
@@ -203,6 +208,8 @@ def test_structured_agent_override_rejects_provider_field() -> None:
         ("LLM_EMBEDDING_MODEL", "text-embedding-3-large"),
         ("LLM_TIMEOUT", 12.5),
         ("LLM_RETRY_COUNT", 4),
+        ("LLM_RETRY_INITIAL_DELAY", 2.5),
+        ("LLM_RETRY_MAX_DELAY", 20.0),
     ],
 )
 def test_openai_environment_overrides(
@@ -216,6 +223,8 @@ def test_openai_environment_overrides(
         "LLM_EMBEDDING_MODEL": "embedding_model",
         "LLM_TIMEOUT": "timeout",
         "LLM_RETRY_COUNT": "retry_count",
+        "LLM_RETRY_INITIAL_DELAY": "retry_initial_delay",
+        "LLM_RETRY_MAX_DELAY": "retry_max_delay",
     }[environment_name]
     monkeypatch.setenv(environment_name, str(expected_value))
 
@@ -229,6 +238,8 @@ def test_openai_environment_overrides(
     [
         ("timeout", 0),
         ("retry_count", -1),
+        ("retry_initial_delay", -1),
+        ("retry_max_delay", -1),
         ("max_tokens", 0),
         ("temperature", -0.1),
     ],

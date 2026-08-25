@@ -29,6 +29,7 @@ from deep_research.providers.contracts import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
+from deep_research.providers.retry import with_retries
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -79,7 +80,9 @@ def _build_client(
         api_key=resolved_key,
         base_url=DEEPSEEK_BASE_URL,
         timeout=config.timeout,
-        max_retries=config.retry_count,
+        # SDK retries are disabled: the repo-owned retry policy in
+        # providers/retry.py owns the retry count and backoff.
+        max_retries=0,
     )
 
 
@@ -221,10 +224,14 @@ def _raise_deepseek_error(error: Exception) -> None:
     if isinstance(error, sdk.RateLimitError):
         raise ProviderRateLimitError("DeepSeek rate limit exceeded") from error
     if isinstance(error, sdk.APIConnectionError):
-        raise ProviderResponseError("DeepSeek connection failed") from error
-    if isinstance(error, sdk.APIStatusError):
         raise ProviderResponseError(
-            f"DeepSeek request failed with status {error.status_code}"
+            "DeepSeek connection failed", retryable=True
+        ) from error
+    if isinstance(error, sdk.APIStatusError):
+        status = error.status_code
+        raise ProviderResponseError(
+            f"DeepSeek request failed with status {status}",
+            retryable=status >= 500 or status in (408, 409),
         ) from error
     raise error
 
@@ -322,21 +329,30 @@ class DeepSeekChatProvider:
                 },
             ) as span:
                 _sdk = _openai_errors()
-                try:
-                    response = await self._client.chat.completions.create(
-                        **{**request, "messages": payload}
-                    )
-                except (
-                    _sdk.APITimeoutError,
-                    _sdk.RateLimitError,
-                    _sdk.APIConnectionError,
-                    _sdk.APIStatusError,
-                ) as error:
-                    _raise_deepseek_error(error)
-                except _sdk.OpenAIError as error:
-                    raise ProviderResponseError(
-                        "DeepSeek chat request failed"
-                    ) from error
+
+                async def _request() -> Any:
+                    try:
+                        return await self._client.chat.completions.create(
+                            **{**request, "messages": payload}
+                        )
+                    except (
+                        _sdk.APITimeoutError,
+                        _sdk.RateLimitError,
+                        _sdk.APIConnectionError,
+                        _sdk.APIStatusError,
+                    ) as error:
+                        _raise_deepseek_error(error)
+                    except _sdk.OpenAIError as error:
+                        raise ProviderResponseError(
+                            "DeepSeek chat request failed"
+                        ) from error
+
+                response = await with_retries(
+                    _request,
+                    retry_count=self._config.retry_count,
+                    initial_delay=self._config.retry_initial_delay,
+                    max_delay=self._config.retry_max_delay,
+                )
                 text = _choice_text(response)
                 usage = _usage_from_response(response)
                 _set_span_result(span, response, usage)
@@ -371,25 +387,34 @@ class DeepSeekChatProvider:
             },
         ) as span:
             _sdk = _openai_errors()
-            try:
-                response = await self._client.chat.completions.create(
-                    **{
-                        **request,
-                        "messages": messages,
-                        "response_format": {"type": "json_object"},
-                    }
-                )
-            except (
-                _sdk.APITimeoutError,
-                _sdk.RateLimitError,
-                _sdk.APIConnectionError,
-                _sdk.APIStatusError,
-            ) as error:
-                _raise_deepseek_error(error)
-            except _sdk.OpenAIError as error:
-                raise ProviderResponseError(
-                    "DeepSeek structured output request failed"
-                ) from error
+
+            async def _request() -> Any:
+                try:
+                    return await self._client.chat.completions.create(
+                        **{
+                            **request,
+                            "messages": messages,
+                            "response_format": {"type": "json_object"},
+                        }
+                    )
+                except (
+                    _sdk.APITimeoutError,
+                    _sdk.RateLimitError,
+                    _sdk.APIConnectionError,
+                    _sdk.APIStatusError,
+                ) as error:
+                    _raise_deepseek_error(error)
+                except _sdk.OpenAIError as error:
+                    raise ProviderResponseError(
+                        "DeepSeek structured output request failed"
+                    ) from error
+
+            response = await with_retries(
+                _request,
+                retry_count=self._config.retry_count,
+                initial_delay=self._config.retry_initial_delay,
+                max_delay=self._config.retry_max_delay,
+            )
             text = _choice_text(response, allow_empty=True)
             usage = _usage_from_response(response)
             _set_span_result(span, response, usage)

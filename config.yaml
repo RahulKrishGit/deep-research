@@ -11,7 +11,12 @@ llm:
   reasoning_effort: high
   model_overrides: {}
   timeout: 60.0
-  retry_count: 2
+  # Repo-owned retry policy: up to 5 retries with exponential backoff from
+  # 1s doubling to a 16s cap (the openai SDK only exposes max_retries with a
+  # fixed 0.5s/8s internal backoff, so the policy lives in providers/retry.py).
+  retry_count: 5
+  retry_initial_delay: 1.0
+  retry_max_delay: 16.0
   temperature: 0.7
   max_tokens: 4096
 

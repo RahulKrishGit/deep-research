@@ -154,7 +154,7 @@ def test_deepseek_builds_openai_compatible_client_with_code_owned_url(
             "api_key": "deepseek-key",
             "base_url": DEEPSEEK_BASE_URL,
             "timeout": 60.0,
-            "max_retries": 2,
+            "max_retries": 0,
         }
     ]
 
@@ -472,7 +472,11 @@ async def test_deepseek_plain_translates_sdk_errors(raised, expected) -> None:
     completions = RecordingCompletions(raised)
     tracker = local_tracker()
     provider = DeepSeekChatProvider(
-        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+        # retry_count=0 isolates the translation contract from the retry
+        # policy, which has its own dedicated tests.
+        deepseek_config(retry_count=0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
     )
     async with tracker.session_span("session-1", "question"):
         with pytest.raises(expected):
@@ -484,7 +488,9 @@ async def test_deepseek_plain_translates_generic_openai_errors() -> None:
     completions = RecordingCompletions(OpenAIError("invalid"))
     tracker = local_tracker()
     provider = DeepSeekChatProvider(
-        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+        deepseek_config(retry_count=0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -803,7 +809,9 @@ async def test_deepseek_structured_sdk_errors_are_not_repaired(
     completions = RecordingCompletions(raised)
     tracker = local_tracker()
     provider = DeepSeekChatProvider(
-        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+        deepseek_config(retry_count=0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -820,7 +828,9 @@ async def test_deepseek_structured_generic_openai_errors_are_not_repaired() -> N
     completions = RecordingCompletions(OpenAIError("invalid"))
     tracker = local_tracker()
     provider = DeepSeekChatProvider(
-        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+        deepseek_config(retry_count=0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -1040,3 +1050,171 @@ async def test_deepseek_structured_public_cause_chain_hides_provider_output() ->
     for link in (caught.value, failure):
         for sensitive in ("not-json", "still invalid", "decide"):
             assert sensitive not in str(link)
+
+
+def _recorded_sleeps(monkeypatch) -> list[float]:
+    """Replace ``asyncio.sleep`` with a recorder for deterministic tests."""
+    import asyncio
+
+    slept: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    return slept
+
+
+@pytest.mark.asyncio
+async def test_deepseek_plain_retries_transient_errors_then_succeeds(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        RateLimitError(
+            "limited",
+            response=httpx.Response(
+                429, request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+            ),
+            body=None,
+        ),
+        chat_response(text="answer"),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=3, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+
+    assert result.text == "answer"
+    assert len(completions.calls) == 3
+    assert slept == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_plain_raises_after_retries_exhausted(monkeypatch) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    error = APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL))
+    completions = RecordingCompletions(error, error, error)
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=16.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert len(completions.calls) == 3
+    assert slept == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_plain_non_transient_errors_are_not_retried(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(ValueError("boom"))
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=5, retry_initial_delay=1.0, retry_max_delay=16.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValueError, match="boom"):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert len(completions.calls) == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_retries_transient_errors_then_succeeds(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(text='{"answer": "yes", "confidence": 9}'),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert result == TinyAnswer(answer="yes", confidence=9)
+    assert len(completions.calls) == 2
+    assert slept == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_plain_does_not_retry_deterministic_status_errors(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APIStatusError(
+            "bad",
+            response=httpx.Response(
+                401, request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+            ),
+            body=None,
+        )
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=5, retry_initial_delay=1.0, retry_max_delay=16.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert len(completions.calls) == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_deepseek_plain_retries_server_status_errors(monkeypatch) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    error = APIStatusError(
+        "bad",
+        response=httpx.Response(
+            503, request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+        ),
+        body=None,
+    )
+    completions = RecordingCompletions(error, error, chat_response(text="answer"))
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=3, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert result.text == "answer"
+    assert len(completions.calls) == 3
+    assert slept == [1.0, 2.0]
