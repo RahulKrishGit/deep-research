@@ -21,8 +21,10 @@ from deep_research.providers.contracts import (
     ChatResult,
     OpenAIProviderError,
     ProviderConfigurationError,
+    ProviderOutputLimitError,
     ProviderRateLimitError,
     ProviderResponseError,
+    ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
 )
@@ -43,6 +45,7 @@ def _openai_errors() -> SimpleNamespace:
             APIStatusError,
             APITimeoutError,
             AsyncOpenAI,
+            LengthFinishReasonError,
             OpenAIError,
             RateLimitError,
         )
@@ -52,6 +55,7 @@ def _openai_errors() -> SimpleNamespace:
             APIStatusError=APIStatusError,
             APITimeoutError=APITimeoutError,
             AsyncOpenAI=AsyncOpenAI,
+            LengthFinishReasonError=LengthFinishReasonError,
             OpenAIError=OpenAIError,
             RateLimitError=RateLimitError,
         )
@@ -119,6 +123,33 @@ def _set_span_result(span: Any, response: Any, usage: TokenUsage) -> None:
     )
 
 
+def _output_limit_telemetry(
+    error: BaseException,
+    *,
+    configured_max_tokens: int,
+    request_attempt: int,
+    structured_attempt: int | None,
+) -> ProviderResponseTelemetry:
+    return ProviderResponseTelemetry(
+        finish_reason_category="length",
+        configured_max_tokens=configured_max_tokens,
+        usage=_usage_from_response(getattr(error, "completion", None)),
+        request_attempt=request_attempt,
+        structured_attempt=structured_attempt,
+    )
+
+
+def _set_output_limit_span_result(
+    span: Any, telemetry: ProviderResponseTelemetry
+) -> None:
+    span.set_outputs(telemetry.model_dump(mode="json"))
+    span.set_token_usage(
+        input_tokens=telemetry.usage.input_tokens,
+        output_tokens=telemetry.usage.output_tokens,
+        total_tokens=telemetry.usage.total_tokens,
+    )
+
+
 def _raise_provider_error(error: Exception) -> None:
     sdk = _openai_errors()
     if isinstance(error, sdk.APITimeoutError):
@@ -127,13 +158,17 @@ def _raise_provider_error(error: Exception) -> None:
         raise ProviderRateLimitError("OpenAI rate limit exceeded") from error
     if isinstance(error, sdk.APIConnectionError):
         raise ProviderResponseError(
-            "OpenAI connection failed", retryable=True
+            "OpenAI connection failed",
+            retryable=True,
+            failure_category="transport",
         ) from error
     if isinstance(error, sdk.APIStatusError):
         status = error.status_code
         raise ProviderResponseError(
             f"OpenAI request failed with status {status}",
             retryable=status >= 500 or status in (408, 409),
+            failure_category="http",
+            http_status_code=status,
         ) from error
     raise error
 
@@ -211,6 +246,7 @@ class OpenAIChatProvider:
             raise ValueError("messages must contain at least one item")
         effective, request, metadata = self._request_options(agent_name)
         payload = [message.model_dump(mode="json") for message in messages]
+        request_attempt = 0
         try:
             async with self._tracker.llm_span(
                 effective.model,
@@ -223,6 +259,8 @@ class OpenAIChatProvider:
                 _sdk = _openai_errors()
 
                 async def _request() -> Any:
+                    nonlocal request_attempt
+                    request_attempt += 1
                     try:
                         return await self._client.responses.create(
                             **{**request, "input": payload}
@@ -234,6 +272,15 @@ class OpenAIChatProvider:
                         _sdk.APIStatusError,
                     ) as error:
                         _raise_provider_error(error)
+                    except _sdk.LengthFinishReasonError as error:
+                        telemetry = _output_limit_telemetry(
+                            error,
+                            configured_max_tokens=self._config.max_tokens,
+                            request_attempt=request_attempt,
+                            structured_attempt=None,
+                        )
+                        _set_output_limit_span_result(span, telemetry)
+                        raise ProviderOutputLimitError(telemetry) from None
                     except _sdk.OpenAIError as error:
                         raise ProviderResponseError(
                             "OpenAI chat request failed"
@@ -285,8 +332,11 @@ class OpenAIChatProvider:
             },
         ) as span:
             _sdk = _openai_errors()
+            request_attempt = 0
 
             async def _request() -> Any:
+                nonlocal request_attempt
+                request_attempt += 1
                 try:
                     return await self._client.responses.parse(
                         **{**request, "input": payload, "text_format": schema}
@@ -298,6 +348,15 @@ class OpenAIChatProvider:
                     _sdk.APIStatusError,
                 ) as error:
                     _raise_provider_error(error)
+                except _sdk.LengthFinishReasonError as error:
+                    telemetry = _output_limit_telemetry(
+                        error,
+                        configured_max_tokens=self._config.max_tokens,
+                        request_attempt=request_attempt,
+                        structured_attempt=attempt,
+                    )
+                    _set_output_limit_span_result(span, telemetry)
+                    raise ProviderOutputLimitError(telemetry) from None
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
                         "OpenAI structured output request failed"

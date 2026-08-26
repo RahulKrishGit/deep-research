@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import json
 import os
+import unicodedata
 from collections.abc import Sequence
 from types import SimpleNamespace
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
@@ -22,10 +23,13 @@ from deep_research.providers.capabilities import resolve_request_settings
 from deep_research.providers.contracts import (
     ChatMessage,
     ChatResult,
+    FinishReasonCategory,
     ProviderConfigurationError,
     ProviderError,
+    ProviderOutputLimitError,
     ProviderRateLimitError,
     ProviderResponseError,
+    ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
 )
@@ -35,6 +39,15 @@ from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+_FINISH_REASON_CATEGORIES = frozenset(
+    {
+        "stop",
+        "length",
+        "content_filter",
+        "tool_calls",
+        "insufficient_system_resource",
+    }
+)
 
 _openai_sdk: SimpleNamespace | None = None
 
@@ -186,7 +199,49 @@ def _usage_from_response(response: Any) -> TokenUsage:
     )
 
 
-def _choice_text(response: Any, *, allow_empty: bool = False) -> str:
+def _normalize_finish_reason(value: object) -> FinishReasonCategory:
+    """Map an untrusted provider finish value to the finite safe taxonomy."""
+    if not isinstance(value, str) or len(value) > 64:
+        return "other"
+    if any(unicodedata.category(character).startswith("C") for character in value):
+        return "other"
+    normalized = value.strip().lower()
+    if normalized in _FINISH_REASON_CATEGORIES:
+        return cast(FinishReasonCategory, normalized)
+    return "other"
+
+
+def _response_finish_reason(response: Any) -> object:
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, (list, tuple)) or len(choices) != 1:
+        return None
+    return getattr(choices[0], "finish_reason", None)
+
+
+def _response_telemetry(
+    response: Any,
+    *,
+    configured_max_tokens: int,
+    request_attempt: int,
+    structured_attempt: int | None = None,
+) -> ProviderResponseTelemetry:
+    return ProviderResponseTelemetry(
+        finish_reason_category=_normalize_finish_reason(
+            _response_finish_reason(response)
+        ),
+        configured_max_tokens=configured_max_tokens,
+        usage=_usage_from_response(response),
+        request_attempt=request_attempt,
+        structured_attempt=structured_attempt,
+    )
+
+
+def _choice_text(
+    response: Any,
+    *,
+    allow_empty: bool = False,
+    finish_reason_category: FinishReasonCategory | None = None,
+) -> str:
     """Extract and trim text from exactly one clean Chat Completions choice.
 
     Fail-closed on malformed shapes and any non-``stop`` finish reason, so a
@@ -198,7 +253,12 @@ def _choice_text(response: Any, *, allow_empty: bool = False) -> str:
     if not isinstance(choices, (list, tuple)) or len(choices) != 1:
         raise ProviderResponseError("DeepSeek response contained malformed choices")
     choice = choices[0]
-    if getattr(choice, "finish_reason", None) != "stop":
+    is_stop = (
+        finish_reason_category == "stop"
+        if finish_reason_category is not None
+        else getattr(choice, "finish_reason", None) == "stop"
+    )
+    if not is_stop:
         raise ProviderResponseError("DeepSeek response did not stop cleanly")
     message = getattr(choice, "message", None)
     content = getattr(message, "content", None) if message is not None else None
@@ -225,28 +285,27 @@ def _raise_deepseek_error(error: Exception) -> None:
         raise ProviderRateLimitError("DeepSeek rate limit exceeded") from error
     if isinstance(error, sdk.APIConnectionError):
         raise ProviderResponseError(
-            "DeepSeek connection failed", retryable=True
+            "DeepSeek connection failed",
+            retryable=True,
+            failure_category="transport",
         ) from error
     if isinstance(error, sdk.APIStatusError):
         status = error.status_code
         raise ProviderResponseError(
             f"DeepSeek request failed with status {status}",
             retryable=status >= 500 or status in (408, 409),
+            failure_category="http",
+            http_status_code=status,
         ) from error
     raise error
 
 
-def _set_span_result(span: Any, response: Any, usage: TokenUsage) -> None:
-    span.set_outputs(
-        {
-            "provider": "deepseek",
-            "response_id": getattr(response, "id", "unknown"),
-        }
-    )
+def _set_span_result(span: Any, telemetry: ProviderResponseTelemetry) -> None:
+    span.set_outputs(telemetry.model_dump(mode="json"))
     span.set_token_usage(
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        total_tokens=usage.total_tokens,
+        input_tokens=telemetry.usage.input_tokens,
+        output_tokens=telemetry.usage.output_tokens,
+        total_tokens=telemetry.usage.total_tokens,
     )
 
 
@@ -319,6 +378,7 @@ class DeepSeekChatProvider:
             raise ValueError("messages must contain at least one item")
         effective, request, metadata = self._request_options(agent_name)
         payload = _translated_messages(messages)
+        request_attempt = 0
         try:
             async with self._tracker.llm_span(
                 effective.model,
@@ -331,6 +391,8 @@ class DeepSeekChatProvider:
                 _sdk = _openai_errors()
 
                 async def _request() -> Any:
+                    nonlocal request_attempt
+                    request_attempt += 1
                     try:
                         return await self._client.chat.completions.create(
                             **{**request, "messages": payload}
@@ -353,13 +415,24 @@ class DeepSeekChatProvider:
                     initial_delay=self._config.retry_initial_delay,
                     max_delay=self._config.retry_max_delay,
                 )
-                text = _choice_text(response)
-                usage = _usage_from_response(response)
-                _set_span_result(span, response, usage)
+                telemetry = _response_telemetry(
+                    response,
+                    configured_max_tokens=self._config.max_tokens,
+                    request_attempt=request_attempt,
+                )
+                _set_span_result(span, telemetry)
+                if telemetry.finish_reason_category == "length":
+                    raise ProviderOutputLimitError(telemetry)
+                text = _choice_text(
+                    response,
+                    finish_reason_category=telemetry.finish_reason_category,
+                )
                 self._last_model_returned = (
                     getattr(response, "model", None) or effective.model
                 )
-                return ChatResult(text=text, model=effective.model, usage=usage)
+                return ChatResult(
+                    text=text, model=effective.model, usage=telemetry.usage
+                )
         except ProviderError:
             # Documentary guard: project-owned errors are already typed,
             # safe, and content-free, so they pass through untouched. The
@@ -387,8 +460,11 @@ class DeepSeekChatProvider:
             },
         ) as span:
             _sdk = _openai_errors()
+            request_attempt = 0
 
             async def _request() -> Any:
+                nonlocal request_attempt
+                request_attempt += 1
                 try:
                     return await self._client.chat.completions.create(
                         **{
@@ -415,9 +491,20 @@ class DeepSeekChatProvider:
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
             )
-            text = _choice_text(response, allow_empty=True)
-            usage = _usage_from_response(response)
-            _set_span_result(span, response, usage)
+            telemetry = _response_telemetry(
+                response,
+                configured_max_tokens=self._config.max_tokens,
+                request_attempt=request_attempt,
+                structured_attempt=attempt,
+            )
+            _set_span_result(span, telemetry)
+            if telemetry.finish_reason_category == "length":
+                raise ProviderOutputLimitError(telemetry)
+            text = _choice_text(
+                response,
+                allow_empty=True,
+                finish_reason_category=telemetry.finish_reason_category,
+            )
             try:
                 parsed = schema.model_validate_json(text)
             except (json.JSONDecodeError, ValidationError) as error:

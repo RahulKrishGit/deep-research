@@ -6,6 +6,8 @@ import asyncio
 
 import pytest
 
+import deep_research.providers.contracts as contracts_module
+from deep_research.observability import TokenUsage
 from deep_research.providers.contracts import (
     ProviderResponseError,
     ProviderTimeoutError,
@@ -87,5 +89,35 @@ async def test_with_retries_non_transient_errors_propagate_immediately(
 
     with pytest.raises(ValueError, match="boom"):
         await with_retries(operation, retry_count=5, initial_delay=1.0, max_delay=16.0)
+    assert calls == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_with_retries_propagates_output_limit_without_retrying(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    telemetry_type = getattr(contracts_module, "ProviderResponseTelemetry", None)
+    error_type = getattr(contracts_module, "ProviderOutputLimitError", None)
+    assert telemetry_type is not None
+    assert error_type is not None
+    telemetry = telemetry_type(
+        finish_reason_category="length",
+        configured_max_tokens=4096,
+        usage=TokenUsage(input_tokens=8, output_tokens=4096),
+        request_attempt=1,
+    )
+    error = error_type(telemetry)
+    calls = 0
+
+    async def operation() -> str:
+        nonlocal calls
+        calls += 1
+        raise error
+
+    with pytest.raises(ProviderResponseError):
+        await with_retries(operation, retry_count=5, initial_delay=1.0, max_delay=16.0)
+
     assert calls == 1
     assert slept == []

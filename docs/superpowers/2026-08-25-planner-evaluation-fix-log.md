@@ -248,3 +248,31 @@ The Sol/high review of the initial documentation commit identified eight documen
 - The documentation fix round modifies only this fix log, the approved design, and the execution-ready plan. `tests/test_diagnostic_planner_deepseek_length.py` remains untracked and preserved; production code and tests were not touched.
 - The reviewed documentation-fix head is the required implementation starting point. The prior diagnosis/document-review base and initial docs commit remain historical references only.
 - Offline documentation checks are required before commit: reserved-term scan, Ruff, `git diff --check`, staged diff check, exact three-path commit audit, and untracked-test preservation check. The supplied code baseline remains `1801 passed, 1 deselected, 2 known dependency warnings`; it is not a result of this documentation round.
+
+## 14. Task 1 — Typed output-limit failure and safe provider telemetry (2026-08-25)
+
+### Issue and implementation
+
+The DeepSeek adapter previously converted every non-`stop` finish into a generic nonretryable `ProviderResponseError` after the retry operation, losing the distinction between configured output exhaustion and other response failures. Task 1 adds the shared typed contract and keeps the provider boundary content-free:
+
+- `FinishReasonCategory` is allow-listed to `stop`, `length`, `content_filter`, `tool_calls`, `insufficient_system_resource`, and `other`. Values are bounded to 64 characters, stripped and case-normalized only when safe, and all unknown, non-string, empty, control-containing, or oversized values become `other`; raw values are not retained.
+- `ProviderResponseTelemetry` contains only the finite category, configured cap, typed usage, request attempt, and optional structured attempt, with positive cap/attempt validation and forbidden extra fields.
+- `ProviderOutputLimitError` is a nonretryable `ProviderResponseError` with a static safe message and typed telemetry. DeepSeek counts actual SDK invocations around `with_retries`, records safe telemetry on the provider span, and raises only for normalized `length`; structured repair attempts carry their one-based structured attempt.
+- Provider response errors now carry a finite failure category and optional validated HTTP status code. OpenAI parity is limited to the installed documented `LengthFinishReasonError` signal; no output-limit inference is made from response text.
+
+Changed files: `src/deep_research/providers/contracts.py`, `src/deep_research/providers/deepseek_provider.py`, `src/deep_research/providers/openai_provider.py`, `src/deep_research/providers/__init__.py`, `tests/test_deepseek_provider.py`, `tests/test_openai_provider.py`, `tests/test_retry_policy.py`, and this fix log. No provider or LangSmith call was run.
+
+### TDD evidence
+
+- **RED command:** `python -m pytest -q tests/test_deepseek_provider.py -k "length or output_limit"`
+- **RED output:** `14 failed, 1 passed, 59 deselected in 1.65s`. The failures were the missing telemetry model, missing typed output-limit class, generic `ProviderResponseError` for `length`, and absent finite span outputs; the preserved direct `_choice_text` characterization remained the expected generic path. The added OpenAI/retry RED command, `python -m pytest -q tests/test_openai_provider.py tests/test_retry_policy.py -k "output_limit or documented_length"`, returned `2 failed, 37 deselected in 1.45s`.
+- **Focused GREEN:** `python -m pytest -q tests/test_deepseek_provider.py -k "length or output_limit"` → `15 passed, 59 deselected in 1.02s`.
+- **Neighboring GREEN:** `python -m pytest -q tests/test_deepseek_provider.py tests/test_openai_provider.py tests/test_retry_policy.py` → `113 passed in 1.24s`.
+
+### Verification, safety, and status
+
+- **Full offline suite:** `python -m pytest -q` → `1815 passed, 1 failed, 1 deselected, 2 warnings in 32.76s`. The sole failure is the preserved untracked diagnostic test `tests/test_diagnostic_planner_deepseek_length.py`, whose downstream planner assertion still expects the pre-Task-1 generic provider-cause message. That file was not edited, staged, or committed; the failure is recorded as a Task 1 scope concern for the later planner-cause task.
+- **Ruff:** `python -m ruff check src tests` → `All checks passed!`
+- **Whitespace:** `git diff --check` → exit 0; only Git LF/CRLF normalization warnings were emitted.
+- **Leakage self-review:** added production lines contain no raw finish-reason field, exception-string serialization, provider response/reasoning content, prompt/request content, or secret output. Span outputs use only the typed telemetry projection. The installed SDK characterization was offline (`openai 2.50.0`, documented `LengthFinishReasonError` present); no live provider/LangSmith call was made.
+- **Code/review status:** Task 1 implementation and self-review are complete. A Sol/high reviewer subagent was not callable in this direct tool context, so no external review result is claimed. The final commit SHA is recorded in the handoff report.

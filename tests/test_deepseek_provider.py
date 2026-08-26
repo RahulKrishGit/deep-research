@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import httpx
@@ -16,9 +17,11 @@ from openai import (
 )
 from pydantic import BaseModel
 
+import deep_research.providers.contracts as contracts_module
 import deep_research.providers.deepseek_provider as deepseek_module
 from deep_research.observability import (
     LangSmithRuntimeConfig,
+    TokenUsage,
     TokenUsageMetric,
     Tracker,
 )
@@ -56,7 +59,7 @@ class FakeDeepSeekClient:
 def chat_response(
     *,
     text: object = "answer",
-    finish_reason: str = "stop",
+    finish_reason: object = "stop",
     prompt_tokens: object = 4,
     completion_tokens: object = 2,
     reasoning_content: str | None = None,
@@ -90,10 +93,21 @@ class CapturingTracker(Tracker):
     def __init__(self) -> None:
         super().__init__(LangSmithRuntimeConfig(tracing_enabled=False))
         self.llm_inputs: list[dict[str, object]] = []
+        self.llm_outputs: list[dict[str, object] | None] = []
 
     def llm_span(self, model, inputs):
         self.llm_inputs.append(dict(inputs))
-        return super().llm_span(model, inputs)
+        manager = super().llm_span(model, inputs)
+
+        @asynccontextmanager
+        async def capture_outputs():
+            async with manager as span:
+                try:
+                    yield span
+                finally:
+                    self.llm_outputs.append(span.outputs)
+
+        return capture_outputs()
 
 
 def local_tracker() -> Tracker:
@@ -413,7 +427,7 @@ async def test_deepseek_rejects_malformed_choice_shapes(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "finish_reason", ["length", "content_filter", "insufficient_system_resource"]
+    "finish_reason", ["content_filter", "insufficient_system_resource"]
 )
 async def test_deepseek_terminal_finish_reasons_fail_closed(
     finish_reason: str,
@@ -432,6 +446,188 @@ async def test_deepseek_terminal_finish_reasons_fail_closed(
 
     assert len(completions.calls) == 1
     assert "partial output" not in str(caught.value)
+
+
+def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
+    telemetry_type = getattr(contracts_module, "ProviderResponseTelemetry", None)
+    assert telemetry_type is not None
+    telemetry = telemetry_type(
+        finish_reason_category="length",
+        configured_max_tokens=4096,
+        usage=TokenUsage(input_tokens=8, output_tokens=4096),
+        request_attempt=1,
+        structured_attempt=2,
+    )
+
+    assert telemetry.model_dump(mode="json") == {
+        "finish_reason_category": "length",
+        "configured_max_tokens": 4096,
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 4096,
+            "total_tokens": 4104,
+        },
+        "request_attempt": 1,
+        "structured_attempt": 2,
+    }
+
+    with pytest.raises(ValueError):
+        telemetry_type(
+            finish_reason_category="length",
+            configured_max_tokens=0,
+            usage=TokenUsage(),
+            request_attempt=1,
+        )
+    with pytest.raises(ValueError):
+        telemetry_type(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(),
+            request_attempt=0,
+        )
+    with pytest.raises(ValueError):
+        telemetry_type(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(),
+            request_attempt=1,
+            raw_finish_reason="length",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("finish_reason", "expected_category", "expects_output_limit"),
+    [
+        ("stop", "stop", False),
+        (" LENGTH ", "length", True),
+        ("CONTENT_FILTER", "content_filter", False),
+        ("tool_calls", "tool_calls", False),
+        ("insufficient_system_resource", "insufficient_system_resource", False),
+        ("unknown-provider-finish-raw-value", "other", False),
+        (None, "other", False),
+        (42, "other", False),
+        ("", "other", False),
+        ("   ", "other", False),
+        ("\x00length", "other", False),
+        ("oversized-provider-finish-raw-" + ("x" * 64), "other", False),
+    ],
+)
+async def test_deepseek_output_limit_finish_reason_telemetry_is_finite_and_safe(
+    finish_reason: object,
+    expected_category: str,
+    expects_output_limit: bool,
+) -> None:
+    completions = RecordingCompletions(
+        chat_response(
+            text="partial provider response content",
+            finish_reason=finish_reason,
+            prompt_tokens=8,
+            completion_tokens=4096,
+        )
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=5),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "prompt content"):
+        if expects_output_limit:
+            with pytest.raises(ProviderResponseError) as caught:
+                await provider.complete(
+                    [ChatMessage(role="user", content="prompt content")]
+                )
+            assert caught.value.retryable is False
+            assert type(caught.value).__name__ == "ProviderOutputLimitError"
+            assert getattr(caught.value, "telemetry").model_dump(mode="json") == {
+                "finish_reason_category": "length",
+                "configured_max_tokens": 4096,
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 4096,
+                    "total_tokens": 4104,
+                },
+                "request_attempt": 1,
+                "structured_attempt": None,
+            }
+            assert "partial provider response content" not in str(caught.value)
+            assert "prompt content" not in str(caught.value)
+        elif expected_category == "stop":
+            result = await provider.complete(
+                [ChatMessage(role="user", content="prompt content")]
+            )
+            assert result.text == "partial provider response content"
+        else:
+            with pytest.raises(ProviderResponseError) as caught:
+                await provider.complete(
+                    [ChatMessage(role="user", content="prompt content")]
+                )
+            assert type(caught.value).__name__ != "ProviderOutputLimitError"
+            assert "partial provider response content" not in str(caught.value)
+            assert "prompt content" not in str(caught.value)
+
+    assert len(completions.calls) == 1
+    assert tracker.llm_outputs == [
+        {
+            "finish_reason_category": expected_category,
+            "configured_max_tokens": 4096,
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 4096,
+                "total_tokens": 4104,
+            },
+            "request_attempt": 1,
+            "structured_attempt": None,
+        }
+    ]
+    serialized = json.dumps(tracker.llm_outputs, sort_keys=True)
+    assert "unknown-provider-finish-raw-value" not in serialized
+    assert "oversized-provider-finish-raw-" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_length_error_carries_structured_attempt() -> None:
+    completions = RecordingCompletions(
+        chat_response(
+            text="partial structured provider response",
+            finish_reason="length",
+            prompt_tokens=8,
+            completion_tokens=4096,
+        )
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=5),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "structured prompt"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="structured prompt")], TinyAnswer
+            )
+
+    assert len(completions.calls) == 1
+    assert type(caught.value).__name__ == "ProviderOutputLimitError"
+    assert getattr(caught.value, "telemetry").model_dump(mode="json") == {
+        "finish_reason_category": "length",
+        "configured_max_tokens": 4096,
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 4096,
+            "total_tokens": 4104,
+        },
+        "request_attempt": 1,
+        "structured_attempt": 1,
+    }
+    assert tracker.llm_outputs[0] == getattr(caught.value, "telemetry").model_dump(
+        mode="json"
+    )
+    assert "partial structured provider response" not in str(caught.value)
+    assert "structured prompt" not in str(caught.value)
 
 
 @pytest.mark.asyncio
