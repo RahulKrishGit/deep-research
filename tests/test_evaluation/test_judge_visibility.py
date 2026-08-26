@@ -28,12 +28,14 @@ class TrackerBoundStructuredProvider(FakeStructuredProvider):
         super().__init__(responses=responses)
         self._tracker = tracker
 
-    async def complete_structured(self, messages, schema, *, agent_name=None):
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None
+    ):
         async with self._tracker.llm_span(
             "judge-test-model", {"operation": "judge"}
         ):
             return await super().complete_structured(
-                messages, schema, agent_name=agent_name
+                messages, schema, agent_name=agent_name, max_tokens=max_tokens
             )
 
 
@@ -57,10 +59,12 @@ class SessionAwareStructuredProvider(FakeStructuredProvider):
         super().__init__(responses=responses)
         self._tracker = tracker
 
-    async def complete_structured(self, messages, schema, *, agent_name=None):
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None
+    ):
         assert self._tracker.active is True
         return await super().complete_structured(
-            messages, schema, agent_name=agent_name
+            messages, schema, agent_name=agent_name, max_tokens=max_tokens
         )
 
 

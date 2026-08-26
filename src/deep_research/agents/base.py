@@ -55,8 +55,13 @@ class StructuredCompleter(Protocol):
         schema: type[_SchemaT],
         *,
         agent_name: str | None = None,
+        max_tokens: int | None = None,
     ) -> _SchemaT:
-        """Return validated structured output for ``schema``."""
+        """Return validated structured output for ``schema``.
+
+        ``max_tokens`` is a per-call output-budget override for this request
+        only; ``None`` means the provider's configured global cap.
+        """
         raise NotImplementedError
 
 

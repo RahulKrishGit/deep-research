@@ -42,6 +42,10 @@ agents:
   tool_budget: 10
   prompt_context_entries: 8
   observation_summary_chars: 200
+  # Operation-specific output budget for the planner's final
+  # ResearchPlanDraft request only; ReAct decisions and judge calls keep
+  # llm.max_tokens (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).
+  planner_final_max_tokens: 4096
 
 graph:
   max_iterations: 3

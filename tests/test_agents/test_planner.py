@@ -282,6 +282,7 @@ def _planner(
     *,
     search: FakeSearchClient | None = None,
     memory: FakeMemory | None = None,
+    config: AgentRuntimeConfig | None = None,
 ) -> PlannerAgent:
     return PlannerAgent(
         provider=completer,
@@ -290,7 +291,7 @@ def _planner(
             session_id="session-1", agent_name="planner", max_entries=20
         ),
         tools=planner_tools(tracker, search=search, memory=memory),
-        config=AgentRuntimeConfig(max_iterations=3, tool_budget=3),
+        config=config or AgentRuntimeConfig(max_iterations=3, tool_budget=3),
     )
 
 
@@ -350,6 +351,95 @@ async def test_the_planner_turns_a_question_into_a_validated_plan(
     ]
     assert outcome.state_update["sub_topics"] == outcome.result.sub_topics
     assert outcome.state_update["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_react_decision_requests_carry_no_max_tokens_override(
+    tracker: Tracker,
+) -> None:
+    """ReAct decisions never receive the planner-final budget override."""
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
+            finish("I understand the question.", "Three angles matter."),
+        ],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "ReActDecision",
+        "ReActDecision",
+        "ResearchPlanDraft",
+    ]
+    assert completer.budgets == [None, None, 4096]
+
+
+@pytest.mark.asyncio
+async def test_only_final_plan_requests_use_the_planner_final_budget(
+    tracker: Tracker,
+) -> None:
+    """A raised planner-final budget reaches only ``ResearchPlanDraft``."""
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
+            finish("I understand the question.", "Three angles matter."),
+        ],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            planner_final_max_tokens=8192,
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_state())
+
+    assert completer.budgets == [None, None, 8192]
+
+
+@pytest.mark.asyncio
+async def test_repair_plan_requests_also_use_the_planner_final_budget(
+    tracker: Tracker,
+) -> None:
+    """Both plan drafts — initial and repair — carry the final budget."""
+    redundant = ResearchPlanDraft(
+        sub_topics=[
+            _draft("Cryptography", priority=1),
+            _draft("cryptography", priority=2),
+        ]
+    )
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            redundant,
+            _plan("Cryptography", "Hardware timelines", "Mitigations"),
+        ],
+    )
+    agent = _planner(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            planner_final_max_tokens=8192,
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.result.repair_attempted is True
+    assert completer.budgets == [None, 8192, 8192]
 
 
 def _output_limit_error() -> ProviderOutputLimitError:

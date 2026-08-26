@@ -21,7 +21,9 @@ from tests.research_fakes import FakeSearchClient
 class RecordingProvider:
     """A structured completer construction must never call."""
 
-    async def complete_structured(self, messages, schema, *, agent_name=None):
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None
+    ):
         raise AssertionError("construction must not call the provider")
 
 

@@ -24,6 +24,7 @@ from deep_research.evaluation.config import (
     target_llm_config,
 )
 from deep_research.utils.config import (
+    AgentRuntimeConfig,
     ConfigSettings,
     EvaluationConfig,
     LLMConfig,
@@ -229,6 +230,30 @@ def test_changing_the_judge_effort_refingerprints_the_judge() -> None:
         != baseline.judge_configuration_fingerprint
     )
     assert changed.dataset_name == baseline.dataset_name
+
+
+def test_changing_the_planner_final_budget_refingerprints_the_configuration() -> None:
+    """The operation-specific budget is visible in safe configuration metadata.
+
+    The effective value enters the serialized application settings, so the
+    configuration fingerprint — and nothing secret — records it.
+    """
+    baseline = build()
+    changed = build(
+        settings=ConfigSettings(
+            agents=AgentRuntimeConfig(planner_final_max_tokens=8192)
+        )
+    )
+
+    assert (
+        changed.configuration_fingerprint != baseline.configuration_fingerprint
+    )
+    assert changed.dataset_name == baseline.dataset_name
+    assert changed.agent_name == baseline.agent_name
+    assert (
+        changed.model_dump(mode="json")["configuration_fingerprint"]
+        != baseline.model_dump(mode="json")["configuration_fingerprint"]
+    )
 
 
 def test_dataset_names_carry_the_agent_tier_and_schema_version() -> None:

@@ -260,9 +260,13 @@ class _DecisionNormalizingCompleter(StructuredCompleter):
         schema: type[Any],
         *,
         agent_name: str | None = None,
+        max_tokens: int | None = None,
     ) -> Any:
         result = await self._inner.complete_structured(
-            messages, schema, agent_name=agent_name
+            messages,
+            schema,
+            agent_name=agent_name,
+            max_tokens=max_tokens,
         )
         if schema is ReActDecision and isinstance(result, ReActDecision):
             return result.model_copy(
@@ -320,6 +324,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 plan_messages(task, run, repair=repair),
                 ResearchPlanDraft,
                 agent_name=self.name,
+                max_tokens=self.config.planner_final_max_tokens,
             )
         except ProviderError as error:
             raise planning_provider_error("plan_draft") from error

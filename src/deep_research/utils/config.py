@@ -160,6 +160,10 @@ class AgentRuntimeConfig(BaseModel):
 
     ``tool_budget`` may be zero: an agent with no tools still gets to think
     and finish, it just may never call one.
+
+    ``planner_final_max_tokens`` is the operation-specific output budget for
+    the planner's final ``ResearchPlanDraft`` request only; ReAct decisions
+    and judge calls keep the global ``llm.max_tokens`` cap.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -168,6 +172,7 @@ class AgentRuntimeConfig(BaseModel):
     tool_budget: int = Field(default=10, ge=0)
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
+    planner_final_max_tokens: int = Field(default=4096, ge=1)
 
 
 class GraphConfig(BaseModel):
@@ -312,6 +317,10 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_TOOL_BUDGET": ("agents", "tool_budget"),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
+    "AGENTS_PLANNER_FINAL_MAX_TOKENS": (
+        "agents",
+        "planner_final_max_tokens",
+    ),
     "GRAPH_MAX_ITERATIONS": ("graph", "max_iterations"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),
     "OUTPUT_DIRECTORY": ("output", "directory"),

@@ -83,6 +83,7 @@ class ScriptedCompleter:
         self._decisions: list[Any] = list(decisions)
         self._outputs: list[Any] = list(outputs)
         self.calls: list[tuple[str, str | None, list[ChatMessage]]] = []
+        self.budgets: list[int | None] = []
 
     async def complete_structured(
         self,
@@ -90,8 +91,10 @@ class ScriptedCompleter:
         schema: type[Any],
         *,
         agent_name: str | None = None,
+        max_tokens: int | None = None,
     ) -> Any:
         self.calls.append((schema.__name__, agent_name, list(messages)))
+        self.budgets.append(max_tokens)
         queue = self._decisions if schema is ReActDecision else self._outputs
         if not queue:
             raise AssertionError(f"no scripted response left for {schema.__name__}")

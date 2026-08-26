@@ -41,6 +41,19 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 _MAX_VALIDATION_FIELD_PATHS = 16
 _MAX_VALIDATION_SUMMARY_LENGTH = 1000
 
+
+def _resolve_max_tokens(global_cap: int, override: int | None) -> int:
+    """Resolve one request's output budget: the global cap unless overridden.
+
+    A per-call override applies to that request field only and must be a
+    positive integer; anything else is rejected before the SDK is touched.
+    """
+    if override is None:
+        return global_cap
+    if override < 1:
+        raise ValueError("max_tokens must be a positive integer when provided")
+    return override
+
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 _FINISH_REASON_CATEGORIES = frozenset(
     {
@@ -545,6 +558,7 @@ class DeepSeekChatProvider:
         model: str,
         request: dict[str, object],
         metadata: dict[str, JsonValue],
+        configured_max_tokens: int,
         attempt: int,
     ) -> SchemaT:
         async with self._tracker.llm_span(
@@ -590,7 +604,7 @@ class DeepSeekChatProvider:
             )
             telemetry = _response_telemetry(
                 response,
-                configured_max_tokens=self._config.max_tokens,
+                configured_max_tokens=configured_max_tokens,
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
             )
@@ -626,10 +640,15 @@ class DeepSeekChatProvider:
         schema: type[SchemaT],
         *,
         agent_name: str | None = None,
+        max_tokens: int | None = None,
     ) -> SchemaT:
         if not messages:
             raise ValueError("messages must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(
+            self._config.max_tokens, max_tokens
+        )
         effective, request, metadata = self._request_options(agent_name)
+        request = {**request, "max_tokens": resolved_max_tokens}
         instruction = _json_instruction(schema)
         current_messages = [
             *_translated_messages(messages),
@@ -645,6 +664,7 @@ class DeepSeekChatProvider:
                     model=effective.model,
                     request=request,
                     metadata=metadata,
+                    configured_max_tokens=resolved_max_tokens,
                     attempt=attempt,
                 )
             except _StructuredValidationFailure as error:
