@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
+from itertools import islice
 from pathlib import Path
 from typing import Any, get_args
 from uuid import UUID
@@ -57,6 +58,7 @@ from deep_research.evaluation.judging import (
     judge_prompt_fingerprint,
 )
 from deep_research.evaluation.models import (
+    _MAX_DIAGNOSTIC_PATHS,
     AGENT_NAMES,
     AgentName,
     CaseResult,
@@ -64,6 +66,7 @@ from deep_research.evaluation.models import (
     EvaluationFailure,
     EvaluationStatus,
     EvaluationTier,
+    EvaluatorDiagnostic,
     ExperimentResult,
     GateReport,
     GateResult,
@@ -797,6 +800,42 @@ def _row_identity(
     return (case_id, case_version, repetition)
 
 
+def _metadata_url(
+    metadata: Mapping[str, Any], key: str
+) -> str | None:
+    """A directly supplied URL string from feedback metadata, else ``None``.
+
+    Only a non-empty string is retained; nothing is derived, reconstructed,
+    or inferred from any other metadata, input, or exception.
+    """
+    candidate = metadata.get(key)
+    if isinstance(candidate, str) and candidate:
+        return candidate
+    return None
+
+
+def _metadata_diagnostics(
+    metadata: Mapping[str, Any],
+) -> tuple[EvaluatorDiagnostic, ...]:
+    """Project bounded typed diagnostics from feedback metadata.
+
+    Malformed or unknown records are dropped rather than allowed to break
+    the artifact reconstruction or smuggle provider-controlled text.
+    """
+    raw = metadata.get("judge_diagnostics")
+    if not isinstance(raw, list):
+        return ()
+    projected: list[EvaluatorDiagnostic] = []
+    for item in islice(raw, _MAX_DIAGNOSTIC_PATHS):
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            projected.append(EvaluatorDiagnostic.model_validate(item))
+        except ValidationError:
+            continue
+    return tuple(projected)
+
+
 def _judge_feedback_from_result(
     payload: Mapping[str, Any], *, runtime: EvaluationRuntimeConfig
 ) -> JudgeFeedback:
@@ -805,7 +844,9 @@ def _judge_feedback_from_result(
     provider invocation: ``build_judge_evaluator``'s evaluator calls the
     judge exactly once and reports the outcome as a flattened feedback
     list, and this is the one place that dict is turned back into the
-    typed record the local artifact and ``aggregate_quality`` need.
+    typed record the local artifact and ``aggregate_quality`` need. The
+    evaluator trace/source URLs and safe diagnostics ride the same
+    metadata, so a missing URL stays ``None`` and is never reconstructed.
     """
     entries: dict[str, Mapping[str, Any]] = {
         item["key"]: item
@@ -835,6 +876,8 @@ def _judge_feedback_from_result(
             or runtime.judge_configuration_fingerprint
         ),
     )
+    evaluator_trace_url = _metadata_url(metadata, "evaluator_trace_url")
+    evaluator_source_url = _metadata_url(metadata, "evaluator_source_url")
 
     scored = status_entry is not None and status_entry.get("value") == "scored"
     if scored and quality_entry is not None:
@@ -859,6 +902,8 @@ def _judge_feedback_from_result(
                 rationale=rationale,
             ),
             judge_quality=float(quality_entry["score"]),
+            evaluator_trace_url=evaluator_trace_url,
+            evaluator_source_url=evaluator_source_url,
             **common,
         )
 
@@ -869,7 +914,14 @@ def _judge_feedback_from_result(
             reason = candidate
     if reason is None:
         reason = "unhandled_exception"
-    return JudgeFeedback(status="judge_not_run", not_run_reason=reason, **common)
+    return JudgeFeedback(
+        status="judge_not_run",
+        not_run_reason=reason,
+        diagnostics=_metadata_diagnostics(metadata),
+        evaluator_trace_url=evaluator_trace_url,
+        evaluator_source_url=evaluator_source_url,
+        **common,
+    )
 
 
 def _unknown_case_code_result() -> dict[str, JsonValue]:
