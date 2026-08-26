@@ -420,3 +420,25 @@ Changed files: `src/deep_research/utils/config.py`, `config.yaml`, `src/deep_res
 - **Whitespace:** `git diff --check` → exit 0.
 - **Leakage self-review:** no secrets, prompts, provider responses, evaluator inputs, or reasoning content enter the changed production paths; span metadata and telemetry carry only the resolved integer budget and the existing typed fields. No live provider or LangSmith call was made; this commit is offline-only. The 4096 global default and the environment override were verified with the effective 8192 budget reaching only `ResearchPlanDraft` (ReAct and judge requests unchanged).
 - **Code/review status:** implementation and self-review complete. The required Sol/high review is not dispatchable in this direct tool context; no external review result is claimed. The exact commit SHA is recorded in the Task 3 handoff report.
+
+## 20. Task 3 fix round 1/5 — Judge-call budget pinning (2026-08-26)
+
+### Finding and fix
+
+The Task 3 review approved everything except one Important finding: no test records/asserts a judge call's request budget. The planner tests pin ReAct decisions to `None` and plan drafts to the configured budget, but the judge path's budget was only verified by code inspection. Because `FakeStructuredProvider` and the judge-visibility subclasses tolerate the keyword, a future regression that passes `max_tokens` on the judge path would violate the exit criterion ("only final `ResearchPlanDraft` accepts the operation-specific value") with every test green.
+
+The controller ruled the plan's Files-list silence does not override Interfaces item 4 ("Add tests that record request budgets for all three operations and assert final planner-only override behavior"), so a judge-test-file edit is in scope. The fix is a single pinning assertion added to the judge happy-path test: `assert provider.budgets == [None]` in `test_a_successful_judge_produces_scored_feedback` (`tests/test_evaluation/test_judging.py`), directly after the existing feedback assertions. The fakes already record budgets, so no fake change was needed, and no production code changed — `evaluation/judging.py` already passes no override.
+
+### TDD evidence
+
+- **RED (covering test):** `python -m pytest -q --rootdir <worktree> tests/test_evaluation/test_judging.py::test_a_successful_judge_produces_scored_feedback -p no:cacheprovider` → **`1 passed, 1 warning in 0.06s`**. This is a coverage-only pin: the production behavior is already correct, so the new assertion is green immediately by characterization. It is the regression guard — it fails iff a judge call records a non-`None` budget — and closes the previously silent coverage gap.
+- **GREEN:** no production change required; the assertion itself is the fix. The covering test stays green.
+- **Neighboring:** `python -m pytest -q --rootdir <worktree> tests/test_evaluation/test_judging.py tests/test_evaluation/test_judge_visibility.py tests/test_agents/test_planner.py -p no:cacheprovider` → **`62 passed, 1 warning in 0.18s`**.
+
+### Verification, safety, and status
+
+- **Tracked full offline suite:** `python -m pytest -q --rootdir <worktree> --basetemp C:\Temp\deep-research-t3-fr1-full -p no:cacheprovider` → **`1864 passed, 1 deselected, 2 warnings in 12.37s`** (the assertion extends an existing test, so the node count is unchanged).
+- **Ruff:** `python -m ruff check src tests` → `All checks passed!`.
+- **Whitespace:** `git diff --check` → exit 0.
+- **Leakage self-review:** test-only change; no production path, telemetry, or serialization touched. No secrets, prompts, provider responses, evaluator inputs, or reasoning content appear. **No live provider or LangSmith call was made.**
+- **Code/review status:** fix-round code and offline verification complete; pending orchestrator-owned Sol/high re-review. The exact commit SHA is recorded in the Task 3 report.
