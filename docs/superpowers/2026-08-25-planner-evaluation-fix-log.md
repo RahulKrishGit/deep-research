@@ -185,3 +185,45 @@ The campaign is stopped at `INFRASTRUCTURE_BLOCKED` (plan-mandated terminal stat
 4. **Accept the current evidence as-is**: all four root causes are fixed and validated at the focused level; final validation #1 achieved 144/144 hard gates with the only shortfall being `ambiguous-scope`'s deterministic quality, since fixed by RC-D.
 
 No merge, push, PR, live-tier run, or new agent campaign without separate authorization. The `R:` mapping can be removed with `subst R: /D` once the campaign is concluded.
+
+## 12. Provider failure root-cause correction and remediation campaign (2026-08-25)
+
+### Issue
+
+The remaining planner provider-family failures are not sufficiently diagnosable. A target response that reaches the configured output cap is collapsed into a generic nonretryable provider response error after retry handling, planner wrapping uses reachability language, ReAct schema failures lose their invalid field paths, and judge failures do not retain evaluator diagnostics or URLs. The approved remediation is documentation-only in this commit; production code and tests remain unchanged.
+
+The earlier sections’ frozen-scope statements describe the completed prior campaign. This separately approved remediation campaign uses the file boundaries and task dependencies in the new design and implementation plan, including the shared provider, ReAct, and evaluator seams that were previously frozen.
+
+### Evidence
+
+- Temporary instrumentation of the live target call recorded `finish_reason=length`, `completion_tokens=4096`, `prompt_tokens=741`, and `total_tokens=4837`. The completion count exactly matched the configured `max_tokens=4096`. The call completed in 33–37 seconds under the 60-second timeout.
+- `_choice_text` runs after `with_retries` and converts a non-stop finish into a generic nonretryable `ProviderResponseError`. Consequently, `retry_count=5` still sends one request for this deterministic output-limit event; it does not send five identical calls.
+- Planner wrapping and evaluation classification currently mislabel output-limit and structured-schema failures as provider reachability failures.
+- A separate ReAct structured-output failure had two successful HTTP responses and two `ReActDecision` validation failures. Invalid field paths were not preserved.
+- A separate `judge_provider_failure` remains unresolved because evaluator diagnostics and URLs are missing. The existing `JudgeFeedback.evaluator_trace_url` and `evaluator_source_url` fields are not populated by the current path.
+- The installed coding Harness differs from production: its adapter default is `maxTokens=256000`, subject to overrides, with streaming and an explicit `length => max-tokens` mapping. The larger cap alone is not evidence that production succeeds.
+- Exact finish and usage metadata came from temporary instrumentation and is not durable in `results.json`. The remediation must persist only a safe typed subset.
+- The current remediation baseline is `1801 passed, 1 deselected, 2 known dependency warnings`; Ruff is clean and `git diff --check` is clean. The earlier §10 historical count of 1798 is retained as historical evidence and is not being relabeled.
+
+No secrets, prompts, model response content, evaluator inputs, tool inputs, or hidden chain-of-thought may enter logs, artifacts, traces, or documentation. No direct live experiment link exists for the temporary instrumentation because its exact metadata was not durably written to `results.json`.
+
+### RED/GREEN and campaign status
+
+- **RED evidence recorded:** the temporary target call, retry-count characterization, planner cause observation, ReAct two-response/two-validation observation, and missing judge URL observation establish the failure boundaries.
+- **GREEN status:** not run in this documentation commit. No production code or tests were changed. The implementation plan requires focused RED/GREEN tests before each code change and a full offline suite once after each code task.
+- **Code/review status:** the approved design and execution-ready plan are being authored by Luna. The whole-branch review gate is `gpt-5.6-sol` at high reasoning effort and is review-only; it does not run a provider, live tier, or other agent.
+- **Live status:** no paid DeepSeek or LangSmith call is authorized by this documentation update. Immediate human confirmation is required directly before the focused 8192 call.
+
+### Remediation campaign ledger
+
+The implementation plan records the following task boundaries. Each task must append its own dated issue, evidence, RED/GREEN result, code/review status, and live experiment link/result or explicit not-run state here before the next gate.
+
+1. Add typed nonretryable output-limit failure and safe provider telemetry, including finish reason, configured cap, usage, request attempt, and structured attempt.
+2. Preserve exception causes through ReAct and Planner; retain sanitized structured-validation field paths and attempt numbers; classify output-limit, schema-output, transport, HTTP, and judge failures distinctly.
+3. Add an operation-specific planner-final budget. The first experiment is `8192` for final `ResearchPlanDraft` only; global 4096 remains unchanged for ReAct and judge. Use `16384` only if length persists.
+4. Preserve judge evaluator diagnostics and trace/source URLs when actually exposed, without evaluator inputs or secrets. Keep missing URLs explicitly unresolved.
+5. Complete offline verification and Sol/high whole-branch review before any paid call.
+6. After immediate human confirmation, run the focused controlled 8192/max experiment. Run the full controlled dataset only when target failures are zero, then document safe results and direct links.
+7. Choose one conditional branch: a single-variable focused 16384 experiment if output-limit failure persists, or residual ReAct/judge diagnosis if it does not. Never run both without evidence.
+
+The current section is the campaign’s root-cause and gate record. Future entries must not claim success from a completed HTTP request alone; they must show typed failure evidence, safe artifact preservation, unchanged operation-specific budgets, and the corresponding experiment or review result.
