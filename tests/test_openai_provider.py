@@ -13,7 +13,6 @@ from openai import (
     APIStatusError,
     APITimeoutError,
     ContentFilterFinishReasonError,
-    LengthFinishReasonError,
     OpenAIError,
     RateLimitError,
 )
@@ -21,7 +20,6 @@ from pydantic import BaseModel, ValidationError
 
 from deep_research.observability import (
     LangSmithRuntimeConfig,
-    TokenUsage,
     TokenUsageMetric,
     Tracker,
 )
@@ -634,39 +632,6 @@ async def test_complete_structured_translates_finish_reason_error() -> None:
             await provider.complete_structured(
                 [ChatMessage(role="user", content="Create an outline")], Outline
             )
-
-
-@pytest.mark.asyncio
-async def test_complete_structured_translates_documented_length_finish_signal() -> None:
-    tracker = CapturingTracker()
-    provider = OpenAIChatProvider(
-        openai_config(retry_count=5),
-        tracker,
-        client=FakeOpenAIClient(
-            responses=RecordingResponses(
-                LengthFinishReasonError(
-                    completion=response(input_tokens=8, output_tokens=4096)
-                )
-            )
-        ),
-    )
-
-    async with tracker.session_span("session-1", "question"):
-        with pytest.raises(ProviderResponseError) as caught:
-            await provider.complete_structured(
-                [ChatMessage(role="user", content="Create an outline")], Outline
-            )
-
-    assert type(caught.value).__name__ == "ProviderOutputLimitError"
-    assert caught.value.retryable is False
-    assert caught.value.telemetry.finish_reason_category == "length"
-    assert caught.value.telemetry.configured_max_tokens == 4096
-    assert caught.value.telemetry.usage == TokenUsage(
-        input_tokens=8, output_tokens=4096
-    )
-    assert caught.value.telemetry.request_attempt == 1
-    assert caught.value.telemetry.structured_attempt == 1
-    assert "Create an outline" not in str(caught.value)
 
 
 @pytest.mark.asyncio

@@ -37,6 +37,10 @@ class ChatResult(ProviderContract):
 
 
 class ProviderResponseTelemetry(ProviderContract):
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
     finish_reason_category: FinishReasonCategory
     configured_max_tokens: PositiveInt
     usage: TokenUsage

@@ -276,3 +276,37 @@ Changed files: `src/deep_research/providers/contracts.py`, `src/deep_research/pr
 - **Whitespace:** `git diff --check` → exit 0; only Git LF/CRLF normalization warnings were emitted.
 - **Leakage self-review:** added production lines contain no raw finish-reason field, exception-string serialization, provider response/reasoning content, prompt/request content, or secret output. Span outputs use only the typed telemetry projection. The installed SDK characterization was offline (`openai 2.50.0`, documented `LengthFinishReasonError` present); no live provider/LangSmith call was made.
 - **Code/review status:** Task 1 implementation and self-review are complete. A Sol/high reviewer subagent was not callable in this direct tool context, so no external review result is claimed. The final commit SHA is recorded in the handoff report.
+
+## 15. Task 1 fix round 1/5 — Important findings (2026-08-25)
+
+### Review findings and scope
+
+This scoped fix round addressed exactly two Important findings from the Task 1 review:
+
+1. The OpenAI adapter uses Responses `create`/`parse`, so the Chat Completions-only `LengthFinishReasonError` helper, lazy import, catches, request-attempt bookkeeping used only by that path, and injected test were removed. No response-text inference or replacement SDK mapping was added. The shared response-error category/status compatibility remains.
+2. `ProviderResponseTelemetry` is now frozen and its nested `TokenUsage` is frozen. `TokenUsage` derives `total_tokens` during validation through an internal attribute set, while public assignments and nested mutations raise Pydantic `ValidationError`; safe `model_dump` output remains bounded.
+
+The deferred Minor findings were not addressed: direct `request_attempt=2` / `structured_attempt=2` provider coverage and constructor/category/status compatibility coverage.
+
+Changed files in this fix round: `src/deep_research/observability/tracker.py`, `src/deep_research/providers/contracts.py`, `src/deep_research/providers/openai_provider.py`, `tests/test_deepseek_provider.py`, and `tests/test_openai_provider.py`. The existing untracked diagnostic test remained byte-for-byte unchanged and untracked.
+
+### TDD RED/GREEN evidence
+
+- **RED:** `python -m pytest -q tests/test_deepseek_provider.py -k "provider_response_telemetry" --basetemp C:\Temp\deep-research-t1-fr1-red` → `3 failed, 74 deselected in 1.33s` (exit 1). Each new assignment/mutation assertion failed with `DID NOT RAISE ValidationError`, proving the current mutable models did not satisfy the requested behavior.
+- **GREEN:** `python -m pytest -q tests/test_deepseek_provider.py -k "provider_response_telemetry" --basetemp C:\Temp\deep-research-t1-fr1-green-final` → `3 passed, 74 deselected in 0.83s`.
+
+### Verification evidence
+
+- Focused provider tests: `python -m pytest -q tests/test_deepseek_provider.py tests/test_openai_provider.py -k "output_limit or telemetry or finish_reason or provider_response" --basetemp C:\Temp\deep-research-t1-fr1-focused` → `23 passed, 87 deselected, 1 warning in 0.86s`.
+- Focused retry contract: `python -m pytest -q tests/test_retry_policy.py -k "output_limit" --basetemp C:\Temp\deep-research-t1-fr1-retry-focused` → `1 passed, 4 deselected in 0.10s`.
+- Neighboring provider/retry tests: `python -m pytest -q tests/test_deepseek_provider.py tests/test_openai_provider.py tests/test_retry_policy.py --basetemp C:\Temp\deep-research-t1-fr1-neighbor` → `115 passed in 0.96s`.
+- Tracked full offline suite: after creating the explicit short `C:\Temp` parent, `python -m pytest -q --ignore=tests/test_diagnostic_planner_deepseek_length.py --basetemp C:\Temp\deep-research-t1-fr1-full` → `1815 passed, 1 deselected, 2 warnings in 30.05s`. The first attempt failed only because the basetemp parent did not exist (`1583 passed, 1 deselected, 232 errors` with `FileNotFoundError [WinError 3]`); the corrected command is the authoritative result.
+- Preserved diagnostic characterization: `python -m pytest -q tests/test_diagnostic_planner_deepseek_length.py --basetemp C:\Temp\deep-research-t1-fr1-protected` → `2 passed, 1 failed in 1.38s`. The sole expected failure is the old planner-cause message assertion; the test was not edited.
+- Ruff: `python -m ruff check src tests` → `All checks passed!` after correcting one initial E501 in the new test name.
+- Whitespace: `git diff --check` → exit 0; only normal Git LF/CRLF normalization warnings were emitted.
+
+### Secret/data-leakage review and status
+
+The changed production paths do not log or serialize prompts, request payloads, response/reasoning content, raw SDK exceptions, raw finish values, secrets, or unbounded finish values. OpenAI no longer imports or handles `LengthFinishReasonError`; it leaves unsupported SDK exceptions on the existing safe generic error path. The frozen models expose only the finite telemetry fields and their bounded JSON serialization. No live provider or LangSmith call was made. The protected test SHA-256 remains `31AC7C15E395F5E4BA31FA80C68FE395989177F2905B82A33A7451A166C08E57`.
+
+**Status:** fix-round code and offline verification are green; the preserved diagnostic test remains the documented downstream-scope concern. The final commit SHA and subject are recorded in the appended Task 1 report.

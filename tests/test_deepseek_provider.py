@@ -15,7 +15,7 @@ from openai import (
     OpenAIError,
     RateLimitError,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 import deep_research.providers.contracts as contracts_module
 import deep_research.providers.deepseek_provider as deepseek_module
@@ -493,6 +493,57 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
             request_attempt=1,
             raw_finish_reason="length",
         )
+
+
+def test_provider_response_telemetry_rejects_top_level_mutation() -> None:
+    telemetry = contracts_module.ProviderResponseTelemetry(
+        finish_reason_category="length",
+        configured_max_tokens=4096,
+        usage=TokenUsage(input_tokens=8, output_tokens=4096),
+        request_attempt=1,
+    )
+
+    with pytest.raises(ValidationError):
+        telemetry.finish_reason_category = "other"
+
+
+def test_provider_response_telemetry_rejects_nested_usage_replacement() -> None:
+    telemetry = contracts_module.ProviderResponseTelemetry(
+        finish_reason_category="length",
+        configured_max_tokens=4096,
+        usage=TokenUsage(input_tokens=8, output_tokens=4096),
+        request_attempt=1,
+    )
+
+    with pytest.raises(ValidationError):
+        telemetry.usage = TokenUsage(input_tokens=1, output_tokens=1)
+
+
+def test_provider_response_telemetry_rejects_nested_mutation_and_stays_bounded(
+) -> None:
+    telemetry = contracts_module.ProviderResponseTelemetry(
+        finish_reason_category="length",
+        configured_max_tokens=4096,
+        usage=TokenUsage(input_tokens=8, output_tokens=4096),
+        request_attempt=1,
+    )
+    serialized_before = telemetry.model_dump(mode="json")
+
+    with pytest.raises(ValidationError):
+        telemetry.usage.output_tokens = 1
+
+    assert telemetry.model_dump(mode="json") == serialized_before
+    assert json.loads(telemetry.model_dump_json()) == {
+        "finish_reason_category": "length",
+        "configured_max_tokens": 4096,
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 4096,
+            "total_tokens": 4104,
+        },
+        "request_attempt": 1,
+        "structured_attempt": None,
+    }
 
 
 @pytest.mark.asyncio
