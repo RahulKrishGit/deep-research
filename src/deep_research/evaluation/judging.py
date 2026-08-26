@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import ContextVar
 from string import Template
 from typing import Any, TypeAlias, cast
 
@@ -499,6 +500,18 @@ def _run_tree_url(run_tree: object | None) -> str | None:
     return None
 
 
+# Per-invocation capture channel for the evaluator trace URL. The traced
+# judge callback reads the injected ``run_tree`` and records the URL here;
+# the surrounding ``__call__`` reads it back after the awaited invocation.
+# A ``ContextVar`` (never an instance field) keeps one invocation's URL out
+# of another's hands: under ``max_concurrency > 1`` each row runs in its
+# own asyncio task context, so concurrent invocations of the same
+# ``JudgeEvaluator`` cannot reset or overwrite each other's captured URL.
+_JUDGE_TRACE_URL: ContextVar[str | None] = ContextVar(
+    "judge_trace_url", default=None
+)
+
+
 class JudgeEvaluator:
     """The judge as a callable LangSmith evaluator for ``aevaluate``.
 
@@ -530,7 +543,6 @@ class JudgeEvaluator:
         self._secrets = tuple(secrets)
         self._gate_lookup = gate_lookup
         self._tracker = tracker
-        self._last_trace_url: str | None = None
         # Only a URL the evaluator integration directly supplies is
         # retained; anything else (including a blank or non-string value)
         # stays ``None`` and nothing is ever derived or reconstructed.
@@ -545,7 +557,7 @@ class JudgeEvaluator:
         ) -> JudgeVerdict:
             captured = _run_tree_url(run_tree)
             if captured is not None:
-                self._last_trace_url = captured
+                _JUDGE_TRACE_URL.set(captured)
             messages = render_judge_messages(judge_input)
             return await _invoke_judge(provider, messages)
 
@@ -581,7 +593,7 @@ class JudgeEvaluator:
             judge_input = build_judge_input(
                 output, self._case, gates, secrets=self._secrets
             )
-            self._last_trace_url = None
+            _JUDGE_TRACE_URL.set(None)
             if self._tracker is None:
                 verdict = await self._trace_judge(judge_input=judge_input)
             else:
@@ -595,13 +607,13 @@ class JudgeEvaluator:
             return self._not_run(
                 _judge_not_run_reason(error),
                 diagnostics=_judge_diagnostics(error),
-                trace_url=self._last_trace_url,
+                trace_url=_JUDGE_TRACE_URL.get(),
             )
 
         feedback = _build_scored_feedback(
             verdict,
             self._runtime,
-            trace_url=self._last_trace_url,
+            trace_url=_JUDGE_TRACE_URL.get(),
             source_url=self._evaluator_source_url,
         )
         return self._scored(verdict, feedback)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -128,6 +129,49 @@ class RunTreeInjectingTraceFactory:
             return wrapper
 
         return decorate
+
+
+class _SequentialRunTreeFactory:
+    """Injects one fake ``run_tree`` per invocation, in call order."""
+
+    def __init__(self, urls: list[str]) -> None:
+        self._urls = iter(urls)
+
+    def __call__(self, *, name, run_type, metadata, **kwargs):
+        del name, run_type, metadata, kwargs
+
+        def decorate(function):
+            async def wrapper(*args, **inner):
+                inner["run_tree"] = FakeRunTree(next(self._urls))
+                return await function(*args, **inner)
+
+            return wrapper
+
+        return decorate
+
+
+class _GatedStructuredProvider(FakeStructuredProvider):
+    """A provider that parks every judge call at one shared gate.
+
+    With two concurrent invocations this forces a deterministic
+    interleaving at the awaited model call: the first invocation has
+    already captured its run-tree URL (``entered`` is set) and is parked
+    at the gate before the second invocation starts, so any shared
+    per-instance capture state would be overwritten by the second
+    invocation before the first resumes.
+    """
+
+    def __init__(self, responses, *, gate, entered) -> None:
+        super().__init__(responses=responses)
+        self._gate = gate
+        self._entered = entered
+
+    async def complete_structured(self, messages, schema, *, agent_name=None):
+        self._entered.set()
+        await self._gate.wait()
+        return await super().complete_structured(
+            messages, schema, agent_name=agent_name
+        )
 
 
 def verdict(value: float = 0.8) -> JudgeVerdict:
@@ -592,3 +636,47 @@ async def test_a_generic_judge_provider_failure_in_a_cause_chain_is_reported(
     assert "judge_diagnostics" not in status["metadata"]
     assert "evaluator_trace_url" not in status["metadata"]
     assert "the model provider is unavailable" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_judge_invocations_keep_their_own_trace_urls(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    """One evaluator serves every repetition row of its case under
+    ``max_concurrency > 1``; each concurrent invocation must retain the
+    URL of its own run tree, never another row's. A shared field on the
+    evaluator would race: the second invocation's reset/capture would wipe
+    the first's captured URL before the first reads it."""
+    url_a = "https://smith.langchain.com/o/x/r/judge-concurrent-a"
+    url_b = "https://smith.langchain.com/o/x/r/judge-concurrent-b"
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+    provider = _GatedStructuredProvider(
+        [verdict(0.7), verdict(0.8)], gate=gate, entered=entered
+    )
+    evaluator = build_judge_evaluator(
+        provider,
+        planner_case,
+        runtime=runtime_config_for("planner"),
+        secrets=(),
+        gate_lookup=lambda output: clean_gate_report,
+        trace_factory=_SequentialRunTreeFactory([url_a, url_b]),
+    )
+
+    row = FakeRun(outputs=clean_target_output.model_dump(mode="json"))
+    example = FakeExampleRow({"inputs": {"case_id": planner_case.case_id}})
+
+    first = asyncio.create_task(evaluator(row, example))
+    # The first invocation has captured its URL and is parked at the gate.
+    await entered.wait()
+    second = asyncio.create_task(evaluator(row, example))
+    gate.set()
+    result_a, result_b = await asyncio.gather(first, second)
+
+    def _trace_url(result) -> str:
+        entries = {item["key"]: item for item in result["results"]}
+        assert entries["judge_status"]["value"] == "scored"
+        return entries["judge_quality"]["metadata"]["evaluator_trace_url"]
+
+    assert _trace_url(result_a) == url_a
+    assert _trace_url(result_b) == url_b
