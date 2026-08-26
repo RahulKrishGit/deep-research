@@ -211,7 +211,7 @@ No secrets, prompts, model response content, evaluator inputs, tool inputs, or h
 
 - **RED evidence recorded:** the temporary target call, retry-count characterization, planner cause observation, ReAct two-response/two-validation observation, and missing judge URL observation establish the failure boundaries.
 - **GREEN status:** not run in this documentation commit. No production code or tests were changed. The implementation plan requires focused RED/GREEN tests before each code change and a full offline suite once after each code task.
-- **Code/review status:** the approved design and execution-ready plan are being authored by Luna. The whole-branch review gate is `gpt-5.6-sol` at high reasoning effort and is review-only; it does not run a provider, live tier, or other agent.
+- **Code/review status:** the approved design and execution-ready plan are being authored by Luna/max. The whole-branch review gate is `gpt-5.6-sol` at high reasoning effort and is review-only; it does not run a provider, live tier, or other agent.
 - **Live status:** no paid DeepSeek or LangSmith call is authorized by this documentation update. Immediate human confirmation is required directly before the focused 8192 call.
 
 ### Remediation campaign ledger
@@ -223,7 +223,28 @@ The implementation plan records the following task boundaries. Each task must ap
 3. Add an operation-specific planner-final budget. The first experiment is `8192` for final `ResearchPlanDraft` only; global 4096 remains unchanged for ReAct and judge. Use `16384` only if length persists.
 4. Preserve judge evaluator diagnostics and trace/source URLs when actually exposed, without evaluator inputs or secrets. Keep missing URLs explicitly unresolved.
 5. Complete offline verification and Sol/high whole-branch review before any paid call.
-6. After immediate human confirmation, run the focused controlled 8192/max experiment. Run the full controlled dataset only when target failures are zero, then document safe results and direct links.
-7. Choose one conditional branch: a single-variable focused 16384 experiment if output-limit failure persists, or residual ReAct/judge diagnosis if it does not. Never run both without evidence.
+6. After immediate human confirmation, run the focused controlled 8192/max experiment. Run the full controlled dataset only when target failures are zero, every expected judge evaluation completed and was successfully scored, and there were zero judge/evaluator failures; otherwise route to residual diagnosis and document safe results and direct links.
+7. Choose one conditional branch: a single-variable focused 16384 experiment only if output-limit failure persists with no judge/evaluator failure, or residual ReAct/judge diagnosis if length does not persist or any judge/evaluator failure occurs. Never run both without evidence.
 
 The current section is the campaign’s root-cause and gate record. Future entries must not claim success from a completed HTTP request alone; they must show typed failure evidence, safe artifact preservation, unchanged operation-specific budgets, and the corresponding experiment or review result.
+
+## 13. Documentation fix round 1 — Sol/high review result (2026-08-25)
+
+### Review result
+
+The Sol/high review of the initial documentation commit identified eight documentation corrections. This round addresses all eight without claiming implementation or live-provider progress:
+
+1. **Judge-complete full-run gate:** Task 6 now requires zero focused target failures, every expected judge evaluation present and completed, every judge result successfully scored, and zero judge/evaluator failures before the full controlled dataset can run. Any missing judge result, `judge_not_run`, evaluator error, or typed/generic judge failure blocks the full run and routes to residual diagnosis.
+2. **Model routing:** Every production, test, documentation, fix-log, and fix-wave write is routed to `gpt-5.6-luna` at `max`. Analysis, task review, scoped re-review, integration review, and final whole-branch review are routed to `gpt-5.6-sol` at `high`.
+3. **Dependency-safe parallelism:** Tasks 1 and 2 remain serialized. After reviewed Task 2, Tasks 3 and 4 branch into separate isolated worktrees from the same Task 2 SHA. Task 2 exclusively owns `evaluation/models.py` and shared taxonomy contracts; Task 4 consumes them and does not modify that file. Integration merges Task 3, then Task 4, followed by Task 4 focused and neighboring tests.
+4. **Implementation provenance:** `14f06b7` is identified only as the diagnosis/document-review base, and `5a50bfd` only as the initial docs commit. Implementation starts from the reviewed documentation-fix head produced by this round, with its exact SHA recorded before Task 1.
+5. **Bounded finish telemetry:** `FinishReasonCategory` is finite and allow-listed as `stop`, `length`, `content_filter`, `tool_calls`, `insufficient_system_resource`, or `other`. Unknown, non-string, control-heavy, empty, and oversized provider values map to `other`; adversarial TDD coverage is required and raw values are not retained.
+6. **Scoped review-fix loops:** This plan explicitly authorizes Luna/max to perform a scoped TDD review-fix loop for a Task 1–4 or final-review finding, followed by Sol/high scoped re-review, with a maximum of five campaign loops and no unrelated scope expansion.
+7. **Documentation status:** This section records the review and documentation fix round. It does not claim code RED/GREEN, production changes, or live experiment results. No paid DeepSeek or LangSmith call was run, so there is no new live link or result.
+8. **Source URL behavior:** `evaluator_source_url` remains `None` when unsupported or not directly supplied. The plan promises no derivation, reconstruction, inference, or fallback URL.
+
+### Status and provenance
+
+- The documentation fix round modifies only this fix log, the approved design, and the execution-ready plan. `tests/test_diagnostic_planner_deepseek_length.py` remains untracked and preserved; production code and tests were not touched.
+- The reviewed documentation-fix head is the required implementation starting point. The prior diagnosis/document-review base and initial docs commit remain historical references only.
+- Offline documentation checks are required before commit: reserved-term scan, Ruff, `git diff --check`, staged diff check, exact three-path commit audit, and untracked-test preservation check. The supplied code baseline remains `1801 passed, 1 deselected, 2 known dependency warnings`; it is not a result of this documentation round.

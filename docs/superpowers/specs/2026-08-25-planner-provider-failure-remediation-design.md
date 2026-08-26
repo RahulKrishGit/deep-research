@@ -4,11 +4,22 @@
 **Status:** Approved for implementation planning
 **Scope:** Planner/provider failure observability, failure taxonomy, operation-specific token budgeting, and controlled verification
 
+This is documentation fix round 1 after the Sol/high review of the initial documentation commit.
+
 ## Goal
 
 Make planner failures diagnosable without exposing provider data, preserve the original failure causes across the ReAct and planner layers, and test the smallest safe change that can correct the final-plan output limit. The remediation must distinguish an output limit, invalid structured output, transport or HTTP failure, and judge failure. It must also make each campaign step auditable in the planner fix log.
 
 This design covers the implementation and the controlled experiment. The current documentation commit does not change production code or tests and does not run a paid provider evaluation.
+
+## Execution routing and provenance
+
+- Every production, test, or documentation write, including every fix wave, is performed by `gpt-5.6-luna` at `max` reasoning effort.
+- Every analysis, task review, scoped re-review, integration review, and final whole-branch review is performed by `gpt-5.6-sol` at `high` reasoning effort. Do not rely on inherited model or effort defaults.
+- Diagnosis/document-review base is `14f06b7` only. The initial documentation commit is `5a50bfd`. Implementation begins from the reviewed head containing this documentation fix round, whose exact SHA must be recorded before Task 1 starts; implementation must not restart from either earlier SHA.
+- This plan explicitly authorizes a scoped Luna/max TDD review-fix loop for a Sol/high finding in Tasks 1–4 or the final review finding. Each loop receives a Sol/high scoped re-review, with a maximum of five loops for this campaign and no unrelated scope expansion.
+
+The implementation topology is dependency-safe: Task 1 completes before Task 2 starts; Task 2 completes and receives Sol/high review before Task 3 and Task 4 branch in separate isolated worktrees from the same Task 2 SHA. Task 2 exclusively owns shared `evaluation/models.py` and taxonomy contracts. Task 4 consumes those contracts and does not modify them. Integration merges Task 3, then Task 4, resolves ordinary conflicts, reruns Task 4 focused and neighboring tests, and receives Sol/high integration review.
 
 ## Verified evidence
 
@@ -45,9 +56,11 @@ The remediation keeps these boundaries separate. It does not turn a successful H
 
 Add a provider-agnostic `ProviderOutputLimitError` under the existing `ProviderResponseError` hierarchy. It is nonretryable and carries a typed, safe telemetry record rather than raw response data.
 
+Use a stable finite `FinishReasonCategory` type with exactly these values: `stop`, `length`, `content_filter`, `tool_calls`, `insufficient_system_resource`, and `other`. The provider’s raw finish-reason string is normalized to this type and is never retained in telemetry, spans, artifacts, or exception messages.
+
 The telemetry record contains exactly these fields:
 
-- `finish_reason: str | None` — the normalized safe finish reason, such as `length`;
+- `finish_reason_category: FinishReasonCategory` — the normalized allow-listed category;
 - `configured_max_tokens: int` — the cap used for this operation;
 - `usage: TokenUsage` — the existing typed usage model;
 - `request_attempt: int` — the one-based request number actually sent inside the retry operation;
@@ -55,7 +68,9 @@ The telemetry record contains exactly these fields:
 
 The exception message is a static, provider-safe message. It must not include a response fragment, prompt, request body, URL query, API key, or model reasoning. The exception must expose the telemetry through a typed attribute so the classifier and artifact projection do not parse `str(exception)`.
 
-For DeepSeek, parse usage and the finish reason before requiring `stop`. When the reason is `length`, raise `ProviderOutputLimitError` with the configured cap and the actual request/structured attempt. Other non-stop finishes remain safe `ProviderResponseError` values with an explicit non-output-limit category. The provider span may record only the safe finish reason, configured cap, usage, and attempt numbers.
+Normalize a provider value only when it is a string of at most 64 characters; strip and case-normalize it, then map exact allow-listed values. Map `None`, non-strings, empty values, control-heavy values, and strings longer than 64 characters to `other` without logging or storing the original value. Only the `length` category raises `ProviderOutputLimitError`. The implementation must include adversarial tests for every known category, unknown values, oversized values, non-string values, and proof that the raw value does not appear in the error, span, or artifact.
+
+For DeepSeek, parse usage and the normalized finish category before requiring `stop`. When the category is `length`, raise `ProviderOutputLimitError` with the configured cap and the actual request/structured attempt. Other non-stop categories remain safe `ProviderResponseError` values with an explicit non-output-limit category. The provider span may record only the allow-listed category, configured cap, usage, and attempt numbers.
 
 The request-attempt counter is local to the existing `with_retries` operation. It increments only when the provider request is actually invoked. A deterministic output-limit error is raised after the first response and is not sent back through retry handling.
 
@@ -88,14 +103,14 @@ The target taxonomy is:
 
 | Cause | `FailureStage` | Safe reason | Safe details |
 | --- | --- | --- | --- |
-| `ProviderOutputLimitError` | `provider` | `output_limit` | Finish reason, configured cap, usage, request attempt, and structured attempt |
+| `ProviderOutputLimitError` | `provider` | `output_limit` | Finish category, configured cap, usage, request attempt, and structured attempt |
 | `StructuredOutputError` | `validation` | `schema_output` | Attempt numbers and field paths only |
 | Provider timeout or rate limit | `provider` | `provider_timeout` or `provider_rate_limit` | Type and safe retryability only |
 | Provider transport error | `provider` | `provider_transport` | Type and safe retryability only |
 | Provider HTTP error | `provider` | `provider_http` | Type and allow-listed status code, when available |
 | Other provider response error | `provider` | `provider_response` | Type and safe retryability only |
 
-The provider response error contract therefore needs a safe category and optional status code for adapter-created transport and HTTP errors. It must not use an unbounded SDK exception string as the category.
+The provider response error contract therefore needs a safe category and optional status code for adapter-created transport and HTTP errors. It must not use an unbounded SDK exception string as the category. The output-limit artifact field is `finish_reason_category`, never an arbitrary provider string.
 
 Judge failures use a separate evaluator prefix so a target failure cannot be mistaken for a judge failure:
 
@@ -145,10 +160,10 @@ Use the configured EU LangSmith endpoint for approved tracing. Do not print envi
 
 The provider exception remains the source of truth in process. Evaluation artifacts receive only an allow-listed projection. The proposed `EvaluationFailure` details contain one of the following safe shapes:
 
-- output-limit: `failure_kind`, `finish_reason`, `configured_max_tokens`, typed usage, `request_attempt`, and optional `structured_attempt`;
+- output-limit: `failure_kind`, `finish_reason_category`, `configured_max_tokens`, typed usage, `request_attempt`, and optional `structured_attempt`;
 - schema output: `failure_kind`, attempt numbers, and normalized field paths;
 - transport or HTTP: `failure_kind`, exception type, retryability, and optional integer status code;
-- judge: the evaluator-prefixed reason, safe diagnostics, `evaluator_trace_url`, and `evaluator_source_url` when actually supplied by the evaluator.
+- judge: the evaluator-prefixed reason, safe diagnostics, `evaluator_trace_url`, and `evaluator_source_url` only when directly supplied by the evaluator integration. Unsupported or missing source URLs remain `None`; there is no source-URL derivation or fallback.
 
 Do not serialize `BaseException`, `__cause__`, prompt messages, request payloads, response text, tool inputs, evaluator inputs, or chain-of-thought. Safe URL fields contain only validated URLs returned by the tracing/evaluation integration; when a URL is unavailable, retain `None` and the stable unavailable state rather than fabricating a link.
 
@@ -158,12 +173,12 @@ The experiment sequence is intentionally one-dimensional:
 
 1. Finish the typed failure, propagation, taxonomy, operation-specific configuration, and evaluator-diagnostic implementation.
 2. Run focused offline RED/GREEN and neighboring tests, then the full suite once; run Ruff and `git diff --check`.
-3. Obtain a Sol/high whole-branch review. This is a review-only activity and does not call a provider or launch another agent.
+3. Obtain a Sol/high whole-branch review. This is a review-only activity and does not call a provider or launch another agent. If it finds a scoped issue, Luna/max may run the affected Task 1–4 TDD fix loop, followed by Sol/high scoped re-review, up to the campaign-wide five-loop maximum.
 4. Immediately before execution, obtain human confirmation for the paid focused run at `8192` with target reasoning `max`.
-5. If and only if target failures are zero, run the full controlled dataset at the same `8192` setting. Record links and safe results.
-6. If output-limit failures persist at `8192`, obtain a new immediate confirmation and run one focused `16384` experiment with every other variable frozen. If output-limit failures do not persist, investigate the remaining ReAct or judge evidence instead. Never combine these branches without evidence.
+5. If and only if focused target failures are zero, every expected judge evaluation completed, every judge result is successfully scored, and there are zero judge/evaluator failures, run the full controlled dataset at the same `8192` setting. A missing judge result, `judge_not_run`, evaluator error, or any judge failure blocks the full run and routes to residual diagnosis. Record links and safe results.
+6. If output-limit failures persist at `8192` and the focused run has no judge/evaluator failure, obtain a new immediate confirmation and run one focused `16384` experiment with every other variable frozen. If output-limit failures do not persist, or any judge/evaluator failure exists, investigate the remaining ReAct or judge evidence instead. Never combine these branches without evidence.
 
-The campaign is not successful merely because a request completes. Success requires a typed and correctly classified result, preserved safe diagnostics, no leakage, unchanged ReAct/judge budgets, and documented live evidence.
+The campaign is not successful merely because a request completes. Success requires a typed and correctly classified result, preserved safe diagnostics, no leakage, unchanged ReAct/judge budgets, every expected judge evaluation successfully scored with no judge/evaluator failure, and documented live evidence.
 
 ## Non-goals
 
@@ -184,6 +199,8 @@ The implementation is ready for the controlled experiment when:
 - output-limit, schema-output, transport, HTTP, and judge failure categories are distinct in safe artifacts;
 - only final `ResearchPlanDraft` uses the operation-specific budget, with 8192 as the first experiment and 16384 conditional on persistent length;
 - evaluator diagnostics and URLs are preserved when available and remain explicitly unavailable when not exposed;
+- the full controlled dataset gate requires zero focused target failures, all expected judge evaluations completed and successfully scored, and zero judge/evaluator failures;
+- all writes use Luna/max and all analysis/review gates use Sol/high, with scoped review-fix loops capped at five rounds;
 - all focused, neighboring, and full offline checks are green, Ruff is clean, and `git diff --check` is clean;
 - the fix log has a dated entry for every task and experiment;
 - the human confirmation gate and secret-safety rules are documented and followed.
