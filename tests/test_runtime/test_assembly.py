@@ -186,7 +186,9 @@ class RecordingProvider:
     def __init__(self) -> None:
         self.calls: list[object] = []
 
-    async def complete_structured(self, messages, schema, *, agent_name=None):
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None
+    ):
         self.calls.append((messages, schema, agent_name))
         raise AssertionError("assembly must not call the provider")
 

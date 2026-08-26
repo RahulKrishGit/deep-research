@@ -282,6 +282,66 @@ class Outline(BaseModel):
 
 
 @pytest.mark.asyncio
+async def test_openai_structured_defaults_max_output_tokens_to_the_global_cap() -> (
+    None
+):
+    parsed = Outline(title="Answer", points=["One", "Two"])
+    responses = RecordingResponses(response(parsed=parsed))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="Create an outline")], Outline
+        )
+
+    assert responses.parse_calls[0]["max_output_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_applies_the_per_call_max_tokens_override() -> None:
+    parsed = Outline(title="Answer", points=["One", "Two"])
+    responses = RecordingResponses(response(parsed=parsed))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="Create an outline")],
+            Outline,
+            max_tokens=8192,
+        )
+
+    assert responses.parse_calls[0]["max_output_tokens"] == 8192
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_max_tokens", [0, -1])
+async def test_openai_structured_rejects_non_positive_per_call_max_tokens(
+    invalid_max_tokens: int,
+) -> None:
+    responses = RecordingResponses(response(text="must not be consumed"))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+
+    with pytest.raises(ValueError, match="max_tokens"):
+        async with tracker.session_span("session-1", "question"):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="Create an outline")],
+                Outline,
+                max_tokens=invalid_max_tokens,
+            )
+
+    assert responses.parse_calls == []
+
+
+@pytest.mark.asyncio
 async def test_complete_structured_returns_parsed_model() -> None:
     parsed = Outline(title="Answer", points=["One", "Two"])
     responses = RecordingResponses(response(parsed=parsed))

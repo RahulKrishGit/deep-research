@@ -259,12 +259,14 @@ class FakeStructuredProvider:
     def __init__(self, responses: Sequence[Any] = ()) -> None:
         self.responses = list(responses)
         self.calls: list[tuple[Any, Any, str | None]] = []
+        self.budgets: list[int | None] = []
         self.last_model_returned: str | None = "deepseek-v4-flash-fake"
 
     async def complete_structured(
-        self, messages, schema, *, agent_name=None
+        self, messages, schema, *, agent_name=None, max_tokens=None
     ):
         self.calls.append((list(messages), schema, agent_name))
+        self.budgets.append(max_tokens)
         if not self.responses:
             raise AssertionError(f"no scripted response left for {schema}")
         response = self.responses.pop(0)

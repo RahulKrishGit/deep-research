@@ -365,6 +365,12 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             "80",
             80,
         ),
+        (
+            "AGENTS_PLANNER_FINAL_MAX_TOKENS",
+            ("agents", "planner_final_max_tokens"),
+            "8192",
+            8192,
+        ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
     ],
@@ -608,6 +614,22 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.tool_budget == 10
     assert settings.agents.prompt_context_entries == 8
     assert settings.agents.observation_summary_chars == 200
+    assert settings.agents.planner_final_max_tokens == 4096
+
+
+def test_the_planner_final_budget_defaults_to_the_global_cap(
+    config_path: Path,
+) -> None:
+    """The operation-specific planner-final budget defaults to the global cap."""
+    settings = load_config(str(config_path))
+
+    assert settings.agents.planner_final_max_tokens == 4096
+
+
+def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["planner_final_max_tokens"] == 4096
 
 
 @pytest.mark.parametrize(
@@ -617,6 +639,7 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
         ("tool_budget", -1),
         ("prompt_context_entries", -1),
         ("observation_summary_chars", 0),
+        ("planner_final_max_tokens", 0),
     ],
 )
 def test_agent_runtime_config_rejects_unbounded_values(

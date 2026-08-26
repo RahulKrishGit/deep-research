@@ -163,6 +163,9 @@ async def test_a_successful_judge_produces_scored_feedback(
     assert feedback.prompt_id == JUDGE_PROMPT_ID
     assert feedback.rubric_version == 1
     assert feedback.judge_model == "deepseek-v4-flash"
+    # The judge call never carries the planner-final budget: only the final
+    # ResearchPlanDraft request may use the operation-specific value.
+    assert provider.budgets == [None]
 
 
 @pytest.mark.asyncio

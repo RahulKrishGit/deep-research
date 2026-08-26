@@ -31,6 +31,19 @@ from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
+
+def _resolve_max_tokens(global_cap: int, override: int | None) -> int:
+    """Resolve one request's output budget: the global cap unless overridden.
+
+    A per-call override applies to that request field only and must be a
+    positive integer; anything else is rejected before the SDK is touched.
+    """
+    if override is None:
+        return global_cap
+    if override < 1:
+        raise ValueError("max_tokens must be a positive integer when provided")
+    return override
+
 _openai_sdk: SimpleNamespace | None = None
 
 
@@ -333,10 +346,15 @@ class OpenAIChatProvider:
         schema: type[SchemaT],
         *,
         agent_name: str | None = None,
+        max_tokens: int | None = None,
     ) -> SchemaT:
         if not messages:
             raise ValueError("messages must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(
+            self._config.max_tokens, max_tokens
+        )
         effective, request, metadata = self._request_options(agent_name)
+        request = {**request, "max_output_tokens": resolved_max_tokens}
         current_messages = list(messages)
 
         for attempt in (1, 2):

@@ -1145,6 +1145,104 @@ async def test_deepseek_structured_output_prompts_json_and_validates_locally() -
 
 
 @pytest.mark.asyncio
+async def test_deepseek_structured_defaults_max_tokens_to_the_global_cap() -> None:
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert completions.calls[0]["max_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_applies_the_per_call_max_tokens_override() -> (
+    None
+):
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            max_tokens=8192,
+        )
+
+    assert completions.calls[0]["max_tokens"] == 8192
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_max_tokens", [0, -1])
+async def test_deepseek_structured_rejects_non_positive_per_call_max_tokens(
+    invalid_max_tokens: int,
+) -> None:
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    with pytest.raises(ValueError, match="max_tokens"):
+        async with tracker.session_span("session-1", "question"):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")],
+                TinyAnswer,
+                max_tokens=invalid_max_tokens,
+            )
+
+    assert completions.calls == []
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_length_telemetry_records_max_tokens_cap() -> (
+    None
+):
+    completions = RecordingCompletions(
+        chat_response(
+            text="partial structured provider response",
+            finish_reason="length",
+            prompt_tokens=8,
+            completion_tokens=8192,
+        )
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=5),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "structured prompt"):
+        with pytest.raises(ProviderOutputLimitError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="structured prompt")],
+                TinyAnswer,
+                max_tokens=8192,
+            )
+
+    assert completions.calls[0]["max_tokens"] == 8192
+    assert getattr(caught.value, "telemetry").configured_max_tokens == 8192
+    assert tracker.llm_outputs[0]["configured_max_tokens"] == 8192
+    assert "partial structured provider response" not in str(caught.value)
+    assert "structured prompt" not in str(caught.value)
+
+
+@pytest.mark.asyncio
 async def test_deepseek_structured_rejects_empty_messages_before_sdk_call() -> None:
     completions = RecordingCompletions(
         chat_response(text='{"answer":"yes","confidence":9}')
