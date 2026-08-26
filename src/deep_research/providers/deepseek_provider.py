@@ -12,9 +12,9 @@ from __future__ import annotations
 import json
 import os
 import unicodedata
-from collections.abc import Sequence
-from types import SimpleNamespace
-from typing import Any, TypeVar, cast
+from collections.abc import Mapping, Sequence
+from types import SimpleNamespace, UnionType
+from typing import Annotated, Any, TypeVar, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
@@ -150,8 +150,75 @@ class _StructuredValidationFailure(RuntimeError):
         self.diagnostic = diagnostic
 
 
+def _single_schema_annotation(annotation: object) -> object | None:
+    """Unwrap metadata and optionality without guessing among real unions."""
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    if get_origin(annotation) in (Union, UnionType):
+        members = tuple(
+            member for member in get_args(annotation) if member is not type(None)
+        )
+        if len(members) != 1:
+            return None
+        return _single_schema_annotation(members[0])
+    return annotation
+
+
+def _schema_field_path(
+    schema: type[BaseModel], location: Sequence[object]
+) -> str:
+    """Retain only field names proven by the requested schema."""
+    annotation: object | None = schema
+    retained: list[str] = []
+    for segment in location:
+        annotation = _single_schema_annotation(annotation)
+        if annotation is None:
+            break
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            if not isinstance(segment, str):
+                break
+            matched = next(
+                (
+                    (field_name, field)
+                    for field_name, field in annotation.model_fields.items()
+                    if segment == field_name
+                    or (isinstance(field.alias, str) and segment == field.alias)
+                    or (
+                        isinstance(field.validation_alias, str)
+                        and segment == field.validation_alias
+                    )
+                ),
+                None,
+            )
+            if matched is None:
+                break
+            field_name, field = matched
+            retained.append(field_name)
+            annotation = field.annotation
+            continue
+
+        origin = get_origin(annotation)
+        arguments = get_args(annotation)
+        if origin in (dict, Mapping):
+            annotation = arguments[1] if len(arguments) == 2 else None
+            continue
+        if origin in (list, set, frozenset, Sequence):
+            annotation = arguments[0] if arguments else None
+            continue
+        if origin is tuple:
+            if len(arguments) == 2 and arguments[1] is Ellipsis:
+                annotation = arguments[0]
+            elif isinstance(segment, int) and 0 <= segment < len(arguments):
+                annotation = arguments[segment]
+            else:
+                annotation = None
+            continue
+        break
+    return ".".join(retained) or "$"
+
+
 def _validation_diagnostic(
-    error: BaseException, *, attempt: int
+    error: BaseException, *, attempt: int, schema: type[BaseModel]
 ) -> StructuredValidationDiagnostic:
     """Extract only bounded schema locations from a validation failure."""
     paths: list[str] = []
@@ -163,7 +230,7 @@ def _validation_diagnostic(
             items = errors()
         for item in items:
             location = item.get("loc", ()) if isinstance(item, dict) else ()
-            path = ".".join(str(part) for part in location) or "$"
+            path = _schema_field_path(schema, location)
             paths.append(path)
             if len(paths) == _MAX_VALIDATION_FIELD_PATHS:
                 break
@@ -538,7 +605,11 @@ class DeepSeekChatProvider:
             try:
                 parsed = schema.model_validate_json(text)
             except (json.JSONDecodeError, ValidationError) as error:
-                diagnostic = _validation_diagnostic(error, attempt=attempt)
+                diagnostic = _validation_diagnostic(
+                    error,
+                    attempt=attempt,
+                    schema=schema,
+                )
             else:
                 self._last_model_returned = (
                     getattr(response, "model", None) or model

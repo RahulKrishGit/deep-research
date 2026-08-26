@@ -370,3 +370,26 @@ Changed files are `src/deep_research/providers/contracts.py`, `src/deep_research
 - Protected characterization: `2 passed, 1 failed in 1.94s`; the sole failure is its known old planner-message assertion. It remains untracked, unstaged, and byte-for-byte unchanged at SHA-256 `31AC7C15E395F5E4BA31FA80C68FE395989177F2905B82A33A7451A166C08E57`.
 
 Leak review found no raw provider output, rejected input, Pydantic message, exception string, prompt, reasoning, credential-bearing URL, or secret in the changed production diagnostic path. No live provider or LangSmith call was made. Task 2 remains pending orchestrator-owned Sol/high re-review and is not marked complete.
+
+## 18. Task 2 fix round 2/5 — Schema-derived field paths (2026-08-26)
+
+### Finding and root cause
+
+The second Sol/high review confirmed that the free-form validator-message, bounding, and taxonomy-priority findings were fixed, but the Critical diagnostic-safety finding remained open for provider-controlled mapping keys. Pydantic emits a mapping value failure location such as `(answers, <dynamic key>, score)`. The provider joined every location segment, so the dynamic key reached the repair request, both retained diagnostics, reachable exception attributes, and evaluator safe projection.
+
+The minimal fix makes validation-path extraction schema-aware. It retains only canonical Pydantic model field names proven by the requested schema, omits mapping keys and sequence/tuple positions while continuing through their declared value/item type, unwraps metadata and a single optional member, and stops conservatively when a path cannot be derived without guessing. Thus the useful static path remains `answers.score`; no provider-controlled dynamic segment is retained. The prior two-attempt bound and shared type-priority taxonomy are unchanged.
+
+Changed files: `src/deep_research/providers/deepseek_provider.py`, `tests/test_deepseek_provider.py`, and this fix log. No Task 3/4 code, shared evaluation model, taxonomy code, token budget, OpenAI mapping, or out-of-list agent/provider package file changed.
+
+### Strict RED/GREEN evidence
+
+- RED command: `python -m pytest -q tests/test_deepseek_provider.py -k "mapping_key_never_reaches_structured_failure_surfaces"` -> `1 failed, 83 deselected, 1 warning in 2.59s` (exit 1). The aggregate structural assertion identified four leaking surfaces: repair request, provider diagnostics, reachable exception attributes, and evaluation projection.
+- GREEN command: the same command -> `1 passed, 83 deselected, 1 warning in 1.61s`.
+- Prior-fix regression set: `9 passed, 93 deselected, 1 warning in 0.85s`.
+- Required Task 2 focused suite: `113 passed, 85 deselected, 1 warning in 1.08s`.
+- Complete six-module Task 2 suite: `198 passed, 1 warning in 2.24s`.
+- Neighboring provider/evaluation suite: `177 passed, 1 warning in 2.06s`.
+- Tracked full suite with only the protected characterization ignored: `1847 passed, 1 deselected, 2 warnings in 30.26s`.
+- Ruff: `All checks passed!`; `git diff --check`: exit 0 with only normal LF/CRLF warnings.
+
+The adversarial test uses a synthetic mapping key and inspects the repair request, immutable provider diagnostics, all reachable exception strings and instance attributes, and the typed evaluation projection. The marker is absent everywhere after the fix, while both attempts retain only `answers.score`. The protected file remains unchanged, untracked, and unstaged at SHA-256 `31AC7C15E395F5E4BA31FA80C68FE395989177F2905B82A33A7451A166C08E57`. No live provider or LangSmith call was made. Task 2 remains pending orchestrator-owned Sol/high re-review.

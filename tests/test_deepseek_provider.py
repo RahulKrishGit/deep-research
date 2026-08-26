@@ -789,6 +789,82 @@ async def test_custom_validator_data_never_reaches_repair_or_exception_graph() -
 
 
 @pytest.mark.asyncio
+async def test_mapping_key_never_reaches_structured_failure_surfaces() -> None:
+    marker = "REJECTED_PROVIDER_MARKER_7E5C"
+
+    class MappingEntry(BaseModel):
+        score: int
+
+    class MappingEnvelope(BaseModel):
+        answers: dict[str, MappingEntry]
+
+    rejected = json.dumps({"answers": {marker: {"score": "invalid"}}})
+    completions = RecordingCompletions(
+        chat_response(text=rejected),
+        chat_response(text=rejected),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "safe prompt"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="safe prompt")],
+                MappingEnvelope,
+            )
+
+    reachable: list[BaseException] = []
+    pending: list[BaseException] = [caught.value]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        reachable.append(current)
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+
+    from deep_research.evaluation.failure_taxonomy import safe_failure_details
+
+    details = safe_failure_details(caught.value)
+    assert details is not None
+    surfaces = {
+        "repair_request": json.dumps(
+            completions.calls[1], default=repr, sort_keys=True
+        ),
+        "provider_diagnostics": json.dumps(
+            [
+                item.model_dump(mode="json")
+                for item in caught.value.diagnostics
+            ],
+            sort_keys=True,
+        ),
+        "exception_strings": repr([str(item) for item in reachable]),
+        "exception_attributes": repr(
+            [{"args": item.args, "private": vars(item)} for item in reachable]
+        ),
+        "evaluation_projection": details.model_dump_json(),
+    }
+
+    leaking_surfaces = [
+        name for name, value in surfaces.items() if marker in value
+    ]
+    assert leaking_surfaces == []
+    assert [item.field_paths for item in caught.value.diagnostics] == [
+        ("answers.score",),
+        ("answers.score",),
+    ]
+    assert [item.field_paths for item in details.diagnostics] == [
+        ("answers.score",),
+        ("answers.score",),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_structured_validation_truncates_paths_before_repair() -> None:
     many_fields = create_model(
         "ManyRequiredFields",
