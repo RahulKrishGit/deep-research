@@ -38,6 +38,8 @@ from deep_research.providers.retry import with_retries
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
+_MAX_VALIDATION_FIELD_PATHS = 16
+_MAX_VALIDATION_SUMMARY_LENGTH = 1000
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 _FINISH_REASON_CATEGORIES = frozenset(
@@ -135,19 +137,16 @@ def _json_instruction(schema: type[BaseModel]) -> ChatMessage:
 class _StructuredValidationFailure(RuntimeError):
     """Carry validation diagnostics for the repair prompt only.
 
-    The message names the schema but never the provider output, and the
-    summary is sanitized to pydantic error locations and messages, which do
-    not embed the invalid text.
+    The message names the schema but never the provider output. The typed
+    diagnostic contains only bounded locations and a stable category.
     """
 
     def __init__(
         self,
         schema_name: str,
-        summary: str,
         diagnostic: StructuredValidationDiagnostic,
     ) -> None:
         super().__init__(f"DeepSeek output failed {schema_name} validation")
-        self.summary = summary
         self.diagnostic = diagnostic
 
 
@@ -166,6 +165,8 @@ def _validation_diagnostic(
             location = item.get("loc", ()) if isinstance(item, dict) else ()
             path = ".".join(str(part) for part in location) or "$"
             paths.append(path)
+            if len(paths) == _MAX_VALIDATION_FIELD_PATHS:
+                break
     return StructuredValidationDiagnostic(
         attempt=attempt,
         field_paths=tuple(paths) or ("$",),
@@ -173,24 +174,24 @@ def _validation_diagnostic(
     )
 
 
-def _validation_summary(error: BaseException, *, limit: int = 1000) -> str:
-    """Format validation diagnostics without any provider output.
-
-    ``str(ValidationError)`` embeds input values, so the summary is built
-    from the structured error items instead and capped at ``limit``
-    characters for a bounded repair prompt.
-    """
-    errors = getattr(error, "errors", None)
-    if callable(errors):
-        lines: list[str] = []
-        for item in errors(include_input=False):
-            location = ".".join(str(part) for part in item.get("loc", ()))
-            message = item.get("msg", "")
-            lines.append(f"{location}: {message}" if location else message)
-        summary = "; ".join(lines)
-    else:
-        summary = "$: schema validation failed"
-    return summary[:limit]
+def _validation_summary(
+    diagnostic: StructuredValidationDiagnostic,
+    *,
+    limit: int = _MAX_VALIDATION_SUMMARY_LENGTH,
+) -> str:
+    """Render only stable category and complete normalized field paths."""
+    category = diagnostic.category or "schema_output"
+    summary = f"category={category}; field_paths="
+    if len(summary) >= limit:
+        return summary[:limit]
+    retained: list[str] = []
+    for path in diagnostic.field_paths:
+        separator = ", " if retained else ""
+        if len(summary) + len(separator) + len(path) > limit:
+            break
+        retained.append(path)
+        summary += f"{separator}{path}"
+    return summary
 
 
 def _usage_from_response(response: Any) -> TokenUsage:
@@ -537,17 +538,16 @@ class DeepSeekChatProvider:
             try:
                 parsed = schema.model_validate_json(text)
             except (json.JSONDecodeError, ValidationError) as error:
-                # from None: the original ValidationError embeds the provider
-                # output in its string and error items, so it must not remain
-                # reachable through the public __cause__ chain.
                 diagnostic = _validation_diagnostic(error, attempt=attempt)
-                raise _StructuredValidationFailure(
-                    schema.__name__,
-                    _validation_summary(error),
-                    diagnostic,
-                ) from None
-            self._last_model_returned = getattr(response, "model", None) or model
-            return parsed
+            else:
+                self._last_model_returned = (
+                    getattr(response, "model", None) or model
+                )
+                return parsed
+            # Raise after the validation handler exits so the provider-bearing
+            # ValidationError is not retained through ``__context__``, while
+            # still marking this traced attempt as failed.
+            raise _StructuredValidationFailure(schema.__name__, diagnostic) from None
 
     async def complete_structured(
         self,
@@ -592,7 +592,7 @@ class DeepSeekChatProvider:
                     "validation. Return only one JSON object that validates "
                     "against the supplied JSON Schema. Do not add Markdown or "
                     "explanatory text. "
-                    f"Validation summary: {error.summary}\n"
+                    f"Validation summary: {_validation_summary(error.diagnostic)}\n"
                     f"JSON Schema:\n{schema_json}"
                 )
                 current_messages = [

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from itertools import islice
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -26,6 +27,7 @@ PositiveInt: TypeAlias = Annotated[int, Field(gt=0, strict=True)]
 _FIELD_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$|^[0-9]+$")
 _MAX_FIELD_PATHS = 16
 _MAX_FIELD_PATH_LENGTH = 128
+_MAX_STRUCTURED_DIAGNOSTICS = 2
 
 
 def _normalize_field_path(value: object) -> str:
@@ -175,7 +177,7 @@ class StructuredOutputError(ProviderError):
             item
             if isinstance(item, StructuredValidationDiagnostic)
             else StructuredValidationDiagnostic.model_validate(item)
-            for item in diagnostics
+            for item in islice(diagnostics, _MAX_STRUCTURED_DIAGNOSTICS)
         )
         super().__init__(message)
 

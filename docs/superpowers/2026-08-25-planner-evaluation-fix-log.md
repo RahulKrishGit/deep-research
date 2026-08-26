@@ -339,3 +339,34 @@ Judge integration and evaluator URL capture remain Task 4 work. The reviewed mod
 - **Whitespace:** `git diff --check` → exit 0; only normal Git LF/CRLF normalization warnings were emitted.
 - **Leakage self-review:** changed serialized failure and trace paths contain no raw provider output, input values, exception strings, prompts, evaluator inputs, hidden reasoning, credential-bearing URLs, or secrets. Structured diagnostics and evaluator details are bounded and allow-listed; provider spans retain typed telemetry only. No live provider or LangSmith call was run.
 - **Review status:** the required Sol/high review was not dispatchable in this direct tool context; no external review result is claimed. The implementation is ready for that review gate, and the exact Task 2 commit SHA is recorded in the handoff report.
+
+## 17. Task 2 fix round 1/5 — Diagnostic safety, bounds, and taxonomy priority (2026-08-26)
+
+### Review findings and minimal fix
+
+This Luna/max fix round addresses the Sol/high review's one Critical and two Important findings without changing Task 3/4 behavior or the provider token budget:
+
+1. DeepSeek repair summaries are now derived only from the typed diagnostic's stable category and bounded normalized field paths. Free-form Pydantic validator messages are never retained, and the sanitized validation exception is raised after leaving the raw validation handler so the original `ValidationError` is absent from both `__cause__` and `__context__`.
+2. Validation paths are truncated deterministically to 16 before typed-model construction, `StructuredOutputError` retains at most the two structured attempts, and evaluator projection skips malformed records while remaining non-throwing and bounded.
+3. Classification and detail projection use the same type-priority cause selector across the complete explicit cause chain. A telemetry-bearing `ProviderOutputLimitError` wins over generic wrappers; a generic `failure_category="output_limit"` remains `provider_response`.
+
+Changed files are `src/deep_research/providers/contracts.py`, `src/deep_research/providers/deepseek_provider.py`, `src/deep_research/evaluation/failure_taxonomy.py`, `tests/test_deepseek_provider.py`, `tests/test_evaluation/test_failure_taxonomy.py`, and this fix log. No out-of-list agent or provider package file changed in this round.
+
+### Strict RED/GREEN evidence
+
+- Adversarial validator RED: `python -m pytest -q tests/test_deepseek_provider.py -k "custom_validator_data_never_reaches_repair_or_exception_graph"` -> `1 failed, 82 deselected in 2.72s`; the sentinel appeared in the repair request. GREEN -> `1 passed, 82 deselected in 1.04s`.
+- Bounding RED: `python -m pytest -q tests/test_deepseek_provider.py tests/test_evaluation/test_failure_taxonomy.py -k "structured_validation_truncates_paths_before_repair or structured_output_error_retains_only_two_diagnostics or safe_schema_projection_skips_malformed_diagnostics_without_raising"` -> `3 failed, 98 deselected, 1 warning in 2.34s`; model construction rejected 18 paths, 17 diagnostics were retained, and malformed projection raised `AttributeError`. GREEN -> `3 passed, 98 deselected, 1 warning in 0.88s`.
+- Taxonomy RED: `python -m pytest -q tests/test_evaluation/test_failure_taxonomy.py -k "output_limit_cause_wins_over_outer_provider_response_wrapper or generic_output_limit_category_remains_provider_response"` -> `2 failed, 16 deselected, 1 warning in 0.73s`. GREEN -> `2 passed, 16 deselected, 1 warning in 0.05s`.
+- Safe-summary RED: `python -m pytest -q tests/test_deepseek_provider.py -k "validation_summary_uses_only_bounded_diagnostic_fields"` -> `1 failed, 82 deselected in 2.09s`. GREEN -> `1 passed, 82 deselected in 1.04s`.
+- The first broader focused run exposed a telemetry-span regression (`1 failed, 111 passed, 85 deselected, 1 warning in 2.01s`); the sanitized raise was moved back inside the tracing context but outside the raw validation handler. Its targeted GREEN was `2 passed, 81 deselected in 1.10s`.
+
+### Final verification and safety
+
+- Amended focused tests: `8 passed, 93 deselected, 1 warning in 0.85s`.
+- Required Task 2 focused suite: `112 passed, 85 deselected, 1 warning in 1.37s`.
+- Neighboring provider/agent/model/target suite: `179 passed, 1 warning in 2.63s`.
+- Tracked full suite, ignoring only the protected untracked characterization: `1846 passed, 1 deselected, 2 warnings in 30.21s`.
+- Ruff: `All checks passed!`; `git diff --check`: exit 0 with only normal LF/CRLF warnings.
+- Protected characterization: `2 passed, 1 failed in 1.94s`; the sole failure is its known old planner-message assertion. It remains untracked, unstaged, and byte-for-byte unchanged at SHA-256 `31AC7C15E395F5E4BA31FA80C68FE395989177F2905B82A33A7451A166C08E57`.
+
+Leak review found no raw provider output, rejected input, Pydantic message, exception string, prompt, reasoning, credential-bearing URL, or secret in the changed production diagnostic path. No live provider or LangSmith call was made. Task 2 remains pending orchestrator-owned Sol/high re-review and is not marked complete.

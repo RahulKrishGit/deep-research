@@ -15,7 +15,7 @@ from openai import (
     OpenAIError,
     RateLimitError,
 )
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, create_model, field_validator
 
 import deep_research.providers.contracts as contracts_module
 import deep_research.providers.deepseek_provider as deepseek_module
@@ -735,6 +735,90 @@ async def test_deepseek_structured_error_retains_safe_diagnostics() -> None:
     assert "provider-secret-two" not in str(caught.value)
 
 
+@pytest.mark.asyncio
+async def test_custom_validator_data_never_reaches_repair_or_exception_graph() -> None:
+    marker = "REJECTED_PROVIDER_MARKER_7E5C"
+
+    class RejectingAnswer(BaseModel):
+        answer: str
+
+        @field_validator("answer")
+        @classmethod
+        def reject_answer(cls, value: str) -> str:
+            raise ValueError(f"validator rejected {value}")
+
+    completions = RecordingCompletions(
+        chat_response(text=json.dumps({"answer": marker})),
+        chat_response(text=json.dumps({"answer": marker})),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "safe prompt"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="safe prompt")],
+                RejectingAnswer,
+            )
+
+    repair_request = json.dumps(completions.calls[1], default=repr, sort_keys=True)
+    assert marker not in repair_request
+
+    reachable: list[BaseException] = []
+    pending: list[BaseException] = [caught.value]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        reachable.append(current)
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+
+    assert [type(item).__name__ for item in reachable] == [
+        "StructuredOutputError",
+        "_StructuredValidationFailure",
+    ]
+    for item in reachable:
+        attributes = repr({"args": item.args, "private": vars(item)})
+        assert marker not in attributes
+
+
+@pytest.mark.asyncio
+async def test_structured_validation_truncates_paths_before_repair() -> None:
+    many_fields = create_model(
+        "ManyRequiredFields",
+        **{f"field_{index:02d}": (str, ...) for index in range(18)},
+    )
+    completions = RecordingCompletions(
+        chat_response(text="{}"),
+        chat_response(text="{}"),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="question")],
+                many_fields,
+            )
+
+    assert len(completions.calls) == 2
+    assert len(caught.value.diagnostics) == 2
+    expected_paths = tuple(f"field_{index:02d}" for index in range(16))
+    assert [item.field_paths for item in caught.value.diagnostics] == [
+        expected_paths,
+        expected_paths,
+    ]
+
+
 def test_structured_validation_diagnostic_normalizes_and_bounds_paths() -> None:
     diagnostic_type = getattr(
         contracts_module, "StructuredValidationDiagnostic", None
@@ -753,6 +837,22 @@ def test_structured_validation_diagnostic_normalizes_and_bounds_paths() -> None:
             field_paths=("title",),
             category="schema_output",
         )
+
+
+def test_structured_output_error_retains_only_two_diagnostics() -> None:
+    diagnostic_type = contracts_module.StructuredValidationDiagnostic
+    diagnostics = tuple(
+        diagnostic_type(
+            attempt=index,
+            field_paths=(f"field_{index}",),
+            category="schema_output",
+        )
+        for index in range(1, 18)
+    )
+
+    error = StructuredOutputError("safe schema failure", diagnostics=diagnostics)
+
+    assert error.diagnostics == diagnostics[:2]
 
 
 def test_provider_output_limit_error_keeps_typed_telemetry() -> None:
@@ -1292,35 +1392,20 @@ async def test_deepseek_structured_telemetry_is_safe_and_attempted() -> None:
         assert sensitive not in serialized
 
 
-def test_deepseek_validation_summary_excludes_inputs_and_stays_capped() -> None:
-    class RecordingValidationFailure:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
+def test_deepseek_validation_summary_uses_only_bounded_diagnostic_fields() -> None:
+    diagnostic = contracts_module.StructuredValidationDiagnostic(
+        attempt=1,
+        field_paths=tuple(
+            f"field_{index}_{'x' * 100}" for index in range(16)
+        ),
+        category="schema_output",
+    )
 
-        def errors(self, **kwargs):
-            self.calls.append(kwargs)
-            return [
-                {
-                    "type": "string_type",
-                    "loc": ("answer",),
-                    "msg": "should be a string",
-                    "input": "secret-provider-output",
-                    "ctx": {"expected": "str"},
-                },
-                {
-                    "type": "int_type",
-                    "loc": ("confidence",),
-                    "msg": "x" * 1200,
-                    "input": 3,
-                },
-            ]
+    summary = deepseek_module._validation_summary(diagnostic)
 
-    error = RecordingValidationFailure()
-    summary = deepseek_module._validation_summary(error)
-    assert error.calls == [{"include_input": False}]
-    assert summary.startswith("answer: should be a string; confidence: ")
-    assert "secret-provider-output" not in summary
-    assert len(summary) == 1000
+    assert summary.startswith("category=schema_output; field_paths=field_0_")
+    assert "attempt" not in summary
+    assert len(summary) <= 1000
 
 
 @pytest.mark.asyncio

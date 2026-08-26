@@ -15,6 +15,7 @@ from deep_research.providers import (
     ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
+    StructuredValidationDiagnostic,
 )
 
 
@@ -134,6 +135,38 @@ def test_specific_cause_wins_over_outer_generic_provider_wrapper() -> None:
     assert isinstance(details, models_module.OutputLimitFailureDetails)
 
 
+def test_output_limit_cause_wins_over_outer_provider_response_wrapper() -> None:
+    cause = _output_limit_error()
+    try:
+        raise ProviderResponseError(
+            "outer response wrapper", failure_category="response"
+        ) from cause
+    except ProviderResponseError as error:
+        taxonomy = _taxonomy_module()
+        result = taxonomy.classify_failure(error)
+        details = taxonomy.safe_failure_details(error)
+
+    assert (result.stage, result.reason) == ("provider", "output_limit")
+    assert isinstance(details, models_module.OutputLimitFailureDetails)
+    assert details.request_attempt == 1
+    assert details.structured_attempt == 2
+
+
+def test_generic_output_limit_category_remains_provider_response() -> None:
+    error = ProviderResponseError(
+        "generic response without telemetry",
+        failure_category="output_limit",
+    )
+    taxonomy = _taxonomy_module()
+
+    result = taxonomy.classify_failure(error)
+    details = taxonomy.safe_failure_details(error)
+
+    assert (result.stage, result.reason) == ("provider", "provider_response")
+    assert isinstance(details, models_module.ProviderFailureDetails)
+    assert details.kind == "provider_response"
+
+
 @pytest.mark.parametrize(
     "error_type",
     [
@@ -171,3 +204,32 @@ def test_safe_failure_details_never_serialize_provider_text() -> None:
     assert isinstance(schema_details, models_module.SchemaFailureDetails)
     assert "schema failed" not in schema_details.model_dump_json()
     assert "partial provider output" not in output_details.model_dump_json()
+
+
+def test_safe_schema_projection_skips_malformed_diagnostics_without_raising() -> None:
+    valid = StructuredValidationDiagnostic(
+        attempt=2,
+        field_paths=("title",),
+        category="schema_output",
+    )
+    error = StructuredOutputError("safe schema failure", diagnostics=(valid,))
+    error.diagnostics = (
+        {"attempt": "REJECTED_PROVIDER_MARKER_7E5C"},
+        valid,
+        *([object()] * 17),
+    )
+
+    details = _taxonomy_module().safe_failure_details(error)
+
+    assert isinstance(details, models_module.SchemaFailureDetails)
+    assert details.model_dump(mode="json") == {
+        "kind": "schema_output",
+        "diagnostics": [
+            {
+                "kind": "schema_output",
+                "attempt": 2,
+                "field_paths": ["title"],
+            }
+        ],
+    }
+    assert "REJECTED_PROVIDER_MARKER_7E5C" not in details.model_dump_json()
