@@ -518,3 +518,24 @@ The reviewed documentation-fix head `8b1d87d` is the implementation base: Task 1
 ### Live status
 
 No paid DeepSeek or LangSmith call was made; the Task 6 focused 8192 experiment remains gated on immediate human confirmation. This entry contains no secrets, prompts, provider responses, evaluator inputs, or hidden reasoning.
+
+## 24. Task 6 — Human-confirmed focused 8192 experiment (2026-08-26)
+
+### Pre-run gate record
+
+- **Human confirmation:** obtained 2026-08-26T18:42:24Z via the controller's confirmation prompt, before any paid command.
+- **Current SHA:** `1beb7015e9550fff8ff879d09dd848d522183bdd` on `codex/planner-remediation-integration` (integration branch, Tasks 1–5 complete, Task 5 gate green).
+- **Operation budget:** `AGENTS_PLANNER_FINAL_MAX_TOKENS=8192` set in the launching shell; effective config verified through the repo-env launcher: `planner_final_max_tokens 8192`, `llm_max_tokens 4096` (global cap frozen), `retry_count 5` (process override set before the launcher to defeat the repo `.env`'s `LLM_RETRY_COUNT=2` per the documented §8.1/§11 trap).
+- **Target reasoning effort:** `max`; **judge reasoning effort:** `max` (unchanged).
+- **Environment:** shared venv editable install re-pointed to the integration worktree's `src` (verified `import deep_research` resolves to `R:\src\deep_research\__init__.py`); `R:` subst maps to the integration worktree; EU LangSmith endpoint `https://eu.api.smith.langchain.com` per configuration; controlled tier only; no conflicting `LLM_MAX_TOKENS` override present.
+- **Exact command to be executed (verbatim, without credentials):**
+
+  ```
+  python -m deep_research.evaluation agent planner --config config.yaml --case focused-decomposition --reasoning-effort max --judge-reasoning-effort max --experiment-prefix planner-provider-remediation-8192 --verbose
+  ```
+
+  (invoked from `R:\` through the repo-env launcher `run_with_repo_env.py` with the repo-root `.env` loaded `override=False`, using the shared venv interpreter.)
+
+### Statement
+
+This entry is the pre-run record; the post-run evidence (status, taxonomy, judge counts, URLs) will be appended by the controller after the run completes. No credentials, secrets, prompts, provider responses, or evaluator inputs are recorded anywhere.
