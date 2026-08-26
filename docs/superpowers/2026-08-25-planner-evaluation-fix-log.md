@@ -443,7 +443,7 @@ The controller ruled the plan's Files-list silence does not override Interfaces 
 - **Leakage self-review:** test-only change; no production path, telemetry, or serialization touched. No secrets, prompts, provider responses, evaluator inputs, or reasoning content appear. **No live provider or LangSmith call was made.**
 - **Code/review status:** fix-round code and offline verification complete; pending orchestrator-owned Sol/high re-review. The exact commit SHA is recorded in the Task 3 report.
 
-## 19. Task 4 — Judge evaluator diagnostics and URL preservation (2026-08-26)
+## 21. Task 4 — Judge evaluator diagnostics and URL preservation (2026-08-26)
 
 ### Issue and implementation
 
@@ -475,7 +475,7 @@ Serialized `JudgeFeedback`/`RepetitionResult`/`ExperimentResult` models, the Lan
 
 **Code/review status:** Task 4 implementation, tests, and self-review are complete at the reviewed Task 2 SHA (production/test writes per Luna/max). The exact Task 4 commit SHA is recorded in the handoff report. Sol/high review is the orchestrator's gate; no external review result is claimed here.
 
-## 20. Task 4 fix round 1/5 — Per-invocation judge trace URL capture (2026-08-26)
+## 22. Task 4 fix round 1/5 — Per-invocation judge trace URL capture (2026-08-26)
 
 ### Finding and root cause
 
@@ -496,3 +496,25 @@ The Sol/high Task 4 review found one Important finding (everything else approved
 - **Whitespace:** `git diff --check` -> exit 0.
 
 No live provider or LangSmith call was made in this fix round; the focused 8192 experiment remains gated on immediate human confirmation. The changed production path still retains only URL strings and typed diagnostics; the regression test uses synthetic `smith.langchain.com` URLs and asserts no misattribution. The exact fix-round commit SHA is recorded in the handoff report.
+
+## 23. Task 5 — Complete offline verification and Sol/high whole-branch review (2026-08-26)
+
+### Implementation starting point
+
+The reviewed documentation-fix head `8b1d87d` is the implementation base: Task 1 base `8b1d87d`; Task 2 base `13bc6ae`; Tasks 3/4 branched from the reviewed Task 2 SHA `0c745b1`.
+
+### Offline verification evidence (integration branch at `57ba26d`)
+
+- **Preserved untracked test check:** `tests/test_diagnostic_planner_deepseek_length.py` remains untracked and byte-for-byte unchanged (SHA-256 `31AC7C15E395F5E4BA31FA80C68FE395989177F2905B82A33A7451A166C08E57`); it does not exist in the integration worktree (untracked files are not carried into new worktrees) and was not created.
+- **Full offline suite:** `python -m pytest -q --rootdir <integration worktree> --basetemp C:\Temp\deep-research-t5-full -p no:cacheprovider` → **`1881 passed, 1 deselected, 2 warnings in 12.35s`** (exit 0). Arithmetic: baseline 1801 + 46 (Tasks 1–2) + 17 (Task 3) + 17 (Task 4) = 1881; the deselection is the `@pytest.mark.live` smoke test; the two warnings are the known langsmith `ast.Str` and fastapi/httpx deprecation warnings.
+- **Ruff:** `python -m ruff check src tests` → `All checks passed!`.
+- **Whitespace:** `git diff --check` → exit 0.
+- **Reserved-term scans:** `TBD`/`TODO`/`FIXME`/`placeholder`/`to be determined`/`fill in`/`similar to task` over the design, plan, and fix log → no matches.
+
+### Whole-branch Sol/high review outcome
+
+0 Critical, 0 Important code findings, 1 Important documentation finding (this entry itself — now addressed); all deferred Minor findings triaged deferrable. Verdict: **"Ready for the human-gated experiment"** once this entry lands. The review was read-only, made no provider calls, and used no live tier.
+
+### Live status
+
+No paid DeepSeek or LangSmith call was made; the Task 6 focused 8192 experiment remains gated on immediate human confirmation. This entry contains no secrets, prompts, provider responses, evaluator inputs, or hidden reasoning.
