@@ -30,7 +30,9 @@ from deep_research.agents.errors import (
     AgentConfigurationError,
     AgentError,
     PlanningError,
+    PlanningOperation,
     agent_error,
+    planning_provider_error,
 )
 from deep_research.agents.events import agent_event
 from deep_research.agents.fact_checker import (
@@ -322,6 +324,7 @@ __all__ = [
     "FactCheckerAgent",
     "FindingDraft",
     "PlannerAgent",
+    "PlanningOperation",
     "PlanningError",
     "ReActActionType",
     "ReActDecision",
@@ -417,6 +420,7 @@ __all__ = [
     "parse_tool_input",
     "plan_messages",
     "planning_completed_event",
+    "planning_provider_error",
     "planning_started_event",
     "render_citations",
     "render_claim_digest",

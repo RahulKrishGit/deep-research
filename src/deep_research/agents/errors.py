@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import Literal
 
 from pydantic import JsonValue
 
@@ -24,9 +25,44 @@ class PlanningError(AgentError):
     provider text, so they are safe to log and to surface to a user.
     """
 
-    def __init__(self, message: str, *, problems: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        problems: Sequence[str] = (),
+        operation: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.problems = tuple(problems)
+        self.operation = operation
+
+
+PlanningOperation = Literal["react_decision", "plan_draft", "react_loop"]
+
+
+def planning_provider_error(operation: PlanningOperation) -> PlanningError:
+    """Return static operation context for a provider failure."""
+    if operation == "react_decision":
+        return PlanningError(
+            "The planner could not produce a scoping decision because the "
+            "model provider operation failed.",
+            problems=("the planner provider failed during a ReAct decision",),
+            operation=operation,
+        )
+    if operation == "plan_draft":
+        return PlanningError(
+            "The planner could not produce the requested plan draft because "
+            "the model provider operation failed.",
+            problems=(
+                "the planner provider failed while requesting the final plan draft",
+            ),
+            operation=operation,
+        )
+    return PlanningError(
+        "The planner scoping phase stopped before a decision was available.",
+        problems=("the planner scoping phase stopped before a decision",),
+        operation=operation,
+    )
 
 
 def agent_error(

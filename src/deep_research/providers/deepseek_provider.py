@@ -32,6 +32,7 @@ from deep_research.providers.contracts import (
     ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
+    StructuredValidationDiagnostic,
 )
 from deep_research.providers.retry import with_retries
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
@@ -139,9 +140,37 @@ class _StructuredValidationFailure(RuntimeError):
     not embed the invalid text.
     """
 
-    def __init__(self, schema_name: str, summary: str) -> None:
+    def __init__(
+        self,
+        schema_name: str,
+        summary: str,
+        diagnostic: StructuredValidationDiagnostic,
+    ) -> None:
         super().__init__(f"DeepSeek output failed {schema_name} validation")
         self.summary = summary
+        self.diagnostic = diagnostic
+
+
+def _validation_diagnostic(
+    error: BaseException, *, attempt: int
+) -> StructuredValidationDiagnostic:
+    """Extract only bounded schema locations from a validation failure."""
+    paths: list[str] = []
+    errors = getattr(error, "errors", None)
+    if callable(errors):
+        try:
+            items = errors(include_input=False)
+        except TypeError:
+            items = errors()
+        for item in items:
+            location = item.get("loc", ()) if isinstance(item, dict) else ()
+            path = ".".join(str(part) for part in location) or "$"
+            paths.append(path)
+    return StructuredValidationDiagnostic(
+        attempt=attempt,
+        field_paths=tuple(paths) or ("$",),
+        category="schema_output",
+    )
 
 
 def _validation_summary(error: BaseException, *, limit: int = 1000) -> str:
@@ -160,7 +189,7 @@ def _validation_summary(error: BaseException, *, limit: int = 1000) -> str:
             lines.append(f"{location}: {message}" if location else message)
         summary = "; ".join(lines)
     else:
-        summary = str(error)
+        summary = "$: schema validation failed"
     return summary[:limit]
 
 
@@ -511,8 +540,11 @@ class DeepSeekChatProvider:
                 # from None: the original ValidationError embeds the provider
                 # output in its string and error items, so it must not remain
                 # reachable through the public __cause__ chain.
+                diagnostic = _validation_diagnostic(error, attempt=attempt)
                 raise _StructuredValidationFailure(
-                    schema.__name__, _validation_summary(error)
+                    schema.__name__,
+                    _validation_summary(error),
+                    diagnostic,
                 ) from None
             self._last_model_returned = getattr(response, "model", None) or model
             return parsed
@@ -533,6 +565,7 @@ class DeepSeekChatProvider:
             {"role": "system", "content": instruction.content},
         ]
 
+        diagnostics: list[StructuredValidationDiagnostic] = []
         for attempt in (1, 2):
             try:
                 return await self._structured_attempt(
@@ -544,10 +577,12 @@ class DeepSeekChatProvider:
                     attempt=attempt,
                 )
             except _StructuredValidationFailure as error:
+                diagnostics.append(error.diagnostic)
                 if attempt == 2:
                     raise StructuredOutputError(
                         f"DeepSeek output failed {schema.__name__} validation "
-                        "after one repair attempt"
+                        "after one repair attempt",
+                        diagnostics=tuple(diagnostics),
                     ) from error
                 schema_json = json.dumps(
                     schema.model_json_schema(), sort_keys=True, separators=(",", ":")

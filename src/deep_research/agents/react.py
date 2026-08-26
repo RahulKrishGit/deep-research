@@ -14,6 +14,7 @@ from typing import TypeAlias
 from pydantic import JsonValue
 
 from deep_research.agents.errors import agent_error
+from deep_research.agents.events import agent_event
 from deep_research.agents.steps import (
     DEFAULT_SUMMARY_LIMIT,
     ReActDecision,
@@ -65,6 +66,7 @@ async def run_react_loop(
     on_step: StepCallback | None = None,
     is_sufficient: SufficiencyCallback | None = None,
     summary_limit: int = DEFAULT_SUMMARY_LIMIT,
+    propagate_provider_errors: bool = True,
 ) -> ReActRun:
     """Run think -> act -> observe until a stop condition fires.
 
@@ -234,6 +236,16 @@ async def run_react_loop(
                     }
                 )
         except ProviderError as error:
+            tracker.record_event(
+                agent_event(
+                    agent_name=agent_name,
+                    event_type="agent.provider_failure",
+                    message="The ReAct provider decision failed.",
+                    metadata={"iteration": iteration},
+                )
+            )
+            if propagate_provider_errors:
+                raise
             errors.append(
                 agent_error(
                     agent_name=agent_name,

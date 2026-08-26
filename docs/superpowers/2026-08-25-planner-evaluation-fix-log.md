@@ -310,3 +310,32 @@ Changed files in this fix round: `src/deep_research/observability/tracker.py`, `
 The changed production paths do not log or serialize prompts, request payloads, response/reasoning content, raw SDK exceptions, raw finish values, secrets, or unbounded finish values. OpenAI no longer imports or handles `LengthFinishReasonError`; it leaves unsupported SDK exceptions on the existing safe generic error path. The frozen models expose only the finite telemetry fields and their bounded JSON serialization. No live provider or LangSmith call was made. The protected test SHA-256 remains `31AC7C15E395F5E4BA31FA80C68FE395989177F2905B82A33A7451A166C08E57`.
 
 **Status:** fix-round code and offline verification are green; the preserved diagnostic test remains the documented downstream-scope concern. The final commit SHA and subject are recorded in the appended Task 1 report.
+
+## 16. Task 2 — Exception propagation and evaluation failure taxonomy (2026-08-25)
+
+### Issue and implementation
+
+Task 2 closes the provider-failure boundary that previously converted structured validation and planner provider failures into generic terminal or reachability results. The provider now retains two bounded structured-validation records, ReAct records only a safe provider-failure event and re-raises the original typed provider error, and Planner adds operation-specific static context while preserving the original cause through both the ReAct decision and final `ResearchPlanDraft` paths. No reachability wording is used for output-limit or schema failures.
+
+The shared `evaluation/models.py` contract, owned exclusively by Task 2 for the Task 3/4 handoff, now contains the target taxonomy, typed output-limit/schema/provider details, bounded evaluator diagnostics, and evaluator-prefixed judge not-run reasons. `failure_taxonomy.py` walks the complete explicit cause chain, checks typed causes before generic provider errors, and projects only bounded categories, attempts, normalized field paths, typed usage/caps, exception type names, retryability, and optional HTTP status. Targets use static artifact messages and never serialize provider exception strings. Generic non-Planner agents retain their prior recoverable terminal behavior through the explicit ReAct compatibility switch.
+
+Changed production files: `src/deep_research/providers/contracts.py`, `src/deep_research/providers/deepseek_provider.py`, `src/deep_research/providers/__init__.py`, `src/deep_research/agents/__init__.py`, `src/deep_research/agents/base.py`, `src/deep_research/agents/critic.py`, `src/deep_research/agents/errors.py`, `src/deep_research/agents/fact_checker.py`, `src/deep_research/agents/planner.py`, `src/deep_research/agents/react.py`, `src/deep_research/agents/researcher.py`, `src/deep_research/evaluation/models.py`, `src/deep_research/evaluation/failure_taxonomy.py`, and `src/deep_research/evaluation/targets.py`. Changed tests are the five listed Task 2 test modules plus the new taxonomy test module. The protected diagnostic characterization remains untracked and unchanged.
+
+Judge integration and evaluator URL capture remain Task 4 work. The reviewed model preserves `evaluator_trace_url` and `evaluator_source_url`; an evaluator source URL remains explicitly unavailable (`None`) unless the later integration directly supplies a safe URL. No URL is derived from prompts, inputs, traces, exceptions, or credentials.
+
+### TDD evidence
+
+- **Initial RED:** `python -m pytest -q tests/test_deepseek_provider.py tests/test_agents/test_react.py tests/test_agents/test_planner.py tests/test_evaluation/test_models.py tests/test_evaluation/test_failure_taxonomy.py tests/test_evaluation/test_targets.py -k "diagnostic or schema or provider or classify"` → `84 passed, 21 failed, 85 deselected, 1 warning`. The failures were the missing structured diagnostics, swallowed ReAct provider cause, planner wrapping, model contracts, and taxonomy behavior.
+- **Scoped cause-chain RED:** `python -m pytest -q tests/test_evaluation/test_failure_taxonomy.py -k "outer_generic_provider_wrapper"` → `1 failed, 14 deselected, 1 warning`; a generic outer provider wrapper incorrectly masked its typed output-limit cause.
+- **Scoped cause-chain GREEN:** the same command → `1 passed, 14 deselected, 1 warning` after the classifier and safe-details projection were changed to scan specific causes before generic provider fallback.
+- **Focused GREEN:** the required focused command → `106 passed, 85 deselected, 1 warning in 1.02s`. The two-response/two-validation case produced attempts 1 and 2 with root field path `$`, stable `schema_output`, and no provider data.
+- **Neighboring GREEN:** `python -m pytest -q tests/test_deepseek_provider.py tests/test_agents/test_react.py tests/test_agents/test_planner.py tests/test_evaluation/test_models.py tests/test_evaluation/test_targets.py` → `176 passed, 1 warning in 1.95s`.
+
+### Verification, safety, and status
+
+- **Tracked full offline suite:** `python -m pytest -q --ignore tests/test_diagnostic_planner_deepseek_length.py --basetemp C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.pytest-basetemp-task2-final` → `1840 passed, 1 deselected, 2 warnings in 33.04s`.
+- **Protected characterization:** `python -m pytest -q tests/test_diagnostic_planner_deepseek_length.py --basetemp C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.pytest-basetemp-task2-protected-final` → `2 passed, 1 failed in 1.41s`. The sole failure is its pre-Task-2 planner-message assertion; the file remains untracked, unchanged, and was not staged. Its SHA-256 remains `31AC7C15E395F5E4BA31FA80C68FE395989177F2905B82A33A7451A166C08E57`.
+- **Ruff:** `python -m ruff check src tests` → `All checks passed!`.
+- **Whitespace:** `git diff --check` → exit 0; only normal Git LF/CRLF normalization warnings were emitted.
+- **Leakage self-review:** changed serialized failure and trace paths contain no raw provider output, input values, exception strings, prompts, evaluator inputs, hidden reasoning, credential-bearing URLs, or secrets. Structured diagnostics and evaluator details are bounded and allow-listed; provider spans retain typed telemetry only. No live provider or LangSmith call was run.
+- **Review status:** the required Sol/high review was not dispatchable in this direct tool context; no external review result is claimed. The implementation is ready for that review gate, and the exact Task 2 commit SHA is recorded in the handoff report.

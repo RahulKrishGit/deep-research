@@ -79,6 +79,7 @@ class BaseAgent(ABC, Generic[ResultT]):
     name: ClassVar[str]
     description: ClassVar[str]
     allowed_tools: ClassVar[tuple[str, ...]] = ()
+    preserve_provider_errors: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -225,6 +226,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                 on_step=self._record_step,
                 is_sufficient=self.is_sufficient,
                 summary_limit=self._config.observation_summary_chars,
+                propagate_provider_errors=self.preserve_provider_errors,
             )
             react = react.model_copy(
                 update={

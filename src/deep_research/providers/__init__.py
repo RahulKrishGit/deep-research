@@ -20,6 +20,7 @@ from deep_research.providers.contracts import (
     ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
+    StructuredValidationDiagnostic,
 )
 from deep_research.providers.deepseek_provider import (
     DEEPSEEK_BASE_URL,
@@ -71,6 +72,7 @@ __all__ = [
     "ProviderResponseTelemetry",
     "ProviderTimeoutError",
     "ResolvedRequestSettings",
+    "StructuredValidationDiagnostic",
     "StructuredOutputError",
     "build_chat_provider",
     "build_embedding_provider",

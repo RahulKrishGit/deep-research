@@ -20,8 +20,12 @@ from deep_research.agents.planner import (
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderTimeoutError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
+    ProviderTimeoutError,
+)
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Finding,
@@ -346,6 +350,59 @@ async def test_the_planner_turns_a_question_into_a_validated_plan(
     ]
     assert outcome.state_update["sub_topics"] == outcome.result.sub_topics
     assert outcome.state_update["errors"] == []
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+            structured_attempt=1,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_planner_preserves_react_provider_cause_with_operation_context(
+    tracker: Tracker,
+) -> None:
+    provider_error = _output_limit_error()
+    agent = _planner(
+        tracker,
+        ScriptedCompleter(decisions=[provider_error]),
+    )
+
+    with pytest.raises(PlanningError) as caught:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert caught.value.__cause__ is provider_error
+    assert "reach" not in str(caught.value).casefold()
+    assert "scop" in str(caught.value).casefold()
+
+
+@pytest.mark.asyncio
+async def test_planner_preserves_final_plan_provider_cause_without_reachability_wording(
+    tracker: Tracker,
+) -> None:
+    provider_error = _output_limit_error()
+    agent = _planner(
+        tracker,
+        ScriptedCompleter(
+            decisions=[finish("No lookup needed.", "Three angles matter.")],
+            outputs=[provider_error],
+        ),
+    )
+
+    with pytest.raises(PlanningError) as caught:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert caught.value.__cause__ is provider_error
+    assert "reach" not in str(caught.value).casefold()
+    assert "plan" in str(caught.value).casefold()
 
 
 @pytest.mark.asyncio

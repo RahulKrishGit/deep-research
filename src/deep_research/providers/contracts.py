@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from deep_research.observability import TokenUsage
 
@@ -18,7 +20,28 @@ FinishReasonCategory: TypeAlias = Literal[
 ProviderFailureCategory: TypeAlias = Literal[
     "output_limit", "transport", "http", "response"
 ]
+StructuredDiagnosticCategory: TypeAlias = Literal["schema_output"]
 PositiveInt: TypeAlias = Annotated[int, Field(gt=0, strict=True)]
+
+_FIELD_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$|^[0-9]+$")
+_MAX_FIELD_PATHS = 16
+_MAX_FIELD_PATH_LENGTH = 128
+
+
+def _normalize_field_path(value: object) -> str:
+    """Keep only normalized schema locations, never validation input values."""
+    if not isinstance(value, str):
+        return "$"
+    parts = [part.strip() for part in value.strip().split(".")]
+    if not parts or any(not part for part in parts):
+        return "$"
+    if any(
+        not _FIELD_PATH_SEGMENT.fullmatch(part)
+        for part in parts
+    ):
+        return "$"
+    normalized = ".".join(parts)
+    return normalized if len(normalized) <= _MAX_FIELD_PATH_LENGTH else "$"
 
 
 class ProviderContract(BaseModel):
@@ -46,6 +69,30 @@ class ProviderResponseTelemetry(ProviderContract):
     usage: TokenUsage
     request_attempt: PositiveInt
     structured_attempt: PositiveInt | None = None
+
+
+class StructuredValidationDiagnostic(ProviderContract):
+    """One bounded, provider-output-free structured validation record."""
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    attempt: PositiveInt
+    field_paths: tuple[str, ...] = Field(
+        min_length=1, max_length=_MAX_FIELD_PATHS
+    )
+    category: StructuredDiagnosticCategory | None = None
+
+    @field_validator("field_paths", mode="before")
+    @classmethod
+    def normalize_field_paths(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, str):
+            value = (value,)
+        if not isinstance(value, Sequence):
+            raise TypeError("field_paths must be a sequence of strings")
+        normalized = tuple(_normalize_field_path(item) for item in value)
+        return normalized or ("$",)
 
 
 class ProviderError(RuntimeError):
@@ -117,6 +164,25 @@ class ProviderOutputLimitError(ProviderResponseError):
 
 class StructuredOutputError(ProviderError):
     """Structured output remained invalid after one repair request."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: Sequence[StructuredValidationDiagnostic] = (),
+    ) -> None:
+        self.diagnostics = tuple(
+            item
+            if isinstance(item, StructuredValidationDiagnostic)
+            else StructuredValidationDiagnostic.model_validate(item)
+            for item in diagnostics
+        )
+        super().__init__(message)
+
+    @property
+    def validation_diagnostics(self) -> tuple[StructuredValidationDiagnostic, ...]:
+        """Compatibility alias for callers that name the validation records."""
+        return self.diagnostics
 
 
 OpenAIProviderError = ProviderError

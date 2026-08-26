@@ -19,6 +19,7 @@ from pydantic import BaseModel, ValidationError
 
 import deep_research.providers.contracts as contracts_module
 import deep_research.providers.deepseek_provider as deepseek_module
+from deep_research.agents.steps import ReActDecision
 from deep_research.observability import (
     LangSmithRuntimeConfig,
     TokenUsage,
@@ -30,8 +31,10 @@ from deep_research.providers.deepseek_provider import (
     ChatMessage,
     DeepSeekChatProvider,
     ProviderConfigurationError,
+    ProviderOutputLimitError,
     ProviderRateLimitError,
     ProviderResponseError,
+    ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
 )
@@ -679,6 +682,92 @@ async def test_deepseek_structured_length_error_carries_structured_attempt() -> 
     )
     assert "partial structured provider response" not in str(caught.value)
     assert "structured prompt" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_error_retains_safe_diagnostics() -> None:
+    completions = RecordingCompletions(
+        chat_response(
+            text='{"thought":"provider-secret-one","action":"finish",'
+            '"tool_input_json":"{}"}'
+        ),
+        chat_response(
+            text='{"thought":"provider-secret-two","action":"finish",'
+            '"tool_input_json":"{}"}'
+        ),
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "structured prompt"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="structured prompt")],
+                ReActDecision,
+            )
+
+    diagnostics = getattr(caught.value, "diagnostics", None)
+    assert diagnostics is not None
+    assert [item.model_dump(mode="json") for item in diagnostics] == [
+        {
+            "attempt": 1,
+            "field_paths": ["$"],
+            "category": "schema_output",
+        },
+        {
+            "attempt": 2,
+            "field_paths": ["$"],
+            "category": "schema_output",
+        },
+    ]
+    serialized = json.dumps(
+        [item.model_dump(mode="json") for item in diagnostics], sort_keys=True
+    )
+    assert "provider-secret-one" not in serialized
+    assert "provider-secret-two" not in serialized
+    assert "structured prompt" not in serialized
+    assert "input_value" not in serialized
+    assert "provider-secret-one" not in str(caught.value)
+    assert "provider-secret-two" not in str(caught.value)
+
+
+def test_structured_validation_diagnostic_normalizes_and_bounds_paths() -> None:
+    diagnostic_type = getattr(
+        contracts_module, "StructuredValidationDiagnostic", None
+    )
+    assert diagnostic_type is not None
+    diagnostic = diagnostic_type(
+        attempt=2,
+        field_paths=(" sub_topics . 0 . title ",),
+        category="schema_output",
+    )
+
+    assert diagnostic.field_paths == ("sub_topics.0.title",)
+    with pytest.raises(ValueError):
+        diagnostic_type(
+            attempt=0,
+            field_paths=("title",),
+            category="schema_output",
+        )
+
+
+def test_provider_output_limit_error_keeps_typed_telemetry() -> None:
+    telemetry = ProviderResponseTelemetry(
+        finish_reason_category="length",
+        configured_max_tokens=4096,
+        usage=TokenUsage(input_tokens=8, output_tokens=4096),
+        request_attempt=1,
+    )
+
+    error = ProviderOutputLimitError(telemetry)
+
+    assert error.retryable is False
+    assert error.failure_category == "output_limit"
+    assert error.telemetry is telemetry
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,7 @@ from typing import Any
 from pydantic import Field, ValidationError
 
 from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
-from deep_research.agents.errors import PlanningError
+from deep_research.agents.errors import PlanningError, planning_provider_error
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import AgentTask, render_memory_guidance
 from deep_research.agents.steps import ReActDecision, ReActRun, summarize_text
@@ -285,6 +285,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     name = PLANNER_NAME
     description = "Turn a research question into a validated research plan."
     allowed_tools = ("query_memory", "web_search")
+    preserve_provider_errors = True
 
     @property
     def output_schema(self) -> type[ResearchPlan]:
@@ -321,11 +322,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 agent_name=self.name,
             )
         except ProviderError as error:
-            raise PlanningError(
-                "The planner could not reach the model provider while a "
-                "plan was requested.",
-                problems=["the model provider failed while the plan was requested"],
-            ) from error
+            raise planning_provider_error("plan_draft") from error
         return validate_plan_draft(draft)
 
     async def finalize(
@@ -335,12 +332,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     ) -> ResearchPlan | None:
         """Request a plan, repair it at most once, or fail the session."""
         if not run.succeeded:
-            raise PlanningError(
-                "The planner could not reach the model provider.",
-                problems=[
-                    "the model provider failed before a plan was requested"
-                ],
-            )
+            raise planning_provider_error("react_loop")
 
         sub_topics, problems = await self._request_plan(task, run)
         if not problems:
@@ -387,6 +379,8 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             self._provider = _DecisionNormalizingCompleter(original_provider)
         try:
             outcome = await super().run(state)
+        except ProviderError as error:
+            raise planning_provider_error("react_decision") from error
         finally:
             self._provider = original_provider
         events.append(planning_completed_event(outcome))
