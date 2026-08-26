@@ -13,8 +13,21 @@ from deep_research.evaluation.judging import (
     render_judge_messages,
     run_judge,
 )
-from deep_research.evaluation.models import JudgeScores, JudgeVerdict
-from deep_research.providers import StructuredOutputError
+from deep_research.evaluation.models import (
+    EvaluatorDiagnostic,
+    JudgeScores,
+    JudgeVerdict,
+)
+from deep_research.observability import TokenUsage
+from deep_research.providers import (
+    OpenAIProviderError,
+    ProviderOutputLimitError,
+    ProviderResponseError,
+    ProviderResponseTelemetry,
+    ProviderTimeoutError,
+    StructuredOutputError,
+    StructuredValidationDiagnostic,
+)
 from tests.evaluation_fakes import FakeStructuredProvider
 
 
@@ -287,3 +300,154 @@ def test_judge_evaluator_metadata_records_thinking_mode(runtime_config_for) -> N
 
     assert metadata["thinking_mode"] == "enabled"
     assert "reasoning_mode" not in metadata
+
+
+@pytest.mark.asyncio
+async def test_a_judge_output_limit_failure_carries_a_diagnostic(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    """A typed output-limit cause maps to ``judge_output_limit`` and its
+    safe attempt telemetry survives as an evaluator diagnostic."""
+    telemetry = ProviderResponseTelemetry(
+        finish_reason_category="length",
+        configured_max_tokens=4096,
+        usage=TokenUsage(input_tokens=100, output_tokens=4096),
+        request_attempt=1,
+    )
+    provider = FakeStructuredProvider(
+        responses=[ProviderOutputLimitError(telemetry)]
+    )
+
+    feedback = await run_judge(
+        provider,
+        clean_target_output,
+        planner_case,
+        clean_gate_report,
+        runtime=runtime_config_for("planner"),
+        secrets=(),
+    )
+
+    assert feedback.status == "judge_not_run"
+    assert feedback.not_run_reason == "judge_output_limit"
+    assert feedback.judge_quality is None
+    assert feedback.evaluator_trace_url is None
+    assert feedback.evaluator_source_url is None
+    assert feedback.diagnostics == (
+        EvaluatorDiagnostic(kind="output_limit", attempt=1),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_schema_judge_failure_carries_bounded_field_paths(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    """A schema cause keeps ``judge_schema_failure`` and projects only the
+    allow-listed field paths, never the provider's own message text."""
+    error = StructuredOutputError(
+        "schema failed after one repair",
+        diagnostics=[
+            StructuredValidationDiagnostic(
+                attempt=1,
+                field_paths=("scores.completeness",),
+            )
+        ],
+    )
+    provider = FakeStructuredProvider(responses=[error])
+
+    feedback = await run_judge(
+        provider,
+        clean_target_output,
+        planner_case,
+        clean_gate_report,
+        runtime=runtime_config_for("planner"),
+        secrets=(),
+    )
+
+    assert feedback.status == "judge_not_run"
+    assert feedback.not_run_reason == "judge_schema_failure"
+    assert feedback.diagnostics == (
+        EvaluatorDiagnostic(
+            kind="schema_output",
+            attempt=1,
+            field_paths=("scores.completeness",),
+        ),
+    )
+    assert "schema failed after one repair" not in repr(feedback)
+
+
+@pytest.mark.asyncio
+async def test_a_generic_judge_provider_failure_in_a_cause_chain_stays_typed(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    """A generic provider cause anywhere in the chain maps to
+    ``judge_provider_failure`` and carries no fabricated diagnostics."""
+    try:
+        try:
+            raise OpenAIProviderError("the model provider is unavailable")
+        except Exception as cause:
+            raise RuntimeError("wrapped by the harness") from cause
+    except Exception as error:
+        provider = FakeStructuredProvider(responses=[error])
+
+    feedback = await run_judge(
+        provider,
+        clean_target_output,
+        planner_case,
+        clean_gate_report,
+        runtime=runtime_config_for("planner"),
+        secrets=(),
+    )
+
+    assert feedback.status == "judge_not_run"
+    assert feedback.not_run_reason == "judge_provider_failure"
+    assert feedback.judge_quality is None
+    assert feedback.diagnostics == ()
+    assert feedback.evaluator_trace_url is None
+    assert feedback.evaluator_source_url is None
+
+
+@pytest.mark.asyncio
+async def test_judge_provider_failure_and_schema_reasons_are_distinct(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    """Transport/timeout causes map to ``judge_transport``, HTTP status
+    causes to ``judge_http``, and unresolved response causes stay
+    ``judge_provider_failure``."""
+    runtime = runtime_config_for("planner")
+    scenarios = [
+        (ProviderTimeoutError("judge timed out"), "judge_transport"),
+        (
+            ProviderResponseError(
+                "connection reset", failure_category="transport"
+            ),
+            "judge_transport",
+        ),
+        (
+            ProviderResponseError(
+                "status 503",
+                failure_category="http",
+                http_status_code=503,
+            ),
+            "judge_http",
+        ),
+        (
+            ProviderResponseError(
+                "unusable response", failure_category="response"
+            ),
+            "judge_provider_failure",
+        ),
+    ]
+    for error, expected in scenarios:
+        provider = FakeStructuredProvider(responses=[error])
+        feedback = await run_judge(
+            provider,
+            clean_target_output,
+            planner_case,
+            clean_gate_report,
+            runtime=runtime,
+            secrets=(),
+        )
+        assert feedback.status == "judge_not_run"
+        assert feedback.not_run_reason == expected
+        assert feedback.judge_quality is None
+        assert feedback.diagnostics == ()

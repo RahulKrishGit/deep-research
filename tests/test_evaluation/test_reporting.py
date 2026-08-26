@@ -217,3 +217,130 @@ def test_writing_an_artifact_creates_missing_parents(
     path = write_experiment_artifact(researcher_experiment_result, root=root)
 
     assert path.is_file()
+
+
+def test_the_artifact_round_trips_judge_urls_and_diagnostics(
+    experiment_result, tmp_path
+) -> None:
+    """The evaluator trace/source URLs and typed diagnostics survive the
+    durable artifact exactly as typed; nothing is flattened or dropped."""
+    from deep_research.evaluation.models import EvaluatorDiagnostic
+
+    judge = experiment_result.cases[0].repetitions[0].judge
+    assert judge is not None
+    judge = judge.model_copy(
+        update={
+            "status": "judge_not_run",
+            "not_run_reason": "judge_output_limit",
+            "verdict": None,
+            "judge_quality": None,
+            "evaluator_trace_url": "https://smith.langchain.com/o/x/r/judge-rt",
+            "evaluator_source_url": "https://smith.langchain.com/o/x/evaluators/1",
+            "diagnostics": (
+                EvaluatorDiagnostic(
+                    kind="output_limit", attempt=1, field_paths=()
+                ),
+            ),
+        }
+    )
+    repetition = experiment_result.cases[0].repetitions[0].model_copy(
+        update={"judge": judge}
+    )
+    case = experiment_result.cases[0].model_copy(
+        update={"repetitions": [repetition]}
+    )
+    result = experiment_result.model_copy(update={"cases": [case]})
+
+    path = write_experiment_artifact(result, root=tmp_path)
+    restored = ExperimentResult.model_validate(
+        json.loads(path.read_text(encoding="utf-8"))
+    )
+
+    assert restored == result
+    restored_judge = restored.cases[0].repetitions[0].judge
+    assert restored_judge is not None
+    assert restored_judge.not_run_reason == "judge_output_limit"
+    assert (
+        restored_judge.evaluator_trace_url
+        == "https://smith.langchain.com/o/x/r/judge-rt"
+    )
+    assert (
+        restored_judge.evaluator_source_url
+        == "https://smith.langchain.com/o/x/evaluators/1"
+    )
+    assert restored_judge.diagnostics == (
+        EvaluatorDiagnostic(kind="output_limit", attempt=1),
+    )
+
+
+def test_the_artifact_keeps_unavailable_source_urls_explicitly_unavailable(
+    researcher_experiment_result, tmp_path
+) -> None:
+    """A judge that never exposed a trace or source URL must serialize the
+    fields as explicit ``null`` -- a missing URL is an infrastructure
+    diagnostic, never evidence that judging passed."""
+    path = write_experiment_artifact(researcher_experiment_result,
+                                     root=tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    judges = [
+        item["judge"]
+        for case in payload["cases"]
+        for item in case["repetitions"]
+    ]
+    assert judges
+    assert all(judge["evaluator_trace_url"] is None for judge in judges)
+    assert all(judge["evaluator_source_url"] is None for judge in judges)
+    assert all(judge["diagnostics"] == [] for judge in judges)
+
+
+def test_verbose_output_renders_safe_judge_diagnostics(
+    judge_not_run_experiment_result,
+) -> None:
+    """Verbose reporting renders only the allow-listed diagnostic fields
+    (kind, attempt, field paths) and the infra trace URL -- never the
+    evaluator input, a prompt, or any provider content."""
+    from deep_research.evaluation.models import EvaluatorDiagnostic
+
+    judge = judge_not_run_experiment_result.cases[0].repetitions[0].judge
+    assert judge is not None
+    diagnosed = judge.model_copy(
+        update={
+            "diagnostics": (
+                EvaluatorDiagnostic(
+                    kind="output_limit", attempt=2, field_paths=()
+                ),
+                EvaluatorDiagnostic(
+                    kind="schema_output",
+                    attempt=1,
+                    field_paths=("scores.completeness",),
+                ),
+            ),
+            "evaluator_trace_url": (
+                "https://smith.langchain.com/o/x/r/judge-diag"
+            ),
+        }
+    )
+    repetition = judge_not_run_experiment_result.cases[0].repetitions[0]
+    repetition = repetition.model_copy(update={"judge": diagnosed})
+    case = judge_not_run_experiment_result.cases[0].model_copy(
+        update={"repetitions": [repetition]}
+    )
+    result = judge_not_run_experiment_result.model_copy(
+        update={"cases": [case]}
+    )
+
+    body = "\n".join(render_experiment(result, verbose=True))
+
+    assert "judge_not_run: no_evaluable_output" in body
+    assert "diagnostic: output_limit attempt=2" in body
+    assert (
+        "diagnostic: schema_output attempt=1 "
+        "fields=scores.completeness" in body
+    )
+    assert (
+        "evaluator_trace_url: https://smith.langchain.com/o/x/r/judge-diag"
+        in body
+    )
+    assert "api_key" not in body.lower()
+    assert "sk-" not in body

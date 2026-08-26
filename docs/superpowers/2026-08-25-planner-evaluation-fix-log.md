@@ -442,3 +442,57 @@ The controller ruled the plan's Files-list silence does not override Interfaces 
 - **Whitespace:** `git diff --check` → exit 0.
 - **Leakage self-review:** test-only change; no production path, telemetry, or serialization touched. No secrets, prompts, provider responses, evaluator inputs, or reasoning content appear. **No live provider or LangSmith call was made.**
 - **Code/review status:** fix-round code and offline verification complete; pending orchestrator-owned Sol/high re-review. The exact commit SHA is recorded in the Task 3 report.
+
+## 19. Task 4 — Judge evaluator diagnostics and URL preservation (2026-08-26)
+
+### Issue and implementation
+
+Task 4 wires the reviewed Task 2 contracts into judging, runner, and reporting from the reviewed Task 2 SHA `0c745b17243b2b8fa5a71d800839974302637611`. Previously the judge path collapsed every typed provider cause into a single `judge_provider_failure`, never populated `JudgeFeedback.evaluator_trace_url`/`evaluator_source_url`, and dropped the safe typed diagnostics a judge failure carries, so a `judge_not_run` row was not actionable.
+
+Implementation is confined to the brief's file list; `src/deep_research/evaluation/models.py` and `tests/test_evaluation/test_models.py` were not touched:
+
+- `src/deep_research/evaluation/judging.py`: `_judge_not_run_reason` now consumes the shared cause-chain classifier and maps typed causes to evaluator-prefixed reasons (`output_limit -> judge_output_limit`, `schema_output -> judge_schema_failure`, `provider_timeout/provider_transport -> judge_transport`, `provider_http -> judge_http`, everything else provider -> `judge_provider_failure`). `_judge_diagnostics` projects only allow-listed records (schema field paths via `SchemaFailureDetails`; output-limit request attempt). The traced judge callback accepts the installed LangSmith `run_tree` injection and captures `run_tree.get_url()` when available (`_run_tree_url`). `JudgeEvaluator`/`build_judge_evaluator` accept a directly supplied `evaluator_source_url` seam; `_not_run`/`_scored` carry URLs and typed diagnostics into the LangSmith metadata; `run_judge` carries diagnostics into `JudgeFeedback`.
+- `src/deep_research/evaluation/runner.py`: `_judge_feedback_from_result` reads `evaluator_trace_url`/`evaluator_source_url` and validated `judge_diagnostics` back into the typed `JudgeFeedback` that `results.json` serializes; malformed records are dropped.
+- `src/deep_research/evaluation/reporting.py`: verbose terminal output renders only the allow-listed diagnostic fields (kind, attempt, normalized field paths) and the infra trace URL.
+- Tests: `tests/test_evaluation/test_judging.py`, `tests/test_evaluation/test_judge_visibility.py`, `tests/test_evaluation/test_runner.py`, `tests/test_evaluation/test_reporting.py`.
+
+**Evaluator URLs present vs unavailable:** the trace URL is present only when the installed LangSmith `traceable` decorator injects a run tree (`run_tree.get_url()` returns a non-empty string). Offline, with tracing disabled, `run_tree` is `None` and the field stays `None`; the fake-trace tests inject a synthetic run tree to prove capture and artifact survival. The evaluator source URL remains unavailable (`None`) in every production path: the installed SDK exposes no evaluator-source URL, and nothing is derived, reconstructed, inferred, or manufactured from any input, prompt, trace, or exception. The only way the source URL can be non-`None` is a URL directly supplied through the new `evaluator_source_url` seam.
+
+**Why no evaluator input or provider content was retained:** diagnostics are typed `EvaluatorDiagnostic` records (stable kind, optional attempt, normalized field paths) produced by the reviewed Task 2 safe projection; URL fields accept only non-empty strings LangSmith directly exposes; not-run comments stay static typed reasons; the runner re-validates diagnostics and drops malformed records; reporting renders only the allow-listed fields. `JudgeInput`, prompts, provider response text, evaluator inputs, secrets, and hidden reasoning never enter serialized models, reports, or trace metadata, and the tests assert provider message text and secrets are absent from evaluator results and artifacts.
+
+### TDD evidence
+
+- **RED command (verbatim from the brief):** `python -m pytest -q tests/test_evaluation/test_judging.py tests/test_evaluation/test_judge_visibility.py tests/test_evaluation/test_runner.py tests/test_evaluation/test_reporting.py -k "diagnostic or url or provider_failure or schema"` -> `14 failed, 7 passed, 77 deselected, 1 warning in 0.77s` (exit 1). The failures were exactly the missing behavior: output-limit/transport/http causes collapsed to `judge_provider_failure`, no diagnostics carried, no run-tree URL capture, no source-URL seam, no runner reconstruction of URLs/diagnostics, and no verbose rendering.
+- **Focused GREEN:** the same command -> `21 passed, 77 deselected, 1 warning in 0.49s`.
+- **Neighboring:** `python -m pytest -q tests/test_evaluation/test_judging.py tests/test_evaluation/test_judge_visibility.py tests/test_evaluation/test_runner.py tests/test_evaluation/test_reporting.py` -> `98 passed, 1 warning in 1.98s`.
+- **Full offline suite:** `python -m pytest -q --basetemp C:\Temp\deep-research-t4-full` -> `1863 passed, 1 deselected, 2 warnings in 13.09s` (exit 0). The Task 2 fix-round-2 baseline was 1847 passed; +16 is the new test count.
+- **Ruff:** `python -m ruff check src tests` -> `All checks passed!` (two auto-fixed `I001` import-sort issues in `runner.py` and `test_runner.py`).
+- **Whitespace:** `git diff --check` -> exit 0.
+
+### Leakage self-review and status
+
+Serialized `JudgeFeedback`/`RepetitionResult`/`ExperimentResult` models, the LangSmith feedback metadata blocks, and terminal reports contain only typed diagnostics, URL strings directly exposed by the integration, and static not-run reasons. A spot check of a written `results.json` artifact confirmed the trace URL survives, the source URL serializes as explicit `null`, the typed diagnostic survives, and no `JudgeInput`, secret, prompt-content, provider-response, or chain-of-thought marker appears. No live provider or LangSmith call was made in this task; the focused 8192 experiment remains gated on immediate human confirmation per the campaign rules.
+
+**Code/review status:** Task 4 implementation, tests, and self-review are complete at the reviewed Task 2 SHA (production/test writes per Luna/max). The exact Task 4 commit SHA is recorded in the handoff report. Sol/high review is the orchestrator's gate; no external review result is claimed here.
+
+## 20. Task 4 fix round 1/5 — Per-invocation judge trace URL capture (2026-08-26)
+
+### Finding and root cause
+
+The Sol/high Task 4 review found one Important finding (everything else approved): the evaluator trace URL was captured on a shared instance field, `JudgeEvaluator._last_trace_url`, which races under the harness's own concurrency settings. One `JudgeEvaluator` is instantiated per case identity and invoked once per repetition row under `aevaluate(..., num_repetitions=runtime.repetitions, max_concurrency=runtime.max_concurrency)` with `max_concurrency` an explicit config knob. With `max_concurrency > 1` and `repetitions > 1`, two `__call__`s for the same case interleave at the awaited `_invoke_judge` provider call: the second invocation's reset could wipe the first's captured URL, or its write could overwrite it, so the first reads the other repetition's URL (or `None`) — silently misattributing or dropping the very provenance diagnostic this task adds.
+
+**Fix:** the shared field was removed and replaced with a module-level `contextvars.ContextVar` (`_JUDGE_TRACE_URL`) written by the traced judge callback and read by the surrounding `__call__`. Asyncio tasks are context-isolated, so concurrent invocations of the same evaluator cannot reset or overwrite each other's captured URL; the per-invocation value is cleared at the start of each invocation and read back after the awaited call on both the scored and the not-run path. Only `src/deep_research/evaluation/judging.py` and `tests/test_evaluation/test_judge_visibility.py` changed; `models.py`, `test_models.py`, and the shared taxonomy were not touched.
+
+### Strict RED/GREEN evidence
+
+- **RED command:** `python -m pytest -q tests/test_evaluation/test_judge_visibility.py -k "url or concurrent" --basetemp C:\Temp\deep-research-t4-fr1-red` -> `1 failed, 3 passed, 14 deselected, 1 warning in 0.41s` (exit 1). The new regression `test_concurrent_judge_invocations_keep_their_own_trace_urls` failed deterministically with the exact misattribution: the first concurrent invocation's feedback carried `...-judge-concurrent-b` (the second invocation's URL) instead of `...-judge-concurrent-a`. The regression parks invocation A at a gate after it captures its URL, then runs invocation B to completion before releasing A, forcing the field race the review described.
+- **GREEN command:** the same command -> `4 passed, 14 deselected, 1 warning in 0.06s`.
+
+### Verification evidence
+
+- **Neighboring:** `python -m pytest -q tests/test_evaluation/test_judging.py tests/test_evaluation/test_judge_visibility.py tests/test_evaluation/test_runner.py tests/test_evaluation/test_reporting.py --basetemp C:\Temp\deep-research-t4-fr1-neighbor` -> `99 passed, 1 warning in 1.86s`.
+- **Full tracked suite:** `python -m pytest -q --rootdir <worktree> --basetemp C:\Temp\deep-research-t4-fr1-full -p no:cacheprovider` -> `1864 passed, 1 deselected, 2 warnings in 10.73s` (exit 0; the Task 4 baseline 1863 plus the one new concurrency regression).
+- **Ruff:** `python -m ruff check src tests` -> `All checks passed!`.
+- **Whitespace:** `git diff --check` -> exit 0.
+
+No live provider or LangSmith call was made in this fix round; the focused 8192 experiment remains gated on immediate human confirmation. The changed production path still retains only URL strings and typed diagnostics; the regression test uses synthetic `smith.langchain.com` URLs and asserts no misattribution. The exact fix-round commit SHA is recorded in the handoff report.
