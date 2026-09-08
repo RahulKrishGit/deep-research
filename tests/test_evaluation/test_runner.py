@@ -7,9 +7,15 @@ from uuid import UUID
 import pytest
 
 from deep_research.evaluation.cli import _focused_dataset_examples
-from deep_research.evaluation.models import EvaluationFailure, GateReport, GateResult
+from deep_research.evaluation.models import (
+    EvaluationFailure,
+    EvaluatorDiagnostic,
+    GateReport,
+    GateResult,
+)
 from deep_research.evaluation.runner import (
     PreflightError,
+    _judge_feedback_from_result,
     aggregate_quality,
     build_case_result,
     build_evaluation_status_values,
@@ -992,4 +998,132 @@ async def test_the_artifact_is_written_and_revalidates(
         "evaluation_status" not in repr(row["feedback"])
         and "evaluation_failure_reason" not in repr(row["feedback"])
         for row in runner.rows
+    )
+
+
+def _judge_not_run_payload(
+    *,
+    reason: str,
+    metadata: dict,
+) -> dict:
+    """A LangSmith-shaped judge evaluator result for one not-run row."""
+    return {
+        "results": [
+            {
+                "key": "judge_status",
+                "value": "judge_not_run",
+                "comment": reason,
+                "metadata": {
+                    "prompt_id": "individual-agent-judge",
+                    "rubric_version": 1,
+                    "prompt_fingerprint": "abc123abc123",
+                    "judge_model": "gpt-5.6-luna",
+                    "judge_configuration_fingerprint": "def456def456",
+                    **metadata,
+                },
+            }
+        ]
+    }
+
+
+def test_judge_feedback_from_result_carries_evaluator_urls_and_diagnostics(
+    runtime_config_for,
+) -> None:
+    """The runner turns the evaluator's LangSmith-shaped result back into
+    the typed ``JudgeFeedback`` the local artifact needs; the evaluator
+    URLs and safe diagnostics must survive that reconstruction."""
+    trace_url = "https://smith.langchain.com/o/x/r/judge-1"
+    payload = _judge_not_run_payload(
+        reason="judge_output_limit",
+        metadata={
+            "evaluator_trace_url": trace_url,
+            "judge_diagnostics": [
+                {"kind": "output_limit", "attempt": 1, "field_paths": []}
+            ],
+        },
+    )
+
+    feedback = _judge_feedback_from_result(
+        payload, runtime=runtime_config_for("planner")
+    )
+
+    assert feedback.status == "judge_not_run"
+    assert feedback.not_run_reason == "judge_output_limit"
+    assert feedback.evaluator_trace_url == trace_url
+    assert feedback.evaluator_source_url is None
+    assert feedback.diagnostics == (
+        EvaluatorDiagnostic(kind="output_limit", attempt=1),
+    )
+    assert feedback.judge_quality is None
+
+
+def test_judge_feedback_from_result_keeps_the_scored_trace_url(
+    runtime_config_for,
+) -> None:
+    """A scored row's evaluator trace URL also survives reconstruction."""
+    trace_url = "https://smith.langchain.com/o/x/r/judge-2"
+    common = {
+        name: {"key": f"judge:{name}", "score": 0.9, "comment": ""}
+        for name in (
+            "role_adherence",
+            "completeness",
+            "groundedness",
+            "reasoning_quality",
+            "usefulness",
+            "uncertainty_calibration",
+        )
+    }
+    payload = {
+        "results": [
+            {
+                "key": "judge_quality",
+                "score": 0.9,
+                "comment": "Clear and grounded.",
+                "metadata": {
+                    "prompt_id": "individual-agent-judge",
+                    "rubric_version": 1,
+                    "prompt_fingerprint": "abc123abc123",
+                    "judge_model": "gpt-5.6-luna",
+                    "judge_configuration_fingerprint": "def456def456",
+                    "evaluator_trace_url": trace_url,
+                },
+            },
+            *common.values(),
+            {"key": "judge_status", "value": "scored", "comment": ""},
+        ]
+    }
+
+    feedback = _judge_feedback_from_result(
+        payload, runtime=runtime_config_for("planner")
+    )
+
+    assert feedback.status == "scored"
+    assert feedback.evaluator_trace_url == trace_url
+    assert feedback.evaluator_source_url is None
+    assert feedback.diagnostics == ()
+
+
+def test_judge_feedback_from_result_drops_malformed_diagnostics(
+    runtime_config_for,
+) -> None:
+    """An unknown diagnostic kind is dropped rather than allowed to break
+    the artifact reconstruction or carry provider-controlled text."""
+    payload = _judge_not_run_payload(
+        reason="judge_schema_failure",
+        metadata={
+            "judge_diagnostics": [
+                {"kind": "schema_output", "attempt": 1, "field_paths": []},
+                {"kind": "not-a-real-kind", "attempt": 1},
+                {"kind": "output_limit", "attempt": 0},
+            ]
+        },
+    )
+
+    feedback = _judge_feedback_from_result(
+        payload, runtime=runtime_config_for("planner")
+    )
+
+    assert feedback.not_run_reason == "judge_schema_failure"
+    assert feedback.diagnostics == (
+        EvaluatorDiagnostic(kind="schema_output", attempt=1),
     )

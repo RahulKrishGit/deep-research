@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.errors import PlanningError
 from deep_research.evaluation.models import TargetOutput
 from deep_research.evaluation.targets import (
     TRACE_TAG,
     RepetitionCounter,
+    _classify_failure,
     build_target,  # noqa: F401 - imported to assert the module's public surface
     correlation_metadata,
     trace_tags,
+)
+from deep_research.observability import TokenUsage
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
 )
 
 
@@ -30,6 +37,24 @@ def test_the_counter_numbers_repetitions_per_case_from_one() -> None:
     assert counter.next("a") == 2
     assert counter.next("a") == 3
     assert counter.next("b") == 2
+
+
+def test_target_classifier_preserves_output_limit_through_planner_wrapper() -> None:
+    cause = ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=4, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
+    try:
+        raise PlanningError("The planner operation failed") from cause
+    except PlanningError as error:
+        stage, reason = _classify_failure(error)
+
+    assert (stage, reason) == ("provider", "output_limit")
+    assert "reach" not in reason
 
 
 def test_every_trace_carries_the_tags_the_spec_lists(

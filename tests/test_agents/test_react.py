@@ -10,8 +10,13 @@ import pytest
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.steps import ReActDecision, ReActStep
 from deep_research.agents.toolset import AgentToolset
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderTimeoutError, StructuredOutputError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
+    ProviderTimeoutError,
+    StructuredOutputError,
+)
 from tests.agent_fakes import (
     BoomTool,
     EchoTool,
@@ -470,48 +475,72 @@ async def test_wrong_tool_arguments_surface_as_a_failed_tool_result(
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_stops_the_loop_without_raising(
+async def test_provider_failure_is_reraised_after_recording_a_safe_event(
     tracker: Tracker,
 ) -> None:
+    provider_error = ProviderTimeoutError("OpenAI request timed out")
     async with agent_scope(tracker):
-        run = await run_react_loop(
-            agent_name="researcher",
-            tracker=tracker,
-            tools=_toolset(tracker, "echo"),
-            decide=_raiser(ProviderTimeoutError("OpenAI request timed out")),
-            max_iterations=4,
-            tool_budget=5,
-        )
+        with pytest.raises(ProviderTimeoutError) as caught:
+            await run_react_loop(
+                agent_name="researcher",
+                tracker=tracker,
+                tools=_toolset(tracker, "echo"),
+                decide=_raiser(provider_error),
+                max_iterations=4,
+                tool_budget=5,
+            )
 
-    assert run.stop_reason == "provider_error"
-    assert run.succeeded is False
-    assert run.steps == []
-    assert run.iterations == 1
-    error = run.errors[0]
-    assert error.error_type == "agent_provider_error"
-    assert error.recoverable is False
-    assert error.details == {
-        "iteration": 1,
-        "exception_type": "ProviderTimeoutError",
-    }
-    assert "timed out" not in error.model_dump_json()
+    assert caught.value is provider_error
 
 
 @pytest.mark.asyncio
-async def test_unrepairable_agent_output_stops_the_loop(tracker: Tracker) -> None:
+async def test_unrepairable_agent_output_is_reraised(tracker: Tracker) -> None:
     """`complete_structured` already made its one repair attempt."""
     async with agent_scope(tracker):
-        run = await run_react_loop(
-            agent_name="researcher",
-            tracker=tracker,
-            tools=_toolset(tracker, "echo"),
-            decide=_raiser(StructuredOutputError("still invalid")),
-            max_iterations=4,
-            tool_budget=5,
-        )
+        with pytest.raises(StructuredOutputError):
+            await run_react_loop(
+                agent_name="researcher",
+                tracker=tracker,
+                tools=_toolset(tracker, "echo"),
+                decide=_raiser(StructuredOutputError("still invalid")),
+                max_iterations=4,
+                tool_budget=5,
+            )
 
-    assert run.stop_reason == "provider_error"
-    assert run.errors[0].details["exception_type"] == "StructuredOutputError"
+
+@pytest.mark.asyncio
+async def test_provider_decision_records_safe_event_and_reraises_original_error(
+    tracker: Tracker,
+) -> None:
+    provider_error = ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=4, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
+
+    async with agent_scope(tracker):
+        with pytest.raises(ProviderOutputLimitError) as caught:
+            await run_react_loop(
+                agent_name="planner",
+                tracker=tracker,
+                tools=_toolset(tracker, "echo"),
+                decide=_raiser(provider_error),
+                max_iterations=4,
+                tool_budget=5,
+            )
+
+    assert caught.value is provider_error
+    provider_events = [
+        event
+        for event in tracker.events
+        if event.event_type == "agent.provider_failure"
+    ]
+    assert len(provider_events) == 1
+    assert provider_events[0].metadata == {"iteration": 1}
+    assert "4096" not in provider_events[0].model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -622,14 +651,15 @@ async def test_a_failed_iteration_span_records_the_provider_error_type(
     tracker: Tracker,
 ) -> None:
     async with agent_scope(tracker):
-        await run_react_loop(
-            agent_name="researcher",
-            tracker=tracker,
-            tools=_toolset(tracker, "echo"),
-            decide=_raiser(ProviderTimeoutError("boom")),
-            max_iterations=2,
-            tool_budget=5,
-        )
+        with pytest.raises(ProviderTimeoutError):
+            await run_react_loop(
+                agent_name="researcher",
+                tracker=tracker,
+                tools=_toolset(tracker, "echo"),
+                decide=_raiser(ProviderTimeoutError("boom")),
+                max_iterations=2,
+                tool_budget=5,
+            )
 
     metric = next(
         metric

@@ -67,6 +67,8 @@ class LLMConfig(BaseModel):
     )
     timeout: float = Field(default=60.0, gt=0)
     retry_count: int = Field(default=2, ge=0)
+    retry_initial_delay: float = Field(default=1.0, ge=0)
+    retry_max_delay: float = Field(default=16.0, ge=0)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1)
 
@@ -158,6 +160,10 @@ class AgentRuntimeConfig(BaseModel):
 
     ``tool_budget`` may be zero: an agent with no tools still gets to think
     and finish, it just may never call one.
+
+    ``planner_final_max_tokens`` is the operation-specific output budget for
+    the planner's final ``ResearchPlanDraft`` request only; ReAct decisions
+    and judge calls keep the global ``llm.max_tokens`` cap.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -166,6 +172,7 @@ class AgentRuntimeConfig(BaseModel):
     tool_budget: int = Field(default=10, ge=0)
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
+    planner_final_max_tokens: int = Field(default=4096, ge=1)
 
 
 class GraphConfig(BaseModel):
@@ -290,6 +297,8 @@ _ENVIRONMENT_OVERRIDES = {
     "LLM_EMBEDDING_MODEL": ("llm", "embedding_model"),
     "LLM_TIMEOUT": ("llm", "timeout"),
     "LLM_RETRY_COUNT": ("llm", "retry_count"),
+    "LLM_RETRY_INITIAL_DELAY": ("llm", "retry_initial_delay"),
+    "LLM_RETRY_MAX_DELAY": ("llm", "retry_max_delay"),
     "LLM_TEMPERATURE": ("llm", "temperature"),
     "LLM_MAX_TOKENS": ("llm", "max_tokens"),
     "LANGSMITH_TRACING": ("langsmith", "tracing_enabled"),
@@ -308,6 +317,10 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_TOOL_BUDGET": ("agents", "tool_budget"),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
+    "AGENTS_PLANNER_FINAL_MAX_TOKENS": (
+        "agents",
+        "planner_final_max_tokens",
+    ),
     "GRAPH_MAX_ITERATIONS": ("graph", "max_iterations"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),
     "OUTPUT_DIRECTORY": ("output", "directory"),

@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, JsonValue, ValidationError
+from pydantic import BaseModel, JsonValue
 
 from deep_research.evaluation.cases import UnknownCaseError, case_by_identity
 from deep_research.evaluation.config import (
@@ -29,10 +29,15 @@ from deep_research.evaluation.factory import (
     build_evaluation_agent,
     evaluation_session_id,
 )
+from deep_research.evaluation.failure_taxonomy import (
+    classify_failure,
+    safe_failure_details,
+)
 from deep_research.evaluation.models import (
     AgentName,
     EvaluationCase,
     EvaluationFailure,
+    EvaluationFailureDetails,
     EvaluationTier,
     EvidenceContext,
     FailureStage,
@@ -41,8 +46,6 @@ from deep_research.evaluation.models import (
     TrajectoryStep,
 )
 from deep_research.observability import ToolMetric, Tracker
-from deep_research.providers import OpenAIProviderError
-from deep_research.tools.base import ToolExecutionError
 from deep_research.utils.config import ConfigSettings
 
 TRACE_TAG = "evaluation"
@@ -159,18 +162,32 @@ def _classify_failure(error: BaseException) -> tuple[FailureStage, str]:
     via ``raise ... from error``); the classification must see through that
     wrapping to still report the real stage.
     """
-    candidate: BaseException | None = error
-    seen: set[int] = set()
-    while candidate is not None and id(candidate) not in seen:
-        seen.add(id(candidate))
-        if isinstance(candidate, OpenAIProviderError):
-            return "provider", "provider_failure"
-        if isinstance(candidate, ToolExecutionError):
-            return "tool", "tool_failure"
-        if isinstance(candidate, ValidationError):
-            return "validation", "validation_failure"
-        candidate = candidate.__cause__
-    return "unhandled", "unhandled_failure"
+    result = classify_failure(error)
+    return result.stage, result.reason
+
+
+def _safe_failure_message(stage: FailureStage, reason: str) -> str:
+    """Return a static artifact message, never an exception rendering."""
+    messages = {
+        "output_limit": "The provider response reached its configured output limit.",
+        "schema_output": (
+            "The provider returned structured output that did not match the requested "
+            "schema."
+        ),
+        "provider_timeout": "The provider request timed out.",
+        "provider_rate_limit": "The provider request was rate limited.",
+        "provider_transport": "The provider transport failed.",
+        "provider_http": "The provider returned an HTTP error.",
+        "provider_response": "The provider returned an unusable response.",
+        "provider_failure": "The provider operation failed.",
+        "tool_failure": "A tool operation failed.",
+        "validation_failure": "Validation failed.",
+        "unhandled_failure": "The evaluation operation failed unexpectedly.",
+    }
+    return messages.get(
+        reason,
+        f"The evaluation {stage} operation failed.",
+    )
 
 
 def _observed_real_services(
@@ -209,6 +226,7 @@ def _minimal_output(
     reason: str,
     message: str,
     exception_type: str | None,
+    details: EvaluationFailureDetails | None = None,
     trace_url: str | None = None,
 ) -> TargetOutput:
     return TargetOutput(
@@ -226,6 +244,7 @@ def _minimal_output(
             reason=reason,
             message=message,
             exception_type=exception_type,
+            details=details,
         ),
         result=None,
         target_model_requested=target_model,
@@ -321,7 +340,7 @@ def build_target(
                 target_reasoning_effort=runtime.target_reasoning_effort,
                 stage="unhandled",
                 reason="unhandled_failure",
-                message=str(error) or type(error).__name__,
+                message=_safe_failure_message("unhandled", "unhandled_failure"),
                 exception_type=type(error).__name__,
             )
             return _finish(output, secrets)
@@ -349,9 +368,7 @@ def build_target(
                 target_reasoning_effort=runtime.target_reasoning_effort,
                 stage="setup",
                 reason="unknown_case",
-                message=redact_secrets(  # type: ignore[arg-type]
-                    str(error) or type(error).__name__, secrets
-                ),
+                message="The requested evaluation case is not registered.",
                 exception_type=type(error).__name__,
             )
             return _finish(output, secrets)
@@ -379,10 +396,9 @@ def build_target(
                 target_reasoning_effort=runtime.target_reasoning_effort,
                 stage=stage,
                 reason=reason,
-                message=redact_secrets(  # type: ignore[arg-type]
-                    str(error) or type(error).__name__, secrets
-                ),
+                message=_safe_failure_message(stage, reason),
                 exception_type=type(error).__name__,
+                details=safe_failure_details(error),
                 trace_url=trace_url,
             )
             return _finish(output, secrets)

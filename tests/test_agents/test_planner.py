@@ -20,8 +20,12 @@ from deep_research.agents.planner import (
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderTimeoutError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
+    ProviderTimeoutError,
+)
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Finding,
@@ -278,6 +282,7 @@ def _planner(
     *,
     search: FakeSearchClient | None = None,
     memory: FakeMemory | None = None,
+    config: AgentRuntimeConfig | None = None,
 ) -> PlannerAgent:
     return PlannerAgent(
         provider=completer,
@@ -286,7 +291,7 @@ def _planner(
             session_id="session-1", agent_name="planner", max_entries=20
         ),
         tools=planner_tools(tracker, search=search, memory=memory),
-        config=AgentRuntimeConfig(max_iterations=3, tool_budget=3),
+        config=config or AgentRuntimeConfig(max_iterations=3, tool_budget=3),
     )
 
 
@@ -346,6 +351,148 @@ async def test_the_planner_turns_a_question_into_a_validated_plan(
     ]
     assert outcome.state_update["sub_topics"] == outcome.result.sub_topics
     assert outcome.state_update["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_react_decision_requests_carry_no_max_tokens_override(
+    tracker: Tracker,
+) -> None:
+    """ReAct decisions never receive the planner-final budget override."""
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
+            finish("I understand the question.", "Three angles matter."),
+        ],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "ReActDecision",
+        "ReActDecision",
+        "ResearchPlanDraft",
+    ]
+    assert completer.budgets == [None, None, 4096]
+
+
+@pytest.mark.asyncio
+async def test_only_final_plan_requests_use_the_planner_final_budget(
+    tracker: Tracker,
+) -> None:
+    """A raised planner-final budget reaches only ``ResearchPlanDraft``."""
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
+            finish("I understand the question.", "Three angles matter."),
+        ],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            planner_final_max_tokens=8192,
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_state())
+
+    assert completer.budgets == [None, None, 8192]
+
+
+@pytest.mark.asyncio
+async def test_repair_plan_requests_also_use_the_planner_final_budget(
+    tracker: Tracker,
+) -> None:
+    """Both plan drafts — initial and repair — carry the final budget."""
+    redundant = ResearchPlanDraft(
+        sub_topics=[
+            _draft("Cryptography", priority=1),
+            _draft("cryptography", priority=2),
+        ]
+    )
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            redundant,
+            _plan("Cryptography", "Hardware timelines", "Mitigations"),
+        ],
+    )
+    agent = _planner(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            planner_final_max_tokens=8192,
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.result.repair_attempted is True
+    assert completer.budgets == [None, 8192, 8192]
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+            structured_attempt=1,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_planner_preserves_react_provider_cause_with_operation_context(
+    tracker: Tracker,
+) -> None:
+    provider_error = _output_limit_error()
+    agent = _planner(
+        tracker,
+        ScriptedCompleter(decisions=[provider_error]),
+    )
+
+    with pytest.raises(PlanningError) as caught:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert caught.value.__cause__ is provider_error
+    assert "reach" not in str(caught.value).casefold()
+    assert "scop" in str(caught.value).casefold()
+
+
+@pytest.mark.asyncio
+async def test_planner_preserves_final_plan_provider_cause_without_reachability_wording(
+    tracker: Tracker,
+) -> None:
+    provider_error = _output_limit_error()
+    agent = _planner(
+        tracker,
+        ScriptedCompleter(
+            decisions=[finish("No lookup needed.", "Three angles matter.")],
+            outputs=[provider_error],
+        ),
+    )
+
+    with pytest.raises(PlanningError) as caught:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert caught.value.__cause__ is provider_error
+    assert "reach" not in str(caught.value).casefold()
+    assert "plan" in str(caught.value).casefold()
 
 
 @pytest.mark.asyncio
@@ -552,3 +699,84 @@ async def test_document_reader_succeeds_through_research_tools_defaults(
     assert result.data["format"] == "json"
     assert result.data["chunks"] != []
     assert result.data["failures"] == []
+
+
+@pytest.mark.asyncio
+async def test_planner_regression_finish_decision_with_empty_tool_name_completes(
+    tracker: Tracker,
+) -> None:
+    finish_with_empty_tool_name = finish(
+        "I understand the question.", "Three angles matter."
+    ).model_copy(update={"tool_name": ""})
+    completer = ScriptedCompleter(
+        decisions=[finish_with_empty_tool_name],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.steps[-1].tool_name is None
+    assert outcome.react.steps[-1].final_answer == "Three angles matter."
+
+
+@pytest.mark.asyncio
+async def test_planner_regression_tool_decision_with_empty_final_answer_completes(
+    tracker: Tracker,
+) -> None:
+    tool_with_empty_final_answer = use_tool(
+        "Recall prior work.", "query_memory", '{"query": "quantum"}'
+    ).model_copy(update={"final_answer": ""})
+    completer = ScriptedCompleter(
+        decisions=[
+            tool_with_empty_final_answer,
+            finish("I understand the question.", "Three angles matter."),
+        ],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.steps[0].final_answer is None
+    assert outcome.react.steps[0].tool_name == "query_memory"
+
+
+def test_planner_regression_system_prompt_forbids_search_when_terms_are_familiar(
+    tracker: Tracker,
+) -> None:
+    agent = _planner(tracker, ScriptedCompleter())
+    prompt = agent.system_prompt(
+        AgentTask(
+            instruction=(
+                "What evidence supports intermittent fasting for "
+                "metabolic health?"
+            )
+        )
+    )
+    assert "every term in the research question is familiar" in prompt
+    assert "finish without searching" in prompt
+
+
+def test_planner_regression_plan_instruction_requires_priority_order() -> None:
+    task = AgentTask(instruction="Some research question.")
+    messages = plan_messages(task, _run())
+    rendered = " ".join(message.content for message in messages)
+    assert "priority order" in rendered
+    assert "most important first" in rendered
+
+
+def test_planner_regression_plan_instruction_requires_balanced_wording() -> None:
+    task = AgentTask(instruction="Some research question.")
+    messages = plan_messages(task, _run())
+    rendered = " ".join(message.content for message in messages)
+    assert "benefits" in rendered
+    assert "risks" in rendered
+    assert "capitalized word" in rendered
+    assert "lowercase" in rendered

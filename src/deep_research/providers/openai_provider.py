@@ -26,9 +26,23 @@ from deep_research.providers.contracts import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
+from deep_research.providers.retry import with_retries
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
+
+
+def _resolve_max_tokens(global_cap: int, override: int | None) -> int:
+    """Resolve one request's output budget: the global cap unless overridden.
+
+    A per-call override applies to that request field only and must be a
+    positive integer; anything else is rejected before the SDK is touched.
+    """
+    if override is None:
+        return global_cap
+    if override < 1:
+        raise ValueError("max_tokens must be a positive integer when provided")
+    return override
 
 _openai_sdk: SimpleNamespace | None = None
 
@@ -73,7 +87,9 @@ def _build_client(
     return _openai_errors().AsyncOpenAI(
         api_key=resolved_key,
         timeout=config.timeout,
-        max_retries=config.retry_count,
+        # SDK retries are disabled: the repo-owned retry policy in
+        # providers/retry.py owns the retry count and backoff.
+        max_retries=0,
     )
 
 
@@ -123,10 +139,18 @@ def _raise_provider_error(error: Exception) -> None:
     if isinstance(error, sdk.RateLimitError):
         raise ProviderRateLimitError("OpenAI rate limit exceeded") from error
     if isinstance(error, sdk.APIConnectionError):
-        raise ProviderResponseError("OpenAI connection failed") from error
-    if isinstance(error, sdk.APIStatusError):
         raise ProviderResponseError(
-            f"OpenAI request failed with status {error.status_code}"
+            "OpenAI connection failed",
+            retryable=True,
+            failure_category="transport",
+        ) from error
+    if isinstance(error, sdk.APIStatusError):
+        status = error.status_code
+        raise ProviderResponseError(
+            f"OpenAI request failed with status {status}",
+            retryable=status >= 500 or status in (408, 409),
+            failure_category="http",
+            http_status_code=status,
         ) from error
     raise error
 
@@ -214,19 +238,30 @@ class OpenAIChatProvider:
                 },
             ) as span:
                 _sdk = _openai_errors()
-                try:
-                    response = await self._client.responses.create(
-                        **{**request, "input": payload}
-                    )
-                except (
-                    _sdk.APITimeoutError,
-                    _sdk.RateLimitError,
-                    _sdk.APIConnectionError,
-                    _sdk.APIStatusError,
-                ) as error:
-                    _raise_provider_error(error)
-                except _sdk.OpenAIError as error:
-                    raise ProviderResponseError("OpenAI chat request failed") from error
+
+                async def _request() -> Any:
+                    try:
+                        return await self._client.responses.create(
+                            **{**request, "input": payload}
+                        )
+                    except (
+                        _sdk.APITimeoutError,
+                        _sdk.RateLimitError,
+                        _sdk.APIConnectionError,
+                        _sdk.APIStatusError,
+                    ) as error:
+                        _raise_provider_error(error)
+                    except _sdk.OpenAIError as error:
+                        raise ProviderResponseError(
+                            "OpenAI chat request failed"
+                        ) from error
+
+                response = await with_retries(
+                    _request,
+                    retry_count=self._config.retry_count,
+                    initial_delay=self._config.retry_initial_delay,
+                    max_delay=self._config.retry_max_delay,
+                )
                 output_text = getattr(response, "output_text", None)
                 if not isinstance(output_text, str):
                     raise ProviderResponseError(
@@ -267,25 +302,34 @@ class OpenAIChatProvider:
             },
         ) as span:
             _sdk = _openai_errors()
-            try:
-                response = await self._client.responses.parse(
-                    **{**request, "input": payload, "text_format": schema}
-                )
-            except (
-                _sdk.APITimeoutError,
-                _sdk.RateLimitError,
-                _sdk.APIConnectionError,
-                _sdk.APIStatusError,
-            ) as error:
-                _raise_provider_error(error)
-            except _sdk.OpenAIError as error:
-                raise ProviderResponseError(
-                    "OpenAI structured output request failed"
-                ) from error
-            except ValidationError as error:
-                raise _StructuredValidationFailure(
-                    schema.__name__, str(error)
-                ) from error
+
+            async def _request() -> Any:
+                try:
+                    return await self._client.responses.parse(
+                        **{**request, "input": payload, "text_format": schema}
+                    )
+                except (
+                    _sdk.APITimeoutError,
+                    _sdk.RateLimitError,
+                    _sdk.APIConnectionError,
+                    _sdk.APIStatusError,
+                ) as error:
+                    _raise_provider_error(error)
+                except _sdk.OpenAIError as error:
+                    raise ProviderResponseError(
+                        "OpenAI structured output request failed"
+                    ) from error
+                except ValidationError as error:
+                    raise _StructuredValidationFailure(
+                        schema.__name__, str(error)
+                    ) from error
+
+            response = await with_retries(
+                _request,
+                retry_count=self._config.retry_count,
+                initial_delay=self._config.retry_initial_delay,
+                max_delay=self._config.retry_max_delay,
+            )
             usage = _usage_from_response(response)
             _set_span_result(span, response, usage)
             parsed = getattr(response, "output_parsed", None)
@@ -302,10 +346,15 @@ class OpenAIChatProvider:
         schema: type[SchemaT],
         *,
         agent_name: str | None = None,
+        max_tokens: int | None = None,
     ) -> SchemaT:
         if not messages:
             raise ValueError("messages must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(
+            self._config.max_tokens, max_tokens
+        )
         effective, request, metadata = self._request_options(agent_name)
+        request = {**request, "max_output_tokens": resolved_max_tokens}
         current_messages = list(messages)
 
         for attempt in (1, 2):

@@ -172,7 +172,7 @@ MetricFactory: TypeAlias = Callable[
 
 
 class TokenUsage(BaseModel):
-    model_config = ConfigDict(extra="forbid", validate_default=True)
+    model_config = ConfigDict(extra="forbid", validate_default=True, frozen=True)
 
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
@@ -182,7 +182,7 @@ class TokenUsage(BaseModel):
     def populate_or_validate_total(self) -> "TokenUsage":
         expected = self.input_tokens + self.output_tokens
         if self.total_tokens is None:
-            self.total_tokens = expected
+            object.__setattr__(self, "total_tokens", expected)
         elif self.total_tokens != expected:
             raise ValueError("total_tokens must equal input_tokens + output_tokens")
         return self

@@ -11,14 +11,15 @@ domain rules locally where their failures can be turned into a repair prompt.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from pydantic import Field, ValidationError
 
-from deep_research.agents.base import AgentRun, BaseAgent
-from deep_research.agents.errors import PlanningError
+from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
+from deep_research.agents.errors import PlanningError, planning_provider_error
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import AgentTask, render_memory_guidance
-from deep_research.agents.steps import ReActRun, summarize_text
+from deep_research.agents.steps import ReActDecision, ReActRun, summarize_text
 from deep_research.agents.validation import _invalid_fields
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.utils.types import (
@@ -41,6 +42,8 @@ PLANNER_SYSTEM_PROMPT = (
     "Use query_memory to recall what previous sessions already learned. Use "
     "web_search only to scope unfamiliar terminology — a later agent "
     "gathers the evidence, so do not research the question here.\n"
+    "If every term in the research question is familiar to you, finish "
+    "without searching.\n"
     "Finish as soon as you understand the shape of the question."
 )
 
@@ -52,6 +55,13 @@ PLAN_INSTRUCTION = (
     "is necessary, at least one concrete web search query, at least one "
     "success criterion describing what evidence would settle it, and a "
     "priority where 1 is the most important.\n"
+    "List the sub-topics in priority order, most important first.\n"
+    "When the question concerns a technology or intervention, ensure the "
+    "plan explicitly covers both benefits and risks (or harms) in the "
+    "subtopic titles or search queries.\n"
+    "Do not introduce any capitalized word or four-digit year in titles or "
+    "queries that the research question does not itself contain; write "
+    "queries in lowercase except for words already in the question.\n"
     "Two sub-topics must never share a title."
 )
 
@@ -229,6 +239,45 @@ def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent
     )
 
 
+class _DecisionNormalizingCompleter(StructuredCompleter):
+    """Serve structured responses, normalizing empty optional ReActDecision fields.
+
+    The model sometimes emits ``""`` for the optional field it is not using
+    (``tool_name`` on finish decisions, ``final_answer`` on tool decisions).
+    ``ReActDecision`` accepts those empty strings, but ``ReActStep`` requires
+    ``min_length=1``, so the shared loop would crash building the step. The
+    planner is the only agent this campaign may change, so normalization lives
+    here instead of in the shared loop; every other schema, including
+    ``ResearchPlanDraft``, passes through untouched.
+    """
+
+    def __init__(self, inner: StructuredCompleter) -> None:
+        self._inner = inner
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[Any],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> Any:
+        result = await self._inner.complete_structured(
+            messages,
+            schema,
+            agent_name=agent_name,
+            max_tokens=max_tokens,
+        )
+        if schema is ReActDecision and isinstance(result, ReActDecision):
+            return result.model_copy(
+                update={
+                    "tool_name": result.tool_name or None,
+                    "final_answer": result.final_answer or None,
+                }
+            )
+        return result
+
+
 class PlannerAgent(BaseAgent[ResearchPlan]):
     """Convert ``original_question`` into 3-7 distinct, prioritized sub-topics.
 
@@ -240,6 +289,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     name = PLANNER_NAME
     description = "Turn a research question into a validated research plan."
     allowed_tools = ("query_memory", "web_search")
+    preserve_provider_errors = True
 
     @property
     def output_schema(self) -> type[ResearchPlan]:
@@ -274,13 +324,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 plan_messages(task, run, repair=repair),
                 ResearchPlanDraft,
                 agent_name=self.name,
+                max_tokens=self.config.planner_final_max_tokens,
             )
         except ProviderError as error:
-            raise PlanningError(
-                "The planner could not reach the model provider while a "
-                "plan was requested.",
-                problems=["the model provider failed while the plan was requested"],
-            ) from error
+            raise planning_provider_error("plan_draft") from error
         return validate_plan_draft(draft)
 
     async def finalize(
@@ -290,12 +337,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     ) -> ResearchPlan | None:
         """Request a plan, repair it at most once, or fail the session."""
         if not run.succeeded:
-            raise PlanningError(
-                "The planner could not reach the model provider.",
-                problems=[
-                    "the model provider failed before a plan was requested"
-                ],
-            )
+            raise planning_provider_error("react_loop")
 
         sub_topics, problems = await self._request_plan(task, run)
         if not problems:
@@ -323,12 +365,29 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         return update
 
     async def run(self, state: ResearchState) -> AgentRun[ResearchPlan]:
-        """Run the inherited loop, bracketed by planning progress events."""
+        """Run the inherited loop, bracketed by planning progress events.
+
+        The structured provider is wrapped for the duration of the run so
+        ``ReActDecision`` results never carry ``""`` in the optional
+        ``tool_name``/``final_answer`` fields (the shared loop builds
+        ``ReActStep`` from them, which requires ``min_length=1``). The
+        wrapper is installed and removed around ``super().run`` so the
+        ``provider`` property keeps its original identity for callers and
+        parity tests, and repeated runs never stack wrappers.
+        """
         events = [
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
         ]
-        outcome = await super().run(state)
+        original_provider = self._provider
+        if not isinstance(original_provider, _DecisionNormalizingCompleter):
+            self._provider = _DecisionNormalizingCompleter(original_provider)
+        try:
+            outcome = await super().run(state)
+        except ProviderError as error:
+            raise planning_provider_error("react_decision") from error
+        finally:
+            self._provider = original_provider
         events.append(planning_completed_event(outcome))
         return AgentRun(
             agent_name=outcome.agent_name,

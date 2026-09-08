@@ -11,7 +11,12 @@ llm:
   reasoning_effort: high
   model_overrides: {}
   timeout: 60.0
-  retry_count: 2
+  # Repo-owned retry policy: up to 5 retries with exponential backoff from
+  # 1s doubling to a 16s cap (the openai SDK only exposes max_retries with a
+  # fixed 0.5s/8s internal backoff, so the policy lives in providers/retry.py).
+  retry_count: 5
+  retry_initial_delay: 1.0
+  retry_max_delay: 16.0
   temperature: 0.7
   max_tokens: 4096
 
@@ -37,6 +42,10 @@ agents:
   tool_budget: 10
   prompt_context_entries: 8
   observation_summary_chars: 200
+  # Operation-specific output budget for the planner's final
+  # ResearchPlanDraft request only; ReAct decisions and judge calls keep
+  # llm.max_tokens (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).
+  planner_final_max_tokens: 4096
 
 graph:
   max_iterations: 3

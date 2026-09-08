@@ -107,6 +107,16 @@ def _failures_lines(cases: list[CaseResult]) -> list[str]:
     return lines
 
 
+def _diagnostic_line(diagnostic) -> str:
+    """One allow-listed diagnostic: kind, attempt, and normalized paths."""
+    parts = [f"diagnostic: {diagnostic.kind}"]
+    if diagnostic.attempt is not None:
+        parts.append(f"attempt={diagnostic.attempt}")
+    if diagnostic.field_paths:
+        parts.append("fields=" + ",".join(diagnostic.field_paths))
+    return "    " + " ".join(parts)
+
+
 def _verbose_lines(cases: list[CaseResult]) -> list[str]:
     lines = ["", "Verbose:"]
     for case in cases:
@@ -122,6 +132,12 @@ def _verbose_lines(cases: list[CaseResult]) -> list[str]:
             judge = repetition.judge
             if judge is not None and judge.status == "judge_not_run":
                 lines.append(f"    judge_not_run: {judge.not_run_reason}")
+                for diagnostic in judge.diagnostics:
+                    lines.append(_diagnostic_line(diagnostic))
+                if judge.evaluator_trace_url is not None:
+                    lines.append(
+                        f"    evaluator_trace_url: {judge.evaluator_trace_url}"
+                    )
     return lines
 
 

@@ -142,12 +142,17 @@ def test_llm_config_resolves_agent_model_override(config_path: Path) -> None:
     assert settings.llm.embedding_model == "text-embedding-3-small"
     assert settings.llm.timeout == 45.0
     assert settings.llm.retry_count == 2
+    assert settings.llm.retry_initial_delay == 1.0
+    assert settings.llm.retry_max_delay == 16.0
 
 
 def test_llm_defaults_select_deepseek_reasoning() -> None:
     llm = LLMConfig()
 
     assert llm.provider == "deepseek"
+    assert llm.retry_count == 2
+    assert llm.retry_initial_delay == 1.0
+    assert llm.retry_max_delay == 16.0
     assert llm.resolve_for(None) == EffectiveModelConfig(
         model="deepseek-v4-flash",
         thinking_mode="enabled",
@@ -203,6 +208,8 @@ def test_structured_agent_override_rejects_provider_field() -> None:
         ("LLM_EMBEDDING_MODEL", "text-embedding-3-large"),
         ("LLM_TIMEOUT", 12.5),
         ("LLM_RETRY_COUNT", 4),
+        ("LLM_RETRY_INITIAL_DELAY", 2.5),
+        ("LLM_RETRY_MAX_DELAY", 20.0),
     ],
 )
 def test_openai_environment_overrides(
@@ -216,6 +223,8 @@ def test_openai_environment_overrides(
         "LLM_EMBEDDING_MODEL": "embedding_model",
         "LLM_TIMEOUT": "timeout",
         "LLM_RETRY_COUNT": "retry_count",
+        "LLM_RETRY_INITIAL_DELAY": "retry_initial_delay",
+        "LLM_RETRY_MAX_DELAY": "retry_max_delay",
     }[environment_name]
     monkeypatch.setenv(environment_name, str(expected_value))
 
@@ -229,6 +238,8 @@ def test_openai_environment_overrides(
     [
         ("timeout", 0),
         ("retry_count", -1),
+        ("retry_initial_delay", -1),
+        ("retry_max_delay", -1),
         ("max_tokens", 0),
         ("temperature", -0.1),
     ],
@@ -353,6 +364,12 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             ("agents", "observation_summary_chars"),
             "80",
             80,
+        ),
+        (
+            "AGENTS_PLANNER_FINAL_MAX_TOKENS",
+            ("agents", "planner_final_max_tokens"),
+            "8192",
+            8192,
         ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
@@ -597,6 +614,22 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.tool_budget == 10
     assert settings.agents.prompt_context_entries == 8
     assert settings.agents.observation_summary_chars == 200
+    assert settings.agents.planner_final_max_tokens == 4096
+
+
+def test_the_planner_final_budget_defaults_to_the_global_cap(
+    config_path: Path,
+) -> None:
+    """The operation-specific planner-final budget defaults to the global cap."""
+    settings = load_config(str(config_path))
+
+    assert settings.agents.planner_final_max_tokens == 4096
+
+
+def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["planner_final_max_tokens"] == 4096
 
 
 @pytest.mark.parametrize(
@@ -606,6 +639,7 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
         ("tool_budget", -1),
         ("prompt_context_entries", -1),
         ("observation_summary_chars", 0),
+        ("planner_final_max_tokens", 0),
     ],
 )
 def test_agent_runtime_config_rejects_unbounded_values(

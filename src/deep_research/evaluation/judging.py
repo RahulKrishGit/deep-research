@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import ContextVar
 from string import Template
-from typing import TypeAlias, cast
+from typing import Any, TypeAlias, cast
 
 from langsmith.run_helpers import traceable
 from pydantic import Field, ValidationError
@@ -28,23 +29,27 @@ from deep_research.evaluation.config import (
     fingerprint,
     redact_secrets,
 )
+from deep_research.evaluation.failure_taxonomy import (
+    classify_failure,
+    safe_failure_details,
+)
 from deep_research.evaluation.models import (
     AgentName,
     EvaluationCase,
     EvaluationTier,
+    EvaluatorDiagnostic,
+    FailureReason,
     GateReport,
     JudgeFeedback,
     JudgeNotRunReason,
     JudgeScores,
     JudgeVerdict,
+    OutputLimitFailureDetails,
+    SchemaFailureDetails,
     TargetOutput,
 )
 from deep_research.observability import Tracker
-from deep_research.providers import (
-    ChatMessage,
-    OpenAIProviderError,
-    StructuredOutputError,
-)
+from deep_research.providers import ChatMessage
 from deep_research.utils.types import ContractModel, JsonValue
 
 JUDGE_PROMPT_ID = "individual-agent-judge"
@@ -291,23 +296,70 @@ async def _invoke_judge(
     )
 
 
+_JUDGE_REASON_BY_CLASSIFICATION: dict[FailureReason, JudgeNotRunReason] = {
+    "output_limit": "judge_output_limit",
+    "schema_output": "judge_schema_failure",
+    "provider_timeout": "judge_transport",
+    "provider_rate_limit": "judge_provider_failure",
+    "provider_transport": "judge_transport",
+    "provider_http": "judge_http",
+    "provider_response": "judge_provider_failure",
+    "provider_failure": "judge_provider_failure",
+}
+
+
 def _judge_not_run_reason(error: Exception) -> JudgeNotRunReason:
     """Map a judge-invocation exception to its typed not-run reason.
 
-    Order matters: ``StructuredOutputError`` is a subclass of
-    ``OpenAIProviderError``, so it must be checked first.
+    Consumes the shared cause-chain classifier, so the judge resolves the
+    same typed taxonomy as every other evaluation failure: an output-limit
+    cause anywhere in the chain maps to ``judge_output_limit``, a schema
+    cause to ``judge_schema_failure``, timeout/transport causes to
+    ``judge_transport``, HTTP-status causes to ``judge_http``, and every
+    other provider cause stays ``judge_provider_failure``. Untyped and
+    non-provider causes remain ``unhandled_exception``.
     """
-    if isinstance(error, StructuredOutputError):
-        return "judge_schema_failure"
-    if isinstance(error, OpenAIProviderError):
-        return "judge_provider_failure"
-    return "unhandled_exception"
+    classification = classify_failure(error)
+    return _JUDGE_REASON_BY_CLASSIFICATION.get(
+        classification.reason, "unhandled_exception"
+    )
+
+
+def _judge_diagnostics(error: Exception) -> tuple[EvaluatorDiagnostic, ...]:
+    """Project bounded evaluator diagnostics from a judge failure.
+
+    Reuses the shared safe-failure projection so the judge carries exactly
+    the same allow-listed schema/output-limit records as every other typed
+    evaluation failure: an output-limit cause contributes its request
+    attempt, a schema cause contributes its bounded field paths, and a
+    generic provider cause contributes nothing -- there is no free-form
+    provider or evaluator text anywhere in the record.
+    """
+    details = safe_failure_details(error)
+    if isinstance(details, SchemaFailureDetails):
+        return details.diagnostics
+    if isinstance(details, OutputLimitFailureDetails):
+        return (
+            EvaluatorDiagnostic(
+                kind="output_limit", attempt=details.request_attempt
+            ),
+        )
+    return ()
 
 
 def _build_scored_feedback(
-    verdict: JudgeVerdict, runtime: EvaluationRuntimeConfig
+    verdict: JudgeVerdict,
+    runtime: EvaluationRuntimeConfig,
+    *,
+    trace_url: str | None = None,
+    source_url: str | None = None,
 ) -> JudgeFeedback:
-    """The scored ``JudgeFeedback``, shared by both call paths."""
+    """The scored ``JudgeFeedback``, shared by both call paths.
+
+    ``trace_url``/``source_url`` are only ever URLs the evaluator
+    integration directly exposed; a missing value stays ``None`` and is
+    never derived from anything.
+    """
     return JudgeFeedback(
         status="scored",
         verdict=verdict,
@@ -319,6 +371,8 @@ def _build_scored_feedback(
         ),
         judge_model=runtime.judge_model,
         judge_configuration_fingerprint=runtime.judge_configuration_fingerprint,
+        evaluator_trace_url=trace_url,
+        evaluator_source_url=source_url,
     )
 
 
@@ -340,10 +394,15 @@ async def run_judge(
     definition that was (or would have been) applied.
     """
 
-    def not_run(reason: JudgeNotRunReason) -> JudgeFeedback:
+    def not_run(
+        reason: JudgeNotRunReason,
+        *,
+        diagnostics: Sequence[EvaluatorDiagnostic] = (),
+    ) -> JudgeFeedback:
         return JudgeFeedback(
             status="judge_not_run",
             not_run_reason=reason,
+            diagnostics=tuple(diagnostics),
             prompt_id=JUDGE_PROMPT_ID,
             rubric_version=runtime.rubric_version,
             prompt_fingerprint=judge_prompt_fingerprint(
@@ -363,7 +422,10 @@ async def run_judge(
     try:
         verdict = await _invoke_judge(provider, messages)
     except Exception as error:
-        return not_run(_judge_not_run_reason(error))
+        return not_run(
+            _judge_not_run_reason(error),
+            diagnostics=_judge_diagnostics(error),
+        )
 
     return _build_scored_feedback(verdict, runtime)
 
@@ -416,6 +478,40 @@ def judge_feedback_payload(feedback: JudgeFeedback) -> dict[str, JsonValue]:
     }
 
 
+def _run_tree_url(run_tree: object | None) -> str | None:
+    """The safe trace URL a LangSmith run tree directly exposes, else ``None``.
+
+    Only a non-empty string returned by ``run_tree.get_url()`` is retained;
+    an absent, non-callable, or failing ``get_url`` yields ``None``. The URL
+    is a LangSmith infrastructure pointer -- it is never derived from any
+    input, prompt, response, or exception.
+    """
+    if run_tree is None:
+        return None
+    get_url = getattr(run_tree, "get_url", None)
+    if not callable(get_url):
+        return None
+    try:
+        candidate = get_url()
+    except Exception:
+        return None
+    if isinstance(candidate, str) and candidate:
+        return candidate
+    return None
+
+
+# Per-invocation capture channel for the evaluator trace URL. The traced
+# judge callback reads the injected ``run_tree`` and records the URL here;
+# the surrounding ``__call__`` reads it back after the awaited invocation.
+# A ``ContextVar`` (never an instance field) keeps one invocation's URL out
+# of another's hands: under ``max_concurrency > 1`` each row runs in its
+# own asyncio task context, so concurrent invocations of the same
+# ``JudgeEvaluator`` cannot reset or overwrite each other's captured URL.
+_JUDGE_TRACE_URL: ContextVar[str | None] = ContextVar(
+    "judge_trace_url", default=None
+)
+
+
 class JudgeEvaluator:
     """The judge as a callable LangSmith evaluator for ``aevaluate``.
 
@@ -438,6 +534,7 @@ class JudgeEvaluator:
         gate_lookup: Callable[[TargetOutput], GateReport | None],
         tracker: Tracker | None = None,
         trace_factory: TraceFactory = traceable,
+        evaluator_source_url: str | None = None,
     ) -> None:
         self.__name__ = JUDGE_PROMPT_ID
         self._provider = provider
@@ -446,8 +543,21 @@ class JudgeEvaluator:
         self._secrets = tuple(secrets)
         self._gate_lookup = gate_lookup
         self._tracker = tracker
+        # Only a URL the evaluator integration directly supplies is
+        # retained; anything else (including a blank or non-string value)
+        # stays ``None`` and nothing is ever derived or reconstructed.
+        self._evaluator_source_url = (
+            evaluator_source_url
+            if isinstance(evaluator_source_url, str) and evaluator_source_url
+            else None
+        )
 
-        async def trace_judge(*, judge_input: JudgeInput) -> JudgeVerdict:
+        async def trace_judge(
+            *, judge_input: JudgeInput, run_tree: Any | None = None
+        ) -> JudgeVerdict:
+            captured = _run_tree_url(run_tree)
+            if captured is not None:
+                _JUDGE_TRACE_URL.set(captured)
             messages = render_judge_messages(judge_input)
             return await _invoke_judge(provider, messages)
 
@@ -483,6 +593,7 @@ class JudgeEvaluator:
             judge_input = build_judge_input(
                 output, self._case, gates, secrets=self._secrets
             )
+            _JUDGE_TRACE_URL.set(None)
             if self._tracker is None:
                 verdict = await self._trace_judge(judge_input=judge_input)
             else:
@@ -493,26 +604,53 @@ class JudgeEvaluator:
         except SecretLeakError as error:
             return self._not_run(str(error))
         except Exception as error:
-            return self._not_run(_judge_not_run_reason(error))
+            return self._not_run(
+                _judge_not_run_reason(error),
+                diagnostics=_judge_diagnostics(error),
+                trace_url=_JUDGE_TRACE_URL.get(),
+            )
 
-        feedback = _build_scored_feedback(verdict, self._runtime)
+        feedback = _build_scored_feedback(
+            verdict,
+            self._runtime,
+            trace_url=_JUDGE_TRACE_URL.get(),
+            source_url=self._evaluator_source_url,
+        )
         return self._scored(verdict, feedback)
 
-    def _not_run(self, comment: str) -> dict[str, JsonValue]:
+    def _not_run(
+        self,
+        comment: str,
+        *,
+        diagnostics: Sequence[EvaluatorDiagnostic] = (),
+        trace_url: str | None = None,
+    ) -> dict[str, JsonValue]:
         """The ``judge_not_run`` result: status only, no fabricated score.
 
         The metadata mirrors the scored path's ``judge_quality`` entry
         (``judge_evaluator_metadata(self._runtime)``), so a ``judge_not_run``
         row in LangSmith is traceable to the exact evaluator definition the
-        same way a local ``judge_not_run`` artifact already is.
+        same way a local ``judge_not_run`` artifact already is. Any safe
+        typed diagnostics and a directly exposed evaluator trace URL ride
+        along in the same metadata; a missing URL is an infrastructure
+        diagnostic, never evidence that judging passed.
         """
+        metadata: dict[str, JsonValue] = judge_evaluator_metadata(self._runtime)
+        if trace_url is not None:
+            metadata["evaluator_trace_url"] = trace_url
+        if self._evaluator_source_url is not None:
+            metadata["evaluator_source_url"] = self._evaluator_source_url
+        if diagnostics:
+            metadata["judge_diagnostics"] = [
+                item.model_dump(mode="json") for item in diagnostics
+            ]
         return {
             "results": [
                 {
                     "key": "judge_status",
                     "value": "judge_not_run",
                     "comment": comment,
-                    "metadata": judge_evaluator_metadata(self._runtime),
+                    "metadata": metadata,
                 }
             ]
         }
@@ -521,6 +659,10 @@ class JudgeEvaluator:
         self, verdict: JudgeVerdict, feedback: JudgeFeedback
     ) -> dict[str, JsonValue]:
         metadata: dict[str, JsonValue] = judge_evaluator_metadata(self._runtime)
+        if feedback.evaluator_trace_url is not None:
+            metadata["evaluator_trace_url"] = feedback.evaluator_trace_url
+        if feedback.evaluator_source_url is not None:
+            metadata["evaluator_source_url"] = feedback.evaluator_source_url
         model_returned = getattr(self._provider, "last_model_returned", None)
         if isinstance(model_returned, str) and model_returned:
             metadata["judge_model_returned"] = model_returned
@@ -564,6 +706,7 @@ def build_judge_evaluator(
     gate_lookup: Callable[[TargetOutput], GateReport | None],
     tracker: Tracker | None = None,
     trace_factory: TraceFactory = traceable,
+    evaluator_source_url: str | None = None,
 ) -> JudgeEvaluator:
     """Wrap the versioned judge as a named, traced LangSmith evaluator.
 
@@ -571,6 +714,8 @@ def build_judge_evaluator(
     ``GateReport`` for the run (or ``None`` when the deterministic half did
     not run), so the judge is shown exactly the verdict the deterministic
     evaluator produced — never a second, possibly divergent computation.
+    ``evaluator_source_url`` is the one place an integration may directly
+    supply the evaluator's own source URL; nothing here ever derives one.
     """
     return JudgeEvaluator(
         provider,
@@ -580,4 +725,5 @@ def build_judge_evaluator(
         gate_lookup=gate_lookup,
         tracker=tracker,
         trace_factory=trace_factory,
+        evaluator_source_url=evaluator_source_url,
     )

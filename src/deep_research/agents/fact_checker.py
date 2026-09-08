@@ -825,6 +825,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             on_step=self._record_step,
             is_sufficient=self.is_sufficient,
             summary_limit=self.config.observation_summary_chars,
+            propagate_provider_errors=False,
         )
         return react.model_copy(
             update={"errors": [*react.errors, *self.scratchpad.drain_errors()]}

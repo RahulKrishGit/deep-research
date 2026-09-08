@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
-from typing import Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
+from deep_research.observability import TokenUsage
+from deep_research.providers.contracts import FinishReasonCategory
 from deep_research.utils.config import ReasoningEffort
 from deep_research.utils.types import ContractModel, ResearchState, UnitScore
 
@@ -220,6 +222,125 @@ FailureStage: TypeAlias = Literal[
     "unhandled",
 ]
 
+FailureReason: TypeAlias = Literal[
+    "output_limit",
+    "schema_output",
+    "provider_timeout",
+    "provider_rate_limit",
+    "provider_transport",
+    "provider_http",
+    "provider_response",
+    "provider_failure",
+    "tool_failure",
+    "validation_failure",
+    "unhandled_failure",
+]
+PositiveInt: TypeAlias = Annotated[int, Field(gt=0, strict=True)]
+
+EvaluatorDiagnosticKind: TypeAlias = Literal[
+    "output_limit",
+    "schema_output",
+    "provider_timeout",
+    "provider_rate_limit",
+    "provider_transport",
+    "provider_http",
+    "provider_response",
+    "provider_failure",
+]
+
+_FIELD_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$|^[0-9]+$")
+_MAX_DIAGNOSTIC_PATHS = 16
+_MAX_DIAGNOSTIC_PATH_LENGTH = 128
+
+
+def _normalize_diagnostic_path(value: object) -> str:
+    if not isinstance(value, str):
+        return "$"
+    parts = [part.strip() for part in value.strip().split(".")]
+    if not parts or any(not part for part in parts):
+        return "$"
+    if any(not _FIELD_PATH_SEGMENT.fullmatch(part) for part in parts):
+        return "$"
+    normalized = ".".join(parts)
+    return normalized if len(normalized) <= _MAX_DIAGNOSTIC_PATH_LENGTH else "$"
+
+
+class EvaluatorDiagnostic(ContractModel):
+    """Safe diagnostic data that an evaluator may carry between tasks."""
+
+    kind: EvaluatorDiagnosticKind
+    attempt: PositiveInt | None = None
+    field_paths: tuple[str, ...] = Field(
+        default_factory=tuple, max_length=_MAX_DIAGNOSTIC_PATHS
+    )
+
+    @field_validator("field_paths", mode="before")
+    @classmethod
+    def normalize_field_paths(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, str):
+            value = (value,)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple, set, frozenset)):
+            raise TypeError("field_paths must be a sequence of strings")
+        return tuple(_normalize_diagnostic_path(item) for item in value)
+
+
+# The shorter name is retained for callers that describe this as an evaluation
+# diagnostic rather than an evaluator-facing one.
+EvaluationDiagnostic = EvaluatorDiagnostic
+
+
+class OutputLimitFailureDetails(ContractModel):
+    """Allow-listed telemetry for a typed provider output-limit failure."""
+
+    kind: Literal["output_limit"] = "output_limit"
+    finish_reason_category: FinishReasonCategory
+    configured_max_tokens: PositiveInt
+    usage: TokenUsage
+    request_attempt: PositiveInt
+    structured_attempt: PositiveInt | None = None
+
+
+class SchemaFailureDetails(ContractModel):
+    """Allow-listed diagnostics for a structured-schema failure."""
+
+    kind: Literal["schema_output"] = "schema_output"
+    diagnostics: tuple[EvaluatorDiagnostic, ...] = Field(
+        default_factory=tuple, max_length=_MAX_DIAGNOSTIC_PATHS
+    )
+
+
+ProviderFailureDetailKind: TypeAlias = Literal[
+    "provider_timeout",
+    "provider_rate_limit",
+    "provider_transport",
+    "provider_http",
+    "provider_response",
+    "provider_failure",
+]
+
+
+class ProviderFailureDetails(ContractModel):
+    """Allow-listed type/retry/status facts for provider failures."""
+
+    kind: ProviderFailureDetailKind
+    type: str = Field(min_length=1, max_length=128)
+    retryable: bool
+    status_code: int | None = Field(default=None, ge=100, le=599)
+
+
+EvaluationFailureDetails: TypeAlias = (
+    OutputLimitFailureDetails | SchemaFailureDetails | ProviderFailureDetails
+)
+
+
+class FailureClassification(ContractModel):
+    """Typed stage/reason output from the shared exception classifier."""
+
+    stage: FailureStage
+    reason: FailureReason
+
 
 class EvaluationFailure(ContractModel):
     """A redacted, typed failure record. Never a raw provider exception."""
@@ -228,6 +349,7 @@ class EvaluationFailure(ContractModel):
     reason: str = Field(min_length=1)
     message: str = Field(min_length=1)
     exception_type: str | None = None
+    details: EvaluationFailureDetails | None = None
 
 
 class TargetOutput(ContractModel):
@@ -308,6 +430,9 @@ JudgeNotRunReason: TypeAlias = Literal[
     "no_evaluable_output",
     "setup_failure",
     "unhandled_exception",
+    "judge_output_limit",
+    "judge_transport",
+    "judge_http",
     "judge_provider_failure",
     "judge_schema_failure",
 ]
@@ -325,6 +450,9 @@ class JudgeFeedback(ContractModel):
     judge_configuration_fingerprint: str = Field(min_length=1)
     evaluator_trace_url: str | None = None
     evaluator_source_url: str | None = None
+    diagnostics: tuple[EvaluatorDiagnostic, ...] = Field(
+        default_factory=tuple, max_length=_MAX_DIAGNOSTIC_PATHS
+    )
     latency_ms: float | None = Field(default=None, ge=0.0)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)

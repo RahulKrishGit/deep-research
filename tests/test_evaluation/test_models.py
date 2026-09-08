@@ -13,6 +13,7 @@ from deep_research.evaluation.models import (
     CaseExpectations,
     DeterministicMetric,
     EvaluationCase,
+    EvaluationFailure,
     ExperimentResult,
     JudgeFeedback,
     JudgeRubric,
@@ -248,6 +249,119 @@ def test_judge_not_run_requires_a_typed_reason() -> None:
             judge_model="gpt-5.6-luna",
             judge_configuration_fingerprint="def456def456",
         )
+
+
+def test_evaluation_failure_details_are_typed_and_allow_listed() -> None:
+    import deep_research.evaluation.models as models_module
+
+    details_type = getattr(models_module, "OutputLimitFailureDetails", None)
+    assert details_type is not None
+    output_limit = details_type(
+        finish_reason_category="length",
+        configured_max_tokens=4096,
+        usage={"input_tokens": 8, "output_tokens": 4096, "total_tokens": 4104},
+        request_attempt=1,
+        structured_attempt=2,
+    )
+    failure = EvaluationFailure(
+        stage="provider",
+        reason="output_limit",
+        message="The provider response reached its configured output limit.",
+        exception_type="ProviderOutputLimitError",
+        details=output_limit,
+    )
+
+    assert failure.details == output_limit
+    assert failure.model_dump(mode="json")["details"] == {
+        "kind": "output_limit",
+        "finish_reason_category": "length",
+        "configured_max_tokens": 4096,
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 4096,
+            "total_tokens": 4104,
+        },
+        "request_attempt": 1,
+        "structured_attempt": 2,
+    }
+    with pytest.raises(ValueError):
+        details_type(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage={"input_tokens": 8, "output_tokens": 4096},
+            request_attempt=1,
+            raw_provider_output="secret",
+        )
+
+
+def test_schema_and_provider_failure_details_retain_only_safe_fields() -> None:
+    import deep_research.evaluation.models as models_module
+
+    diagnostic_type = getattr(models_module, "EvaluationDiagnostic", None)
+    schema_type = getattr(models_module, "SchemaFailureDetails", None)
+    transport_type = getattr(models_module, "ProviderFailureDetails", None)
+    assert diagnostic_type is not None
+    assert schema_type is not None
+    assert transport_type is not None
+    schema = schema_type(
+        diagnostics=(
+            diagnostic_type(
+                kind="schema_output",
+                attempt=1,
+                field_paths=("sub_topics.0.title",),
+            ),
+        )
+    )
+    transport = transport_type(
+        kind="provider_transport",
+        type="ProviderResponseError",
+        retryable=True,
+        status_code=None,
+    )
+
+    assert schema.model_dump(mode="json") == {
+        "kind": "schema_output",
+        "diagnostics": [
+            {
+                "kind": "schema_output",
+                "attempt": 1,
+                "field_paths": ["sub_topics.0.title"],
+            }
+        ],
+    }
+    assert transport.model_dump(mode="json") == {
+        "kind": "provider_transport",
+        "type": "ProviderResponseError",
+        "retryable": True,
+        "status_code": None,
+    }
+
+
+def test_judge_feedback_round_trips_safe_evaluator_diagnostics() -> None:
+    import deep_research.evaluation.models as models_module
+
+    diagnostic_type = getattr(models_module, "EvaluationDiagnostic", None)
+    assert diagnostic_type is not None
+    feedback = JudgeFeedback(
+        status="judge_not_run",
+        not_run_reason="judge_schema_failure",
+        prompt_id="individual-agent-judge",
+        rubric_version=1,
+        prompt_fingerprint="abc123abc123",
+        judge_model="gpt-5.6-luna",
+        judge_configuration_fingerprint="def456def456",
+        diagnostics=(
+            diagnostic_type(
+                kind="schema_output",
+                attempt=2,
+                field_paths=("scores.completeness",),
+            ),
+        ),
+    )
+
+    restored = JudgeFeedback.model_validate_json(feedback.model_dump_json())
+    assert restored == feedback
+    assert "provider output" not in feedback.model_dump_json()
 
 
 def test_an_experiment_result_round_trips_through_json(
