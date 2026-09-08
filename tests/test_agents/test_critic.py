@@ -21,7 +21,7 @@ from deep_research.agents.critic import (
 )
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.prompts import AgentTask
-from deep_research.agents.steps import ReActRun
+from deep_research.agents.steps import ReActDecision, ReActRun
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ProviderError
@@ -532,6 +532,32 @@ async def test_a_spot_check_reaches_the_review_prompt(tracker: Tracker) -> None:
     assert "[web_search]" in review_call[2][1].content
     event = outcome.state_update["events"][-1]
     assert event.metadata["tool_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_critic_react_handles_empty_unused_final_answer(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            ReActDecision(
+                thought="Check the cost figure.",
+                action="use_tool",
+                tool_name="web_search",
+                tool_input_json='{"query": "qec cost 2025"}',
+                final_answer="",
+            ),
+            finish("Enough to judge.", "The cost figure checks out."),
+        ],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(tracker, completer, tool_budget=2)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.steps[0].final_answer is None
 
 
 @pytest.mark.asyncio

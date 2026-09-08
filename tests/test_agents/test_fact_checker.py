@@ -30,7 +30,12 @@ from deep_research.agents.fact_checker import (
     verdict_counts,
 )
 from deep_research.agents.prompts import AgentTask
-from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
+from deep_research.agents.steps import (
+    ReActDecision,
+    ReActObservation,
+    ReActRun,
+    ReActStep,
+)
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ProviderTimeoutError
@@ -847,6 +852,49 @@ async def test_a_full_run_verifies_each_claim_and_reports_the_counts(
         if event.event_type == "fact_checker.claim.checked"
     )
     assert checked.metadata["tool_calls"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_fact_checker_react_handles_empty_unused_tool_name(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool(
+                "Look for an independent source.",
+                "web_search",
+                '{"query": "break-even 2025"}',
+            ),
+            ReActDecision(
+                thought="The independent source is enough.",
+                action="finish",
+                tool_name="",
+                tool_input_json="{}",
+                final_answer="Checked.",
+            ),
+        ],
+        outputs=[
+            ClaimsDraft(claims=[_claim_draft()]),
+            _verdict_draft(verdict="verified"),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+    )
+    state = _check_state([_check_finding()])
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.steps[-1].tool_name is None
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,7 @@ from deep_research.agents.researcher import (
     select_sub_topics,
 )
 from deep_research.agents.steps import (
+    ReActDecision,
     ReActObservation,
     ReActRun,
     ReActStep,
@@ -826,6 +827,33 @@ async def test_the_researcher_creates_findings_from_search_and_scrape(
     assert finding.source_url == "https://example.test/qec"
     assert outcome.state_update["raw_findings"] == outcome.result.findings
     assert outcome.react.tool_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_researcher_react_handles_empty_unused_final_answer(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            ReActDecision(
+                thought="Find one source.",
+                action="use_tool",
+                tool_name="web_search",
+                tool_input_json='{"query": "qec 2025"}',
+                final_answer="",
+            ),
+            finish("The source is enough.", "Error rates fell."),
+        ],
+        outputs=[_findings_draft()],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(sub_topics=[_sub_topic("Alpha", 1)])
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.steps[0].final_answer is None
 
 
 @pytest.mark.asyncio

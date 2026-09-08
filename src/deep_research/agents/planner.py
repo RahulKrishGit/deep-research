@@ -11,15 +11,14 @@ domain rules locally where their failures can be turned into a repair prompt.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
 
 from pydantic import Field, ValidationError
 
-from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
+from deep_research.agents.base import AgentRun, BaseAgent
 from deep_research.agents.errors import PlanningError, planning_provider_error
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import AgentTask, render_memory_guidance
-from deep_research.agents.steps import ReActDecision, ReActRun, summarize_text
+from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.validation import _invalid_fields
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.utils.types import (
@@ -239,45 +238,6 @@ def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent
     )
 
 
-class _DecisionNormalizingCompleter(StructuredCompleter):
-    """Serve structured responses, normalizing empty optional ReActDecision fields.
-
-    The model sometimes emits ``""`` for the optional field it is not using
-    (``tool_name`` on finish decisions, ``final_answer`` on tool decisions).
-    ``ReActDecision`` accepts those empty strings, but ``ReActStep`` requires
-    ``min_length=1``, so the shared loop would crash building the step. The
-    planner is the only agent this campaign may change, so normalization lives
-    here instead of in the shared loop; every other schema, including
-    ``ResearchPlanDraft``, passes through untouched.
-    """
-
-    def __init__(self, inner: StructuredCompleter) -> None:
-        self._inner = inner
-
-    async def complete_structured(
-        self,
-        messages: Sequence[ChatMessage],
-        schema: type[Any],
-        *,
-        agent_name: str | None = None,
-        max_tokens: int | None = None,
-    ) -> Any:
-        result = await self._inner.complete_structured(
-            messages,
-            schema,
-            agent_name=agent_name,
-            max_tokens=max_tokens,
-        )
-        if schema is ReActDecision and isinstance(result, ReActDecision):
-            return result.model_copy(
-                update={
-                    "tool_name": result.tool_name or None,
-                    "final_answer": result.final_answer or None,
-                }
-            )
-        return result
-
-
 class PlannerAgent(BaseAgent[ResearchPlan]):
     """Convert ``original_question`` into 3-7 distinct, prioritized sub-topics.
 
@@ -366,28 +326,15 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
 
     async def run(self, state: ResearchState) -> AgentRun[ResearchPlan]:
         """Run the inherited loop, bracketed by planning progress events.
-
-        The structured provider is wrapped for the duration of the run so
-        ``ReActDecision`` results never carry ``""`` in the optional
-        ``tool_name``/``final_answer`` fields (the shared loop builds
-        ``ReActStep`` from them, which requires ``min_length=1``). The
-        wrapper is installed and removed around ``super().run`` so the
-        ``provider`` property keeps its original identity for callers and
-        parity tests, and repeated runs never stack wrappers.
         """
         events = [
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
         ]
-        original_provider = self._provider
-        if not isinstance(original_provider, _DecisionNormalizingCompleter):
-            self._provider = _DecisionNormalizingCompleter(original_provider)
         try:
             outcome = await super().run(state)
         except ProviderError as error:
             raise planning_provider_error("react_decision") from error
-        finally:
-            self._provider = original_provider
         events.append(planning_completed_event(outcome))
         return AgentRun(
             agent_name=outcome.agent_name,
