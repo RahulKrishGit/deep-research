@@ -267,11 +267,11 @@ async def run_react_loop(
             iteration=iteration,
             thought=decision.thought,
             action=decision.action,
-            tool_name=decision.tool_name,
+            tool_name=decision.tool_name or None,
             tool_input=tool_input,
             observation=observation,
             tool_result=tool_result,
-            final_answer=decision.final_answer,
+            final_answer=decision.final_answer or None,
         )
         steps.append(step)
         if on_step is not None:

@@ -131,6 +131,59 @@ async def test_multi_step_loop_calls_a_tool_then_finishes(tracker: Tracker) -> N
 
 
 @pytest.mark.asyncio
+async def test_finish_decision_normalizes_empty_unused_tool_name(
+    tracker: Tracker,
+) -> None:
+    decision = ReActDecision(
+        thought="Enough evidence.",
+        action="finish",
+        tool_name="",
+        tool_input_json="{}",
+        final_answer="Done.",
+    )
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker),
+            decide=_decider([decision]),
+            max_iterations=2,
+            tool_budget=0,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.steps[0].tool_name is None
+    assert run.steps[0].final_answer == "Done."
+
+
+@pytest.mark.asyncio
+async def test_tool_decision_normalizes_empty_unused_final_answer(
+    tracker: Tracker,
+) -> None:
+    decision = ReActDecision(
+        thought="Check one source.",
+        action="use_tool",
+        tool_name="echo",
+        tool_input_json='{"value": "x"}',
+        final_answer="",
+    )
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [decision, finish("Enough.", "Done.")]
+            ),
+            max_iterations=2,
+            tool_budget=1,
+        )
+
+    assert run.steps[0].tool_name == "echo"
+    assert run.steps[0].final_answer is None
+
+
+@pytest.mark.asyncio
 async def test_loop_stops_at_max_iterations(tracker: Tracker) -> None:
     async with agent_scope(tracker):
         run = await run_react_loop(
