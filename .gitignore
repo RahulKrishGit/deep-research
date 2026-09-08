@@ -224,5 +224,8 @@ __marimo__/
 # SDD scratch workspace
 .superpowers/
 
+# Local Git worktrees
+.worktrees/
+
 # Local DeepSeek/Claude routing helper; never commit credentials or tooling.
 /.local-deepseek/
