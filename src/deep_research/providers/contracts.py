@@ -21,6 +21,16 @@ FinishReasonCategory: TypeAlias = Literal[
 ProviderFailureCategory: TypeAlias = Literal[
     "output_limit", "transport", "http", "response"
 ]
+ProviderFailureKind: TypeAlias = Literal[
+    "output_limit",
+    "schema_output",
+    "provider_timeout",
+    "provider_rate_limit",
+    "provider_transport",
+    "provider_http",
+    "provider_response",
+    "provider_failure",
+]
 StructuredDiagnosticCategory: TypeAlias = Literal["schema_output"]
 PositiveInt: TypeAlias = Annotated[int, Field(gt=0, strict=True)]
 
@@ -185,6 +195,82 @@ class StructuredOutputError(ProviderError):
     def validation_diagnostics(self) -> tuple[StructuredValidationDiagnostic, ...]:
         """Compatibility alias for callers that name the validation records."""
         return self.diagnostics
+
+
+class ProviderFailureSnapshot(ProviderContract):
+    """Immutable, finite details safe to retain for an agent provider error."""
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    kind: ProviderFailureKind
+    exception_type: str = Field(min_length=1, max_length=128)
+    retryable: bool | None = None
+    http_status_code: int | None = Field(default=None, ge=100, le=599)
+    configured_max_tokens: PositiveInt | None = None
+    usage: TokenUsage | None = None
+    request_attempt: PositiveInt | None = None
+    structured_attempt: PositiveInt | None = None
+    diagnostics: tuple[StructuredValidationDiagnostic, ...] = Field(
+        default=(), max_length=_MAX_STRUCTURED_DIAGNOSTICS
+    )
+
+
+def provider_failure_snapshot(error: ProviderError) -> ProviderFailureSnapshot:
+    """Project one provider error into bounded, provider-content-free data."""
+    exception_type = type(error).__name__
+    if isinstance(error, ProviderOutputLimitError):
+        telemetry = error.telemetry
+        return ProviderFailureSnapshot(
+            kind="output_limit",
+            exception_type=exception_type,
+            retryable=error.retryable,
+            configured_max_tokens=telemetry.configured_max_tokens,
+            usage=telemetry.usage,
+            request_attempt=telemetry.request_attempt,
+            structured_attempt=telemetry.structured_attempt,
+        )
+    if isinstance(error, StructuredOutputError):
+        diagnostics = tuple(
+            item
+            for item in islice(error.diagnostics, _MAX_STRUCTURED_DIAGNOSTICS)
+            if isinstance(item, StructuredValidationDiagnostic)
+        )
+        return ProviderFailureSnapshot(
+            kind="schema_output",
+            exception_type=exception_type,
+            diagnostics=diagnostics,
+        )
+    if isinstance(error, ProviderTimeoutError):
+        return ProviderFailureSnapshot(
+            kind="provider_timeout",
+            exception_type=exception_type,
+            retryable=True,
+        )
+    if isinstance(error, ProviderRateLimitError):
+        return ProviderFailureSnapshot(
+            kind="provider_rate_limit",
+            exception_type=exception_type,
+            retryable=True,
+        )
+    if isinstance(error, ProviderResponseError):
+        kind: ProviderFailureKind = {
+            "transport": "provider_transport",
+            "http": "provider_http",
+            "response": "provider_response",
+            "output_limit": "provider_response",
+        }[error.failure_category]
+        return ProviderFailureSnapshot(
+            kind=kind,
+            exception_type=exception_type,
+            retryable=error.retryable,
+            http_status_code=error.http_status_code,
+        )
+    return ProviderFailureSnapshot(
+        kind="provider_failure",
+        exception_type=exception_type,
+    )
 
 
 OpenAIProviderError = ProviderError

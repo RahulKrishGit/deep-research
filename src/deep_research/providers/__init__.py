@@ -14,6 +14,8 @@ from deep_research.providers.contracts import (
     ProviderConfigurationError,
     ProviderError,
     ProviderFailureCategory,
+    ProviderFailureKind,
+    ProviderFailureSnapshot,
     ProviderOutputLimitError,
     ProviderRateLimitError,
     ProviderResponseError,
@@ -21,6 +23,7 @@ from deep_research.providers.contracts import (
     ProviderTimeoutError,
     StructuredOutputError,
     StructuredValidationDiagnostic,
+    provider_failure_snapshot,
 )
 from deep_research.providers.deepseek_provider import (
     DEEPSEEK_BASE_URL,
@@ -66,6 +69,8 @@ __all__ = [
     "ProviderConfigurationError",
     "ProviderError",
     "ProviderFailureCategory",
+    "ProviderFailureKind",
+    "ProviderFailureSnapshot",
     "ProviderOutputLimitError",
     "ProviderRateLimitError",
     "ProviderResponseError",
@@ -80,4 +85,5 @@ __all__ = [
     "embedding_capability_for",
     "resolve_request_settings",
     "validate_agent_model_configs",
+    "provider_failure_snapshot",
 ]

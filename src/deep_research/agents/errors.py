@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import JsonValue
 
+from deep_research.providers import ProviderError, provider_failure_snapshot
 from deep_research.utils.types import ResearchError
 
 
@@ -88,3 +89,19 @@ def agent_error(
         recoverable=recoverable,
         details=dict(details or {}),
     )
+
+
+def agent_provider_failure_details(
+    operation: str,
+    error: ProviderError,
+    **extra: JsonValue,
+) -> dict[str, JsonValue]:
+    """Build safe JSON details for a provider failure caught by an agent."""
+    if not operation.strip():
+        raise ValueError("operation must not be blank")
+    snapshot = provider_failure_snapshot(error)
+    return {
+        "operation": operation.strip(),
+        "provider_failure": snapshot.model_dump(mode="json"),
+        **extra,
+    }
