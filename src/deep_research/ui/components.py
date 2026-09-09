@@ -31,9 +31,8 @@ _START_IN_FLIGHT_KEY = "_deep_research_start_in_flight"
 
 _CONFIGURATION_FAILURE_MESSAGE = "Research service configuration is unavailable."
 _FALLBACK_CONFIGURATION_HINT = "Review the research configuration and try again."
-_UNEXPECTED_START_MESSAGE = (
-    "Research could not be started. Review the form and try again."
-)
+_START_VALIDATION_MESSAGE = "Research request could not be started."
+_START_VALIDATION_HINT = "Check the research question and settings, then try again."
 
 _STATUS_PRESENTATION: Mapping[str, tuple[str, str, str]] = {
     "ready": ("●", "Ready to start", "neutral"),
@@ -164,7 +163,7 @@ def render_sidebar(controller: LocalResearchController) -> None:
         if st.button(
             "+ New research",
             key="new_research",
-            type="primary",
+            type="secondary",
             use_container_width=True,
         ):
             state[_SELECTED_SESSION_KEY] = None
@@ -243,18 +242,17 @@ def _start_research(
         )
     except ResearchConfigurationError as error:
         state[_START_ERROR_KEY] = _configuration_error_details(error)
-        state[_START_IN_FLIGHT_KEY] = False
         return
-    except Exception:
+    except ValueError:
         state[_START_ERROR_KEY] = (
-            _UNEXPECTED_START_MESSAGE,
-            "Check the question and research settings, then try again.",
+            _START_VALIDATION_MESSAGE,
+            _START_VALIDATION_HINT,
         )
-        state[_START_IN_FLIGHT_KEY] = False
         return
+    finally:
+        state[_START_IN_FLIGHT_KEY] = False
 
     state[_START_ERROR_KEY] = None
-    state[_START_IN_FLIGHT_KEY] = False
     state[_ACTIVE_SESSION_KEY] = snapshot.session_id
     state[_SELECTED_SESSION_KEY] = snapshot.session_id
     state[_VIEW_KEY] = "current"

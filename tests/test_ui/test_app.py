@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from deep_research.runtime.errors import configuration_error
@@ -11,9 +12,11 @@ from deep_research.ui.app import (
     _ACTIVE_SESSION_KEY,
     _CONTROLLER_KEY,
     _SELECTED_SESSION_KEY,
+    _START_ERROR_KEY,
     _VIEW_KEY,
     render_app,
 )
+from deep_research.ui.components import _start_research
 from deep_research.ui.models import (
     SessionHistoryEntry,
     UiFactCheckSummary,
@@ -165,6 +168,13 @@ def test_new_research_screen_has_question_form_and_ready_state() -> None:
     assert not any("Current session" in item.value for item in app.main.markdown)
 
 
+def test_start_research_is_the_only_filled_primary_action() -> None:
+    app = _app([]).run()
+
+    assert app.sidebar.button(key="new_research").proto.type == "secondary"
+    assert app.button(key="start_research").proto.type == "primary"
+
+
 def test_new_research_blank_question_disables_submit_and_preserves_draft_values(
 ) -> None:
     app = _app([]).run()
@@ -235,6 +245,24 @@ def test_configuration_error_renders_only_safe_project_message() -> None:
     assert "Research service configuration is unavailable." in visible_text
     assert "Set the selected chat provider's API key" in visible_text
     assert sensitive_message not in visible_text
+
+
+def test_unexpected_start_error_surfaces_without_form_guidance() -> None:
+    controller = FakeController(
+        [],
+        start_error=RuntimeError("unexpected persistence failure"),
+    )
+    state: dict[str, object] = {_START_ERROR_KEY: None}
+
+    with pytest.raises(RuntimeError, match="unexpected persistence failure"):
+        _start_research(
+            controller,
+            question="A valid question",
+            max_iterations=4,
+            state=state,
+        )
+
+    assert state[_START_ERROR_KEY] is None
 
 
 def test_start_stores_session_and_immediately_renders_running_view() -> None:
