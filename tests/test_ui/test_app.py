@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import sleep
@@ -38,7 +39,7 @@ from deep_research.ui.progress import project_progress
 from deep_research.ui.runner import LocalResearchController
 from deep_research.ui.styles import STATIC_CSS
 from deep_research.utils.types import ResearchEvent
-from tests.test_ui.fakes import FailingSyncRunner
+from tests.test_ui.fakes import DemoController, FailingSyncRunner
 
 
 def _entry(
@@ -1293,3 +1294,218 @@ def test_failed_runner_snapshot_renders_last_known_agent_and_activity(
     assert "Subtopic 2 of 5" in visible
     assert "Last active topic" in visible
     assert "Research run failed unexpectedly." in visible
+
+
+def test_demo_controller_covers_all_offline_visual_scenarios() -> None:
+    controller = DemoController()
+
+    entries = controller.list_history()
+    assert len(entries) >= 10
+    assert {
+        "running",
+        "completed",
+        "max_iterations",
+        "incomplete",
+        "failed",
+    } <= {entry.status for entry in entries}
+
+    running = controller.snapshot(controller.running_session_id)
+    assert [topic.status for topic in running.sub_topics] == [
+        "completed",
+        "running",
+        "queued",
+        "queued",
+        "queued",
+    ]
+    assert len(running.recent_activity) == 3
+    assert running.token_usage is not None
+    assert running.trace_url
+
+    no_telemetry = controller.snapshot(controller.no_telemetry_session_id)
+    assert no_telemetry.token_usage is None
+    assert no_telemetry.trace_url is None
+
+    completed = controller.snapshot(controller.completed_session_id)
+    assert completed.report is not None
+    assert completed.report.count("## ") >= 3
+    assert "- " in completed.report
+    assert "https://" in completed.report
+    assert "| Scenario |" in completed.report
+    assert completed.source_summary.total == 4
+    assert {
+        completed.source_summary.high,
+        completed.source_summary.moderate,
+        completed.source_summary.low,
+        completed.source_summary.unrated,
+    } == {1}
+    assert {
+        completed.fact_check_summary.verified,
+        completed.fact_check_summary.unverified,
+        completed.fact_check_summary.contradicted,
+        completed.fact_check_summary.insufficient_evidence,
+    } == {1}
+    assert completed.limitations
+
+    max_iterations = controller.snapshot(controller.max_iterations_session_id)
+    failed_partial = controller.snapshot(controller.failed_partial_session_id)
+    configuration_error_snapshot = controller.snapshot(
+        controller.configuration_error_session_id
+    )
+    assert max_iterations.status == "max_iterations"
+    assert max_iterations.report
+    assert failed_partial.status == "failed"
+    assert failed_partial.report
+    assert failed_partial.errors
+    assert configuration_error_snapshot.status == "failed"
+    assert configuration_error_snapshot.report is None
+    assert configuration_error_snapshot.errors[0].details["reason"] == (
+        "missing_secrets"
+    )
+
+
+def test_demo_controller_start_is_deterministic_and_stays_offline() -> None:
+    controller = DemoController()
+
+    first = controller.start(
+        question="A deterministic question",
+        max_iterations=4,
+    )
+    second = controller.start(
+        question="A deterministic question",
+        max_iterations=4,
+    )
+
+    assert first.session_id == second.session_id
+    assert first.status == "running"
+    assert controller.start_calls == [
+        {
+            "question": "A deterministic question",
+            "max_iterations": 4,
+            "output_format": "markdown",
+        },
+        {
+            "question": "A deterministic question",
+            "max_iterations": 4,
+            "output_format": "markdown",
+        },
+    ]
+
+
+def test_manual_mock_app_exposes_only_development_state_selector() -> None:
+    app = AppTest.from_file(Path(__file__).with_name("manual_mock_app.py")).run()
+
+    selectors = [item for item in app.selectbox if item.label == "Demo state"]
+    assert len(selectors) == 1
+    assert selectors[0].options == [
+        "New",
+        "Running",
+        "Completed",
+        "History",
+        "Max iterations",
+        "Failed/partial",
+    ]
+    assert "Demo state" not in _visible_main_text(app)
+
+
+def test_manual_mock_app_renders_each_selectable_offline_state() -> None:
+    app = AppTest.from_file(Path(__file__).with_name("manual_mock_app.py")).run()
+    expected_headings = {
+        "New": "What would you like to research?",
+        "Running": "RESEARCH IN PROGRESS",
+        "Completed": "RESEARCH COMPLETED",
+        "History": "Research sessions",
+        "Max iterations": "RESEARCH PAUSED",
+        "Failed/partial": "RESEARCH FAILED",
+    }
+
+    for mode, heading in expected_headings.items():
+        next(item for item in app.selectbox if item.label == "Demo state").set_value(
+            mode
+        ).run()
+        assert heading in _visible_main_text(app)
+
+
+def test_demo_app_flow_researches_completes_and_reopens_history() -> None:
+    controller = DemoController()
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+
+    assert "What would you like to research?" in _visible_main_text(app)
+    app.text_area(key="research_question").set_value(
+        "How will grid-scale batteries reshape energy markets by 2030?"
+    ).run()
+    app.button(key="start_research").click().run()
+
+    started_id = app.session_state[_ACTIVE_SESSION_KEY]
+    assert started_id == controller.started_session_id
+    assert app.session_state[_VIEW_KEY] == "current"
+    assert "RESEARCH IN PROGRESS" in _visible_main_text(app)
+    assert "Researcher" in _visible_main_text(app)
+
+    controller.complete_started_session()
+    app.run()
+    completed_text = _visible_main_text(app)
+    assert app.session_state[_VIEW_KEY] == "current"
+    assert "RESEARCH COMPLETED" in completed_text
+    assert "# Executive Summary" in completed_text
+
+    app.button(key="session_history").click().run()
+    assert app.session_state[_VIEW_KEY] == "history"
+    assert "Research sessions" in _visible_main_text(app)
+    app.button(key=f"history_open_{started_id}").click().run()
+
+    assert app.session_state[_VIEW_KEY] == "current"
+    assert app.session_state[_SELECTED_SESSION_KEY] == started_id
+    reopened_text = _visible_main_text(app)
+    assert "RESEARCH COMPLETED" in reopened_text
+    assert "# Executive Summary" in reopened_text
+
+
+def test_demo_app_exposes_accessible_status_words_and_no_hidden_report_tab() -> None:
+    controller = DemoController()
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+
+    app.session_state[_ACTIVE_SESSION_KEY] = controller.running_session_id
+    app.session_state[_SELECTED_SESSION_KEY] = controller.running_session_id
+    app.session_state[_VIEW_KEY] = "current"
+    app.run()
+    running_text = _visible_main_text(app)
+
+    assert "How will grid-scale batteries reshape energy markets by 2030?" in (
+        running_text
+    )
+    assert all(
+        status in running_text
+        for status in ("Running", "Complete", "Active", "Queued")
+    )
+    assert any(
+        button.label == "Open LangSmith trace"
+        for button in app.main.get("link_button")
+    )
+    assert "Overall progress" not in running_text
+    assert re.search(r"\bETA\b", running_text) is None
+    activity_summaries = (
+        "Completed subtopic 1",
+        "Started subtopic 2",
+        "Evaluated 4 new sources",
+    )
+    assert sum(summary in running_text for summary in activity_summaries) == 3
+
+    app.session_state[_SELECTED_SESSION_KEY] = controller.completed_session_id
+    app.session_state[_ACTIVE_SESSION_KEY] = None
+    app.run()
+    completed_text = _visible_main_text(app)
+    assert any(
+        button.label == "Open LangSmith trace"
+        for button in app.main.get("link_button")
+    )
+    assert "SOURCE CREDIBILITY" in completed_text
+    assert "FACT-CHECK SUMMARY" in completed_text
+    assert "LIMITATIONS" in completed_text
+    assert "EXECUTION ERRORS" not in completed_text
+    assert len(app.tabs) == 0
