@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 class ProgressSummary(BaseModel):
     current_agent: str | None = None
     iteration: int = Field(default=0, ge=0)
+    planned_sub_topic_count: int = Field(default=0, ge=0)
     sub_topics: list[UiSubTopicProgress] = Field(default_factory=list)
     recent_activity: list[UiRecentActivity] = Field(default_factory=list)
     tool_calls: list[UiToolCallSummary] = Field(default_factory=list)
@@ -164,6 +165,7 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
     """Project structured events into truthful, user-facing progress data."""
     current_agent: str | None = None
     iteration = 0
+    planned_sub_topic_count = 0
     topics: dict[int, dict[str, object]] = {}
     tools: dict[str, list[int]] = {}
     activities: list[UiRecentActivity] = []
@@ -187,7 +189,17 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
                 )
 
         if event.event_type == "graph.session.completed":
-            current_agent = None
+            status = _text(metadata.get("status"))
+            if status != "failed":
+                current_agent = None
+
+        if event.event_type == "planner.planning.completed":
+            planned_count = _integer(metadata.get("sub_topic_count"), minimum=1)
+            if planned_count is not None:
+                planned_sub_topic_count = max(
+                    planned_sub_topic_count,
+                    planned_count,
+                )
 
         index = _integer(metadata.get("index"), minimum=1)
         if index is not None and event.event_type in {
@@ -234,14 +246,32 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
             activities.append(activity)
 
     meaningful = activities or fallback_activities
+    known_topics = [
+        UiSubTopicProgress.model_validate(topics[index])
+        for index in sorted(topics)
+        if topics[index].get("title")
+    ]
+    if planned_sub_topic_count:
+        topics_by_index = {topic.index: topic for topic in known_topics}
+        sub_topics = [
+            topics_by_index.get(
+                index,
+                UiSubTopicProgress(
+                    index=index,
+                    title=f"Queued subtopic {index}",
+                    status="queued",
+                ),
+            )
+            for index in range(1, planned_sub_topic_count + 1)
+        ]
+    else:
+        sub_topics = known_topics
+
     return ProgressSummary(
         current_agent=current_agent,
         iteration=iteration,
-        sub_topics=[
-            UiSubTopicProgress.model_validate(topics[index])
-            for index in sorted(topics)
-            if topics[index].get("title")
-        ],
+        planned_sub_topic_count=planned_sub_topic_count,
+        sub_topics=sub_topics,
         recent_activity=meaningful[-3:],
         tool_calls=[
             UiToolCallSummary(

@@ -31,6 +31,7 @@ _ACTIVE_SESSION_KEY = "_deep_research_active_session_id"
 _SELECTED_SESSION_KEY = "_deep_research_selected_session_id"
 _START_ERROR_KEY = "_deep_research_start_error"
 _START_IN_FLIGHT_KEY = "_deep_research_start_in_flight"
+_SIDEBAR_STATUS_PLACEHOLDER_KEY = "_deep_research_sidebar_status_placeholder"
 
 _CONFIGURATION_FAILURE_MESSAGE = "Research service configuration is unavailable."
 _FALLBACK_CONFIGURATION_HINT = "Review the research configuration and try again."
@@ -134,8 +135,15 @@ def _render_recent_row(
             vertical_alignment="center",
         )
         with status_column:
-            render_status(entry.status)
-            st.caption(_session_date(entry))
+            if entry.session_id == state.get(_ACTIVE_SESSION_KEY):
+                placeholder = st.empty()
+                state[_SIDEBAR_STATUS_PLACEHOLDER_KEY] = placeholder
+                with placeholder.container():
+                    render_status(entry.status)
+                    st.caption(_session_date(entry))
+            else:
+                render_status(entry.status)
+                st.caption(_session_date(entry))
         with action_column:
             st.button(
                 "Open",
@@ -194,6 +202,17 @@ def render_sidebar(controller: LocalResearchController) -> None:
             use_container_width=True,
         ):
             _set_view("history", state)
+
+
+def render_sidebar_status(snapshot: UiSessionSnapshot) -> None:
+    """Update the active row's status from the live fragment only."""
+    placeholder = st.session_state.get(_SIDEBAR_STATUS_PLACEHOLDER_KEY)
+    if placeholder is None:
+        return
+    entry = history_entry_from_snapshot(snapshot)
+    with placeholder.container():
+        render_status(entry.status)
+        st.caption(_session_date(entry))
 
 
 def _snapshot_for_selection(
@@ -406,6 +425,7 @@ def _render_health(snapshot: UiSessionSnapshot) -> None:
         )
         return
     issue_count = len(snapshot.errors)
+    issue_count += sum(call.failures for call in snapshot.tool_calls)
     if issue_count:
         noun = "issue" if issue_count == 1 else "issues"
         st.caption(f"{issue_count} {noun}; continuing")
@@ -630,6 +650,7 @@ __all__ = [
     "render_history_view",
     "render_new_research_view",
     "render_sidebar",
+    "render_sidebar_status",
     "render_status",
     "status_presentation",
 ]

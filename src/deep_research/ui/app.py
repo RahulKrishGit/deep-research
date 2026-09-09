@@ -64,7 +64,12 @@ def render_live_progress(controller: LocalResearchController) -> None:
     if not isinstance(session_id, str):
         return
     snapshot = controller.snapshot(session_id)
-    from deep_research.ui.components import _render_running_snapshot
+    from deep_research.ui.components import (
+        _render_running_snapshot,
+        render_sidebar_status,
+    )
+
+    render_sidebar_status(snapshot)
 
     if snapshot.status == "running":
         _render_running_snapshot(snapshot)

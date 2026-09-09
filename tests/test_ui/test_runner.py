@@ -137,6 +137,79 @@ def test_published_events_project_live_progress_and_snapshots_are_copies(
     _wait_for(lambda: controller.snapshot(first.session_id).status == "completed")
 
 
+def test_live_event_path_preserves_planned_five_subtopic_state(tmp_path: Path) -> None:
+    events = [
+        _event(
+            "planner.planning.completed",
+            metadata={"sub_topic_count": 5},
+        ),
+        _event(
+            "graph.node.started",
+            metadata={"node": "researcher", "iteration": 2},
+        ),
+        _event(
+            "researcher.sub_topic.started",
+            metadata={"index": 2, "sub_topic": "Grid adoption"},
+        ),
+    ]
+    runner = GatedSyncRunner(events=events)
+    controller = _controller(tmp_path, runner)
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    assert runner.started.wait(1)
+    live = controller.snapshot(snapshot.session_id)
+
+    assert live.current_agent == "researcher"
+    assert len(live.sub_topics) == 5
+    assert live.sub_topics[1].status == "running"
+    assert [topic.status for topic in live.sub_topics[2:]] == [
+        "queued",
+        "queued",
+        "queued",
+    ]
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
+
+
+def test_failed_event_path_preserves_last_agent_and_recoverable_tool_issue(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _event(
+            "planner.planning.completed",
+            metadata={"sub_topic_count": 5},
+        ),
+        _event(
+            "graph.node.started",
+            metadata={"node": "researcher", "iteration": 2},
+        ),
+        _event(
+            "researcher.sub_topic.started",
+            metadata={"index": 2, "sub_topic": "Grid adoption"},
+        ),
+        _event(
+            "researcher.tool_call",
+            metadata={
+                "tool": "web_search",
+                "success": False,
+                "provider_payload": "must not render",
+            },
+        ),
+    ]
+    runner = FailingSyncRunner(RuntimeError("private provider failure"), events=events)
+    controller = _controller(tmp_path, runner)
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "failed")
+    failed = controller.snapshot(snapshot.session_id)
+
+    assert failed.current_agent == "researcher"
+    assert len(failed.sub_topics) == 5
+    assert failed.tool_calls[0].failures == 1
+    assert "private provider failure" not in failed.model_dump_json()
+    assert "provider_payload" not in failed.model_dump_json()
+
+
 def test_terminal_snapshot_uses_authoritative_outcome_quality_fields(
     tmp_path: Path,
 ) -> None:

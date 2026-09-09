@@ -108,10 +108,24 @@ class GatedSyncRunner:
 class FailingSyncRunner:
     """Raise one supplied exception after recording the runner invocation."""
 
-    def __init__(self, error: Exception) -> None:
+    def __init__(
+        self,
+        error: Exception,
+        *,
+        events: Sequence[ResearchEvent] = (),
+    ) -> None:
         self.error = error
+        self.events = list(events)
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, **kwargs: Any) -> ResearchOutcome:
+    def __call__(
+        self,
+        *,
+        event_handler: Callable[[ResearchEvent], None] | None = None,
+        **kwargs: Any,
+    ) -> ResearchOutcome:
         self.calls.append(dict(kwargs))
+        if event_handler is not None:
+            for event in self.events:
+                event_handler(event)
         raise self.error

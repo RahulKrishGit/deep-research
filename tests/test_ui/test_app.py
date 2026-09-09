@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from time import sleep
 
 import pytest
+import yaml
 from streamlit.testing.v1 import AppTest
 
 from deep_research.runtime.errors import configuration_error
@@ -27,6 +30,10 @@ from deep_research.ui.models import (
     UiTokenUsage,
     UiToolCallSummary,
 )
+from deep_research.ui.progress import project_progress
+from deep_research.ui.runner import LocalResearchController
+from deep_research.utils.types import ResearchEvent
+from tests.test_ui.fakes import FailingSyncRunner
 
 
 def _entry(
@@ -168,6 +175,7 @@ def _snapshot(
     sub_topics: list[UiSubTopicProgress] | None = None,
     recent_activity: list[UiRecentActivity] | None = None,
     errors: list[object] | None = None,
+    tool_calls: list[UiToolCallSummary] | None = None,
     report: str | None = None,
 ) -> UiSessionSnapshot:
     from deep_research.utils.types import ResearchError
@@ -187,7 +195,8 @@ def _snapshot(
         max_iterations=4,
         sub_topics=sub_topics or [],
         recent_activity=recent_activity or [],
-        tool_calls=[
+        tool_calls=tool_calls
+        or [
             UiToolCallSummary(
                 tool_name="web_search",
                 display_label="Web search",
@@ -591,6 +600,33 @@ def test_recoverable_issue_is_concise_and_safe() -> None:
     assert "SECRET-DETAIL" not in visible
 
 
+def test_recoverable_failed_tool_event_is_reflected_in_health() -> None:
+    progress = project_progress(
+        [
+            ResearchEvent(
+                event_type="researcher.tool_call",
+                source="test",
+                message="private provider payload",
+                metadata={
+                    "tool": "web_search",
+                    "success": False,
+                    "payload": "SECRET-PAYLOAD",
+                },
+            )
+        ]
+    )
+    app = _running_app(
+        _snapshot(
+            tool_calls=progress.tool_calls,
+            recent_activity=progress.recent_activity,
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "1 issue; continuing" in visible
+    assert "SECRET-PAYLOAD" not in visible
+
+
 def test_running_rerun_does_not_start_a_duplicate_worker() -> None:
     app = _app([]).run()
     app.text_area(key="research_question").set_value("A valid question").run()
@@ -600,6 +636,47 @@ def test_running_rerun_does_not_start_a_duplicate_worker() -> None:
     app.run()
 
     assert len(controller.start_calls) == 1
+
+
+def test_live_fragment_updates_sidebar_status_after_terminal_snapshot() -> None:
+    session_id = "g" * 32
+    running = _snapshot(status="running").model_copy(
+        update={"session_id": session_id}
+    )
+    completed = running.model_copy(
+        update={"status": "completed", "report": "Done"}
+    )
+
+    class SequencedController(FakeController):
+        def __init__(self) -> None:
+            super().__init__([_entry(session_id, "Question", "running", 0)])
+            self.snapshots = iter([running, completed])
+
+        def snapshot(self, requested_id: str) -> UiSessionSnapshot:
+            assert requested_id == session_id
+            return next(self.snapshots)
+
+    controller = SequencedController()
+
+    def fragment_script(active_controller) -> None:
+        import streamlit as st
+
+        from deep_research.ui.app import _ACTIVE_SESSION_KEY, render_live_progress
+        from deep_research.ui.components import render_sidebar
+
+        st.session_state[_ACTIVE_SESSION_KEY] = "g" * 32
+
+        render_sidebar(active_controller)
+        render_live_progress(active_controller)
+
+    app = AppTest.from_function(
+        fragment_script,
+        kwargs={"active_controller": controller},
+    ).run()
+    sidebar_text = "\n".join(item.value for item in app.sidebar.markdown)
+
+    assert "Completed" in sidebar_text
+    assert "Running" not in sidebar_text
 
 
 def test_running_screen_labels_derived_fraction_as_phase_progress() -> None:
@@ -699,3 +776,66 @@ def test_failed_snapshot_retains_last_progress_and_uses_safe_error() -> None:
     assert "Last known activity" in visible
     assert "Research run failed unexpectedly." in visible
     assert "SECRET-STACK-TRACE" not in visible
+
+
+def test_failed_runner_snapshot_renders_last_known_agent_and_activity(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "graph": {"max_iterations": 4},
+                "output": {"directory": str(tmp_path / "output")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    runner = FailingSyncRunner(
+        RuntimeError("private provider failure"),
+        events=[
+            ResearchEvent(
+                event_type="planner.planning.completed",
+                source="test",
+                message="Planning complete.",
+                metadata={"sub_topic_count": 5},
+            ),
+            ResearchEvent(
+                event_type="graph.node.started",
+                source="test",
+                message="Researcher started.",
+                metadata={"node": "researcher", "iteration": 2},
+            ),
+            ResearchEvent(
+                event_type="researcher.sub_topic.started",
+                source="test",
+                message="Subtopic started.",
+                metadata={"index": 2, "sub_topic": "Last active topic"},
+            ),
+        ],
+    )
+    controller = LocalResearchController(
+        config_path=str(config_path),
+        runner=runner,
+        preflight=lambda **_: object(),
+    )
+    snapshot = controller.start(question="Question", max_iterations=2)
+    for _ in range(100):
+        if controller.snapshot(snapshot.session_id).status == "failed":
+            break
+        sleep(0.01)
+
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+    app.session_state[_ACTIVE_SESSION_KEY] = snapshot.session_id
+    app.session_state[_SELECTED_SESSION_KEY] = snapshot.session_id
+    app.session_state[_VIEW_KEY] = "current"
+    app.run()
+    visible = _visible_main_text(app)
+
+    assert "Researcher" in visible
+    assert "Subtopic 2 of 5" in visible
+    assert "Last active topic" in visible
+    assert "Research run failed unexpectedly." in visible

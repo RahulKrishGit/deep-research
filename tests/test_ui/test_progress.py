@@ -173,6 +173,30 @@ def test_project_progress_projects_agent_iteration_subtopics_and_tools() -> None
     ]
 
 
+def test_project_progress_preserves_planned_subtopic_denominator_from_events() -> None:
+    summary = project_progress(
+        [
+            event(
+                "planner.planning.completed",
+                metadata={"sub_topic_count": 5},
+            ),
+            event(
+                "researcher.sub_topic.started",
+                metadata={"index": 2, "sub_topic": "Grid adoption"},
+            ),
+        ]
+    )
+
+    assert len(summary.sub_topics) == 5
+    assert summary.sub_topics[1].title == "Grid adoption"
+    assert summary.sub_topics[1].status == "running"
+    assert [topic.status for topic in summary.sub_topics[2:]] == [
+        "queued",
+        "queued",
+        "queued",
+    ]
+
+
 def test_project_progress_preserves_subtopic_fields_on_completion() -> None:
     summary = project_progress(
         [

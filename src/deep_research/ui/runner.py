@@ -351,7 +351,9 @@ class LocalResearchController:
                 status=status,
                 started_at=started_at,
                 finished_at=finished_at,
-                current_agent=None,
+                current_agent=(
+                    progress.current_agent if status == "failed" else None
+                ),
                 iteration=outcome.state.iteration,
                 max_iterations=outcome.state.max_iterations,
                 sub_topics=progress.sub_topics,
@@ -377,7 +379,11 @@ class LocalResearchController:
             status=status,
             started_at=started_at,
             finished_at=finished_at,
-            current_agent=(None if status != "running" else progress.current_agent),
+            current_agent=(
+                progress.current_agent
+                if status in {"running", "failed"}
+                else None
+            ),
             iteration=progress.iteration,
             max_iterations=requested_max_iterations,
             sub_topics=progress.sub_topics,
