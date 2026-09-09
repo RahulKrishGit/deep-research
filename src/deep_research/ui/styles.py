@@ -76,6 +76,7 @@ STATIC_CSS = """
 .stApp {
   background: var(--dr-background);
   color: var(--dr-text);
+  color-scheme: light;
 }
 
 [data-testid="stAppViewContainer"] {
@@ -235,6 +236,52 @@ STATIC_CSS = """
 .stButton > button {
   border-radius: var(--dr-radius-control);
   box-shadow: none;
+}
+
+button[kind="primary"],
+button[kind="primaryFormSubmit"] {
+  background: var(--dr-active) !important;
+  border-color: var(--dr-active) !important;
+  color: var(--dr-background) !important;
+}
+
+button[kind="secondary"] {
+  background: var(--dr-background) !important;
+  border-color: var(--dr-border) !important;
+  color: var(--dr-text) !important;
+}
+
+[data-testid="stTextArea"] textarea,
+[data-testid="stNumberInputField"] {
+  background: var(--dr-background) !important;
+  color: var(--dr-text) !important;
+}
+
+[data-testid="stTextAreaRootElement"],
+[data-testid="stNumberInputContainer"] {
+  background: var(--dr-background) !important;
+  border: 1px solid var(--dr-border) !important;
+  border-radius: var(--dr-radius-control) !important;
+}
+
+[data-testid="stTextArea"] textarea {
+  min-height: 152px;
+}
+
+[data-testid="stNumberInputContainer"] input {
+  background: transparent !important;
+}
+
+[data-testid="stNumberInputContainer"] [data-testid^="stNumberInputStep"] {
+  background: var(--dr-surface) !important;
+  color: var(--dr-text) !important;
+}
+
+.dr-readonly-field {
+  border: 1px solid var(--dr-border);
+  border-radius: var(--dr-radius-control);
+  color: var(--dr-text);
+  padding: var(--dr-space-2) var(--dr-space-3);
 }
 
 [data-testid="stSidebar"] .stButton > button {

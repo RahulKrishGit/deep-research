@@ -15,6 +15,7 @@ _SELECTED_SESSION_KEY = "_deep_research_selected_session_id"
 _HISTORY_SEARCH_KEY = "_deep_research_history_search"
 _HISTORY_FILTER_KEY = "_deep_research_history_filter"
 _START_ERROR_KEY = "_deep_research_start_error"
+_START_IN_FLIGHT_KEY = "_deep_research_start_in_flight"
 
 _VALID_VIEWS = {"new", "current", "history"}
 
@@ -42,6 +43,7 @@ def _initialize_session_state() -> None:
         _HISTORY_SEARCH_KEY: "",
         _HISTORY_FILTER_KEY: "all",
         _START_ERROR_KEY: None,
+        _START_IN_FLIGHT_KEY: False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -86,7 +88,7 @@ def render_app(controller=None) -> None:
     elif view == "current":
         render_current_session_view(resolved_controller)
     else:
-        render_new_research_view()
+        render_new_research_view(resolved_controller)
 
 
 if __name__ == "__main__":
@@ -100,6 +102,7 @@ __all__ = [
     "_HISTORY_SEARCH_KEY",
     "_SELECTED_SESSION_KEY",
     "_START_ERROR_KEY",
+    "_START_IN_FLIGHT_KEY",
     "_VIEW_KEY",
     "render_app",
     "resolve_controller",

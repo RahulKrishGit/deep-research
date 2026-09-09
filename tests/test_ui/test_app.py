@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 from streamlit.testing.v1 import AppTest
 
+from deep_research.runtime.errors import configuration_error
 from deep_research.ui.app import (
     _ACTIVE_SESSION_KEY,
+    _CONTROLLER_KEY,
     _SELECTED_SESSION_KEY,
     _VIEW_KEY,
     render_app,
@@ -51,8 +53,61 @@ def _entry(
 
 
 class FakeController:
-    def __init__(self, entries: list[SessionHistoryEntry]) -> None:
+    def __init__(
+        self,
+        entries: list[SessionHistoryEntry],
+        *,
+        start_error: Exception | None = None,
+    ) -> None:
         self.entries = entries
+        self.start_error = start_error
+        self.start_calls: list[dict[str, object]] = []
+        self.started_snapshots: dict[str, UiSessionSnapshot] = {}
+
+    @property
+    def default_max_iterations(self) -> int:
+        return 4
+
+    def start(
+        self,
+        *,
+        question: str,
+        max_iterations: int,
+        output_format: str = "markdown",
+    ) -> UiSessionSnapshot:
+        self.start_calls.append(
+            {
+                "question": question,
+                "max_iterations": max_iterations,
+                "output_format": output_format,
+            }
+        )
+        if self.start_error is not None:
+            raise self.start_error
+        session_id = "r" * 32
+        snapshot = UiSessionSnapshot(
+            session_id=session_id,
+            question=question,
+            status="running",
+            started_at=datetime(2026, 9, 9, tzinfo=timezone.utc),
+            iteration=0,
+            max_iterations=max_iterations,
+            source_summary=UiSourceSummary(
+                total=0,
+                high=0,
+                moderate=0,
+                low=0,
+                unrated=0,
+            ),
+            fact_check_summary=UiFactCheckSummary(
+                verified=0,
+                unverified=0,
+                contradicted=0,
+                insufficient_evidence=0,
+            ),
+        )
+        self.started_snapshots[session_id] = snapshot
+        return snapshot
 
     def list_history(self, *, limit: int = 50) -> list[SessionHistoryEntry]:
         return self.entries[:limit]
@@ -64,6 +119,8 @@ class FakeController:
         )
 
     def snapshot(self, session_id: str) -> UiSessionSnapshot:
+        if session_id in self.started_snapshots:
+            return self.started_snapshots[session_id]
         entry = self.history_entry(session_id)
         assert entry is not None
         return UiSessionSnapshot(
@@ -79,15 +136,117 @@ class FakeController:
         )
 
 
-def _app(entries: list[SessionHistoryEntry]) -> AppTest:
+def _app(
+    entries: list[SessionHistoryEntry],
+    *,
+    start_error: Exception | None = None,
+) -> AppTest:
     return AppTest.from_function(
         render_app,
-        kwargs={"controller": FakeController(entries)},
+        kwargs={
+            "controller": FakeController(entries, start_error=start_error),
+        },
     )
 
 
 def _button_values(app: AppTest) -> list[str]:
     return [button.label for button in app.button]
+
+
+def test_new_research_screen_has_question_form_and_ready_state() -> None:
+    app = _app([]).run()
+
+    assert app.text_area(key="research_question").label == "Research question"
+    assert app.number_input(key="max_iterations").label == "Maximum iterations"
+    assert any("Markdown" in item.value for item in app.main.markdown)
+    assert any("Start Research" in value for value in _button_values(app))
+    assert any("Ready to start" in item.value for item in app.main.markdown)
+    assert not any("Session history" in item.value for item in app.main.markdown)
+    assert not any("Current session" in item.value for item in app.main.markdown)
+
+
+def test_new_research_blank_question_disables_submit_and_preserves_draft_values(
+) -> None:
+    app = _app([]).run()
+
+    app.text_area(key="research_question").set_value("   ").run()
+    app.number_input(key="max_iterations").set_value(6).run()
+
+    assert app.text_area(key="research_question").value == "   "
+    assert app.number_input(key="max_iterations").value == 6
+    assert app.button(key="start_research").disabled is True
+    assert app.session_state[_CONTROLLER_KEY].start_calls == []
+
+
+def test_valid_question_can_submit_and_forwards_markdown_configuration() -> None:
+    app = _app([]).run()
+
+    app.text_area(key="research_question").set_value(
+        "How will grid-scale batteries reshape energy markets by 2030?"
+    ).run()
+    app.number_input(key="max_iterations").set_value(6).run()
+    app.button(key="start_research").click().run()
+
+    controller = app.session_state[_CONTROLLER_KEY]
+    assert len(controller.start_calls) == 1
+    assert controller.start_calls[0] == {
+        "question": "How will grid-scale batteries reshape energy markets by 2030?",
+        "max_iterations": 6,
+        "output_format": "markdown",
+    }
+
+
+def test_configuration_error_preserves_draft_values() -> None:
+    app = _app(
+        [],
+        start_error=configuration_error(
+            reason="missing_secrets",
+            message="secret=TOP-SECRET-CONFIGURATION-DIAGNOSTIC",
+        ),
+    ).run()
+
+    app.text_area(key="research_question").set_value("Keep this question").run()
+    app.number_input(key="max_iterations").set_value(7).run()
+    app.button(key="start_research").click().run()
+
+    assert app.session_state[_VIEW_KEY] == "new"
+    assert app.text_area(key="research_question").value == "Keep this question"
+    assert app.number_input(key="max_iterations").value == 7
+
+
+def test_configuration_error_renders_only_safe_project_message() -> None:
+    sensitive_message = "provider-key=TOP-SECRET-CONFIGURATION-DIAGNOSTIC"
+    app = _app(
+        [],
+        start_error=configuration_error(
+            reason="missing_secrets",
+            message=sensitive_message,
+        ),
+    ).run()
+
+    app.text_area(key="research_question").set_value("A valid question").run()
+    app.button(key="start_research").click().run()
+
+    visible_text = "\n".join(
+        [item.value for item in app.main.markdown]
+        + [item.value for item in app.main.error]
+        + [item.value for item in app.main.caption]
+    )
+    assert "Research service configuration is unavailable." in visible_text
+    assert "Set the selected chat provider's API key" in visible_text
+    assert sensitive_message not in visible_text
+
+
+def test_start_stores_session_and_immediately_renders_running_view() -> None:
+    app = _app([]).run()
+
+    app.text_area(key="research_question").set_value("A valid question").run()
+    app.button(key="start_research").click().run()
+
+    assert app.session_state[_ACTIVE_SESSION_KEY] == "r" * 32
+    assert app.session_state[_VIEW_KEY] == "current"
+    assert any("Running" in item.value for item in app.main.markdown)
+    assert any("A valid question" in item.value for item in app.main.markdown)
 
 
 def test_initial_shell_has_identity_navigation_and_at_most_five_recent_rows() -> None:
