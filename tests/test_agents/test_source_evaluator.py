@@ -580,7 +580,9 @@ async def test_a_full_run_writes_sources_events_and_span_outputs(
     assert outcome.react.stop_reason == "finished"
     assert outcome.result is not None
     assert len(outcome.result.sources) == 2
-    assert [call[0] for call in completer.calls] == ["SourceScoresDraft"]
+    requested_schemas = [call[0] for call in completer.calls]
+    assert requested_schemas == ["SourceScoresDraft"]
+    assert "ReActDecision" not in requested_schemas
 
     merged = merge_research_state(state, outcome.state_update)
     assert [source.url for source in merged.evaluated_sources] == [

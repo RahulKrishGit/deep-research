@@ -467,7 +467,9 @@ async def test_a_run_writes_the_report_and_records_its_counts(
     assert "Vendor numbers remain unaudited." in outcome.result.markdown
     assert outcome.react.stop_reason == "finished"
     assert outcome.errors == []
-    assert [call[0] for call in completer.calls] == ["ReportDraft"]
+    requested_schemas = [call[0] for call in completer.calls]
+    assert requested_schemas == ["ReportDraft"]
+    assert "ReActDecision" not in requested_schemas
     # One high-confidence verified claim was kept for future sessions.
     assert [content for content, _ in memory.saved] == [
         "Logical error rates fell below break-even in 2025."
