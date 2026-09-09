@@ -43,7 +43,9 @@ AGENT_NAMES: tuple[AgentName, ...] = (
     "synthesizer",
     "critic",
 )
-CLI_AGENT_NAMES: tuple[str, ...] = tuple(name.replace("_", "-") for name in AGENT_NAMES)
+CLI_AGENT_NAMES: tuple[str, ...] = tuple(
+    name.replace("_", "-") for name in AGENT_NAMES
+)
 TIERS: tuple[EvaluationTier, ...] = ("controlled", "live")
 
 _CASE_ID_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -66,7 +68,9 @@ def parse_agent_name(value: str) -> AgentName:
     candidate = value.strip().casefold().replace("-", "_")
     if candidate not in AGENT_NAMES:
         valid = ", ".join(CLI_AGENT_NAMES)
-        raise UnknownAgentError(f"unknown agent {value!r}; expected one of: {valid}")
+        raise UnknownAgentError(
+            f"unknown agent {value!r}; expected one of: {valid}"
+        )
     return candidate  # type: ignore[return-value]
 
 
@@ -150,7 +154,6 @@ class EvaluationCase(ContractModel):
     expectations: CaseExpectations
     judge_rubric: JudgeRubric
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
-
     @model_validator(mode="after")
     def validate_case_id(self) -> "EvaluationCase":
         if not _CASE_ID_PATTERN.match(self.case_id):
@@ -224,12 +227,6 @@ class ReActSummary(ContractModel):
     stop_reason: ReActStopReason
     max_iterations: int = Field(ge=1)
     tool_budget: int = Field(ge=0)
-
-    @field_validator("stop_reason", mode="before")
-    @classmethod
-    def normalize_legacy_stop_reason(cls, value: object) -> object:
-        """Read older local artifacts while writing only current vocabulary."""
-        return "finished" if value == "completed" else value
 
 
 class FallbackProviderDiagnostic(ContractModel):
@@ -559,7 +556,9 @@ class RepetitionResult(ContractModel):
     @property
     def passed(self) -> bool:
         return (
-            self.completed and self.gates.passed and self.aggregate_quality is not None
+            self.completed
+            and self.gates.passed
+            and self.aggregate_quality is not None
         )
 
 

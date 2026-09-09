@@ -355,7 +355,9 @@ def test_the_live_threshold_is_zero_point_seven_five(
     passing = build_case_result(None, repetitions_at([0.75]), threshold=0.75)
     failing = build_case_result(None, repetitions_at([0.74]), threshold=0.75)
 
-    assert decide_status([passing], tier="live", runtime=runtime) == ("REVIEW REQUIRED")
+    assert decide_status([passing], tier="live", runtime=runtime) == (
+        "REVIEW REQUIRED"
+    )
     assert decide_status([failing], tier="live", runtime=runtime) == "FAILED"
 
 
@@ -446,10 +448,12 @@ async def test_the_summary_observes_every_completed_row_before_it_runs(
 ) -> None:
     import deep_research.evaluation.runner as runner_module
 
-    original_evaluate_target = runner_module.evaluate_target
+    original_evaluate_target = runner_module.evaluate_target_with_metrics
 
     def evaluate_with_available_trace(output, case, *, secrets):
-        gates, quality = original_evaluate_target(output, case, secrets=secrets)
+        gates, quality, metrics = original_evaluate_target(
+            output, case, secrets=secrets
+        )
         return (
             GateReport(
                 results=[
@@ -460,9 +464,12 @@ async def test_the_summary_observes_every_completed_row_before_it_runs(
                 ]
             ),
             quality,
+            metrics,
         )
 
-    monkeypatch.setattr(runner_module, "evaluate_target", evaluate_with_available_trace)
+    monkeypatch.setattr(
+        runner_module, "evaluate_target_with_metrics", evaluate_with_available_trace
+    )
     runner = FakeEvaluateRunner(examples=partially_failing_harness.examples)
 
     result = await run_agent_evaluation(
@@ -510,7 +517,8 @@ async def test_summary_upload_failure_is_recorded_without_rewriting_verdict(
 
     assert result.status == "FAILED"
     assert any(
-        error.stage == "trace" and error.reason == "langsmith_summary_unavailable"
+        error.stage == "trace"
+        and error.reason == "langsmith_summary_unavailable"
         for error in result.errors
     )
     assert secret not in result.model_dump_json()
@@ -804,7 +812,9 @@ async def test_experiment_url_falls_back_to_comparison_url(
         url=None,
         comparison_url=comparison_url,
     )
-    runner = FakeEvaluateRunner(examples=evaluation_harness.examples, results=results)
+    runner = FakeEvaluateRunner(
+        examples=evaluation_harness.examples, results=results
+    )
 
     result = await run_agent_evaluation(
         settings,
@@ -835,7 +845,9 @@ async def test_experiment_url_failure_is_auxiliary_and_preserves_quality_status(
         url=None,
         comparison_error=ConnectionError("url unavailable"),
     )
-    runner = FakeEvaluateRunner(examples=evaluation_harness.examples, results=results)
+    runner = FakeEvaluateRunner(
+        examples=evaluation_harness.examples, results=results
+    )
 
     result = await run_agent_evaluation(
         settings,
@@ -847,7 +859,9 @@ async def test_experiment_url_failure_is_auxiliary_and_preserves_quality_status(
 
     assert result.status == baseline.status
     assert result.experiment_url is None
-    assert any(error.reason == "experiment_url_unavailable" for error in result.errors)
+    assert any(
+        error.reason == "experiment_url_unavailable" for error in result.errors
+    )
 
 
 @pytest.mark.asyncio
@@ -856,7 +870,7 @@ async def test_a_gate_evaluation_exception_is_recorded_not_dropped(
 ) -> None:
     """Finding 16's defense in depth: even though the root-cause fix makes
     ``normalize_source_url`` total, ``_dispatch_code``'s ``try`` around
-    ``evaluate_target`` must widen past ``ValidationError`` so that ANY
+    ``evaluate_target_with_metrics`` must widen past ``ValidationError`` so that ANY
     unexpected exception from gate evaluation is caught, rather than
     relying solely on ``normalize_source_url`` never raising again.
 
@@ -873,7 +887,7 @@ async def test_a_gate_evaluation_exception_is_recorded_not_dropped(
     def _boom(output, case, *, secrets):
         raise ValueError("simulated: Port out of range 0-65535")
 
-    monkeypatch.setattr(runner_module, "evaluate_target", _boom)
+    monkeypatch.setattr(runner_module, "evaluate_target_with_metrics", _boom)
 
     focused = evaluation_harness.for_case("focused-decomposition")
     runner = FakeEvaluateRunner(examples=focused.examples)
@@ -891,7 +905,9 @@ async def test_a_gate_evaluation_exception_is_recorded_not_dropped(
     # Not dropped: all three repetitions are still present.
     assert len(repetitions) == 3
     assert all(r.gates.passed is False for r in repetitions)
-    assert all("gate_evaluation_error" in r.gates.failed_ids for r in repetitions)
+    assert all(
+        "gate_evaluation_error" in r.gates.failed_ids for r in repetitions
+    )
     assert all(r.deterministic_quality == 0.0 for r in repetitions)
 
 
@@ -926,7 +942,9 @@ async def test_run_agent_evaluation_wires_the_threshold_and_floor_correctly(
             case, repetitions, threshold=threshold, floor=floor
         )
 
-    monkeypatch.setattr(runner_module, "build_case_result", spying_build_case_result)
+    monkeypatch.setattr(
+        runner_module, "build_case_result", spying_build_case_result
+    )
 
     runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
     runtime = runtime_config_for("planner")
@@ -944,7 +962,9 @@ async def test_run_agent_evaluation_wires_the_threshold_and_floor_correctly(
     assert runtime.repetition_floor == pytest.approx(0.65)
     assert runtime.case_average_threshold != runtime.repetition_floor
     for call in captured_calls:
-        assert call["threshold"] == pytest.approx(runtime.case_average_threshold)
+        assert call["threshold"] == pytest.approx(
+            runtime.case_average_threshold
+        )
         assert call["floor"] == pytest.approx(runtime.repetition_floor)
 
 
@@ -1033,7 +1053,9 @@ async def test_the_artifact_is_written_and_revalidates(
         json.loads(path.read_text(encoding="utf-8"))
     )
     assert restored == result
-    assert len([r for case in restored.cases for r in case.repetitions]) == 9
+    assert len(
+        [r for case in restored.cases for r in case.repetitions]
+    ) == 9
     assert set(_summary_values({"results": runner.summary_feedback})) == {
         "evaluation_status",
         "evaluation_failure_reason",

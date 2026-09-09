@@ -119,7 +119,9 @@ def test_deterministic_metric_weights_must_sum_to_one() -> None:
             max_iterations=5,
             max_tool_calls=10,
             deterministic_metrics=[
-                DeterministicMetric(metric_id="coverage", weight=0.5, description="d")
+                DeterministicMetric(
+                    metric_id="coverage", weight=0.5, description="d"
+                )
             ],
         )
 
@@ -135,8 +137,12 @@ def test_deterministic_metric_ids_must_be_unique() -> None:
             max_iterations=5,
             max_tool_calls=10,
             deterministic_metrics=[
-                DeterministicMetric(metric_id="coverage", weight=0.5, description="d"),
-                DeterministicMetric(metric_id="coverage", weight=0.5, description="d"),
+                DeterministicMetric(
+                    metric_id="coverage", weight=0.5, description="d"
+                ),
+                DeterministicMetric(
+                    metric_id="coverage", weight=0.5, description="d"
+                ),
             ],
         )
 
@@ -506,6 +512,15 @@ def test_repetition_result_rejects_unknown_stop_reasons_and_unsafe_fallbacks() -
             iterations=0,
             tool_calls=0,
             stop_reason="unknown",
+            max_iterations=1,
+            tool_budget=0,
+        )
+
+    with pytest.raises(ValueError):
+        ReActSummary(
+            iterations=0,
+            tool_calls=0,
+            stop_reason="completed",
             max_iterations=1,
             tool_budget=0,
         )

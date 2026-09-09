@@ -52,8 +52,7 @@ from deep_research.evaluation.dependencies import (
 from deep_research.evaluation.evaluators import (
     METRIC_FUNCTIONS,
     code_evaluator,
-    deterministic_metric_scores,
-    evaluate_target,
+    evaluate_target_with_metrics,
 )
 from deep_research.evaluation.factory import evaluation_session_id
 from deep_research.evaluation.judging import (
@@ -211,7 +210,9 @@ def _validate_case_identities(cases: Sequence[EvaluationCase]) -> None:
         versions.setdefault(case.case_id, set()).add(case.version)
     duplicates = sorted(key[0] for key, count in seen.items() if count > 1)
     if duplicates:
-        raise CaseRegistryError(f"duplicate case identities: {', '.join(duplicates)}")
+        raise CaseRegistryError(
+            f"duplicate case identities: {', '.join(duplicates)}"
+        )
     conflicting = sorted(
         case_id for case_id, found in versions.items() if len(found) > 1
     )
@@ -249,12 +250,16 @@ async def preflight(
     # 2. A specifically requested case actually exists.
     if runtime.case_id is not None:
         try:
-            smoke_case = case_by_id(runtime.agent_name, runtime.tier, runtime.case_id)
+            smoke_case = case_by_id(
+                runtime.agent_name, runtime.tier, runtime.case_id
+            )
         except UnknownCaseError as error:
             raise PreflightError("unknown_case", str(error)) from error
     else:
         if not cases:
-            raise PreflightError("unknown_case", "no cases were supplied to preflight")
+            raise PreflightError(
+                "unknown_case", "no cases were supplied to preflight"
+            )
         smoke_case = cases[0]
 
     # 3. Reasoning efforts re-resolve without error against the current
@@ -292,7 +297,9 @@ async def preflight(
         )
     )
     missing = [
-        variable for variable in required if not environ.get(variable, "").strip()
+        variable
+        for variable in required
+        if not environ.get(variable, "").strip()
     ]
     if missing:
         raise PreflightError(
@@ -354,7 +361,9 @@ async def preflight(
         provider = build_chat_provider(
             target_llm_config(runtime, settings.llm),
             tracker,
-            api_key=environ.get(CHAT_PROVIDER_CREDENTIALS[settings.llm.provider]),
+            api_key=environ.get(
+                CHAT_PROVIDER_CREDENTIALS[settings.llm.provider]
+            ),
         )
         build_agent(
             runtime.agent_name,
@@ -399,7 +408,9 @@ EXPERIMENT_EXIT_CODES: dict[EvaluationStatus, int] = {
 
 EvaluateCallable = Callable[..., Awaitable[Any]]
 
-_SUMMARY_FEEDBACK_KEYS = frozenset({"evaluation_status", "evaluation_failure_reason"})
+_SUMMARY_FEEDBACK_KEYS = frozenset(
+    {"evaluation_status", "evaluation_failure_reason"}
+)
 
 
 class _SummaryFeedbackClient:
@@ -573,7 +584,9 @@ def build_case_result(
         all(repetition.completed for repetition in repetitions)
         and all(repetition.gates.passed for repetition in repetitions)
         and all_scored
-        and all(score is not None and score >= effective_floor for score in scores)
+        and all(
+            score is not None and score >= effective_floor for score in scores
+        )
         and average_quality is not None
         and average_quality >= threshold
     )
@@ -590,7 +603,9 @@ def build_case_result(
         )
         lowest_scoring_trace_url = lowest.trace_url
     else:
-        lowest_scoring_trace_url = repetitions[0].trace_url if repetitions else None
+        lowest_scoring_trace_url = (
+            repetitions[0].trace_url if repetitions else None
+        )
 
     if case is not None:
         case_id, case_version = case.case_id, case.version
@@ -610,7 +625,9 @@ def build_case_result(
 
 def _build_case_results(
     case_by_identity: Mapping[tuple[str, int], EvaluationCase],
-    repetitions_by_case: Mapping[tuple[str, int], Sequence[RepetitionResult]],
+    repetitions_by_case: Mapping[
+        tuple[str, int], Sequence[RepetitionResult]
+    ],
     *,
     runtime: EvaluationRuntimeConfig,
 ) -> list[CaseResult]:
@@ -681,14 +698,18 @@ def evaluation_failure_reason(
 
     threshold, floor = _quality_thresholds(runtime)
     for case in cases:
-        for repetition in sorted(case.repetitions, key=lambda item: item.repetition):
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
             if repetition.errors:
                 return (
                     f"{case.case_id} repetition {repetition.repetition} "
                     f"failed {repetition.errors[0].reason}"
                 )
     for case in cases:
-        for repetition in sorted(case.repetitions, key=lambda item: item.repetition):
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
             if repetition.gates.failed_ids:
                 return (
                     f"{case.case_id} repetition {repetition.repetition} "
@@ -816,7 +837,9 @@ def _row_identity(
     return (case_id, case_version, repetition)
 
 
-def _metadata_url(metadata: Mapping[str, Any], key: str) -> str | None:
+def _metadata_url(
+    metadata: Mapping[str, Any], key: str
+) -> str | None:
     """A directly supplied URL string from feedback metadata, else ``None``.
 
     Only a non-empty string is retained; nothing is derived, reconstructed,
@@ -1087,9 +1110,11 @@ async def run_agent_evaluation(
         except ValidationError:
             return code_evaluators[case_identity](run, example)
         try:
-            gates, deterministic = evaluate_target(output, case, secrets=secrets)
-            deterministic_metrics = deterministic_metric_scores(
-                output, case, metric_functions=METRIC_FUNCTIONS
+            gates, deterministic, deterministic_metrics = evaluate_target_with_metrics(
+                output,
+                case,
+                secrets=secrets,
+                metric_functions=METRIC_FUNCTIONS,
             )
         except Exception as error:
             # Defense in depth for finding 16: a gate that raises (e.g. a
@@ -1327,7 +1352,6 @@ async def run_agent_evaluation(
 
     return result
 
-
 # --- Task 26: the six-agent controlled suite --------------------------------
 
 
@@ -1440,7 +1464,9 @@ async def run_suite_evaluation(
             cases = list(cases_for(agent_name, "controlled"))
 
             tracker = Tracker.from_config(settings.langsmith, environ=environ)
-            chat_key = environ.get(CHAT_PROVIDER_CREDENTIALS[settings.llm.provider])
+            chat_key = environ.get(
+                CHAT_PROVIDER_CREDENTIALS[settings.llm.provider]
+            )
             target_provider = build_chat_provider(
                 target_llm_config(runtime, settings.llm),
                 tracker,

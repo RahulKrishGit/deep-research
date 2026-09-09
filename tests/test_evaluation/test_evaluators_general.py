@@ -13,6 +13,7 @@ from deep_research.evaluation.evaluators import (
     deterministic_quality,
     evaluate_general_gates,
     evaluate_target,
+    evaluate_target_with_metrics,
 )
 from deep_research.evaluation.models import (
     DependencyLedger,
@@ -47,7 +48,9 @@ def test_the_general_gates_cover_every_rule_the_spec_names() -> None:
 def test_a_clean_run_passes_every_general_gate(
     planner_case, clean_target_output
 ) -> None:
-    results = evaluate_general_gates(clean_target_output, planner_case, secrets=())
+    results = evaluate_general_gates(
+        clean_target_output, planner_case, secrets=()
+    )
 
     assert [item.gate_id for item in results] == list(GENERAL_GATE_IDS)
     assert all(item.passed for item in results), [
@@ -152,7 +155,9 @@ def test_an_unknown_citation_fails_the_citation_gate(
     researcher_case, researcher_target_output
 ) -> None:
     result = dict(researcher_target_output.result)
-    result["findings"] = [{"source_url": "https://invented.example.com/page"}]
+    result["findings"] = [
+        {"source_url": "https://invented.example.com/page"}
+    ]
     output = researcher_target_output.model_copy(update={"result": result})
 
     results = evaluate_general_gates(output, researcher_case, secrets=())
@@ -204,7 +209,9 @@ def test_a_live_case_without_known_urls_fails_on_unknown_citations(
     assert live_case.expectations.known_source_urls == []
 
     result = dict(researcher_target_output.result)
-    result["findings"] = [{"source_url": "https://invented.example.com/page"}]
+    result["findings"] = [
+        {"source_url": "https://invented.example.com/page"}
+    ]
     output = researcher_target_output.model_copy(
         update={"result": result, "trajectory": []}
     )
@@ -282,7 +289,9 @@ def test_a_malformed_cited_url_fails_the_citation_gate_without_raising(
     of failing it (worse than a crash: it inflates the pass rate).
     """
     result = dict(researcher_target_output.result)
-    result["findings"] = [{"source_url": "https://ex.com:99999/page"}]
+    result["findings"] = [
+        {"source_url": "https://ex.com:99999/page"}
+    ]
     output = researcher_target_output.model_copy(update={"result": result})
 
     results = evaluate_general_gates(output, researcher_case, secrets=())
@@ -345,7 +354,9 @@ def test_a_secret_anywhere_in_the_output_fails_the_secret_gate(
     assert "sk-abcdefghijklmnop" not in failed.detail
 
 
-def test_a_prohibited_call_fails_its_gate(planner_case, clean_target_output) -> None:
+def test_a_prohibited_call_fails_its_gate(
+    planner_case, clean_target_output
+) -> None:
     ledger = clean_target_output.dependencies.model_copy(
         update={"prohibited_calls": ["tavily.search"]}
     )
@@ -391,7 +402,9 @@ def test_deterministic_quality_is_the_weighted_sum_of_passing_metrics(
 ) -> None:
     functions = {
         metric.metric_id: (lambda output, case, index=index: index == 0)
-        for index, metric in enumerate(planner_case.expectations.deterministic_metrics)
+        for index, metric in enumerate(
+            planner_case.expectations.deterministic_metrics
+        )
     }
 
     score = deterministic_quality(
@@ -433,7 +446,9 @@ def test_a_metric_without_an_implementation_is_a_defect_not_a_zero(
 ) -> None:
     """Silently scoring an unimplemented metric zero would hide the bug."""
     with pytest.raises(MissingMetricError) as caught:
-        deterministic_quality(clean_target_output, planner_case, metric_functions={})
+        deterministic_quality(
+            clean_target_output, planner_case, metric_functions={}
+        )
 
     assert planner_case.expectations.deterministic_metrics[0].metric_id in str(
         caught.value
@@ -646,7 +661,7 @@ def _build_golden_output(case: EvaluationCase) -> TargetOutput:
         react=ReActSummary(
             iterations=1,
             tool_calls=1 if trajectory else 0,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=case.expectations.max_iterations,
             tool_budget=case.expectations.max_tool_calls,
         ),
@@ -657,10 +672,12 @@ def _build_golden_output(case: EvaluationCase) -> TargetOutput:
                 for source in case.state.evaluated_sources
             ],
             findings=[
-                finding.model_dump(mode="json") for finding in case.state.raw_findings
+                finding.model_dump(mode="json")
+                for finding in case.state.raw_findings
             ],
             claims=[
-                claim.model_dump(mode="json") for claim in case.state.verified_claims
+                claim.model_dump(mode="json")
+                for claim in case.state.verified_claims
             ],
             scripted_search_urls=[],
         ),
@@ -752,3 +769,35 @@ def test_deterministic_metric_scores_still_raises_for_missing_metrics(
         deterministic_metric_scores(
             clean_target_output, planner_case, metric_functions={}
         )
+
+
+def test_combined_target_evaluation_calls_each_metric_once(
+    planner_case, clean_target_output
+) -> None:
+    calls = {
+        metric.metric_id: 0
+        for metric in planner_case.expectations.deterministic_metrics
+    }
+
+    def score(output, case, *, metric_id):
+        del output, case
+        calls[metric_id] += 1
+        return True
+
+    functions = {
+        metric_id: (lambda output, case, metric_id=metric_id: score(
+            output, case, metric_id=metric_id
+        ))
+        for metric_id in calls
+    }
+    gates, quality, scores = evaluate_target_with_metrics(
+        clean_target_output,
+        planner_case,
+        secrets=(),
+        metric_functions=functions,
+    )
+
+    assert gates.results
+    assert quality == pytest.approx(1.0)
+    assert scores == {metric_id: 1.0 for metric_id in calls}
+    assert calls == {metric_id: 1 for metric_id in calls}

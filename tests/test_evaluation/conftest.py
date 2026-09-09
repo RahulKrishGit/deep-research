@@ -186,7 +186,7 @@ def clean_target_output(planner_case) -> TargetOutput:
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=planner_case.expectations.max_iterations,
             tool_budget=planner_case.expectations.max_tool_calls,
         ),
@@ -242,7 +242,7 @@ def leaking_target_output(planner_case) -> TargetOutput:
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=planner_case.expectations.max_iterations,
             tool_budget=planner_case.expectations.max_tool_calls,
         ),
@@ -307,7 +307,7 @@ def researcher_target_output(researcher_case) -> TargetOutput:
         react=ReActSummary(
             iterations=4,
             tool_calls=6,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=researcher_case.expectations.max_iterations,
             tool_budget=researcher_case.expectations.max_tool_calls,
         ),
@@ -740,7 +740,7 @@ def planner_output(planner_case) -> PlannerOutput:
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=planner_case.expectations.max_iterations,
             tool_budget=planner_case.expectations.max_tool_calls,
         ),
@@ -796,7 +796,7 @@ def researcher_output(researcher_case) -> ResearcherOutput:
         react=ReActSummary(
             iterations=4,
             tool_calls=6,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=researcher_case.expectations.max_iterations,
             tool_budget=researcher_case.expectations.max_tool_calls,
         ),
@@ -894,7 +894,7 @@ def source_evaluator_output(
         react=ReActSummary(
             iterations=2,
             tool_calls=4,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=source_evaluator_case.expectations.max_iterations,
             tool_budget=source_evaluator_case.expectations.max_tool_calls,
         ),
@@ -947,7 +947,7 @@ def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
         react=ReActSummary(
             iterations=2,
             tool_calls=4,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=fact_checker_case.expectations.max_iterations,
             tool_budget=fact_checker_case.expectations.max_tool_calls,
         ),
@@ -1014,7 +1014,7 @@ def fact_checker_dependent_output(
         react=ReActSummary(
             iterations=2,
             tool_calls=4,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=fact_checker_dependent_case.expectations.max_iterations,
             tool_budget=fact_checker_dependent_case.expectations.max_tool_calls,
         ),
@@ -1081,7 +1081,7 @@ def synthesizer_output(synthesizer_case) -> SynthesizerOutput:
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=synthesizer_case.expectations.max_iterations,
             tool_budget=synthesizer_case.expectations.max_tool_calls,
         ),
@@ -1133,7 +1133,7 @@ def synthesizer_failure_output(
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=synthesizer_failure_case.expectations.max_iterations,
             tool_budget=synthesizer_failure_case.expectations.max_tool_calls,
         ),
@@ -1179,7 +1179,7 @@ def critic_output(critic_case) -> CriticOutput:
         react=ReActSummary(
             iterations=1,
             tool_calls=1,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=critic_case.expectations.max_iterations,
             tool_budget=critic_case.expectations.max_tool_calls,
         ),
@@ -1230,7 +1230,7 @@ def critic_gap_output(critic_gap_case) -> CriticOutput:
         react=ReActSummary(
             iterations=1,
             tool_calls=1,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=critic_gap_case.expectations.max_iterations,
             tool_budget=critic_gap_case.expectations.max_tool_calls,
         ),
@@ -1281,7 +1281,7 @@ def critic_budget_output(critic_budget_case) -> CriticOutput:
         react=ReActSummary(
             iterations=3,
             tool_calls=6,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=critic_budget_case.expectations.max_iterations,
             tool_budget=critic_budget_case.expectations.max_tool_calls,
         ),
