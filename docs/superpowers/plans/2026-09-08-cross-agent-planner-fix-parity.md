@@ -1067,8 +1067,9 @@ Modify only:
 - `tests/test_evaluation/test_runner.py`
 - `tests/test_evaluation/test_targets.py`
 - `tests/test_evaluation/test_reporting.py`
+- `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_inventory.py` (ignored campaign helper; update only to project the new bounded typed fields and retain fail-closed validation)
 
-Verify first; modify `src/deep_research/evaluation/targets.py` or `src/deep_research/evaluation/reporting.py` only if a focused RED test proves the existing typed source or normal model serialization is insufficient. Do not change controlled cases, judges, prompts, agents, providers, configuration budgets, retry policy, or dependency scenarios.
+Verify first; modify `src/deep_research/evaluation/targets.py` or `src/deep_research/evaluation/reporting.py` only if a focused RED test proves the existing typed source or normal model serialization is insufficient. The ignored inventory helper may be updated only to consume the new typed artifact fields and reject missing/unsafe telemetry. Do not change controlled cases, judges, prompts, agents, providers, configuration budgets, retry policy, or dependency scenarios.
 
 **Consumes:** Task 8's reviewed offline candidate; typed `TargetOutput` fields for `dependencies.prohibited_calls`, `react.stop_reason`, and safe fallback errors containing `details.operation` and `details.provider_failure.kind`; the existing metric definitions, weights, and runtime vocabularies.
 
