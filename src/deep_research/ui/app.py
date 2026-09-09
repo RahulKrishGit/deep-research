@@ -41,7 +41,7 @@ def _initialize_session_state() -> None:
         _ACTIVE_SESSION_KEY: None,
         _SELECTED_SESSION_KEY: None,
         _HISTORY_SEARCH_KEY: "",
-        _HISTORY_FILTER_KEY: "all",
+        _HISTORY_FILTER_KEY: "All",
         _START_ERROR_KEY: None,
         _START_IN_FLIGHT_KEY: False,
     }

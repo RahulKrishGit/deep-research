@@ -39,6 +39,10 @@ _CONFIGURATION_FAILURE_MESSAGE = "Research service configuration is unavailable.
 _FALLBACK_CONFIGURATION_HINT = "Review the research configuration and try again."
 _START_VALIDATION_MESSAGE = "Research request could not be started."
 _START_VALIDATION_HINT = "Check the research question and settings, then try again."
+_HISTORY_FILTER_OPTIONS = ("All", "Running", "Completed", "Issues")
+_HISTORY_ISSUE_STATUSES = frozenset(
+    {"max_iterations", "incomplete", "failed"}
+)
 
 _STATUS_PRESENTATION: Mapping[str, tuple[str, str, str]] = {
     "ready": ("●", "Ready to start", "neutral"),
@@ -58,6 +62,10 @@ REPORT_CSS = """
   font-family: Georgia, "Times New Roman", serif !important;
   font-weight: 600 !important;
   letter-spacing: -0.02em !important;
+}
+
+[data-testid="stMainBlockContainer"] hr {
+  margin: 4px 0 !important;
 }
 """
 
@@ -103,13 +111,43 @@ def _entry_for_active_session(
     return history_entry_from_snapshot(snapshot)
 
 
+def _history_entry_for_display(
+    entry: SessionHistoryEntry,
+    state: Mapping[str, Any],
+) -> SessionHistoryEntry:
+    """Normalize persisted running metadata unless it is live in this session."""
+    active_id = state.get(_ACTIVE_SESSION_KEY)
+    if entry.status == "running" and entry.session_id != active_id:
+        return entry.model_copy(update={"status": "incomplete"})
+    return entry.model_copy(deep=True)
+
+
+def _history_sort_key(entry: SessionHistoryEntry) -> datetime:
+    started_at = entry.started_at
+    if started_at.tzinfo is None or started_at.utcoffset() is None:
+        return started_at.replace(tzinfo=timezone.utc)
+    return started_at.astimezone(timezone.utc)
+
+
+def _history_entries(
+    controller: LocalResearchController,
+    state: MutableMapping[str, Any],
+) -> list[SessionHistoryEntry]:
+    entries = [
+        _history_entry_for_display(entry, state)
+        for entry in controller.list_history(limit=50)
+    ]
+    return sorted(entries, key=_history_sort_key, reverse=True)
+
+
 def _recent_entries(
     controller: LocalResearchController,
     state: MutableMapping[str, Any],
 ) -> list[SessionHistoryEntry]:
-    entries = list(controller.list_history(limit=50))
+    entries = _history_entries(controller, state)
     active_entry = _entry_for_active_session(controller, state)
     if active_entry is not None:
+        active_entry = _history_entry_for_display(active_entry, state)
         entries = [
             entry for entry in entries if entry.session_id != active_entry.session_id
         ]
@@ -236,10 +274,77 @@ def _snapshot_for_selection(
     selected_id = state.get(_SELECTED_SESSION_KEY)
     if not isinstance(selected_id, str):
         return None
+    active_id = state.get(_ACTIVE_SESSION_KEY)
     try:
-        return controller.snapshot(selected_id)
+        snapshot = controller.snapshot(selected_id)
+    except (AttributeError, KeyError):
+        snapshot = None
+
+    if snapshot is not None and (
+        selected_id == active_id or snapshot.status != "running"
+    ):
+        if snapshot.report is None and snapshot.status != "running":
+            report = _read_history_report(controller, selected_id)
+            if report is not None:
+                snapshot = snapshot.model_copy(update={"report": report})
+        return snapshot
+
+    entry = _history_entry(controller, selected_id, state)
+    if entry is None:
+        return None
+    report = _read_history_report(controller, selected_id, entry=entry)
+    return UiSessionSnapshot(
+        session_id=entry.session_id,
+        question=entry.question,
+        status=entry.status,
+        started_at=entry.started_at,
+        finished_at=entry.finished_at,
+        iteration=entry.iteration,
+        max_iterations=entry.max_iterations,
+        report_path=entry.report_path,
+        report=report,
+        source_summary=entry.source_summary,
+        fact_check_summary=entry.fact_check_summary,
+        errors=entry.errors,
+        limitations=entry.limitations,
+    )
+
+
+def _history_entry(
+    controller: LocalResearchController,
+    session_id: str,
+    state: Mapping[str, Any],
+) -> SessionHistoryEntry | None:
+    try:
+        entry = controller.history_entry(session_id)
     except (AttributeError, KeyError):
         return None
+    if entry is None:
+        return None
+    return _history_entry_for_display(entry, state)
+
+
+def _read_history_report(
+    controller: LocalResearchController,
+    session_id: str,
+    *,
+    entry: SessionHistoryEntry | None = None,
+) -> str | None:
+    if entry is None:
+        try:
+            entry = controller.history_entry(session_id)
+        except (AttributeError, KeyError):
+            return None
+    if entry is None:
+        return None
+    reader = getattr(controller, "read_history_report", None)
+    if not callable(reader):
+        return None
+    try:
+        report = reader(entry)
+    except (AttributeError, OSError, ValueError):
+        return None
+    return report if isinstance(report, str) else None
 
 
 def _configuration_error_details(
@@ -868,15 +973,140 @@ def render_current_session_view(controller: LocalResearchController) -> None:
     _render_terminal_snapshot(snapshot)
 
 
+def _history_time_label(entry: SessionHistoryEntry) -> str:
+    timestamp = entry.started_at
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    timestamp = timestamp.astimezone(timezone.utc)
+    if timestamp.date() == datetime.now(timezone.utc).date():
+        return f"Today, {timestamp:%H:%M}"
+    return f"{timestamp:%b} {timestamp.day}, {timestamp:%H:%M}"
+
+
+def _history_context(entry: SessionHistoryEntry) -> str:
+    if entry.status == "running":
+        return f"Macro iteration {entry.iteration} of {entry.max_iterations}"
+    if entry.status == "completed":
+        return (
+            f"Completed in {entry.iteration} of {entry.max_iterations} iterations"
+        )
+    if entry.status == "max_iterations":
+        return f"Stopped at {entry.iteration} of {entry.max_iterations} iterations"
+    if entry.status == "failed":
+        return f"Stopped at iteration {entry.iteration} of {entry.max_iterations}"
+    return f"Paused after iteration {entry.iteration} of {entry.max_iterations}"
+
+
+def _render_history_row(
+    entry: SessionHistoryEntry,
+    *,
+    selected_id: str | None,
+    state: MutableMapping[str, Any],
+) -> None:
+    selected = entry.session_id == selected_id
+    row_key = (
+        f"dr-history-row-selected-{entry.session_id}"
+        if selected
+        else f"dr-history-row-{entry.session_id}"
+    )
+    with st.container(key=row_key, gap="small"):
+        if selected:
+            st.caption("Selected session")
+        question_column, status_column, action_column = st.columns(
+            [3, 1.15, 0.5],
+            gap="medium",
+            vertical_alignment="center",
+        )
+        with question_column:
+            st.markdown(
+                f'<div class="dr-session-question"><strong>{escape(entry.question)}'
+                "</strong></div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(f"{_history_time_label(entry)}  ·  {_history_context(entry)}")
+        with status_column:
+            render_status(entry.status)
+        with action_column:
+            st.button(
+                "Open",
+                key=f"history_open_{entry.session_id}",
+                type="secondary",
+                use_container_width=True,
+                on_click=_select_session,
+                args=(entry.session_id, state),
+            )
+
+
 def render_history_view(controller: LocalResearchController) -> None:
-    """Render the history route scaffold; detailed archive UI belongs later."""
-    del controller
+    """Render a searchable, newest-first archive of local session metadata."""
+    state = st.session_state
+    entries = _history_entries(controller, state)
     st.markdown(
         '<div class="dr-editorial-column dr-shell-title">'
-        "<h1>Session history</h1></div>",
+        "<h1>Research sessions</h1></div>",
         unsafe_allow_html=True,
     )
-    st.caption("Searchable session history will appear here.")
+    st.caption(f"{len(entries)} sessions total")
+
+    search_column, filter_column = st.columns([3, 1.15], gap="small")
+    with search_column:
+        search = st.text_input(
+            "Search research questions",
+            key="_deep_research_history_search",
+            placeholder="Search research questions...",
+        )
+    with filter_column:
+        current_filter = state.get("_deep_research_history_filter", "All")
+        matching_filter = next(
+            (
+                option
+                for option in _HISTORY_FILTER_OPTIONS
+                if str(current_filter).casefold() == option.casefold()
+            ),
+            "All",
+        )
+        if current_filter != matching_filter:
+            state["_deep_research_history_filter"] = matching_filter
+        selected_filter = st.selectbox(
+            "Status",
+            options=list(_HISTORY_FILTER_OPTIONS),
+            key="_deep_research_history_filter",
+        )
+
+    query = search.strip().casefold() if isinstance(search, str) else ""
+    filter_name = str(selected_filter).casefold()
+    visible_entries = [
+        entry
+        for entry in entries
+        if (not query or query in entry.question.casefold())
+        and (
+            filter_name == "all"
+            or (
+                filter_name == "issues"
+                and entry.status in _HISTORY_ISSUE_STATUSES
+            )
+            or entry.status == filter_name
+        )
+    ]
+
+    st.markdown(
+        '<div class="dr-history-header dr-section-label">'
+        "QUESTION <span>NEWEST FIRST</span></div>",
+        unsafe_allow_html=True,
+    )
+    selected_id = state.get(_SELECTED_SESSION_KEY)
+    selected_id = selected_id if isinstance(selected_id, str) else None
+    for index, entry in enumerate(visible_entries):
+        _render_history_row(
+            entry,
+            selected_id=selected_id,
+            state=state,
+        )
+        if index < len(visible_entries) - 1:
+            with st.container(key=f"dr-history-divider-{index}"):
+                st.divider()
+    if not visible_entries:
+        st.caption("No research sessions match this search and status filter.")
 
 
 __all__ = [

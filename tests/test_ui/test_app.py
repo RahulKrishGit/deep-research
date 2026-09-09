@@ -14,6 +14,8 @@ from deep_research.runtime.errors import configuration_error
 from deep_research.ui.app import (
     _ACTIVE_SESSION_KEY,
     _CONTROLLER_KEY,
+    _HISTORY_FILTER_KEY,
+    _HISTORY_SEARCH_KEY,
     _SELECTED_SESSION_KEY,
     _START_ERROR_KEY,
     _VIEW_KEY,
@@ -79,6 +81,7 @@ class FakeController:
         self.start_error = start_error
         self.start_calls: list[dict[str, object]] = []
         self.started_snapshots: dict[str, UiSessionSnapshot] = {}
+        self.history_reports: dict[str, str] = {}
 
     @property
     def default_max_iterations(self) -> int:
@@ -150,6 +153,9 @@ class FakeController:
             source_summary=entry.source_summary,
             fact_check_summary=entry.fact_check_summary,
         )
+
+    def read_history_report(self, entry: SessionHistoryEntry) -> str | None:
+        return self.history_reports.get(entry.session_id)
 
 
 def _app(
@@ -234,6 +240,8 @@ def _running_app(snapshot: UiSessionSnapshot) -> AppTest:
     ).run()
     controller = app.session_state[_CONTROLLER_KEY]
     controller.started_snapshots[snapshot.session_id] = snapshot
+    if snapshot.status == "running":
+        app.session_state[_ACTIVE_SESSION_KEY] = snapshot.session_id
     app.session_state[_SELECTED_SESSION_KEY] = snapshot.session_id
     app.session_state[_VIEW_KEY] = "current"
     app.run()
@@ -546,7 +554,7 @@ def test_recent_session_navigation_selects_id_and_current_view() -> None:
     assert app.session_state[_VIEW_KEY] == "current"
     assert app.session_state[_ACTIVE_SESSION_KEY] is None
     assert any("Question" in item.value for item in app.main.markdown)
-    assert any("Running" in item.value for item in app.markdown)
+    assert any("Incomplete" in item.value for item in app.markdown)
 
 
 def test_recent_row_is_one_native_container_with_its_open_action() -> None:
@@ -1012,6 +1020,152 @@ def test_max_iterations_snapshot_has_amber_terminal_treatment() -> None:
     assert "Max iterations" in visible
     assert "Partial report." in visible
     assert "Running" not in visible
+
+
+def _history_entries() -> list[SessionHistoryEntry]:
+    return [
+        _entry("a" * 32, "Newest completed research question", "completed", 0),
+        _entry("b" * 32, "Active research question", "running", 1),
+        _entry("c" * 32, "Stopped after too many iterations", "max_iterations", 2),
+        _entry("d" * 32, "Paused before the research finished", "incomplete", 3),
+        _entry("e" * 32, "Research question with an error", "failed", 4),
+        _entry("f" * 32, "Old completed research question", "completed", 5),
+    ]
+
+
+def _history_app(entries: list[SessionHistoryEntry] | None = None) -> AppTest:
+    app = _app(entries or _history_entries()).run()
+    app.button(key="session_history").click().run()
+    return app
+
+
+def test_history_screen_has_searchable_newest_first_status_rows_and_open_actions(
+) -> None:
+    app = _history_app()
+    visible = _visible_main_text(app)
+
+    assert "Research sessions" in visible
+    assert "6 sessions total" in visible
+    assert app.text_input(key=_HISTORY_SEARCH_KEY).label == "Search research questions"
+    assert app.selectbox(key=_HISTORY_FILTER_KEY).options == [
+        "All",
+        "Running",
+        "Completed",
+        "Issues",
+    ]
+    assert "Newest completed research question" in visible
+    assert "Old completed research question" in visible
+    assert visible.index("Newest completed research question") < visible.index(
+        "Old completed research question"
+    )
+    assert all(
+        status in visible
+        for status in ("Completed", "Max iterations", "Incomplete", "Failed")
+    )
+    assert len([button for button in app.main.button if button.label == "Open"]) == 6
+    assert len(app.dataframe) == 0
+
+
+def test_history_search_is_case_insensitive_and_survives_reruns() -> None:
+    app = _history_app()
+
+    app.text_input(key=_HISTORY_SEARCH_KEY).set_value("STOPPED").run()
+    visible = _visible_main_text(app)
+
+    assert "Stopped after too many iterations" in visible
+    assert "Newest completed research question" not in visible
+    assert app.session_state[_HISTORY_SEARCH_KEY] == "STOPPED"
+
+    app.run()
+    assert app.session_state[_HISTORY_SEARCH_KEY] == "STOPPED"
+    assert "Stopped after too many iterations" in _visible_main_text(app)
+
+
+def test_history_filters_completed_and_issues_without_changing_archive_order() -> None:
+    app = _history_app()
+
+    app.selectbox(key=_HISTORY_FILTER_KEY).set_value("Issues").run()
+    issues = _visible_main_text(app)
+    assert "Stopped after too many iterations" in issues
+    assert "Paused before the research finished" in issues
+    assert "Research question with an error" in issues
+    assert "Newest completed research question" not in issues
+    assert app.session_state[_HISTORY_FILTER_KEY] == "Issues"
+
+    app.selectbox(key=_HISTORY_FILTER_KEY).set_value("Completed").run()
+    completed = _visible_main_text(app)
+    assert "Newest completed research question" in completed
+    assert "Old completed research question" in completed
+    assert "Stopped after too many iterations" not in completed
+
+
+def test_historical_running_session_is_shown_as_incomplete_when_not_active() -> None:
+    app = _history_app([_entry("b" * 32, "Persisted running question", "running", 0)])
+    visible = _visible_main_text(app)
+
+    assert "Persisted running question" in visible
+    assert "Incomplete" in visible
+    assert "Running" not in visible
+
+
+def test_active_running_session_keeps_running_status_in_history() -> None:
+    session_id = "b" * 32
+    app = _app([_entry(session_id, "Active research question", "running", 0)]).run()
+    app.session_state[_ACTIVE_SESSION_KEY] = session_id
+    app.session_state[_VIEW_KEY] = "history"
+    app.run()
+
+    visible = _visible_main_text(app)
+    assert "Active research question" in visible
+    assert "Running" in visible
+    assert "Incomplete" not in visible
+
+
+def test_history_open_rebuilds_completed_report_in_same_shell_without_rerun() -> None:
+    session_id = "a" * 32
+    app = _history_app([_entry(session_id, "Completed question", "completed", 0)])
+    controller = app.session_state[_CONTROLLER_KEY]
+    controller.history_reports[session_id] = "# Reopened report\n\nSaved answer."
+
+    app.button(key=f"history_open_{session_id}").click().run()
+
+    assert app.session_state[_SELECTED_SESSION_KEY] == session_id
+    assert app.session_state[_VIEW_KEY] == "current"
+    assert controller.start_calls == []
+    visible = _visible_main_text(app)
+    assert "Reopened report" in visible
+    assert "Saved answer." in visible
+    assert "Research sessions" not in visible
+
+
+def test_history_open_failure_retains_safe_terminal_context_and_partial_report(
+) -> None:
+    session_id = "e" * 32
+    entry = _entry(session_id, "Failed question", "failed", 0)
+    app = _history_app([entry])
+    controller = app.session_state[_CONTROLLER_KEY]
+    controller.history_reports[session_id] = (
+        "# Partial stopping point\n\nUseful findings."
+    )
+
+    app.button(key=f"history_open_{session_id}").click().run()
+
+    visible = _visible_main_text(app)
+    assert "Failed" in visible
+    assert "Partial stopping point" in visible
+    assert "Useful findings." in visible
+    assert controller.start_calls == []
+
+
+def test_history_selected_row_has_a_non_color_selected_cue() -> None:
+    session_id = "a" * 32
+    app = _history_app([_entry(session_id, "Selected question", "completed", 0)])
+
+    app.button(key=f"history_open_{session_id}").click().run()
+    app.button(key="session_history").click().run()
+
+    selected_row = app.main.container(key=f"dr-history-row-selected-{session_id}")
+    assert any("Selected session" in item.value for item in selected_row.caption)
 
 
 def test_failed_snapshot_retains_last_progress_and_uses_safe_error() -> None:
