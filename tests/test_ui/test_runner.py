@@ -7,10 +7,14 @@ from pathlib import Path
 from time import sleep
 from typing import Any
 
+import pytest
 import yaml
 
 from deep_research.observability import TokenUsage
-from deep_research.runtime.errors import configuration_error
+from deep_research.runtime.errors import (
+    ResearchConfigurationError,
+    configuration_error,
+)
 from deep_research.runtime.outcome import ToolCallSummary
 from deep_research.ui.history import SessionHistoryStore
 from deep_research.ui.runner import LocalResearchController
@@ -248,6 +252,75 @@ def test_late_configuration_failure_stores_only_reason_and_hint(tmp_path: Path) 
         "config.yaml. OPENAI_API_KEY is required only when a provider or "
         "embedding_provider of 'openai' is configured."
     )
+
+
+def test_terminal_history_write_failure_does_not_leave_outcome_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = GatedSyncRunner(
+        outcome_kwargs={"report": "authoritative report"}
+    )
+    store = SessionHistoryStore(output_directory=tmp_path / "output")
+    original_upsert = store.upsert
+    calls = 0
+    secret = "private history write failure"
+
+    def fail_terminal_upsert(entry: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError(secret)
+        original_upsert(entry)
+
+    monkeypatch.setattr(store, "upsert", fail_terminal_upsert)
+    controller = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=runner,
+        preflight=lambda **_: object(),
+        history_store=store,
+    )
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    assert runner.started.wait(1)
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
+
+    finished = controller.snapshot(snapshot.session_id)
+    assert finished.status == "completed"
+    assert finished.report == "authoritative report"
+    assert secret not in finished.model_dump_json()
+
+
+def test_unknown_configuration_failure_details_are_allowlisted(
+    tmp_path: Path,
+) -> None:
+    secret_reason = "private reason"
+    secret_hint = "private hint"
+    secret_message = "private configuration message"
+    runner = FailingSyncRunner(
+        ResearchConfigurationError(
+            secret_message,
+            reason=secret_reason,
+            hint=secret_hint,
+        )
+    )
+    controller = _controller(tmp_path, runner)
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "failed")
+
+    finished = controller.snapshot(snapshot.session_id)
+    history = controller.history_entry(snapshot.session_id)
+    assert history is not None
+    rendered = finished.model_dump_json() + history.model_dump_json()
+    assert secret_reason not in rendered
+    assert secret_hint not in rendered
+    assert secret_message not in rendered
+    assert finished.errors[0].details == {
+        "reason": "configuration_error",
+        "hint": "Review the research configuration and try again.",
+    }
 
 
 def test_history_running_entries_are_incomplete_when_not_active(tmp_path: Path) -> None:

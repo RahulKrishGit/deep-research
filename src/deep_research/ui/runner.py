@@ -44,6 +44,7 @@ Preflight: TypeAlias = Callable[..., object]
 
 _UNEXPECTED_FAILURE_MESSAGE = "Research run failed unexpectedly."
 _CONFIGURATION_FAILURE_MESSAGE = "Research service configuration is unavailable."
+_FALLBACK_CONFIGURATION_REASON = "configuration_error"
 _FALLBACK_CONFIGURATION_HINT = (
     "Review the research configuration and try again."
 )
@@ -177,12 +178,11 @@ class LocalResearchController:
                 event_handler=lambda event: self._publish(session_id, event),
             )
         except ResearchConfigurationError as error:
+            reason = _safe_configuration_reason(error.reason)
             self._record_failure(
                 session_id,
-                reason=error.reason,
-                hint=CONFIGURATION_HINTS.get(
-                    error.reason, _FALLBACK_CONFIGURATION_HINT
-                ),
+                reason=reason,
+                hint=CONFIGURATION_HINTS.get(reason, _FALLBACK_CONFIGURATION_HINT),
                 message=_CONFIGURATION_FAILURE_MESSAGE,
             )
             return
@@ -202,14 +202,13 @@ class LocalResearchController:
             outcome_copy = deepcopy(outcome)
             finished_at = datetime.now(timezone.utc)
 
-        self._persist(
-            self._snapshot_from_values(
-                session_id,
-                outcome=outcome_copy,
-                status=outcome_copy.status,
-                finished_at=finished_at,
-            )
+        terminal_snapshot = self._snapshot_from_values(
+            session_id,
+            outcome=outcome_copy,
+            status=outcome_copy.status,
+            finished_at=finished_at,
         )
+        self._persist_terminal(terminal_snapshot)
         with self._lock:
             session = self._sessions.get(session_id)
             if session is not None:
@@ -259,14 +258,13 @@ class LocalResearchController:
             session.events.append(event)
             finished_at = datetime.now(timezone.utc)
 
-        self._persist(
-            self._snapshot_from_values(
-                session_id,
-                status="failed",
-                finished_at=finished_at,
-                failure=error,
-            )
+        terminal_snapshot = self._snapshot_from_values(
+            session_id,
+            status="failed",
+            finished_at=finished_at,
+            failure=error,
         )
+        self._persist_terminal(terminal_snapshot)
         with self._lock:
             session = self._sessions.get(session_id)
             if session is not None:
@@ -413,12 +411,27 @@ class LocalResearchController:
         with self._lock:
             self._history.upsert(entry)
 
+    def _persist_terminal(self, snapshot: UiSessionSnapshot) -> None:
+        """Best-effort terminal persistence; memory state remains authoritative."""
+        try:
+            self._persist(snapshot)
+        except Exception:
+            # A local history outage must never strand a finished worker as
+            # running, and its exception text must not reach the UI.
+            return
+
     def _display_history_entry(self, entry: SessionHistoryEntry) -> SessionHistoryEntry:
         with self._lock:
             active = entry.session_id in self._sessions
         if entry.status == "running" and not active:
             return entry.model_copy(update={"status": "incomplete"})
         return entry.model_copy(deep=True)
+
+
+def _safe_configuration_reason(reason: object) -> str:
+    if isinstance(reason, str) and reason in CONFIGURATION_HINTS:
+        return reason
+    return _FALLBACK_CONFIGURATION_REASON
 
 
 __all__ = ["LocalResearchController"]
