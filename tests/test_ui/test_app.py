@@ -179,6 +179,7 @@ def _snapshot(
     errors: list[object] | None = None,
     tool_calls: list[UiToolCallSummary] | None = None,
     report: str | None = None,
+    report_path: str | None = None,
 ) -> UiSessionSnapshot:
     from deep_research.utils.types import ResearchError
 
@@ -208,6 +209,7 @@ def _snapshot(
         ],
         token_usage=token_usage,
         trace_url=trace_url,
+        report_path=report_path,
         report=report,
         source_summary=UiSourceSummary(
             total=0,
@@ -982,7 +984,23 @@ def test_max_iterations_keeps_partial_report_and_uses_amber_language() -> None:
     assert "Partial report" in visible
     assert "Readable stopping-point findings." in visible
     assert "The run reached its configured iteration limit." in visible
+    assert "Stopped at iteration 2 of 4" in visible
+    assert "Completed in 2 of 4 iterations" not in visible
     assert "Failed" not in visible
+
+
+def test_incomplete_report_uses_incomplete_iteration_wording() -> None:
+    app = _running_app(
+        _snapshot(
+            status="incomplete",
+            report="# Incomplete report\n\nThe stopping point is readable.",
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "Incomplete" in visible
+    assert "Incomplete after 2 of 4 iterations" in visible
+    assert "Completed in 2 of 4 iterations" not in visible
 
 
 def test_max_iterations_snapshot_has_amber_terminal_treatment() -> None:
@@ -1028,6 +1046,34 @@ def test_failed_snapshot_retains_last_progress_and_uses_safe_error() -> None:
     assert "Last known activity" in visible
     assert "Research run failed unexpectedly." in visible
     assert "SECRET-STACK-TRACE" not in visible
+
+
+def test_failed_partial_snapshot_retains_report_path_and_safe_error() -> None:
+    app = _running_app(
+        _snapshot(
+            status="failed",
+            report="# Retained partial report\n\nLast verified findings.",
+            report_path="reports/retained-partial.md",
+            errors=[
+                {
+                    "error_type": "ui.research.failed",
+                    "source": "ui",
+                    "message": "Research run failed unexpectedly.",
+                    "recoverable": False,
+                    "details": {"diagnostic": "SECRET-FAILED-REPORT"},
+                }
+            ],
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "RESEARCH FAILED" in visible
+    assert "Failed" in visible
+    assert "reports/retained-partial.md" in visible
+    assert "# Retained partial report" in visible
+    assert "Last verified findings." in visible
+    assert "Research run failed unexpectedly." in visible
+    assert "SECRET-FAILED-REPORT" not in visible
 
 
 def test_failed_runner_snapshot_renders_last_known_agent_and_activity(

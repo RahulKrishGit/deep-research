@@ -593,7 +593,12 @@ def _safe_failure_message(snapshot: UiSessionSnapshot) -> str:
 
 
 def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
-    if snapshot.status in {"completed", "max_iterations", "incomplete"}:
+    has_retained_report = (
+        snapshot.report is not None or snapshot.report_path is not None
+    )
+    if snapshot.status in {"completed", "max_iterations", "incomplete"} or (
+        snapshot.status == "failed" and has_retained_report
+    ):
         _render_completed_snapshot(snapshot)
         return
 
@@ -638,6 +643,9 @@ def _report_status_label(snapshot: UiSessionSnapshot) -> tuple[str, str, str]:
         return "RESEARCH COMPLETED", "completed", "Completed"
     if snapshot.status == "max_iterations":
         return "RESEARCH PAUSED", "max_iterations", "Max iterations · Partial report"
+    if snapshot.status == "failed":
+        label = "Failed · Partial report" if snapshot.report else "Failed"
+        return "RESEARCH FAILED", "failed", label
     return "RESEARCH INCOMPLETE", "incomplete", "Incomplete"
 
 
@@ -760,7 +768,10 @@ def _render_report_issues(snapshot: UiSessionSnapshot) -> None:
 
     if snapshot.errors:
         render_status("failed", label="EXECUTION ERRORS")
-        st.error("Execution errors were recorded during the run.")
+        if snapshot.status == "failed":
+            st.error(_safe_failure_message(snapshot))
+        else:
+            st.error("Execution errors were recorded during the run.")
     elif snapshot.status == "completed":
         st.caption("No errors reported.")
 
@@ -779,14 +790,35 @@ def _render_completed_snapshot(snapshot: UiSessionSnapshot) -> None:
             unsafe_allow_html=True,
         )
         render_status(status, label=status_label)
+        if snapshot.status == "completed":
+            iteration_metadata = (
+                f"Completed in {snapshot.iteration} of "
+                f"{snapshot.max_iterations} iterations"
+            )
+        elif snapshot.status == "max_iterations":
+            iteration_metadata = (
+                f"Stopped at iteration {snapshot.iteration} of "
+                f"{snapshot.max_iterations}"
+            )
+        elif snapshot.status == "incomplete":
+            iteration_metadata = (
+                f"Incomplete after {snapshot.iteration} of "
+                f"{snapshot.max_iterations} iterations"
+            )
+        else:
+            iteration_metadata = (
+                f"Failed after {snapshot.iteration} of "
+                f"{snapshot.max_iterations} iterations"
+            )
         metadata = [
-            "Markdown · "
-            f"Completed in {snapshot.iteration} of "
-            f"{snapshot.max_iterations} iterations"
+            f"Markdown · {iteration_metadata}"
         ]
-        completed_at = _format_datetime(snapshot.finished_at, prefix="Completed")
-        if completed_at:
-            metadata.append(completed_at)
+        finished_at = _format_datetime(
+            snapshot.finished_at,
+            prefix="Completed" if snapshot.status == "completed" else "Ended",
+        )
+        if finished_at:
+            metadata.append(finished_at)
         st.caption(" · ".join(metadata))
         if snapshot.report_path:
             st.caption(f"Report path · `{escape(snapshot.report_path)}`")
