@@ -32,6 +32,7 @@ from deep_research.agents.errors import (
     PlanningError,
     PlanningOperation,
     agent_error,
+    agent_provider_failure_details,
     planning_provider_error,
 )
 from deep_research.agents.events import agent_event
@@ -358,6 +359,7 @@ __all__ = [
     "VerifiedClaims",
     "agent_error",
     "agent_event",
+    "agent_provider_failure_details",
     "assemble_report",
     "average_score",
     "blend_authority",
