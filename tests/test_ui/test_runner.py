@@ -1,0 +1,289 @@
+"""Offline tests for the non-blocking local research controller."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from time import sleep
+from typing import Any
+
+import yaml
+
+from deep_research.observability import TokenUsage
+from deep_research.runtime.errors import configuration_error
+from deep_research.runtime.outcome import ToolCallSummary
+from deep_research.ui.history import SessionHistoryStore
+from deep_research.ui.runner import LocalResearchController
+from deep_research.utils.types import Claim, Finding, ResearchEvent, ScoredSource
+from tests.test_ui.fakes import FailingSyncRunner, GatedSyncRunner
+
+
+def _event(event_type: str, *, metadata: dict[str, Any]) -> ResearchEvent:
+    return ResearchEvent(
+        event_type=event_type,
+        source="tests",
+        message="Typed test event.",
+        metadata=metadata,
+    )
+
+
+def _config_file(tmp_path: Path) -> Path:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "graph": {"max_iterations": 4},
+                "output": {"directory": str(tmp_path / "output")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _controller(
+    tmp_path: Path,
+    runner: Any,
+    *,
+    preflight: Any | None = None,
+) -> LocalResearchController:
+    return LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=runner,
+        preflight=preflight or (lambda **_: object()),
+    )
+
+
+def _wait_for(predicate: Any) -> None:
+    for _ in range(100):
+        if predicate():
+            return
+        sleep(0.01)
+    raise AssertionError("condition was not reached")
+
+
+def test_start_returns_running_before_gated_runner_finishes(tmp_path: Path) -> None:
+    runner = GatedSyncRunner()
+    controller = _controller(tmp_path, runner)
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+
+    assert snapshot.status == "running"
+    persisted = controller.history_entry(snapshot.session_id)
+    assert persisted is not None
+    assert persisted.status == "running"
+    assert runner.started.wait(1)
+    assert len(runner.calls) == 1
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
+    terminal = controller.history_entry(snapshot.session_id)
+    assert terminal is not None
+    assert terminal.status == "completed"
+
+
+def test_strict_preflight_happens_before_session_registration(tmp_path: Path) -> None:
+    runner = GatedSyncRunner()
+    observed: list[bool] = []
+
+    def preflight(**_: Any) -> object:
+        observed.append(controller.history_entry("a" * 32) is not None)
+        return object()
+
+    controller = _controller(tmp_path, runner, preflight=preflight)
+    snapshot = controller.start(question="Question", max_iterations=2)
+
+    assert observed == [False]
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
+
+
+def test_published_events_project_live_progress_and_snapshots_are_copies(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _event(
+            "graph.node.started",
+            metadata={"node": "researcher", "iteration": 2},
+        ),
+        _event(
+            "researcher.sub_topic.started",
+            metadata={"index": 1, "sub_topic": "Market size", "priority": 1},
+        ),
+        _event(
+            "researcher.tool_call",
+            metadata={"tool": "web_search", "success": True},
+        ),
+    ]
+    runner = GatedSyncRunner(events=events)
+    controller = _controller(tmp_path, runner)
+
+    first = controller.start(question="Question", max_iterations=2)
+    assert runner.started.wait(1)
+    assert first.current_agent == "researcher"
+    assert first.iteration == 2
+    assert first.sub_topics[0].title == "Market size"
+    assert first.recent_activity[-1].summary == (
+        "Evaluated new evidence for the research question"
+    )
+
+    first.sub_topics[0].title = "mutated"
+    second = controller.snapshot(first.session_id)
+    assert second.sub_topics[0].title == "Market size"
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(first.session_id).status == "completed")
+
+
+def test_terminal_snapshot_uses_authoritative_outcome_quality_fields(
+    tmp_path: Path,
+) -> None:
+    source = ScoredSource(
+        url="https://example.org/source",
+        title="Typed source",
+        authority_score=0.9,
+        recency_score=0.9,
+        relevance_score=0.9,
+        corroboration_score=0.8,
+        overall_score=0.9,
+        rationale="Typed source rationale.",
+    )
+    finding = Finding(
+        content="Typed finding.",
+        source_url=source.url,
+        source_title=source.title,
+        extracted_at=datetime.now(timezone.utc).isoformat(),
+        confidence=0.9,
+        related_sub_topic="Typed topic",
+    )
+    claim = Claim(
+        text="Typed verified claim.",
+        source_urls=[source.url],
+        verdict="verified",
+        confidence=0.9,
+        evidence=["Typed evidence."],
+        contradictions=[],
+    )
+    runner = GatedSyncRunner(
+        outcome_kwargs={
+            "iteration": 2,
+            "report": "authoritative report",
+            "raw_findings": (finding,),
+            "evaluated_sources": (source,),
+            "verified_claims": (claim,),
+            "token_usage": TokenUsage(input_tokens=12, output_tokens=8),
+            "tool_calls": (
+                ToolCallSummary(tool_name="web_search", calls=4, failures=1),
+            ),
+        }
+    )
+    controller = _controller(tmp_path, runner)
+    snapshot = controller.start(question="Question", max_iterations=2)
+    assert runner.started.wait(1)
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
+
+    finished = controller.snapshot(snapshot.session_id)
+    assert finished.iteration == 2
+    assert finished.report == "authoritative report"
+    assert finished.token_usage is not None
+    assert finished.token_usage.model_dump() == {"input_tokens": 12, "output_tokens": 8}
+    assert finished.tool_calls[0].calls == 4
+    assert finished.source_summary.total == 1
+    assert finished.source_summary.details[0].related_sub_topics == [
+        "Typed topic"
+    ]
+    assert finished.fact_check_summary.verified == 1
+    assert finished.fact_check_summary.details[0].text == "Typed verified claim."
+
+
+def test_zero_token_outcome_publishes_none_token_usage(tmp_path: Path) -> None:
+    runner = GatedSyncRunner(
+        outcome_kwargs={"token_usage": TokenUsage(input_tokens=0, output_tokens=0)}
+    )
+    controller = _controller(tmp_path, runner)
+    snapshot = controller.start(question="Question", max_iterations=2)
+    assert runner.started.wait(1)
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
+
+    assert controller.snapshot(snapshot.session_id).token_usage is None
+
+
+def test_unexpected_failure_uses_safe_project_owned_text(tmp_path: Path) -> None:
+    secret = "provider secret exception text"
+    runner = FailingSyncRunner(RuntimeError(secret))
+    controller = _controller(tmp_path, runner)
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "failed")
+    finished = controller.snapshot(snapshot.session_id)
+    history = controller.history_entry(snapshot.session_id)
+
+    assert secret not in finished.model_dump_json()
+    assert history is not None
+    assert secret not in history.model_dump_json()
+    assert finished.errors[0].message == "Research run failed unexpectedly."
+
+
+def test_late_configuration_failure_stores_only_reason_and_hint(tmp_path: Path) -> None:
+    runner = FailingSyncRunner(
+        configuration_error(
+            reason="missing_secrets",
+            message="private configuration details",
+        )
+    )
+    controller = _controller(tmp_path, runner)
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "failed")
+    finished = controller.snapshot(snapshot.session_id)
+    history = controller.history_entry(snapshot.session_id)
+
+    assert history is not None
+    assert "private configuration details" not in finished.model_dump_json()
+    assert "private configuration details" not in history.model_dump_json()
+    assert finished.errors[0].details["reason"] == "missing_secrets"
+    assert finished.errors[0].details["hint"] == (
+        "Set the selected chat provider's API key (DEEPSEEK_API_KEY by default) "
+        "and TAVILY_API_KEY in the environment or in a .env file next to "
+        "config.yaml. OPENAI_API_KEY is required only when a provider or "
+        "embedding_provider of 'openai' is configured."
+    )
+
+
+def test_history_running_entries_are_incomplete_when_not_active(tmp_path: Path) -> None:
+    store = SessionHistoryStore(output_directory=tmp_path / "output")
+    from deep_research.ui.models import (
+        UiFactCheckSummary,
+        UiSessionSnapshot,
+        UiSourceSummary,
+        history_entry_from_snapshot,
+    )
+
+    persisted = history_entry_from_snapshot(
+        UiSessionSnapshot(
+            session_id="b" * 32,
+            question="Question",
+            status="running",
+            started_at=datetime.now(timezone.utc),
+            iteration=0,
+            max_iterations=2,
+            source_summary=UiSourceSummary(
+                total=0, high=0, moderate=0, low=0, unrated=0
+            ),
+            fact_check_summary=UiFactCheckSummary(
+                verified=0,
+                unverified=0,
+                contradicted=0,
+                insufficient_evidence=0,
+            ),
+        )
+    )
+    store.upsert(persisted)
+    restored = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=GatedSyncRunner(),
+        preflight=lambda **_: object(),
+        history_store=store,
+    ).history_entry("b" * 32)
+    assert restored is not None
+    assert restored.status == "incomplete"

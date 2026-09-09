@@ -15,6 +15,7 @@ from deep_research.ui.models import (
     UiToolCallSummary,
     history_entry_from_snapshot,
 )
+from deep_research.ui.runner import LocalResearchController
 
 __all__ = [
     "SessionHistoryEntry",
@@ -30,4 +31,5 @@ __all__ = [
     "UiTokenUsage",
     "UiToolCallSummary",
     "history_entry_from_snapshot",
+    "LocalResearchController",
 ]
