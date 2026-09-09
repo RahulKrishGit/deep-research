@@ -53,6 +53,7 @@ from deep_research.evaluation.evaluators import (
     METRIC_FUNCTIONS,
     code_evaluator,
     evaluate_target_with_metrics,
+    format_code_evaluator_feedback,
 )
 from deep_research.evaluation.factory import evaluation_session_id
 from deep_research.evaluation.judging import (
@@ -1155,7 +1156,7 @@ async def run_agent_evaluation(
         pending_gates[key] = gates
         pending_deterministic[key] = deterministic
         pending_deterministic_metrics[key] = deterministic_metrics
-        return code_evaluators[case_identity](run, example)
+        return format_code_evaluator_feedback(gates, deterministic)
 
     _dispatch_code.__name__ = "code_evaluator"
 

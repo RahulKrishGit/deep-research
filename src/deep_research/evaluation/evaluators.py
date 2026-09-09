@@ -2055,6 +2055,29 @@ if not _CASE_METRIC_IDS.issubset(METRIC_FUNCTIONS):
 # --- The LangSmith code-evaluator adapter -----------------------------------
 
 
+def format_code_evaluator_feedback(
+    report: GateReport, quality: float
+) -> dict[str, list[dict[str, object]]]:
+    """Format an already-computed gate report and quality score."""
+    results: list[dict[str, object]] = [
+        {
+            "key": f"gate:{result.gate_id}",
+            "score": 1 if result.passed else 0,
+            "comment": result.detail,
+        }
+        for result in report.results
+    ]
+    results.append(
+        {
+            "key": "hard_gates_passed",
+            "score": 1 if report.passed else 0,
+            "comment": "",
+        }
+    )
+    results.append({"key": "deterministic_quality", "score": quality, "comment": ""})
+    return {"results": results}
+
+
 def code_evaluator(
     case: EvaluationCase, *, secrets: Sequence[str]
 ) -> Callable[[Run, Example], dict]:
@@ -2086,24 +2109,6 @@ def code_evaluator(
                 ]
             }
         report, quality = evaluate_target(output, case, secrets=secrets)
-        results = [
-            {
-                "key": f"gate:{result.gate_id}",
-                "score": 1 if result.passed else 0,
-                "comment": result.detail,
-            }
-            for result in report.results
-        ]
-        results.append(
-            {
-                "key": "hard_gates_passed",
-                "score": 1 if report.passed else 0,
-                "comment": "",
-            }
-        )
-        results.append(
-            {"key": "deterministic_quality", "score": quality, "comment": ""}
-        )
-        return {"results": results}
+        return format_code_evaluator_feedback(report, quality)
 
     return evaluate

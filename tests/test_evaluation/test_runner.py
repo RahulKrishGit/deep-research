@@ -381,6 +381,48 @@ async def test_a_controlled_experiment_requests_three_repetitions(
 
 
 @pytest.mark.asyncio
+async def test_runner_evaluates_each_metric_once_per_repetition(
+    settings, runtime_config_for, tmp_path, evaluation_harness, monkeypatch
+) -> None:
+    import deep_research.evaluation.evaluators as evaluators_module
+    import deep_research.evaluation.runner as runner_module
+
+    focused = evaluation_harness.for_case("focused-decomposition")
+    calls = {
+        metric.metric_id: 0
+        for metric in focused.cases[0].expectations.deterministic_metrics
+    }
+    original_functions = evaluators_module.METRIC_FUNCTIONS
+
+    def counted(output, case, *, metric_id, function):
+        calls[metric_id] += 1
+        return function(output, case)
+
+    functions = dict(original_functions)
+    for metric_id in calls:
+        function = original_functions[metric_id]
+
+        def counted_function(
+            output, case, *, metric_id=metric_id, function=function
+        ):
+            return counted(output, case, metric_id=metric_id, function=function)
+
+        functions[metric_id] = counted_function
+    monkeypatch.setattr(evaluators_module, "METRIC_FUNCTIONS", functions)
+    monkeypatch.setattr(runner_module, "METRIC_FUNCTIONS", functions)
+
+    await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner", case_id="focused-decomposition"),
+        cases=focused.cases,
+        evaluate=FakeEvaluateRunner(examples=focused.examples),
+        **focused.kwargs(tmp_path),
+    )
+
+    assert calls == {metric_id: 3 for metric_id in calls}
+
+
+@pytest.mark.asyncio
 async def test_the_langsmith_experiment_url_is_preserved(
     settings, runtime_config_for, tmp_path, evaluation_harness
 ) -> None:
