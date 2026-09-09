@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
-from deep_research.evaluation.cases import cases_for
+from deep_research.evaluation import runner as runner_module
+from deep_research.evaluation.cases import case_by_id, cases_for
 from deep_research.evaluation.runner import (
     PREFLIGHT_REASONS,
     PreflightError,
     preflight,
     validate_model_capabilities,
 )
-from tests.evaluation_fakes import FakeLangSmithClient
+from tests.evaluation_fakes import FakeLangSmithClient, FakeStructuredProvider
 
 ENVIRONMENT = {
     "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
@@ -50,6 +54,108 @@ async def test_a_clean_preflight_passes(
     settings, runtime_config_for, tmp_path
 ) -> None:
     await run(settings, runtime_config_for("planner"), tmp_path)
+
+
+def _long_absolute_output_base(tmp_path: Path) -> Path:
+    base = tmp_path
+    for name in (
+        "task10-output-root-" + "a" * 64,
+        "windows-long-path-" + "b" * 64,
+        "controlled-preflight-" + "c" * 64,
+        "legal-component-" + "d" * 64,
+    ):
+        base /= name
+    assert len(str(base)) >= 260
+    return base
+
+
+TASK10_PREFLIGHT_CASES = (
+    (
+        "researcher",
+        "cross-agent-planner-fix-parity-baseline-researcher",
+        "multi-source-coverage",
+    ),
+    (
+        "source_evaluator",
+        "cross-agent-planner-fix-parity-baseline-source-evaluator",
+        "strong-and-weak-sources",
+    ),
+    (
+        "fact_checker",
+        "cross-agent-planner-fix-parity-baseline-fact-checker",
+        "mixed-verdicts",
+    ),
+    (
+        "synthesizer",
+        "cross-agent-planner-fix-parity-baseline-synthesizer",
+        "complete-cited-report",
+    ),
+    (
+        "critic",
+        "cross-agent-planner-fix-parity-baseline-critic",
+        "approve-strong-report",
+    ),
+    (
+        "researcher",
+        "cross-agent-planner-fix-parity-confirmation-researcher",
+        "multi-source-coverage",
+    ),
+)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows long-path regression")
+@pytest.mark.parametrize(
+    ("agent_name", "experiment_prefix", "case_id"),
+    TASK10_PREFLIGHT_CASES,
+    ids=[item[1] for item in TASK10_PREFLIGHT_CASES],
+)
+@pytest.mark.asyncio
+async def test_task10_preflight_uses_a_long_runtime_output_root(
+    settings,
+    runtime_config_for,
+    tmp_path,
+    monkeypatch,
+    agent_name,
+    experiment_prefix,
+    case_id,
+) -> None:
+    runtime = runtime_config_for(
+        agent_name,
+        case_id=case_id,
+        output_directory=str(_long_absolute_output_base(tmp_path)),
+        experiment_prefix=experiment_prefix,
+    )
+    case = case_by_id(agent_name, "controlled", case_id)
+    dependency_roots: list[Path] = []
+    real_dependencies = runner_module.build_controlled_dependencies
+
+    def recording_dependencies(runtime_arg, case_arg, *, root, **kwargs):
+        dependency_roots.append(root)
+        return real_dependencies(runtime_arg, case_arg, root=root, **kwargs)
+
+    monkeypatch.setattr(
+        runner_module, "build_controlled_dependencies", recording_dependencies
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "build_chat_provider",
+        lambda *args, **kwargs: FakeStructuredProvider(),
+    )
+    monkeypatch.setattr(runner_module, "build_agent", lambda *args, **kwargs: object())
+
+    await runner_module.preflight(
+        settings,
+        runtime,
+        cases=[case],
+        environ=dict(ENVIRONMENT),
+        langsmith_client=FakeLangSmithClient(),
+        root=runtime.output_root,
+    )
+
+    assert str(runtime.output_root).startswith("\\\\?\\")
+    assert dependency_roots == [runtime.output_root / "_preflight"]
+    assert (runtime.output_root / "_preflight").is_dir()
+    assert not (runtime.output_root / ".preflight-write-probe").exists()
 
 
 @pytest.mark.asyncio

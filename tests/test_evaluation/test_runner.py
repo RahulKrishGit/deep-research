@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from uuid import UUID
 
 import pytest
 
+from deep_research.evaluation import runner as runner_module
+from deep_research.evaluation.cases import case_by_id
 from deep_research.evaluation.cli import _focused_dataset_examples
+from deep_research.evaluation.dependencies import build_controlled_dependencies
 from deep_research.evaluation.models import (
     EvaluationFailure,
     EvaluatorDiagnostic,
@@ -1107,6 +1112,94 @@ async def test_the_artifact_is_written_and_revalidates(
         and "evaluation_failure_reason" not in repr(row["feedback"])
         for row in runner.rows
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows long-path regression")
+@pytest.mark.asyncio
+async def test_runner_uses_runtime_output_root_for_every_offline_descendant(
+    settings, runtime_config_for, tmp_path, evaluation_harness, monkeypatch
+) -> None:
+    base = tmp_path
+    for name in (
+        "task10-runner-output-root-" + "a" * 64,
+        "windows-long-path-" + "b" * 64,
+        "normal-repetition-" + "c" * 64,
+        "legal-component-" + "d" * 64,
+    ):
+        base /= name
+    assert len(str(base)) >= 260
+
+    harness = evaluation_harness.for_case("focused-decomposition")
+    case = case_by_id("planner", "controlled", "focused-decomposition")
+    runtime = runtime_config_for(
+        "planner",
+        case_id=case.case_id,
+        output_directory=str(base),
+        experiment_prefix="task10-runner-output-root",
+    )
+    preflight_roots: list[Path] = []
+    real_dependencies = runner_module.build_controlled_dependencies
+
+    def recording_preflight_dependencies(runtime_arg, case_arg, *, root, **kwargs):
+        preflight_roots.append(root)
+        return real_dependencies(runtime_arg, case_arg, root=root, **kwargs)
+
+    monkeypatch.setattr(
+        runner_module,
+        "build_controlled_dependencies",
+        recording_preflight_dependencies,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "build_chat_provider",
+        lambda *args, **kwargs: harness.factory_kwargs["target_provider_factory"](),
+    )
+    monkeypatch.setattr(runner_module, "build_agent", lambda *args, **kwargs: object())
+
+    await runner_module.preflight(
+        settings,
+        runtime,
+        cases=[case],
+        environ={
+            "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
+            "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
+        },
+        langsmith_client=FakeLangSmithClient(),
+        root=runtime.output_root,
+    )
+
+    repetition_roots: list[Path] = []
+
+    def recording_repetition_dependencies(runtime_arg, case_arg, *, root, **kwargs):
+        repetition_roots.append(root)
+        return build_controlled_dependencies(
+            runtime_arg, case_arg, root=root, **kwargs
+        )
+
+    runner = FakeEvaluateRunner(examples=harness.examples)
+    result = await run_agent_evaluation(
+        settings,
+        runtime,
+        cases=[case],
+        evaluate=runner,
+        target_provider_factory=harness.factory_kwargs["target_provider_factory"],
+        judge_provider_factory=harness.factory_kwargs["judge_provider_factory"],
+        tracker_factory=harness.factory_kwargs["tracker_factory"],
+        dependency_factory=recording_repetition_dependencies,
+        secrets=(),
+        root=runtime.output_root,
+        langsmith_client=FakeLangSmithClient(),
+    )
+
+    assert str(runtime.output_root).startswith("\\\\?\\")
+    assert preflight_roots == [runtime.output_root / "_preflight"]
+    assert repetition_roots == [
+        runtime.output_root / case.case_id / f"r{repetition}"
+        for repetition in range(1, 4)
+    ]
+    assert all(root.is_relative_to(runtime.output_root) for root in repetition_roots)
+    assert (runtime.output_root / "results.json").is_file()
+    assert result.experiment_name == runtime.experiment_name
 
 
 def _judge_not_run_payload(

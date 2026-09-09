@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -346,6 +348,65 @@ def test_the_output_root_is_per_agent_and_per_experiment() -> None:
         "source-evaluator",
         runtime.experiment_name,
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path contract")
+@pytest.mark.parametrize(
+    ("output_directory", "expected_base"),
+    [
+        (r"C:\evaluation-root", r"\\?\C:\evaluation-root"),
+        (
+            r"\\server\share\evaluation-root",
+            r"\\?\UNC\server\share\evaluation-root",
+        ),
+        (r"\\?\C:\evaluation-root", r"\\?\C:\evaluation-root"),
+        (
+            r"C:\evaluation-root\child\..\final",
+            r"\\?\C:\evaluation-root\final",
+        ),
+    ],
+    ids=["drive-letter", "unc", "already-extended", "absolute-normalization"],
+)
+def test_windows_output_root_has_a_pure_extended_path_contract(
+    output_directory: str, expected_base: str
+) -> None:
+    """The root transformation is deterministic and filesystem-independent."""
+    runtime = build(output_directory=output_directory)
+
+    assert runtime.output_root.parent.parent == Path(expected_base)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path contract")
+def test_windows_output_root_transformation_is_idempotent() -> None:
+    once = build(output_directory=r"C:\evaluation-root\child\..\final")
+    twice = build(output_directory=str(once.output_root.parent.parent))
+
+    assert twice.output_root.parent.parent == once.output_root.parent.parent
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path contract")
+def test_windows_runtime_config_preserves_all_evaluation_semantics() -> None:
+    prefix = "cross-agent-planner-fix-parity-baseline-researcher"
+    plain = build(
+        agent_name="researcher",
+        output_directory=r"C:\evaluation-root",
+        experiment_prefix=prefix,
+    )
+    already_extended = build(
+        agent_name="researcher",
+        output_directory=r"\\?\C:\evaluation-root",
+        experiment_prefix=prefix,
+    )
+
+    assert plain.experiment_name == (
+        "cross-agent-planner-fix-parity-baseline-researcher-"
+        "researcher-controlled-20260816T101500Z-abc1234"
+    )
+    assert plain.dataset_name == "deep-research-researcher-controlled-v1"
+    assert plain.model_dump(mode="json", exclude={"output_root"}) == (
+        already_extended.model_dump(mode="json", exclude={"output_root"})
+    )
+    assert plain.output_root == already_extended.output_root
 
 
 def test_experiment_metadata_records_everything_the_spec_names() -> None:
