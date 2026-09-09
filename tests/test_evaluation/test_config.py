@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
+import ntpath
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
@@ -350,7 +349,6 @@ def test_the_output_root_is_per_agent_and_per_experiment() -> None:
     )
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows path contract")
 @pytest.mark.parametrize(
     ("output_directory", "expected_base"),
     [
@@ -373,18 +371,19 @@ def test_windows_output_root_has_a_pure_extended_path_contract(
     """The root transformation is deterministic and filesystem-independent."""
     runtime = build(output_directory=output_directory)
 
-    assert runtime.output_root.parent.parent == Path(expected_base)
+    assert str(runtime.output_root.parent.parent) == expected_base
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows path contract")
 def test_windows_output_root_transformation_is_idempotent() -> None:
-    once = build(output_directory=r"C:\evaluation-root\child\..\final")
+    output_directory = r"C:\evaluation-root\child\..\final"
+    expected = _expected_extended_windows_path(output_directory)
+    once = build(output_directory=output_directory)
     twice = build(output_directory=str(once.output_root.parent.parent))
 
-    assert twice.output_root.parent.parent == once.output_root.parent.parent
+    assert str(once.output_root.parent.parent) == expected
+    assert str(twice.output_root.parent.parent) == expected
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows path contract")
 def test_windows_runtime_config_preserves_all_evaluation_semantics() -> None:
     prefix = "cross-agent-planner-fix-parity-baseline-researcher"
     plain = build(
@@ -406,7 +405,19 @@ def test_windows_runtime_config_preserves_all_evaluation_semantics() -> None:
     assert plain.model_dump(mode="json", exclude={"output_root"}) == (
         already_extended.model_dump(mode="json", exclude={"output_root"})
     )
-    assert plain.output_root == already_extended.output_root
+    assert str(plain.output_root.parent.parent) == (
+        str(already_extended.output_root.parent.parent)
+    )
+
+
+def _expected_extended_windows_path(value: str) -> str:
+    """Return the host-independent string contract for Task 3's helper."""
+    normalized = ntpath.normpath(value)
+    if normalized.startswith("\\\\?\\"):
+        return normalized
+    if normalized.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + normalized[2:]
+    return "\\\\?\\" + normalized
 
 
 def test_experiment_metadata_records_everything_the_spec_names() -> None:

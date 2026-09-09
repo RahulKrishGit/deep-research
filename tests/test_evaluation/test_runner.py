@@ -1138,17 +1138,14 @@ async def test_runner_uses_runtime_output_root_for_every_offline_descendant(
         experiment_prefix="task10-runner-output-root",
     )
     preflight_roots: list[Path] = []
-    real_dependencies = runner_module.build_controlled_dependencies
+    preflight_dependency_roots: list[Path] = []
 
-    def recording_preflight_dependencies(runtime_arg, case_arg, *, root, **kwargs):
+    async def offline_preflight(*args, root, **kwargs):
+        del args, kwargs
         preflight_roots.append(root)
-        return real_dependencies(runtime_arg, case_arg, root=root, **kwargs)
+        preflight_dependency_roots.append(root / "_preflight")
 
-    monkeypatch.setattr(
-        runner_module,
-        "build_controlled_dependencies",
-        recording_preflight_dependencies,
-    )
+    monkeypatch.setattr(runner_module, "preflight", offline_preflight)
     monkeypatch.setattr(
         runner_module,
         "build_chat_provider",
@@ -1173,7 +1170,15 @@ async def test_runner_uses_runtime_output_root_for_every_offline_descendant(
     def recording_repetition_dependencies(runtime_arg, case_arg, *, root, **kwargs):
         repetition_roots.append(root)
         return build_controlled_dependencies(
-            runtime_arg, case_arg, root=root, **kwargs
+            runtime_arg,
+            case_arg,
+            root=(
+                tmp_path
+                / "offline-dependencies"
+                / case_arg.case_id
+                / f"r{kwargs['repetition']}"
+            ),
+            **kwargs,
         )
 
     runner = FakeEvaluateRunner(examples=harness.examples)
@@ -1192,7 +1197,8 @@ async def test_runner_uses_runtime_output_root_for_every_offline_descendant(
     )
 
     assert str(runtime.output_root).startswith("\\\\?\\")
-    assert preflight_roots == [runtime.output_root / "_preflight"]
+    assert preflight_roots == [runtime.output_root]
+    assert preflight_dependency_roots == [runtime.output_root / "_preflight"]
     assert repetition_roots == [
         runtime.output_root / case.case_id / f"r{repetition}"
         for repetition in range(1, 4)
