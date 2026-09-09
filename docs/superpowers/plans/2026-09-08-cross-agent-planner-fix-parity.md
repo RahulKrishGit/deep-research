@@ -15,6 +15,29 @@
 - `docs/superpowers/plans/2026-08-24-planner-controlled-evaluation-improvement.md`
 - Current `obra/superpowers` `brainstorming`, `writing-plans`, and `subagent-driven-development` skills as of 2026-09-08.
 
+## Current Execution Status (Updated 2026-09-09)
+
+This table is the authoritative task bookkeeping for the remote branch `codex/cross-agent-planner-fix-parity`. “Complete” requires implementation evidence plus the required task-scoped review; “not complete” means the task must not be represented as finished merely because its brief or offline preparation exists.
+
+| Task | Status | Evidence / remaining work |
+| --- | --- | --- |
+| 1. Isolated SDD campaign and known-good base | **Complete** | Worktree/ledger initialized; editable-install provenance and offline baseline recorded. |
+| 2. Shared ReAct boundary normalization | **Complete** | Commit `66340a4`; RED/GREEN focused tests, neighboring tests, Ruff, and diff checks; Luna Max review approved. |
+| 3. Planner wrapper removal and cross-agent ReAct parity | **Complete** | Commit `45178ab`; parity/provider-identity regressions and task review approved. |
+| 4. Safe provider-failure snapshot | **Complete** | Commits `c4e3fee` through `9349166`, plus export fix `808cfba`; two reviewed fix rounds resolved the Important findings. |
+| 5. Non-Planner fallback diagnostic wiring | **Complete** | Commit `0c9c0ec`; focused, agent, evaluation, Ruff, and diff checks; Luna Max review approved. |
+| 6. Evaluation artifact-boundary preservation | **Complete** | Commit `2fbf6be`; test-only boundary guard; Luna Max review approved. |
+| 7. Source Evaluator/Synthesizer non-ReAct characterization | **Complete** | Commit `91d817b`; characterization tests; Luna Max review approved. |
+| 8. Offline integration gate | **Complete** | Candidate `808cfba`; focused `690` passed and full offline `1,895` passed; task review approved. |
+| 9. Immutable controlled baselines | **Not complete — blocked** | No paid DeepSeek/LangSmith baseline reached a provider request; missing credentials left all five agents `INFRASTRUCTURE_BLOCKED` / `NOT_REACHED`. |
+| 10. Evidence-gated output-budget repair | **Not started / not applicable** | Requires a typed Task 9 target-side `output_limit` diagnosis; none exists. |
+| 11. Evidence-gated agent quality/trajectory repair | **Not started / not applicable** | Requires a typed Task 9 quality/trajectory diagnosis; none exists. |
+| 12. Full controlled validation | **Not started** | Depends on Task 9 and any evidence-supported repairs; no live or controlled validation was run. |
+| 13. Permanent cross-agent fix log | **Complete** | `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`, 17 required sections, secret-safe scan, committed in `3ffdc9d`. |
+| 14. Final offline verification and whole-branch review | **Incomplete — review deferred** | Offline verification passed (`1,895` tests, Ruff, whitespace); the whole-branch reviewer and any final-finding loop were not run because the user explicitly deferred branch review. |
+
+The following boundaries remain active: `--tier live` is prohibited; controlled calls require immediate per-command human authorization; no Task 10–12 result may be inferred from the absence of a Task 9 artifact; and the whole-branch review must remain deferred until the user explicitly requests it. The separately authorized GitHub push is complete, but it does not change the Task 14 review status.
+
 ## Brainstorming Outcome
 
 This is an **architectural** change, not a bounded patch: the confirmed bug sits on a shared runtime boundary used by multiple agents, while provider-diagnostic and token-budget behavior crosses provider, runtime, evaluation, and agent-specific fallback interfaces.
@@ -293,7 +316,7 @@ src/deep_research/evaluation/models.py
 
 ---
 
-### Task 1: Create the Isolated SDD Campaign and Freeze the Known-Good Base
+### Task 1: Create the Isolated SDD Campaign and Freeze the Known-Good Base — COMPLETE
 
 **Files:**
 - Create, ignored: this plan's `.superpowers/sdd/.../progress.md` workspace ledger
@@ -305,7 +328,7 @@ src/deep_research/evaluation/models.py
 - Consumes: `main` containing merge commit `bc67620666bbc41c516556d45602de6dd00d7102` and this plan.
 - Produces: isolated branch/worktree, exact approved-base SHA, clean offline baseline, and a recovery ledger that survives context compaction.
 
-- [ ] **Step 1: Resolve the repository and verify the Planner remediation is in the base**
+- [x] **Step 1: Resolve the repository and verify the Planner remediation is in the base**
 
 ```powershell
 $Repository = (git rev-parse --show-toplevel).Trim()
@@ -323,7 +346,7 @@ if ($LASTEXITCODE -ne 0) { throw 'approved base does not contain this plan' }
 
 Expected: both checks exit 0 and `$ApprovedBase` is a literal 40-character SHA.
 
-- [ ] **Step 2: Create or verify the worktree without deleting anything unexpected**
+- [x] **Step 2: Create or verify the worktree without deleting anything unexpected**
 
 ```powershell
 if (Test-Path -LiteralPath $Worktree) {
@@ -342,7 +365,7 @@ if (git status --porcelain) { throw 'campaign worktree is dirty before execution
 
 Expected: clean `codex/cross-agent-planner-fix-parity` at `$ApprovedBase`.
 
-- [ ] **Step 3: Initialize the SDD workspace and ledger**
+- [x] **Step 3: Initialize the SDD workspace and ledger**
 
 Use the current Superpowers `subagent-driven-development` workspace helper if installed. The ledger's first line must identify this plan exactly:
 
@@ -364,7 +387,7 @@ Then record these literal values beneath it:
 
 Do not save the angle-bracket text; replace it with the actual SHA.
 
-- [ ] **Step 4: Verify interpreter/editable-install provenance**
+- [x] **Step 4: Verify interpreter/editable-install provenance**
 
 ```powershell
 python -m pip install -e ".[dev]"
@@ -373,7 +396,7 @@ python -c "import pathlib, deep_research; print(pathlib.Path(deep_research.__fil
 
 Expected: the printed module path resolves under this campaign worktree's `src`.
 
-- [ ] **Step 5: Run the complete tracked offline baseline**
+- [x] **Step 5: Run the complete tracked offline baseline**
 
 ```powershell
 python -m pytest -q -p no:cacheprovider
@@ -383,13 +406,13 @@ git diff --check
 
 Expected: pytest matches or improves the merged Planner-remediation baseline (PR #19 recorded 1881 passed, 1 deselected, 2 known dependency warnings), Ruff is clean, and `git diff --check` exits 0. If the local Windows temp-root reproduces the documented path-length issue, use a short `--basetemp` and record that exact ruling in the ledger; do not change tracked code to fix the environment.
 
-- [ ] **Step 6: Commit no code in this task**
+- [x] **Step 6: Commit no code in this task**
 
 The task ends with a clean baseline and ledger only. Record `Task 1: complete` in the ignored ledger. No tracked commit is required.
 
 ---
 
-### Task 2: Move RC-A Normalization to the Shared ReAct Boundary
+### Task 2: Move RC-A Normalization to the Shared ReAct Boundary — COMPLETE
 
 **Files:**
 - Modify: `src/deep_research/agents/react.py`
@@ -400,7 +423,7 @@ The task ends with a clean baseline and ledger only. Record `Task 1: complete` i
 - Produces: every `ReActStep` stores `tool_name=None` on finish decisions and `final_answer=None` on tool decisions; meaningful non-empty values are unchanged.
 - Does not change: `ReActDecision` schema, `ReActStep` schema, provider contracts, stop reasons, tool-budget behavior, or provider-error propagation mode.
 
-- [ ] **Step 1: Add the two direct failing shared-loop regression tests**
+- [x] **Step 1: Add the two direct failing shared-loop regression tests**
 
 Append tests beside `test_one_step_loop_finishes_immediately` / `test_multi_step_loop_calls_a_tool_then_finishes` in `tests/test_agents/test_react.py`:
 
@@ -458,7 +481,7 @@ async def test_tool_decision_normalizes_empty_unused_final_answer(
     assert run.steps[0].final_answer is None
 ```
 
-- [ ] **Step 2: Run them and verify RED**
+- [x] **Step 2: Run them and verify RED**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_react.py -k "normalizes_empty_unused"
@@ -466,7 +489,7 @@ python -m pytest -q tests/test_agents/test_react.py -k "normalizes_empty_unused"
 
 Expected before the fix: both tests fail at `ReActStep(...)` validation because the unused value is an empty string.
 
-- [ ] **Step 3: Apply the minimal shared-boundary fix**
+- [x] **Step 3: Apply the minimal shared-boundary fix**
 
 In the existing `ReActStep(...)` construction in `run_react_loop`, change only the two optional values:
 
@@ -485,7 +508,7 @@ step = ReActStep(
 
 Do not weaken `ReActStep`'s `min_length=1` contract. Do not add a second provider wrapper. `ContractModel` already strips whitespace, so `field or None` also handles whitespace-only unused strings after model validation.
 
-- [ ] **Step 4: Verify focused and neighboring GREEN**
+- [x] **Step 4: Verify focused and neighboring GREEN**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_react.py -k "normalizes_empty_unused"
@@ -496,7 +519,7 @@ git diff --check
 
 Expected: all commands pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/deep_research/agents/react.py tests/test_agents/test_react.py
@@ -507,7 +530,7 @@ Record commit SHA and `Task 2: complete` in the ledger.
 
 ---
 
-### Task 3: Remove the Planner-Local RC-A Workaround and Prove Cross-Agent ReAct Parity
+### Task 3: Remove the Planner-Local RC-A Workaround and Prove Cross-Agent ReAct Parity — COMPLETE
 
 **Files:**
 - Modify: `src/deep_research/agents/planner.py`
@@ -523,7 +546,7 @@ Record commit SHA and `Task 2: complete` in the ledger.
 - Produces: Planner no longer swaps/wraps its provider for RC-A; Researcher, Fact Checker, and Critic all complete a scripted ReAct path containing an empty unused optional field.
 - Preserves: Planner's `preserve_provider_errors=True`, `planning_provider_error("react_decision")` cause wrapping, and `planner_final_max_tokens` only on `ResearchPlanDraft`.
 
-- [ ] **Step 1: Add/retain parity tests before deleting Planner code**
+- [x] **Step 1: Add/retain parity tests before deleting Planner code**
 
 Keep the existing Planner RC-A regression tests unchanged. Add one agent-level regression to each custom ReAct agent using its existing test constructors/fakes. Each test must queue a valid decision whose *unused* optional field is `""` and assert the agent does not raise `ValidationError`.
 
@@ -537,7 +560,7 @@ Critic: the spot-check loop completes and the stored step has final_answer is No
 
 Use the existing `ScriptedCompleter` and each test module's current state/tool fixtures rather than introducing a second fake framework.
 
-- [ ] **Step 2: Verify the new sibling tests are already GREEN on Task 2**
+- [x] **Step 2: Verify the new sibling tests are already GREEN on Task 2**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_researcher.py -k "empty_unused"
@@ -547,7 +570,7 @@ python -m pytest -q tests/test_agents/test_critic.py -k "empty_unused"
 
 Expected: all pass because Task 2 fixed the shared boundary. If any fails for a different reason, record the exact failure as a separate root-cause candidate; do not weaken the test or copy the Planner wrapper into that agent.
 
-- [ ] **Step 3: Delete only the Planner-local normalization wrapper**
+- [x] **Step 3: Delete only the Planner-local normalization wrapper**
 
 In `planner.py`:
 - remove `_DecisionNormalizingCompleter` completely;
@@ -564,7 +587,7 @@ except ProviderError as error:
 
 Do not change `_request_plan()` or its `max_tokens=self.config.planner_final_max_tokens` argument.
 
-- [ ] **Step 4: Run the Planner and provider-identity regression set**
+- [x] **Step 4: Run the Planner and provider-identity regression set**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_planner.py -k "planner_regression or provider"
@@ -575,7 +598,7 @@ python -m ruff check src/deep_research/agents tests/test_agents
 
 Expected: the Planner's known-good RC-A tests remain green and exact provider identity/parity tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/deep_research/agents/planner.py `
@@ -590,7 +613,7 @@ Record commit SHA and `Task 3: complete`.
 
 ---
 
-### Task 4: Add a Shared Safe Snapshot for Provider Failures Caught by Fallbacking Agents
+### Task 4: Add a Shared Safe Snapshot for Provider Failures Caught by Fallbacking Agents — COMPLETE
 
 **Files:**
 - Modify: `src/deep_research/providers/contracts.py`
@@ -605,7 +628,7 @@ Record commit SHA and `Task 3: complete`.
 - Produces: one immutable, finite `ProviderFailureSnapshot` and `provider_failure_snapshot(error)` helper that never renders exception messages or provider content; one `agent_provider_failure_details(operation, error, **extra)` helper returning JSON-safe details.
 - The snapshot is runtime/provider infrastructure, not an evaluation model; agents must not import from `deep_research.evaluation`.
 
-- [ ] **Step 1: Write RED tests for the safe finite projection**
+- [x] **Step 1: Write RED tests for the safe finite projection**
 
 Add tests that construct:
 - `ProviderOutputLimitError` with `finish_reason_category="length"`, `configured_max_tokens=4096`, typed usage, request attempt 2, structured attempt 1;
@@ -631,7 +654,7 @@ For output-limit, assert configured cap, usage, request attempt, and structured 
 
 Add an adversarial error whose message contains `PROVIDER_SECRET_SENTINEL` and assert that sentinel is absent from both `snapshot.model_dump(mode="json")` and `repr(snapshot.model_dump(mode="json"))`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_errors.py tests/test_deepseek_provider.py tests/test_openai_provider.py -k "provider_failure_snapshot or agent_provider_failure_details"
@@ -639,7 +662,7 @@ python -m pytest -q tests/test_agents/test_errors.py tests/test_deepseek_provide
 
 Expected: collection/assertions fail because the shared snapshot/helper do not exist.
 
-- [ ] **Step 3: Implement `ProviderFailureSnapshot` in provider contracts**
+- [x] **Step 3: Implement `ProviderFailureSnapshot` in provider contracts**
 
 Define an immutable model with only these fields:
 
@@ -675,7 +698,7 @@ class ProviderFailureSnapshot(ProviderContract):
 
 Implement `provider_failure_snapshot(error: ProviderError) -> ProviderFailureSnapshot` by type, most specific first. Do not inspect `str(error)`. Map `ProviderResponseError.failure_category="output_limit"` to `provider_response` unless the concrete type is `ProviderOutputLimitError`, matching the evaluation taxonomy's existing conservative rule.
 
-- [ ] **Step 4: Implement the agent JSON helper**
+- [x] **Step 4: Implement the agent JSON helper**
 
 In `agents/errors.py`, add:
 
@@ -697,7 +720,7 @@ def agent_provider_failure_details(
 
 Do not retain a second `exception_type` outside the snapshot. Export the provider snapshot/helper from `providers.__init__` using the package's existing explicit-export style.
 
-- [ ] **Step 5: Run GREEN and neighboring provider tests**
+- [x] **Step 5: Run GREEN and neighboring provider tests**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_errors.py tests/test_deepseek_provider.py tests/test_openai_provider.py -k "provider_failure_snapshot or agent_provider_failure_details"
@@ -707,7 +730,7 @@ python -m ruff check src/deep_research/providers src/deep_research/agents/errors
 
 Expected: all pass; existing evaluation taxonomy behavior remains unchanged.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/deep_research/providers/contracts.py `
@@ -723,7 +746,7 @@ Record commit SHA and `Task 4: complete`.
 
 ---
 
-### Task 5: Wire Safe Provider Diagnostics into Every Non-Planner Fallback Path
+### Task 5: Wire Safe Provider Diagnostics into Every Non-Planner Fallback Path — COMPLETE
 
 **Files:**
 - Modify: `src/deep_research/agents/react.py`
@@ -750,7 +773,7 @@ synthesizer_report_draft
 critic_report_review
 ```
 
-- [ ] **Step 1: Add RED assertions to each existing provider-failure test**
+- [x] **Step 1: Add RED assertions to each existing provider-failure test**
 
 For each path, replace assertions that only expect `{"exception_type": ...}` with assertions on:
 
@@ -772,7 +795,7 @@ Also keep/extend each test's semantic assertions:
 - Critic: fallback critique/routing remains unchanged.
 - ReAct compatibility mode: `stop_reason == "provider_error"`, nonrecoverable ResearchError, no raised provider exception when `propagate_provider_errors=False`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 python -m pytest -q `
@@ -787,7 +810,7 @@ python -m pytest -q `
 
 Expected: new detail assertions fail because the current code records only generic exception type/counts.
 
-- [ ] **Step 3: Replace only provider-error `details` construction**
+- [x] **Step 3: Replace only provider-error `details` construction**
 
 Use `agent_provider_failure_details(...)` in each provider catch. Preserve every existing `error_type`, static user-facing message, `recoverable` value, stop reason, fallback object, and loop-break rule.
 
@@ -824,7 +847,7 @@ errors.append(
 
 Do not change Planner's raised cause-chain behavior; when `propagate_provider_errors=True`, the shared loop still re-raises the original provider exception after recording its safe event.
 
-- [ ] **Step 4: Run focused and full agent tests**
+- [x] **Step 4: Run focused and full agent tests**
 
 ```powershell
 python -m pytest -q tests/test_agents
@@ -834,7 +857,7 @@ python -m ruff check src/deep_research/agents tests/test_agents
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/deep_research/agents/react.py `
@@ -856,7 +879,7 @@ Record commit SHA and `Task 5: complete`.
 
 ---
 
-### Task 6: Prove Typed Fallback Diagnostics Survive the Evaluation Artifact Boundary
+### Task 6: Prove Typed Fallback Diagnostics Survive the Evaluation Artifact Boundary — COMPLETE
 
 **Files:**
 - Modify: `tests/test_evaluation/test_targets.py`
@@ -866,7 +889,7 @@ Record commit SHA and `Task 5: complete`.
 - Consumes: a non-Planner agent that intentionally returns a fallback `AgentRun.result` plus `run.errors` containing Task 5 provider snapshots.
 - Produces: `TargetOutput.completed=True`, `TargetOutput.failure=None`, and the safe typed provider snapshot preserved in `TargetOutput.errors` for fallback-producing agents; Planner exceptions continue to produce `completed=False` with top-level typed `failure` via the cause-chain taxonomy.
 
-- [ ] **Step 1: Add a target-level fallback test**
+- [x] **Step 1: Add a target-level fallback test**
 
 Extend the target harness/fakes using the existing fixture style so one non-Planner agent returns a valid fallback result and one `ResearchError` whose `details.provider_failure.kind == "output_limit"`. Assert:
 
@@ -881,7 +904,7 @@ assert output.errors[0]["details"]["provider_failure"]["configured_max_tokens"] 
 
 Also retain the existing Planner test that a raised output-limit cause becomes top-level `failure.reason == "output_limit"`.
 
-- [ ] **Step 2: Run the target tests**
+- [x] **Step 2: Run the target tests**
 
 ```powershell
 python -m pytest -q tests/test_evaluation/test_targets.py -k "provider or fallback or output_limit"
@@ -889,14 +912,14 @@ python -m pytest -q tests/test_evaluation/test_targets.py -k "provider or fallba
 
 Expected: this should already be GREEN because `_success_output` serializes `run.errors`. If it is green, make no production target change; the test is the regression guard. If it fails because typed safe fields are dropped, fix only the serialization boundary required by the failing assertion, then rerun the complete target suite.
 
-- [ ] **Step 3: Run neighboring evaluation tests**
+- [x] **Step 3: Run neighboring evaluation tests**
 
 ```powershell
 python -m pytest -q tests/test_evaluation/test_targets.py tests/test_evaluation/test_models.py tests/test_evaluation/test_failure_taxonomy.py tests/test_evaluation/test_runner.py
 python -m ruff check src/deep_research/evaluation tests/test_evaluation/test_targets.py
 ```
 
-- [ ] **Step 4: Commit the test (and only a demonstrated minimal production fix if needed)**
+- [x] **Step 4: Commit the test (and only a demonstrated minimal production fix if needed)**
 
 ```powershell
 git add tests/test_evaluation/test_targets.py
@@ -910,7 +933,7 @@ Record commit SHA and `Task 6: complete`.
 
 ---
 
-### Task 7: Characterize Source Evaluator and Synthesizer as Non-ReAct Agents
+### Task 7: Characterize Source Evaluator and Synthesizer as Non-ReAct Agents — COMPLETE
 
 **Files:**
 - Modify: `tests/test_agents/test_source_evaluator.py`
@@ -920,7 +943,7 @@ Record commit SHA and `Task 6: complete`.
 **Interfaces:**
 - Produces a regression guard for the audit conclusion that RC-A does not apply to these two agents on current `main`.
 
-- [ ] **Step 1: Add test assertions that their normal provider calls never request `ReActDecision`**
+- [x] **Step 1: Add test assertions that their normal provider calls never request `ReActDecision`**
 
 Use `ScriptedCompleter.calls` / each module's existing recording provider. After a representative successful run, assert the requested schema sequence contains:
 
@@ -931,7 +954,7 @@ Synthesizer: ReportDraft only
 
 and does not contain `ReActDecision`.
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_source_evaluator.py tests/test_agents/test_synthesizer.py -k "react or schema or provider"
@@ -939,7 +962,7 @@ python -m pytest -q tests/test_agents/test_source_evaluator.py tests/test_agents
 
 Expected: GREEN with no production edit. If a current code path unexpectedly requests `ReActDecision`, stop and record the architecture drift before proceeding; RC-A applicability must be reclassified.
 
-- [ ] **Step 3: Commit characterization tests**
+- [x] **Step 3: Commit characterization tests**
 
 ```powershell
 git add tests/test_agents/test_source_evaluator.py tests/test_agents/test_synthesizer.py
@@ -950,7 +973,7 @@ Record commit SHA and `Task 7: complete`.
 
 ---
 
-### Task 8: Run the Offline Integration Gate Before Any Paid Evaluation
+### Task 8: Run the Offline Integration Gate Before Any Paid Evaluation — COMPLETE
 
 **Files:**
 - No production files
@@ -960,7 +983,7 @@ Record commit SHA and `Task 7: complete`.
 - Consumes: Tasks 2-7.
 - Produces: one reviewed offline candidate SHA eligible for controlled evaluation.
 
-- [ ] **Step 1: Run focused integration suites**
+- [x] **Step 1: Run focused integration suites**
 
 ```powershell
 python -m pytest -q `
@@ -975,7 +998,7 @@ python -m pytest -q `
   tests/test_runtime/test_assembly.py
 ```
 
-- [ ] **Step 2: Run full tracked offline verification**
+- [x] **Step 2: Run full tracked offline verification**
 
 ```powershell
 python -m pytest -q -p no:cacheprovider
@@ -986,7 +1009,7 @@ git status --short
 
 Expected: full suite green, Ruff clean, whitespace clean, tracked worktree clean.
 
-- [ ] **Step 3: Run the task review gate**
+- [x] **Step 3: Run the task review gate**
 
 Dispatch a fresh reviewer on the complete diff from `$ApprovedBase` through current HEAD. Required review questions:
 
@@ -1001,7 +1024,7 @@ Dispatch a fresh reviewer on the complete diff from `$ApprovedBase` through curr
 
 Fix Critical/Important findings with TDD and scoped re-review before proceeding. Record review report path and rulings in the SDD ledger.
 
-- [ ] **Step 4: Freeze candidate SHA**
+- [x] **Step 4: Freeze candidate SHA**
 
 ```powershell
 $CandidateSha = (git rev-parse HEAD).Trim()
@@ -1012,7 +1035,7 @@ Expected: clean worktree. Record literal `$CandidateSha` in the ledger as `Offli
 
 ---
 
-### Task 9: Run Immutable Controlled Baselines for Each Non-Planner Agent
+### Task 9: Run Immutable Controlled Baselines for Each Non-Planner Agent — NOT COMPLETE (BLOCKED)
 
 **Files:**
 - No tracked production/test changes during baseline acquisition
@@ -1265,7 +1288,7 @@ Expected: no tracked changes beyond the already reviewed Task 8 candidate; no `s
 
 ---
 
-### Task 10: Evidence-Gated Operation-Specific Output-Budget Repair
+### Task 10: Evidence-Gated Operation-Specific Output-Budget Repair — NOT STARTED / NOT APPLICABLE
 
 **Files:** conditional; modify only for an agent/operation that produced a typed target-side `output_limit`
 - `src/deep_research/utils/config.py`
@@ -1352,7 +1375,7 @@ After the focused inventory passes and the fresh review is approved, commit only
 
 ---
 
-### Task 11: Evidence-Gated Agent-Specific Quality / Trajectory Repair Loop
+### Task 11: Evidence-Gated Agent-Specific Quality / Trajectory Repair Loop — NOT STARTED / NOT APPLICABLE
 
 **Files:** conditional per diagnosed root cause; never edit frozen evaluation inputs, evaluators, judges, or the SDD ledger's source-of-truth definitions.
 
@@ -1392,7 +1415,7 @@ After focused approval, commit only the agent-specific files with `fix($CliAgent
 
 ---
 
-### Task 12: Full Controlled Validation for Every Repaired Agent
+### Task 12: Full Controlled Validation for Every Repaired Agent — NOT STARTED
 
 **Files:**
 - No tracked changes during validation
@@ -1446,7 +1469,7 @@ If an agent passed its Task 9 baseline and required no repair, its immutable bas
 
 ---
 
-### Task 13: Create the Permanent Cross-Agent Fix Log
+### Task 13: Create the Permanent Cross-Agent Fix Log — COMPLETE
 
 **Files:**
 - Create: `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`
@@ -1455,7 +1478,7 @@ If an agent passed its Task 9 baseline and required no repair, its immutable bas
 - Consumes: SDD ledger, git history, reviewed diffs, and validated controlled artifacts.
 - Produces: a tracked, secret-safe permanent record analogous to the Planner fix log.
 
-- [ ] **Step 1: Write the log with these exact sections**
+- [x] **Step 1: Write the log with these exact sections**
 
 ```markdown
 # Cross-Agent Planner-Fix Parity Fix Log (2026-09-08)
@@ -1481,11 +1504,11 @@ If an agent passed its Task 9 baseline and required no repair, its immutable bas
 
 For an agent that needed no change, say so and cite the exact controlled artifact/gates that justified no change. Do not manufacture a repair section.
 
-- [ ] **Step 2: Secret/data-leakage scan**
+- [x] **Step 2: Secret/data-leakage scan**
 
 The fix log may contain commit SHAs, case IDs, gate IDs, finite typed reasons, non-secret config values/fingerprints, counts, scores, experiment URLs directly supplied by LangSmith, and static error messages. It must not contain prompts, provider responses, evaluator inputs, secrets, hidden reasoning, raw exception strings, or raw environment dumps.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git add docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md
@@ -1496,7 +1519,7 @@ Record `Task 13: complete`.
 
 ---
 
-### Task 14: Final Offline Verification and Whole-Branch Review
+### Task 14: Final Offline Verification and Whole-Branch Review — INCOMPLETE (REVIEW DEFERRED)
 
 **Files:**
 - No new production scope
@@ -1505,7 +1528,7 @@ Record `Task 13: complete`.
 **Interfaces:**
 - Produces: review-clean branch and final execution handoff; no merge/push.
 
-- [ ] **Step 1: Run authoritative full verification**
+- [x] **Step 1: Run authoritative full verification**
 
 ```powershell
 python -m pytest -q -p no:cacheprovider
