@@ -29,8 +29,8 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 6. Evaluation artifact-boundary preservation | **Complete** | Commit `2fbf6be`; test-only boundary guard; Luna Max review approved. |
 | 7. Source Evaluator/Synthesizer non-ReAct characterization | **Complete** | Commit `91d817b`; characterization tests; Luna Max review approved. |
 | 8. Offline integration gate | **Complete** | Candidate `808cfba`; focused `690` passed and full offline `1,895` passed; task review approved. |
-| 9. Offline typed evaluation telemetry contract | **Not started — required blocker** | Must repair the additive artifact projection and pass focused/evaluation/full-offline tests plus Luna-max review before any controlled baseline. |
-| 10. Immutable controlled baselines | **Blocked by Task 9** | No paid DeepSeek/LangSmith baseline may run until the Task 9 ledger gates are present and approved. |
+| 9. Offline typed evaluation telemetry contract | **Complete** | Commit `a763cda`; focused/evaluation/full-offline tests, exact local inventory acceptance/rejection proof, lint/diff checks, and fresh Luna-max review approved. |
+| 10. Immutable controlled baselines | **Ready — immediate authorization required** | Task 9 gate is approved; no paid DeepSeek/LangSmith baseline has run. Each controlled command still requires immediate per-command human authorization. |
 | 11. Evidence-gated output-budget repair | **Not started / not applicable** | Requires typed Task 10 target-side `output_limit` evidence; none exists. |
 | 12. Evidence-gated agent quality/trajectory repair | **Not started / not applicable** | Requires typed Task 10 quality/trajectory evidence; none exists. |
 | 13. Full controlled validation | **Not started** | Depends on Task 10 and any evidence-supported Tasks 11–12 repairs; no live or controlled validation was run. |
@@ -1045,7 +1045,7 @@ Expected: clean worktree. Record literal `$CandidateSha` in the ledger as `Offli
 
 ---
 
-### Task 9: Repair the Evaluation Artifact Typed Telemetry Contract — OFFLINE ONLY / BLOCKING CONTROLLED BASELINES
+### Task 9: Repair the Evaluation Artifact Typed Telemetry Contract — COMPLETE (OFFLINE; LUNA-MAX REVIEW APPROVED)
 
 **Purpose:** Repair only the evaluation artifact projection boundary so the already-required controlled-baseline telemetry survives into `RepetitionResult` and `results.json`. This task must not change agent behavior, frozen evaluation semantics, provider behavior, prompts, gates, thresholds, cases, rubrics, judges, model budgets, retry policy, or dependency scenarios.
 
@@ -1149,7 +1149,7 @@ Update `build_repetition_result(...)` and its existing bookkeeping to set the fo
 
 ---
 
-### Task 10: Run Immutable Controlled Baselines for Each Non-Planner Agent — BLOCKED UNTIL TASK 9 APPROVES
+### Task 10: Run Immutable Controlled Baselines for Each Non-Planner Agent — READY (IMMEDIATE AUTHORIZATION REQUIRED)
 
 **Hard paid-call precondition:** Do not execute any provider, LangSmith, controlled-evaluation, dataset-sync, judge, or credential-dependent command until the ledger contains all of these exact lines: `Task 9 focused tests: PASS`, `Task 9 evaluation tests: PASS`, `Task 9 full offline suite: PASS`, `Task 9 inventory contract check: PASS`, `Task 9 review: APPROVED`, and `Task 9: complete`. This local-only check does not replace immediate human authorization for each paid command.
 
