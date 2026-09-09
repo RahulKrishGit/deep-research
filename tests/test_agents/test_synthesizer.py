@@ -446,9 +446,10 @@ async def test_a_run_writes_the_report_and_records_its_counts(
     tracker: Tracker, tmp_path: Path
 ) -> None:
     memory = FakeMemory()
+    completer = ScriptedCompleter(outputs=[_draft()])
     agent = _synthesizer(
         tracker,
-        ScriptedCompleter(outputs=[_draft()]),
+        completer,
         synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
     )
 
@@ -466,6 +467,7 @@ async def test_a_run_writes_the_report_and_records_its_counts(
     assert "Vendor numbers remain unaudited." in outcome.result.markdown
     assert outcome.react.stop_reason == "finished"
     assert outcome.errors == []
+    assert [call[0] for call in completer.calls] == ["ReportDraft"]
     # One high-confidence verified claim was kept for future sessions.
     assert [content for content, _ in memory.saved] == [
         "Logical error rates fell below break-even in 2025."

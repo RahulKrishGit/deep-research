@@ -561,8 +561,9 @@ async def test_a_full_run_writes_sources_events_and_span_outputs(
     tracker: Tracker,
 ) -> None:
     memory = FakeReputationSource(reputations={"https://example.org/a": 0.95})
+    completer = ScriptedCompleter(outputs=[_scoring_response()])
     agent = _evaluator(
-        tracker, ScriptedCompleter(outputs=[_scoring_response()]),
+        tracker, completer,
         reputation=memory,
     )
     state = _eval_state(
@@ -579,6 +580,7 @@ async def test_a_full_run_writes_sources_events_and_span_outputs(
     assert outcome.react.stop_reason == "finished"
     assert outcome.result is not None
     assert len(outcome.result.sources) == 2
+    assert [call[0] for call in completer.calls] == ["SourceScoresDraft"]
 
     merged = merge_research_state(state, outcome.state_update)
     assert [source.url for source in merged.evaluated_sources] == [
