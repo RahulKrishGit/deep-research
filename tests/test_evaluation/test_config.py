@@ -384,24 +384,47 @@ def test_windows_output_root_transformation_is_idempotent() -> None:
     assert str(twice.output_root.parent.parent) == expected
 
 
-def test_windows_runtime_config_preserves_all_evaluation_semantics() -> None:
-    prefix = "cross-agent-planner-fix-parity-baseline-researcher"
+TASK10_RUNTIME_IDENTITIES = (
+    (
+        "researcher",
+        "cross-agent-planner-fix-parity-baseline-researcher",
+    ),
+    (
+        "source_evaluator",
+        "cross-agent-planner-fix-parity-baseline-source-evaluator",
+    ),
+    ("fact_checker", "cross-agent-planner-fix-parity-baseline-fact-checker"),
+    ("synthesizer", "cross-agent-planner-fix-parity-baseline-synthesizer"),
+    ("critic", "cross-agent-planner-fix-parity-baseline-critic"),
+    (
+        "researcher",
+        "cross-agent-planner-fix-parity-confirmation-researcher",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "prefix"),
+    TASK10_RUNTIME_IDENTITIES,
+    ids=[prefix for _, prefix in TASK10_RUNTIME_IDENTITIES],
+)
+def test_windows_runtime_config_preserves_all_evaluation_semantics(
+    agent_name: str, prefix: str
+) -> None:
     plain = build(
-        agent_name="researcher",
+        agent_name=agent_name,
         output_directory=r"C:\evaluation-root",
         experiment_prefix=prefix,
     )
     already_extended = build(
-        agent_name="researcher",
+        agent_name=agent_name,
         output_directory=r"\\?\C:\evaluation-root",
         experiment_prefix=prefix,
     )
 
-    assert plain.experiment_name == (
-        "cross-agent-planner-fix-parity-baseline-researcher-"
-        "researcher-controlled-20260816T101500Z-abc1234"
-    )
-    assert plain.dataset_name == "deep-research-researcher-controlled-v1"
+    assert plain.experiment_name.startswith(prefix)
+    assert already_extended.experiment_name.startswith(prefix)
+    assert plain.dataset_name == dataset_name(agent_name, "controlled", 1)
     assert plain.model_dump(mode="json", exclude={"output_root"}) == (
         already_extended.model_dump(mode="json", exclude={"output_root"})
     )

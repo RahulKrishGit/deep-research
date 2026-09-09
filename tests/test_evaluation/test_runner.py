@@ -1137,15 +1137,22 @@ async def test_runner_uses_runtime_output_root_for_every_offline_descendant(
         output_directory=str(base),
         experiment_prefix="task10-runner-output-root",
     )
-    preflight_roots: list[Path] = []
     preflight_dependency_roots: list[Path] = []
+    real_preflight_dependencies = runner_module.build_controlled_dependencies
 
-    async def offline_preflight(*args, root, **kwargs):
-        del args, kwargs
-        preflight_roots.append(root)
-        preflight_dependency_roots.append(root / "_preflight")
+    def recording_preflight_dependencies(
+        runtime_arg, case_arg, *, root, **kwargs
+    ):
+        preflight_dependency_roots.append(root)
+        return real_preflight_dependencies(
+            runtime_arg, case_arg, root=root, **kwargs
+        )
 
-    monkeypatch.setattr(runner_module, "preflight", offline_preflight)
+    monkeypatch.setattr(
+        runner_module,
+        "build_controlled_dependencies",
+        recording_preflight_dependencies,
+    )
     monkeypatch.setattr(
         runner_module,
         "build_chat_provider",
@@ -1197,7 +1204,6 @@ async def test_runner_uses_runtime_output_root_for_every_offline_descendant(
     )
 
     assert str(runtime.output_root).startswith("\\\\?\\")
-    assert preflight_roots == [runtime.output_root]
     assert preflight_dependency_roots == [runtime.output_root / "_preflight"]
     assert repetition_roots == [
         runtime.output_root / case.case_id / f"r{repetition}"
