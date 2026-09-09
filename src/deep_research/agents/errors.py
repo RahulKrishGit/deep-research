@@ -99,6 +99,8 @@ def agent_provider_failure_details(
     """Build safe JSON details for a provider failure caught by an agent."""
     if not operation.strip():
         raise ValueError("operation must not be blank")
+    if {"provider_failure", "exception_type"}.intersection(extra):
+        raise ValueError("extra contains reserved provider failure detail keys")
     snapshot = provider_failure_snapshot(error)
     return {
         "operation": operation.strip(),

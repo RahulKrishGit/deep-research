@@ -195,6 +195,20 @@ def test_agent_provider_failure_details_rejects_blank_operation() -> None:
         agent_provider_failure_details("   ", ProviderTimeoutError("timeout"))
 
 
+@pytest.mark.parametrize(
+    "reserved_key", ["provider_failure", "exception_type"]
+)
+def test_agent_provider_failure_details_rejects_reserved_extra_keys(
+    reserved_key: str,
+) -> None:
+    with pytest.raises(ValueError, match="reserved"):
+        agent_provider_failure_details(
+            "research",
+            ProviderTimeoutError("opaque provider failure"),
+            **{reserved_key: "override"},
+        )
+
+
 def test_planning_error_is_an_agent_error_carrying_its_problems() -> None:
     from deep_research.agents.errors import PlanningError
 
