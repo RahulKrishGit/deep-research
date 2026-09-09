@@ -139,8 +139,7 @@ Review findings addressed without expanding into Task 10:
    not expose the newer widget. Existing tests exercise the exact All/Running/
    Completed/Issues semantics through the segmented control.
 3. **P3 traceability:** the original commit reference is corrected to the
-   reviewed base commit `746c1c1`; the fix-round commit is listed below after
-   commit creation.
+   reviewed base commit `746c1c1`; the fix-round commit is listed below.
 
 ### Fix-round TDD evidence
 
@@ -177,4 +176,4 @@ GREEN was then verified with the same command:
 ### Actual commit trace
 
 - Base Task 9 implementation: `746c1c1 feat: add searchable streamlit session history`.
-- Fix round 1: `1931ebe fix: align session history review findings`.
+- Fix round 1: `99b1380 fix: align session history review findings`.
