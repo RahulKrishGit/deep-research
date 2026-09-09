@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from deep_research.utils.types import ClaimVerdict, ContractModel, ResearchError
 
@@ -108,6 +109,15 @@ class UiSessionSnapshot(ContractModel):
     events_seen: int = Field(default=0, ge=0)
 
 
+def _sanitize_history_error(error: object) -> object:
+    """Retain structured error metadata while dropping free-form details."""
+    if isinstance(error, ResearchError):
+        return ResearchError.model_validate(error.model_dump(exclude={"details"}))
+    if isinstance(error, Mapping):
+        return {key: value for key, value in error.items() if key != "details"}
+    return error
+
+
 class SessionHistoryEntry(ContractModel):
     session_id: str = Field(min_length=1)
     question: str = Field(min_length=1)
@@ -123,6 +133,13 @@ class SessionHistoryEntry(ContractModel):
     fact_check_summary: UiFactCheckSummary
     errors: list[ResearchError] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+
+    @field_validator("errors", mode="before")
+    @classmethod
+    def sanitize_errors(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            return [_sanitize_history_error(error) for error in value]
+        return value
 
 
 def history_entry_from_snapshot(snapshot: UiSessionSnapshot) -> SessionHistoryEntry:
@@ -146,7 +163,7 @@ def history_entry_from_snapshot(snapshot: UiSessionSnapshot) -> SessionHistoryEn
         token_usage=snapshot.token_usage,
         source_summary=source_summary,
         fact_check_summary=fact_check_summary,
-        errors=list(snapshot.errors),
+        errors=[_sanitize_history_error(error) for error in snapshot.errors],
         limitations=list(snapshot.limitations),
     )
 

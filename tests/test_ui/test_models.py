@@ -112,6 +112,11 @@ def _snapshot() -> UiSessionSnapshot:
                 error_type="recoverable",
                 source="researcher",
                 message="A source was skipped.",
+                details={
+                    "prompt": "private prompt",
+                    "api_key": "secret-value",
+                    "tool_arguments": {"query": "private query"},
+                },
             )
         ],
         limitations=["One source was unavailable."],
@@ -186,11 +191,24 @@ def test_subtopic_progress_accepts_each_lifecycle_status(status: str) -> None:
 
 def test_models_strip_strings_and_forbid_extra_fields() -> None:
     usage = UiTokenUsage(input_tokens=1, output_tokens=2)
+    detail = UiSourceDetail(
+        title="  Source  ",
+        url="  https://example.org  ",
+        tier="high",
+        overall_score=0.5,
+        rationale="  Rationale  ",
+        corroboration_score=0.5,
+        related_sub_topics=["  Topic  "],
+    )
 
     with pytest.raises(ValidationError):
         UiTokenUsage(input_tokens=1, output_tokens=2, unexpected=True)
 
     assert usage.model_dump() == {"input_tokens": 1, "output_tokens": 2}
+    assert detail.title == "Source"
+    assert detail.url == "https://example.org"
+    assert detail.rationale == "Rationale"
+    assert detail.related_sub_topics == ["Topic"]
 
 
 def test_history_entry_contains_only_persistable_metadata() -> None:
@@ -233,3 +251,35 @@ def test_history_entry_from_snapshot_strips_detail_payloads() -> None:
     assert payload["fact_check_summary"]["verified"] == 1
     assert "report" not in payload
     assert "events" not in payload
+
+
+def test_history_entry_sanitizes_errors_and_breaks_snapshot_aliases() -> None:
+    snapshot = _snapshot()
+    history = history_entry_from_snapshot(snapshot)
+
+    assert history.errors[0] is not snapshot.errors[0]
+    assert history.errors[0].details == {}
+    assert "private prompt" not in history.model_dump_json()
+    assert "secret-value" not in history.model_dump_json()
+    assert "private query" not in history.model_dump_json()
+
+    snapshot.errors[0].message = "changed after compaction"
+    assert history.errors[0].message == "A source was skipped."
+
+
+def test_history_entry_model_enforces_error_detail_redaction() -> None:
+    snapshot = _snapshot()
+    history = SessionHistoryEntry(
+        session_id=snapshot.session_id,
+        question=snapshot.question,
+        status=snapshot.status,
+        started_at=snapshot.started_at,
+        iteration=snapshot.iteration,
+        max_iterations=snapshot.max_iterations,
+        source_summary=snapshot.source_summary,
+        fact_check_summary=snapshot.fact_check_summary,
+        errors=snapshot.errors,
+    )
+
+    assert history.errors[0].details == {}
+    assert history.errors[0] is not snapshot.errors[0]
