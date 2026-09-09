@@ -12,6 +12,8 @@ import hashlib
 import importlib
 import inspect
 import json
+import ntpath
+import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -175,6 +177,22 @@ def experiment_name(
     return base
 
 
+def _extended_windows_path(path: Path) -> Path:
+    """Return a normalized extended path on Windows only."""
+    if os.name != "nt":
+        return Path(path)
+
+    value = os.fspath(path)
+    if value.startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[len("\\\\?\\UNC\\") :]
+    elif value.startswith("\\\\?\\"):
+        value = value[len("\\\\?\\") :]
+    value = ntpath.abspath(ntpath.normpath(value))
+    if value.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + value[2:])
+    return Path("\\\\?\\" + value)
+
+
 class EvaluationRuntimeConfig(ContractModel):
     """The frozen, resolved configuration of one evaluation experiment.
 
@@ -310,7 +328,9 @@ def build_runtime_config(
         dataset_version=evaluation.dataset_version,
         rubric_version=evaluation.rubric_version,
         experiment_name=resolved_experiment_name,
-        output_root=root / cli_agent_name(agent_name) / resolved_experiment_name,
+        output_root=_extended_windows_path(
+            root / cli_agent_name(agent_name) / resolved_experiment_name
+        ),
         repetition_floor=evaluation.controlled_repetition_floor,
         case_average_threshold=evaluation.controlled_case_average_threshold,
         live_threshold=evaluation.live_threshold,
