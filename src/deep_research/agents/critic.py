@@ -18,7 +18,11 @@ from collections.abc import Sequence
 from pydantic import Field
 
 from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
-from deep_research.agents.errors import AgentConfigurationError, agent_error
+from deep_research.agents.errors import (
+    AgentConfigurationError,
+    agent_error,
+    agent_provider_failure_details,
+)
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
     CRITIC_SYSTEM_PROMPT,
@@ -325,7 +329,7 @@ def critique_provider_error(error: Exception) -> ResearchError:
             "research pass was ended rather than repeated."
         ),
         recoverable=False,
-        details={"exception_type": type(error).__name__},
+        details=agent_provider_failure_details("critic_report_review", error),
     )
 
 

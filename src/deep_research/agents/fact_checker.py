@@ -19,7 +19,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
-from deep_research.agents.errors import AgentConfigurationError, agent_error
+from deep_research.agents.errors import (
+    AgentConfigurationError,
+    agent_error,
+    agent_provider_failure_details,
+)
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_INSTRUCTION,
@@ -176,8 +180,9 @@ def claim_extraction_provider_error(error: Exception) -> ResearchError:
     """Record that claim extraction could not reach the provider.
 
     Non-recoverable: with no claims there is nothing to verify, so the
-    pass ends. ``details`` carries ``exception_type`` only, matching the
-    redaction discipline in ``react.py`` and ``researcher.py``.
+    pass ends. ``details`` carries a static operation and safe provider
+    snapshot, matching the redaction discipline in ``react.py`` and
+    ``researcher.py``.
     """
     return agent_error(
         agent_name=FACT_CHECKER_NAME,
@@ -187,7 +192,9 @@ def claim_extraction_provider_error(error: Exception) -> ResearchError:
             "claim was verified."
         ),
         recoverable=False,
-        details={"exception_type": type(error).__name__},
+        details=agent_provider_failure_details(
+            "fact_checker_claim_extraction", error
+        ),
     )
 
 
@@ -495,7 +502,9 @@ def claim_verification_provider_error(error: Exception) -> ResearchError:
             "requested; the claim was recorded as insufficient evidence."
         ),
         recoverable=False,
-        details={"exception_type": type(error).__name__},
+        details=agent_provider_failure_details(
+            "fact_checker_claim_verification", error
+        ),
     )
 
 

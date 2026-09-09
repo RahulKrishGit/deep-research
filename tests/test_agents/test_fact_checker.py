@@ -37,8 +37,12 @@ from deep_research.agents.steps import (
     ReActStep,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderTimeoutError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
+    ProviderTimeoutError,
+)
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -54,6 +58,17 @@ from tests.agent_fakes import ScriptedCompleter, finish, use_tool
 from tests.research_fakes import FakeSearchClient, fact_checker_tools, search_response
 
 CHECK_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
 
 
 def _check_finding(
@@ -517,7 +532,7 @@ async def test_extraction_makes_no_provider_call_without_findings(
 async def test_extraction_provider_failure_is_non_recoverable(
     tracker: Tracker,
 ) -> None:
-    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    completer = ScriptedCompleter(outputs=[_output_limit_error()])
     agent = _checker(tracker, completer)
     state = _check_state([_check_finding("https://example.org/a")])
 
@@ -527,7 +542,11 @@ async def test_extraction_provider_failure_is_non_recoverable(
     assert provider_failed is True
     assert errors[0].error_type == "fact_checker_extraction_provider_error"
     assert errors[0].recoverable is False
-    assert errors[0].details["exception_type"] == "ProviderTimeoutError"
+    assert errors[0].details["operation"] == "fact_checker_claim_extraction"
+    provider = errors[0].details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
 
 
 @pytest.mark.asyncio
@@ -920,7 +939,7 @@ async def test_a_verification_provider_failure_stops_further_claims(
     tracker: Tracker,
 ) -> None:
     completer = ScriptedCompleter(
-        decisions=list(_check_decisions()),
+        decisions=[*_check_decisions(), *_check_decisions()],
         outputs=[
             ClaimsDraft(
                 claims=[
@@ -928,7 +947,8 @@ async def test_a_verification_provider_failure_stops_further_claims(
                     ClaimDraft(text="Second.", source_urls=["https://example.org/a"]),
                 ]
             ),
-            ProviderTimeoutError("timed out"),
+            _verdict_draft(),
+            _output_limit_error(),
         ],
     )
     agent = _checker(
@@ -937,7 +957,10 @@ async def test_a_verification_provider_failure_stops_further_claims(
         tools=fact_checker_tools(
             tracker,
             search=FakeSearchClient(
-                [search_response(url="https://third.test/x")]
+                [
+                    search_response(url="https://third.test/x"),
+                    search_response(url="https://third.test/x"),
+                ]
             ),
         ),
     )
@@ -948,8 +971,21 @@ async def test_a_verification_provider_failure_stops_further_claims(
 
     assert outcome.result is not None
     assert [claim.verdict for claim in outcome.result.claims] == [
-        "insufficient_evidence"
+        "verified",
+        "insufficient_evidence",
     ]
     assert outcome.react.stop_reason == "provider_error"
     types = {error.error_type for error in outcome.errors}
     assert "fact_checker_verification_provider_error" in types
+    verification_error = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "fact_checker_verification_provider_error"
+    )
+    assert verification_error.details["operation"] == (
+        "fact_checker_claim_verification"
+    )
+    provider = verification_error.details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1

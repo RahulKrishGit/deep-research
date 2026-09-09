@@ -19,7 +19,11 @@ from datetime import datetime, timezone
 from pydantic import Field, ValidationError
 
 from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
-from deep_research.agents.errors import AgentConfigurationError, agent_error
+from deep_research.agents.errors import (
+    AgentConfigurationError,
+    agent_error,
+    agent_provider_failure_details,
+)
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
     AgentTask,
@@ -587,8 +591,9 @@ def extraction_provider_error(
 
     Non-recoverable: the caller must stop researching remaining sub-topics,
     mirroring the ReAct-loop-level ``provider_error`` path. ``details``
-    carries only ``exception_type`` and counts, never ``str(error)`` — the
-    same redaction discipline ``react.py`` and ``planner.py`` follow.
+    carries the static operation, safe provider snapshot, and counts, never
+    ``str(error)`` — the same redaction discipline ``react.py`` and
+    ``planner.py`` follow.
     """
     return agent_error(
         agent_name=RESEARCHER_NAME,
@@ -599,11 +604,12 @@ def extraction_provider_error(
             "sub-topics were researched."
         ),
         recoverable=False,
-        details={
-            "exception_type": type(error).__name__,
-            "iterations": run.iterations,
-            "tool_calls": run.tool_calls,
-        },
+        details=agent_provider_failure_details(
+            "researcher_finding_extraction",
+            error,
+            iterations=run.iterations,
+            tool_calls=run.tool_calls,
+        ),
     )
 
 

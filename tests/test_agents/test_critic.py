@@ -23,8 +23,12 @@ from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActDecision, ReActRun
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseError,
+    ProviderResponseTelemetry,
+)
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -38,6 +42,17 @@ from tests.agent_fakes import ScriptedCompleter, finish, use_tool
 from tests.research_fakes import FakeSearchClient, critic_tools
 
 CRITIC_SOURCE_URL = "https://example.org/a"
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
 
 
 def _source(*, low_confidence: bool = False) -> ScoredSource:
@@ -482,7 +497,7 @@ async def test_a_provider_failure_still_routes_and_stops(
     tracker: Tracker,
 ) -> None:
     agent = _critic(
-        tracker, ScriptedCompleter(outputs=[ProviderError("down")])
+        tracker, ScriptedCompleter(outputs=[_output_limit_error()])
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -499,7 +514,43 @@ async def test_a_provider_failure_still_routes_and_stops(
         if error.error_type == "critic_review_provider_error"
     )
     assert error.recoverable is False
-    assert error.details == {"exception_type": "ProviderError"}
+    assert error.details["operation"] == "critic_report_review"
+    provider = error.details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_http_provider_failure_still_routes_and_stops(
+    tracker: Tracker,
+) -> None:
+    agent = _critic(
+        tracker,
+        ScriptedCompleter(
+            outputs=[
+                ProviderResponseError(
+                    "provider returned an HTTP error",
+                    retryable=True,
+                    failure_category="http",
+                    http_status_code=503,
+                )
+            ]
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert outcome.react.stop_reason == "provider_error"
+    error = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_provider_error"
+    )
+    provider = error.details["provider_failure"]
+    assert provider["kind"] == "provider_http"
+    assert provider["http_status_code"] == 503
 
 
 @pytest.mark.asyncio

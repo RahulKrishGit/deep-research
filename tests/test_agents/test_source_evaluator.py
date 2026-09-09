@@ -29,8 +29,11 @@ from deep_research.agents.source_evaluator import (
 from deep_research.agents.sources import SourceGroup
 from deep_research.agents.steps import ReActRun
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderTimeoutError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
+)
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Finding,
@@ -43,6 +46,17 @@ from tests.agent_fakes import ScriptedCompleter
 from tests.research_fakes import FakeReputationSource
 
 EVAL_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
 
 
 def _group(
@@ -394,7 +408,7 @@ async def test_scoring_stamps_computed_fields_onto_model_scores(
 async def test_every_source_still_gets_a_record_when_the_provider_fails(
     tracker: Tracker,
 ) -> None:
-    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    completer = ScriptedCompleter(outputs=[_output_limit_error()])
     agent = _evaluator(tracker, completer)
     state = _eval_state([_eval_finding("https://example.org/a")])
     task, _, _ = await agent.lookup_reputations(agent.build_task(state))
@@ -407,7 +421,11 @@ async def test_every_source_still_gets_a_record_when_the_provider_fails(
     assert "could not be reached" in sources[0].rationale
     assert errors[0].error_type == "source_evaluator_scoring_provider_error"
     assert errors[0].recoverable is False
-    assert errors[0].details["exception_type"] == "ProviderTimeoutError"
+    assert errors[0].details["operation"] == "source_evaluator_scoring"
+    provider = errors[0].details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,11 @@ from typing import Protocol
 from pydantic import Field
 
 from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
-from deep_research.agents.errors import AgentConfigurationError, agent_error
+from deep_research.agents.errors import (
+    AgentConfigurationError,
+    agent_error,
+    agent_provider_failure_details,
+)
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
@@ -370,10 +374,9 @@ def scoring_provider_error(error: Exception, *, sources: int) -> ResearchError:
             "source was recorded as low confidence instead."
         ),
         recoverable=False,
-        details={
-            "exception_type": type(error).__name__,
-            "sources": sources,
-        },
+        details=agent_provider_failure_details(
+            "source_evaluator_scoring", error, sources=sources
+        ),
     )
 
 

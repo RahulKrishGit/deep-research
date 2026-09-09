@@ -597,6 +597,44 @@ async def test_provider_decision_records_safe_event_and_reraises_original_error(
 
 
 @pytest.mark.asyncio
+async def test_compatibility_provider_failure_records_safe_details_without_raising(
+    tracker: Tracker,
+) -> None:
+    provider_error = ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=4, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_raiser(provider_error),
+            max_iterations=4,
+            tool_budget=5,
+            propagate_provider_errors=False,
+        )
+
+    assert run.stop_reason == "provider_error"
+    assert run.succeeded is False
+    assert len(run.errors) == 1
+    error = run.errors[0]
+    assert error.error_type == "agent_provider_error"
+    assert error.recoverable is False
+    assert error.details["operation"] == "react_decision"
+    provider = error.details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
+    assert "Provider response reached" not in str(error.details)
+
+
+@pytest.mark.asyncio
 async def test_programming_errors_propagate(tracker: Tracker) -> None:
     with pytest.raises(AttributeError):
         async with agent_scope(tracker):

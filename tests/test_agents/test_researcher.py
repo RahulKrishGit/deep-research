@@ -34,8 +34,13 @@ from deep_research.agents.steps import (
     summarize_text,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderTimeoutError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
+    ProviderTimeoutError,
+    StructuredOutputError,
+)
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -76,6 +81,17 @@ def _finding(sub_topic: str, url: str) -> Finding:
         extracted_at=EXTRACTED_AT,
         confidence=0.8,
         related_sub_topic=sub_topic,
+    )
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
     )
 
 
@@ -734,7 +750,16 @@ async def test_extraction_reports_a_provider_failure_without_raising(
     non-recoverable structured error, and signal the failure back to the
     caller via ``provider_failed`` rather than letting the exception escape.
     """
-    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    completer = ScriptedCompleter(
+        outputs=[
+            StructuredOutputError(
+                "PROVIDER_SECRET_SENTINEL",
+                diagnostics=[
+                    {"attempt": 1, "field_paths": ["findings"]}
+                ],
+            )
+        ]
+    )
     agent = _researcher(tracker, completer)
     task = SubTopicTask(
         instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
@@ -754,8 +779,10 @@ async def test_extraction_reports_a_provider_failure_without_raising(
     assert len(errors) == 1
     assert errors[0].error_type == "researcher_extraction_provider_error"
     assert errors[0].recoverable is False
-    assert errors[0].details["exception_type"] == "ProviderTimeoutError"
-    assert "timed out" not in str(errors[0].details)
+    assert errors[0].details["operation"] == "researcher_finding_extraction"
+    provider = errors[0].details["provider_failure"]
+    assert provider["kind"] == "schema_output"
+    assert "PROVIDER_SECRET_SENTINEL" not in str(errors[0].details)
 
 
 @pytest.mark.asyncio
@@ -1138,7 +1165,7 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
 
     Regression guard for the Critical finding: sub-topic Alpha's loop and
     extraction both succeed and produce one finding. Sub-topic Beta's loop
-    *also* succeeds, but its extraction call raises ``ProviderTimeoutError``
+    *also* succeeds, but its extraction call reaches the provider output limit
     — the failure specifically identified as escaping ``run`` uncaught and
     destroying every finding collected so far. Sub-topic Gamma must never be
     started at all.
@@ -1150,7 +1177,7 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
             use_tool("Search Beta.", "web_search", '{"query": "beta 2025"}'),
             finish("Done with Beta.", "Beta answer."),
         ],
-        outputs=[_findings_draft(), ProviderTimeoutError("timed out")],
+        outputs=[_findings_draft(), _output_limit_error()],
     )
     agent = _researcher(
         tracker,
@@ -1185,6 +1212,14 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
     ]
     assert len(extraction_errors) == 1
     assert extraction_errors[0].recoverable is False
+    assert (
+        extraction_errors[0].details["operation"]
+        == "researcher_finding_extraction"
+    )
+    provider = extraction_errors[0].details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
 
     # Finding 2 (stop_reason override): the merged run must report
     # "provider_error", not "finished" — Beta's extraction failure is what

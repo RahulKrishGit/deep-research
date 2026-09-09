@@ -13,7 +13,7 @@ from typing import TypeAlias
 
 from pydantic import JsonValue
 
-from deep_research.agents.errors import agent_error
+from deep_research.agents.errors import agent_error, agent_provider_failure_details
 from deep_research.agents.events import agent_event
 from deep_research.agents.steps import (
     DEFAULT_SUMMARY_LIMIT,
@@ -254,10 +254,9 @@ async def run_react_loop(
                         "The model provider failed and the ReAct loop stopped."
                     ),
                     recoverable=False,
-                    details={
-                        "iteration": iteration,
-                        "exception_type": type(error).__name__,
-                    },
+                    details=agent_provider_failure_details(
+                        "react_decision", error, iteration=iteration
+                    ),
                 )
             )
             stop_reason = "provider_error"
