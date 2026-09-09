@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from deep_research.agents.errors import PlanningError
+from deep_research.evaluation.dependencies import build_controlled_dependencies
 from deep_research.evaluation.models import TargetOutput
 from deep_research.evaluation.targets import (
     TRACE_TAG,
@@ -19,6 +20,7 @@ from deep_research.providers import (
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
 )
+from tests.evaluation_fakes import FakeStructuredProvider
 
 
 def test_the_counter_refuses_concurrency_above_one() -> None:
@@ -196,6 +198,54 @@ async def test_a_provider_failure_is_captured_not_raised(
     assert output.failure.stage == "provider"
     assert output.result is None
     assert output.failure.exception_type
+
+
+@pytest.mark.asyncio
+async def test_a_non_planner_fallback_preserves_typed_provider_diagnostics(
+    tmp_path, tracker, settings, runtime_config_for, controlled_case_for_id
+) -> None:
+    case = controlled_case_for_id(
+        "source_evaluator", "strong-and-weak-sources"
+    )
+    runtime = runtime_config_for("source_evaluator", case_id=case.case_id)
+    cause = ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=4, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
+    target = build_target(
+        runtime,
+        settings,
+        tracker_factory=lambda: tracker,
+        dependency_factory=build_controlled_dependencies,
+        provider_factory=lambda: FakeStructuredProvider([cause]),
+        counter=RepetitionCounter(max_concurrency=1),
+        secrets=(),
+        root=tmp_path,
+    )
+
+    payload = await target(
+        {
+            "case_id": case.case_id,
+            "case_version": case.version,
+            "agent": "source_evaluator",
+            "tier": "controlled",
+        }
+    )
+    output = TargetOutput.model_validate(payload)
+
+    assert output.completed is True
+    assert output.failure is None
+    assert output.result is not None
+    assert output.errors[0]["details"]["provider_failure"]["kind"] == (
+        "output_limit"
+    )
+    assert output.errors[0]["details"]["provider_failure"][
+        "configured_max_tokens"
+    ] == 4096
 
 
 @pytest.mark.asyncio
