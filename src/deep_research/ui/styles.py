@@ -177,12 +177,6 @@ STATIC_CSS = """
   color: var(--dr-error);
 }
 
-.dr-current-row {
-  border-radius: var(--dr-radius-container);
-  background: var(--dr-active-tint);
-  padding: var(--dr-space-2);
-}
-
 .dr-session-question {
   color: var(--dr-text);
   font-size: 14px;
@@ -191,9 +185,20 @@ STATIC_CSS = """
   padding: var(--dr-space-2) 0 var(--dr-space-1);
 }
 
-.dr-sidebar-spacer {
+.st-key-dr-sidebar-spacer {
   flex: 1;
   min-height: var(--dr-space-8);
+}
+
+[class*="st-key-dr-session-row-"] {
+  border-bottom: 1px solid var(--dr-border);
+  padding: var(--dr-space-2) 0;
+}
+
+[class*="st-key-dr-session-row-selected-"] {
+  border-radius: var(--dr-radius-container);
+  background: var(--dr-active-tint);
+  padding: var(--dr-space-2);
 }
 
 .dr-shell-rule {

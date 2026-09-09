@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping
+from datetime import datetime, timezone
 from html import escape
 from typing import TYPE_CHECKING, Any
 
@@ -55,9 +56,13 @@ def _set_view(view: str, state: MutableMapping[str, Any]) -> None:
     state[_VIEW_KEY] = view
 
 
+def _select_session(session_id: str, state: MutableMapping[str, Any]) -> None:
+    state[_SELECTED_SESSION_KEY] = session_id
+    _set_view("current", state)
+
+
 def _entry_for_active_session(
     controller: LocalResearchController,
-    entries: list[SessionHistoryEntry],
     state: MutableMapping[str, Any],
 ) -> SessionHistoryEntry | None:
     active_id = state.get(_ACTIVE_SESSION_KEY)
@@ -75,7 +80,7 @@ def _recent_entries(
     state: MutableMapping[str, Any],
 ) -> list[SessionHistoryEntry]:
     entries = list(controller.list_history(limit=50))
-    active_entry = _entry_for_active_session(controller, entries, state)
+    active_entry = _entry_for_active_session(controller, state)
     if active_entry is not None:
         entries = [
             entry for entry in entries if entry.session_id != active_entry.session_id
@@ -84,30 +89,49 @@ def _recent_entries(
     return entries[:5]
 
 
+def _session_date(entry: SessionHistoryEntry) -> str:
+    """Format compact sidebar metadata without exposing a locale dependency."""
+    started_at = entry.started_at
+    if started_at.tzinfo is None or started_at.utcoffset() is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    if started_at.astimezone(timezone.utc).date() == datetime.now(timezone.utc).date():
+        return "Today"
+    return f"{started_at:%b} {started_at.day}"
+
+
 def _render_recent_row(
     entry: SessionHistoryEntry,
     *,
     selected_id: str | None,
     state: MutableMapping[str, Any],
 ) -> None:
-    row_class = "dr-current-row" if entry.session_id == selected_id else ""
-    if row_class:
-        st.markdown(f'<div class="{row_class}">', unsafe_allow_html=True)
-    st.markdown(
-        f'<div class="dr-session-question">{escape(entry.question)}</div>',
-        unsafe_allow_html=True,
+    row_key = (
+        f"dr-session-row-selected-{entry.session_id}"
+        if entry.session_id == selected_id
+        else f"dr-session-row-{entry.session_id}"
     )
-    if st.button(
-        "Open",
-        key=f"session_{entry.session_id}",
-        type="secondary",
-        use_container_width=True,
-    ):
-        state[_SELECTED_SESSION_KEY] = entry.session_id
-        _set_view("current", state)
-    render_status(entry.status)
-    if row_class:
-        st.markdown("</div>", unsafe_allow_html=True)
+    with st.container(key=row_key, gap="small"):
+        st.markdown(
+            f'<div class="dr-session-question">{escape(entry.question)}</div>',
+            unsafe_allow_html=True,
+        )
+        status_column, action_column = st.columns(
+            [1, 0.45],
+            gap="small",
+            vertical_alignment="center",
+        )
+        with status_column:
+            render_status(entry.status)
+            st.caption(_session_date(entry))
+        with action_column:
+            st.button(
+                "Open",
+                key=f"session_{entry.session_id}",
+                type="secondary",
+                use_container_width=True,
+                on_click=_select_session,
+                args=(entry.session_id, state),
+            )
 
 
 def render_sidebar(controller: LocalResearchController) -> None:
@@ -136,7 +160,10 @@ def render_sidebar(controller: LocalResearchController) -> None:
             state[_START_ERROR_KEY] = None
             _set_view("new", state)
 
-        st.caption("Recent sessions")
+        st.markdown(
+            '<div class="dr-section-label">RECENT SESSIONS</div>',
+            unsafe_allow_html=True,
+        )
         selected_id = state.get(_SELECTED_SESSION_KEY)
         for entry in _recent_entries(controller, state):
             _render_recent_row(
@@ -145,7 +172,8 @@ def render_sidebar(controller: LocalResearchController) -> None:
                 state=state,
             )
 
-        st.markdown('<div class="dr-sidebar-spacer"></div>', unsafe_allow_html=True)
+        with st.container(key="dr-sidebar-spacer"):
+            st.markdown('<div aria-hidden="true"></div>', unsafe_allow_html=True)
         if st.button(
             "Session history",
             key="session_history",
