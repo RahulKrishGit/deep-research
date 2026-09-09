@@ -493,6 +493,21 @@ def test_repetition_result_rejects_malformed_metric_maps(metrics) -> None:
         )
 
 
+@pytest.mark.parametrize("bad_value", [True, False, "0.0", "1.0"])
+def test_repetition_result_rejects_non_numeric_metric_values_before_coercion(
+    bad_value,
+) -> None:
+    with pytest.raises(ValueError):
+        RepetitionResult(
+            case_id="focused-decomposition",
+            case_version=1,
+            repetition=1,
+            completed=True,
+            gates=GateReport(),
+            deterministic_metrics={"coverage": bad_value, "ordering": 0.0},
+        )
+
+
 @pytest.mark.parametrize("count", [-1, 10_001, True])
 def test_repetition_result_rejects_invalid_prohibited_call_counts(count) -> None:
     with pytest.raises(ValueError):

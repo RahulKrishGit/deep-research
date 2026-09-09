@@ -544,6 +544,18 @@ class RepetitionResult(ContractModel):
                 raise ValueError("deterministic metric ids must be lower snake case")
         return value
 
+    @field_validator("deterministic_metrics", mode="before")
+    @classmethod
+    def validate_metric_value_types(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            raise TypeError("deterministic_metrics must be a mapping")
+        if any(
+            isinstance(score, bool) or not isinstance(score, (int, float))
+            for score in value.values()
+        ):
+            raise ValueError("deterministic metric values must be numeric")
+        return value
+
     @field_validator("deterministic_metrics")
     @classmethod
     def validate_metric_values(
