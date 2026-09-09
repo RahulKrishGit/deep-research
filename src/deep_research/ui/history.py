@@ -102,7 +102,7 @@ class SessionHistoryStore:
             return None
         try:
             report_path = candidate.resolve()
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             return None
 
         if not _is_within(report_path, self._output_directory):
@@ -110,7 +110,7 @@ class SessionHistoryStore:
 
         try:
             return report_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
+        except (OSError, UnicodeError, ValueError):
             return None
 
     def _read_entry(
@@ -148,7 +148,7 @@ class SessionHistoryStore:
                 and directory.resolve() == directory
                 and self._output_directory in directory.parents
             )
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             return False
 
 
@@ -197,7 +197,7 @@ def _is_link_or_junction(path: Path) -> bool:
         return path.is_symlink() or (
             is_junction is not None and is_junction()
         )
-    except OSError:
+    except (OSError, ValueError):
         return True
 
 

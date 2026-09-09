@@ -196,6 +196,14 @@ def test_read_report_returns_none_for_missing_report_path(tmp_path: Path) -> Non
     )
 
 
+def test_read_report_refuses_filesystem_invalid_embedded_nul_path(
+    tmp_path: Path,
+) -> None:
+    store = SessionHistoryStore(output_directory=tmp_path)
+
+    assert store.read_report(_entry(report_path="reports/invalid\x00.md")) is None
+
+
 def test_read_report_reads_a_report_under_the_output_root(tmp_path: Path) -> None:
     store = SessionHistoryStore(output_directory=tmp_path)
     report = tmp_path / "reports" / "session.md"
