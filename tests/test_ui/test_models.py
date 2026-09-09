@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timezone
 
 import pytest
@@ -283,3 +284,57 @@ def test_history_entry_model_enforces_error_detail_redaction() -> None:
 
     assert history.errors[0].details == {}
     assert history.errors[0] is not snapshot.errors[0]
+
+
+def test_history_entry_sanitizes_deque_error_inputs() -> None:
+    snapshot = _snapshot()
+    history = SessionHistoryEntry(
+        session_id=snapshot.session_id,
+        question=snapshot.question,
+        status=snapshot.status,
+        started_at=snapshot.started_at,
+        iteration=snapshot.iteration,
+        max_iterations=snapshot.max_iterations,
+        source_summary=snapshot.source_summary,
+        fact_check_summary=snapshot.fact_check_summary,
+        errors=deque(snapshot.errors),
+    )
+
+    assert history.errors[0].details == {}
+    assert history.errors[0] is not snapshot.errors[0]
+
+
+def test_history_entry_sanitizes_generator_error_inputs() -> None:
+    snapshot = _snapshot()
+    history = SessionHistoryEntry(
+        session_id=snapshot.session_id,
+        question=snapshot.question,
+        status=snapshot.status,
+        started_at=snapshot.started_at,
+        iteration=snapshot.iteration,
+        max_iterations=snapshot.max_iterations,
+        source_summary=snapshot.source_summary,
+        fact_check_summary=snapshot.fact_check_summary,
+        errors=(error for error in snapshot.errors),
+    )
+
+    assert history.errors[0].details == {}
+    assert history.errors[0] is not snapshot.errors[0]
+
+
+@pytest.mark.parametrize("errors", [123, {"details": {"secret": "value"}}])
+def test_history_entry_rejects_invalid_error_collections(errors: object) -> None:
+    snapshot = _snapshot()
+
+    with pytest.raises(ValidationError):
+        SessionHistoryEntry(
+            session_id=snapshot.session_id,
+            question=snapshot.question,
+            status=snapshot.status,
+            started_at=snapshot.started_at,
+            iteration=snapshot.iteration,
+            max_iterations=snapshot.max_iterations,
+            source_summary=snapshot.source_summary,
+            fact_check_summary=snapshot.fact_check_summary,
+            errors=errors,
+        )

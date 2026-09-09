@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Literal
 
@@ -137,7 +137,9 @@ class SessionHistoryEntry(ContractModel):
     @field_validator("errors", mode="before")
     @classmethod
     def sanitize_errors(cls, value: object) -> object:
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, Iterable) and not isinstance(
+            value, (str, bytes, bytearray, Mapping)
+        ):
             return [_sanitize_history_error(error) for error in value]
         return value
 
