@@ -20,8 +20,12 @@ from deep_research.ui.components import _start_research
 from deep_research.ui.models import (
     SessionHistoryEntry,
     UiFactCheckSummary,
+    UiRecentActivity,
     UiSessionSnapshot,
     UiSourceSummary,
+    UiSubTopicProgress,
+    UiTokenUsage,
+    UiToolCallSummary,
 )
 
 
@@ -154,6 +158,82 @@ def _app(
 
 def _button_values(app: AppTest) -> list[str]:
     return [button.label for button in app.button]
+
+
+def _snapshot(
+    *,
+    status: str = "running",
+    token_usage: UiTokenUsage | None = None,
+    trace_url: str | None = None,
+    sub_topics: list[UiSubTopicProgress] | None = None,
+    recent_activity: list[UiRecentActivity] | None = None,
+    errors: list[object] | None = None,
+    report: str | None = None,
+) -> UiSessionSnapshot:
+    from deep_research.utils.types import ResearchError
+
+    return UiSessionSnapshot(
+        session_id="s" * 32,
+        question="How will grid-scale batteries reshape energy markets by 2030?",
+        status=status,
+        started_at=datetime(2026, 9, 9, tzinfo=timezone.utc),
+        finished_at=(
+            datetime(2026, 9, 9, 0, 10, tzinfo=timezone.utc)
+            if status != "running"
+            else None
+        ),
+        current_agent="researcher",
+        iteration=2,
+        max_iterations=4,
+        sub_topics=sub_topics or [],
+        recent_activity=recent_activity or [],
+        tool_calls=[
+            UiToolCallSummary(
+                tool_name="web_search",
+                display_label="Web search",
+                calls=2,
+                failures=0,
+            )
+        ],
+        token_usage=token_usage,
+        trace_url=trace_url,
+        report=report,
+        source_summary=UiSourceSummary(
+            total=0,
+            high=0,
+            moderate=0,
+            low=0,
+            unrated=0,
+        ),
+        fact_check_summary=UiFactCheckSummary(
+            verified=0,
+            unverified=0,
+            contradicted=0,
+            insufficient_evidence=0,
+        ),
+        errors=[ResearchError.model_validate(error) for error in (errors or [])],
+    )
+
+
+def _running_app(snapshot: UiSessionSnapshot) -> AppTest:
+    app = _app(
+        [_entry(snapshot.session_id, snapshot.question, snapshot.status, 0)]
+    ).run()
+    controller = app.session_state[_CONTROLLER_KEY]
+    controller.started_snapshots[snapshot.session_id] = snapshot
+    app.session_state[_SELECTED_SESSION_KEY] = snapshot.session_id
+    app.session_state[_VIEW_KEY] = "current"
+    app.run()
+    return app
+
+
+def _visible_main_text(app: AppTest) -> str:
+    return "\n".join(
+        [item.value for item in app.main.markdown if "<style>" not in item.value]
+        + [item.value for item in app.main.caption]
+        + [item.value for item in app.main.error]
+        + [item.value for item in app.main.warning]
+    )
 
 
 def test_new_research_screen_has_question_form_and_ready_state() -> None:
@@ -391,3 +471,231 @@ def test_active_session_is_promoted_to_the_first_recent_row() -> None:
     active_row = app.sidebar.container(key=f"dr-session-row-{active_id}")
     assert any("Active question" in item.value for item in active_row.markdown)
     assert any("Running" in item.value for item in active_row.markdown)
+
+
+def test_running_screen_preserves_narrative_sequence_and_three_recent_rows() -> None:
+    snapshot = _snapshot(
+        sub_topics=[
+            UiSubTopicProgress(
+                index=1,
+                title="Battery cost curves",
+                status="completed",
+            ),
+            UiSubTopicProgress(
+                index=2,
+                title="Grid operator adoption patterns",
+                status="running",
+            ),
+            UiSubTopicProgress(
+                index=3,
+                title="Competing storage technologies",
+                status="queued",
+            ),
+            UiSubTopicProgress(index=4, title="Investment flows", status="queued"),
+            UiSubTopicProgress(
+                index=5,
+                title="Market structure impacts",
+                status="queued",
+            ),
+        ],
+        recent_activity=[
+            UiRecentActivity(event_type="one", summary="Old activity"),
+            UiRecentActivity(event_type="two", summary="Started subtopic 2"),
+            UiRecentActivity(event_type="three", summary="Evaluated new evidence"),
+            UiRecentActivity(event_type="four", summary="Newest meaningful activity"),
+        ],
+    )
+
+    app = _running_app(snapshot)
+    visible = _visible_main_text(app)
+
+    assert "How will grid-scale batteries reshape energy markets by 2030?" in visible
+    assert "Researcher" in visible
+    assert "Subtopic 2 of 5" in visible
+    assert "Searching and evaluating sources" in visible
+    assert "Macro iteration 2 of 4" in visible
+    assert "No issues detected" in visible
+    assert "Battery cost curves" in visible
+    assert "Grid operator adoption patterns" in visible
+    assert "Queued" in visible
+    assert "Old activity" not in visible
+    activity_summaries = (
+        "Started subtopic 2",
+        "Evaluated new evidence",
+        "Newest meaningful activity",
+    )
+    assert sum(summary in visible for summary in activity_summaries) == 3
+    assert "Started subtopic 2" in visible
+    assert "Evaluated new evidence" in visible
+    assert "Newest meaningful activity" in visible
+
+
+def test_running_screen_omits_unavailable_observability() -> None:
+    app = _running_app(_snapshot())
+    visible = _visible_main_text(app)
+
+    assert "Not available" not in visible
+    assert "0 tokens" not in visible
+    assert "Open LangSmith trace" not in _button_values(app)
+    assert len(app.metric) == 0
+
+
+def test_running_screen_renders_available_observability_once() -> None:
+    app = _running_app(
+        _snapshot(
+            token_usage=UiTokenUsage(input_tokens=8_000, output_tokens=4_400),
+            trace_url="https://smith.langchain.com/o/example/r/session",
+        )
+    )
+    assert app.metric[0].value == "12.4k"
+    trace_links = app.main.get("link_button")
+    assert len(trace_links) == 1
+    assert trace_links[0].label == "Open LangSmith trace"
+    assert trace_links[0].url.endswith("/session")
+
+
+def test_running_screen_does_not_claim_progress_without_a_defensible_fraction() -> None:
+    app = _running_app(
+        _snapshot(
+            sub_topics=[
+                UiSubTopicProgress(index=1, title="Active topic", status="running"),
+                UiSubTopicProgress(index=2, title="Queued topic", status="queued"),
+            ]
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "Macro iteration 2 of 4" in visible
+    assert "%" not in visible
+    assert "ETA" not in visible.replace("SESSION DETAILS", "")
+
+
+def test_recoverable_issue_is_concise_and_safe() -> None:
+    app = _running_app(
+        _snapshot(
+            errors=[
+                {
+                    "error_type": "researcher.tool_failed",
+                    "source": "researcher",
+                    "message": "safe internal message",
+                    "recoverable": True,
+                    "details": {"provider_response": "SECRET-DETAIL"},
+                }
+            ]
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "1 issue; continuing" in visible
+    assert "safe internal message" not in visible
+    assert "SECRET-DETAIL" not in visible
+
+
+def test_running_rerun_does_not_start_a_duplicate_worker() -> None:
+    app = _app([]).run()
+    app.text_area(key="research_question").set_value("A valid question").run()
+    app.button(key="start_research").click().run()
+
+    controller = app.session_state[_CONTROLLER_KEY]
+    app.run()
+
+    assert len(controller.start_calls) == 1
+
+
+def test_running_screen_labels_derived_fraction_as_phase_progress() -> None:
+    app = _running_app(
+        _snapshot(
+            sub_topics=[
+                UiSubTopicProgress(
+                    index=1,
+                    title="Completed topic",
+                    status="completed",
+                ),
+                UiSubTopicProgress(index=2, title="Active topic", status="running"),
+                UiSubTopicProgress(index=3, title="Queued topic", status="queued"),
+                UiSubTopicProgress(index=4, title="Queued topic two", status="queued"),
+                UiSubTopicProgress(
+                    index=5,
+                    title="Queued topic three",
+                    status="queued",
+                ),
+            ]
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "Phase progress" in visible
+    assert "20%" in visible
+    assert "Overall progress" not in visible
+    assert "ETA" not in visible.replace("SESSION DETAILS", "")
+
+
+def test_running_screen_keeps_tool_and_agent_details_collapsed_and_safe() -> None:
+    app = _running_app(_snapshot())
+    visible = _visible_main_text(app)
+
+    expanders = {item.label: item for item in app.expander}
+    assert expanders["Tool activity"].proto.expanded is False
+    assert expanders["Agent details"].proto.expanded is False
+    assert "raw event" not in visible.casefold()
+    assert "web_search" not in visible
+    assert "s" * 32 not in visible
+    assert "provider" not in visible.casefold()
+    assert "stack trace" not in visible.casefold()
+
+
+def test_completed_snapshot_transitions_to_report_view_in_same_canvas() -> None:
+    report = "# Research answer\n\nReport body."
+    app = _running_app(_snapshot(status="completed", report=report))
+    visible = _visible_main_text(app)
+
+    assert "Completed" in visible
+    assert report in visible
+    assert "Research answer" in visible
+    assert "Report body." in visible
+    assert "Session detail content will appear here." not in visible
+
+
+def test_max_iterations_snapshot_has_amber_terminal_treatment() -> None:
+    app = _running_app(
+        _snapshot(status="max_iterations", report="Partial report.")
+    )
+    visible = _visible_main_text(app)
+
+    assert "Max iterations" in visible
+    assert "Partial report." in visible
+    assert "Running" not in visible
+
+
+def test_failed_snapshot_retains_last_progress_and_uses_safe_error() -> None:
+    app = _running_app(
+        _snapshot(
+            status="failed",
+            errors=[
+                {
+                    "error_type": "ui.research.failed",
+                    "source": "ui",
+                    "message": "Research run failed unexpectedly.",
+                    "recoverable": False,
+                    "details": {"diagnostic": "SECRET-STACK-TRACE"},
+                }
+            ],
+            sub_topics=[
+                UiSubTopicProgress(
+                    index=2,
+                    title="Last active topic",
+                    status="running",
+                )
+            ],
+            recent_activity=[
+                UiRecentActivity(event_type="last", summary="Last known activity")
+            ],
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "Failed" in visible
+    assert "Last active topic" in visible
+    assert "Last known activity" in visible
+    assert "Research run failed unexpectedly." in visible
+    assert "SECRET-STACK-TRACE" not in visible

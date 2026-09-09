@@ -57,6 +57,23 @@ def _current_view() -> str:
     return view
 
 
+@st.fragment(run_every="2s")
+def render_live_progress(controller: LocalResearchController) -> None:
+    """Refresh only the active research region on the two-second cadence."""
+    session_id = st.session_state.get(_ACTIVE_SESSION_KEY)
+    if not isinstance(session_id, str):
+        return
+    snapshot = controller.snapshot(session_id)
+    from deep_research.ui.components import _render_running_snapshot
+
+    if snapshot.status == "running":
+        _render_running_snapshot(snapshot)
+    else:
+        from deep_research.ui.components import _render_terminal_snapshot
+
+        _render_terminal_snapshot(snapshot)
+
+
 def render_app(controller=None) -> None:
     """Apply the shell, render navigation, and route among the three views."""
     # AppTest.from_function executes the supplied function in a small isolated
@@ -104,6 +121,7 @@ __all__ = [
     "_START_ERROR_KEY",
     "_START_IN_FLIGHT_KEY",
     "_VIEW_KEY",
+    "render_live_progress",
     "render_app",
     "resolve_controller",
 ]
