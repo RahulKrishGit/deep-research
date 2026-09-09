@@ -1149,6 +1149,23 @@ Update `build_repetition_result(...)` and its existing bookkeeping to set the fo
 
 ---
 
+### Infrastructure Repair Amendment: Windows Evaluation Output-Root Boundary — COMPLETE
+
+The first Task 10 baseline attempt was run at candidate `e05ff277db4b60456be93a2e03bd55e742eb0f82`. All five agents failed during Windows preflight before producing `results.json`; the same-SHA confirmation attempts reproduced the infrastructure failure. The typed evidence identifies the failure boundary as the long local output-root path, not target quality or provider behavior.
+
+The repair was executed as a new candidate and reviewed before resuming Task 10:
+
+- Task 2 RED coverage: `92afc9c972677f5d39f454e42316254a9121b345`.
+- Task 2 review-fix commits: `5fff3b906d7037b84d31309b2e84735ee727d2ed`, `3ca4ccdaec7c69559331e1dea0d747f98e4fc5c9`.
+- Task 2 Luna-max review: approved; exact six Task 10 prefixes, host-independent path cases, real production preflight seam, repetition descendants, and `results.json` coverage accepted.
+- Task 3 implementation: `d7ff281acdfac9394db75c25eb3c6fa2cafe1b41`.
+- Task 3 Luna-max review: approved; only `src/deep_research/evaluation/config.py` changed, with a private `_extended_windows_path` boundary applied after the complete logical output root is assembled.
+- New controlled-run candidate: `d7ff281acdfac9394db75c25eb3c6fa2cafe1b41`.
+
+The historical failed artifacts remain immutable. Task 10 may resume only from the new candidate, with fresh per-agent namespaces and the existing immediate per-command human authorization requirement.
+
+---
+
 ### Task 10: Run Immutable Controlled Baselines for Each Non-Planner Agent — READY (IMMEDIATE AUTHORIZATION REQUIRED)
 
 **Hard paid-call precondition:** Do not execute any provider, LangSmith, controlled-evaluation, dataset-sync, judge, or credential-dependent command until the ledger contains all of these exact lines: `Task 9 focused tests: PASS`, `Task 9 evaluation tests: PASS`, `Task 9 full offline suite: PASS`, `Task 9 inventory contract check: PASS`, `Task 9 review: APPROVED`, and `Task 9: complete`. This local-only check does not replace immediate human authorization for each paid command.
