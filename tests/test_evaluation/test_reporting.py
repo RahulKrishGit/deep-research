@@ -16,8 +16,7 @@ from deep_research.evaluation.reporting import (
 )
 
 
-def test_scores_render_to_two_decimals_and_never_lie(
-) -> None:
+def test_scores_render_to_two_decimals_and_never_lie() -> None:
     assert format_score(0.8649) == "0.86"
     assert format_score(0.9) == "0.90"
     assert format_score(None) == "n/a"
@@ -47,8 +46,7 @@ def test_the_summary_matches_the_shape_the_spec_shows(
 def test_the_review_block_links_the_lowest_scoring_trace_per_case(
     researcher_experiment_result,
 ) -> None:
-    body = "\n".join(render_experiment(researcher_experiment_result,
-                                       verbose=False))
+    body = "\n".join(render_experiment(researcher_experiment_result, verbose=False))
 
     for case in researcher_experiment_result.cases:
         assert case.lowest_scoring_trace_url in body
@@ -57,8 +55,7 @@ def test_the_review_block_links_the_lowest_scoring_trace_per_case(
 def test_a_failed_experiment_names_the_failed_gates(
     failing_experiment_result,
 ) -> None:
-    body = "\n".join(render_experiment(failing_experiment_result,
-                                       verbose=False))
+    body = "\n".join(render_experiment(failing_experiment_result, verbose=False))
 
     assert "Status:      FAILED" in body
     assert "citations_known" in body
@@ -79,8 +76,7 @@ def test_verbose_output_adds_per_repetition_lines(
 def test_verbose_output_prints_no_model_payload_and_no_secret(
     researcher_experiment_result,
 ) -> None:
-    body = "\n".join(render_experiment(researcher_experiment_result,
-                                       verbose=True))
+    body = "\n".join(render_experiment(researcher_experiment_result, verbose=True))
 
     assert "sk-" not in body
     assert "api_key" not in body.lower()
@@ -90,15 +86,13 @@ def test_verbose_output_prints_no_model_payload_and_no_secret(
 def test_a_judge_not_run_repetition_is_shown_with_its_reason(
     judge_not_run_experiment_result,
 ) -> None:
-    body = "\n".join(render_experiment(judge_not_run_experiment_result,
-                                       verbose=True))
+    body = "\n".join(render_experiment(judge_not_run_experiment_result, verbose=True))
 
     assert "judge_not_run" in body
     assert "no_evaluable_output" in body
 
 
-def test_the_listing_shows_every_agent_case_and_dataset(
-) -> None:
+def test_the_listing_shows_every_agent_case_and_dataset() -> None:
     body = "\n".join(
         render_listing(
             dataset_version=1,
@@ -131,8 +125,7 @@ def test_the_listing_counts_three_controlled_and_one_live_per_agent() -> None:
     from deep_research.evaluation.models import AGENT_NAMES
 
     body = "\n".join(
-        render_listing(dataset_version=1,
-                       repetitions={"controlled": 3, "live": 1})
+        render_listing(dataset_version=1, repetitions={"controlled": 3, "live": 1})
     )
 
     for agent_name in AGENT_NAMES:
@@ -155,8 +148,7 @@ def test_the_artifact_lands_at_the_documented_path(
 def test_the_artifact_round_trips_through_strict_models(
     researcher_experiment_result, tmp_path
 ) -> None:
-    path = write_experiment_artifact(researcher_experiment_result,
-                                     root=tmp_path)
+    path = write_experiment_artifact(researcher_experiment_result, root=tmp_path)
 
     restored = ExperimentResult.model_validate(
         json.loads(path.read_text(encoding="utf-8"))
@@ -168,17 +160,18 @@ def test_the_artifact_round_trips_through_strict_models(
 def test_the_artifact_contains_every_repetition_result(
     researcher_experiment_result, tmp_path
 ) -> None:
-    path = write_experiment_artifact(researcher_experiment_result,
-                                     root=tmp_path)
+    path = write_experiment_artifact(researcher_experiment_result, root=tmp_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
 
-    repetitions = [
-        item for case in payload["cases"] for item in case["repetitions"]
-    ]
+    repetitions = [item for case in payload["cases"] for item in case["repetitions"]]
     assert len(repetitions) == 9
     for item in repetitions:
         assert "gates" in item
         assert "deterministic_quality" in item
+        assert "deterministic_metrics" in item
+        assert "prohibited_call_count" in item
+        assert "react_stop_reason" in item
+        assert "fallback_provider_diagnostic" in item
         assert "judge" in item
         assert "trace_url" in item
 
@@ -186,8 +179,7 @@ def test_the_artifact_contains_every_repetition_result(
 def test_the_artifact_records_both_model_identifiers_and_the_fingerprints(
     researcher_experiment_result, tmp_path
 ) -> None:
-    path = write_experiment_artifact(researcher_experiment_result,
-                                     root=tmp_path)
+    path = write_experiment_artifact(researcher_experiment_result, root=tmp_path)
     metadata = json.loads(path.read_text(encoding="utf-8"))["metadata"]
 
     assert metadata["target_model"] == "deepseek-v4-flash"
@@ -237,18 +229,14 @@ def test_the_artifact_round_trips_judge_urls_and_diagnostics(
             "evaluator_trace_url": "https://smith.langchain.com/o/x/r/judge-rt",
             "evaluator_source_url": "https://smith.langchain.com/o/x/evaluators/1",
             "diagnostics": (
-                EvaluatorDiagnostic(
-                    kind="output_limit", attempt=1, field_paths=()
-                ),
+                EvaluatorDiagnostic(kind="output_limit", attempt=1, field_paths=()),
             ),
         }
     )
-    repetition = experiment_result.cases[0].repetitions[0].model_copy(
-        update={"judge": judge}
+    repetition = (
+        experiment_result.cases[0].repetitions[0].model_copy(update={"judge": judge})
     )
-    case = experiment_result.cases[0].model_copy(
-        update={"repetitions": [repetition]}
-    )
+    case = experiment_result.cases[0].model_copy(update={"repetitions": [repetition]})
     result = experiment_result.model_copy(update={"cases": [case]})
 
     path = write_experiment_artifact(result, root=tmp_path)
@@ -279,14 +267,11 @@ def test_the_artifact_keeps_unavailable_source_urls_explicitly_unavailable(
     """A judge that never exposed a trace or source URL must serialize the
     fields as explicit ``null`` -- a missing URL is an infrastructure
     diagnostic, never evidence that judging passed."""
-    path = write_experiment_artifact(researcher_experiment_result,
-                                     root=tmp_path)
+    path = write_experiment_artifact(researcher_experiment_result, root=tmp_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
 
     judges = [
-        item["judge"]
-        for case in payload["cases"]
-        for item in case["repetitions"]
+        item["judge"] for case in payload["cases"] for item in case["repetitions"]
     ]
     assert judges
     assert all(judge["evaluator_trace_url"] is None for judge in judges)
@@ -307,18 +292,14 @@ def test_verbose_output_renders_safe_judge_diagnostics(
     diagnosed = judge.model_copy(
         update={
             "diagnostics": (
-                EvaluatorDiagnostic(
-                    kind="output_limit", attempt=2, field_paths=()
-                ),
+                EvaluatorDiagnostic(kind="output_limit", attempt=2, field_paths=()),
                 EvaluatorDiagnostic(
                     kind="schema_output",
                     attempt=1,
                     field_paths=("scores.completeness",),
                 ),
             ),
-            "evaluator_trace_url": (
-                "https://smith.langchain.com/o/x/r/judge-diag"
-            ),
+            "evaluator_trace_url": ("https://smith.langchain.com/o/x/r/judge-diag"),
         }
     )
     repetition = judge_not_run_experiment_result.cases[0].repetitions[0]
@@ -326,21 +307,13 @@ def test_verbose_output_renders_safe_judge_diagnostics(
     case = judge_not_run_experiment_result.cases[0].model_copy(
         update={"repetitions": [repetition]}
     )
-    result = judge_not_run_experiment_result.model_copy(
-        update={"cases": [case]}
-    )
+    result = judge_not_run_experiment_result.model_copy(update={"cases": [case]})
 
     body = "\n".join(render_experiment(result, verbose=True))
 
     assert "judge_not_run: no_evaluable_output" in body
     assert "diagnostic: output_limit attempt=2" in body
-    assert (
-        "diagnostic: schema_output attempt=1 "
-        "fields=scores.completeness" in body
-    )
-    assert (
-        "evaluator_trace_url: https://smith.langchain.com/o/x/r/judge-diag"
-        in body
-    )
+    assert "diagnostic: schema_output attempt=1 fields=scores.completeness" in body
+    assert "evaluator_trace_url: https://smith.langchain.com/o/x/r/judge-diag" in body
     assert "api_key" not in body.lower()
     assert "sk-" not in body

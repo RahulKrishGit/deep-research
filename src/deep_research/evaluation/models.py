@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from math import isfinite
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, JsonValue, field_validator, model_validator
 
 from deep_research.observability import TokenUsage
-from deep_research.providers.contracts import FinishReasonCategory
+from deep_research.providers.contracts import (
+    FinishReasonCategory,
+    ProviderFailureKind,
+)
 from deep_research.utils.config import ReasoningEffort
 from deep_research.utils.types import ContractModel, ResearchState, UnitScore
 
 ARTIFACT_SCHEMA_VERSION = 1
+
+_MAX_ARTIFACT_DETERMINISTIC_METRICS = 16
+_MAX_ARTIFACT_METRIC_ID_LENGTH = 64
+_MAX_ARTIFACT_OPERATION_LENGTH = 96
+_MAX_ARTIFACT_PROHIBITED_CALL_COUNT = 10_000
+_ARTIFACT_METRIC_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 AgentName: TypeAlias = Literal[
     "planner",
@@ -32,9 +43,7 @@ AGENT_NAMES: tuple[AgentName, ...] = (
     "synthesizer",
     "critic",
 )
-CLI_AGENT_NAMES: tuple[str, ...] = tuple(
-    name.replace("_", "-") for name in AGENT_NAMES
-)
+CLI_AGENT_NAMES: tuple[str, ...] = tuple(name.replace("_", "-") for name in AGENT_NAMES)
 TIERS: tuple[EvaluationTier, ...] = ("controlled", "live")
 
 _CASE_ID_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -57,9 +66,7 @@ def parse_agent_name(value: str) -> AgentName:
     candidate = value.strip().casefold().replace("-", "_")
     if candidate not in AGENT_NAMES:
         valid = ", ".join(CLI_AGENT_NAMES)
-        raise UnknownAgentError(
-            f"unknown agent {value!r}; expected one of: {valid}"
-        )
+        raise UnknownAgentError(f"unknown agent {value!r}; expected one of: {valid}")
     return candidate  # type: ignore[return-value]
 
 
@@ -202,12 +209,38 @@ class EvidenceContext(ContractModel):
     scripted_search_urls: list[str] = Field(default_factory=list)
 
 
+ReActStopReason: TypeAlias = Literal[
+    "finished",
+    "sufficient",
+    "max_iterations",
+    "tool_budget_exhausted",
+    "provider_error",
+]
+
+
 class ReActSummary(ContractModel):
     iterations: int = Field(ge=0)
     tool_calls: int = Field(ge=0)
-    stop_reason: str = Field(min_length=1)
+    stop_reason: ReActStopReason
     max_iterations: int = Field(ge=1)
     tool_budget: int = Field(ge=0)
+
+    @field_validator("stop_reason", mode="before")
+    @classmethod
+    def normalize_legacy_stop_reason(cls, value: object) -> object:
+        """Read older local artifacts while writing only current vocabulary."""
+        return "finished" if value == "completed" else value
+
+
+class FallbackProviderDiagnostic(ContractModel):
+    """The bounded provider diagnosis safe to project into an artifact."""
+
+    kind: ProviderFailureKind
+    operation: str = Field(
+        min_length=1,
+        max_length=_MAX_ARTIFACT_OPERATION_LENGTH,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )
 
 
 FailureStage: TypeAlias = Literal[
@@ -481,17 +514,52 @@ class RepetitionResult(ContractModel):
     completed: bool
     gates: GateReport
     deterministic_quality: UnitScore | None = None
+    deterministic_metrics: dict[str, UnitScore] = Field(
+        default_factory=dict,
+        max_length=_MAX_ARTIFACT_DETERMINISTIC_METRICS,
+    )
+    prohibited_call_count: int = Field(
+        default=0,
+        ge=0,
+        le=_MAX_ARTIFACT_PROHIBITED_CALL_COUNT,
+        strict=True,
+    )
+    react_stop_reason: ReActStopReason | None = None
+    fallback_provider_diagnostic: FallbackProviderDiagnostic | None = None
     judge: JudgeFeedback | None = None
     aggregate_quality: UnitScore | None = None
     trace_url: str | None = None
     errors: list[EvaluationFailure] = Field(default_factory=list)
 
+    @field_validator("deterministic_metrics", mode="before")
+    @classmethod
+    def validate_metric_ids(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            raise TypeError("deterministic_metrics must be a mapping")
+        if len(value) > _MAX_ARTIFACT_DETERMINISTIC_METRICS:
+            raise ValueError("too many deterministic metrics")
+        for metric_id in value:
+            if (
+                not isinstance(metric_id, str)
+                or len(metric_id) > _MAX_ARTIFACT_METRIC_ID_LENGTH
+                or _ARTIFACT_METRIC_ID.fullmatch(metric_id) is None
+            ):
+                raise ValueError("deterministic metric ids must be lower snake case")
+        return value
+
+    @field_validator("deterministic_metrics")
+    @classmethod
+    def validate_metric_values(
+        cls, value: dict[str, UnitScore]
+    ) -> dict[str, UnitScore]:
+        if any(not isfinite(score) for score in value.values()):
+            raise ValueError("deterministic metric values must be finite")
+        return value
+
     @property
     def passed(self) -> bool:
         return (
-            self.completed
-            and self.gates.passed
-            and self.aggregate_quality is not None
+            self.completed and self.gates.passed and self.aggregate_quality is not None
         )
 
 

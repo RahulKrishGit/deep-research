@@ -9,6 +9,7 @@ from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.evaluators import (
     GENERAL_GATE_IDS,
     MissingMetricError,
+    deterministic_metric_scores,
     deterministic_quality,
     evaluate_general_gates,
     evaluate_target,
@@ -46,9 +47,7 @@ def test_the_general_gates_cover_every_rule_the_spec_names() -> None:
 def test_a_clean_run_passes_every_general_gate(
     planner_case, clean_target_output
 ) -> None:
-    results = evaluate_general_gates(
-        clean_target_output, planner_case, secrets=()
-    )
+    results = evaluate_general_gates(clean_target_output, planner_case, secrets=())
 
     assert [item.gate_id for item in results] == list(GENERAL_GATE_IDS)
     assert all(item.passed for item in results), [
@@ -153,9 +152,7 @@ def test_an_unknown_citation_fails_the_citation_gate(
     researcher_case, researcher_target_output
 ) -> None:
     result = dict(researcher_target_output.result)
-    result["findings"] = [
-        {"source_url": "https://invented.example.com/page"}
-    ]
+    result["findings"] = [{"source_url": "https://invented.example.com/page"}]
     output = researcher_target_output.model_copy(update={"result": result})
 
     results = evaluate_general_gates(output, researcher_case, secrets=())
@@ -207,9 +204,7 @@ def test_a_live_case_without_known_urls_fails_on_unknown_citations(
     assert live_case.expectations.known_source_urls == []
 
     result = dict(researcher_target_output.result)
-    result["findings"] = [
-        {"source_url": "https://invented.example.com/page"}
-    ]
+    result["findings"] = [{"source_url": "https://invented.example.com/page"}]
     output = researcher_target_output.model_copy(
         update={"result": result, "trajectory": []}
     )
@@ -287,9 +282,7 @@ def test_a_malformed_cited_url_fails_the_citation_gate_without_raising(
     of failing it (worse than a crash: it inflates the pass rate).
     """
     result = dict(researcher_target_output.result)
-    result["findings"] = [
-        {"source_url": "https://ex.com:99999/page"}
-    ]
+    result["findings"] = [{"source_url": "https://ex.com:99999/page"}]
     output = researcher_target_output.model_copy(update={"result": result})
 
     results = evaluate_general_gates(output, researcher_case, secrets=())
@@ -352,9 +345,7 @@ def test_a_secret_anywhere_in_the_output_fails_the_secret_gate(
     assert "sk-abcdefghijklmnop" not in failed.detail
 
 
-def test_a_prohibited_call_fails_its_gate(
-    planner_case, clean_target_output
-) -> None:
+def test_a_prohibited_call_fails_its_gate(planner_case, clean_target_output) -> None:
     ledger = clean_target_output.dependencies.model_copy(
         update={"prohibited_calls": ["tavily.search"]}
     )
@@ -400,9 +391,7 @@ def test_deterministic_quality_is_the_weighted_sum_of_passing_metrics(
 ) -> None:
     functions = {
         metric.metric_id: (lambda output, case, index=index: index == 0)
-        for index, metric in enumerate(
-            planner_case.expectations.deterministic_metrics
-        )
+        for index, metric in enumerate(planner_case.expectations.deterministic_metrics)
     }
 
     score = deterministic_quality(
@@ -444,9 +433,7 @@ def test_a_metric_without_an_implementation_is_a_defect_not_a_zero(
 ) -> None:
     """Silently scoring an unimplemented metric zero would hide the bug."""
     with pytest.raises(MissingMetricError) as caught:
-        deterministic_quality(
-            clean_target_output, planner_case, metric_functions={}
-        )
+        deterministic_quality(clean_target_output, planner_case, metric_functions={})
 
     assert planner_case.expectations.deterministic_metrics[0].metric_id in str(
         caught.value
@@ -670,12 +657,10 @@ def _build_golden_output(case: EvaluationCase) -> TargetOutput:
                 for source in case.state.evaluated_sources
             ],
             findings=[
-                finding.model_dump(mode="json")
-                for finding in case.state.raw_findings
+                finding.model_dump(mode="json") for finding in case.state.raw_findings
             ],
             claims=[
-                claim.model_dump(mode="json")
-                for claim in case.state.verified_claims
+                claim.model_dump(mode="json") for claim in case.state.verified_claims
             ],
             scripted_search_urls=[],
         ),
@@ -713,3 +698,57 @@ def test_a_plausible_correct_output_passes_every_general_gate_for_every_register
     assert [item.gate_id for item in results] == list(GENERAL_GATE_IDS)
     failed = [item for item in results if not item.passed]
     assert not failed, [(item.gate_id, item.detail) for item in failed]
+
+
+def test_deterministic_metric_scores_returns_every_metric_as_a_unit_score(
+    planner_case, clean_target_output
+) -> None:
+    functions = {
+        metric.metric_id: (lambda output, case, value=value: value)
+        for metric, value in zip(
+            planner_case.expectations.deterministic_metrics,
+            [
+                index == 0
+                for index in range(len(planner_case.expectations.deterministic_metrics))
+            ],
+            strict=True,
+        )
+    }
+
+    scores = deterministic_metric_scores(
+        clean_target_output, planner_case, metric_functions=functions
+    )
+    assert list(scores) == [
+        metric.metric_id for metric in planner_case.expectations.deterministic_metrics
+    ]
+    assert list(scores.values()) == [1.0] + [0.0] * (len(scores) - 1)
+
+
+def test_deterministic_metric_scores_records_exceptions_as_zero(
+    planner_case, clean_target_output
+) -> None:
+    metrics = planner_case.expectations.deterministic_metrics
+
+    def broken(output, case):
+        raise RuntimeError("unsafe metric failure")
+
+    scores = deterministic_metric_scores(
+        clean_target_output,
+        planner_case,
+        metric_functions={
+            metrics[0].metric_id: broken,
+            **{metric.metric_id: (lambda output, case: True) for metric in metrics[1:]},
+        },
+    )
+
+    assert scores[metrics[0].metric_id] == 0.0
+    assert all(scores[metric.metric_id] == 1.0 for metric in metrics[1:])
+
+
+def test_deterministic_metric_scores_still_raises_for_missing_metrics(
+    planner_case, clean_target_output
+) -> None:
+    with pytest.raises(MissingMetricError):
+        deterministic_metric_scores(
+            clean_target_output, planner_case, metric_functions={}
+        )

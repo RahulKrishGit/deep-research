@@ -15,9 +15,13 @@ from deep_research.evaluation.models import (
     EvaluationCase,
     EvaluationFailure,
     ExperimentResult,
+    FallbackProviderDiagnostic,
+    GateReport,
     JudgeFeedback,
     JudgeRubric,
     JudgeScores,
+    ReActSummary,
+    RepetitionResult,
     RubricDimension,
     SuiteResult,
     TargetOutput,
@@ -115,9 +119,7 @@ def test_deterministic_metric_weights_must_sum_to_one() -> None:
             max_iterations=5,
             max_tool_calls=10,
             deterministic_metrics=[
-                DeterministicMetric(
-                    metric_id="coverage", weight=0.5, description="d"
-                )
+                DeterministicMetric(metric_id="coverage", weight=0.5, description="d")
             ],
         )
 
@@ -133,12 +135,8 @@ def test_deterministic_metric_ids_must_be_unique() -> None:
             max_iterations=5,
             max_tool_calls=10,
             deterministic_metrics=[
-                DeterministicMetric(
-                    metric_id="coverage", weight=0.5, description="d"
-                ),
-                DeterministicMetric(
-                    metric_id="coverage", weight=0.5, description="d"
-                ),
+                DeterministicMetric(metric_id="coverage", weight=0.5, description="d"),
+                DeterministicMetric(metric_id="coverage", weight=0.5, description="d"),
             ],
         )
 
@@ -437,3 +435,84 @@ def test_suite_result_round_trips_through_json(experiment_result) -> None:
     payload = json.loads(suite.model_dump_json())
     assert payload["schema_version"] == ARTIFACT_SCHEMA_VERSION
     assert SuiteResult.model_validate(payload) == suite
+
+
+def test_repetition_result_accepts_bounded_typed_telemetry() -> None:
+    result = RepetitionResult(
+        case_id="focused-decomposition",
+        case_version=1,
+        repetition=1,
+        completed=True,
+        gates=GateReport(),
+        deterministic_quality=0.75,
+        deterministic_metrics={"coverage": 1.0, "ordering": 0.0},
+        prohibited_call_count=2,
+        react_stop_reason="provider_error",
+        fallback_provider_diagnostic=FallbackProviderDiagnostic(
+            kind="output_limit", operation="react_decision"
+        ),
+    )
+
+    payload = result.model_dump(mode="json")
+    assert payload["deterministic_metrics"] == {
+        "coverage": 1.0,
+        "ordering": 0.0,
+    }
+    assert payload["fallback_provider_diagnostic"] == {
+        "kind": "output_limit",
+        "operation": "react_decision",
+    }
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"": 1.0},
+        {"Not_snake_case": 1.0},
+        {"has-dash": 1.0},
+        {"too_large": 1.1},
+        {"not_finite": float("nan")},
+        {f"metric_{index}": 1.0 for index in range(17)},
+    ],
+)
+def test_repetition_result_rejects_malformed_metric_maps(metrics) -> None:
+    with pytest.raises(ValueError):
+        RepetitionResult(
+            case_id="focused-decomposition",
+            case_version=1,
+            repetition=1,
+            completed=True,
+            gates=GateReport(),
+            deterministic_metrics=metrics,
+        )
+
+
+@pytest.mark.parametrize("count", [-1, 10_001, True])
+def test_repetition_result_rejects_invalid_prohibited_call_counts(count) -> None:
+    with pytest.raises(ValueError):
+        RepetitionResult(
+            case_id="focused-decomposition",
+            case_version=1,
+            repetition=1,
+            completed=True,
+            gates=GateReport(),
+            prohibited_call_count=count,
+        )
+
+
+def test_repetition_result_rejects_unknown_stop_reasons_and_unsafe_fallbacks() -> None:
+    with pytest.raises(ValueError):
+        ReActSummary(
+            iterations=0,
+            tool_calls=0,
+            stop_reason="unknown",
+            max_iterations=1,
+            tool_budget=0,
+        )
+
+    with pytest.raises(ValueError):
+        FallbackProviderDiagnostic(
+            kind="output_limit",
+            operation="react_decision",
+            raw_provider_output="must not persist",
+        )

@@ -20,6 +20,7 @@ from deep_research.evaluation.runner import (
     build_case_result,
     build_evaluation_status_values,
     build_evaluation_summary_feedback,
+    build_repetition_result,
     decide_status,
     run_agent_evaluation,
 )
@@ -38,6 +39,68 @@ def test_the_aggregate_formula_matches_the_spec_exactly() -> None:
     assert aggregate_quality(0.0, 1.0) == pytest.approx(0.60)
     assert aggregate_quality(0.5, 0.5) == pytest.approx(0.50)
     assert aggregate_quality(0.9, 0.8) == pytest.approx(0.84)
+
+
+def test_repetition_result_projects_only_safe_typed_telemetry(
+    clean_target_output,
+) -> None:
+    output = clean_target_output.model_copy(
+        update={
+            "dependencies": clean_target_output.dependencies.model_copy(
+                update={"prohibited_calls": ["tool-a", "tool-b"]}
+            ),
+            "react": clean_target_output.react.model_copy(
+                update={"stop_reason": "provider_error"}
+            ),
+            "errors": [
+                {
+                    "details": {
+                        "operation": "react_decision",
+                        "provider_failure": {"kind": "output_limit"},
+                        "raw_provider_output": "do not persist",
+                    },
+                    "message": "do not persist",
+                },
+                {
+                    "details": {
+                        "operation": "later_operation",
+                        "provider_failure": {"kind": "provider_timeout"},
+                    }
+                },
+            ],
+        }
+    )
+
+    result = build_repetition_result(
+        output,
+        GateReport(),
+        0.5,
+        None,
+        deterministic_metrics={"coverage": 1.0, "ordering": 0.0},
+    )
+
+    assert result.deterministic_quality == 0.5
+    assert result.deterministic_metrics == {"coverage": 1.0, "ordering": 0.0}
+    assert result.prohibited_call_count == 2
+    assert result.react_stop_reason == "provider_error"
+    assert result.fallback_provider_diagnostic is not None
+    assert result.fallback_provider_diagnostic.model_dump(mode="json") == {
+        "kind": "output_limit",
+        "operation": "react_decision",
+    }
+    assert "raw_provider_output" not in result.model_dump_json()
+    assert "do not persist" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize("agent_name", ["source_evaluator", "synthesizer"])
+def test_non_react_agents_project_no_stop_reason(
+    clean_target_output, agent_name
+) -> None:
+    output = clean_target_output.model_copy(update={"agent_name": agent_name})
+
+    result = build_repetition_result(output, GateReport(), 0.5, None)
+
+    assert result.react_stop_reason is None
 
 
 def test_the_aggregate_is_not_rounded_before_thresholding() -> None:
@@ -292,9 +355,7 @@ def test_the_live_threshold_is_zero_point_seven_five(
     passing = build_case_result(None, repetitions_at([0.75]), threshold=0.75)
     failing = build_case_result(None, repetitions_at([0.74]), threshold=0.75)
 
-    assert decide_status([passing], tier="live", runtime=runtime) == (
-        "REVIEW REQUIRED"
-    )
+    assert decide_status([passing], tier="live", runtime=runtime) == ("REVIEW REQUIRED")
     assert decide_status([failing], tier="live", runtime=runtime) == "FAILED"
 
 
@@ -401,9 +462,7 @@ async def test_the_summary_observes_every_completed_row_before_it_runs(
             quality,
         )
 
-    monkeypatch.setattr(
-        runner_module, "evaluate_target", evaluate_with_available_trace
-    )
+    monkeypatch.setattr(runner_module, "evaluate_target", evaluate_with_available_trace)
     runner = FakeEvaluateRunner(examples=partially_failing_harness.examples)
 
     result = await run_agent_evaluation(
@@ -451,8 +510,7 @@ async def test_summary_upload_failure_is_recorded_without_rewriting_verdict(
 
     assert result.status == "FAILED"
     assert any(
-        error.stage == "trace"
-        and error.reason == "langsmith_summary_unavailable"
+        error.stage == "trace" and error.reason == "langsmith_summary_unavailable"
         for error in result.errors
     )
     assert secret not in result.model_dump_json()
@@ -746,9 +804,7 @@ async def test_experiment_url_falls_back_to_comparison_url(
         url=None,
         comparison_url=comparison_url,
     )
-    runner = FakeEvaluateRunner(
-        examples=evaluation_harness.examples, results=results
-    )
+    runner = FakeEvaluateRunner(examples=evaluation_harness.examples, results=results)
 
     result = await run_agent_evaluation(
         settings,
@@ -779,9 +835,7 @@ async def test_experiment_url_failure_is_auxiliary_and_preserves_quality_status(
         url=None,
         comparison_error=ConnectionError("url unavailable"),
     )
-    runner = FakeEvaluateRunner(
-        examples=evaluation_harness.examples, results=results
-    )
+    runner = FakeEvaluateRunner(examples=evaluation_harness.examples, results=results)
 
     result = await run_agent_evaluation(
         settings,
@@ -793,9 +847,7 @@ async def test_experiment_url_failure_is_auxiliary_and_preserves_quality_status(
 
     assert result.status == baseline.status
     assert result.experiment_url is None
-    assert any(
-        error.reason == "experiment_url_unavailable" for error in result.errors
-    )
+    assert any(error.reason == "experiment_url_unavailable" for error in result.errors)
 
 
 @pytest.mark.asyncio
@@ -839,9 +891,7 @@ async def test_a_gate_evaluation_exception_is_recorded_not_dropped(
     # Not dropped: all three repetitions are still present.
     assert len(repetitions) == 3
     assert all(r.gates.passed is False for r in repetitions)
-    assert all(
-        "gate_evaluation_error" in r.gates.failed_ids for r in repetitions
-    )
+    assert all("gate_evaluation_error" in r.gates.failed_ids for r in repetitions)
     assert all(r.deterministic_quality == 0.0 for r in repetitions)
 
 
@@ -876,9 +926,7 @@ async def test_run_agent_evaluation_wires_the_threshold_and_floor_correctly(
             case, repetitions, threshold=threshold, floor=floor
         )
 
-    monkeypatch.setattr(
-        runner_module, "build_case_result", spying_build_case_result
-    )
+    monkeypatch.setattr(runner_module, "build_case_result", spying_build_case_result)
 
     runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
     runtime = runtime_config_for("planner")
@@ -896,9 +944,7 @@ async def test_run_agent_evaluation_wires_the_threshold_and_floor_correctly(
     assert runtime.repetition_floor == pytest.approx(0.65)
     assert runtime.case_average_threshold != runtime.repetition_floor
     for call in captured_calls:
-        assert call["threshold"] == pytest.approx(
-            runtime.case_average_threshold
-        )
+        assert call["threshold"] == pytest.approx(runtime.case_average_threshold)
         assert call["floor"] == pytest.approx(runtime.repetition_floor)
 
 
@@ -987,9 +1033,7 @@ async def test_the_artifact_is_written_and_revalidates(
         json.loads(path.read_text(encoding="utf-8"))
     )
     assert restored == result
-    assert len(
-        [r for case in restored.cases for r in case.repetitions]
-    ) == 9
+    assert len([r for case in restored.cases for r in case.repetitions]) == 9
     assert set(_summary_values({"results": runner.summary_feedback})) == {
         "evaluation_status",
         "evaluation_failure_reason",

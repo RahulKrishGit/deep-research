@@ -34,7 +34,7 @@ from deep_research.evaluation.models import (
     GateResult,
     TargetOutput,
 )
-from deep_research.utils.types import Claim, ScoredSource, SubTopic
+from deep_research.utils.types import Claim, ScoredSource, SubTopic, UnitScore
 
 GENERAL_GATE_IDS: tuple[str, ...] = (
     "agent_constructed",
@@ -52,9 +52,7 @@ GENERAL_GATE_IDS: tuple[str, ...] = (
 
 MetricFunction: TypeAlias = Callable[[TargetOutput, EvaluationCase], bool]
 
-_RESEARCH_ERROR_KEYS = frozenset(
-    {"error_type", "source", "message", "timestamp"}
-)
+_RESEARCH_ERROR_KEYS = frozenset({"error_type", "source", "message", "timestamp"})
 _URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+")
 # Greedy URL matching keeps trailing punctuation that belongs to prose
 # (markdown parens, commas, periods, ...). Strip it so the extracted string
@@ -101,9 +99,7 @@ def _url_like_strings(payload: object) -> set[str]:
     return found
 
 
-def _gate_agent_constructed(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_agent_constructed(output: TargetOutput, case: EvaluationCase) -> GateResult:
     stage = _field(output.failure, "stage")
     passed = stage is None or stage != "construction"
     return GateResult(
@@ -129,9 +125,7 @@ def _gate_run_completed(output: TargetOutput, case: EvaluationCase) -> GateResul
     return GateResult(gate_id="run_completed", passed=True, detail="")
 
 
-def _gate_contracts_valid(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_contracts_valid(output: TargetOutput, case: EvaluationCase) -> GateResult:
     problems: list[str] = []
     if not isinstance(output.result, Mapping):
         problems.append("result is not a mapping")
@@ -149,22 +143,16 @@ def _gate_required_fields_present(
 ) -> GateResult:
     result = output.result if isinstance(output.result, Mapping) else {}
     missing = [
-        name
-        for name in case.expectations.required_output_fields
-        if name not in result
+        name for name in case.expectations.required_output_fields if name not in result
     ]
     return GateResult(
         gate_id="required_fields_present",
         passed=not missing,
-        detail=(
-            "missing required fields: " + ", ".join(missing) if missing else ""
-        ),
+        detail=("missing required fields: " + ", ".join(missing) if missing else ""),
     )
 
 
-def _gate_budgets_respected(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_budgets_respected(output: TargetOutput, case: EvaluationCase) -> GateResult:
     react = output.react
     if react is None:
         return GateResult(
@@ -175,21 +163,13 @@ def _gate_budgets_respected(
     iterations = _field(react, "iterations")
     tool_calls = _field(react, "tool_calls")
     violations: list[str] = []
-    if (
-        not isinstance(iterations, int)
-        or iterations > case.expectations.max_iterations
-    ):
+    if not isinstance(iterations, int) or iterations > case.expectations.max_iterations:
         violations.append(
-            f"iterations {iterations} exceed "
-            f"{case.expectations.max_iterations}"
+            f"iterations {iterations} exceed {case.expectations.max_iterations}"
         )
-    if (
-        not isinstance(tool_calls, int)
-        or tool_calls > case.expectations.max_tool_calls
-    ):
+    if not isinstance(tool_calls, int) or tool_calls > case.expectations.max_tool_calls:
         violations.append(
-            f"tool_calls {tool_calls} exceed "
-            f"{case.expectations.max_tool_calls}"
+            f"tool_calls {tool_calls} exceed {case.expectations.max_tool_calls}"
         )
     return GateResult(
         gate_id="budgets_respected",
@@ -235,9 +215,7 @@ def _normalized(url: str) -> str:
         return url
 
 
-def _gate_citations_known(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_citations_known(output: TargetOutput, case: EvaluationCase) -> GateResult:
     # Live cases fall through to the trajectory check even when no known
     # source urls are declared: for those cases the recorded tool trajectory
     # is the only evidence a cited url was genuinely retrieved.
@@ -249,13 +227,9 @@ def _gate_citations_known(
     # targets.py). Those URLs are just as "known" as a scripted search hit
     # or a declared known-source URL, so they belong in ``allowed`` too.
     expectations = case.expectations
-    allowed: set[str] = {
-        _normalized(url) for url in expectations.known_source_urls
-    }
+    allowed: set[str] = {_normalized(url) for url in expectations.known_source_urls}
     scripted = _field(output.evidence, "scripted_search_urls") or ()
-    allowed.update(
-        _normalized(url) for url in scripted if isinstance(url, str)
-    )
+    allowed.update(_normalized(url) for url in scripted if isinstance(url, str))
     evidence_sources = _field(output.evidence, "sources") or ()
     for source in evidence_sources:
         url = _field(source, "url")
@@ -285,8 +259,7 @@ def _gate_citations_known(
     if case.tier == "live":
         for step in output.trajectory:
             allowed.update(
-                _normalized(url)
-                for url in _url_like_strings(_field(step, "thought"))
+                _normalized(url) for url in _url_like_strings(_field(step, "thought"))
             )
             allowed.update(
                 _normalized(url)
@@ -295,17 +268,14 @@ def _gate_citations_known(
     cited = {
         _normalized(url)
         for url in (
-            _url_like_strings(output.result)
-            | _url_like_strings(output.state_update)
+            _url_like_strings(output.result) | _url_like_strings(output.state_update)
         )
     }
     unknown = sorted(cited - allowed)
     return GateResult(
         gate_id="citations_known",
         passed=not unknown,
-        detail=(
-            "unknown source urls: " + ", ".join(unknown) if unknown else ""
-        ),
+        detail=("unknown source urls: " + ", ".join(unknown) if unknown else ""),
     )
 
 
@@ -327,9 +297,7 @@ def _gate_no_secret_in_output(
     )
 
 
-def _gate_no_prohibited_calls(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_no_prohibited_calls(output: TargetOutput, case: EvaluationCase) -> GateResult:
     calls = _field(output.dependencies, "prohibited_calls") or []
     calls = [name for name in calls if isinstance(name, str)]
     return GateResult(
@@ -339,9 +307,7 @@ def _gate_no_prohibited_calls(
     )
 
 
-def _gate_trace_available(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_trace_available(output: TargetOutput, case: EvaluationCase) -> GateResult:
     trace_url = output.trace_url
     passed = isinstance(trace_url, str) and bool(trace_url.strip())
     return GateResult(
@@ -364,8 +330,7 @@ def _gate_no_tracker_transport_failure(
         gate_id="no_tracker_transport_failure",
         passed=not failures,
         detail=(
-            "langsmith transport failures at indices: "
-            + ", ".join(map(str, failures))
+            "langsmith transport failures at indices: " + ", ".join(map(str, failures))
             if failures
             else ""
         ),
@@ -387,9 +352,7 @@ _GENERAL_GATE_FUNCTIONS: dict[
     "no_tracker_transport_failure": _gate_no_tracker_transport_failure,
 }
 
-if set(_GENERAL_GATE_FUNCTIONS) != set(GENERAL_GATE_IDS) - {
-    "no_secret_in_output"
-}:
+if set(_GENERAL_GATE_FUNCTIONS) != set(GENERAL_GATE_IDS) - {"no_secret_in_output"}:
     raise RuntimeError("every general gate id needs exactly one gate function")
 
 
@@ -408,9 +371,7 @@ def evaluate_general_gates(
     results: list[GateResult] = []
     for gate_id in GENERAL_GATE_IDS:
         if gate_id == "no_secret_in_output":
-            results.append(
-                _gate_no_secret_in_output(output, case, secrets=secrets)
-            )
+            results.append(_gate_no_secret_in_output(output, case, secrets=secrets))
         else:
             results.append(_GENERAL_GATE_FUNCTIONS[gate_id](output, case))
     return results
@@ -430,7 +391,23 @@ def deterministic_quality(
     function that raises is a failed metric (weight zero) and must not
     abort the other metrics.
     """
-    score = 0.0
+    scores = deterministic_metric_scores(
+        output, case, metric_functions=metric_functions
+    )
+    return sum(
+        metric.weight * scores[metric.metric_id]
+        for metric in case.expectations.deterministic_metrics
+    )
+
+
+def deterministic_metric_scores(
+    output: TargetOutput,
+    case: EvaluationCase,
+    *,
+    metric_functions: Mapping[str, MetricFunction],
+) -> dict[str, UnitScore]:
+    """Evaluate every declared metric into a bounded unit-score map."""
+    scores: dict[str, UnitScore] = {}
     for metric in case.expectations.deterministic_metrics:
         function = metric_functions.get(metric.metric_id)
         if function is None:
@@ -438,12 +415,33 @@ def deterministic_quality(
                 f"no metric function registered for {metric.metric_id!r}"
             )
         try:
-            if function(output, case):
-                score += metric.weight
+            scores[metric.metric_id] = 1.0 if function(output, case) else 0.0
         except Exception:
             # One broken metric must not lose every other metric's score.
-            continue
-    return score
+            scores[metric.metric_id] = 0.0
+    return scores
+
+
+def evaluate_target_with_metrics(
+    output: TargetOutput,
+    case: EvaluationCase,
+    *,
+    secrets: Sequence[str],
+    metric_functions: Mapping[str, MetricFunction] | None = None,
+) -> tuple[GateReport, float, dict[str, UnitScore]]:
+    """Evaluate gates and expose metric details without changing the public API."""
+    if metric_functions is None:
+        metric_functions = METRIC_FUNCTIONS
+    results = evaluate_general_gates(output, case, secrets=secrets)
+    results.extend(evaluate_agent_gates(output, case))
+    scores = deterministic_metric_scores(
+        output, case, metric_functions=metric_functions
+    )
+    score = sum(
+        metric.weight * scores[metric.metric_id]
+        for metric in case.expectations.deterministic_metrics
+    )
+    return GateReport(results=results), score, scores
 
 
 def evaluate_target(
@@ -459,14 +457,10 @@ def evaluate_target(
     agent's own gates in ``AGENT_GATE_IDS`` order. ``metric_functions``
     defaults to the complete ``METRIC_FUNCTIONS`` table.
     """
-    if metric_functions is None:
-        metric_functions = METRIC_FUNCTIONS
-    results = evaluate_general_gates(output, case, secrets=secrets)
-    results.extend(evaluate_agent_gates(output, case))
-    score = deterministic_quality(
-        output, case, metric_functions=metric_functions
+    gates, score, _ = evaluate_target_with_metrics(
+        output, case, secrets=secrets, metric_functions=metric_functions
     )
-    return GateReport(results=results), score
+    return gates, score
 
 
 # --- Agent-specific hard gates ---------------------------------------------
@@ -572,9 +566,7 @@ def _reference_int(case: EvaluationCase, key: str, default: int) -> int:
     return int(value)
 
 
-def _uncovered_sub_topics(
-    output: TargetOutput, case: EvaluationCase
-) -> list[str]:
+def _uncovered_sub_topics(output: TargetOutput, case: EvaluationCase) -> list[str]:
     """Subtopic titles with no finding and no recorded skip reason."""
     covered: set[str] = set()
     findings = _artifact(output, "findings")
@@ -603,9 +595,7 @@ def _forbidden_persistence_claims(reference: Mapping) -> list[str]:
     return []
 
 
-def _registrable_family_count(
-    domains: Sequence[str], *, family: str | None
-) -> int:
+def _registrable_family_count(domains: Sequence[str], *, family: str | None) -> int:
     """Distinct registrable families among ``domains``.
 
     ``a.example.com`` and ``b.a.example.com`` are one family; a declared
@@ -633,9 +623,7 @@ def _subtopic_count_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     return minimum <= len(sub_topics) <= maximum
 
 
-def _gate_subtopic_count(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_subtopic_count(output: TargetOutput, case: EvaluationCase) -> GateResult:
     sub_topics = _artifact(output, "sub_topics")
     if not isinstance(sub_topics, list):
         return _agent_result("subtopic_count", False, "sub_topics is not a list")
@@ -658,14 +646,10 @@ def _distinct_subtopics_passes(output: TargetOutput, case: EvaluationCase) -> bo
     return len(titles) == len(set(titles))
 
 
-def _gate_distinct_subtopics(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_distinct_subtopics(output: TargetOutput, case: EvaluationCase) -> GateResult:
     sub_topics = _artifact(output, "sub_topics")
     if not isinstance(sub_topics, list):
-        return _agent_result(
-            "distinct_subtopics", False, "sub_topics is not a list"
-        )
+        return _agent_result("distinct_subtopics", False, "sub_topics is not a list")
     titles = [_normalized_text(_field(entry, "title")) for entry in sub_topics]
     passed = len(titles) == len(set(titles))
     return _agent_result(
@@ -675,9 +659,7 @@ def _gate_distinct_subtopics(
     )
 
 
-def _gate_valid_subtopics(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_valid_subtopics(output: TargetOutput, case: EvaluationCase) -> GateResult:
     sub_topics = _artifact(output, "sub_topics")
     if not isinstance(sub_topics, list):
         return _agent_result("valid_subtopics", False, "sub_topics is not a list")
@@ -698,17 +680,11 @@ def _gate_prioritized_subtopics(
 ) -> GateResult:
     sub_topics = _artifact(output, "sub_topics")
     if not isinstance(sub_topics, list):
-        return _agent_result(
-            "prioritized_subtopics", False, "sub_topics is not a list"
-        )
+        return _agent_result("prioritized_subtopics", False, "sub_topics is not a list")
     priorities: list[int] = []
     for index, entry in enumerate(sub_topics):
         priority = _field(entry, "priority")
-        if (
-            not isinstance(priority, int)
-            or isinstance(priority, bool)
-            or priority < 1
-        ):
+        if not isinstance(priority, int) or isinstance(priority, bool) or priority < 1:
             return _agent_result(
                 "prioritized_subtopics",
                 False,
@@ -723,9 +699,7 @@ def _gate_prioritized_subtopics(
     )
 
 
-def _question_preserved_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _question_preserved_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     rewritten = _state_update(output).get("original_question")
     if not isinstance(rewritten, str):
         return True
@@ -733,9 +707,7 @@ def _question_preserved_passes(
     return question is None or rewritten == question
 
 
-def _gate_question_preserved(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_question_preserved(output: TargetOutput, case: EvaluationCase) -> GateResult:
     passed = _question_preserved_passes(output, case)
     return _agent_result(
         "question_preserved",
@@ -751,9 +723,7 @@ def _sub_topic_covered_passes(output: TargetOutput, case: EvaluationCase) -> boo
     return not _uncovered_sub_topics(output, case)
 
 
-def _gate_sub_topic_covered(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_sub_topic_covered(output: TargetOutput, case: EvaluationCase) -> GateResult:
     uncovered = _uncovered_sub_topics(output, case)
     return _agent_result(
         "sub_topic_covered",
@@ -762,9 +732,7 @@ def _gate_sub_topic_covered(
     )
 
 
-def _gate_sourced_findings(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_sourced_findings(output: TargetOutput, case: EvaluationCase) -> GateResult:
     findings = _artifact(output, "findings")
     if not isinstance(findings, list):
         return _agent_result("sourced_findings", False, "findings is not a list")
@@ -786,9 +754,7 @@ def _gate_sourced_findings(
     return _agent_result("sourced_findings", True)
 
 
-def _no_invented_sources_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _no_invented_sources_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     allowed: set[str] = {
         normalize_source_url(url) for url in case.expectations.known_source_urls
     }
@@ -816,9 +782,7 @@ def _no_invented_sources_passes(
     return True
 
 
-def _gate_no_invented_sources(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_no_invented_sources(output: TargetOutput, case: EvaluationCase) -> GateResult:
     passed = _no_invented_sources_passes(output, case)
     return _agent_result(
         "no_invented_sources",
@@ -832,8 +796,7 @@ def _gate_no_invented_sources(
 
 def _canonical_source_urls(case: EvaluationCase) -> set[str]:
     return {
-        normalize_source_url(finding.source_url)
-        for finding in case.state.raw_findings
+        normalize_source_url(finding.source_url) for finding in case.state.raw_findings
     }
 
 
@@ -882,9 +845,7 @@ def _bounded_scores_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     return True
 
 
-def _gate_bounded_scores(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_bounded_scores(output: TargetOutput, case: EvaluationCase) -> GateResult:
     passed = _bounded_scores_passes(output, case)
     return _agent_result(
         "bounded_scores",
@@ -893,9 +854,7 @@ def _gate_bounded_scores(
     )
 
 
-def _low_confidence_flagged_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _low_confidence_flagged_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     expected = case.expectations.reference.get("expected_low_confidence_urls")
     if not isinstance(expected, list) or not expected:
         return True
@@ -927,9 +886,7 @@ def _gate_low_confidence_flagged(
 # --- Fact checker gates ----------------------------------------------------
 
 
-def _gate_valid_verdicts(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_valid_verdicts(output: TargetOutput, case: EvaluationCase) -> GateResult:
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
         return _agent_result("valid_verdicts", False, "verified_claims is not a list")
@@ -963,9 +920,7 @@ def _evidence_linked_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     return True
 
 
-def _gate_evidence_linked(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_evidence_linked(output: TargetOutput, case: EvaluationCase) -> GateResult:
     passed = _evidence_linked_passes(output, case)
     return _agent_result(
         "evidence_linked",
@@ -974,9 +929,7 @@ def _gate_evidence_linked(
     )
 
 
-def _independent_domains_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _independent_domains_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     reference = case.expectations.reference
     # The gate enforces a minimum only for cases that pin one: the ordinary
     # mixed-verdicts case never declares ``minimum_independent_domains`` and
@@ -1003,9 +956,7 @@ def _independent_domains_passes(
     recorded_urls: list[str] = []
     for step in output.trajectory:
         recorded_urls.extend(_url_like_strings(_field(step, "thought")))
-        recorded_urls.extend(
-            _url_like_strings(_field(step, "observation_summary"))
-        )
+        recorded_urls.extend(_url_like_strings(_field(step, "observation_summary")))
     recorded_urls.extend(
         url
         for url in (_field(output.evidence, "scripted_search_urls") or ())
@@ -1018,9 +969,7 @@ def _independent_domains_passes(
         if _field(entry, "verdict") != "verified":
             continue
         source_urls = [
-            url
-            for url in (_field(entry, "source_urls") or [])
-            if isinstance(url, str)
+            url for url in (_field(entry, "source_urls") or []) if isinstance(url, str)
         ]
         claimed = claimed_domains_for(source_urls)
         evidence_urls = list(source_urls)
@@ -1031,17 +980,13 @@ def _independent_domains_passes(
                     for url in _URL_PATTERN.findall(string)
                 )
         evidence_urls.extend(recorded_urls)
-        independent = independent_domains(
-            evidence_urls, claimed_domains=claimed
-        )
+        independent = independent_domains(evidence_urls, claimed_domains=claimed)
         if _registrable_family_count(independent, family=family) < minimum:
             return False
     return True
 
 
-def _gate_independent_domains(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_independent_domains(output: TargetOutput, case: EvaluationCase) -> GateResult:
     passed = _independent_domains_passes(output, case)
     return _agent_result(
         "independent_domains",
@@ -1083,9 +1028,7 @@ def _gate_conservative_insufficiency(
 # --- Synthesizer gates -----------------------------------------------------
 
 
-def _gate_valid_report(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_valid_report(output: TargetOutput, case: EvaluationCase) -> GateResult:
     report = _report_body(output)
     passed = bool(report.strip())
     return _agent_result(
@@ -1093,12 +1036,8 @@ def _gate_valid_report(
     )
 
 
-def _citations_known_only_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    known = {
-        normalize_source_url(url) for url in case.expectations.known_source_urls
-    }
+def _citations_known_only_passes(output: TargetOutput, case: EvaluationCase) -> bool:
+    known = {normalize_source_url(url) for url in case.expectations.known_source_urls}
     report = _report_body(output)
     cited = {
         normalize_source_url(url.rstrip(_URL_TRAILING_PUNCTUATION))
@@ -1134,9 +1073,7 @@ def _gate_limitations_represented(
     )
 
 
-def _persistence_truthful_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _persistence_truthful_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     writes = _field(output.dependencies, "document_writes")
     if isinstance(writes, int) and writes > 0:
         return True
@@ -1164,11 +1101,7 @@ def _gate_persistence_truthful(
 def _bounded_score_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     critique = _artifact(output, "critique")
     score = _field(critique, "score")
-    return (
-        isinstance(score, int)
-        and not isinstance(score, bool)
-        and 1 <= score <= 10
-    )
+    return isinstance(score, int) and not isinstance(score, bool) and 1 <= score <= 10
 
 
 def _gate_bounded_component_scores(
@@ -1182,9 +1115,7 @@ def _gate_bounded_component_scores(
     )
 
 
-def _critique_actionable_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _critique_actionable_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     critique = _artifact(output, "critique")
     if _field(critique, "should_continue") is not True:
         return True
@@ -1201,9 +1132,7 @@ def _critique_actionable_passes(
     return False
 
 
-def _gate_critique_actionable(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_critique_actionable(output: TargetOutput, case: EvaluationCase) -> GateResult:
     passed = _critique_actionable_passes(output, case)
     return _agent_result(
         "critique_actionable",
@@ -1217,11 +1146,7 @@ def _route_consistent_passes(output: TargetOutput, case: EvaluationCase) -> bool
     score = _field(critique, "score")
     if not isinstance(score, int) or isinstance(score, bool):
         return False
-    gaps = [
-        item
-        for item in (_field(critique, "gaps") or [])
-        if isinstance(item, str)
-    ]
+    gaps = [item for item in (_field(critique, "gaps") or []) if isinstance(item, str)]
     unsupported = [
         item
         for item in (_field(critique, "unsupported_claims") or [])
@@ -1241,9 +1166,7 @@ def _route_consistent_passes(output: TargetOutput, case: EvaluationCase) -> bool
     return expected is (_field(critique, "should_continue") is True)
 
 
-def _gate_route_consistent(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
+def _gate_route_consistent(output: TargetOutput, case: EvaluationCase) -> GateResult:
     passed = _route_consistent_passes(output, case)
     return _agent_result(
         "route_consistent",
@@ -1304,28 +1227,21 @@ def evaluate_agent_gates(
     """One result per agent-specific gate, in ``AGENT_GATE_IDS`` order."""
     functions = _AGENT_GATE_FUNCTIONS[case.agent_name]
     return [
-        functions[gate_id](output, case)
-        for gate_id in AGENT_GATE_IDS[case.agent_name]
+        functions[gate_id](output, case) for gate_id in AGENT_GATE_IDS[case.agent_name]
     ]
 
 
 # --- Deterministic metrics --------------------------------------------------
 
 
-def _strictly_increasing_priorities(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _strictly_increasing_priorities(output: TargetOutput, case: EvaluationCase) -> bool:
     sub_topics = _artifact(output, "sub_topics")
     if not isinstance(sub_topics, list) or not sub_topics:
         return False
     priorities: list[int] = []
     for entry in sub_topics:
         priority = _field(entry, "priority")
-        if (
-            not isinstance(priority, int)
-            or isinstance(priority, bool)
-            or priority < 1
-        ):
+        if not isinstance(priority, int) or isinstance(priority, bool) or priority < 1:
             return False
         priorities.append(priority)
     return all(a < b for a, b in zip(priorities, priorities[1:]))
@@ -1350,9 +1266,7 @@ def _query_quality_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     return True
 
 
-def _no_invented_constraints_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _no_invented_constraints_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     """No subtopic title or query names a country, vendor, or year absent
     from the question.
 
@@ -1391,9 +1305,7 @@ def _no_invented_constraints_passes(
     return True
 
 
-def _balanced_coverage_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _balanced_coverage_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     sub_topics = _artifact(output, "sub_topics")
     if not isinstance(sub_topics, list):
         return False
@@ -1438,9 +1350,7 @@ def _bounded_recovery_passes(output: TargetOutput, case: EvaluationCase) -> bool
 
 
 def _source_grounding_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    known = {
-        normalize_source_url(url) for url in case.expectations.known_source_urls
-    }
+    known = {normalize_source_url(url) for url in case.expectations.known_source_urls}
     findings = _artifact(output, "findings")
     if not isinstance(findings, list):
         return False
@@ -1458,17 +1368,13 @@ def _source_diversity_passes(output: TargetOutput, case: EvaluationCase) -> bool
         return False
     domains = {
         source_domain(url).casefold()
-        for url in (
-            _field(finding, "source_url") for finding in findings
-        )
+        for url in (_field(finding, "source_url") for finding in findings)
         if isinstance(url, str)
     }
     return len(domains) >= minimum
 
 
-def _uncertainty_preserved_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _uncertainty_preserved_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     reference = case.expectations.reference
     signals = [
         signal
@@ -1497,9 +1403,7 @@ def _uncertainty_preserved_passes(
     return len(cited & {normalize_source_url(url) for url in conflicting}) >= 2
 
 
-def _no_false_consensus_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _no_false_consensus_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     conflicting = [
         url
         for url in case.expectations.reference.get("conflicting_urls", [])
@@ -1518,16 +1422,12 @@ def _no_false_consensus_passes(
     return len(cited & {normalize_source_url(url) for url in conflicting}) >= 2
 
 
-def _partial_results_present_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _partial_results_present_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     findings = _artifact(output, "findings")
     return isinstance(findings, list) and len(findings) >= 1
 
 
-def _sources_are_real_urls_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _sources_are_real_urls_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     trajectory_urls: set[str] = set()
     for step in output.trajectory:
         trajectory_urls.update(
@@ -1551,9 +1451,7 @@ def _sources_are_real_urls_passes(
 def _score_ordering_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     reference = case.expectations.reference
     authoritative = [
-        url
-        for url in reference.get("authoritative_urls", [])
-        if isinstance(url, str)
+        url for url in reference.get("authoritative_urls", []) if isinstance(url, str)
     ]
     weak = [url for url in reference.get("weak_urls", []) if isinstance(url, str)]
     if not authoritative or not weak:
@@ -1624,9 +1522,7 @@ def _rationale_signals_passes(output: TargetOutput, case: EvaluationCase) -> boo
     return False
 
 
-def _fallback_scores_bounded_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _fallback_scores_bounded_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     reference = case.expectations.reference
     failing = {
         domain.casefold()
@@ -1678,9 +1574,7 @@ def _no_fabricated_reputation_passes(
     return True
 
 
-def _verdict_correctness_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _verdict_correctness_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     expected = case.expectations.reference.get("expected_verdicts")
     if not isinstance(expected, Mapping):
         return True
@@ -1699,9 +1593,7 @@ def _verdict_correctness_passes(
     return True
 
 
-def _confidence_calibrated_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _confidence_calibrated_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
         return False
@@ -1718,9 +1610,7 @@ def _confidence_calibrated_passes(
 
 
 def _sources_known_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    known = {
-        normalize_source_url(url) for url in case.expectations.known_source_urls
-    }
+    known = {normalize_source_url(url) for url in case.expectations.known_source_urls}
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
         return False
@@ -1734,9 +1624,7 @@ def _sources_known_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     return True
 
 
-def _conservative_on_failure_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _conservative_on_failure_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     reference = case.expectations.reference
     prefix = reference.get("failing_query_prefix")
     if not isinstance(prefix, str) or not prefix:
@@ -1767,14 +1655,10 @@ def _partial_verification_present_passes(
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
         return False
-    return any(
-        _field(entry, "verdict") != "insufficient_evidence" for entry in claims
-    )
+    return any(_field(entry, "verdict") != "insufficient_evidence" for entry in claims)
 
 
-def _report_present_in_state_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _report_present_in_state_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     report = _state_update(output).get("report")
     return isinstance(report, str) and bool(report.strip())
 
@@ -1786,9 +1670,7 @@ def _coverage_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     )
 
 
-def _conflict_represented_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _conflict_represented_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     reference = case.expectations.reference
     signals = [
         signal
@@ -1808,9 +1690,7 @@ def _conflict_represented_passes(
     )
 
 
-def _no_overstatement_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _no_overstatement_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     forbidden = [
         word
         for word in case.expectations.reference.get("forbidden_overstatement", [])
@@ -1851,10 +1731,7 @@ def _rationale_present_passes(output: TargetOutput, case: EvaluationCase) -> boo
     if any(theme.casefold() in folded for theme in themes):
         return True
     theme_words = {
-        word.casefold()
-        for theme in themes
-        for word in theme.split()
-        if len(word) >= 5
+        word.casefold() for theme in themes for word in theme.split() if len(word) >= 5
     }
     return bool(theme_words & set(folded.split()))
 
@@ -1868,10 +1745,7 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
     if not themes:
         return True
     theme_words = {
-        word.casefold()
-        for theme in themes
-        for word in theme.split()
-        if len(word) >= 5
+        word.casefold() for theme in themes for word in theme.split() if len(word) >= 5
     }
     critique = _artifact(output, "critique")
     gaps = _field(critique, "gaps")
@@ -1931,9 +1805,7 @@ def _route_discipline_passes(output: TargetOutput, case: EvaluationCase) -> bool
     return case.state.iteration >= case.state.max_iterations
 
 
-def _conservative_score_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
+def _conservative_score_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     maximum = case.expectations.reference.get("maximum_score")
     if not isinstance(maximum, (int, float)) or isinstance(maximum, bool):
         return True
