@@ -55,6 +55,9 @@ The campaign is complete only when all of the following are true:
 - Every agent-specific source/prompt change is tied to one root-cause ID, has RED/GREEN offline evidence, a focused three-repetition controlled retest, and a reviewer gate before a full nine-repetition validation.
 - No controlled case, gate, rubric, evaluator, threshold, judge prompt, dependency script, or weight is changed to make an agent pass. A demonstrated harness defect stops agent tuning and moves to a separate approved harness plan.
 - The final full tracked offline suite and Ruff are green, and the final whole-branch review has no unresolved load-bearing findings.
+- Each of `researcher`, `source_evaluator`, `fact_checker`, `synthesizer`, and `critic` has either an immutable nine-repetition controlled result, an explicitly reused immutable passing baseline, or a documented terminal state of `INFRASTRUCTURE_BLOCKED`, `HARNESS_DEFECT_BLOCKED`, or `ESCALATED`; no agent is silently omitted.
+- Each non-Planner agent has a safe baseline-provenance record, a typed failure/quality diagnosis, stable root-cause IDs, reviewer-gated repair history, and a final terminal-state record even when no source repair is authorized.
+- The permanent fix log contains one evidence-only section for each of the five non-Planner agents, including environment/retry rulings, output-budget decisions, review resolutions, deferred/parked findings, immutable artifact paths, and the final terminal state.
 
 ## Global Constraints
 
@@ -124,7 +127,148 @@ The campaign is complete only when all of the following are true:
 | --- | --- |
 | `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/progress.md` | Ignored SDD recovery ledger, task completion, rulings, review findings, exact commits, provider-run gates, artifact paths, and next action. |
 | `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md` | Tracked final permanent record created only after implementation begins: confirmed transferable causes, changes, RED/GREEN commands, controlled evidence, and terminal state for each agent. |
-| `output/evaluations/<agent>/*/results.json` | Immutable per-agent controlled evidence; ignored, never committed. |
+| `output/evaluations/researcher/*/results.json` | Immutable Researcher controlled evidence; ignored, never committed. The other literal roots are `output/evaluations/source-evaluator/*/results.json`, `output/evaluations/fact-checker/*/results.json`, `output/evaluations/synthesizer/*/results.json`, and `output/evaluations/critic/*/results.json`; the experiment directory is resolved from the returned `experiment_name`. |
+
+### Post-gate per-agent campaign packets
+
+These ignored paths are created only after Task 8. They are operational evidence, not source changes, and must never contain prompts, provider responses, evaluator inputs, secrets, hidden reasoning, or unredacted exception strings:
+
+| Path | Required contents and mutability rule |
+| --- | --- |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_provenance.py` | Offline-only helper that writes safe effective configuration, retry, environment-source, import, Python, branch, worktree, and Git provenance; it never prints or serializes credential values. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_inventory.py` | Offline-only helper that validates one `results.json`, extracts only the bounded inventory schema below, and refuses to overwrite an existing inventory file. It never copies prompts, provider output, evaluator input, or exception text. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/` | Exact packet root for Researcher evidence. The same packet filenames are used under the four other literal roots: `agents/source-evaluator/`, `agents/fact-checker/`, `agents/synthesizer/`, and `agents/critic/`. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-provenance.json` | One immutable record made before the Researcher baseline command. Do not overwrite it; a later same-SHA confirmation uses `confirmation-provenance.json`, and a shared-change rerun uses `invalidation-provenance.json`. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-inventory.json` | One strictly validated, typed, bounded three-case × three-repetition inventory for the Researcher baseline. Write once after the authoritative `results.json` is resolved; use the analogous filename under each other agent root. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/confirmation-provenance.json` | Immutable provenance for the one permitted same-SHA, same-effective-config infrastructure confirmation. Create it before that paid command and never reuse it for another command. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/confirmation-inventory.json` | Immutable safe inventory for a confirmation artifact when the confirmation completes enough to validate. It is supplemental evidence and never overwrites `baseline-inventory.json`. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/invalidation-provenance.json` | Immutable provenance for a rerun required because a shared production path changed after a prior agent result. It names the invalidating commit and affected path; it is not a replacement baseline. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/invalidation-inventory.json` | Immutable safe inventory for the shared-change invalidation run. The prior inventory remains preserved and is never relabeled as current evidence. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/root-causes/*.md` | One immutable Markdown record per literal root-cause ID. Each record contains counterevidence, typed failure class, exact operation, repair-attempt count, permitted files, focused case, predicted non-target invariants, rollback, and reviewer disposition. A new hypothesis gets a new filename. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/repairs/*/attempt-*-amendment.md` | One immutable literal repair amendment per root-cause attempt. It is written before any source edit and contains the exact RED test, GREEN command, candidate command, review gate, rollback condition, and expected status transition. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/reviews/*.md` | Fresh reviewer records with only these finding dispositions: `approved`, `needs-change`, `deferred-non-load-bearing`, or `blocked-infrastructure`; each finding has a resolution or an explicit stop. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/escalation.md` | Created only after the third unsuccessful focused attempt for the same root-cause ID. It contains all three hypotheses, commits, focused artifacts, deltas, evidence, and the human escalation decision; it is never created to disguise an infrastructure or harness block. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/terminal-state.md` | One final control-plane record naming the exact terminal state, harness status/exit code, authoritative artifact or reused baseline path, final candidate SHA, invalidations, deferred/parked findings, and next action. Use the same literal record under `source-evaluator`, `fact-checker`, `synthesizer`, and `critic`. |
+| `output/evaluations/researcher/*/results.json` | Immutable Researcher controlled artifacts written by the harness. The four other exact roots are `output/evaluations/source-evaluator/`, `output/evaluations/fact-checker/`, `output/evaluations/synthesizer/`, and `output/evaluations/critic/`; resolve the experiment directory from the literal `experiment_name` and never overwrite an existing `results.json`. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/final-whole-branch-review-handoff.md` | Created only after all five agents have terminal-state records and final offline verification is green; the handoff package for the deferred broad review. It is not a review result. |
+
+Every packet path above is write-once. Before writing any file, run `Test-Path -LiteralPath` and stop if it already exists unless the step explicitly names that file as the current append target. The five literal packet roots are `researcher`, `source-evaluator`, `fact-checker`, `synthesizer`, and `critic`; no Planner packet is created by this campaign.
+
+The inventory helper must emit this exact field contract and no additional fields. The type words below are schema types, not values to copy into an inventory:
+
+```text
+Top level:
+  schema_version: integer
+  agent: internal AgentName
+  cli_agent: literal kebab-case CLI name
+  baseline_candidate_sha: 40-character lowercase Git SHA
+  results_path: absolute path to the resolved results.json
+  results_sha256: 64-character lowercase SHA-256
+  experiment_name: harness experiment name
+  experiment_url: direct URL or null
+  dataset_name: harness dataset name
+  dataset_url: direct URL or null
+  configuration_fingerprint: harness fingerprint
+  judge_configuration_fingerprint: harness fingerprint
+  prompt_fingerprint: harness fingerprint
+  target_model: effective target model
+  target_reasoning_effort: effective target effort
+  judge_model: effective judge model
+  judge_reasoning_effort: effective judge effort
+  controlled_repetitions: integer equal to 3
+  cases: array of exactly three case records
+
+Case record:
+  case_id: one frozen case ID for this agent
+  repetitions: array of exactly three repetition records
+
+Repetition record:
+  repetition: integer in the range 1 through 3
+  completed: boolean
+  failed_gate_ids: array of gate IDs
+  failed_gate_details: array of safe typed gate details
+  deterministic_metrics: map of exact metric ID to numeric result
+  deterministic_quality: numeric result or null
+  judge_status: scored, judge_not_run, or the harness-declared typed status
+  judge_not_run_reason: safe typed reason or null
+  judge_dimensions: map of exact dimension ID to numeric result
+  judge_quality: numeric result or null
+  aggregate_quality: numeric result or null
+  target_failure_stage: provider, trace, artifact, setup, or null
+  target_failure_reason: safe typed reason or null
+  target_failure_details_kind: safe typed details.kind or null
+  fallback_provider_failure_kinds: safe typed provider kinds
+  fallback_provider_operations: exact safe operation names or unavailable markers
+  judge_diagnostic_kinds: safe typed evaluator/provider diagnostics
+  react_stop_reason: safe stop-reason enum or null
+  prohibited_call_count: integer
+  target_trace_url: direct URL or null
+  evaluator_trace_url: direct URL or null
+  evaluator_source_url: direct URL or null
+```
+
+The values are produced from the validated artifact or a directly supplied, sanitized target trace; no worker may substitute a sample score, status, path, SHA, URL, or completion value. Preserve `null` when a URL or typed field is unavailable, and omit no case or repetition. `fallback_provider_failure_kinds` and `fallback_provider_operations` are read only from safe `ResearchError.details.provider_failure` records; a missing operation is recorded as an unavailable diagnostic and cannot justify a budget amendment.
+
+### Five non-Planner campaign contracts
+
+The CLI uses kebab-case; internal `AgentName` values and source paths use underscores. The listed case IDs are the three frozen controlled cases for each agent. The listed operation names are the only target operations eligible for typed diagnosis or an operation-specific budget amendment; `react_decision` remains at the global `llm.max_tokens=4096` cap.
+
+| Agent | Controlled cases and deterministic metric IDs | Target operations | Offline repair surface and invariants |
+| --- | --- | --- | --- |
+| Researcher (`researcher`) | `multi-source-coverage` (`sub_topic_coverage`, `source_grounding`, `source_diversity`, `budget_respected`); `conflicting-evidence` (`uncertainty_preserved`, `no_false_consensus`, `source_grounding`, `budget_respected`); `partial-search-failure` (`partial_results_present`, `failure_recorded`, `no_invented_sources`, `budget_respected`) | `react_decision`; `researcher_finding_extraction` | `src/deep_research/agents/researcher.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_researcher.py`; preserve prior findings, stop later subtopics after a provider failure, retain recoverable errors, and never invent source URLs. |
+| Source Evaluator (`source-evaluator`) | `strong-and-weak-sources` (`one_evaluation_per_source`, `score_ordering`, `bounded_scores`, `low_confidence_flagged`); `corroboration-recency-reputation` (`balanced_scoring`, `one_evaluation_per_source`, `bounded_scores`, `rationale_mentions_multiple_signals`); `reputation-provider-failure` (`all_sources_still_scored`, `fallback_scores_bounded`, `failure_recorded`, `no_fabricated_reputation`) | `source_evaluator_scoring` | `src/deep_research/agents/source_evaluator.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_source_evaluator.py`; preserve one row per source, bounded fallback scores, low-confidence semantics, and explicit reputation-failure recording. This agent is non-ReAct. |
+| Fact Checker (`fact-checker`) | `mixed-verdicts` (`verdict_correctness`, `evidence_linked`, `confidence_calibrated`, `sources_known`); `independent-domain-evidence` (`independence_enforced`, `evidence_linked`, `sources_known`, `budget_respected`); `verification-search-failure` (`conservative_on_failure`, `partial_verification_present`, `failure_recorded`, `budget_respected`) | `react_decision`; `fact_checker_claim_extraction`; `fact_checker_claim_verification` | `src/deep_research/agents/fact_checker.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_fact_checker.py`; preserve completed claims, use `insufficient_evidence`/`unverified` as designed after failed verification, retain independent-domain rules, and record recoverable failures. |
+| Synthesizer (`synthesizer`) | `complete-cited-report` (`report_present`, `citations_known`, `coverage`, `limitations_present`, `persistence_truthful`); `conflict-and-limitations` (`conflict_represented`, `no_overstatement`, `limitations_present`, `citations_known`); `write-or-memory-failure` (`report_present_in_state`, `failure_recorded`, `no_false_persistence_claim`, `citations_known`) | `synthesizer_report_draft` | `src/deep_research/agents/synthesizer.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_synthesizer.py`; preserve the locally assembled evidence-only skeleton, truthful persistence claims, known citations, and write/memory fallback errors. This agent is non-ReAct. |
+| Critic (`critic`) | `approve-strong-report` (`score_bounded`, `route_consistent`, `rationale_present`, `no_spurious_gaps`); `request-more-research` (`route_consistent`, `gaps_actionable`, `gaps_identified`, `score_bounded`); `missing-evidence-or-budget-exhausted` (`route_discipline`, `conservative_score`, `failure_recorded`, `score_bounded`) | `react_decision`; `critic_report_review` | `src/deep_research/agents/critic.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_critic.py`; preserve score bounds, concrete gap/routing behavior, macro-iteration limits, and the existing fallback critique/routing decision. |
+
+### Controlled status and terminal-state contract
+
+The harness status and process exit code are not interchangeable with the ignored ledger's workflow state. Record both exactly:
+
+| Harness result | Exit | Required ledger routing |
+| --- | ---: | --- |
+| `REVIEW REQUIRED` | `0` | The nine-repetition result is eligible for a reviewer gate. If no later shared change invalidates it, record `terminal_state: REVIEW_REQUIRED` for a repaired agent or `terminal_state: UNCHANGED_BASELINE_REUSED` for an untouched passing baseline. |
+| `FAILED` | `1` | Keep the complete artifact immutable. Route to `DIAGNOSING`; do not call the agent repaired. A quality failure and a typed target/provider failure must be separated before any edit. |
+| `INFRASTRUCTURE FAILURE` | `3` | Perform one same-SHA, same-config confirmation. If the typed infrastructure/trace/artifact failure persists, record `INFRASTRUCTURE_BLOCKED` and stop that agent without counting a repair attempt. |
+| Invalid usage or case/agent selection | `2` | Stop for a command correction; do not treat it as an evaluation result or spend another provider call. |
+
+Use these exact control-plane terminal values in each `terminal-state.md`: `REVIEW_REQUIRED`, `UNCHANGED_BASELINE_REUSED`, `INFRASTRUCTURE_BLOCKED`, `HARNESS_DEFECT_BLOCKED`, or `ESCALATED`. `DEFERRED_NON_LOAD_BEARING` and `PARKED_INFRASTRUCTURE` are finding dispositions, not substitutes for an agent terminal state. Never add a new value to the harness `EvaluationStatus` type.
+
+### Post-gate producer/consumer and status interface
+
+Tasks 9–13 are one sequential control-plane. A later task may consume only the
+artifact named by the preceding task and may not infer a missing status from a
+score or a process exit code:
+
+| Producer | Required output | Consumer and allowed transition |
+| --- | --- | --- |
+| Task 9 baseline acquisition | One immutable provenance record, one strictly validated three-case × three-repetition inventory, a typed failure inventory, and one per-agent routing decision | Task 10 may consume only an exact target-side `output_limit` with an exact non-ReAct operation; Task 11 may consume only a typed quality/trajectory diagnosis or a typed non-budget provider/schema result; Task 12 may consume only a passing immutable baseline or a reviewed candidate. |
+| Task 10 budget amendment | A reviewed operation-specific config/call-site candidate, offline RED/GREEN evidence, and a focused three-repetition result | Task 12 consumes the candidate only when the focused gate passes; a persistent or reclassified failure returns to Task 9/11 and never jumps directly to full validation. |
+| Task 11 agent repair loop | A root-cause record, literal amendment, fresh review record, one candidate commit, offline RED/GREEN evidence, and a focused three-repetition result | Task 12 consumes the candidate only when the focused gate passes; three unsuccessful focused attempts for the same root-cause ID produce `ESCALATED` and stop. |
+| Task 12 full validation | One immutable nine-repetition artifact or an explicit infrastructure/harness/escalation terminal record | Task 13 consumes the terminal record for that agent; an unchanged passing baseline is consumed without another paid run. |
+| Task 13 fix log | One tracked safe section per non-Planner agent and a terminal-state table covering all five agents | Task 14 consumes the log, the five terminal records, and offline verification to create the deferred whole-branch review handoff. |
+
+The ledger uses the workflow states already defined by the approved workflow:
+`BASELINE_REQUIRED`, `DIAGNOSING`, `REPAIRING`, `FOCUSED_RETEST`,
+`FULL_VALIDATION`, `REVIEW_REQUIRED`, `ESCALATED`, and
+`INFRASTRUCTURE_BLOCKED`. The campaign phase label left by Task 8,
+`CONTROLLED_BASELINES_REQUIRED`, is retained as the parent phase; each agent
+gets its own workflow state and terminal-state value under that phase. Harness
+status values remain exactly `REVIEW REQUIRED`, `FAILED`, and
+`INFRASTRUCTURE FAILURE`, with exit codes `0`, `1`, and `3`; exit `2` is
+invalid usage and is never an evaluation result.
+
+For a baseline or candidate to receive `REVIEW_REQUIRED`, all of the following
+must be explicit in its inventory: 3 cases, 3 repetitions per case, every
+repetition complete, every hard gate passing, every aggregate score at least
+`0.65`, every case average at least `0.80`, every expected judge result
+`status == "scored"`, no judge-not-run reason, no unexplained target or
+fallback provider failure, no trace/artifact/secret failure, and no prohibited
+call. A case's deliberately scripted recovery behavior may produce a safe
+non-provider error (for example, a search, reputation, write, or budget
+failure in the named failure case); it must be the exact expected case
+behavior and must pass the corresponding frozen `failure_recorded` or
+conservative-output gate. It is not a target output-limit candidate.
 
 ### Frozen evaluation inputs during agent repair loops
 
@@ -873,103 +1017,251 @@ Expected: clean worktree. Record literal `$CandidateSha` in the ledger as `Offli
 **Files:**
 - No tracked production/test changes during baseline acquisition
 - Update ignored ledger
-- Create ignored `output/evaluations/<agent>/...` artifacts through existing harness
+- Create ignored provenance, inventory, and packet files under the five exact agent roots in the post-gate artifact table
+- Create immutable `output/evaluations/researcher/*/results.json`, `output/evaluations/source-evaluator/*/results.json`, `output/evaluations/fact-checker/*/results.json`, `output/evaluations/synthesizer/*/results.json`, and `output/evaluations/critic/*/results.json` artifacts through the existing harness
 
 **Interfaces:**
 - Consumes: Task 8 candidate SHA and the existing frozen controlled datasets.
-- Produces: one immutable full controlled baseline per non-Planner agent at the same candidate SHA.
+- Produces: one immutable three-case × three-repetition baseline attempt per non-Planner agent at the same candidate SHA; a safe effective-configuration/provenance record; a bounded baseline inventory; a typed failure inventory; and one explicit routing decision for each agent. No source edit is permitted in this task.
 
-**Run order:** `researcher`, `fact_checker`, `critic`, `synthesizer`, `source_evaluator`.
+**Run order:** `researcher`, `source_evaluator`, `fact_checker`, `synthesizer`, `critic`.
 
-This order checks the three RC-A-exposed agents first, then the long-output non-ReAct agent, then the bounded scoring agent.
+The execution map is fixed before any provider command. The internal name is used in artifacts and Python; the CLI name is used in commands and output directories.
+
+| Internal name | CLI name | Target effort | Frozen controlled cases | Exact target operations eligible for diagnosis |
+| --- | --- | --- | --- | --- |
+| `researcher` | `researcher` | `high` | `multi-source-coverage`, `conflicting-evidence`, `partial-search-failure` | `react_decision`, `researcher_finding_extraction` |
+| `source_evaluator` | `source-evaluator` | `high` | `strong-and-weak-sources`, `corroboration-recency-reputation`, `reputation-provider-failure` | `source_evaluator_scoring` |
+| `fact_checker` | `fact-checker` | `max` | `mixed-verdicts`, `independent-domain-evidence`, `verification-search-failure` | `react_decision`, `fact_checker_claim_extraction`, `fact_checker_claim_verification` |
+| `synthesizer` | `synthesizer` | `max` | `complete-cited-report`, `conflict-and-limitations`, `write-or-memory-failure` | `synthesizer_report_draft` |
+| `critic` | `critic` | `max` | `approve-strong-report`, `request-more-research`, `missing-evidence-or-budget-exhausted` | `react_decision`, `critic_report_review` |
 
 - [ ] **Step 1: Preflight effective model/retry/budget configuration without printing secrets**
 
-Through the repo's secret-safe launcher or inherited environment, print only non-secret values:
-
-```python
-settings.llm.model
-settings.llm.max_tokens
-settings.llm.retry_count
-settings.llm.retry_initial_delay
-settings.llm.retry_max_delay
-settings.agents.planner_final_max_tokens
-```
-
-Required baseline values:
-
-```text
-llm.max_tokens = 4096
-planner_final_max_tokens = 4096 unless a Planner-specific shell override is intentionally present (clear it for this campaign)
-retry policy = the repository's intended controlled-evaluation policy; if `.env` changes it, set the approved process override before the launcher and record the effective non-secret value
-```
-
-Never print API keys or the full environment.
-
-- [ ] **Step 2: Immediately before each paid command, obtain human confirmation**
-
-The controller states the agent, candidate SHA, exact command, controlled-only scope, expected 3 cases × 3 repetitions, target/judge model, global 4096 cap, and that the run makes paid provider/LangSmith calls. Do not reuse an old confirmation for a later agent.
-
-- [ ] **Step 3: Run each full controlled baseline separately**
-
-For each `$Agent` in the fixed run order:
+Run this offline from the campaign worktree. Do not create a second worktree, reset the branch, or remove any existing ignored packet. The command must print only the candidate SHA and path/state facts:
 
 ```powershell
-python -m deep_research.evaluation agent $Agent `
-  --config config.yaml `
-  --experiment-prefix cross-agent-planner-fix-parity-baseline `
-  --verbose
+$CampaignRoot = (git rev-parse --show-toplevel).Trim()
+$LedgerPath = Join-Path $CampaignRoot '.superpowers\sdd\2026-09-08-cross-agent-planner-fix-parity\progress.md'
+$PacketRoot = Join-Path $CampaignRoot '.superpowers\sdd\2026-09-08-cross-agent-planner-fix-parity'
+$RunWithEnv = Join-Path $PacketRoot 'run_with_repo_env.py'
+$RepoEnv = Join-Path $CampaignRoot '.env'
+$EnvSource = if (Test-Path -LiteralPath $RepoEnv) { $RepoEnv } else { '-' }
+$CandidateSha = (git rev-parse HEAD).Trim()
+if ($CandidateSha -notmatch '^[0-9a-f]{40}$') { throw 'Task 8 candidate is not a literal 40-character SHA' }
+if (git status --porcelain) { throw 'tracked worktree is dirty at the Task 9 gate' }
+if (-not (Test-Path -LiteralPath $LedgerPath)) { throw 'Task 8 ledger is missing' }
+if (-not (Select-String -LiteralPath $LedgerPath -SimpleMatch 'Workflow state: CONTROLLED_BASELINES_REQUIRED')) {
+    throw 'Task 8 did not leave the campaign at CONTROLLED_BASELINES_REQUIRED'
+}
+New-Item -ItemType Directory -Force -Path $PacketRoot | Out-Null
+foreach ($CliAgent in @('researcher', 'source-evaluator', 'fact-checker', 'synthesizer', 'critic')) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $PacketRoot "agents\$CliAgent") | Out-Null
+}
+Write-Output "candidate_sha=$CandidateSha"
+Write-Output "campaign_root=$CampaignRoot"
+Write-Output "packet_root=$PacketRoot"
+Write-Output "env_source_present=$([bool](Test-Path -LiteralPath $RepoEnv))"
 ```
 
-Do not use `--tier live` and do not run the suite command.
+Expected: the candidate SHA is the clean Task 8 SHA; all five literal packet roots exist; no credential value is printed; and no provider or LangSmith call occurs.
 
-- [ ] **Step 4: Strictly validate and inventory each artifact**
+- [ ] **Step 2: Create the two offline-only packet helpers before any paid command**
 
-For each `results.json`, record in the ledger:
+Create these ignored files with `apply_patch`; do not add them to Git. The helpers must refuse to overwrite an existing output path, must use UTF-8 JSON, and must return a nonzero exit code on validation failure.
+
+`record_eval_provenance.py` has this exact interface:
 
 ```text
-agent
-experiment name / artifact path / experiment URL
-candidate SHA and configuration fingerprint
-cases completed / repetitions completed / hard gates
-status and mean score
-all target failure stages/reasons
-all safe provider_failure.kind values found under successful fallback output.errors
-judge status/not-run reasons and safe evaluator diagnostics
-per-case deterministic score / judge score / aggregate
-all prohibited-call gate failures
-all trajectory stop reasons
+python .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_provenance.py \
+  --config config.yaml \
+  --agent researcher \
+  --output .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-provenance.json
 ```
 
-Never record provider exception messages or prompt/provider content.
+It loads `config.yaml` with the repository's existing `load_config(..., strict=False)` behavior, snapshots only environment-variable names and presence/source (`process`, `repo_dotenv`, or `absent`), and writes these safe fields: `schema_version`, UTC creation time, internal/CLI agent name, candidate Git SHA/short SHA/branch/dirty bit, absolute worktree path, Python executable/version, resolved `deep_research` import path, config path, effective target/judge model and effort, `llm.max_tokens`, `agents.planner_final_max_tokens`, `llm.retry_count`, `llm.retry_initial_delay`, `llm.retry_max_delay`, controlled repetitions/floor/case-average threshold/max concurrency, dataset/rubric versions, LangSmith endpoint, configuration/judge/prompt fingerprints, and boolean presence for `DEEPSEEK_API_KEY`, `TAVILY_API_KEY`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, and `OPENAI_API_KEY`. It must never write any environment value, `.env` value, prompt, request, response, exception text, or full environment dump.
 
-- [ ] **Step 5: Assign root-cause IDs**
-
-Use these prefixes:
+`record_eval_inventory.py` has this exact interface:
 
 ```text
-researcher-...
-source-evaluator-...
-fact-checker-...
-synthesizer-...
-critic-...
+python .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_inventory.py \
+  --agent researcher \
+  --results $ResultsPath \
+  --provenance .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-provenance.json \
+  --output .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-inventory.json
 ```
 
-A root cause must be falsifiable and evidence-backed. Do not call every low judge score a prompt problem. Separate infrastructure/provider failures from deterministic quality failures.
+`$ResultsPath` must be the one literal path resolved by Step 7; it must not contain a wildcard, an ellipsis, or a guessed experiment directory. The helper strictly validates `ExperimentResult`, the agent/tier/case identities, three repetitions per case, the provenance SHA, and the results SHA-256. It writes only the bounded fields named by the inventory contract in the post-gate section: case/repetition IDs, completion, failed gate IDs/details, deterministic metric maps, judge dimensions, aggregate scores, typed target failure stage/reason/detail kind, safe fallback provider kinds/operations, typed judge status/reason/diagnostic kinds, ReAct stop reason, prohibited-call count, direct trace/evaluator/experiment URLs, configuration/prompt/judge fingerprints, model/effort values, and no raw messages. If a successful fallback `TargetOutput` is visible only in a target trace, the worker first writes a `target-output-projection.json` containing only its typed `operation` and provider snapshot fields; if the trace does not expose a safe projection, the inventory records `fallback_diagnostic_visibility: unavailable` and the agent cannot be promoted on that evidence.
 
-- [ ] **Step 6: Determine terminal routing per agent**
+Expected: `python ... --help` for both helpers is offline; the helpers have no provider imports or network calls; and a secret scan over either helper's output finds no known secret.
 
-For each agent:
+- [ ] **Step 3: Resolve effective configuration and retry/environment provenance**
+
+Use the existing launcher or inherited environment to print only the following JSON object; do not print `os.environ`, `.env`, or any secret value:
+
+```powershell
+$env:CAMPAIGN_AGENT = 'researcher'
+python $RunWithEnv $EnvSource python -c "import json, os; from deep_research.utils.config import load_config; s=load_config('config.yaml', strict=False); print(json.dumps({'agent':os.environ['CAMPAIGN_AGENT'],'llm_model':s.llm.model,'llm_max_tokens':s.llm.max_tokens,'retry_count':s.llm.retry_count,'retry_initial_delay':s.llm.retry_initial_delay,'retry_max_delay':s.llm.retry_max_delay,'planner_final_max_tokens':s.agents.planner_final_max_tokens,'target_model':s.evaluation.target_model,'target_effort':s.evaluation.target_reasoning_effort_overrides.get(os.environ['CAMPAIGN_AGENT'], s.evaluation.target_reasoning_effort),'judge_model':s.evaluation.judge_model,'judge_effort':s.evaluation.judge_reasoning_effort,'controlled_repetitions':s.evaluation.controlled_repetitions,'repetition_floor':s.evaluation.controlled_repetition_floor,'case_average_threshold':s.evaluation.controlled_case_average_threshold,'max_concurrency':s.evaluation.max_concurrency,'dataset_version':s.evaluation.dataset_version,'rubric_version':s.evaluation.rubric_version}, sort_keys=True))"
+Remove-Item Env:CAMPAIGN_AGENT
+```
+
+Repeat the probe with `source_evaluator`, `fact_checker`, `synthesizer`, and `critic` before their own provenance files. The required effective values are: `target_model=deepseek-v4-flash`; target effort `high` for Researcher and Source Evaluator and `max` for Fact Checker, Synthesizer, and Critic; `judge_model=deepseek-v4-flash`; `judge_effort=max`; `llm.max_tokens=4096`; `agents.planner_final_max_tokens=4096`; controlled repetitions `3`; repetition floor `0.65`; case-average threshold `0.80`; maximum concurrency `1`; dataset version `1`; and rubric version `1`.
+
+The retry ruling is exact: `retry_count=5`, `retry_initial_delay=1.0`, and `retry_max_delay=16.0`, producing the repository-owned 1/2/4/8/16-second backoff for retryable failures. If the repository `.env` changes any of these values, set only the non-secret process overrides below before the next provenance helper and record the ruling in the ledger; never edit `.env` in this campaign:
+
+```powershell
+$env:LLM_RETRY_COUNT = '5'
+$env:LLM_RETRY_INITIAL_DELAY = '1.0'
+$env:LLM_RETRY_MAX_DELAY = '16.0'
+$env:AGENTS_PLANNER_FINAL_MAX_TOKENS = '4096'
+```
+
+If model, target/judge effort, global max tokens, repetition, threshold, concurrency, dataset, or rubric values differ after the process overrides, stop with `INFRASTRUCTURE_BLOCKED` for the affected agent and do not spend a baseline call. A configuration mismatch is not a quality failure and is not repaired by a prompt edit.
+
+- [ ] **Step 4: Write one immutable baseline-provenance record per agent**
+
+Run the provenance helper once per literal agent, before that agent's first baseline command. Do not reuse one agent's file for another agent and do not overwrite a file that already exists:
+
+```powershell
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent researcher --output $PacketRoot\agents\researcher\baseline-provenance.json
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent source_evaluator --output $PacketRoot\agents\source-evaluator\baseline-provenance.json
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent fact_checker --output $PacketRoot\agents\fact-checker\baseline-provenance.json
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent synthesizer --output $PacketRoot\agents\synthesizer\baseline-provenance.json
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent critic --output $PacketRoot\agents\critic\baseline-provenance.json
+```
+
+Expected: five files, each naming the same clean Task 8 candidate SHA and its own effective target effort; each file contains only safe non-secret provenance; and each file's SHA-256 is recorded in the ignored ledger. If a file exists, inspect its safe fields and reuse it only when its candidate SHA, effective configuration, and file hash match the current gate; otherwise stop and create no replacement until the discrepancy is ruled on.
+
+- [ ] **Step 5: Obtain immediate human authorization before each baseline command**
+
+The controller must ask immediately before each command: “Authorize this paid controlled command for the named agent at the recorded candidate SHA? It runs the three frozen controlled cases with three repetitions each against `deepseek-v4-flash`, the recorded target effort, judge effort `max`, global `4096` tokens, the configured retry policy, and LangSmith controlled tracing; it does not use `--tier live`.” The controller must state the literal command and expected artifact path. One authorization covers one command only; do not pre-authorize the five-command sequence or reuse authorization for a confirmation, focused retest, or full validation.
+
+- [ ] **Step 6: Run each immutable full controlled baseline separately**
+
+Run exactly one command after the matching authorization. These commands intentionally omit `--case`, so each requests all three frozen cases and the harness's configured three repetitions:
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent researcher --tier controlled --config config.yaml --reasoning-effort high --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-researcher --verbose
+$ResearcherBaselineExit = $LASTEXITCODE
+if ($ResearcherBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Researcher exit code: $ResearcherBaselineExit" }
+```
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent source-evaluator --tier controlled --config config.yaml --reasoning-effort high --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-source-evaluator --verbose
+$SourceEvaluatorBaselineExit = $LASTEXITCODE
+if ($SourceEvaluatorBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Source Evaluator exit code: $SourceEvaluatorBaselineExit" }
+```
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent fact-checker --tier controlled --config config.yaml --reasoning-effort max --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-fact-checker --verbose
+$FactCheckerBaselineExit = $LASTEXITCODE
+if ($FactCheckerBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Fact Checker exit code: $FactCheckerBaselineExit" }
+```
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent synthesizer --tier controlled --config config.yaml --reasoning-effort max --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-synthesizer --verbose
+$SynthesizerBaselineExit = $LASTEXITCODE
+if ($SynthesizerBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Synthesizer exit code: $SynthesizerBaselineExit" }
+```
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent critic --tier controlled --config config.yaml --reasoning-effort max --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-critic --verbose
+$CriticBaselineExit = $LASTEXITCODE
+if ($CriticBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Critic exit code: $CriticBaselineExit" }
+```
+
+Do not run `python -m deep_research.evaluation suite`, do not add `--tier live`, and do not edit source/config/evaluation inputs when a command returns `1`, `2`, or `3`. Exit `2` is a command/case correction with no evaluation result; exit `3` is an infrastructure/preflight result; exit `1` is completed-but-not-passing and requires typed diagnosis.
+
+- [ ] **Step 7: Resolve, hash, and strictly validate each baseline artifact**
+
+Immediately before each paid command, capture the existing matching result paths in a variable named for that literal agent. The resolver must compare its post-command result list with that pre-command list; never select an older artifact. For Researcher, use this exact pattern and repeat it with the literal values for the other four agents and prefixes:
+
+```powershell
+$BeforeResearcherResults = @(
+    Get-ChildItem -LiteralPath 'output\evaluations\researcher' -Filter 'results.json' -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.FullName }
+)
+$ResearcherResults = @(
+    Get-ChildItem -LiteralPath 'output\evaluations\researcher' -Filter 'results.json' -Recurse -ErrorAction Stop |
+        Where-Object {
+            $_.Directory.Name -like 'cross-agent-planner-fix-parity-baseline-researcher-researcher-controlled-*' -and
+            $_.FullName -notin $BeforeResearcherResults
+        } |
+        Sort-Object LastWriteTimeUtc -Descending
+)
+if ($ResearcherResults.Count -ne 1) { throw 'Researcher baseline did not produce exactly one new results.json' }
+$ResearcherResultsPath = $ResearcherResults[0].FullName
+$env:RESULTS_PATH = $ResearcherResultsPath
+$env:EXPECTED_AGENT = 'researcher'
+$env:EXPECTED_SHA = $CandidateSha
+python -c "import json, os; from pathlib import Path; from deep_research.evaluation.models import ExperimentResult; r=ExperimentResult.model_validate_json(Path(os.environ['RESULTS_PATH']).read_text(encoding='utf-8')); expected={'multi-source-coverage','conflicting-evidence','partial-search-failure'}; assert r.agent_name == os.environ['EXPECTED_AGENT']; assert r.tier == 'controlled'; assert {c.case_id for c in r.cases} == expected; assert all(len(c.repetitions) == 3 for c in r.cases); assert r.metadata.get('git_commit') == os.environ['EXPECTED_SHA']; print(json.dumps({'status':r.status,'experiment_name':r.experiment_name,'cases':len(r.cases),'repetitions':sum(len(c.repetitions) for c in r.cases),'configuration_fingerprint':r.metadata.get('configuration_fingerprint')}, sort_keys=True))"
+Remove-Item Env:RESULTS_PATH
+Remove-Item Env:EXPECTED_AGENT
+Remove-Item Env:EXPECTED_SHA
+Get-FileHash -Algorithm SHA256 -LiteralPath $ResearcherResultsPath
+```
+
+The Source Evaluator, Fact Checker, Synthesizer, and Critic validations use the same command with these exact case sets and roots: `strong-and-weak-sources|corroboration-recency-reputation|reputation-provider-failure` under `output/evaluations/source-evaluator`; `mixed-verdicts|independent-domain-evidence|verification-search-failure` under `output/evaluations/fact-checker`; `complete-cited-report|conflict-and-limitations|write-or-memory-failure` under `output/evaluations/synthesizer`; and `approve-strong-report|request-more-research|missing-evidence-or-budget-exhausted` under `output/evaluations/critic`. The validator must print only status, experiment name, counts, and fingerprints. A valid `FAILED` artifact with all 9 repetitions remains immutable evidence; it is not overwritten or relabeled.
+
+- [ ] **Step 8: Write one immutable bounded inventory per valid baseline**
+
+Invoke `record_eval_inventory.py` with the resolved literal path, matching provenance file, and matching output path:
+
+```powershell
+python $PacketRoot\record_eval_inventory.py --agent researcher --results $ResearcherResultsPath --provenance $PacketRoot\agents\researcher\baseline-provenance.json --output $PacketRoot\agents\researcher\baseline-inventory.json
+```
+
+Repeat for the other four agents with their own resolved path and packet root. The helper must reject a result whose candidate SHA, agent, tier, case set, repetition count, configuration fingerprint, or prompt/judge fingerprint disagrees with provenance. Preserve direct experiment, dataset, target-trace, evaluator-trace, and evaluator-source URLs exactly when the harness supplies them; retain `null` when the integration supplies none. Never derive a URL from a prompt, case input, exception, environment value, or another trace.
+
+For every repetition, extract the complete typed row before diagnosing: all gate IDs/details, deterministic metrics, judge status and all common/agent-specific dimensions, unrounded aggregate, target failure stage/reason/details kind, fallback provider kind/operation, judge not-run reason/diagnostics, ReAct stop reason, prohibited-call count, latency/token counts when already typed, and direct trace URLs. Do not copy a provider exception message, response fragment, prompt, evaluator input, hidden reasoning, or raw trajectory into the inventory.
+
+- [ ] **Step 9: Separate provider/infrastructure, harness, and quality/trajectory evidence**
+
+Apply this precedence to every failed or suspicious row; record the selected class and the evidence that ruled out the other classes in the ledger before writing a source amendment:
+
+| Evidence | Required class and action |
+| --- | --- |
+| `TargetOutput.failure.stage` is `provider`, `trace`, `artifact`, or `setup`; a safe `details.kind` is `output_limit`, `schema_output`, `provider_timeout`, `provider_rate_limit`, `provider_transport`, `provider_http`, `provider_response`, or `provider_failure`; a fallback error carries a safe `provider_failure.kind`; or a judge is `judge_not_run` with a typed provider/transport/output-limit reason | Provider/infrastructure. Preserve the artifact, identify the exact target/judge operation if visible, perform the one same-SHA confirmation in Step 11, and do not edit prompts or add a budget field. A `judge_output_limit` is a judge-side infrastructure finding, not a target operation budget candidate. |
+| Offline evidence proves that a frozen case, deterministic evaluator, gate, judge adapter, artifact projection, or status calculation contradicts its declared contract | Harness/evaluator defect. Do not tune the agent. Record the offline reproduction, affected artifact paths, and `HARNESS_DEFECT_BLOCKED`; request a separate approved harness plan and a new baseline. |
+| The target completed with no unexplained typed provider/infrastructure failure, the required traces and judges are valid, and a hard gate, deterministic metric, visible trajectory, state update, or judge dimension shows an agent behavior defect | Deterministic quality/trajectory. Create one agent+operation root-cause record and route to Task 10 only if the exact target operation is a typed output-limit; otherwise route to Task 11. |
+| A known failure case records its expected scripted search/reputation/write/memory/budget recovery and passes its frozen recovery gate | Expected case behavior. Keep it in evidence, do not classify it as an LLM provider failure, and do not create a repair solely because the safe recovery error exists. |
+
+`provider_failure.kind` is never inferred from `str(error)`, a judge score, a timeout-looking duration, or a completed HTTP request. If the operation or typed class cannot be established from safe evidence, record `diagnostic_visibility: unavailable`, do not add a token budget, and route the agent to the infrastructure confirmation/blocked path.
+
+- [ ] **Step 10: Create separate operation-scoped diagnoses and route each agent**
+
+For every observed failure, create a new file under the exact agent root, for example `agents/researcher/root-causes/researcher-react-decision-001.md` or `agents/source-evaluator/root-causes/source-evaluator-scoring-001.md`. The stable ID is formed from the literal CLI name, the operation in kebab case, and a three-digit sequence, such as `researcher-react-decision-001`; record the exact snake-case operation separately. Use these operation spellings only: `react_decision`, `researcher_finding_extraction`, `source_evaluator_scoring`, `fact_checker_claim_extraction`, `fact_checker_claim_verification`, `synthesizer_report_draft`, and `critic_report_review`. A single agent may therefore have multiple independent records; never combine extraction and verification, ReAct and final review, or two agents under one ID.
+
+Each root-cause file must contain literal values for: agent/internal name, CLI name, exact operation, case ID, repetition numbers, immutable baseline inventory path and SHA-256, direct trace/experiment URLs, typed class and safe details, failed gates/metrics/judge dimensions, visible trajectory/state evidence, at least one counterexample or counterevidence item, falsifiable hypothesis, why transport/schema/harness alternatives are ruled out, smallest permitted repair surface, predicted target and non-target invariants, current focused-attempt count, rollback commit, reviewer disposition, and next action. A passing agent receives an explicit `baseline-pass-no-repair.md` record with `diagnosis: no repair required` and an empty root-cause-ID list; do not manufacture a defect ID for a passing baseline.
+
+Route each agent exactly once after its baseline inventory:
 
 ```text
-A. PASS: full controlled status REVIEW REQUIRED, all expected reps complete, no unexplained target/fallback provider failure, no judge infrastructure failure that invalidates quality.
-B. PROVIDER OUTPUT-LIMIT CANDIDATE: typed output_limit observed in a specific target operation; route to Task 10.
-C. OTHER PROVIDER/SCHEMA CANDIDATE: typed schema/transport/http/etc.; diagnose typed cause before any prompt/budget edit; use Task 11 amendment process.
-D. QUALITY/TRAJECTORY CANDIDATE: target completed but gate/deterministic/judge evidence identifies one behavior defect; use Task 11 amendment process.
-E. HARNESS DEFECT: frozen harness/evaluator is demonstrably wrong; stop tuning that agent and open a separate harness plan.
+REVIEW REQUIRED + all nine rows valid + no unexplained target/judge/provider issue -> write no-repair record; Task 12 may reuse the immutable baseline.
+Typed target-side output_limit + exact eligible non-ReAct operation -> Task 10.
+Typed target-side schema/provider/transport/HTTP failure, typed fallback issue, or deterministic quality/trajectory failure -> Task 11 after diagnosis.
+Persistent provider/trace/artifact/setup failure after the one confirmation -> terminal_state INFRASTRUCTURE_BLOCKED; stop that agent.
+Offline-proven harness/evaluator defect -> terminal_state HARNESS_DEFECT_BLOCKED; stop that agent and request a separate plan.
+Three unsuccessful focused repairs for one unchanged root-cause ID -> terminal_state ESCALATED; write escalation.md and stop that root cause.
 ```
 
-No source edit occurs in Task 9.
+- [ ] **Step 11: Make the one allowed same-SHA infrastructure confirmation**
+
+If a baseline command exits `3`, produces an incomplete artifact, lacks required trace/artifact evidence, or contains an unclassified/persistent provider or judge failure that prevents a valid quality verdict, write the matching `confirmation-provenance.json` before a new command. Obtain a new immediate human authorization, then rerun the exact same agent command with the exact same candidate SHA, case set, model/effort, effective retry values, global `4096`, and configuration fingerprints, changing only the experiment prefix to `cross-agent-planner-fix-parity-confirmation-$CliAgent`, where `$CliAgent` is set to one literal value from the five-agent execution map.
+
+If the same typed infrastructure/trace/artifact failure persists, preserve both immutable results/provenance records, write `terminal-state.md` with `terminal_state: INFRASTRUCTURE_BLOCKED`, `harness_status: INFRASTRUCTURE FAILURE` when that is the harness status, the actual exit code, and `repair_attempts: 0`, and stop that agent. If the confirmation produces a valid 3×3 artifact, write `confirmation-inventory.json`, keep the first attempt immutable, and use the valid evidence for diagnosis; the confirmation is not a repair attempt. A transient provider failure that disappears is recorded as provider evidence, not silently erased.
+
+- [ ] **Step 12: Close Task 9 without editing source or running a suite**
+
+Before advancing, verify that every agent has a baseline provenance file, a valid baseline or explicit infrastructure confirmation record, a safe inventory or a documented artifact-unavailable stop, a no-repair or operation-scoped diagnosis, and a ledger entry naming the next task. Run:
+
+```powershell
+git diff --name-only
+git status --short
+if (git diff --name-only | Where-Object { $_ -notlike '.superpowers/*' -and $_ -notlike 'output/*' }) { throw 'Task 9 changed tracked source/test/config/evaluation files' }
+```
+
+Expected: no tracked changes beyond the already reviewed Task 8 candidate; no `suite` command has run; and no agent is silently omitted. Do not begin Task 10 or Task 11 until all five baseline decisions are present.
 
 ---
 
@@ -1036,104 +1328,67 @@ Do not modify `llm.max_tokens` or any judge/ReAct call.
 
 Run the affected agent tests, config tests, provider max-token tests, evaluation fingerprint tests, then the full offline suite and Ruff.
 
-- [ ] **Step 5: Review before any paid retest**
+- [ ] **Step 5: Fresh review before any paid retest**
 
-Fresh reviewer must explicitly verify isolation: affected operation gets 8192 only when process override is set; all other target operations, ReAct decisions, and judge calls retain global 4096.
+Write `agents/<cli-agent>/reviews/budget-attempt-<attempt>.md` with a fresh reviewer disposition. The reviewer must confirm the exact operation field, default `4096`, process override `8192`, unchanged global/ReAct/judge `4096`, unchanged retry policy, unchanged frozen inputs, and the RED/GREEN evidence. `needs-change` blocks the paid command; `approved` is required. Allow at most five review/fix loops for the campaign, then stop and record the unresolved finding.
 
-- [ ] **Step 6: Human-confirmed focused 8192 experiment**
+- [ ] **Step 7: Human-confirmed focused three-repetition budget test**
 
-Set only the new operation-specific env override to 8192 in the launching shell, verify effective config/fingerprint without secrets, then run exactly the failing controlled case with three repetitions via:
+Use the literal row for the diagnosed agent and operation. Set `$CliAgent`, `$CaseId`, `$ReasoningEffort`, `$BudgetEnv`, `$RootCauseId`, and `$Attempt` to the recorded literal values; set only `$BudgetEnv` to `8192`; run the safe config probe; and obtain immediate authorization for this one command:
 
 ```powershell
-python -m deep_research.evaluation agent <agent> `
-  --config config.yaml `
-  --case <failing-case-id> `
-  --experiment-prefix cross-agent-<agent>-8192 `
-  --verbose
+[Environment]::SetEnvironmentVariable($BudgetEnv, '8192', 'Process')
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent $CliAgent --tier controlled --config config.yaml --case $CaseId --reasoning-effort $ReasoningEffort --judge-reasoning-effort max --experiment-prefix ("cross-agent-planner-fix-parity-focused-{0}-{1}-attempt-{2}" -f $CliAgent, $RootCauseId, $Attempt) --verbose
+$FocusedExit = $LASTEXITCODE
+[Environment]::SetEnvironmentVariable($BudgetEnv, $null, 'Process')
+if ($FocusedExit -notin 0, 1, 2, 3) { throw "Unexpected focused exit code: $FocusedExit" }
 ```
 
-Clear the process override after evidence is recorded.
+There is no ReAct budget variable. Resolve exactly one new `results.json` with the pre-command artifact list and inventory it under the exact packet root. A focused pass requires three repetitions, all hard gates, every aggregate at least `0.65`, case average at least `0.80`, scored judges, no target-side output-limit, no prohibited call, and no new non-target failure. If output-limit persists at `8192`, create a new diagnosis, remove unsupported changes, and do not try `16384` automatically.
 
-Focused gate passes only if all three target repetitions complete, the target-side output-limit disappears, hard gates pass, and all expected judges score without evaluator failure. If output-limit persists at 8192, stop and write a new diagnosis; do not automatically jump to 16384.
+- [ ] **Step 8: Commit only evidence-supported budget repair**
 
-- [ ] **Step 7: Commit only after focused evidence justifies keeping the field**
-
-Use commit subject:
-
-```text
-fix(<agent>): isolate <operation> output budget
-```
-
-If focused evidence disproves the hypothesis, revert the unneeded config/call-site change and retain the artifact/ledger evidence; do not keep speculative knobs.
+After the focused inventory passes and the fresh review is approved, commit only the exact config field, call site, tests, and ledger reference with `fix(<literal-cli-agent>): isolate <literal-operation> output budget`; record SHA and artifact paths. Three unsuccessful focused attempts for the same root-cause ID produce `escalation.md` and `terminal_state: ESCALATED`; a provider/trace failure uses the one confirmation and `INFRASTRUCTURE_BLOCKED`, not a repair attempt. Never modify ReAct, judge, global `llm.max_tokens`, or an unrelated agent.
 
 ---
 
 ### Task 11: Evidence-Gated Agent-Specific Quality / Trajectory Repair Loop
 
-**Files:** conditional per diagnosed root cause; never edit frozen evaluation inputs
+**Files:** conditional per diagnosed root cause; never edit frozen evaluation inputs, evaluators, judges, or the SDD ledger's source-of-truth definitions.
 
-**Interfaces:**
-- Consumes: one Task 9 or Task 10 focused failure with a falsifiable non-harness root cause.
-- Produces: one cohesive repair, one focused three-repetition validation, and at most one full controlled validation before moving to the next root cause.
+**Allowed agent-specific surfaces:** Researcher `src/deep_research/agents/researcher.py`, its prompt in `src/deep_research/agents/prompts.py`, and `tests/test_agents/test_researcher.py`; Source Evaluator uses `source_evaluator.py` and `test_source_evaluator.py`; Fact Checker uses `fact_checker.py` and `test_fact_checker.py`; Synthesizer uses `synthesizer.py` and `test_synthesizer.py`; Critic uses `critic.py` and `test_critic.py`. A shared runtime/prompt change invalidates every affected agent's evidence and requires new baselines. No Planner tuning is allowed.
 
-- [ ] **Step 1: Route the failure before editing**
+**Interfaces:** consumes one typed Task 9/10 diagnosis; produces one minimal agent-specific repair, offline RED/GREEN evidence, fresh review approval, and one focused three-repetition result. Permitted quality categories are `agent_prompt`, `agent_local_validation`, `agent_tool_policy`, and `agent_fallback_state`. Provider/infrastructure, schema-output, harness, and output-limit findings remain on their typed routes.
 
-Classify the root cause into exactly one category:
+- [ ] **Step 1: Record the operation-scoped amendment before editing**
 
-```text
-shared runtime contract (should already be solved by Tasks 2-3)
-agent prompt/instruction ambiguity
-agent local validation/normalization
-agent tool policy/trajectory control
-agent fallback/state-update logic
-structured provider output limit (Task 10 instead)
-provider transport/rate/HTTP reliability (do not tune prompt)
-schema-output failure
-harness/evaluator defect (separate plan)
+Write `agents/$CliAgent/repairs/$RootCauseId/attempt-$Attempt-amendment.md` with literal agent/CLI/operation, cases and repetitions, immutable inventory and trace paths, typed class, falsifiable hypothesis, counterevidence, ruled-out alternatives, exact allowed files, RED test node, smallest change, target/non-target invariants, focused command, rollback, and expected status. Never combine ReAct with extraction/verification/review or two agents.
+
+- [ ] **Step 2: TDD one minimal repair**
+
+Set `$TestNode` to the literal mapped agent test file and run `python -m pytest -q $TestNode -p no:cacheprovider`; the root-cause test must fail for the recorded defect. Make the smallest prompt, behavior, or state change for that operation only. Preserve: Researcher prior findings/no invented URLs; Source Evaluator one row/source, bounded fallback, and low-confidence semantics; Fact Checker prior claims, independent domains, and `insufficient_evidence`/`unverified`; Synthesizer evidence-only assembly, truthful persistence, and known citations; Critic bounded scores, actionable gaps, routing, and macro limits.
+
+- [ ] **Step 3: Run offline GREEN and isolation checks**
+
+Run `python -m pytest -q $TestNode -p no:cacheprovider`, the complete literal agent test module, `python -m pytest -q -p no:cacheprovider`, `python -m ruff check src tests`, and `git diff --check`. Confirm no frozen input, evaluator, judge, retry, global budget, Planner path, or unrelated agent changed. If RED is not reproduced or GREEN changes a non-target invariant, revert the candidate and return to diagnosis.
+
+- [ ] **Step 4: Fresh review and one authorized focused retest**
+
+Write `agents/$CliAgent/reviews/attempt-$Attempt.md`; a fresh reviewer must resolve Critical/Important findings and approve the exact diff before any paid command. Obtain immediate authorization for one command, set `$CliAgent`, `$CaseId`, `$ReasoningEffort`, `$RootCauseId`, and `$Attempt` to their literal recorded values, then run:
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent $CliAgent --tier controlled --config config.yaml --case $CaseId --reasoning-effort $ReasoningEffort --judge-reasoning-effort max --experiment-prefix ("cross-agent-planner-fix-parity-focused-{0}-{1}-attempt-{2}" -f $CliAgent, $RootCauseId, $Attempt) --verbose
 ```
 
-- [ ] **Step 2: Write a literal repair amendment**
+Resolve one new result path and inventory every gate, deterministic metric, judge dimension/status, trajectory stop reason, typed provider/fallback kind and operation, prohibited-call count, and safe URL. The focused gate requires three repetitions, all hard gates, aggregate floor `0.65`, case average `0.80`, scored judges, no infrastructure/harness failure, target improvement, and no non-target regression.
 
-Mirror the Planner campaign discipline. Before source edits, record:
+- [ ] **Step 5: Enforce routing and the attempt limit**
 
-```text
-root-cause ID and mechanism
-artifact/trace evidence
-why neighboring hypotheses are ruled out
-exact file(s) allowed to change
-literal failing offline test
-minimal implementation text
-focused command and expected delta
-non-target regression expectations
-rollback condition
-```
+Typed provider/trace/artifact/setup failure gets the one same-SHA confirmation and then `INFRASTRUCTURE_BLOCKED`; an offline harness contradiction gets `HARNESS_DEFECT_BLOCKED`; a target-side `output_limit` gets Task 10; a failed quality hypothesis gets a new root-cause ID. After three unsuccessful focused attempts for one unchanged ID, write `escalation.md`, set `terminal_state: ESCALATED`, and stop. Infrastructure and harness blocks do not consume repair attempts; unrelated causes are never bundled.
 
-- [ ] **Step 3: TDD the repair**
+- [ ] **Step 6: Commit only a passing cohesive repair**
 
-Write the test, run RED, make the minimal change, run GREEN, run neighboring tests, Ruff, and `git diff --check`.
-
-Prompt-repair rule: copy a *principle* from Planner only if the sibling's evidence proves the same ambiguity. Examples:
-- unnecessary/prohibited search: tell that agent when existing evidence is sufficient or how to prioritize provided queries; do not tell Researcher/Fact Checker never to search, because search is part of their role;
-- ordering/coverage: state the exact agent contract that failed, not Planner's priority/benefit-risk rubric;
-- invented constraints/citations: enforce only the sibling's own output/evidence contract.
-
-- [ ] **Step 4: Review the diagnosis and diff before provider calls**
-
-Use a fresh reviewer. Fix Critical/Important findings before proceeding.
-
-- [ ] **Step 5: Human-confirmed focused controlled retest**
-
-Run the exact failing case for three repetitions. Record gates, deterministic/judge score, trajectory, typed provider/fallback diagnostics, and prohibited calls. The repair advances only if the targeted metric/failure improves without a new non-target regression.
-
-- [ ] **Step 6: Attempt limit**
-
-After three unsuccessful focused repairs for the same root-cause ID, stop that root-cause loop and write an escalation entry. Do not keep prompt-tuning indefinitely.
-
-- [ ] **Step 7: Commit a successful cohesive repair**
-
-Use an agent-specific commit subject and record SHA/evidence in the ledger.
-
-Repeat Task 11 only for another independently diagnosed root cause; never bundle unrelated causes in one repair.
+After focused approval, commit only the agent-specific files with `fix($CliAgent): repair $Operation behavior`, record SHA and evidence, and route to Task 12. A failed or deferred attempt remains immutable evidence and is not called repaired.
 
 ---
 
