@@ -1135,15 +1135,15 @@ Update `build_repetition_result(...)` and its existing bookkeeping to set the fo
 
 #### Required TDD sequence
 
-- [ ] Add RED model tests for valid metrics, metric bounds/IDs/values, strict prohibited-call counts, valid/unknown stop reasons, and the exact two-field fallback diagnostic with rejection of unsafe extra fields.
-- [ ] Add RED evaluator tests proving complete metric maps, Boolean conversion, exception-to-zero behavior, missing-metric failure, and unchanged weighted scalar quality.
-- [ ] Add RED runner tests using a local `TargetOutput` with two prohibited calls, a valid stop reason, pass/fail metrics, and a safe fallback error plus sentinel unsafe values. Prove only the four typed projections survive serialization; add Source Evaluator and Synthesizer `None` cases.
-- [ ] Add target characterization tests for the typed source fields and reporting round-trip tests for local `ExperimentResult` serialization. Do not force already-green characterization tests to fail.
-- [ ] Run the focused offline evaluation tests with `-p no:cacheprovider`; no evaluation CLI command is permitted.
-- [ ] Implement the smallest typed-contract change with Luna high.
-- [ ] Run the focused tests, `python -m pytest -q tests/test_evaluation -p no:cacheprovider`, the full offline suite, Ruff format/lint, `git diff --check`, and an allowed-file diff review.
-- [ ] Build a local synthetic three-case × three-repetition artifact and prove `record_eval_inventory.py` accepts complete typed telemetry and fails closed when each required telemetry key is removed. Do not run a provider or LangSmith command.
-- [ ] Write the Task 9 ledger evidence, commit the scoped change, and obtain one fresh Luna-max task review. Record `Task 9 review: APPROVED` and `Task 9: complete` only after approval.
+- [x] Add RED model tests for valid metrics, metric bounds/IDs/values, strict prohibited-call counts, valid/unknown stop reasons, and the exact two-field fallback diagnostic with rejection of unsafe extra fields.
+- [x] Add RED evaluator tests proving complete metric maps, Boolean conversion, exception-to-zero behavior, missing-metric failure, and unchanged weighted scalar quality.
+- [x] Add RED runner tests using a local `TargetOutput` with two prohibited calls, a valid stop reason, pass/fail metrics, and a safe fallback error plus sentinel unsafe values. Prove only the four typed projections survive serialization; add Source Evaluator and Synthesizer `None` cases.
+- [x] Add target characterization tests for the typed source fields and reporting round-trip tests for local `ExperimentResult` serialization. Do not force already-green characterization tests to fail.
+- [x] Run the focused offline evaluation tests with `-p no:cacheprovider`; no evaluation CLI command is permitted.
+- [x] Implement the smallest typed-contract change with Luna high.
+- [x] Run the focused tests, `python -m pytest -q tests/test_evaluation -p no:cacheprovider`, the full offline suite, Ruff lint/targeted formatting, `git diff --check`, and an allowed-file diff review. Repository-wide format-only deviations remain documented pre-existing baseline.
+- [x] Build a local synthetic three-case × three-repetition artifact and prove `record_eval_inventory.py` accepts complete typed telemetry and fails closed when empty, incomplete, extra, or malformed metric maps are supplied. Do not run a provider or LangSmith command.
+- [x] Write the Task 9 ledger evidence, commit the scoped change, and obtain one fresh Luna-max task review. Record `Task 9 review: APPROVED` and `Task 9: complete` only after approval.
 
 **Hard stop:** Task 10 cannot begin until every Task 9 offline test, inventory proof, diff check, commit, and Luna-max review gate passes. The previous 1,895-test result does not certify this new task.
 
