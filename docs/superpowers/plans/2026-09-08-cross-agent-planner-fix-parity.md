@@ -29,14 +29,15 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 6. Evaluation artifact-boundary preservation | **Complete** | Commit `2fbf6be`; test-only boundary guard; Luna Max review approved. |
 | 7. Source Evaluator/Synthesizer non-ReAct characterization | **Complete** | Commit `91d817b`; characterization tests; Luna Max review approved. |
 | 8. Offline integration gate | **Complete** | Candidate `808cfba`; focused `690` passed and full offline `1,895` passed; task review approved. |
-| 9. Immutable controlled baselines | **Not complete — blocked** | No paid DeepSeek/LangSmith baseline reached a provider request; missing credentials left all five agents `INFRASTRUCTURE_BLOCKED` / `NOT_REACHED`. |
-| 10. Evidence-gated output-budget repair | **Not started / not applicable** | Requires a typed Task 9 target-side `output_limit` diagnosis; none exists. |
-| 11. Evidence-gated agent quality/trajectory repair | **Not started / not applicable** | Requires a typed Task 9 quality/trajectory diagnosis; none exists. |
-| 12. Full controlled validation | **Not started** | Depends on Task 9 and any evidence-supported repairs; no live or controlled validation was run. |
-| 13. Permanent cross-agent fix log | **Complete** | `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`, 17 required sections, secret-safe scan, committed in `3ffdc9d`. |
-| 14. Final offline verification and whole-branch review | **Incomplete — review deferred** | Offline verification passed (`1,895` tests, Ruff, whitespace); the whole-branch reviewer and any final-finding loop were not run because the user explicitly deferred branch review. |
+| 9. Offline typed evaluation telemetry contract | **Not started — required blocker** | Must repair the additive artifact projection and pass focused/evaluation/full-offline tests plus Luna-max review before any controlled baseline. |
+| 10. Immutable controlled baselines | **Blocked by Task 9** | No paid DeepSeek/LangSmith baseline may run until the Task 9 ledger gates are present and approved. |
+| 11. Evidence-gated output-budget repair | **Not started / not applicable** | Requires typed Task 10 target-side `output_limit` evidence; none exists. |
+| 12. Evidence-gated agent quality/trajectory repair | **Not started / not applicable** | Requires typed Task 10 quality/trajectory evidence; none exists. |
+| 13. Full controlled validation | **Not started** | Depends on Task 10 and any evidence-supported Tasks 11–12 repairs; no live or controlled validation was run. |
+| 14. Permanent cross-agent fix log | **Complete snapshot; update required after controlled work** | `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md` remains the prior safe snapshot and must be updated with later evidence. |
+| 15. Final offline verification and whole-branch review | **Incomplete — review deferred** | The prior offline result predates the Task 9 artifact-contract change; rerun final offline verification after tracked work. Whole-branch review remains user-deferred. |
 
-The following boundaries remain active: `--tier live` is prohibited; controlled calls require immediate per-command human authorization; no Task 10–12 result may be inferred from the absence of a Task 9 artifact; and the whole-branch review must remain deferred until the user explicitly requests it. The separately authorized GitHub push is complete, but it does not change the Task 14 review status.
+The following boundaries remain active: `--tier live` is prohibited; Task 9 is network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and the whole-branch review must remain deferred until the user explicitly requests it. The separately authorized GitHub push is complete, but it does not change the Task 15 review status.
 
 ## Brainstorming Outcome
 
@@ -115,6 +116,9 @@ The campaign is complete only when all of the following are true:
 | `src/deep_research/agents/planner.py` | Remove `_DecisionNormalizingCompleter` and the temporary provider swap after the shared boundary is proven equivalent; retain Planner's operation-specific provider wrapping and final-plan budget. |
 | `src/deep_research/providers/contracts.py` | Define one finite, immutable, provider-content-free runtime snapshot for caught provider failures, built only from already-safe typed provider fields. |
 | `src/deep_research/agents/errors.py` | Convert a caught `ProviderError` plus a static operation name into JSON-safe `ResearchError.details` without `str(error)`. |
+| `src/deep_research/evaluation/models.py` | Own the additive bounded artifact-side telemetry types and `RepetitionResult` fields for Task 9. |
+| `src/deep_research/evaluation/evaluators.py` | Expose bounded deterministic metric details while preserving the existing scalar quality API and weighting. |
+| `src/deep_research/evaluation/runner.py` | Carry typed metric details and project the four safe telemetry fields into each repetition artifact. |
 
 ### Agent production files consuming the shared provider diagnostic
 
@@ -141,6 +145,10 @@ The campaign is complete only when all of the following are true:
 | `tests/test_deepseek_provider.py` | Provider snapshot compatibility with output-limit/schema telemetry if the snapshot is defined in provider contracts. |
 | `tests/test_openai_provider.py` | Generic provider-response/timeout/HTTP compatibility; no unsupported output-limit inference. |
 | `tests/test_evaluation/test_targets.py` | Prove fallback-producing agents remain `completed=True` when designed to return a result, while their `errors` retain safe typed diagnosis; Planner raised failures remain target `failure` records. |
+| `tests/test_evaluation/test_models.py` | Bounds, finite vocabulary, strict counts, and allow-listed fallback diagnostic contract tests for Task 9. |
+| `tests/test_evaluation/test_evaluators_general.py` | Deterministic metric-detail and scalar-compatibility tests for Task 9. |
+| `tests/test_evaluation/test_runner.py` | End-to-end local `TargetOutput` to `RepetitionResult` telemetry projection and leakage tests. |
+| `tests/test_evaluation/test_reporting.py` | Local artifact round-trip coverage for the additive telemetry fields. |
 | `tests/test_evaluation/test_factory.py` and `tests/test_runtime/test_assembly.py` | Preserve exact provider identity/parity after Planner-local wrapper removal. |
 | `tests/test_config.py` and `tests/test_evaluation/test_config.py` | Conditional only: operation-specific budget field + environment override + fingerprint when a controlled output-limit amendment authorizes one. |
 
@@ -154,7 +162,7 @@ The campaign is complete only when all of the following are true:
 
 ### Post-gate per-agent campaign packets
 
-These ignored paths are created only after Task 8. They are operational evidence, not source changes, and must never contain prompts, provider responses, evaluator inputs, secrets, hidden reasoning, or unredacted exception strings:
+These ignored paths are created only after the Task 9 artifact gate and before Task 10. They are operational evidence, not source changes, and must never contain prompts, provider responses, evaluator inputs, secrets, hidden reasoning, or unredacted exception strings:
 
 | Path | Required contents and mutability rule |
 | --- | --- |
@@ -259,17 +267,19 @@ Use these exact control-plane terminal values in each `terminal-state.md`: `REVI
 
 ### Post-gate producer/consumer and status interface
 
-Tasks 9–13 are one sequential control-plane. A later task may consume only the
+Tasks 9–15 are one sequential control-plane. A later task may consume only the
 artifact named by the preceding task and may not infer a missing status from a
 score or a process exit code:
 
 | Producer | Required output | Consumer and allowed transition |
 | --- | --- | --- |
-| Task 9 baseline acquisition | One immutable provenance record, one strictly validated three-case × three-repetition inventory, a typed failure inventory, and one per-agent routing decision | Task 10 may consume only an exact target-side `output_limit` with an exact non-ReAct operation; Task 11 may consume only a typed quality/trajectory diagnosis or a typed non-budget provider/schema result; Task 12 may consume only a passing immutable baseline or a reviewed candidate. |
-| Task 10 budget amendment | A reviewed operation-specific config/call-site candidate, offline RED/GREEN evidence, and a focused three-repetition result | Task 12 consumes the candidate only when the focused gate passes; a persistent or reclassified failure returns to Task 9/11 and never jumps directly to full validation. |
-| Task 11 agent repair loop | A root-cause record, literal amendment, fresh review record, one candidate commit, offline RED/GREEN evidence, and a focused three-repetition result | Task 12 consumes the candidate only when the focused gate passes; three unsuccessful focused attempts for the same root-cause ID produce `ESCALATED` and stop. |
-| Task 12 full validation | One immutable nine-repetition artifact or an explicit infrastructure/harness/escalation terminal record | Task 13 consumes the terminal record for that agent; an unchanged passing baseline is consumed without another paid run. |
-| Task 13 fix log | One tracked safe section per non-Planner agent and a terminal-state table covering all five agents | Task 14 consumes the log, the five terminal records, and offline verification to create the deferred whole-branch review handoff. |
+| Task 9 typed telemetry contract | Reviewed additive artifact contract; bounded deterministic metric map; exact prohibited-call count; typed nullable ReAct stop reason; narrow nullable fallback `{kind, operation}` projection; focused/evaluation/full-offline tests; offline inventory proof; Luna-max approval | Task 10 only. No controlled baseline is eligible before this row is complete. |
+| Task 10 baseline acquisition | One immutable provenance record, one strictly validated three-case × three-repetition inventory, a typed failure inventory, and one per-agent routing decision | Task 11 may consume only exact target-side `output_limit` evidence; Task 12 may consume only typed quality/trajectory or non-budget provider/schema evidence; Task 13 may consume a passing immutable baseline or reviewed candidate. |
+| Task 11 budget amendment | A reviewed operation-specific config/call-site candidate, offline RED/GREEN evidence, and a focused three-repetition result | Task 13 consumes the candidate only when the focused gate passes; persistent/reclassified failure returns to Task 10 diagnosis or Task 12, never directly to full validation. |
+| Task 12 agent repair loop | A root-cause record, literal amendment, fresh review record, candidate commit, offline RED/GREEN evidence, and focused three-repetition result | Task 13 consumes the candidate only when the focused gate passes; three unsuccessful focused attempts for one root-cause ID produce `ESCALATED` and stop. |
+| Task 13 full validation | One immutable nine-repetition artifact or explicit infrastructure/harness/escalation terminal record | Task 14 consumes the terminal record; an unchanged passing baseline is consumed without another paid run. |
+| Task 14 fix log | One tracked safe section per non-Planner agent and a terminal-state table covering all five agents, updated for Tasks 10–13 evidence | Task 15 consumes the log, terminal records, and tracked source state. |
+| Task 15 final offline verification | Final offline pytest/Ruff/diff evidence plus a branch-review handoff state | Whole-branch review may be dispatched only after the user explicitly asks for it. |
 
 The ledger uses the workflow states already defined by the approved workflow:
 `BASELINE_REQUIRED`, `DIAGNOSING`, `REPAIRING`, `FOCUSED_RETEST`,
@@ -312,7 +322,7 @@ src/deep_research/evaluation/dependencies.py
 src/deep_research/evaluation/models.py
 ```
 
-`src/deep_research/evaluation/targets.py` may change only in the explicit offline artifact-visibility task below, not during any later agent quality repair.
+`src/deep_research/evaluation/targets.py` may change only in the explicit offline artifact-visibility portion of Task 9, not during any later agent quality repair. Task 9 may also modify `src/deep_research/evaluation/models.py`, `src/deep_research/evaluation/evaluators.py`, and `src/deep_research/evaluation/runner.py` only for the bounded artifact contract described below; after Task 9's Luna-max approval these evaluation files are frozen again for Tasks 10–13 except through a separately approved harness change.
 
 ---
 
@@ -1035,7 +1045,112 @@ Expected: clean worktree. Record literal `$CandidateSha` in the ledger as `Offli
 
 ---
 
-### Task 9: Run Immutable Controlled Baselines for Each Non-Planner Agent — NOT COMPLETE (BLOCKED)
+### Task 9: Repair the Evaluation Artifact Typed Telemetry Contract — OFFLINE ONLY / BLOCKING CONTROLLED BASELINES
+
+**Purpose:** Repair only the evaluation artifact projection boundary so the already-required controlled-baseline telemetry survives into `RepetitionResult` and `results.json`. This task must not change agent behavior, frozen evaluation semantics, provider behavior, prompts, gates, thresholds, cases, rubrics, judges, model budgets, retry policy, or dependency scenarios.
+
+**Execution model:** GPT-5.6 Luna, high reasoning.
+
+**Required task-scoped reviewer:** one fresh GPT-5.6 Luna, max reasoning, after implementation and offline verification. Task 9 is not complete until that review approves the task. A load-bearing finding returns to Luna high, followed by offline verification and Luna-max scoped re-review.
+
+**Network boundary:** Task 9 is network-zero. No provider, LangSmith, controlled evaluation, live evaluation, remote dataset, model, embedding, or credential-dependent call is permitted. Do not run the evaluation CLI in this task.
+
+**Files:**
+
+Modify only:
+
+- `src/deep_research/evaluation/models.py`
+- `src/deep_research/evaluation/evaluators.py`
+- `src/deep_research/evaluation/runner.py`
+- `tests/test_evaluation/test_models.py`
+- `tests/test_evaluation/test_evaluators_general.py`
+- `tests/test_evaluation/test_runner.py`
+- `tests/test_evaluation/test_targets.py`
+- `tests/test_evaluation/test_reporting.py`
+
+Verify first; modify `src/deep_research/evaluation/targets.py` or `src/deep_research/evaluation/reporting.py` only if a focused RED test proves the existing typed source or normal model serialization is insufficient. Do not change controlled cases, judges, prompts, agents, providers, configuration budgets, retry policy, or dependency scenarios.
+
+**Consumes:** Task 8's reviewed offline candidate; typed `TargetOutput` fields for `dependencies.prohibited_calls`, `react.stop_reason`, and safe fallback errors containing `details.operation` and `details.provider_failure.kind`; the existing metric definitions, weights, and runtime vocabularies.
+
+**Produces:** an additive backward-compatible `RepetitionResult` contract preserving the existing scalar fields and additionally preserving `deterministic_metrics`, `prohibited_call_count`, `react_stop_reason`, and `fallback_provider_diagnostic`; a local synthetic artifact proof; a fail-closed inventory proof; offline test evidence; and Luna-max approval.
+
+#### Exact typed artifact contract
+
+Keep `ARTIFACT_SCHEMA_VERSION` unchanged. Existing model consumers must still parse older result objects; newly generated Task 10 artifacts must physically contain the new telemetry keys.
+
+Add bounded artifact-side vocabulary in `src/deep_research/evaluation/models.py`:
+
+```python
+_MAX_ARTIFACT_DETERMINISTIC_METRICS = 16
+_MAX_ARTIFACT_METRIC_ID_LENGTH = 64
+_MAX_ARTIFACT_OPERATION_LENGTH = 96
+_MAX_ARTIFACT_PROHIBITED_CALL_COUNT = 10_000
+
+ReActStopReason: TypeAlias = Literal[
+    "finished",
+    "sufficient",
+    "max_iterations",
+    "tool_budget_exhausted",
+    "provider_error",
+]
+
+class FallbackProviderDiagnostic(ContractModel):
+    kind: ProviderFailureKind
+    operation: str = Field(
+        min_length=1,
+        max_length=_MAX_ARTIFACT_OPERATION_LENGTH,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )
+```
+
+The stop-reason vocabulary must match the current runtime vocabulary exactly. `ReActSummary.stop_reason` must use the bounded alias rather than an unbounded string.
+
+Add these fields to `RepetitionResult` without removing or renaming existing fields:
+
+```python
+deterministic_metrics: dict[str, UnitScore] = Field(
+    default_factory=dict,
+    max_length=_MAX_ARTIFACT_DETERMINISTIC_METRICS,
+)
+prohibited_call_count: int = Field(
+    default=0,
+    ge=0,
+    le=_MAX_ARTIFACT_PROHIBITED_CALL_COUNT,
+    strict=True,
+)
+react_stop_reason: ReActStopReason | None = None
+fallback_provider_diagnostic: FallbackProviderDiagnostic | None = None
+```
+
+Metric IDs must be non-empty lower snake case matching `^[a-z][a-z0-9_]{0,63}$`; values must be finite `UnitScore` values in `[0.0, 1.0]`; oversized or malformed maps fail closed rather than being truncated. `prohibited_call_count` is exactly `len(output.dependencies.prohibited_calls)`, never a gate-string inference or clamp. ReAct agents preserve the exact typed stop reason; Source Evaluator and Synthesizer explicitly serialize `None`. The fallback projection is the first valid safe record in `output.errors` order and contains only `{kind, operation}`. Never copy and redact arbitrary error details.
+
+#### Deterministic metric-detail compatibility
+
+Add a bounded helper in `src/deep_research/evaluation/evaluators.py` that evaluates every declared metric and returns an exact metric-ID-to-`UnitScore` map. Boolean pass/fail becomes `1.0`/`0.0`; a metric implementation exception records `0.0` and continues; a missing metric implementation still raises `MissingMetricError`. Preserve the current metric definitions, weights, failure semantics, scalar `deterministic_quality`, thresholds, and public evaluator APIs. The runner must carry both the unchanged scalar and the new map.
+
+#### Runner projection and safety
+
+Update `build_repetition_result(...)` and its existing bookkeeping to set the four new fields from typed source values only. Preserve the meaning of all existing fields. The allow-list must exclude raw exception text, provider/model output, prompts, evaluator inputs, hidden reasoning, credentials, request payloads, arbitrary details, unbounded paths/lists/text, and raw prohibited tool names.
+
+#### Required TDD sequence
+
+- [ ] Add RED model tests for valid metrics, metric bounds/IDs/values, strict prohibited-call counts, valid/unknown stop reasons, and the exact two-field fallback diagnostic with rejection of unsafe extra fields.
+- [ ] Add RED evaluator tests proving complete metric maps, Boolean conversion, exception-to-zero behavior, missing-metric failure, and unchanged weighted scalar quality.
+- [ ] Add RED runner tests using a local `TargetOutput` with two prohibited calls, a valid stop reason, pass/fail metrics, and a safe fallback error plus sentinel unsafe values. Prove only the four typed projections survive serialization; add Source Evaluator and Synthesizer `None` cases.
+- [ ] Add target characterization tests for the typed source fields and reporting round-trip tests for local `ExperimentResult` serialization. Do not force already-green characterization tests to fail.
+- [ ] Run the focused offline evaluation tests with `-p no:cacheprovider`; no evaluation CLI command is permitted.
+- [ ] Implement the smallest typed-contract change with Luna high.
+- [ ] Run the focused tests, `python -m pytest -q tests/test_evaluation -p no:cacheprovider`, the full offline suite, Ruff format/lint, `git diff --check`, and an allowed-file diff review.
+- [ ] Build a local synthetic three-case × three-repetition artifact and prove `record_eval_inventory.py` accepts complete typed telemetry and fails closed when each required telemetry key is removed. Do not run a provider or LangSmith command.
+- [ ] Write the Task 9 ledger evidence, commit the scoped change, and obtain one fresh Luna-max task review. Record `Task 9 review: APPROVED` and `Task 9: complete` only after approval.
+
+**Hard stop:** Task 10 cannot begin until every Task 9 offline test, inventory proof, diff check, commit, and Luna-max review gate passes. The previous 1,895-test result does not certify this new task.
+
+---
+
+### Task 10: Run Immutable Controlled Baselines for Each Non-Planner Agent — BLOCKED UNTIL TASK 9 APPROVES
+
+**Hard paid-call precondition:** Do not execute any provider, LangSmith, controlled-evaluation, dataset-sync, judge, or credential-dependent command until the ledger contains all of these exact lines: `Task 9 focused tests: PASS`, `Task 9 evaluation tests: PASS`, `Task 9 full offline suite: PASS`, `Task 9 inventory contract check: PASS`, `Task 9 review: APPROVED`, and `Task 9: complete`. This local-only check does not replace immediate human authorization for each paid command.
 
 **Files:**
 - No tracked production/test changes during baseline acquisition
@@ -1072,7 +1187,7 @@ $RepoEnv = Join-Path $CampaignRoot '.env'
 $EnvSource = if (Test-Path -LiteralPath $RepoEnv) { $RepoEnv } else { '-' }
 $CandidateSha = (git rev-parse HEAD).Trim()
 if ($CandidateSha -notmatch '^[0-9a-f]{40}$') { throw 'Task 8 candidate is not a literal 40-character SHA' }
-if (git status --porcelain) { throw 'tracked worktree is dirty at the Task 9 gate' }
+if (git status --porcelain) { throw 'tracked worktree is dirty at the Task 10 gate' }
 if (-not (Test-Path -LiteralPath $LedgerPath)) { throw 'Task 8 ledger is missing' }
 if (-not (Select-String -LiteralPath $LedgerPath -SimpleMatch 'Workflow state: CONTROLLED_BASELINES_REQUIRED')) {
     throw 'Task 8 did not leave the campaign at CONTROLLED_BASELINES_REQUIRED'
@@ -1246,7 +1361,7 @@ Apply this precedence to every failed or suspicious row; record the selected cla
 | --- | --- |
 | `TargetOutput.failure.stage` is `provider`, `trace`, `artifact`, or `setup`; a safe `details.kind` is `output_limit`, `schema_output`, `provider_timeout`, `provider_rate_limit`, `provider_transport`, `provider_http`, `provider_response`, or `provider_failure`; a fallback error carries a safe `provider_failure.kind`; or a judge is `judge_not_run` with a typed provider/transport/output-limit reason | Provider/infrastructure. Preserve the artifact, identify the exact target/judge operation if visible, perform the one same-SHA confirmation in Step 11, and do not edit prompts or add a budget field. A `judge_output_limit` is a judge-side infrastructure finding, not a target operation budget candidate. |
 | Offline evidence proves that a frozen case, deterministic evaluator, gate, judge adapter, artifact projection, or status calculation contradicts its declared contract | Harness/evaluator defect. Do not tune the agent. Record the offline reproduction, affected artifact paths, and `HARNESS_DEFECT_BLOCKED`; request a separate approved harness plan and a new baseline. |
-| The target completed with no unexplained typed provider/infrastructure failure, the required traces and judges are valid, and a hard gate, deterministic metric, visible trajectory, state update, or judge dimension shows an agent behavior defect | Deterministic quality/trajectory. Create one agent+operation root-cause record and route to Task 10 only if the exact target operation is a typed output-limit; otherwise route to Task 11. |
+| The target completed with no unexplained typed provider/infrastructure failure, the required traces and judges are valid, and a hard gate, deterministic metric, visible trajectory, state update, or judge dimension shows an agent behavior defect | Deterministic quality/trajectory. Create one agent+operation root-cause record and route to Task 11 only if the exact target operation is a typed output-limit; otherwise route to Task 12. |
 | A known failure case records its expected scripted search/reputation/write/memory/budget recovery and passes its frozen recovery gate | Expected case behavior. Keep it in evidence, do not classify it as an LLM provider failure, and do not create a repair solely because the safe recovery error exists. |
 
 `provider_failure.kind` is never inferred from `str(error)`, a judge score, a timeout-looking duration, or a completed HTTP request. If the operation or typed class cannot be established from safe evidence, record `diagnostic_visibility: unavailable`, do not add a token budget, and route the agent to the infrastructure confirmation/blocked path.
@@ -1260,9 +1375,9 @@ Each root-cause file must contain literal values for: agent/internal name, CLI n
 Route each agent exactly once after its baseline inventory:
 
 ```text
-REVIEW REQUIRED + all nine rows valid + no unexplained target/judge/provider issue -> write no-repair record; Task 12 may reuse the immutable baseline.
-Typed target-side output_limit + exact eligible non-ReAct operation -> Task 10.
-Typed target-side schema/provider/transport/HTTP failure, typed fallback issue, or deterministic quality/trajectory failure -> Task 11 after diagnosis.
+REVIEW REQUIRED + all nine rows valid + no unexplained target/judge/provider issue -> write no-repair record; Task 13 may reuse the immutable baseline.
+Typed target-side output_limit + exact eligible non-ReAct operation -> Task 11.
+Typed target-side schema/provider/transport/HTTP failure, typed fallback issue, or deterministic quality/trajectory failure -> Task 12 after diagnosis.
 Persistent provider/trace/artifact/setup failure after the one confirmation -> terminal_state INFRASTRUCTURE_BLOCKED; stop that agent.
 Offline-proven harness/evaluator defect -> terminal_state HARNESS_DEFECT_BLOCKED; stop that agent and request a separate plan.
 Three unsuccessful focused repairs for one unchanged root-cause ID -> terminal_state ESCALATED; write escalation.md and stop that root cause.
@@ -1274,21 +1389,21 @@ If a baseline command exits `3`, produces an incomplete artifact, lacks required
 
 If the same typed infrastructure/trace/artifact failure persists, preserve both immutable results/provenance records, write `terminal-state.md` with `terminal_state: INFRASTRUCTURE_BLOCKED`, `harness_status: INFRASTRUCTURE FAILURE` when that is the harness status, the actual exit code, and `repair_attempts: 0`, and stop that agent. If the confirmation produces a valid 3×3 artifact, write `confirmation-inventory.json`, keep the first attempt immutable, and use the valid evidence for diagnosis; the confirmation is not a repair attempt. A transient provider failure that disappears is recorded as provider evidence, not silently erased.
 
-- [ ] **Step 12: Close Task 9 without editing source or running a suite**
+- [ ] **Step 12: Close Task 10 without editing source or running a suite**
 
 Before advancing, verify that every agent has a baseline provenance file, a valid baseline or explicit infrastructure confirmation record, a safe inventory or a documented artifact-unavailable stop, a no-repair or operation-scoped diagnosis, and a ledger entry naming the next task. Run:
 
 ```powershell
 git diff --name-only
 git status --short
-if (git diff --name-only | Where-Object { $_ -notlike '.superpowers/*' -and $_ -notlike 'output/*' }) { throw 'Task 9 changed tracked source/test/config/evaluation files' }
+if (git diff --name-only | Where-Object { $_ -notlike '.superpowers/*' -and $_ -notlike 'output/*' }) { throw 'Task 10 changed tracked source/test/config/evaluation files' }
 ```
 
-Expected: no tracked changes beyond the already reviewed Task 8 candidate; no `suite` command has run; and no agent is silently omitted. Do not begin Task 10 or Task 11 until all five baseline decisions are present.
+Expected: no tracked changes beyond the already reviewed Task 9 candidate; no `suite` command has run; and no agent is silently omitted. Do not begin Task 11 or Task 12 until the required Task 10 baseline decision exists for that agent.
 
 ---
 
-### Task 10: Evidence-Gated Operation-Specific Output-Budget Repair — NOT STARTED / NOT APPLICABLE
+### Task 11: Evidence-Gated Operation-Specific Output-Budget Repair — NOT STARTED / NOT APPLICABLE
 
 **Files:** conditional; modify only for an agent/operation that produced a typed target-side `output_limit`
 - `src/deep_research/utils/config.py`
@@ -1300,7 +1415,7 @@ Expected: no tracked changes beyond the already reviewed Task 8 candidate; no `s
 - provider tests only if the existing `max_tokens` override contract itself is broken (not expected)
 
 **Interfaces:**
-- Consumes: one Task 9 artifact proving target-side `output_limit`, including exact operation name and configured cap 4096.
+- Consumes: one Task 10 artifact proving target-side `output_limit`, including exact operation name and configured cap 4096.
 - Produces: a single agent-operation-specific budget field; only that request passes it to `complete_structured(max_tokens=...)`; ReAct and judge calls remain `None`/global 4096.
 
 Candidate field names are fixed by operation:
@@ -1375,13 +1490,13 @@ After the focused inventory passes and the fresh review is approved, commit only
 
 ---
 
-### Task 11: Evidence-Gated Agent-Specific Quality / Trajectory Repair Loop — NOT STARTED / NOT APPLICABLE
+### Task 12: Evidence-Gated Agent-Specific Quality / Trajectory Repair Loop — NOT STARTED / NOT APPLICABLE
 
 **Files:** conditional per diagnosed root cause; never edit frozen evaluation inputs, evaluators, judges, or the SDD ledger's source-of-truth definitions.
 
 **Allowed agent-specific surfaces:** Researcher `src/deep_research/agents/researcher.py`, its prompt in `src/deep_research/agents/prompts.py`, and `tests/test_agents/test_researcher.py`; Source Evaluator uses `source_evaluator.py` and `test_source_evaluator.py`; Fact Checker uses `fact_checker.py` and `test_fact_checker.py`; Synthesizer uses `synthesizer.py` and `test_synthesizer.py`; Critic uses `critic.py` and `test_critic.py`. A shared runtime/prompt change invalidates every affected agent's evidence and requires new baselines. No Planner tuning is allowed.
 
-**Interfaces:** consumes one typed Task 9/10 diagnosis; produces one minimal agent-specific repair, offline RED/GREEN evidence, fresh review approval, and one focused three-repetition result. Permitted quality categories are `agent_prompt`, `agent_local_validation`, `agent_tool_policy`, and `agent_fallback_state`. Provider/infrastructure, schema-output, harness, and output-limit findings remain on their typed routes.
+**Interfaces:** consumes one typed Task 10/11 diagnosis; produces one minimal agent-specific repair, offline RED/GREEN evidence, fresh review approval, and one focused three-repetition result. Permitted quality categories are `agent_prompt`, `agent_local_validation`, `agent_tool_policy`, and `agent_fallback_state`. Provider/infrastructure, schema-output, harness, and output-limit findings remain on their typed routes.
 
 - [ ] **Step 1: Record the operation-scoped amendment before editing**
 
@@ -1407,22 +1522,22 @@ Resolve one new result path and inventory every gate, deterministic metric, judg
 
 - [ ] **Step 5: Enforce routing and the attempt limit**
 
-Typed provider/trace/artifact/setup failure gets the one same-SHA confirmation and then `INFRASTRUCTURE_BLOCKED`; an offline harness contradiction gets `HARNESS_DEFECT_BLOCKED`; a target-side `output_limit` gets Task 10; a failed quality hypothesis gets a new root-cause ID. After three unsuccessful focused attempts for one unchanged ID, write `escalation.md`, set `terminal_state: ESCALATED`, and stop. Infrastructure and harness blocks do not consume repair attempts; unrelated causes are never bundled.
+Typed provider/trace/artifact/setup failure gets the one same-SHA confirmation and then `INFRASTRUCTURE_BLOCKED`; an offline harness contradiction gets `HARNESS_DEFECT_BLOCKED`; a target-side `output_limit` gets Task 11; a failed quality hypothesis gets a new root-cause ID. After three unsuccessful focused attempts for one unchanged ID, write `escalation.md`, set `terminal_state: ESCALATED`, and stop. Infrastructure and harness blocks do not consume repair attempts; unrelated causes are never bundled.
 
 - [ ] **Step 6: Commit only a passing cohesive repair**
 
-After focused approval, commit only the agent-specific files with `fix($CliAgent): repair $Operation behavior`, record SHA and evidence, and route to Task 12. A failed or deferred attempt remains immutable evidence and is not called repaired.
+After focused approval, commit only the agent-specific files with `fix($CliAgent): repair $Operation behavior`, record SHA and evidence, and route to Task 13. A failed or deferred attempt remains immutable evidence and is not called repaired.
 
 ---
 
-### Task 12: Full Controlled Validation for Every Repaired Agent — NOT STARTED
+### Task 13: Full Controlled Validation for Every Repaired Agent — NOT STARTED
 
 **Files:**
 - No tracked changes during validation
 - Update ignored ledger and ignored artifacts
 
 **Interfaces:**
-- Consumes: the final candidate commit for one agent after Tasks 10/11.
+- Consumes: the final candidate commit for one agent after Tasks 11/12.
 - Produces: one authoritative nine-repetition full controlled artifact at that commit.
 
 - [ ] **Step 1: Re-run the full offline suite and verify clean Git state**
@@ -1465,11 +1580,11 @@ If a typed provider infrastructure failure prevents a valid quality verdict afte
 
 - [ ] **Step 5: Record unchanged agents too**
 
-If an agent passed its Task 9 baseline and required no repair, its immutable baseline artifact is its authoritative validation; do not spend money rerunning it merely for symmetry unless later shared code changes touched its execution path. If later shared code did touch it, rerun only after immediate human confirmation.
+If an agent passed its Task 10 baseline and required no repair, its immutable baseline artifact is its authoritative validation; do not spend money rerunning it merely for symmetry unless later shared code changes touched its execution path. If later shared code did touch it, rerun only after immediate human confirmation.
 
 ---
 
-### Task 13: Create the Permanent Cross-Agent Fix Log — COMPLETE
+### Task 14: Create the Permanent Cross-Agent Fix Log — COMPLETE SNAPSHOT / UPDATE REQUIRED
 
 **Files:**
 - Create: `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`
@@ -1515,11 +1630,11 @@ git add docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md
 git commit -m "docs: record cross-agent planner-fix parity evidence"
 ```
 
-Record `Task 13: complete`.
+Record `Task 14: complete` only after the log is updated with the final controlled evidence.
 
 ---
 
-### Task 14: Final Offline Verification and Whole-Branch Review — INCOMPLETE (REVIEW DEFERRED)
+### Task 15: Final Offline Verification and Whole-Branch Review — INCOMPLETE (FINAL OFFLINE RERUN REQUIRED; WHOLE-BRANCH REVIEW DEFERRED)
 
 **Files:**
 - No new production scope
@@ -1610,7 +1725,25 @@ At execution time, use the current `superpowers:subagent-driven-development` pro
 
 ## Recommended Subagent Model Routing
 
-Use the least expensive model that can reliably do the role, explicitly selected on every dispatch:
+Use explicit model selection for every remaining implementation or review dispatch. The user's required routing for this campaign is authoritative:
+
+| Work | Model | Reasoning |
+| --- | --- | --- |
+| Task 9 implementation and review-finding fixes | GPT-5.6 Luna | **high** |
+| Task 9 task-scoped review and scoped re-review | GPT-5.6 Luna | **max** |
+| Task 11 budget implementation/fixes | GPT-5.6 Luna | **high** |
+| Task 11 task-scoped review | GPT-5.6 Luna | **max** |
+| Task 12 agent implementation/fixes | GPT-5.6 Luna | **high** |
+| Task 12 task-scoped review | GPT-5.6 Luna | **max** |
+| Task 13 implementation fixes | GPT-5.6 Luna | **high** |
+| Task 13 task-scoped review | GPT-5.6 Luna | **max** |
+| Task 14 documentation/fix-log updates | GPT-5.6 Luna | **high** unless purely mechanical |
+| Task 14 task-scoped review | GPT-5.6 Luna | **max** |
+| Task 15 whole-branch review | **Do not dispatch** until the user explicitly requests it | deferred |
+
+Task 10 and Task 13 controlled target/judge runs must use the frozen evaluation model configuration. Implementation-model routing is not permission to change target model, judge model, reasoning effort, retry policy, or token budgets. High/max workers may require longer bounded controller waits; do not interpret slow reasoning as a repository-helper loop or launch duplicate workers.
+
+The original task-specific routing notes remain useful for completed tasks and are retained below:
 
 | Work | Suggested capability |
 | --- | --- |
@@ -1626,6 +1759,11 @@ Use the least expensive model that can reliably do the role, explicitly selected
 
 ## Explicit Non-Goals
 
+- Task 9 is network-zero: do not run `python -m deep_research.evaluation ...`, instantiate real providers, call LangSmith, sync datasets, or supply credentials.
+- Task 9 may change only the bounded artifact contract in the listed evaluation files and its offline tests; it may not change cases, rubrics, judges, prompts, gates, thresholds, dependency scenarios, retry behavior, model budgets, provider wrappers, or agent behavior.
+- Preserve `ARTIFACT_SCHEMA_VERSION`, global `llm.max_tokens=4096`, and the existing Planner-specific final-output budget.
+- Never persist raw provider/evaluator content, exception text, prompts, credentials, request payloads, hidden reasoning, or arbitrary diagnostic dictionaries. If typed visibility is insufficient, fail closed.
+- DeepSeek wrapper/bridge repair is deferred and has no dependency or allowed change in Task 9.
 - No live-tier evaluation.
 - No end-to-end graph quality campaign.
 - No change to Planner quality prompts or Planner scoring.
@@ -1642,6 +1780,11 @@ Use the least expensive model that can reliably do the role, explicitly selected
 Before execution, the controller must confirm:
 
 - Every confirmed transferable Planner issue maps to a task or an explicit no-change rationale.
+- New Task 9 appears immediately after completed Task 8 and blocks Task 10.
+- No path permits Task 8 to transition directly to a controlled baseline.
+- Task 9 preserves bounded deterministic metric details, exact prohibited-call count, finite ReAct stop reason, and nullable `{kind, operation}` fallback projection.
+- Task 9 preserves the existing weighted scalar `deterministic_quality` and does not change metric definitions, weights, thresholds, gates, or artifact schema version.
+- Task 9 has focused RED/GREEN, full offline evaluation, full offline suite, inventory accept/reject proofs, and one Luna-max approval before Task 10.
 - RC-A is fixed at the shared boundary rather than copied across agents.
 - The historical fix-log statement about Source Evaluator/Synthesizer has been reconciled with current no-ReAct architecture.
 - Planner-local wrapper removal happens only after shared RED/GREEN proof.
@@ -1654,3 +1797,4 @@ Before execution, the controller must confirm:
 - No task requires changing a case/rubric/gate to pass.
 - Every tracked task ends with a test/review/commit boundary appropriate for a fresh subagent.
 - The permanent fix log is part of completion, so future agents do not have to reconstruct this campaign from chat history.
+- Final Task 15 offline verification is rerun after Task 9 and any later tracked repair; whole-branch review remains paused until explicit user request.
