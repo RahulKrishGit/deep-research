@@ -191,12 +191,14 @@ STATIC_CSS = """
   min-height: var(--dr-space-8);
 }
 
-[class*="st-key-dr-session-row-"] {
+[class*="st-key-dr-session-row-"],
+[class*="st-key-dr-history-row-"] {
   border-bottom: 1px solid var(--dr-border);
   padding: var(--dr-space-2) 0;
 }
 
-[class*="st-key-dr-session-row-selected-"] {
+[class*="st-key-dr-session-row-selected-"],
+[class*="st-key-dr-history-row-selected-"] {
   border-radius: var(--dr-radius-container);
   background: var(--dr-active-tint);
   padding: var(--dr-space-2);

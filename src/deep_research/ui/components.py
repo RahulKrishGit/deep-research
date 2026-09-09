@@ -43,6 +43,8 @@ _HISTORY_FILTER_OPTIONS = ("All", "Running", "Completed", "Issues")
 _HISTORY_ISSUE_STATUSES = frozenset(
     {"max_iterations", "incomplete", "failed"}
 )
+_HISTORY_SEARCH_KEY = "_deep_research_history_search"
+_HISTORY_FILTER_KEY = "_deep_research_history_filter"
 
 _STATUS_PRESENTATION: Mapping[str, tuple[str, str, str]] = {
     "ready": ("●", "Ready to start", "neutral"),
@@ -1048,15 +1050,15 @@ def render_history_view(controller: LocalResearchController) -> None:
     )
     st.caption(f"{len(entries)} sessions total")
 
-    search_column, filter_column = st.columns([3, 1.15], gap="small")
+    search_column, filter_column = st.columns([2.7, 1.35], gap="small")
     with search_column:
         search = st.text_input(
             "Search research questions",
-            key="_deep_research_history_search",
+            key=_HISTORY_SEARCH_KEY,
             placeholder="Search research questions...",
         )
     with filter_column:
-        current_filter = state.get("_deep_research_history_filter", "All")
+        current_filter = state.get(_HISTORY_FILTER_KEY, "All")
         matching_filter = next(
             (
                 option
@@ -1066,12 +1068,23 @@ def render_history_view(controller: LocalResearchController) -> None:
             "All",
         )
         if current_filter != matching_filter:
-            state["_deep_research_history_filter"] = matching_filter
-        selected_filter = st.selectbox(
-            "Status",
-            options=list(_HISTORY_FILTER_OPTIONS),
-            key="_deep_research_history_filter",
-        )
+            state[_HISTORY_FILTER_KEY] = matching_filter
+        segmented_control = getattr(st, "segmented_control", None)
+        if callable(segmented_control):
+            selected_filter = segmented_control(
+                "Status",
+                options=list(_HISTORY_FILTER_OPTIONS),
+                key=_HISTORY_FILTER_KEY,
+                label_visibility="collapsed",
+            )
+        else:
+            # Streamlit 1.37 is supported, but segmented_control is newer;
+            # retain the same values for older supported installations.
+            selected_filter = st.selectbox(
+                "Status",
+                options=list(_HISTORY_FILTER_OPTIONS),
+                key=_HISTORY_FILTER_KEY,
+            )
 
     query = search.strip().casefold() if isinstance(search, str) else ""
     filter_name = str(selected_filter).casefold()

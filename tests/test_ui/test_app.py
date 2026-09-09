@@ -36,6 +36,7 @@ from deep_research.ui.models import (
 )
 from deep_research.ui.progress import project_progress
 from deep_research.ui.runner import LocalResearchController
+from deep_research.ui.styles import STATIC_CSS
 from deep_research.utils.types import ResearchEvent
 from tests.test_ui.fakes import FailingSyncRunner
 
@@ -1047,7 +1048,7 @@ def test_history_screen_has_searchable_newest_first_status_rows_and_open_actions
     assert "Research sessions" in visible
     assert "6 sessions total" in visible
     assert app.text_input(key=_HISTORY_SEARCH_KEY).label == "Search research questions"
-    assert app.selectbox(key=_HISTORY_FILTER_KEY).options == [
+    assert app.segmented_control(key=_HISTORY_FILTER_KEY).options == [
         "All",
         "Running",
         "Completed",
@@ -1084,7 +1085,7 @@ def test_history_search_is_case_insensitive_and_survives_reruns() -> None:
 def test_history_filters_completed_and_issues_without_changing_archive_order() -> None:
     app = _history_app()
 
-    app.selectbox(key=_HISTORY_FILTER_KEY).set_value("Issues").run()
+    app.segmented_control(key=_HISTORY_FILTER_KEY).set_value("Issues").run()
     issues = _visible_main_text(app)
     assert "Stopped after too many iterations" in issues
     assert "Paused before the research finished" in issues
@@ -1092,7 +1093,7 @@ def test_history_filters_completed_and_issues_without_changing_archive_order() -
     assert "Newest completed research question" not in issues
     assert app.session_state[_HISTORY_FILTER_KEY] == "Issues"
 
-    app.selectbox(key=_HISTORY_FILTER_KEY).set_value("Completed").run()
+    app.segmented_control(key=_HISTORY_FILTER_KEY).set_value("Completed").run()
     completed = _visible_main_text(app)
     assert "Newest completed research question" in completed
     assert "Old completed research question" in completed
@@ -1166,6 +1167,7 @@ def test_history_selected_row_has_a_non_color_selected_cue() -> None:
 
     selected_row = app.main.container(key=f"dr-history-row-selected-{session_id}")
     assert any("Selected session" in item.value for item in selected_row.caption)
+    assert "st-key-dr-history-row-selected-" in STATIC_CSS
 
 
 def test_failed_snapshot_retains_last_progress_and_uses_safe_error() -> None:

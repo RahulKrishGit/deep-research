@@ -123,4 +123,58 @@ The temporary harness was removed and is not part of the product changes.
 
 ## Commit
 
-`22c2a5d feat: add searchable streamlit session history`
+`746c1c1 feat: add searchable streamlit session history`
+
+## Fix round 1 — Luna Max findings
+
+Review findings addressed without expanding into Task 10:
+
+1. **P1 selected-row styling hook:** history rows retain the keyed native
+   containers `dr-history-row-*` / `dr-history-row-selected-*`; the centralized
+   CSS now targets both history and sidebar row key families. A regression test
+   asserts the selected history container and matching CSS hook.
+2. **P2 compact filter:** the history screen now uses `st.segmented_control`
+   when available. A narrowly scoped `getattr`/callability fallback retains the
+   same `selectbox` values only for supported Streamlit installations that do
+   not expose the newer widget. Existing tests exercise the exact All/Running/
+   Completed/Issues semantics through the segmented control.
+3. **P3 traceability:** the original commit reference is corrected to the
+   reviewed base commit `746c1c1`; the fix-round commit is listed below after
+   commit creation.
+
+### Fix-round TDD evidence
+
+RED was run after adding the regression expectations and before the fixes:
+
+```text
+python -m pytest tests/test_ui/test_app.py -k "history or search or filter" -v
+3 expected failures, 10 passed, 35 deselected
+```
+
+The failures were the missing segmented-control widget and missing
+`st-key-dr-history-row-selected-` CSS hook.
+
+GREEN was then verified with the same command:
+
+```text
+13 passed, 35 deselected
+```
+
+### Fix-round verification
+
+- Focused history/search/filter AppTests: `13 passed, 35 deselected`.
+- Full UI suite: `126 passed, 2 skipped`.
+- Full offline repository suite with this worktree `src` first on
+  `PYTHONPATH`: `2007 passed, 2 skipped, 1 deselected, 2 warnings`.
+- `python -m ruff check .`: `All checks passed!`.
+- `git diff --check`: clean.
+- Streamlit runtime check: `1.63.0`; `st.segmented_control` available.
+- Offline Figure 4 comparison recaptured after both fixes. All four filter
+  options are visible at the desktop width, the selected history row has the
+  pale-teal treatment and visible selected cue, and the archive remains
+  question-led with divider-separated native rows. No live provider was used.
+
+### Actual commit trace
+
+- Base Task 9 implementation: `746c1c1 feat: add searchable streamlit session history`.
+- Fix round 1: `1931ebe fix: align session history review findings`.
