@@ -22,9 +22,11 @@ from deep_research.ui.app import (
 from deep_research.ui.components import _start_research
 from deep_research.ui.models import (
     SessionHistoryEntry,
+    UiClaimDetail,
     UiFactCheckSummary,
     UiRecentActivity,
     UiSessionSnapshot,
+    UiSourceDetail,
     UiSourceSummary,
     UiSubTopicProgress,
     UiTokenUsage,
@@ -234,6 +236,123 @@ def _running_app(snapshot: UiSessionSnapshot) -> AppTest:
     app.session_state[_VIEW_KEY] = "current"
     app.run()
     return app
+
+
+def _completed_report_snapshot(
+    *,
+    status: str = "completed",
+    token_usage: UiTokenUsage | None = UiTokenUsage(
+        input_tokens=18_000,
+        output_tokens=6_800,
+    ),
+    trace_url: str | None = "https://smith.langchain.com/o/example/r/report",
+    report: str | None = (
+        "# Research answer\n\n"
+        "The report answer leads with the research question.\n\n"
+        "## Cost trajectory\n\n"
+        "- Evidence-backed finding [1].\n\n"
+        "| Scenario | Capacity |\n| --- | --- |\n| Base | 1,020 GW |"
+    ),
+    limitations: list[str] | None = None,
+    errors: list[object] | None = None,
+) -> UiSessionSnapshot:
+    snapshot = _snapshot(
+        status=status,
+        token_usage=token_usage,
+        trace_url=trace_url,
+        report=report,
+        errors=errors,
+    )
+    return snapshot.model_copy(
+        update={
+            "report_path": "reports/grid-scale-batteries-2030.md",
+            "limitations": limitations or [],
+            "source_summary": UiSourceSummary(
+                total=4,
+                high=1,
+                moderate=1,
+                low=1,
+                unrated=1,
+                details=[
+                    UiSourceDetail(
+                        title="Grid Storage Outlook",
+                        url="https://example.com/grid-storage",
+                        tier="high",
+                        overall_score=0.91,
+                        rationale=(
+                            "Primary market dataset with transparent methodology."
+                        ),
+                        corroboration_score=0.88,
+                        related_sub_topics=["Battery cost curves"],
+                    ),
+                    UiSourceDetail(
+                        title="Policy filing",
+                        url="https://example.com/policy",
+                        tier="moderate",
+                        overall_score=0.64,
+                        rationale="Useful regulatory context with narrower coverage.",
+                        corroboration_score=0.55,
+                        related_sub_topics=["Grid operator adoption"],
+                    ),
+                    UiSourceDetail(
+                        title="Industry analysis",
+                        url="https://example.com/industry",
+                        tier="low",
+                        overall_score=0.42,
+                        rationale="Directional estimate requiring corroboration.",
+                        corroboration_score=0.31,
+                        related_sub_topics=["Market structure impacts"],
+                    ),
+                    UiSourceDetail(
+                        title="Unrated source",
+                        url="https://example.com/unrated",
+                        tier="unrated",
+                        overall_score=0.0,
+                        rationale="The source could not be scored reliably.",
+                        corroboration_score=0.12,
+                        related_sub_topics=[],
+                    ),
+                ],
+            ),
+            "fact_check_summary": UiFactCheckSummary(
+                verified=1,
+                unverified=1,
+                contradicted=1,
+                insufficient_evidence=1,
+                details=[
+                    UiClaimDetail(
+                        text="Deployment expands substantially.",
+                        verdict="verified",
+                        confidence=0.94,
+                        source_urls=["https://example.com/grid-storage"],
+                        evidence=["Capacity data supports the estimate."],
+                    ),
+                    UiClaimDetail(
+                        text="Financing costs fall every year.",
+                        verdict="unverified",
+                        confidence=0.51,
+                        source_urls=["https://example.com/industry"],
+                        evidence=["The available series is incomplete."],
+                    ),
+                    UiClaimDetail(
+                        text="Interconnection is never a constraint.",
+                        verdict="contradicted",
+                        confidence=0.89,
+                        source_urls=["https://example.com/policy"],
+                        evidence=["Regional filings report queue delays."],
+                        contradictions=["The claim conflicts with operator filings."],
+                    ),
+                    UiClaimDetail(
+                        text="Sodium-ion reaches mass scale by 2028.",
+                        verdict="insufficient_evidence",
+                        confidence=0.29,
+                        source_urls=[],
+                        evidence=["Only pilot-scale data was available."],
+                    ),
+                ],
+            ),
+        }
+    )
 
 
 def _visible_main_text(app: AppTest) -> str:
@@ -731,6 +850,139 @@ def test_completed_snapshot_transitions_to_report_view_in_same_canvas() -> None:
     assert "Research answer" in visible
     assert "Report body." in visible
     assert "Session detail content will appear here." not in visible
+
+
+def test_completed_report_screen_leads_with_markdown_and_quality_summaries() -> None:
+    app = _running_app(_completed_report_snapshot())
+    visible = _visible_main_text(app)
+
+    assert "RESEARCH COMPLETED" in visible
+    assert "How will grid-scale batteries reshape energy markets by 2030?" in visible
+    assert "Completed in 2 of 4 iterations" in visible
+    assert "reports/grid-scale-batteries-2030.md" in visible
+    assert "# Research answer" in visible
+    assert "The report answer leads with the research question." in visible
+    assert "SOURCE CREDIBILITY" in visible
+    assert "FACT-CHECK SUMMARY" in visible
+    assert "High" in visible and "Moderate" in visible
+    assert "Low" in visible and "Unrated" in visible
+    assert "Verified" in visible and "Unverified" in visible
+    assert "Contradicted" in visible and "Insufficient evidence" in visible
+    assert app.metric[0].label == "Tokens used"
+    assert any(
+        button.label == "Open LangSmith trace"
+        for button in app.main.get("link_button")
+    )
+
+
+def test_completed_report_is_on_base_canvas_with_secondary_quality_details() -> None:
+    app = _running_app(_completed_report_snapshot())
+    visible = _visible_main_text(app)
+
+    assert "The report answer leads with the research question." in visible
+    assert not any(item.label == "Report" for item in app.expander)
+    assert len(app.tabs) == 0
+    assert any(item.label == "Source details" for item in app.expander)
+    assert any(item.label == "Claim details" for item in app.expander)
+    assert any(item.label == "Session metadata" for item in app.expander)
+    assert "Average source score" not in visible
+    assert "Gauge" not in visible
+
+
+def test_completed_source_details_disclose_provenance_without_an_opaque_score() -> None:
+    app = _running_app(_completed_report_snapshot())
+    source_details = next(
+        item for item in app.expander if item.label == "Source details"
+    )
+    assert source_details.proto.expanded is False
+    visible = _visible_main_text(app)
+
+    assert "Grid Storage Outlook" in visible
+    assert "https://example.com/grid-storage" in visible
+    assert "High" in visible
+    assert "Primary market dataset with transparent methodology." in visible
+    assert "Used in research topics" in visible
+    assert "Battery cost curves" in visible
+    assert "Corroboration" in visible
+    assert "91%" not in visible
+    assert "Average" not in visible
+
+
+def test_completed_claim_details_preserve_verdict_and_structured_evidence() -> None:
+    app = _running_app(_completed_report_snapshot())
+    claim_details = next(
+        item for item in app.expander if item.label == "Claim details"
+    )
+    assert claim_details.proto.expanded is False
+    visible = _visible_main_text(app)
+
+    assert "Deployment expands substantially." in visible
+    assert "Verified" in visible
+    assert "https://example.com/grid-storage" in visible
+    assert "Capacity data supports the estimate." in visible
+    assert "Interconnection is never a constraint." in visible
+    assert "Contradicted" in visible
+    assert "The claim conflicts with operator filings." in visible
+    assert "Insufficient evidence" in visible
+
+
+def test_completed_limitations_and_errors_are_separate_semantic_sections() -> None:
+    app = _running_app(
+        _completed_report_snapshot(
+            limitations=["Pilot-scale sodium-ion data may not generalize."],
+            errors=[
+                {
+                    "error_type": "researcher.tool_failed",
+                    "source": "researcher",
+                    "message": "A research step had an issue; continuing",
+                    "recoverable": True,
+                    "details": {"private": "SECRET-DIAGNOSTIC"},
+                }
+            ],
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "LIMITATIONS" in visible
+    assert "Pilot-scale sodium-ion data may not generalize." in visible
+    assert "EXECUTION ERRORS" in visible
+    assert "Execution errors were recorded during the run." in visible
+    assert "SECRET-DIAGNOSTIC" not in visible
+    assert len(app.error) == 1
+    assert len(app.warning) == 0
+
+
+def test_completed_report_omits_unavailable_telemetry_entirely() -> None:
+    app = _running_app(
+        _completed_report_snapshot(token_usage=None, trace_url=None)
+    )
+    visible = _visible_main_text(app)
+
+    assert "Tokens used" not in visible
+    assert "Open LangSmith trace" not in _button_values(app)
+    assert len(app.metric) == 0
+    assert not any(
+        button.label == "Open LangSmith trace"
+        for button in app.main.get("link_button")
+    )
+
+
+def test_max_iterations_keeps_partial_report_and_uses_amber_language() -> None:
+    app = _running_app(
+        _completed_report_snapshot(
+            status="max_iterations",
+            report="# Partial report\n\nReadable stopping-point findings.",
+            token_usage=None,
+            trace_url=None,
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "Max iterations" in visible
+    assert "Partial report" in visible
+    assert "Readable stopping-point findings." in visible
+    assert "The run reached its configured iteration limit." in visible
+    assert "Failed" not in visible
 
 
 def test_max_iterations_snapshot_has_amber_terminal_treatment() -> None:

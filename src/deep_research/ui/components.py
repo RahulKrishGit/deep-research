@@ -15,7 +15,9 @@ from deep_research.runtime.errors import (
 )
 from deep_research.ui.models import (
     SessionHistoryEntry,
+    UiClaimDetail,
     UiSessionSnapshot,
+    UiSourceDetail,
     UiSubTopicProgress,
     history_entry_from_snapshot,
 )
@@ -46,6 +48,18 @@ _STATUS_PRESENTATION: Mapping[str, tuple[str, str, str]] = {
     "incomplete": ("Ⅱ", "Incomplete", "incomplete"),
     "failed": ("×", "Failed", "failed"),
 }
+
+REPORT_CSS = """
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3,
+[data-testid="stMarkdownContainer"] h4 {
+  color: var(--dr-text);
+  font-family: Georgia, "Times New Roman", serif !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.02em !important;
+}
+"""
 
 
 def status_presentation(status: str) -> tuple[str, str, str]:
@@ -579,6 +593,10 @@ def _safe_failure_message(snapshot: UiSessionSnapshot) -> str:
 
 
 def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
+    if snapshot.status in {"completed", "max_iterations", "incomplete"}:
+        _render_completed_snapshot(snapshot)
+        return
+
     st.markdown(
         '<div class="dr-editorial-column dr-section-label">RESEARCH SESSION</div>',
         unsafe_allow_html=True,
@@ -600,6 +618,191 @@ def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
         st.markdown(snapshot.report)
     elif snapshot.status == "max_iterations":
         st.warning("The run reached its iteration limit before a report was available.")
+
+
+def _format_datetime(value: datetime | None, *, prefix: str) -> str | None:
+    if value is None:
+        return None
+    timestamp = value
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    hour = timestamp.strftime("%I").lstrip("0") or "0"
+    return (
+        f"{prefix} {timestamp:%b} {timestamp.day}, {timestamp:%Y} "
+        f"at {hour}:{timestamp:%M} {timestamp:%p}"
+    )
+
+
+def _report_status_label(snapshot: UiSessionSnapshot) -> tuple[str, str, str]:
+    if snapshot.status == "completed":
+        return "RESEARCH COMPLETED", "completed", "Completed"
+    if snapshot.status == "max_iterations":
+        return "RESEARCH PAUSED", "max_iterations", "Max iterations · Partial report"
+    return "RESEARCH INCOMPLETE", "incomplete", "Incomplete"
+
+
+def _render_quality_rows(
+    *,
+    heading: str,
+    rows: tuple[tuple[str, int], ...],
+) -> None:
+    st.markdown(
+        f'<div class="dr-section-label">{escape(heading)}</div>',
+        unsafe_allow_html=True,
+    )
+    for label, count in rows:
+        st.caption(f"{label} · {count}")
+
+
+def _source_tier_label(tier: str) -> str:
+    return {
+        "high": "High",
+        "moderate": "Moderate",
+        "low": "Low",
+        "unrated": "Unrated",
+    }.get(tier, "Unrated")
+
+
+def _render_source_detail(detail: UiSourceDetail) -> None:
+    st.markdown(f"**{escape(detail.title)}**")
+    st.caption(f"Source · {detail.url}")
+    st.caption(f"Tier · {_source_tier_label(detail.tier)}")
+    st.caption(f"Rationale · {detail.rationale}")
+    topics = ", ".join(detail.related_sub_topics) or "Not associated with a subtopic"
+    st.caption(f"Used in research topics · {topics}")
+    st.caption(f"Corroboration score · {detail.corroboration_score:.2f}")
+
+
+def _render_claim_detail(detail: UiClaimDetail) -> None:
+    st.markdown(f"**{escape(detail.text)}**")
+    verdict = {
+        "verified": "Verified",
+        "unverified": "Unverified",
+        "contradicted": "Contradicted",
+        "insufficient_evidence": "Insufficient evidence",
+    }.get(detail.verdict, "Unknown")
+    st.caption(f"Verdict · {verdict}")
+    st.caption(f"Confidence · {detail.confidence:.0%}")
+    if detail.source_urls:
+        st.caption(f"Supporting URLs · {', '.join(detail.source_urls)}")
+    for evidence in detail.evidence:
+        st.caption(f"Evidence · {evidence}")
+    for contradiction in detail.contradictions:
+        st.caption(f"Contradiction · {contradiction}")
+
+
+def _render_completed_details_rail(snapshot: UiSessionSnapshot) -> None:
+    source_summary = snapshot.source_summary
+    _render_quality_rows(
+        heading="SOURCE CREDIBILITY",
+        rows=(
+            ("High", source_summary.high),
+            ("Moderate", source_summary.moderate),
+            ("Low", source_summary.low),
+            ("Unrated", source_summary.unrated),
+        ),
+    )
+    with st.expander("Source details", expanded=False):
+        if source_summary.details:
+            for detail in source_summary.details:
+                _render_source_detail(detail)
+                st.divider()
+        else:
+            st.caption("No source details recorded.")
+
+    fact_summary = snapshot.fact_check_summary
+    _render_quality_rows(
+        heading="FACT-CHECK SUMMARY",
+        rows=(
+            ("Verified", fact_summary.verified),
+            ("Unverified", fact_summary.unverified),
+            ("Contradicted", fact_summary.contradicted),
+            ("Insufficient evidence", fact_summary.insufficient_evidence),
+        ),
+    )
+    with st.expander("Claim details", expanded=False):
+        if fact_summary.details:
+            for detail in fact_summary.details:
+                _render_claim_detail(detail)
+                st.divider()
+        else:
+            st.caption("No claim details recorded.")
+
+    if snapshot.token_usage is not None:
+        st.metric(
+            "Tokens used",
+            _format_token_total(snapshot.token_usage.total_tokens),
+        )
+    trace_url = _valid_trace_url(snapshot.trace_url)
+    if trace_url is not None:
+        st.link_button("Open LangSmith trace", trace_url, use_container_width=True)
+
+    with st.expander("Session metadata", expanded=False):
+        st.caption(f"Session ID · {snapshot.session_id}")
+        started = _format_datetime(snapshot.started_at, prefix="Started")
+        completed = _format_datetime(snapshot.finished_at, prefix="Completed")
+        if started:
+            st.caption(started)
+        if completed:
+            st.caption(completed)
+        st.caption(f"Configured limit · {snapshot.max_iterations} iterations")
+        st.caption(f"Actual iteration · {snapshot.iteration}")
+        st.caption(f"Terminal status · {status_presentation(snapshot.status)[1]}")
+        if snapshot.report_path:
+            st.caption(f"Report path · {snapshot.report_path}")
+
+
+def _render_report_issues(snapshot: UiSessionSnapshot) -> None:
+    if snapshot.limitations:
+        render_status("max_iterations", label="LIMITATIONS")
+        for limitation in snapshot.limitations:
+            st.markdown(f"- {limitation}")
+
+    if snapshot.errors:
+        render_status("failed", label="EXECUTION ERRORS")
+        st.error("Execution errors were recorded during the run.")
+    elif snapshot.status == "completed":
+        st.caption("No errors reported.")
+
+
+def _render_completed_snapshot(snapshot: UiSessionSnapshot) -> None:
+    eyebrow, status, status_label = _report_status_label(snapshot)
+    main_column, details_column = st.columns([3, 1], gap="large")
+    with main_column:
+        st.markdown(
+            f'<div class="dr-editorial-column dr-section-label">{eyebrow}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="dr-editorial-column dr-shell-title">'
+            f"<h1>{escape(snapshot.question)}</h1></div>",
+            unsafe_allow_html=True,
+        )
+        render_status(status, label=status_label)
+        metadata = [
+            "Markdown · "
+            f"Completed in {snapshot.iteration} of "
+            f"{snapshot.max_iterations} iterations"
+        ]
+        completed_at = _format_datetime(snapshot.finished_at, prefix="Completed")
+        if completed_at:
+            metadata.append(completed_at)
+        st.caption(" · ".join(metadata))
+        if snapshot.report_path:
+            st.caption(f"Report path · `{escape(snapshot.report_path)}`")
+        if snapshot.status == "max_iterations":
+            st.caption("The run reached its configured iteration limit.")
+
+        if snapshot.report:
+            # Keep report Markdown on the base canvas so the answer remains the
+            # dominant object and Streamlit owns its safe Markdown rendering.
+            st.markdown(snapshot.report)
+        else:
+            st.caption("No report was available for this session.")
+        _render_report_issues(snapshot)
+
+    with details_column:
+        _render_completed_details_rail(snapshot)
 
 
 def render_current_session_view(controller: LocalResearchController) -> None:
@@ -646,6 +849,7 @@ def render_history_view(controller: LocalResearchController) -> None:
 
 __all__ = [
     "_render_running_snapshot",
+    "REPORT_CSS",
     "render_current_session_view",
     "render_history_view",
     "render_new_research_view",

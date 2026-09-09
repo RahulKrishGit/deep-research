@@ -92,6 +92,7 @@ def render_app(controller=None) -> None:
         resolve_controller,
     )
     from deep_research.ui.components import (
+        REPORT_CSS,
         render_current_session_view,
         render_history_view,
         render_new_research_view,
@@ -101,7 +102,10 @@ def render_app(controller=None) -> None:
 
     resolved_controller = resolve_controller(controller)
     _initialize_session_state()
-    st.markdown(STATIC_CSS, unsafe_allow_html=True)
+    st.markdown(
+        STATIC_CSS.replace("</style>", f"{REPORT_CSS}</style>", 1),
+        unsafe_allow_html=True,
+    )
     render_sidebar(resolved_controller)
 
     view = _current_view()
