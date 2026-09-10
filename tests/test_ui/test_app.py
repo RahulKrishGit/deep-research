@@ -25,6 +25,8 @@ from deep_research.ui.app import (
     render_app,
 )
 from deep_research.ui.components import (
+    _START_VALIDATION_HINT,
+    _START_VALIDATION_MESSAGE,
     _start_research,
     execution_error_presentation,
 )
@@ -461,7 +463,7 @@ def test_start_research_is_the_only_filled_primary_action() -> None:
     assert app.button(key="start_research").proto.type == "primary"
 
 
-def test_new_research_blank_question_disables_submit_and_preserves_draft_values(
+def test_new_research_blank_question_keeps_submit_available_and_validates_safely(
 ) -> None:
     app = _app([]).run()
 
@@ -470,8 +472,16 @@ def test_new_research_blank_question_disables_submit_and_preserves_draft_values(
 
     assert app.text_area(key="research_question").value == "   "
     assert app.number_input(key="max_iterations").value == 6
-    assert app.button(key="start_research").disabled is True
+    assert app.button(key="start_research").disabled is False
+
+    app.button(key="start_research").click().run()
+
     assert app.session_state[_CONTROLLER_KEY].start_calls == []
+    assert app.session_state[_START_IN_FLIGHT_KEY] is False
+    assert _START_VALIDATION_MESSAGE in _visible_main_text(app)
+    assert _START_VALIDATION_HINT in _visible_main_text(app)
+    assert app.text_area(key="research_question").value == "   "
+    assert app.number_input(key="max_iterations").value == 6
 
 
 def test_valid_question_can_submit_and_forwards_markdown_configuration() -> None:

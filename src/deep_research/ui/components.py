@@ -1294,15 +1294,22 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
                 key="start_research",
                 type="primary",
                 use_container_width=True,
-                disabled=question_is_blank or start_in_flight,
+                disabled=start_in_flight,
             )
 
         if submitted:
-            _queue_research_start(
-                question=question,
-                max_iterations=int(st.session_state["max_iterations"]),
-                state=state,
-            )
+            if question_is_blank:
+                state[_START_ERROR_KEY] = (
+                    _START_VALIDATION_MESSAGE,
+                    _START_VALIDATION_HINT,
+                )
+                st.rerun()
+            else:
+                _queue_research_start(
+                    question=question,
+                    max_iterations=int(st.session_state["max_iterations"]),
+                    state=state,
+                )
 
     if start_in_flight and state.get(_PENDING_START_KEY) is not None:
         _start_pending_research(controller, state)
