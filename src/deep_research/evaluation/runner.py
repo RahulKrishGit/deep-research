@@ -757,6 +757,21 @@ def evaluation_failure_reason(
         for repetition in sorted(
             case.repetitions, key=lambda item: item.repetition
         ):
+            if repetition.gates.failed_ids:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    f"failed {repetition.gates.failed_ids[0]}"
+                )
+            if not repetition.completed:
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    "failed run_incomplete"
+                )
+
+    for case in cases:
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
             if _has_judge_infrastructure_failure(repetition):
                 return (
                     f"{case.case_id} repetition {repetition.repetition} "
@@ -768,16 +783,6 @@ def evaluation_failure_reason(
         for repetition in sorted(
             case.repetitions, key=lambda item: item.repetition
         ):
-            if repetition.gates.failed_ids:
-                return (
-                    f"{case.case_id} repetition {repetition.repetition} "
-                    f"failed {repetition.gates.failed_ids[0]}"
-                )
-            if not repetition.completed:
-                return (
-                    f"{case.case_id} repetition {repetition.repetition} "
-                    "failed run_incomplete"
-                )
             if repetition.judge is None:
                 return (
                     f"{case.case_id} repetition {repetition.repetition} "

@@ -336,6 +336,32 @@ def test_mixed_deterministic_and_judge_failure_remains_quality_failed(
     ) == "focused-decomposition repetition 98 failed no_prohibited_calls"
 
 
+def test_deterministic_gate_reason_precedes_judge_failure_in_another_repetition(
+    repetition_with_failed_gate, repetition_without_judge, runtime_config_for
+) -> None:
+    judge = repetition_without_judge.judge
+    assert judge is not None
+    judge_failure = repetition_without_judge.model_copy(
+        update={
+            "repetition": 99,
+            "judge": judge.model_copy(
+                update={"not_run_reason": "judge_schema_failure"}
+            ),
+        }
+    )
+    case = build_case_result(
+        None, [repetition_with_failed_gate, judge_failure], threshold=0.80
+    )
+    runtime = runtime_config_for("planner")
+
+    status = decide_status([case], tier="controlled", runtime=runtime)
+
+    assert status == "FAILED"
+    assert evaluation_failure_reason(
+        [case], status=status, runtime=runtime
+    ) == "focused-decomposition repetition 98 failed no_prohibited_calls"
+
+
 @pytest.mark.parametrize("stage", ["setup", "trace"])
 def test_setup_and_trace_failures_remain_infrastructure_failures(
     runtime_config_for, stage
