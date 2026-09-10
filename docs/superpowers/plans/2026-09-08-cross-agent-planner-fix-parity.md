@@ -15,7 +15,7 @@
 - `docs/superpowers/plans/2026-08-24-planner-controlled-evaluation-improvement.md`
 - Current `obra/superpowers` `brainstorming`, `writing-plans`, and `subagent-driven-development` skills as of 2026-09-08.
 
-## Current Execution Status (Updated 2026-09-09)
+## Current Execution Status (Updated 2026-09-10)
 
 This table is the authoritative task bookkeeping for the remote branch `codex/cross-agent-planner-fix-parity`. “Complete” requires implementation evidence plus the required task-scoped review; “not complete” means the task must not be represented as finished merely because its brief or offline preparation exists.
 
@@ -30,12 +30,12 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 7. Source Evaluator/Synthesizer non-ReAct characterization | **Complete** | Commit `91d817b`; characterization tests; Luna Max review approved. |
 | 8. Offline integration gate | **Complete** | Candidate `808cfba`; focused `690` passed and full offline `1,895` passed; task review approved. |
 | 9. Offline typed evaluation telemetry contract | **Complete** | Commit `a763cda`; focused/evaluation/full-offline tests, exact local inventory acceptance/rejection proof, lint/diff checks, and fresh Luna-max review approved. |
-| 10. Immutable controlled baselines | **Ready — immediate authorization required** | Task 9 gate is approved; no paid DeepSeek/LangSmith baseline has run. Each controlled command still requires immediate per-command human authorization. |
+| 10. Immutable controlled baselines | **Complete — five agents terminal-blocked after confirmation** | At candidate `d6a082c`, all five agents completed immutable 3-case × 3-repetition baselines and same-SHA confirmations. Windows preflight passed; typed judge/provider failures persisted, so each agent has `INFRASTRUCTURE_BLOCKED`, `repair_attempts: 0`, safe inventories, and a terminal record. |
 | 11. Evidence-gated output-budget repair | **Not started / not applicable** | Requires typed Task 10 target-side `output_limit` evidence; none exists. |
 | 12. Evidence-gated agent quality/trajectory repair | **Not started / not applicable** | Requires typed Task 10 quality/trajectory evidence; none exists. |
 | 13. Full controlled validation | **Not started** | Depends on Task 10 and any evidence-supported Tasks 11–12 repairs; no live or controlled validation was run. |
-| 14. Permanent cross-agent fix log | **Complete snapshot; update required after controlled work** | `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md` remains the prior safe snapshot and must be updated with later evidence. |
-| 15. Final offline verification and whole-branch review | **Incomplete — review deferred** | The prior offline result predates the Task 9 artifact-contract change; rerun final offline verification after tracked work. Whole-branch review remains user-deferred. |
+| 14. Permanent cross-agent fix log | **Complete** | Updated with the candidate `d6a082c` controlled baseline/confirmation evidence, typed failure classes, hashes, and the no-budget/no-agent-repair decision. |
+| 15. Final offline verification and whole-branch review | **Offline verification complete — whole-branch review deferred** | After the Task 10/14 documentation update: focused config tests `47 passed`, `tests/test_evaluation` `697 passed`, full offline suite `1,936 passed, 1 deselected`, Ruff and `git diff --check` passed. Whole-branch review remains user-deferred. |
 
 The following boundaries remain active: `--tier live` is prohibited; Task 9 is network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and the whole-branch review must remain deferred until the user explicitly requests it. The separately authorized GitHub push is complete, but it does not change the Task 15 review status.
 
@@ -1160,13 +1160,13 @@ The repair was executed as a new candidate and reviewed before resuming Task 10:
 - Task 2 Luna-max review: approved; exact six Task 10 prefixes, host-independent path cases, real production preflight seam, repetition descendants, and `results.json` coverage accepted.
 - Task 3 implementation: `d7ff281acdfac9394db75c25eb3c6fa2cafe1b41`.
 - Task 3 Luna-max review: approved; only `src/deep_research/evaluation/config.py` changed, with a private `_extended_windows_path` boundary applied after the complete logical output root is assembled.
-- New controlled-run candidate: `d7ff281acdfac9394db75c25eb3c6fa2cafe1b41`.
+- New controlled-run source candidate: `d7ff281acdfac9394db75c25eb3c6fa2cafe1b41`; current bookkeeping descendant used for all controlled runs: `d6a082c9260e5d9f2f7c061833b4734ec9990f1f`.
 
 The historical failed artifacts remain immutable. Task 10 may resume only from the new candidate, with fresh per-agent namespaces and the existing immediate per-command human authorization requirement.
 
 ---
 
-### Task 10: Run Immutable Controlled Baselines for Each Non-Planner Agent — READY (IMMEDIATE AUTHORIZATION REQUIRED)
+### Task 10: Run Immutable Controlled Baselines for Each Non-Planner Agent — COMPLETE (FIVE AGENTS INFRASTRUCTURE-BLOCKED AFTER CONFIRMATION)
 
 **Hard paid-call precondition:** Do not execute any provider, LangSmith, controlled-evaluation, dataset-sync, judge, or credential-dependent command until the ledger contains all of these exact lines: `Task 9 focused tests: PASS`, `Task 9 evaluation tests: PASS`, `Task 9 full offline suite: PASS`, `Task 9 inventory contract check: PASS`, `Task 9 review: APPROVED`, and `Task 9: complete`. This local-only check does not replace immediate human authorization for each paid command.
 
@@ -1401,13 +1401,15 @@ Offline-proven harness/evaluator defect -> terminal_state HARNESS_DEFECT_BLOCKED
 Three unsuccessful focused repairs for one unchanged root-cause ID -> terminal_state ESCALATED; write escalation.md and stop that root cause.
 ```
 
-- [ ] **Step 11: Make the one allowed same-SHA infrastructure confirmation**
+- [x] **Step 11: Make the one allowed same-SHA infrastructure confirmation**
 
 If a baseline command exits `3`, produces an incomplete artifact, lacks required trace/artifact evidence, or contains an unclassified/persistent provider or judge failure that prevents a valid quality verdict, write the matching `confirmation-provenance.json` before a new command. Obtain a new immediate human authorization, then rerun the exact same agent command with the exact same candidate SHA, case set, model/effort, effective retry values, global `4096`, and configuration fingerprints, changing only the experiment prefix to `cross-agent-planner-fix-parity-confirmation-$CliAgent`, where `$CliAgent` is set to one literal value from the five-agent execution map.
 
 If the same typed infrastructure/trace/artifact failure persists, preserve both immutable results/provenance records, write `terminal-state.md` with `terminal_state: INFRASTRUCTURE_BLOCKED`, `harness_status: INFRASTRUCTURE FAILURE` when that is the harness status, the actual exit code, and `repair_attempts: 0`, and stop that agent. If the confirmation produces a valid 3×3 artifact, write `confirmation-inventory.json`, keep the first attempt immutable, and use the valid evidence for diagnosis; the confirmation is not a repair attempt. A transient provider failure that disappears is recorded as provider evidence, not silently erased.
 
-- [ ] **Step 12: Close Task 10 without editing source or running a suite**
+- [x] **Step 12: Close Task 10 without editing source or running a suite**
+
+Task 10 closed at candidate `d6a082c` after all five agents produced valid baseline and confirmation inventories. The confirmation results preserved typed judge/provider failures and no Windows path preflight failure. Each agent's terminal record is `INFRASTRUCTURE_BLOCKED` with `repair_attempts: 0`; no target-side output-limit evidence exists, so Tasks 11 and 12 remain not applicable and no paid suite/live run is authorized by this plan.
 
 Before advancing, verify that every agent has a baseline provenance file, a valid baseline or explicit infrastructure confirmation record, a safe inventory or a documented artifact-unavailable stop, a no-repair or operation-scoped diagnosis, and a ledger entry naming the next task. Run:
 
@@ -1602,7 +1604,7 @@ If an agent passed its Task 10 baseline and required no repair, its immutable ba
 
 ---
 
-### Task 14: Create the Permanent Cross-Agent Fix Log — COMPLETE SNAPSHOT / UPDATE REQUIRED
+### Task 14: Create the Permanent Cross-Agent Fix Log — COMPLETE
 
 **Files:**
 - Create: `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`
@@ -1621,11 +1623,8 @@ If an agent passed its Task 10 baseline and required no repair, its immutable ba
 ## 3. Transferability Matrix
 ## 4. Shared RC-A ReAct Boundary Fix
 ## 5. Planner Local-Wrapper Removal / Regression Evidence
-## 6. Researcher Findings and Repairs
-## 7. Source Evaluator Findings and Repairs
-## 8. Fact Checker Findings and Repairs
-## 9. Synthesizer Findings and Repairs
-## 10. Critic Findings and Repairs
+## 6. Controlled Baseline and Confirmation Findings
+## 7. Agent-Specific Repair Decision
 ## 11. Safe Provider Diagnostic Projection
 ## 12. Operation-Specific Budget Decisions
 ## 13. Controlled Evaluation Evidence
@@ -1652,7 +1651,7 @@ Record `Task 14: complete` only after the log is updated with the final controll
 
 ---
 
-### Task 15: Final Offline Verification and Whole-Branch Review — INCOMPLETE (FINAL OFFLINE RERUN REQUIRED; WHOLE-BRANCH REVIEW DEFERRED)
+### Task 15: Final Offline Verification Complete; Whole-Branch Review Deferred
 
 **Files:**
 - No new production scope
@@ -1673,7 +1672,7 @@ git log --oneline --decorate --max-count=30
 
 Expected: full suite green; Ruff/whitespace green; clean tracked worktree.
 
-- [ ] **Step 2: Run reserved-data leakage checks over changed tracked files**
+- [x] **Step 2: Run reserved-data leakage checks over changed tracked files**
 
 Inspect the diff from `$ApprovedBase` and verify no added production/logging path contains:
 
@@ -1688,6 +1687,8 @@ unbounded validation input values
 ```
 
 Legitimate test assertions may mention these strings only to prove they are absent.
+
+Result: the added tracked documentation contains only bounded typed failure names, counts, hashes, repository-relative artifact paths, and explicit statements that raw provider content and secrets are excluded. No raw exception, prompt, evaluator input, environment dump, or secret value was added.
 
 - [ ] **Step 3: Dispatch the final whole-branch reviewer**
 

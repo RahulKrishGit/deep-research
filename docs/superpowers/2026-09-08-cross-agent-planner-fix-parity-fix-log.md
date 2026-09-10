@@ -43,25 +43,23 @@ Commit `45178ab` removed `_DecisionNormalizingCompleter` from Planner after sibl
 
 The parity tests cover Researcher, Fact Checker, and Critic ReAct paths with an empty unused optional field. Factory and assembly tests continue to assert exact provider identity. Planner behavior was not reimplemented in the siblings.
 
-## 6. Researcher Findings and Repairs
+## 6. Controlled Baseline and Confirmation Findings
 
-No agent-specific Researcher repair was authorized or inferred from offline evidence. The shared ReAct normalization applies to its execution path, and Task 5 preserves its existing fallback semantics while projecting only finite provider diagnostics. The controlled Researcher baseline was not reached because the required credentials were unavailable; therefore no quality conclusion, budget amendment, or provider-response diagnosis is recorded for Researcher.
+The Windows output-root repair was validated at candidate `d6a082c9260e5d9f2f7c061833b4734ec9990f1f`. Every agent completed all nine rows in its baseline and its one permitted same-SHA confirmation; none reproduced the historical Windows preflight failure. The results below are immutable, and the safe inventories are under `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/infrastructure-remediation/d6a082c-v3/agents/<agent>/`.
 
-## 7. Source Evaluator Findings and Repairs
+| Agent | Baseline | Confirmation | Persistent typed evidence | Result hashes (baseline / confirmation) |
+| --- | --- | --- | --- | --- |
+| Researcher | exit `1`; 9/9; 111/126 gates; mean `0.56` | exit `1`; 9/9; 109/126; mean unavailable | `judge_output_limit`; fallback `output_limit` on `researcher_finding_extraction` and `react_decision` | `a90b5ed9...48836` / `b721956d...50527` |
+| Source Evaluator | exit `1`; 9/9; 117/126; mean `0.92` | exit `1`; 9/9; 117/126; mean `0.91` | `required_fields_present`; typed judge output-limit/schema failures; fallback `output_limit` on `source_evaluator_scoring` | `0419ee76...edc89b` / `75517f20...523c10` |
+| Fact Checker | exit `1`; 9/9; 113/135; mean `0.70` | exit `1`; 9/9; 115/135; mean `0.67` | `required_fields_present`; typed judge output-limit/schema failures; fallback `output_limit`/schema on `react_decision` | `d1f6f2d9...d002d` / `5e8c6867...415a4` |
+| Synthesizer | exit `1`; 9/9; 126/135; mean `0.91` | exit `1`; 9/9; 126/135; mean `0.90` | `required_fields_present`; typed judge schema failures; fallback schema evidence | `2f55779f...6e37` / `cdaaf2ac...f46d3` |
+| Critic | exit `1`; 9/9; 112/126; mean `0.87` | exit `1`; 9/9; 108/126; mean `0.64` | `required_fields_present`; `route_consistent`/`no_prohibited_calls`; typed judge schema/output-limit and fallback `critic_report_review` evidence | `b83da8b4...3ccc9` / `8595bf93...0b637` |
 
-No agent-specific Source Evaluator repair was authorized or inferred. Task 7's characterization tests pin the expected non-ReAct schema sequence and reject `ReActDecision` for this agent. Its controlled baseline was not reached because credentials were unavailable; no output-limit or quality repair is claimed.
+The shortened hashes above are display-only; each inventory records the complete SHA-256. All five terminal records set `terminal_state: INFRASTRUCTURE_BLOCKED`, `repair_attempts: 0`, and preserve both immutable result paths. The repeated required-fields failures are not treated as a source repair because the same rows also contain typed judge/provider failures that prevent a valid quality verdict. Judge-side `output_limit` is not target operation budget evidence.
 
-## 8. Fact Checker Findings and Repairs
+## 7. Agent-Specific Repair Decision
 
-No agent-specific Fact Checker repair was authorized or inferred. Its ReAct parity regression exercises the shared boundary, while Task 5 retains existing fallback/partial-result behavior and adds only safe typed diagnostic projection. Its controlled baseline was not reached; no quality or operation-budget diagnosis is claimed.
-
-## 9. Synthesizer Findings and Repairs
-
-No agent-specific Synthesizer repair was authorized or inferred. Task 7's characterization tests pin its expected non-ReAct schema sequence and reject `ReActDecision`. Its controlled baseline was not reached because credentials were unavailable; no repair or no-change quality conclusion is claimed.
-
-## 10. Critic Findings and Repairs
-
-No agent-specific Critic repair was authorized or inferred. Its ReAct parity regression covers an empty unused optional field, and Task 5 preserves the existing fallback path while adding bounded diagnostics. Its controlled baseline was not reached; no quality or output-limit conclusion is claimed.
+No Task 11 budget amendment or Task 12 prompt/behavior repair is authorized by this evidence. The observed output-limit events are judge-side or fallback/provider diagnostics, not typed target-side `output_limit` evidence for an eligible non-ReAct operation. The shared Windows path repair is therefore the only source fix in this campaign. A future repair requires a new approved diagnosis after the evaluation-contract/provider issue is resolved; it must not tune prompts or budgets against these blocked verdicts.
 
 ## 11. Safe Provider Diagnostic Projection
 
@@ -77,9 +75,9 @@ No Task 10 budget amendment was authorized: a typed Task 9 output-limit artifact
 
 ## 13. Controlled Evaluation Evidence
 
-Task 9 was prepared but did not reach a provider or LangSmith request. The required `DEEPSEEK_API_KEY` and `LANGSMITH_API_KEY` were unavailable in the execution environment. All five agents therefore ended at `INFRASTRUCTURE_BLOCKED` with harness status `NOT_REACHED`, exit status `1`, and zero repair attempts.
+Task 10 used the repository environment through the safe launcher and process-only retry/token overrides. The five baselines and five confirmations reached DeepSeek/LangSmith and produced valid nine-row result artifacts. No raw credentials, prompts, provider responses, evaluator inputs, hidden reasoning, or unredacted exception strings were recorded. No `--tier live` command and no `suite` command were run; live evaluation remains outside this plan.
 
-There are no controlled result inventories, provider traces, evaluator URLs, or live experiment links to claim. No `--tier live` command was run. The missing credentials are recorded by name only; their values are not recorded.
+The historical pre-repair artifacts under the old SHA remain immutable. The current evidence is exclusively the `d6a082c-v3` namespace and the result paths named in each terminal record. The inventory helper was minimally corrected in ignored control-plane tooling to accept exact Windows `\\?\\` paths while continuing to reject wildcard/ellipsis paths; this helper change is not a source or tracked application change.
 
 ## 14. Environment / Retry / Worktree Rulings
 
@@ -109,6 +107,6 @@ There are no controlled result inventories, provider traces, evaluator URLs, or 
 
 ## 17. Final Verification and Terminal State
 
-Tasks 1–8 are complete and task-reviewed. The offline candidate is the `808cfba` campaign state; the current branch additionally contains the reviewed plan amendment, the current `origin/main` Streamlit documentation commit through rebase, and this permanent fix log.
+Tasks 1–10 and the Task 14 documentation update are complete and task-scoped reviewed where required. The current tracked candidate is `d6a082c`; the implementation source remains the reviewed Task 3 Windows path repair. The five agents are individually terminal-blocked after valid same-SHA confirmations, and no agent-specific repair is claimed.
 
-The campaign terminal state is `CONTROLLED_BASELINES_REQUIRED` / five-agent `INFRASTRUCTURE_BLOCKED`. The branch is ready for the separately authorized GitHub push, but it is not a claim of successful paid evaluation, live-tier execution, merge, release, or deployment.
+The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTURE_BLOCKS`. Final offline verification after the documentation update passed: focused config tests `47 passed`, `tests/test_evaluation` `697 passed`, full offline suite `1,936 passed, 1 deselected`, Ruff passed, and `git diff --check` passed. Whole-branch review remains explicitly deferred. This branch is not a claim of successful quality evaluation, live-tier execution, merge, release, or deployment.
