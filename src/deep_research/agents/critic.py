@@ -121,7 +121,7 @@ class CritiqueTask(AgentTask):
     error_count: int = Field(default=0, ge=0)
 
 
-def render_spot_check_guidance(sub_topics: Sequence[SubTopic]) -> str:
+def _render_spot_check_guidance(sub_topics: Sequence[SubTopic]) -> str:
     """Render the planner's search context for the Critic's spot check."""
     lines = [
         "When performing a spot check, use an applicable planned search "
@@ -467,7 +467,7 @@ class CriticAgent(BaseAgent[Critique]):
         """Bind this review to the report and the remaining budget."""
         return CritiqueTask(
             instruction=state.original_question,
-            guidance=render_spot_check_guidance(state.sub_topics),
+            guidance=_render_spot_check_guidance(state.sub_topics),
             report=state.report or "",
             iteration=state.iteration,
             max_iterations=state.max_iterations,
