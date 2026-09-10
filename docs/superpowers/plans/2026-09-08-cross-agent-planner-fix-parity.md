@@ -32,7 +32,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 9. Offline typed evaluation telemetry contract | **Complete** | Commit `a763cda`; focused/evaluation/full-offline tests, exact local inventory acceptance/rejection proof, lint/diff checks, and fresh Luna-max review approved. |
 | 10. Immutable controlled baselines | **Complete — five agents terminal-blocked after confirmation** | At candidate `d6a082c`, all five agents completed immutable 3-case × 3-repetition baselines and same-SHA confirmations. Windows preflight passed; typed judge/provider failures persisted, so each agent has `INFRASTRUCTURE_BLOCKED`, `repair_attempts: 0`, safe inventories, and a terminal record. |
 | 11. Evidence-gated output-budget repair | **Not started / not applicable** | Requires typed Task 10 target-side `output_limit` evidence; none exists. |
-| 12. Evidence-gated agent quality/trajectory repair | **Not started / not applicable** | Requires typed Task 10 quality/trajectory evidence; none exists. |
+| 12. Evidence-gated agent quality/trajectory repair | **In progress — evaluator repair wave 1 complete** | Sol-confirmed Task 10 evidence produced an evaluator contract repair: commit `7c58abc` fixes cross-channel `required_fields_present` with six production-shaped regression cases. Critic routing/context repairs and typed judge diagnosis remain pending. |
 | 13. Full controlled validation | **Not started** | Depends on Task 10 and any evidence-supported Tasks 11–12 repairs; no live or controlled validation was run. |
 | 14. Permanent cross-agent fix log | **Complete** | Updated with the candidate `d6a082c` controlled baseline/confirmation evidence, typed failure classes, hashes, and the no-budget/no-agent-repair decision. |
 | 15. Final offline verification and whole-branch review | **Offline verification complete — whole-branch review deferred** | After the Task 10/14 documentation update: focused config tests `47 passed`, `tests/test_evaluation` `697 passed`, full offline suite `1,936 passed, 1 deselected`, Ruff and `git diff --check` passed. Whole-branch review remains user-deferred. |
@@ -1514,7 +1514,7 @@ After the focused inventory passes and the fresh review is approved, commit only
 
 ---
 
-### Task 12: Evidence-Gated Agent-Specific Quality / Trajectory Repair Loop — NOT STARTED / NOT APPLICABLE
+### Task 12: Evidence-Gated Agent-Specific Quality / Trajectory Repair Loop — IN PROGRESS
 
 **Files:** conditional per diagnosed root cause; never edit frozen evaluation inputs, evaluators, judges, or the SDD ledger's source-of-truth definitions.
 

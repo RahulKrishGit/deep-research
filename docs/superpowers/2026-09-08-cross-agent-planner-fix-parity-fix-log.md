@@ -110,3 +110,13 @@ The historical pre-repair artifacts under the old SHA remain immutable. The curr
 Tasks 1–10 and the Task 14 documentation update are complete and task-scoped reviewed where required. The controlled evaluation candidate is `d6a082c`; the current documentation HEAD is its descendant `ceb5075`, and the implementation source remains the reviewed Task 3 Windows path repair. The five agents are individually terminal-blocked after valid same-SHA confirmations, and no agent-specific repair is claimed.
 
 The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTURE_BLOCKS`. Final offline verification after the documentation update passed: focused config tests `47 passed`, `tests/test_evaluation` `697 passed`, full offline suite `1,936 passed, 1 deselected`, Ruff passed, and `git diff --check` passed. Whole-branch review remains explicitly deferred. This branch is not a claim of successful quality evaluation, live-tier execution, merge, release, or deployment.
+
+## 18. Approved Repair Wave 1: Cross-Channel Required Fields
+
+- Diagnosis: `required_fields_present` inspected only `TargetOutput.result`, while production `_success_output()` intentionally keeps agent result and `state_update` as separate typed channels. This was confirmed for Source Evaluator (`evaluated_sources`), Fact Checker (`verified_claims`), Synthesizer (`report`), and Critic (`critique`). Researcher remains the control case because `findings` belongs in `result`. The original controlled artifacts remain immutable.
+- RED evidence: production-shaped fixtures failed the four state-update-only cases while the Researcher result case and missing-from-both control behaved as expected.
+- Fix: `src/deep_research/evaluation/evaluators.py` now treats a required field as present when its exact key exists in either mapping; empty values remain present and no field names, truthiness rules, gates, cases, thresholds, or fallback behavior changed.
+- Tests: `tests/test_evaluation/test_evaluators_general.py` adds five production-boundary/control cases plus missing-from-both. Focused evaluator/target verification passed `75` tests; Ruff and `git diff --check` passed.
+- Commit: `7c58abc08b83ab6da6d36cead9fa1f7316ae646a`.
+- Review: Luna Max approved with no findings; review confirmed key-presence semantics, coverage of all five agents/controls, and unchanged gate ordering.
+- Remaining work: Critic fallback route predicate, Critic ReAct context wiring, and judge diagnosis from typed `field_paths` (`$` and `rationale`) remain separate repair/diagnosis items. No token-budget change is authorized.
