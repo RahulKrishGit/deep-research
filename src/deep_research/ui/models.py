@@ -37,6 +37,16 @@ class UiToolCallSummary(ContractModel):
     failures: int = Field(ge=0)
 
 
+class UiExecutionErrorPresentation(ContractModel):
+    """Safe, project-owned copy for one execution error in the UI."""
+
+    category: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    effect: str = Field(min_length=1)
+    recovery_hint: str | None = None
+    diagnostic_context: dict[str, str] = Field(default_factory=dict)
+
+
 class UiSubTopicProgress(ContractModel):
     index: int = Field(ge=1)
     title: str = Field(min_length=1)
@@ -208,6 +218,7 @@ __all__ = [
     "SessionHistoryEntry",
     "UiClaimDetail",
     "UiCredibilityTier",
+    "UiExecutionErrorPresentation",
     "UiFactCheckSummary",
     "UiRecentActivity",
     "UiSessionSnapshot",

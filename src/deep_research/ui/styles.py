@@ -104,6 +104,18 @@ STATIC_CSS = """
   max-width: 820px;
 }
 
+[class*="st-key-dr-new-research-column"],
+[class*="st-key-dr-report-column"] {
+  width: 100%;
+  max-width: 820px;
+  margin-right: auto;
+}
+
+[data-testid="stForm"] {
+  width: 100%;
+  max-width: 820px;
+}
+
 .dr-product-identity {
   display: flex;
   align-items: center;
@@ -176,6 +188,59 @@ STATIC_CSS = """
 
 .dr-status--failed {
   color: var(--dr-error);
+}
+
+.dr-quality-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dr-space-1);
+  margin: var(--dr-space-2) 0 var(--dr-space-4);
+}
+
+.dr-quality-row {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  align-items: center;
+  gap: var(--dr-space-2);
+  color: var(--dr-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dr-quality-icon {
+  display: inline-flex;
+  width: 16px;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dr-quality-row--success .dr-quality-icon {
+  color: var(--dr-success);
+}
+
+.dr-quality-row--warning .dr-quality-icon {
+  color: var(--dr-warning);
+}
+
+.dr-quality-row--error .dr-quality-icon {
+  color: var(--dr-error);
+}
+
+.dr-quality-row--neutral .dr-quality-icon {
+  color: var(--dr-text-muted);
+}
+
+.dr-quality-count {
+  color: var(--dr-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-testid="stCodeBlock"] pre,
+[data-testid="stCode"] pre {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .dr-session-question {

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Mapping, MutableMapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 import streamlit as st
@@ -17,6 +20,7 @@ from deep_research.runtime.errors import (
 from deep_research.ui.models import (
     SessionHistoryEntry,
     UiClaimDetail,
+    UiExecutionErrorPresentation,
     UiSessionSnapshot,
     UiSourceDetail,
     UiSubTopicProgress,
@@ -24,6 +28,7 @@ from deep_research.ui.models import (
 )
 from deep_research.ui.progress import display_agent_action, display_agent_name
 from deep_research.ui.styles import COLORS, RADII, SPACING
+from deep_research.utils.types import ResearchError
 
 if TYPE_CHECKING:
     from deep_research.ui.runner import LocalResearchController
@@ -52,6 +57,487 @@ _HISTORY_ISSUE_STATUSES = frozenset(
 _HISTORY_SEARCH_KEY = "_deep_research_history_search"
 _HISTORY_FILTER_KEY = "_deep_research_history_filter"
 
+
+@dataclass(frozen=True, slots=True)
+class _ExecutionErrorSpec:
+    category: str
+    message: str
+    recoverable_effect: str
+    terminal_effect: str
+    recovery_hint: str
+
+
+_EXECUTION_ERROR_SPECS: Mapping[str, _ExecutionErrorSpec] = {
+    "ui.research.configuration_error": _ExecutionErrorSpec(
+        category="Configuration issue",
+        message=_CONFIGURATION_FAILURE_MESSAGE,
+        recoverable_effect=(
+            "The session could not begin with the current configuration."
+        ),
+        terminal_effect="The session could not begin with the current configuration.",
+        recovery_hint="Review the local research configuration and try again.",
+    ),
+    "ui.research.failed": _ExecutionErrorSpec(
+        category="Execution stopped",
+        message="Research run failed unexpectedly.",
+        recoverable_effect="The workflow recorded an execution issue and continued.",
+        terminal_effect="The run stopped; any retained report is partial.",
+        recovery_hint=(
+            "Review the retained report if present, then start a new session."
+        ),
+    ),
+    "graph_agent_configuration_error": _ExecutionErrorSpec(
+        category="Configuration issue",
+        message="The research workflow could not initialize its agents.",
+        recoverable_effect="The workflow continued with reduced execution coverage.",
+        terminal_effect="The workflow stopped before research could be completed.",
+        recovery_hint="Review the local research configuration and try again.",
+    ),
+    "graph_planning_failed": _ExecutionErrorSpec(
+        category="Planning issue",
+        message="The research plan could not be prepared.",
+        recoverable_effect="The workflow continued without one planning result.",
+        terminal_effect="The workflow stopped before all research could be planned.",
+        recovery_hint="Start a new session to retry the planning step.",
+    ),
+    "graph_provider_configuration_error": _ExecutionErrorSpec(
+        category="Configuration issue",
+        message="A research workflow provider is not configured.",
+        recoverable_effect="The workflow continued with reduced provider coverage.",
+        terminal_effect="The workflow stopped before all research could be completed.",
+        recovery_hint="Review the local research configuration and try again.",
+    ),
+    "graph_invalid_agent_state": _ExecutionErrorSpec(
+        category="Workflow state issue",
+        message="The research workflow reached an invalid state.",
+        recoverable_effect="The workflow continued after recording a state issue.",
+        terminal_effect="The workflow stopped before all planned work completed.",
+        recovery_hint="Start a new session to retry the workflow.",
+    ),
+    "graph_invalid_route": _ExecutionErrorSpec(
+        category="Workflow state issue",
+        message="The research workflow could not select its next step.",
+        recoverable_effect="The workflow continued with reduced execution coverage.",
+        terminal_effect="The workflow stopped before all planned work completed.",
+        recovery_hint="Start a new session to retry the workflow.",
+    ),
+    "researcher_sub_topic_without_findings": _ExecutionErrorSpec(
+        category="Research coverage issue",
+        message="One research subtopic returned no citable findings.",
+        recoverable_effect=(
+            "The research pass continued, but coverage may be thinner for one "
+            "subtopic."
+        ),
+        terminal_effect=(
+            "The research pass stopped with one subtopic lacking citable "
+            "findings."
+        ),
+        recovery_hint=(
+            "Review the report coverage and rerun the session if the gap "
+            "matters."
+        ),
+    ),
+    "researcher_sub_topic_skipped": _ExecutionErrorSpec(
+        category="Research coverage issue",
+        message="One planned research subtopic was not researched.",
+        recoverable_effect=(
+            "The research pass continued, but the report may omit one "
+            "subtopic."
+        ),
+        terminal_effect=(
+            "The research pass stopped before one planned subtopic was "
+            "researched."
+        ),
+        recovery_hint=(
+            "Review the stopping point and rerun the session for full "
+            "coverage."
+        ),
+    ),
+    "researcher_extraction_provider_error": _ExecutionErrorSpec(
+        category="Finding extraction issue",
+        message="Finding extraction was unavailable for one research step.",
+        recoverable_effect=(
+            "The research pass continued, but one finding set may be "
+            "incomplete."
+        ),
+        terminal_effect=(
+            "The research pass stopped before all planned subtopics were "
+            "researched."
+        ),
+        recovery_hint=(
+            "Review the stopping point and start a new session to retry the "
+            "missing step."
+        ),
+    ),
+    "researcher_invalid_finding": _ExecutionErrorSpec(
+        category="Finding validation issue",
+        message="One extracted finding did not pass validation.",
+        recoverable_effect="The research pass continued without that finding.",
+        terminal_effect="The research pass stopped with an invalid finding result.",
+        recovery_hint="Review the retained coverage and rerun the session if needed.",
+    ),
+    "researcher_no_sub_topics": _ExecutionErrorSpec(
+        category="Planning issue",
+        message="No research subtopics were available to investigate.",
+        recoverable_effect="The workflow continued with no subtopic findings.",
+        terminal_effect="The workflow stopped before research could begin.",
+        recovery_hint="Start a new session with a more specific research question.",
+    ),
+    "source_evaluator_reputation_unavailable": _ExecutionErrorSpec(
+        category="Source evaluation issue",
+        message="Remembered source credibility context was unavailable.",
+        recoverable_effect=(
+            "The source credibility pass continued with direct scoring, so "
+            "the report may have less remembered-source context."
+        ),
+        terminal_effect=(
+            "The source credibility pass stopped before all sources were "
+            "evaluated."
+        ),
+        recovery_hint=(
+            "Review source details and rerun the session if credibility "
+            "coverage is important."
+        ),
+    ),
+    "source_evaluator_scoring_provider_error": _ExecutionErrorSpec(
+        category="Source evaluation issue",
+        message="Model-based source scoring was unavailable.",
+        recoverable_effect=(
+            "The source credibility pass continued with reduced scoring "
+            "coverage."
+        ),
+        terminal_effect=(
+            "The source credibility pass stopped; retained sources use "
+            "lower-confidence fallback context."
+        ),
+        recovery_hint=(
+            "Review source credibility details and rerun the session for "
+            "full scoring."
+        ),
+    ),
+    "source_evaluator_no_sources": _ExecutionErrorSpec(
+        category="Source coverage issue",
+        message="No sources were available for credibility evaluation.",
+        recoverable_effect=(
+            "The workflow continued, but source coverage may be limited."
+        ),
+        terminal_effect="The workflow stopped without sources to evaluate.",
+        recovery_hint=(
+            "Review the research question and rerun the session to gather "
+            "sources."
+        ),
+    ),
+    "fact_checker_extraction_provider_error": _ExecutionErrorSpec(
+        category="Fact-check issue",
+        message="Claim extraction was unavailable for one fact-checking step.",
+        recoverable_effect="The fact-check pass continued with reduced claim coverage.",
+        terminal_effect=(
+            "The fact-check pass stopped before all claims could be checked."
+        ),
+        recovery_hint=(
+            "Treat unchecked claims cautiously and rerun the session for "
+            "full verification."
+        ),
+    ),
+    "fact_checker_invalid_claim": _ExecutionErrorSpec(
+        category="Fact-check issue",
+        message="One extracted claim did not pass validation.",
+        recoverable_effect="The fact-check pass continued without that claim.",
+        terminal_effect="The fact-check pass stopped with an invalid claim result.",
+        recovery_hint="Review the fact-check summary and rerun the session if needed.",
+    ),
+    "fact_checker_no_findings": _ExecutionErrorSpec(
+        category="Fact-check issue",
+        message="No findings were available for fact-checking.",
+        recoverable_effect="The workflow continued without additional claim checks.",
+        terminal_effect="The workflow stopped before claims could be checked.",
+        recovery_hint=(
+            "Review the report evidence and rerun the session for "
+            "verification."
+        ),
+    ),
+    "fact_checker_verification_provider_error": _ExecutionErrorSpec(
+        category="Fact-check issue",
+        message="Claim verification was unavailable for one fact-checking step.",
+        recoverable_effect=(
+            "The fact-check pass continued with reduced verification "
+            "coverage."
+        ),
+        terminal_effect=(
+            "The fact-check pass stopped before all claims could be "
+            "verified."
+        ),
+        recovery_hint=(
+            "Treat unchecked claims cautiously and rerun the session for "
+            "verification."
+        ),
+    ),
+    "synthesizer_report_provider_error": _ExecutionErrorSpec(
+        category="Report synthesis issue",
+        message="Report synthesis was unavailable.",
+        recoverable_effect=(
+            "The workflow continued, but the report may have reduced "
+            "synthesis coverage."
+        ),
+        terminal_effect=(
+            "The workflow stopped before the report could be fully "
+            "synthesized."
+        ),
+        recovery_hint=(
+            "Review any retained report and start a new session to retry "
+            "synthesis."
+        ),
+    ),
+    "synthesizer_invalid_section": _ExecutionErrorSpec(
+        category="Report synthesis issue",
+        message="One synthesized report section did not pass validation.",
+        recoverable_effect="The workflow continued without that section.",
+        terminal_effect="The workflow stopped with an incomplete report structure.",
+        recovery_hint=(
+            "Review the retained report and rerun the session if coverage is "
+            "missing."
+        ),
+    ),
+    "synthesizer_report_not_written": _ExecutionErrorSpec(
+        category="Report delivery issue",
+        message="The synthesized report could not be saved locally.",
+        recoverable_effect=(
+            "The workflow continued, but the saved report may be unavailable."
+        ),
+        terminal_effect="The workflow stopped before the report could be saved.",
+        recovery_hint="Check the local output directory and rerun the session.",
+    ),
+    "synthesizer_memory_save_failed": _ExecutionErrorSpec(
+        category="Research memory issue",
+        message="Research memory could not be updated after synthesis.",
+        recoverable_effect=(
+            "The report workflow continued without saving this context to "
+            "memory."
+        ),
+        terminal_effect="The workflow stopped while saving research context.",
+        recovery_hint=(
+            "Use the retained report and rerun the session if memory "
+            "continuity matters."
+        ),
+    ),
+    "synthesizer_no_evidence": _ExecutionErrorSpec(
+        category="Report evidence issue",
+        message="No evidence was available for report synthesis.",
+        recoverable_effect=(
+            "The workflow continued, but the report may have limited "
+            "evidence."
+        ),
+        terminal_effect=(
+            "The workflow stopped before an evidence-backed report could be "
+            "synthesized."
+        ),
+        recovery_hint="Broaden the question or rerun the session to gather evidence.",
+    ),
+    "critic_review_provider_error": _ExecutionErrorSpec(
+        category="Report review issue",
+        message="The report review step was unavailable.",
+        recoverable_effect="The workflow continued without one review result.",
+        terminal_effect=(
+            "The workflow stopped before the report could be fully reviewed."
+        ),
+        recovery_hint=(
+            "Review the retained report and rerun the session for another "
+            "review pass."
+        ),
+    ),
+    "critic_missing_report": _ExecutionErrorSpec(
+        category="Report review issue",
+        message="No report was available for the review step.",
+        recoverable_effect="The workflow continued without a report review.",
+        terminal_effect=(
+            "The workflow stopped because no report was available to review."
+        ),
+        recovery_hint=(
+            "Rerun the session after confirming that research produced "
+            "evidence."
+        ),
+    ),
+    "agent_unknown_tool": _ExecutionErrorSpec(
+        category="Research step issue",
+        message="A requested research tool was unavailable.",
+        recoverable_effect="The research step continued with one tool action omitted.",
+        terminal_effect=(
+            "The research step stopped because a required tool was "
+            "unavailable."
+        ),
+        recovery_hint=(
+            "Review the report coverage and rerun the session if the missing "
+            "action matters."
+        ),
+    ),
+    "agent_tool_budget_exhausted": _ExecutionErrorSpec(
+        category="Research step issue",
+        message="A research step reached its tool-action limit.",
+        recoverable_effect=(
+            "The research step continued with the evidence collected so far."
+        ),
+        terminal_effect=(
+            "The research step stopped after reaching its tool-action limit."
+        ),
+        recovery_hint=(
+            "Review the evidence collected and rerun the session for more "
+            "coverage."
+        ),
+    ),
+    "agent_invalid_tool_input": _ExecutionErrorSpec(
+        category="Research step issue",
+        message="A research tool action could not be validated.",
+        recoverable_effect="The research step continued without that tool action.",
+        terminal_effect=(
+            "The research step stopped after a tool action could not be "
+            "validated."
+        ),
+        recovery_hint="Review the report coverage and rerun the session if needed.",
+    ),
+    "agent_tool_failed": _ExecutionErrorSpec(
+        category="Research step issue",
+        message="Execution errors were recorded during the run.",
+        recoverable_effect=(
+            "The workflow continued, but the result may have less evidence."
+        ),
+        terminal_effect="The research step stopped before all evidence was collected.",
+        recovery_hint=(
+            "Review the retained evidence and rerun the session if coverage "
+            "is incomplete."
+        ),
+    ),
+    "agent_provider_error": _ExecutionErrorSpec(
+        category="Research step issue",
+        message="A model-assisted research step was unavailable.",
+        recoverable_effect="The workflow continued with reduced research coverage.",
+        terminal_effect="The research step stopped before all evidence was collected.",
+        recovery_hint=(
+            "Review the stopping point and start a new session to retry the "
+            "step."
+        ),
+    ),
+    "ValidationError": _ExecutionErrorSpec(
+        category="Input validation issue",
+        message="A research action did not pass validation.",
+        recoverable_effect="The workflow continued without that action.",
+        terminal_effect="The workflow stopped after an action failed validation.",
+        recovery_hint="Review the report coverage and rerun the session if needed.",
+    ),
+    "ResponseValidationError": _ExecutionErrorSpec(
+        category="Research response issue",
+        message="A research response did not pass validation.",
+        recoverable_effect="The workflow continued without that response.",
+        terminal_effect=(
+            "The workflow stopped after a research response failed "
+            "validation."
+        ),
+        recovery_hint="Rerun the session to retry the affected research step.",
+    ),
+    "unsupported_document_format": _ExecutionErrorSpec(
+        category="Document input issue",
+        message="A document format was not supported for research.",
+        recoverable_effect="The workflow continued without that document.",
+        terminal_effect="The workflow stopped before the document could be used.",
+        recovery_hint="Provide a supported document format and rerun the session.",
+    ),
+    "document_extraction_failed": _ExecutionErrorSpec(
+        category="Document input issue",
+        message="Text could not be extracted from one document.",
+        recoverable_effect=(
+            "The workflow continued without that document's extracted text."
+        ),
+        terminal_effect="The workflow stopped while extracting document text.",
+        recovery_hint="Check the document and rerun the session.",
+    ),
+    "unsupported_content_type": _ExecutionErrorSpec(
+        category="Source input issue",
+        message="A source content type was not supported for research.",
+        recoverable_effect="The workflow continued without that source content.",
+        terminal_effect="The workflow stopped before that source could be used.",
+        recovery_hint="Review the source selection and rerun the session.",
+    ),
+    "robots_disallowed": _ExecutionErrorSpec(
+        category="Source access issue",
+        message="A source declined automated access.",
+        recoverable_effect="The workflow continued without that source.",
+        terminal_effect="The workflow stopped while accessing a source.",
+        recovery_hint=(
+            "Review the remaining sources and rerun the session if coverage "
+            "is insufficient."
+        ),
+    ),
+}
+
+_FALLBACK_EXECUTION_ERROR_SPEC = _ExecutionErrorSpec(
+    category="Execution issue",
+    message="Execution errors were recorded during the run.",
+    recoverable_effect="The workflow continued, but the result may have less coverage.",
+    terminal_effect="The run stopped before all planned work completed.",
+    recovery_hint=(
+        "Review the retained result and start a new session if coverage is "
+        "incomplete."
+    ),
+)
+
+_SAFE_STAGE_BY_SOURCE = {
+    "agent.researcher": "Researcher",
+    "researcher": "Researcher",
+    "agent.source_evaluator": "Source evaluator",
+    "source_evaluator": "Source evaluator",
+    "agent.fact_checker": "Fact checker",
+    "fact_checker": "Fact checker",
+    "agent.synthesizer": "Report synthesis",
+    "synthesizer": "Report synthesis",
+    "agent.critic": "Report review",
+    "critic": "Report review",
+    "graph": "Research workflow",
+    "engine": "Research workflow",
+    "ui": "Application",
+}
+
+_SAFE_DETAIL_FIELDS = (
+    ("attempts", "Attempts"),
+    ("failures", "Failures"),
+    ("failure_count", "Failures"),
+    ("sources", "Sources"),
+    ("source_count", "Sources"),
+    ("iterations", "Iterations"),
+    ("iteration", "Iteration"),
+    ("max_iterations", "Iteration limit"),
+    ("tool_calls", "Tool calls"),
+    ("tool_budget", "Tool-action limit"),
+    ("attempted", "Attempted items"),
+    ("rejected", "Rejected items"),
+    ("priority", "Priority"),
+    ("status_code", "Response status"),
+    ("exception_type", "Exception type"),
+    ("reason", "Recorded reason"),
+    ("stop_reason", "Stop reason"),
+)
+
+_SAFE_REASON_LABELS = {
+    "cap": "Iteration cap",
+    "provider_failure_stopped_processing": "Provider failure stopped processing",
+    "tool_budget_exhausted": "Tool-action limit reached",
+    "provider_error": "Provider failure",
+    "tool_failed": "Tool failure",
+    "malformed_result": "Malformed result",
+    "finished": "Completed",
+    "completed": "Completed",
+}
+_SAFE_EXCEPTION_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
+_UNSAFE_EXCEPTION_MARKERS = (
+    "secret",
+    "password",
+    "credential",
+    "token",
+    "payload",
+    "trace",
+    "raw",
+    "config",
+    "key",
+)
+
 _STATUS_PRESENTATION: Mapping[str, tuple[str, str, str]] = {
     "ready": ("●", "Ready to start", "neutral"),
     "running": ("◌", "Running", "running"),
@@ -59,6 +545,17 @@ _STATUS_PRESENTATION: Mapping[str, tuple[str, str, str]] = {
     "max_iterations": ("▲", "Max iterations", "max-iterations"),
     "incomplete": ("Ⅱ", "Incomplete", "incomplete"),
     "failed": ("×", "Failed", "failed"),
+}
+
+_QUALITY_ROW_PRESENTATION: Mapping[tuple[str, str], tuple[str, str]] = {
+    ("source", "High"): ("●", "success"),
+    ("source", "Moderate"): ("◐", "warning"),
+    ("source", "Low"): ("●", "error"),
+    ("source", "Unrated"): ("○", "neutral"),
+    ("fact", "Verified"): ("✓", "success"),
+    ("fact", "Unverified"): ("○", "neutral"),
+    ("fact", "Contradicted"): ("×", "error"),
+    ("fact", "Insufficient evidence"): ("△", "warning"),
 }
 
 REPORT_CSS = """
@@ -73,7 +570,7 @@ REPORT_CSS = """
 }
 
 [data-testid="stMainBlockContainer"] hr {
-  margin: 4px 0 !important;
+  margin: 16px 0 !important;
 }
 """
 
@@ -124,6 +621,119 @@ def render_status(status: str, *, label: str | None = None) -> None:
         ),
         unsafe_allow_html=True,
     )
+
+
+def _safe_stage(source: str) -> str:
+    return _SAFE_STAGE_BY_SOURCE.get(source, "Research workflow")
+
+
+def _safe_integer(value: object) -> str | None:
+    """Return only bounded numeric diagnostics from a structured error."""
+    if type(value) is int:
+        number = value
+    elif type(value) is float and isfinite(value) and value.is_integer():
+        number = int(value)
+    else:
+        return None
+    if number < 0 or number > 1_000_000:
+        return None
+    return str(number)
+
+
+def _safe_exception_type(value: object) -> str | None:
+    if not isinstance(value, str) or not _SAFE_EXCEPTION_TYPE.fullmatch(value):
+        return None
+    lowered = value.casefold()
+    if any(marker in lowered for marker in _UNSAFE_EXCEPTION_MARKERS):
+        return None
+    return value
+
+
+def _safe_diagnostic_value(field: str, value: object) -> str | None:
+    if field in {"reason", "stop_reason"}:
+        if isinstance(value, str):
+            return _SAFE_REASON_LABELS.get(value)
+        return None
+    if field == "exception_type":
+        return _safe_exception_type(value)
+    if field in {"attempted", "rejected"} and isinstance(
+        value, (list, tuple)
+    ):
+        return _safe_integer(len(value))
+    return _safe_integer(value)
+
+
+def _safe_diagnostic_context(error: ResearchError) -> dict[str, str]:
+    """Allowlist compact, non-sensitive context for the details expander."""
+    context = {"Stage": _safe_stage(error.source)}
+    seen_labels = set(context)
+    for field, label in _SAFE_DETAIL_FIELDS:
+        if label in seen_labels or field not in error.details:
+            continue
+        safe_value = _safe_diagnostic_value(field, error.details[field])
+        if safe_value is None:
+            continue
+        context[label] = safe_value
+        seen_labels.add(label)
+    return context
+
+
+def _presentation_from_spec(
+    error: ResearchError,
+    spec: _ExecutionErrorSpec,
+) -> UiExecutionErrorPresentation:
+    effect = spec.recoverable_effect if error.recoverable else spec.terminal_effect
+    return UiExecutionErrorPresentation(
+        category=spec.category,
+        message=spec.message,
+        effect=effect,
+        recovery_hint=spec.recovery_hint,
+        diagnostic_context=_safe_diagnostic_context(error),
+    )
+
+
+def execution_error_presentation(
+    error: ResearchError,
+) -> UiExecutionErrorPresentation:
+    """Map one structured engine error to safe, project-owned UI copy.
+
+    The persisted error message and untrusted detail values are intentionally
+    not used as user-facing text.  Only the error type, recoverability flag,
+    and a small allowlist of structured numeric/context fields are consulted.
+    """
+    spec = _EXECUTION_ERROR_SPECS.get(
+        error.error_type,
+        _FALLBACK_EXECUTION_ERROR_SPEC,
+    )
+    return _presentation_from_spec(error, spec)
+
+
+def _fallback_execution_error_presentation(
+    *,
+    terminal: bool,
+) -> UiExecutionErrorPresentation:
+    spec = _FALLBACK_EXECUTION_ERROR_SPEC
+    return UiExecutionErrorPresentation(
+        category=spec.category,
+        message=(
+            "Research run failed unexpectedly."
+            if terminal
+            else spec.message
+        ),
+        effect=spec.terminal_effect if terminal else spec.recoverable_effect,
+        recovery_hint=spec.recovery_hint,
+        diagnostic_context={"Stage": "Research workflow"},
+    )
+
+
+def _execution_error_presentations(
+    snapshot: UiSessionSnapshot,
+) -> tuple[UiExecutionErrorPresentation, ...]:
+    if snapshot.errors:
+        return tuple(
+            execution_error_presentation(error) for error in snapshot.errors
+        )
+    return (_fallback_execution_error_presentation(terminal=True),)
 
 
 def _set_view(view: str, state: MutableMapping[str, Any]) -> None:
@@ -489,7 +1099,7 @@ def _start_research(
     st.rerun()
 
 
-def render_new_research_view(controller: LocalResearchController) -> None:
+def _render_new_research_content(controller: LocalResearchController) -> None:
     """Render the question-first New Research screen and its start form."""
     state = st.session_state
     error_details = state.get(_START_ERROR_KEY)
@@ -598,6 +1208,12 @@ def render_new_research_view(controller: LocalResearchController) -> None:
         with column:
             st.markdown(f"**{title}**")
             st.caption(description)
+
+
+def render_new_research_view(controller: LocalResearchController) -> None:
+    """Render the question-first view inside its bounded editorial column."""
+    with _st_container(key="dr-new-research-column"):
+        _render_new_research_content(controller)
 
 
 def _format_token_total(total: int) -> str:
@@ -805,6 +1421,14 @@ def _render_details_rail(snapshot: UiSessionSnapshot) -> None:
             f"Macro iteration · {snapshot.iteration} of {snapshot.max_iterations}"
         )
 
+    if snapshot.errors:
+        with st.expander("Execution issues", expanded=False):
+            for presentation in _execution_error_presentations(snapshot):
+                st.markdown(f"**{escape(presentation.category)}**")
+                st.caption(f"Effect · {presentation.effect}")
+                if presentation.recovery_hint:
+                    st.caption(f"Recovery · {presentation.recovery_hint}")
+
 
 def _render_running_snapshot(snapshot: UiSessionSnapshot) -> None:
     main_column, details_column = st.columns([3, 1], gap="large")
@@ -834,12 +1458,32 @@ def _render_running_snapshot(snapshot: UiSessionSnapshot) -> None:
 
 
 def _safe_failure_message(snapshot: UiSessionSnapshot) -> str:
-    if any(
-        error.error_type == "ui.research.configuration_error"
-        for error in snapshot.errors
-    ):
-        return _CONFIGURATION_FAILURE_MESSAGE
-    return "Research run failed unexpectedly."
+    return _execution_error_presentations(snapshot)[0].message
+
+
+def _render_safe_diagnostic_details(
+    presentations: tuple[UiExecutionErrorPresentation, ...],
+) -> None:
+    with st.expander("Safe diagnostic details", expanded=False):
+        for index, presentation in enumerate(presentations):
+            if index:
+                st.divider()
+            if len(presentations) > 1:
+                st.markdown(f"**{escape(presentation.category)}**")
+            for label, value in presentation.diagnostic_context.items():
+                st.caption(f"{label} · {value}")
+
+
+def _render_execution_errors(snapshot: UiSessionSnapshot) -> None:
+    """Render safe effects and recovery without exposing engine text."""
+    render_status("failed", label="EXECUTION ERRORS")
+    presentations = _execution_error_presentations(snapshot)
+    for presentation in presentations:
+        st.error(f"{presentation.category}: {presentation.message}")
+        st.caption(f"Effect · {presentation.effect}")
+        if presentation.recovery_hint:
+            st.caption(f"Recovery · {presentation.recovery_hint}")
+    _render_safe_diagnostic_details(presentations)
 
 
 def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
@@ -862,7 +1506,7 @@ def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
     render_status(snapshot.status)
     st.caption(f"Markdown  ·  Max {snapshot.max_iterations} iterations")
     if snapshot.status == "failed":
-        st.error(_safe_failure_message(snapshot))
+        _render_execution_errors(snapshot)
         if snapshot.report is None:
             st.caption("No report was available for this session.")
         _render_stopping_point(snapshot)
@@ -900,14 +1544,32 @@ def _report_status_label(snapshot: UiSessionSnapshot) -> tuple[str, str, str]:
 def _render_quality_rows(
     *,
     heading: str,
+    kind: str,
     rows: tuple[tuple[str, int], ...],
 ) -> None:
     st.markdown(
         f'<div class="dr-section-label">{escape(heading)}</div>',
         unsafe_allow_html=True,
     )
+    rendered_rows = [
+        '<div class="dr-quality-list" role="list">'
+    ]
     for label, count in rows:
-        st.caption(f"{label} · {count}")
+        icon, tone = _QUALITY_ROW_PRESENTATION.get(
+            (kind, label),
+            ("•", "neutral"),
+        )
+        slug = label.casefold().replace(" ", "-")
+        rendered_rows.append(
+            f'<div class="dr-quality-row dr-quality-row--{kind}-{slug} '
+            f'dr-quality-row--{tone}" role="listitem">'
+            f'<span class="dr-quality-icon" aria-hidden="true">{icon}</span>'
+            f'<span class="dr-quality-label">{escape(label)}</span>'
+            f'<span class="dr-quality-count">{count}</span>'
+            "</div>"
+        )
+    rendered_rows.append("</div>")
+    st.markdown("".join(rendered_rows), unsafe_allow_html=True)
 
 
 def _source_tier_label(tier: str) -> str:
@@ -951,6 +1613,7 @@ def _render_completed_details_rail(snapshot: UiSessionSnapshot) -> None:
     source_summary = snapshot.source_summary
     _render_quality_rows(
         heading="SOURCE CREDIBILITY",
+        kind="source",
         rows=(
             ("High", source_summary.high),
             ("Moderate", source_summary.moderate),
@@ -969,6 +1632,7 @@ def _render_completed_details_rail(snapshot: UiSessionSnapshot) -> None:
     fact_summary = snapshot.fact_check_summary
     _render_quality_rows(
         heading="FACT-CHECK SUMMARY",
+        kind="fact",
         rows=(
             ("Verified", fact_summary.verified),
             ("Unverified", fact_summary.unverified),
@@ -1015,72 +1679,84 @@ def _render_report_issues(snapshot: UiSessionSnapshot) -> None:
             st.markdown(f"- {limitation}")
 
     if snapshot.errors:
-        render_status("failed", label="EXECUTION ERRORS")
-        if snapshot.status == "failed":
-            st.error(_safe_failure_message(snapshot))
-        else:
-            st.error("Execution errors were recorded during the run.")
+        _render_execution_errors(snapshot)
     elif snapshot.status == "completed":
         st.caption("No errors reported.")
+
+
+def _render_completed_report_body(
+    snapshot: UiSessionSnapshot,
+    *,
+    eyebrow: str,
+    status: str,
+    status_label: str,
+) -> None:
+    st.markdown(
+        f'<div class="dr-editorial-column dr-section-label">{eyebrow}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="dr-editorial-column dr-shell-title">'
+        f"<h1>{escape(snapshot.question)}</h1></div>",
+        unsafe_allow_html=True,
+    )
+    render_status(status, label=status_label)
+    if snapshot.status == "completed":
+        iteration_metadata = (
+            f"Completed in {snapshot.iteration} of "
+            f"{snapshot.max_iterations} iterations"
+        )
+    elif snapshot.status == "max_iterations":
+        iteration_metadata = (
+            f"Stopped at iteration {snapshot.iteration} of "
+            f"{snapshot.max_iterations}"
+        )
+    elif snapshot.status == "incomplete":
+        iteration_metadata = (
+            f"Incomplete after {snapshot.iteration} of "
+            f"{snapshot.max_iterations} iterations"
+        )
+    else:
+        iteration_metadata = (
+            f"Failed after {snapshot.iteration} of "
+            f"{snapshot.max_iterations} iterations"
+        )
+    metadata = [f"Markdown · {iteration_metadata}"]
+    finished_at = _format_datetime(
+        snapshot.finished_at,
+        prefix="Completed" if snapshot.status == "completed" else "Ended",
+    )
+    if finished_at:
+        metadata.append(finished_at)
+    st.caption(" · ".join(metadata))
+    if snapshot.report_path:
+        st.caption("Report path")
+        st.code(snapshot.report_path, language=None)
+    if snapshot.status == "max_iterations":
+        st.caption("The run reached its configured iteration limit.")
+
+    if snapshot.report:
+        # Keep report Markdown on the base canvas so the answer remains the
+        # dominant object and Streamlit owns its safe Markdown rendering.
+        st.markdown(snapshot.report)
+    else:
+        st.caption("No report was available for this session.")
+    if snapshot.status != "completed":
+        _render_stopping_point(snapshot)
+    _render_report_issues(snapshot)
 
 
 def _render_completed_snapshot(snapshot: UiSessionSnapshot) -> None:
     eyebrow, status, status_label = _report_status_label(snapshot)
     main_column, details_column = st.columns([3, 1], gap="large")
     with main_column:
-        st.markdown(
-            f'<div class="dr-editorial-column dr-section-label">{eyebrow}</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<div class="dr-editorial-column dr-shell-title">'
-            f"<h1>{escape(snapshot.question)}</h1></div>",
-            unsafe_allow_html=True,
-        )
-        render_status(status, label=status_label)
-        if snapshot.status == "completed":
-            iteration_metadata = (
-                f"Completed in {snapshot.iteration} of "
-                f"{snapshot.max_iterations} iterations"
+        with _st_container(key="dr-report-column"):
+            _render_completed_report_body(
+                snapshot,
+                eyebrow=eyebrow,
+                status=status,
+                status_label=status_label,
             )
-        elif snapshot.status == "max_iterations":
-            iteration_metadata = (
-                f"Stopped at iteration {snapshot.iteration} of "
-                f"{snapshot.max_iterations}"
-            )
-        elif snapshot.status == "incomplete":
-            iteration_metadata = (
-                f"Incomplete after {snapshot.iteration} of "
-                f"{snapshot.max_iterations} iterations"
-            )
-        else:
-            iteration_metadata = (
-                f"Failed after {snapshot.iteration} of "
-                f"{snapshot.max_iterations} iterations"
-            )
-        metadata = [
-            f"Markdown · {iteration_metadata}"
-        ]
-        finished_at = _format_datetime(
-            snapshot.finished_at,
-            prefix="Completed" if snapshot.status == "completed" else "Ended",
-        )
-        if finished_at:
-            metadata.append(finished_at)
-        st.caption(" · ".join(metadata))
-        if snapshot.report_path:
-            st.caption(f"Report path · `{escape(snapshot.report_path)}`")
-        if snapshot.status == "max_iterations":
-            st.caption("The run reached its configured iteration limit.")
-
-        if snapshot.report:
-            # Keep report Markdown on the base canvas so the answer remains the
-            # dominant object and Streamlit owns its safe Markdown rendering.
-            st.markdown(snapshot.report)
-        else:
-            st.caption("No report was available for this session.")
-        _render_stopping_point(snapshot)
-        _render_report_issues(snapshot)
 
     with details_column:
         _render_completed_details_rail(snapshot)
@@ -1267,6 +1943,7 @@ def render_history_view(controller: LocalResearchController) -> None:
 __all__ = [
     "_render_running_snapshot",
     "REPORT_CSS",
+    "execution_error_presentation",
     "render_current_session_view",
     "render_history_view",
     "render_new_research_view",

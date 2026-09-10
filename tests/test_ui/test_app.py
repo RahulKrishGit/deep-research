@@ -23,7 +23,10 @@ from deep_research.ui.app import (
     _VIEW_KEY,
     render_app,
 )
-from deep_research.ui.components import _start_research
+from deep_research.ui.components import (
+    _start_research,
+    execution_error_presentation,
+)
 from deep_research.ui.history import SessionHistoryStore
 from deep_research.ui.models import (
     SessionHistoryEntry,
@@ -421,6 +424,7 @@ def _visible_main_text(app: AppTest) -> str:
 def test_new_research_screen_has_question_form_and_ready_state() -> None:
     app = _app([]).run()
 
+    assert app.container(key="dr-new-research-column") is not None
     assert app.text_area(key="research_question").label == "Research question"
     assert app.number_input(key="max_iterations").label == "Maximum iterations"
     assert any("Markdown" in item.value for item in app.main.markdown)
@@ -1211,6 +1215,151 @@ def test_completed_report_is_on_base_canvas_with_secondary_quality_details() -> 
     assert any(item.label == "Session metadata" for item in app.expander)
     assert "Average source score" not in visible
     assert "Gauge" not in visible
+
+
+def test_report_quality_rows_and_path() -> None:
+    app = _running_app(_completed_report_snapshot())
+    visible = _visible_main_text(app)
+
+    assert app.container(key="dr-report-column") is not None
+    assert "dr-quality-row" in visible
+    assert "dr-quality-icon" in visible
+    assert "dr-quality-row--source-high" in visible
+    assert "dr-quality-row--fact-contradicted" in visible
+    assert app.code
+    assert app.code[0].value == "reports/grid-scale-batteries-2030.md"
+    assert any(
+        item.value == "Report path" for item in app.main.caption
+    )
+
+
+def test_completed_without_execution_errors_keeps_neutral_issue_state() -> None:
+    app = _running_app(_completed_report_snapshot(errors=[]))
+    visible = _visible_main_text(app)
+
+    assert "No errors reported." in visible
+    assert "EXECUTION ERRORS" not in visible
+    assert not any(
+        item.label == "Safe diagnostic details" for item in app.expander
+    )
+
+
+def test_execution_error_mapping_uses_safe_project_owned_copy_and_details() -> None:
+    from deep_research.utils.types import ResearchError
+
+    error = ResearchError(
+        error_type="source_evaluator_reputation_unavailable",
+        source="agent.source_evaluator",
+        message="provider response contains TOP-SECRET-RAW-MESSAGE",
+        recoverable=True,
+        details={
+            "failures": 3,
+            "exception_type": "ProviderTimeoutError",
+            "provider_config": "SECRET-CONFIG",
+            "raw_payload": "SECRET-PAYLOAD",
+        },
+    )
+
+    presentation = execution_error_presentation(error)
+    rendered = presentation.model_dump_json()
+
+    assert presentation.category == "Source evaluation issue"
+    assert "The source credibility pass continued" in presentation.effect
+    assert presentation.recovery_hint
+    assert presentation.diagnostic_context["Stage"] == "Source evaluator"
+    assert presentation.diagnostic_context["Failures"] == "3"
+    assert presentation.diagnostic_context["Exception type"] == (
+        "ProviderTimeoutError"
+    )
+    assert "TOP-SECRET-RAW-MESSAGE" not in rendered
+    assert "SECRET-CONFIG" not in rendered
+    assert "SECRET-PAYLOAD" not in rendered
+
+
+def test_nonfatal_error_copy_and_details() -> None:
+    app = _running_app(
+        _completed_report_snapshot(
+            errors=[
+                {
+                    "error_type": "source_evaluator_reputation_unavailable",
+                    "source": "agent.source_evaluator",
+                    "message": "private raw provider response",
+                    "recoverable": True,
+                    "details": {
+                        "failures": 2,
+                        "raw_payload": "SECRET-COMPLETED-PAYLOAD",
+                    },
+                }
+            ]
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "EXECUTION ERRORS" in visible
+    assert "Source evaluation issue" in visible
+    assert "The source credibility pass continued" in visible
+    assert "Recovery" in visible
+    assert "private raw provider response" not in visible
+    assert "SECRET-COMPLETED-PAYLOAD" not in visible
+    details = next(
+        item for item in app.expander if item.label == "Safe diagnostic details"
+    )
+    assert details.proto.expanded is False
+
+
+def test_terminal_error_copy_and_recovery() -> None:
+    app = _running_app(
+        _snapshot(
+            status="failed",
+            report=None,
+            errors=[
+                {
+                    "error_type": "researcher_extraction_provider_error",
+                    "source": "agent.researcher",
+                    "message": "raw provider trace SECRET-TERMINAL-DETAIL",
+                    "recoverable": False,
+                    "details": {
+                        "exception_type": "ProviderTimeoutError",
+                        "iterations": 2,
+                        "trace": "SECRET-TRACE",
+                    },
+                }
+            ],
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "Finding extraction issue" in visible
+    assert "The research pass stopped" in visible
+    assert "Recovery" in visible
+    assert "SECRET-TERMINAL-DETAIL" not in visible
+    assert "SECRET-TRACE" not in visible
+
+
+def test_failed_partial_report_keeps_report_and_sanitized_execution_effect() -> None:
+    app = _running_app(
+        _completed_report_snapshot(
+            status="failed",
+            report="# Partial result\n\nRetained findings.",
+            errors=[
+                {
+                    "error_type": "ui.research.failed",
+                    "source": "ui",
+                    "message": "raw terminal exception SECRET-PARTIAL-DETAIL",
+                    "recoverable": False,
+                    "details": {"traceback": "SECRET-TRACEBACK"},
+                }
+            ],
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "# Partial result" in visible
+    assert "Retained findings." in visible
+    assert "Execution stopped" in visible
+    assert "The run stopped; any retained report is partial." in visible
+    assert "SECRET-PARTIAL-DETAIL" not in visible
+    assert "SECRET-TRACEBACK" not in visible
 
 
 def test_completed_source_details_disclose_provenance_without_an_opaque_score() -> None:
