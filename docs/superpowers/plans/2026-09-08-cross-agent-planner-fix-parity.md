@@ -1767,6 +1767,8 @@ This task follows Task 16 and addresses the remaining judge-only infrastructure 
 
 Post-review fix round 3 is complete: Sol High identified an OpenAI structured-repair traceback-local leak, and Luna High implemented the one-line local scrub plus a focused marker regression in `a95262f`. A fresh Luna-max task review approved the minimal two-file change with no Critical or Important findings. The controller must now run the full offline gate, Ruff, and whitespace checks, update the fix ledger, and push before any further paid/live validation or whole-branch review.
 
+The authorized follow-up live wave is also complete at candidate `160c334`. It ran one sequential repetition for each of the six agents with no retries and is documented in `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-live-rerun.md`. The rerun confirms the required-field, Critic routing/context, no-prohibited-call, and no-target-budget conclusions, while judge instability remains unresolved. It does not justify prompt tuning, token-budget changes, a suite run, or a claim of quality improvement from one noisy repetition.
+
 ---
 
 ## Subagent-Driven Development Execution Contract
