@@ -107,6 +107,6 @@ The historical pre-repair artifacts under the old SHA remain immutable. The curr
 
 ## 17. Final Verification and Terminal State
 
-Tasks 1–10 and the Task 14 documentation update are complete and task-scoped reviewed where required. The current tracked candidate is `d6a082c`; the implementation source remains the reviewed Task 3 Windows path repair. The five agents are individually terminal-blocked after valid same-SHA confirmations, and no agent-specific repair is claimed.
+Tasks 1–10 and the Task 14 documentation update are complete and task-scoped reviewed where required. The controlled evaluation candidate is `d6a082c`; the current documentation HEAD is its descendant `ceb5075`, and the implementation source remains the reviewed Task 3 Windows path repair. The five agents are individually terminal-blocked after valid same-SHA confirmations, and no agent-specific repair is claimed.
 
 The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTURE_BLOCKS`. Final offline verification after the documentation update passed: focused config tests `47 passed`, `tests/test_evaluation` `697 passed`, full offline suite `1,936 passed, 1 deselected`, Ruff passed, and `git diff --check` passed. Whole-branch review remains explicitly deferred. This branch is not a claim of successful quality evaluation, live-tier execution, merge, release, or deployment.
