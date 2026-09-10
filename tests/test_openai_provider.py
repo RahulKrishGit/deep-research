@@ -102,6 +102,29 @@ class CapturingTracker(Tracker):
         return super().llm_span(model, inputs)
 
 
+def _provider_exception_surfaces(error: BaseException) -> list[str]:
+    """Collect public exception data and provider traceback locals only."""
+    surfaces: list[str] = []
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        surfaces.append(repr((current.args, vars(current))))
+        traceback = current.__traceback__
+        while traceback is not None:
+            filename = traceback.tb_frame.f_code.co_filename.replace("\\", "/")
+            if "/src/deep_research/providers/" in filename:
+                surfaces.append(repr(traceback.tb_frame.f_locals))
+            traceback = traceback.tb_next
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+    return surfaces
+
+
 def openai_config(**updates: object) -> LLMConfig:
     return LLMConfig.model_validate(
         {
@@ -658,6 +681,47 @@ async def test_openai_structured_validation_never_retains_provider_content() -> 
     assert marker not in repr(caught.value)
     assert marker not in repr(vars(caught.value))
     assert caught.value.diagnostics[0].category == "type_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_failure_drops_provider_and_request_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_marker = "OPENAI_RESPONSE_FRAME_MARKER_4F9A"
+    prompt_marker = "OPENAI_PROMPT_FRAME_MARKER_8B2D"
+    request_marker = "OPENAI_REQUEST_FRAME_MARKER_C671"
+    with pytest.raises(ValidationError) as exc_info:
+        Outline.model_validate({"title": 3, "points": response_marker})
+    validation_error = exc_info.value
+
+    responses = RecordingResponses(validation_error, validation_error)
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+    original_options = provider._request_options
+
+    def marked_options(agent_name):
+        effective, request, metadata = original_options(agent_name)
+        return effective, {**request, "request_marker": request_marker}, metadata
+
+    monkeypatch.setattr(provider, "_request_options", marked_options)
+
+    with pytest.raises(StructuredOutputError) as caught:
+        async with tracker.session_span("session-1", prompt_marker):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content=prompt_marker)], Outline
+            )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    surfaces = _provider_exception_surfaces(caught.value)
+    assert surfaces
+    assert all(
+        marker not in surface
+        for surface in surfaces
+        for marker in (response_marker, prompt_marker, request_marker)
+    )
 
 
 @pytest.mark.asyncio

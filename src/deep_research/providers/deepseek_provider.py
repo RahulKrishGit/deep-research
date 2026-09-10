@@ -657,6 +657,7 @@ class DeepSeekChatProvider:
         ]
 
         diagnostics: list[StructuredValidationDiagnostic] = []
+        final_error: StructuredOutputError | None = None
         for attempt in (1, 2):
             try:
                 return await self._structured_attempt(
@@ -671,11 +672,12 @@ class DeepSeekChatProvider:
             except _StructuredValidationFailure as error:
                 diagnostics.append(error.diagnostic)
                 if attempt == 2:
-                    raise StructuredOutputError(
+                    final_error = StructuredOutputError(
                         f"DeepSeek output failed {schema.__name__} validation "
                         "after one repair attempt",
                         diagnostics=tuple(diagnostics),
-                    ) from error
+                    )
+                    break
                 schema_json = json.dumps(
                     schema.model_json_schema(), sort_keys=True, separators=(",", ":")
                 )
@@ -692,4 +694,19 @@ class DeepSeekChatProvider:
                     {"role": "system", "content": repair},
                 ]
 
-        raise AssertionError("structured output attempt loop did not return")
+        if final_error is None:
+            raise AssertionError("structured output attempt loop did not return")
+
+        # Do not raise while handling the internal validation failure: that
+        # would retain it through ``__context__``/``__cause__``. Clear all
+        # provider-adjacent locals before the public error's traceback is
+        # captured, leaving only the bounded typed diagnostics.
+        self = None
+        messages = []
+        current_messages = []
+        request = {}
+        metadata = {}
+        effective = None
+        agent_name = None
+        schema = BaseModel
+        raise final_error

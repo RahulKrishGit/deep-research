@@ -743,7 +743,6 @@ def evaluation_failure_reason(
     if infrastructure is not None:
         return f"{infrastructure.stage}:{infrastructure.reason}"
 
-    threshold, floor = _quality_thresholds(runtime)
     for case in cases:
         for repetition in sorted(
             case.repetitions, key=lambda item: item.repetition
@@ -753,6 +752,18 @@ def evaluation_failure_reason(
                     f"{case.case_id} repetition {repetition.repetition} "
                     f"failed {repetition.errors[0].reason}"
                 )
+
+    for case in cases:
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
+            if _has_judge_infrastructure_failure(repetition):
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    f"failed {repetition.judge.not_run_reason}"
+                )
+
+    threshold, floor = _quality_thresholds(runtime)
     for case in cases:
         for repetition in sorted(
             case.repetitions, key=lambda item: item.repetition

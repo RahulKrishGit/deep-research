@@ -273,6 +273,44 @@ def test_judge_only_infrastructure_failure_precedes_quality_failure(
     ) == f"focused-decomposition repetition 99 failed {judge_reason}"
 
 
+@pytest.mark.parametrize(
+    "judge_reason",
+    [
+        "judge_schema_failure",
+        "judge_output_limit",
+        "judge_transport",
+        "judge_provider_failure",
+    ],
+)
+def test_judge_infrastructure_reason_precedes_scored_floor_failure(
+    repetition_without_judge, repetitions_at, runtime_config_for, judge_reason
+) -> None:
+    judge = repetition_without_judge.judge
+    assert judge is not None
+    scored_floor_failure = repetitions_at([0.64])[0]
+    judge_failure = repetition_without_judge.model_copy(
+        update={
+            "repetition": 2,
+            "judge": judge.model_copy(update={"not_run_reason": judge_reason}),
+        }
+    )
+    case = build_case_result(
+        None,
+        [scored_floor_failure, judge_failure],
+        threshold=0.80,
+        floor=0.65,
+    )
+    runtime = runtime_config_for("planner")
+
+    status = decide_status([case], tier="controlled", runtime=runtime)
+    reason = evaluation_failure_reason(
+        [case], status=status, runtime=runtime
+    )
+
+    assert status == "INFRASTRUCTURE FAILURE"
+    assert reason == f"focused-decomposition repetition 2 failed {judge_reason}"
+
+
 def test_mixed_deterministic_and_judge_failure_remains_quality_failed(
     repetition_with_failed_gate, repetition_without_judge, runtime_config_for
 ) -> None:
@@ -291,6 +329,11 @@ def test_mixed_deterministic_and_judge_failure_remains_quality_failed(
     assert decide_status(
         [case], tier="controlled", runtime=runtime_config_for("planner")
     ) == "FAILED"
+    assert evaluation_failure_reason(
+        [case],
+        status="FAILED",
+        runtime=runtime_config_for("planner"),
+    ) == "focused-decomposition repetition 98 failed no_prohibited_calls"
 
 
 @pytest.mark.parametrize("stage", ["setup", "trace"])

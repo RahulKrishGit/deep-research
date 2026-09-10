@@ -376,6 +376,7 @@ class OpenAIChatProvider:
         current_messages = list(messages)
 
         diagnostics: list[StructuredValidationDiagnostic] = []
+        final_error: StructuredOutputError | None = None
         for attempt in (1, 2):
             try:
                 return await self._structured_attempt(
@@ -389,11 +390,12 @@ class OpenAIChatProvider:
             except _StructuredValidationFailure as error:
                 diagnostics.append(error.diagnostic)
                 if attempt == 2:
-                    raise StructuredOutputError(
+                    final_error = StructuredOutputError(
                         f"OpenAI output failed {schema.__name__} validation "
                         "after one repair attempt",
                         diagnostics=tuple(diagnostics),
-                    ) from error
+                    )
+                    break
                 repair_instruction = (
                     f"The previous response failed {schema.__name__} validation. "
                     "Return a corrected response that matches the supplied schema "
@@ -405,4 +407,19 @@ class OpenAIChatProvider:
                     ChatMessage(role="developer", content=repair_instruction),
                 ]
 
-        raise AssertionError("structured output attempt loop did not return")
+        if final_error is None:
+            raise AssertionError("structured output attempt loop did not return")
+
+        # Do not raise while handling the internal validation failure: that
+        # would retain it through ``__context__``/``__cause__``. Clear all
+        # provider-adjacent locals before the public error's traceback is
+        # captured, leaving only the bounded typed diagnostics.
+        self = None
+        messages = ()
+        current_messages = []
+        request = {}
+        metadata = {}
+        effective = None
+        agent_name = None
+        schema = BaseModel
+        raise final_error

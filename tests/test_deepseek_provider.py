@@ -125,6 +125,29 @@ def local_tracker() -> Tracker:
     return Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
 
 
+def _provider_exception_surfaces(error: BaseException) -> list[str]:
+    """Collect public exception data and provider traceback locals only."""
+    surfaces: list[str] = []
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        surfaces.append(repr((current.args, vars(current))))
+        traceback = current.__traceback__
+        while traceback is not None:
+            filename = traceback.tb_frame.f_code.co_filename.replace("\\", "/")
+            if "/src/deep_research/providers/" in filename:
+                surfaces.append(repr(traceback.tb_frame.f_locals))
+            traceback = traceback.tb_next
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+    return surfaces
+
+
 def deepseek_config(**updates: object) -> LLMConfig:
     return LLMConfig.model_validate(
         {
@@ -814,12 +837,54 @@ async def test_custom_validator_data_never_reaches_repair_or_exception_graph() -
                 pending.append(linked)
 
     assert [type(item).__name__ for item in reachable] == [
-        "StructuredOutputError",
-        "_StructuredValidationFailure",
+        "StructuredOutputError"
     ]
     for item in reachable:
         attributes = repr({"args": item.args, "private": vars(item)})
         assert marker not in attributes
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_failure_drops_provider_and_request_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_marker = "DEEPSEEK_RESPONSE_FRAME_MARKER_4F9A"
+    prompt_marker = "DEEPSEEK_PROMPT_FRAME_MARKER_8B2D"
+    request_marker = "DEEPSEEK_REQUEST_FRAME_MARKER_C671"
+    invalid_response = json.dumps(
+        {"answer": response_marker, "confidence": "not-an-integer"}
+    )
+    completions = RecordingCompletions(
+        chat_response(text=invalid_response),
+        chat_response(text=invalid_response),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+    original_options = provider._request_options
+
+    def marked_options(agent_name):
+        effective, request, metadata = original_options(agent_name)
+        return effective, {**request, "request_marker": request_marker}, metadata
+
+    monkeypatch.setattr(provider, "_request_options", marked_options)
+
+    with pytest.raises(StructuredOutputError) as caught:
+        async with tracker.session_span("session-1", prompt_marker):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content=prompt_marker)], TinyAnswer
+            )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    surfaces = _provider_exception_surfaces(caught.value)
+    assert surfaces
+    assert all(
+        marker not in surface
+        for surface in surfaces
+        for marker in (response_marker, prompt_marker, request_marker)
+    )
 
 
 @pytest.mark.asyncio
@@ -1774,13 +1839,10 @@ async def test_deepseek_structured_public_cause_chain_hides_provider_output() ->
     assert str(caught.value) == (
         "DeepSeek output failed TinyAnswer validation after one repair attempt"
     )
-    failure = caught.value.__cause__
-    assert isinstance(failure, deepseek_module._StructuredValidationFailure)
-    assert failure.__cause__ is None
-    assert failure.__suppress_context__ is True
-    for link in (caught.value, failure):
-        for sensitive in ("not-json", "still invalid", "decide"):
-            assert sensitive not in str(link)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    for sensitive in ("not-json", "still invalid", "decide"):
+        assert sensitive not in str(caught.value)
 
 
 def _recorded_sleeps(monkeypatch) -> list[float]:
