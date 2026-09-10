@@ -1791,7 +1791,7 @@ before any budget amendment. The first Researcher repetition and Sol High
 review are recorded in the tracked sequential-live Researcher report and fix
 log; Task 20 is the current repair task.
 
-### Task 20: Repair Researcher Live Retrieval Provenance — READY TO DISPATCH
+### Task 20: Repair Researcher Live Retrieval Provenance — IMPLEMENTED, REVIEW PENDING
 
 **Sol High diagnosis:** the Researcher live failure is not yet a confirmed
 Researcher prompt or agent defect. Successful tool results retain up to the
@@ -1849,6 +1849,22 @@ open a separate Researcher-agent TDD task; do not combine it with this harness
 repair. If provenance passes but `max_iterations` persists, record it as a
 separate trajectory signal without changing iteration or token budgets.
 
+Implementation is committed and pushed at `1c9047b`. The additive
+`DependencyLedger.source_url_fingerprints` field records deduplicated,
+bounded SHA-256 fingerprints from successful live evidence-tool payloads;
+only the live Researcher source-provenance paths consume it. Controlled
+semantics, old artifact validation, target/prompt behavior, budgets, judge
+behavior, and the global `4096` cap remain unchanged. The implementation
+dispatch did not become ready after the existing campaign branch checkout
+was occupied; no Luna worker changed files, so the controller completed the
+exact approved scope locally rather than launching a duplicate worker.
+
+Verification: focused Task 20 tests `5 passed`; full offline pytest with
+`-p no:cacheprovider` `1,985 passed, 1 deselected, 2 warnings`; Ruff and
+`git diff --check` passed. The next action is a Luna-max task-scoped review,
+followed by exactly one focused Researcher live confirmation if the review
+is clean.
+
 ---
 
 ## Subagent-Driven Development Execution Contract
@@ -1885,6 +1901,8 @@ Use explicit model selection for every remaining implementation or review dispat
 | Task 16 task-scoped review and re-review | GPT-5.6 Luna | **max** |
 | Task 17 implementation and fix rounds | GPT-5.6 Luna | **max** |
 | Task 17 task-scoped review and re-review | GPT-5.6 Luna | **max** |
+| Task 20 implementation and fix rounds | GPT-5.6 Luna | **high** |
+| Task 20 task-scoped review and re-review | GPT-5.6 Luna | **max** |
 | Task 15 whole-branch review | **Complete — Sol High review at 6a01175** | Ready with follow-ups; one non-blocking documentation chronology cleanup recorded. |
 
 Task 10 and Task 13 controlled target/judge runs must use the frozen evaluation model configuration. Implementation-model routing is not permission to change target model, judge model, reasoning effort, retry policy, or token budgets. High/max workers may require longer bounded controller waits; do not interpret slow reasoning as a repository-helper loop or launch duplicate workers.
