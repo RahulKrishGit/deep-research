@@ -159,7 +159,10 @@ def test_findings_render_their_citation_line() -> None:
 
 def test_verified_claims_are_always_cited() -> None:
     index = build_citation_index([_source()], [])
-    rendered = render_verified_claims([_claim(), _claim(verdict="unverified")], index)
+    rendered = render_verified_claims(
+        [_claim(), _claim(text="Adoption is broad.", verdict="unverified")],
+        index,
+    )
 
     assert rendered.count("- ") == 1
     assert "[1] (confidence 0.80)" in rendered

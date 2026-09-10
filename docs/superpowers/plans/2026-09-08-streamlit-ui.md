@@ -6,13 +6,13 @@
 
 **Architecture:** Keep Streamlit a thin local frontend over the existing `run_research_sync` engine. A UI-local `LocalResearchController` owns one worker thread per started session, receives existing typed `ResearchEvent` callbacks, and exposes immutable UI snapshots. Pure projector functions transform event/state/outcome contracts into presentation models. Streamlit keeps view/navigation state in `st.session_state`, uses a persistent sidebar for New research/recent sessions/history, and refreshes only the running-state fragment every two seconds. Styling is centralized, token-driven, and limited to typography, content width, spacing rhythm, hairline borders, semantic status treatments, selected/active tints, and compact labels. No custom JavaScript is allowed.
 
-**Tech Stack:** Python 3.11+, Streamlit `>=1.37`, Pydantic v2, standard-library `threading`/`pathlib`/`json`, existing `deep_research.main`, existing `ResearchEvent` / `ResearchOutcome` / `ResearchState` contracts, pytest, Streamlit `streamlit.testing.v1.AppTest`, Ruff.
+**Tech Stack:** Python 3.11+, Streamlit `>=1.49`, Pydantic v2, standard-library `threading`/`pathlib`/`json`, existing `deep_research.main`, existing `ResearchEvent` / `ResearchOutcome` / `ResearchState` contracts, pytest, Streamlit `streamlit.testing.v1.AppTest`, Ruff.
 
 **Functional spec:** `docs/superpowers/specs/2026-07-25-14-streamlit-ui-design.md`
 
 **Parent design:** `docs/superpowers/specs/2026-07-25-agentic-deep-research-design.md`
 
-**Approved visual handoff:** `docs/superpowers/specs/2026-09-08-streamlit-ui-design-handoff.docx`
+**Approved visual handoff:** `docs/superpowers/plans/deep-research-streamlit-ui-design-handoff.docx`
 
 The visual handoff is the approved UX Pilot artifact titled **Deep Research Streamlit UI Design Handoff**, selected direction **Editorial Research Canvas**. If the DOCX is not committed at the path above, it must be attached to the implementation/review session. **No visual implementation task may start without access to the handoff screenshots.**
 
@@ -40,7 +40,7 @@ This section is binding for the SDD controller.
 - **No parallel implementation subagents:** tasks share UI contracts and app state. Read-only analysis/review preparation may overlap, implementation may not.
 - **Task ledger:** use `.superpowers/sdd/2026-09-08-streamlit-ui/progress.md` and the plan-owned SDD workspace. Do not reuse another plan's ledger.
 - **Evidence directory:** task reviewers may save local screenshots/notes under `.superpowers/sdd/2026-09-08-streamlit-ui/evidence/`; this is execution evidence, not product source.
-- **Branch-review hard stop:** after Task 10's task-scoped reviewer approves, **STOP**. Do not dispatch a whole-branch reviewer, do not invoke `superpowers:requesting-code-review`, do not invoke `superpowers:finishing-a-development-branch`, and do not merge/push/publish. Record `Branch review: HALTED by explicit human instruction` and wait.
+- **Original branch-review hard stop (pre-authorization gate; superseded after explicit human authorization):** after Task 10's task-scoped reviewer approves, **STOP until the human explicitly authorizes branch review**. Do not dispatch a whole-branch reviewer, do not invoke `superpowers:requesting-code-review`, do not invoke `superpowers:finishing-a-development-branch`, and do not merge/push/publish. Before that authorization, record `Branch review: HALTED by explicit human instruction` and wait; after it, follow the reopened-review instructions below.
 
 ---
 
@@ -126,7 +126,7 @@ Additional layout rules:
 ## Global Engineering Constraints
 
 - Preserve `requires-python = ">=3.11"`.
-- Add exactly one runtime dependency: `streamlit>=1.37`. Do not add a separate frontend framework, refresh package, browser runtime, database, queue, or new HTTP client.
+- Add exactly one runtime dependency: `streamlit>=1.49`. This floor is required by the keyed `st.container` contract used for selected-row and editorial-column styling. Do not add a separate frontend framework, refresh package, browser runtime, database, queue, or new HTTP client.
 - The Streamlit UI calls the existing synchronous adapter `run_research_sync` from a worker thread. Do not duplicate orchestration logic and do not require FastAPI.
 - Preserve existing CLI/FastAPI behavior.
 - Markdown remains the only output format.
@@ -343,7 +343,7 @@ class SessionHistoryEntry(BaseModel):
 ```
 
 - [ ] **Step 1: Write contract tests first.** Verify valid status/tier values, nonnegative counts, token total, queued/running/completed subtopic states, and Pydantic rejection of unknown statuses.
-- [ ] **Step 2: Verify persistent-history minimization.** Assert `SessionHistoryEntry` has no `report`, `events`, `recent_activity`, `raw_findings`, prompts, tool results, or model-message fields. `source_summary.details` and `fact_check_summary.details` must also be excluded from persisted history by using summary-only serialization helpers later; do not persist full per-source/per-claim rationale in history.
+- [ ] **Step 2: Verify persistent-history minimization.** The earlier “no `recent_activity`” minimization rule was superseded by the later stopping-point remediation: retain only the bounded plain-language `recent_activity` needed to preserve the last known stopping point. Assert `SessionHistoryEntry` has no report bodies, raw events, `raw_findings`, prompts, tool payloads/results, model messages, provider config, secrets, environment variables, or config file contents. `source_summary.details` and `fact_check_summary.details` must also be excluded from persisted history by using summary-only serialization helpers later; do not persist full per-source/per-claim rationale in history.
 - [ ] **Step 3: Run RED.**
 
 ```bash
@@ -352,7 +352,7 @@ python -m pytest tests/test_ui/test_models.py -v
 
 Expected: import failure because the UI contracts do not exist.
 
-- [ ] **Step 4: Add the runtime dependency.** Add exactly `"streamlit>=1.37",` to the runtime dependency list.
+- [ ] **Step 4: Add the runtime dependency.** Add exactly `"streamlit>=1.49",` to the runtime dependency list. The floor supports the keyed `st.container` contract used by the UI styling.
 - [ ] **Step 5: Implement contracts.** Use a shared `ContractModel`-style Pydantic config (`extra="forbid"`, stripped strings, validated defaults). Avoid importing Streamlit from `models.py` or `ui/__init__.py`.
 - [ ] **Step 6: Add an explicit history compaction function.** `history_entry_from_snapshot` must copy summary counts but strip `source_summary.details` and `fact_check_summary.details` before persistence.
 - [ ] **Step 7: Run focused tests and lint.**
@@ -676,7 +676,7 @@ git commit -m "feat: add editorial streamlit app shell"
 - Validation is adjacent to the form/action region.
 
 - [ ] **Step 1: Write first-screen AppTest.** Assert question text area, max iterations, visible Markdown indicator, Start action, and Ready status. Assert the report/history screen does not render on initial load.
-- [ ] **Step 2: Write validation AppTests.** Blank/whitespace question prevents submit and preserves values; valid question can submit; configuration error preserves the draft.
+- [ ] **Step 2: Write validation AppTests.** Blank/whitespace submission remains available for direct browser type-to-click behavior but is rejected safely without queuing a run and preserves values; valid question can submit; configuration error preserves the draft.
 - [ ] **Step 3: Write safe-error test.** A fake configuration error with sensitive message renders only generic error plus safe project hint; sensitive message absent.
 - [ ] **Step 4: Write start-transition test.** Clicking Start calls controller exactly once, stores session ID, moves view to `current`, and immediately renders a running state on rerun.
 - [ ] **Step 5: Run RED.**
@@ -685,8 +685,8 @@ git commit -m "feat: add editorial streamlit app shell"
 python -m pytest tests/test_ui/test_app.py -k "new_research or start or configuration" -v
 ```
 
-- [ ] **Step 6: Implement one atomic `st.form`.** Use `st.text_area`, `st.number_input`, read-only Markdown indicator, and `st.form_submit_button`. Keep max-iteration configuration visually subordinate.
-- [ ] **Step 7: Implement action-state behavior.** Start is disabled only for invalid/blank or in-flight submission; old terminal sessions do not block a new run.
+- [ ] **Step 6: Implement atomic native inputs.** Use one atomic `st.form` with native `st.text_area`, `st.number_input`, a read-only Markdown indicator, and `st.form_submit_button`. Because Streamlit batches `st.text_area` edits until form submission, retain the original atomic form and keep the submit control available for blank/whitespace input so direct browser type-to-click works; reject blank input safely on submit with the existing project-owned validation message. Remove conditional blank guidance that can become stale while a textarea is focused. Keep max-iteration configuration visually subordinate.
+- [ ] **Step 7: Implement action-state behavior.** Start is disabled only while a start is in flight; blank/whitespace submissions remain available but cannot queue a run, and old terminal sessions do not block a new run. This is an explicit adjudication against the aspirational disabled-invalid wording in the visual handoff, required by the framework's batched form semantics.
 - [ ] **Step 8: Implement three-step reassurance.** Plain text, no cards: `Plan subtopics` -> `Search & evaluate` -> `Synthesize report`.
 - [ ] **Step 9: Run tests/lint.**
 
@@ -1100,11 +1100,11 @@ Never claim PASS for an item that did not run.
 
 ---
 
-## Branch Review Gate — HALTED
+## Branch Review Gate — HISTORICAL HARD STOP / REOPENED
 
-The normal `superpowers:subagent-driven-development` flow would eventually dispatch a broad whole-branch reviewer. **Do not do that for this plan yet.** The human explicitly requested that branch review remain halted until they mention it.
+The normal `superpowers:subagent-driven-development` flow would eventually dispatch a broad whole-branch reviewer. The following records the original pre-review hard stop: after Task 10's scoped review, the human explicitly required that whole-branch review remain halted until they mentioned it.
 
-After Task 10's scoped Luna Max review approves, stop in this exact state:
+After Task 10's scoped Luna Max review approved, the plan stopped in this historical state:
 
 ```text
 IMPLEMENTATION: COMPLETE
@@ -1116,4 +1116,44 @@ FINISHING-A-DEVELOPMENT-BRANCH: NOT INVOKED
 MERGE/PUSH/PUBLISH: NOT PERFORMED
 ```
 
-Only a later explicit human instruction such as `run the branch review` reopens the final-review phase.
+That original hard stop is historical. The explicit human instruction recorded in the post-review follow-up below reopened the final-review phase.
+
+---
+
+## Post-review follow-up — authorized by explicit human instruction
+
+The human explicitly reopened the branch-review phase after Task 10. The
+following follow-up tasks address the final Sol/High review's documentation,
+baseline, and deferred test-evidence recommendations. They do not expand the
+Streamlit product scope or change the engine/provider contracts.
+
+### Task 20: Reconcile branch-review documentation and evidence metadata
+
+- Update the README's prominent project-status statement so it agrees with the
+  completed Phase-4 interface status.
+- Refresh the top-of-file SDD ledger summary and checklist while preserving all
+  append-only historical task records. Record the current `origin/main` merge
+  base, reviewed HEAD, and the current verification/review status accurately.
+- Update this plan's branch-review section to reflect that the explicit human
+  instruction reopened review, while retaining the original pre-review hard
+  stop as historical context.
+- Do not claim fresh tests, visual acceptance, or merge readiness unless the
+  corresponding evidence is actually produced.
+
+### Task 21: Close the deferred worker/history test-evidence gaps
+
+- Add a focused offline regression proving one `LocalResearchController.start()`
+  creates and starts exactly one worker for a valid session.
+- Add a deterministic offline regression exercising concurrent writes from
+  independent history-store instances and proving that atomic commits leave
+  valid, independently readable history entries.
+- Keep the tests platform-safe: symlink privilege limitations may remain
+  explicitly skipped on Windows, and no live provider or network call is
+  allowed.
+- Do not change production behavior unless a test demonstrates a concrete
+  defect; if that happens, stop and report the exact contract conflict before
+  broadening scope.
+
+The follow-up tasks use the same SDD loop: a fresh Luna High implementer,
+Luna Max task-scoped review, focused verification, and an updated evidence
+package before any further branch-review request.

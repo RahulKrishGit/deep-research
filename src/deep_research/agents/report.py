@@ -19,8 +19,9 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
-from deep_research.agents.sources import normalize_source_url
+from deep_research.agents.sources import latest_scored_sources, normalize_source_url
 from deep_research.agents.steps import summarize_text
+from deep_research.utils.claims import latest_claims
 from deep_research.utils.types import Claim, ContractModel, ScoredSource
 
 REPORT_TITLE_PREFIX = "# Research report: "
@@ -110,11 +111,11 @@ def build_citation_index(
     claim is titled with the URL itself, because nothing scored it.
     """
     titles: dict[str, str] = {}
-    for source in sources:
+    for source in latest_scored_sources(sources):
         url = normalize_source_url(source.url)
         if url:
             titles.setdefault(url, source.title)
-    for claim in claims:
+    for claim in latest_claims(claims):
         for raw in claim.source_urls:
             url = normalize_source_url(raw)
             if url:
@@ -173,7 +174,7 @@ def render_source_appendix(
         "| # | Source | Score | Confidence | Assessment |",
         "| --- | --- | --- | --- | --- |",
     ]
-    for source in sources:
+    for source in latest_scored_sources(sources):
         number = numbers.get(normalize_source_url(source.url))
         marker = str(number) if number is not None else "-"
         confidence = "low" if source.low_confidence else "normal"
@@ -207,7 +208,7 @@ def render_verified_claims(
 ) -> str:
     """Render only the claims that reached ``verified``, each cited."""
     lines: list[str] = []
-    for claim in claims:
+    for claim in latest_claims(claims):
         if claim.verdict != "verified":
             continue
         markers = citation_markers(claim.source_urls, index)
@@ -231,7 +232,7 @@ def render_uncertain_claims(
     blocks: list[str] = []
     for verdict, heading in _UNCERTAIN_VERDICTS:
         lines: list[str] = []
-        for claim in claims:
+        for claim in latest_claims(claims):
             if claim.verdict != verdict:
                 continue
             markers = citation_markers(claim.source_urls, index)
@@ -275,6 +276,8 @@ def assemble_report(
     heading added without a body (or the reverse) fails here rather than
     silently shortening every future report.
     """
+    claims = latest_claims(claims)
+    sources = latest_scored_sources(sources)
     uncertain = render_uncertain_claims(claims, index)
     notes = " ".join(uncertainty_notes.split())
     bodies = (

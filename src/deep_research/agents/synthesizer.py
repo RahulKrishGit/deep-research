@@ -35,12 +35,13 @@ from deep_research.agents.report import (
     build_citation_index,
     render_limitations,
 )
-from deep_research.agents.sources import normalize_source_url
+from deep_research.agents.sources import latest_scored_sources, normalize_source_url
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool
+from deep_research.utils.claims import latest_claims
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
@@ -134,6 +135,11 @@ class SynthesizedReport(ContractModel):
     saved_findings: int = Field(default=0, ge=0)
 
 
+def _effective_sources(task: SynthesisTask) -> list[ScoredSource]:
+    """Return the latest normalized-URL source records for a task."""
+    return latest_scored_sources(task.sources)
+
+
 def limitation_reasons(state: ResearchState) -> list[str]:
     """Enumerate every limitation this pass must disclose, in report order.
 
@@ -147,13 +153,15 @@ def limitation_reasons(state: ResearchState) -> list[str]:
         reasons.append("errors_recorded")
     if state.iteration >= state.max_iterations:
         reasons.append("max_iterations_reached")
-    if not state.evaluated_sources:
+    sources = latest_scored_sources(state.evaluated_sources)
+    claims = latest_claims(state.verified_claims)
+    if not sources:
         reasons.append("no_sources_evaluated")
-    elif any(source.low_confidence for source in state.evaluated_sources):
+    elif any(source.low_confidence for source in sources):
         reasons.append("low_confidence_sources")
-    if not any(claim.verdict == "verified" for claim in state.verified_claims):
+    if not any(claim.verdict == "verified" for claim in claims):
         reasons.append("no_verified_claims")
-    if any(claim.verdict == "contradicted" for claim in state.verified_claims):
+    if any(claim.verdict == "contradicted" for claim in claims):
         reasons.append("contradicted_claims")
     return reasons
 
@@ -245,7 +253,7 @@ def high_confidence_claims(
     """Verified claims confident enough to keep for future sessions."""
     return [
         claim
-        for claim in claims
+        for claim in latest_claims(claims)
         if claim.verdict == "verified" and claim.confidence >= threshold
     ]
 
@@ -306,13 +314,15 @@ def compose_report(
     limitations: Sequence[str],
 ) -> SynthesizedReport:
     """Assemble the report and record the counts observability needs."""
-    index = build_citation_index(task.sources, task.claims)
+    claims = latest_claims(task.claims)
+    sources = _effective_sources(task)
+    index = build_citation_index(sources, claims)
     markdown = assemble_report(
         question=task.instruction,
         summary=summary,
         sections=sections,
-        claims=task.claims,
-        sources=task.sources,
+        claims=claims,
+        sources=sources,
         index=index,
         limitations=limitations,
         uncertainty_notes=uncertainty_notes,
@@ -321,7 +331,7 @@ def compose_report(
         markdown=markdown,
         section_count=len(sections),
         citation_count=len(index),
-        source_count=len(task.sources),
+        source_count=len(sources),
     )
 
 
@@ -332,6 +342,7 @@ def report_messages(
     claim_digest: int,
 ) -> list[ChatMessage]:
     """Build the messages that request one structured report draft."""
+    sources = _effective_sources(task)
     sections = [f"## Research question\n{task.instruction}"]
     if task.guidance.strip():
         sections.append(f"## Context\n{task.guidance}")
@@ -339,13 +350,13 @@ def report_messages(
         [
             (
                 "## Verified and checked claims\n"
-                f"{render_claim_digest(list(task.claims)[:claim_digest])}"
+                f"{render_claim_digest(latest_claims(task.claims)[:claim_digest])}"
             ),
             (
                 "## Retrieved findings\n"
                 f"{render_finding_digest(list(task.findings)[:finding_digest])}"
             ),
-            f"## Source quality\n{render_source_quality(task.sources)}",
+            f"## Source quality\n{render_source_quality(sources)}",
             f"## Known limitations\n{render_limitations(task.limitations)}",
             f"## Response contract\n{REPORT_INSTRUCTION}",
         ]
@@ -563,8 +574,8 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
             guidance=render_revision_guidance(state),
             session_id=state.session_id,
             iteration=state.iteration,
-            claims=list(state.verified_claims),
-            sources=list(state.evaluated_sources),
+            claims=latest_claims(state.verified_claims),
+            sources=latest_scored_sources(state.evaluated_sources),
             findings=list(state.raw_findings),
             limitations=limitation_reasons(state),
         )
@@ -723,6 +734,7 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
         from any other agent.
         """
         task = self.build_task(state)
+        task = task.model_copy(update={"sources": _effective_sources(task)})
         events: list[ResearchEvent] = [
             synthesis_started_event(
                 claim_count=len(task.claims),

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field
 
-from deep_research.utils.types import ContractModel, Finding
+from deep_research.utils.types import ContractModel, Finding, ScoredSource
 
 _DEFAULT_PORTS = {"http": "80", "https": "443"}
 
@@ -51,6 +51,16 @@ def normalize_source_url(url: str) -> str:
         return urlunsplit((scheme, netloc, path, parts.query, ""))
     except ValueError:
         return collapsed
+
+
+def latest_scored_sources(
+    sources: Sequence[ScoredSource],
+) -> list[ScoredSource]:
+    """Keep the last append-ordered score for each normalized source URL."""
+    projected: dict[str, ScoredSource] = {}
+    for source in sources:
+        projected[normalize_source_url(source.url)] = source
+    return list(projected.values())
 
 
 def source_domain(url: str) -> str:
