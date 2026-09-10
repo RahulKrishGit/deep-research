@@ -18,6 +18,7 @@ from openai import (
 )
 from pydantic import BaseModel, ValidationError
 
+import deep_research.providers.openai_provider as openai_provider_module
 from deep_research.observability import (
     LangSmithRuntimeConfig,
     TokenUsageMetric,
@@ -690,6 +691,7 @@ async def test_openai_structured_failure_drops_provider_and_request_frames(
     response_marker = "OPENAI_RESPONSE_FRAME_MARKER_4F9A"
     prompt_marker = "OPENAI_PROMPT_FRAME_MARKER_8B2D"
     request_marker = "OPENAI_REQUEST_FRAME_MARKER_C671"
+    repair_marker = "OPENAI_REPAIR_FRAME_MARKER_9D3E"
     with pytest.raises(ValidationError) as exc_info:
         Outline.model_validate({"title": 3, "points": response_marker})
     validation_error = exc_info.value
@@ -706,6 +708,11 @@ async def test_openai_structured_failure_drops_provider_and_request_frames(
         return effective, {**request, "request_marker": request_marker}, metadata
 
     monkeypatch.setattr(provider, "_request_options", marked_options)
+    monkeypatch.setattr(
+        openai_provider_module,
+        "validation_summary",
+        lambda diagnostic: repair_marker,
+    )
 
     with pytest.raises(StructuredOutputError) as caught:
         async with tracker.session_span("session-1", prompt_marker):
@@ -715,12 +722,18 @@ async def test_openai_structured_failure_drops_provider_and_request_frames(
 
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
+    assert repair_marker in repr(responses.parse_calls[1])
     surfaces = _provider_exception_surfaces(caught.value)
     assert surfaces
     assert all(
         marker not in surface
         for surface in surfaces
-        for marker in (response_marker, prompt_marker, request_marker)
+        for marker in (
+            response_marker,
+            prompt_marker,
+            request_marker,
+            repair_marker,
+        )
     )
 
 

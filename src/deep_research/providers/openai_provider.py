@@ -422,4 +422,5 @@ class OpenAIChatProvider:
         effective = None
         agent_name = None
         schema = BaseModel
+        repair_instruction = ""
         raise final_error
