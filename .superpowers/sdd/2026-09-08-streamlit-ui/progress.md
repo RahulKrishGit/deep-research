@@ -99,10 +99,13 @@ Task 18: complete (commits 6dd8ba2..419e6ba, review clean; Luna Max approved the
 Task 19: complete — browser verification exposed a Streamlit form-event incompatibility; the final adjudication restored atomic form submission, safe blank validation, stale-guidance removal, and explicit Task 6 plan documentation (commits 857ee01, dc9dab2, 9d1adb6; Luna Max scoped review: REVIEW CLEAN).
 
 Task 20: complete — README status, historical/reopened branch-review wording, and current ledger metadata reconciled; no new product, test, visual-acceptance, or merge-readiness evidence claimed.
+Task 20: fix round 1/5 — 1 addressed, 0 open; commit 6ea82de; Luna Max scoped re-review returned ALL FINDINGS ADDRESSED.
+Task 20: complete (commits 8e8c9d4..6ea82de, review clean after 1 fix round).
 
 Fresh verification (2026-09-10):
 Origin/main merge base: 3de683931aae9bb91b55019cee0be0e77da381f6.
 Reviewed HEAD: 8e8c9d4479bb244fad778295f293789c0c945244.
+Post-review follow-up HEAD: 6ea82de709117b86569a439347e61469b00ee642.
 Offline UI suite: PASS — 205 passed, 2 skipped.
 Repository suite: PASS — 2089 passed, 2 skipped, 1 deselected, 2 warnings in 60.88s.
 Ruff: PASS — python -m ruff check .
