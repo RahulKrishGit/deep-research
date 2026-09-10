@@ -25,6 +25,7 @@ from deep_research.ui.app import (
     render_app,
 )
 from deep_research.ui.components import (
+    _START_VALIDATION_MESSAGE,
     _start_research,
     execution_error_presentation,
 )
@@ -435,8 +436,12 @@ def test_new_research_screen_has_question_form_and_ready_state() -> None:
     assert app.number_input(key="max_iterations").label == "Maximum iterations"
     assert any("Markdown" in item.value for item in app.main.markdown)
     assert any("Start Research" in value for value in _button_values(app))
-    assert app.button(key="start_research").disabled is True
+    assert app.button(key="start_research").disabled is False
     assert any("Ready to start" in item.value for item in app.main.markdown)
+    assert not any(
+        "Enter a research question to start." in item.value
+        for item in app.main.caption
+    )
     assert not any("Session history" in item.value for item in app.main.markdown)
     assert not any("Current session" in item.value for item in app.main.markdown)
 
@@ -462,40 +467,50 @@ def test_start_research_is_the_only_filled_primary_action() -> None:
     assert app.button(key="start_research").proto.type == "primary"
 
 
-def test_new_research_nonblank_question_rerender_enables_submit_and_clears_guidance(
+@pytest.mark.parametrize("question", ["", "   "], ids=["blank", "whitespace"])
+def test_blank_question_submission_is_available_but_cannot_queue_run(
+    question: str,
 ) -> None:
     app = _app([]).run()
 
-    assert app.button(key="start_research").disabled is True
-    assert any(
-        "Enter a research question to start." in item.value
-        for item in app.main.caption
-    )
-
-    app.text_area(key="research_question").set_value("A valid question").run()
-
-    assert app.text_area(key="research_question").value == "A valid question"
+    app.text_area(key="research_question").set_value(question).run()
     assert app.button(key="start_research").disabled is False
+    app.button(key="start_research").click().run()
+
+    assert app.session_state[_CONTROLLER_KEY].start_calls == []
+    assert app.session_state[_START_IN_FLIGHT_KEY] is False
+    assert app.session_state[_PENDING_START_STATE_KEY] is None
+    assert _START_VALIDATION_MESSAGE in _visible_main_text(app)
     assert not any(
         "Enter a research question to start." in item.value
         for item in app.main.caption
     )
 
 
-def test_new_research_blank_question_remains_disabled_and_cannot_queue_run() -> None:
+def test_new_research_valid_question_submits_once() -> None:
     app = _app([]).run()
 
-    app.text_area(key="research_question").set_value("   ").run()
+    app.text_area(key="research_question").set_value("A valid question").run()
     app.number_input(key="max_iterations").set_value(6).run()
+    assert app.button(key="start_research").disabled is False
+    app.button(key="start_research").click().run()
 
-    assert app.text_area(key="research_question").value == "   "
-    assert app.number_input(key="max_iterations").value == 6
-    assert app.button(key="start_research").disabled is True
-    assert app.session_state[_CONTROLLER_KEY].start_calls == []
-    assert app.session_state[_START_IN_FLIGHT_KEY] is False
+    controller = app.session_state[_CONTROLLER_KEY]
+    assert len(controller.start_calls) == 1
+    assert controller.start_calls[0]["question"] == "A valid question"
     assert app.session_state[_PENDING_START_STATE_KEY] is None
-    assert app.text_area(key="research_question").value == "   "
-    assert app.number_input(key="max_iterations").value == 6
+
+
+def test_new_research_start_disables_controls_while_in_flight() -> None:
+    app = _app([]).run()
+    app.text_area(key="research_question").set_value("A valid question").run()
+    app.session_state[_START_IN_FLIGHT_KEY] = True
+    app.run()
+
+    assert app.text_area(key="research_question").disabled is True
+    assert app.number_input(key="max_iterations").disabled is True
+    assert app.button(key="start_research").disabled is True
+    assert "Preparing research plan" in _visible_main_text(app)
 
 
 def test_valid_question_can_submit_and_forwards_markdown_configuration() -> None:

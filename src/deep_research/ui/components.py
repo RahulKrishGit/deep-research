@@ -1241,60 +1241,60 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
         "synthesize a long-form report.</div>",
         unsafe_allow_html=True,
     )
-    question = st.text_area(
-        "Research question",
-        key="research_question",
-        height=152,
-        placeholder=(
-            "Ask a focused question with a timeframe or scope where relevant."
-        ),
-        disabled=start_in_flight,
-    )
-    st.caption("Be specific. Include a timeframe or scope where relevant.")
-    st.divider()
-
-    config_left, config_right = st.columns(2, gap="large")
-    with config_left:
-        st.number_input(
-            "Maximum iterations",
-            min_value=1,
-            value=controller.default_max_iterations,
-            step=1,
-            key="max_iterations",
-            help="Macro refinement passes before the report is finalized.",
+    with st.form("new_research_form", clear_on_submit=False):
+        question = st.text_area(
+            "Research question",
+            key="research_question",
+            height=152,
+            placeholder=(
+                "Ask a focused question with a timeframe or scope where relevant."
+            ),
             disabled=start_in_flight,
         )
-    with config_right:
-        st.markdown("**Output format**")
-        st.markdown(
-            '<div class="dr-readonly-field" aria-label="Output format: Markdown">'
-            "Markdown</div>",
-            unsafe_allow_html=True,
+        st.caption("Be specific. Include a timeframe or scope where relevant.")
+        st.divider()
+
+        config_left, config_right = st.columns(2, gap="large")
+        with config_left:
+            st.number_input(
+                "Maximum iterations",
+                min_value=1,
+                value=controller.default_max_iterations,
+                step=1,
+                key="max_iterations",
+                help="Macro refinement passes before the report is finalized.",
+                disabled=start_in_flight,
+            )
+        with config_right:
+            st.markdown("**Output format**")
+            st.markdown(
+                '<div class="dr-readonly-field" aria-label="Output format: Markdown">'
+                "Markdown</div>",
+                unsafe_allow_html=True,
+            )
+            st.caption("Read-only for this local build.")
+
+        action_status, action_button = st.columns(
+            [1, 0.5],
+            gap="large",
+            vertical_alignment="bottom",
         )
-        st.caption("Read-only for this local build.")
+        with action_status:
+            if start_in_flight:
+                render_status("starting")
+                st.caption("Preparing research plan before the research run begins.")
+            else:
+                render_status("ready")
+        with action_button:
+            submitted = st.form_submit_button(
+                "Start Research  →",
+                key="start_research",
+                type="primary",
+                use_container_width=True,
+                disabled=start_in_flight,
+            )
 
     question_is_blank = not isinstance(question, str) or not question.strip()
-    action_status, action_button = st.columns(
-        [1, 0.5],
-        gap="large",
-        vertical_alignment="bottom",
-    )
-    with action_status:
-        if start_in_flight:
-            render_status("starting")
-            st.caption("Preparing research plan before the research run begins.")
-        else:
-            render_status("ready")
-        if question_is_blank and not start_in_flight:
-            st.caption("Enter a research question to start.")
-    with action_button:
-        submitted = st.button(
-            "Start Research  →",
-            key="start_research",
-            type="primary",
-            use_container_width=True,
-            disabled=question_is_blank or start_in_flight,
-        )
 
     if submitted:
         if question_is_blank:

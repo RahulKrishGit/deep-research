@@ -676,7 +676,7 @@ git commit -m "feat: add editorial streamlit app shell"
 - Validation is adjacent to the form/action region.
 
 - [ ] **Step 1: Write first-screen AppTest.** Assert question text area, max iterations, visible Markdown indicator, Start action, and Ready status. Assert the report/history screen does not render on initial load.
-- [ ] **Step 2: Write validation AppTests.** Blank/whitespace question prevents submit and preserves values; valid question can submit; configuration error preserves the draft.
+- [ ] **Step 2: Write validation AppTests.** Blank/whitespace submission remains available for direct browser type-to-click behavior but is rejected safely without queuing a run and preserves values; valid question can submit; configuration error preserves the draft.
 - [ ] **Step 3: Write safe-error test.** A fake configuration error with sensitive message renders only generic error plus safe project hint; sensitive message absent.
 - [ ] **Step 4: Write start-transition test.** Clicking Start calls controller exactly once, stores session ID, moves view to `current`, and immediately renders a running state on rerun.
 - [ ] **Step 5: Run RED.**
@@ -685,8 +685,8 @@ git commit -m "feat: add editorial streamlit app shell"
 python -m pytest tests/test_ui/test_app.py -k "new_research or start or configuration" -v
 ```
 
-- [ ] **Step 6: Implement reactive native inputs.** Use native `st.text_area`, `st.number_input`, read-only Markdown indicator, and `st.button` so question edits rerun the screen and can enable the action in a browser. The original atomic `st.form` approach was superseded because Streamlit batches form edits; retain a genuinely disabled Start action for blank/invalid input and while a start is in flight. Keep max-iteration configuration visually subordinate.
-- [ ] **Step 7: Implement action-state behavior.** Start is disabled only for invalid/blank or in-flight submission; old terminal sessions do not block a new run.
+- [ ] **Step 6: Implement atomic native inputs.** Use one atomic `st.form` with native `st.text_area`, `st.number_input`, a read-only Markdown indicator, and `st.form_submit_button`. Because Streamlit batches `st.text_area` edits until form submission, retain the original atomic form and keep the submit control available for blank/whitespace input so direct browser type-to-click works; reject blank input safely on submit with the existing project-owned validation message. Remove conditional blank guidance that can become stale while a textarea is focused. Keep max-iteration configuration visually subordinate.
+- [ ] **Step 7: Implement action-state behavior.** Start is disabled only while a start is in flight; blank/whitespace submissions remain available but cannot queue a run, and old terminal sessions do not block a new run. This is an explicit adjudication against the aspirational disabled-invalid wording in the visual handoff, required by the framework's batched form semantics.
 - [ ] **Step 8: Implement three-step reassurance.** Plain text, no cards: `Plan subtopics` -> `Search & evaluate` -> `Synthesize report`.
 - [ ] **Step 9: Run tests/lint.**
 
