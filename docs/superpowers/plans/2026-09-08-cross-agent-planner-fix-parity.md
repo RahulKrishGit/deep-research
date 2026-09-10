@@ -41,6 +41,10 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 
 The following boundaries remain active: `--tier live` is prohibited; Task 9 is network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and the whole-branch review must remain deferred until the user explicitly requests it. The separately authorized GitHub push is complete, but it does not change the Task 15 review status.
 
+### User-authorized live-evaluation amendment (2026-09-10)
+
+The user explicitly overrode the plan's implementation-era live prohibition after Task 17's offline review and requested one live-tier repetition for all six registered agents. The six results, typed diagnoses, LangSmith links, artifact paths, and SHA-256 values are recorded in `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-live-evaluation.md` and the permanent fix log. This amendment adds evidence only; it does not authorize a live suite, a token-budget increase, prompt tuning, a new repair, or the deferred whole-branch review.
+
 ## Documentation and Error/Fix Ledger Requirement (Added 2026-09-10)
 
 Every repair wave must leave an auditable, secret-safe record of the errors and fixes used to restore the agents. Before and after each implementation or review attempt, update the ignored SDD ledger and the tracked permanent fix log with: the candidate SHA; the exact repository-relative files and tests involved; the observed typed error or failed gate; the classification and ruled-out alternatives; the smallest repair; the resulting commit; verification commands and counts; reviewer disposition; and any remaining blocker or next action. Preserve earlier failed artifacts and reports as immutable evidence; never overwrite, relabel, or delete them to make a later candidate appear successful. Do not record prompts, provider responses, evaluator inputs, hidden reasoning, raw exception messages, credentials, or environment dumps. A task cannot be marked complete until its error diagnosis, fix, review, and verification are recorded in both ledgers where applicable.
@@ -1738,7 +1742,7 @@ Do not merge, push, open a PR, deploy, or begin live evaluation as part of this 
 
 ---
 
-### Task 16: Repair Controlled Scenario-Miss Semantics — READY
+### Task 16: Repair Controlled Scenario-Miss Semantics — COMPLETE (REVIEWED)
 
 Sol High's re-review identified a harness contract defect: an injected in-memory search double currently records every query absent from the exact scenario map as `prohibited_calls`, even though this is a scenario miss rather than an attempted real-service access. This task must preserve fail-closed controlled isolation while separating `scenario_misses`/`unscripted_queries` from true prohibited dependency/tool access.
 
@@ -1750,7 +1754,7 @@ Sol High's re-review identified a harness contract defect: an injected in-memory
 - Do not alter target prompts, agent budgets, global `llm.max_tokens == 4096`, thresholds, scoring weights, or live dependencies in this task.
 - Required evidence: RED tests showing the current classification, GREEN tests for the separated classification and versioned case contract, focused evaluator/case/dependency tests, full offline gate, Luna-max implementation report, and Luna-max task review.
 
-### Task 17: Improve Judge Diagnostics and Status Precedence — READY
+### Task 17: Improve Judge Diagnostics and Status Precedence — COMPLETE (REVIEWED; LIVE EVIDENCE RECORDED)
 
 This task follows Task 16 and addresses the remaining judge-only infrastructure boundary. Current `$` diagnostics are too coarse because root-level Pydantic failures can represent malformed JSON, root-shape mismatch, extra fields, or other schema categories. Judge-only failures also currently collapse into ordinary `FAILED` status when deterministic hard gates pass.
 
