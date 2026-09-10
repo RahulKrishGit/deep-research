@@ -35,15 +35,15 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 12. Evidence-gated agent quality/trajectory repair | **Complete — repairs and integration correction; judge no-change decision** | Commits `7c58abc`, `12f9ebe`, `b7c2500`, and `8271dbc` repair cross-channel `required_fields_present`, typed Critic provider-fallback routing, Critic ReAct context wiring, and the package export-surface regression. Typed judge diagnostics split between `$` and `rationale`, so no judge/provider repair is justified without a repeatable contract failure. |
 | 13. Full controlled validation | **Complete — five repaired agents terminal-blocked after confirmation** | Candidate `1f790b0` completed fresh baseline/confirmation pairs for all five agents in `infrastructure-remediation/1f790b0-v1/`; all 90 repetitions completed, repaired hard gates held where applicable, and shared judge/provider failures remained typed. No live or suite command ran. |
 | 14. Permanent cross-agent fix log | **Complete — post-repair evidence recorded** | Fix log section 23 records all five fresh result hashes, gate counts, typed failures, provenance-capture errors/fixes, terminal states, and the no-budget/no-new-repair decisions. |
-| 15. Final offline verification and whole-branch review | **Offline verification complete — whole-branch review deferred** | After the final Task 13/14 documentation update: full offline suite `1,944 passed, 1 deselected, 2 warnings`, Ruff passed, and `git diff --check` passed. Whole-branch review remains user-deferred. |
+| 15. Final offline verification and whole-branch review | **Complete — Ready with follow-ups** | Post-a95262f recorded full offline suite `1,980 passed, 1 deselected, 2 warnings`, Ruff passed, and `git diff --check` passed. Sol High's current-HEAD review at `6a01175` found no Critical/Important blocker and one non-blocking documentation chronology issue. |
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
-| 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek traceback scrubbing passed two scoped Luna-max review rounds. |
+| 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 
-The following boundaries remain active: `--tier live` is prohibited; Task 9 is network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and the whole-branch review must remain deferred until the user explicitly requests it. The separately authorized GitHub push is complete, but it does not change the Task 15 review status.
+The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves; no further paid/live run is authorized by those artifacts; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite or prompt/budget tuning is authorized by the current evidence. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
 ### User-authorized live-evaluation amendment (2026-09-10)
 
-The user explicitly overrode the plan's implementation-era live prohibition after Task 17's offline review and requested one live-tier repetition for all six registered agents. The six results, typed diagnoses, LangSmith links, artifact paths, and SHA-256 values are recorded in `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-live-evaluation.md` and the permanent fix log. This amendment adds evidence only; it does not authorize a live suite, a token-budget increase, prompt tuning, a new repair, or the deferred whole-branch review.
+The user explicitly overrode the plan's implementation-era live prohibition after Task 17's offline review and requested the two documented live evidence waves for all six registered agents. Their typed diagnoses, LangSmith links, artifact paths, and SHA-256 values are recorded in the two live-evaluation reports and the permanent fix log. These amendments add evidence only; they do not authorize a live suite, a token-budget increase, prompt tuning, or a new repair. The whole-branch review was subsequently completed at `6a01175`.
 
 ## Documentation and Error/Fix Ledger Requirement (Added 2026-09-10)
 
@@ -107,7 +107,7 @@ The campaign is complete only when all of the following are true:
 - One implementer task gets a spec-compliance + code-quality review before the next task. Use a fresh reviewer. After all tasks, perform one broad whole-branch review with the most capable available model.
 - Batch only truly same-shape test additions. Do not batch tasks whose failures require different architectural judgment.
 - `pytest` and Ruff are offline. Controlled evaluation intentionally makes paid target-model, judge-model, and LangSmith calls.
-- Do not run any controlled provider command without immediate human authorization at the paid-call gate in the execution session. Do not run `--tier live` anywhere in this plan.
+- Do not run any controlled provider command without immediate human authorization at the paid-call gate in the execution session. The implementation-era plan prohibited `--tier live`; the later user-authorized live-evidence amendments are recorded separately and remain limited to the documented one-repetition waves.
 - Never run `python -m deep_research.evaluation suite` until each non-Planner agent has independently passed its own full controlled campaign or has a documented infrastructure-blocked terminal state.
 - Never print, commit, upload, or quote credentials, hidden chain-of-thought, raw provider payloads, unredacted exception strings, prompts, evaluator inputs, or provider reasoning content.
 - Use only typed artifacts, bounded trajectory summaries, safe events, safe provider diagnostics, gate IDs/details that are already allowed, concise judge rationale, and trace URLs directly supplied by LangSmith.
@@ -1765,7 +1765,7 @@ This task follows Task 16 and addresses the remaining judge-only infrastructure 
 - Preserve the no-fabricated-score rule, one structured repair attempt, global `llm.max_tokens == 4096`, frozen v1 artifacts, and all existing target/fallback semantics.
 - Required evidence: RED/GREEN provider and runner tests, focused evaluation/provider suite, full offline gate, Luna-max implementation report, and Luna-max task review.
 
-Post-review fix round 3 is complete: Sol High identified an OpenAI structured-repair traceback-local leak, and Luna High implemented the one-line local scrub plus a focused marker regression in `a95262f`. A fresh Luna-max task review approved the minimal two-file change with no Critical or Important findings. The controller must now run the full offline gate, Ruff, and whitespace checks, update the fix ledger, and push before any further paid/live validation or whole-branch review.
+Post-review fix round 3 is complete: Sol High identified an OpenAI structured-repair traceback-local leak, and Luna High implemented the one-line local scrub plus a focused marker regression in `a95262f`. A fresh Luna-max task review approved the minimal two-file change with no Critical or Important findings. The controller subsequently ran the full offline gate, Ruff, and whitespace checks, updated the fix ledger, and pushed before the authorized live evidence rerun and current-HEAD whole-branch review.
 
 The authorized follow-up live wave is also complete at candidate `160c334`. It ran one sequential repetition for each of the six agents with no retries and is documented in `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-live-rerun.md`. The rerun confirms the required-field, Critic routing/context, no-prohibited-call, and no-target-budget conclusions, while judge instability remains unresolved. It does not justify prompt tuning, token-budget changes, a suite run, or a claim of quality improvement from one noisy repetition.
 
@@ -1805,7 +1805,7 @@ Use explicit model selection for every remaining implementation or review dispat
 | Task 16 task-scoped review and re-review | GPT-5.6 Luna | **max** |
 | Task 17 implementation and fix rounds | GPT-5.6 Luna | **max** |
 | Task 17 task-scoped review and re-review | GPT-5.6 Luna | **max** |
-| Task 15 whole-branch review | **Do not dispatch** until the user explicitly requests it | deferred |
+| Task 15 whole-branch review | **Complete — Sol High review at 6a01175** | Ready with follow-ups; one non-blocking documentation chronology cleanup recorded. |
 
 Task 10 and Task 13 controlled target/judge runs must use the frozen evaluation model configuration. Implementation-model routing is not permission to change target model, judge model, reasoning effort, retry policy, or token budgets. High/max workers may require longer bounded controller waits; do not interpret slow reasoning as a repository-helper loop or launch duplicate workers.
 
@@ -1863,4 +1863,4 @@ Before execution, the controller must confirm:
 - No task requires changing a case/rubric/gate to pass.
 - Every tracked task ends with a test/review/commit boundary appropriate for a fresh subagent.
 - The permanent fix log is part of completion, so future agents do not have to reconstruct this campaign from chat history.
-- Final Task 15 offline verification is rerun after Task 9 and any later tracked repair; whole-branch review remains paused until explicit user request.
+- Final Task 15 offline verification is rerun after Task 9 and any later tracked repair; the current whole-branch review is complete, with only non-blocking follow-up evidence work remaining.
