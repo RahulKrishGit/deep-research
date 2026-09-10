@@ -2179,6 +2179,41 @@ def test_history_open_rebuilds_completed_report_in_same_shell_without_rerun() ->
     assert "Research sessions" not in visible
 
 
+def test_restarted_history_reopens_persisted_telemetry_in_completed_view() -> None:
+    session_id = "t" * 32
+    trace_url = "https://smith.langchain.com/o/example/r/restarted"
+    token_usage = UiTokenUsage(input_tokens=8_000, output_tokens=4_400)
+    entry = _entry(
+        session_id,
+        "Restarted telemetry question",
+        "completed",
+        0,
+    ).model_copy(
+        update={
+            "finished_at": datetime(2026, 9, 9, 0, 10, tzinfo=timezone.utc),
+            "report_path": "reports/restarted-telemetry.md",
+            "trace_url": trace_url,
+            "token_usage": token_usage,
+        }
+    )
+    controller = RestartedFakeController([entry])
+    controller.history_reports[session_id] = "# Reopened report"
+
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+    app.button(key="session_history").click().run()
+    app.button(key=f"history_open_{session_id}").click().run()
+
+    assert app.metric[0].label == "Tokens used"
+    assert app.metric[0].value == "12.4k"
+    trace_links = app.main.get("link_button")
+    assert len(trace_links) == 1
+    assert trace_links[0].label == "Open LangSmith trace"
+    assert trace_links[0].url == trace_url
+
+
 def test_history_open_failure_retains_safe_terminal_context_and_partial_report(
 ) -> None:
     session_id = "e" * 32

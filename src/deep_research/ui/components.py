@@ -1057,6 +1057,8 @@ def _snapshot_for_selection(
         ],
         report_path=entry.report_path,
         report=report,
+        token_usage=entry.token_usage,
+        trace_url=entry.trace_url,
         source_summary=entry.source_summary,
         fact_check_summary=entry.fact_check_summary,
         errors=entry.errors,
