@@ -303,6 +303,7 @@ STATIC_CSS = """
 .stButton > button {
   border-radius: var(--dr-radius-control);
   box-shadow: none;
+  min-height: 44px;
 }
 
 button[kind="primary"],
@@ -310,6 +311,7 @@ button[kind="primaryFormSubmit"] {
   background: var(--dr-active) !important;
   border-color: var(--dr-active) !important;
   color: var(--dr-background) !important;
+  min-height: 44px !important;
 }
 
 button[kind="secondary"] {

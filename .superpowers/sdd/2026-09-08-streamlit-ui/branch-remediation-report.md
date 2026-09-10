@@ -301,3 +301,72 @@ not re-rendered. No live provider was invoked.
 
 No merge or branch-wide review was run. The branch is ready for the user's
 separate re-review after the commit is pushed.
+
+## Task 12 — Final re-review remediation
+
+Date: 2026-09-10
+Branch: `codex/streamlit-ui`
+Starting clean-worktree HEAD: `fc78f050e0e6f0dd93e204203cf9cb47bf1d1d6c`
+Scope: the remaining Sol High re-review findings. No engine, provider,
+tracing, live-provider, or branch-wide review changes.
+
+### Remediated findings
+
+- Sidebar status refresh is now keyed by each visible session ID. Selecting
+  an older active session updates that row from its own controller snapshot,
+  while other active sessions retain their independent Running status and
+  lifecycle.
+- Starting is now a two-phase UI flow: submission persists a normalized
+  pending request and reruns into a read-only form with the teal preparation
+  cue before consuming the request once. Duplicate submission is disabled.
+- The completed quality rail now includes a deterministic credibility
+  distribution explanation after the High, Moderate, Low, and Unrated counts.
+- The execution plan now declares `streamlit>=1.49`, matching the keyed and
+  gapped `st.container` contract used by the visual implementation.
+- The primary submit control has an explicit 44px minimum height in both
+  generic and primary-form CSS rules.
+
+### Design record and changed files
+
+The approved design decision is recorded in
+`docs/superpowers/specs/2026-09-10-streamlit-ui-final-remediation-design.md`
+(commit `36f11c8`). The implementation changes cover:
+
+- `docs/superpowers/plans/2026-09-08-streamlit-ui.md`
+- `src/deep_research/ui/app.py`
+- `src/deep_research/ui/components.py`
+- `src/deep_research/ui/styles.py`
+- `tests/test_ui/test_app.py`
+- `tests/test_ui/test_styles.py`
+- `.superpowers/sdd/2026-09-08-streamlit-ui/branch-remediation-report.md`
+
+### TDD and fresh verification
+
+- The focused RED run produced the expected failures for the not-yet-
+  implemented pending-start, keyed-status, distribution-summary, plan-floor,
+  and 44px contracts.
+- `python -m pytest tests/test_ui -q` — PASS: **184 passed, 2 skipped**, 0
+  failed, 29.61s.
+- `python -m pytest -q` — PASS: **2065 passed, 2 skipped, 1 deselected**, 0
+  failed, 2 warnings in 57.30s. Warnings are the existing LangSmith
+  `ast.Str` deprecation and Starlette/httpx test-client integration
+  deprecation.
+- `python -m ruff check .` — PASS: `All checks passed!`
+- `git diff --check` — PASS; Git emitted only LF-to-CRLF normalization
+  warnings for edited text files.
+
+### Rendered verification
+
+The local Streamlit mock was restarted after the final CSS change and checked
+in the in-app browser. The primary form submit control measured
+`height: 44px` and `min-height: 44px`. The four-state New, Running, Completed,
+and History surfaces were structurally checked against the DOCX reference
+figures during the preceding acceptance pass; exact pixel identity is not
+claimed because the reference captures and browser viewport dimensions
+differ. LibreOffice/`soffice` remains unavailable, so the DOCX itself was not
+re-rendered. No live provider was invoked.
+
+### Scope boundary
+
+No merge or branch-wide review was run. The branch is ready for the user's
+separate re-review after the final commits are pushed.

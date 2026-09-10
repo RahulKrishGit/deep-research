@@ -22,6 +22,7 @@ from deep_research.ui.models import (
     UiExecutionErrorPresentation,
     UiSessionSnapshot,
     UiSourceDetail,
+    UiSourceSummary,
     UiSubTopicProgress,
     history_entry_from_snapshot,
 )
@@ -39,7 +40,8 @@ _LIVE_SESSION_KEY = "_deep_research_live_session_id"
 _SELECTED_SESSION_KEY = "_deep_research_selected_session_id"
 _START_ERROR_KEY = "_deep_research_start_error"
 _START_IN_FLIGHT_KEY = "_deep_research_start_in_flight"
-_SIDEBAR_STATUS_PLACEHOLDER_KEY = "_deep_research_sidebar_status_placeholder"
+_PENDING_START_KEY = "_deep_research_pending_start_request"
+_SIDEBAR_STATUS_PLACEHOLDERS_KEY = "_deep_research_sidebar_status_placeholders"
 
 _CONFIGURATION_FAILURE_MESSAGE = "Research service configuration is unavailable."
 _HISTORY_FAILURE_MESSAGE = (
@@ -857,13 +859,13 @@ def _render_recent_row(
             vertical_alignment="center",
         )
         with status_column:
-            if entry.session_id == state.get(_ACTIVE_SESSION_KEY):
-                placeholder = st.empty()
-                state[_SIDEBAR_STATUS_PLACEHOLDER_KEY] = placeholder
-                with placeholder.container():
-                    render_status(entry.status)
-                    st.caption(_session_date(entry))
-            else:
+            placeholders = state.setdefault(_SIDEBAR_STATUS_PLACEHOLDERS_KEY, {})
+            if not isinstance(placeholders, dict):
+                placeholders = {}
+                state[_SIDEBAR_STATUS_PLACEHOLDERS_KEY] = placeholders
+            placeholder = st.empty()
+            placeholders[entry.session_id] = placeholder
+            with placeholder.container():
                 render_status(entry.status)
                 st.caption(_session_date(entry))
         with action_column:
@@ -907,6 +909,7 @@ def render_sidebar(controller: LocalResearchController) -> None:
             '<div class="dr-section-label">RECENT SESSIONS</div>',
             unsafe_allow_html=True,
         )
+        state[_SIDEBAR_STATUS_PLACEHOLDERS_KEY] = {}
         selected_id = state.get(_SELECTED_SESSION_KEY)
         for entry in _recent_entries(controller, state):
             _render_recent_row(
@@ -926,15 +929,50 @@ def render_sidebar(controller: LocalResearchController) -> None:
             _set_view("history", state)
 
 
-def render_sidebar_status(snapshot: UiSessionSnapshot) -> None:
-    """Update the active row's status from the live fragment only."""
-    placeholder = st.session_state.get(_SIDEBAR_STATUS_PLACEHOLDER_KEY)
-    if placeholder is None:
+def _sidebar_entry_for_refresh(
+    controller: LocalResearchController,
+    session_id: str,
+    state: MutableMapping[str, Any],
+    selected_snapshot: UiSessionSnapshot,
+) -> SessionHistoryEntry | None:
+    if session_id == selected_snapshot.session_id:
+        return history_entry_from_snapshot(selected_snapshot)
+
+    try:
+        snapshot = controller.snapshot(session_id)
+    except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+        snapshot = None
+    if snapshot is not None and (
+        snapshot.status != "running"
+        or _controller_session_is_active(controller, session_id, state)
+    ):
+        return history_entry_from_snapshot(snapshot)
+    return _history_entry(controller, session_id, state)
+
+
+def render_sidebar_status(
+    controller: LocalResearchController,
+    snapshot: UiSessionSnapshot,
+) -> None:
+    """Refresh each visible sidebar row from its own session state."""
+    placeholders = st.session_state.get(_SIDEBAR_STATUS_PLACEHOLDERS_KEY)
+    if not isinstance(placeholders, dict):
         return
-    entry = history_entry_from_snapshot(snapshot)
-    with placeholder.container():
-        render_status(entry.status)
-        st.caption(_session_date(entry))
+
+    for session_id, placeholder in placeholders.items():
+        if not isinstance(session_id, str):
+            continue
+        entry = _sidebar_entry_for_refresh(
+            controller,
+            session_id,
+            st.session_state,
+            snapshot,
+        )
+        if entry is None:
+            continue
+        with placeholder.container():
+            render_status(entry.status)
+            st.caption(_session_date(entry))
 
 
 def _snapshot_for_selection(
@@ -1056,6 +1094,22 @@ def _render_start_error(error_details: object) -> None:
     st.caption(hint)
 
 
+def _queue_research_start(
+    *,
+    question: str,
+    max_iterations: int,
+    state: MutableMapping[str, Any],
+) -> None:
+    """Persist a start request so the next render can show Starting first."""
+    state[_PENDING_START_KEY] = {
+        "question": question.strip(),
+        "max_iterations": max_iterations,
+    }
+    state[_START_IN_FLIGHT_KEY] = True
+    state[_START_ERROR_KEY] = None
+    st.rerun()
+
+
 def _start_research(
     controller: LocalResearchController,
     *,
@@ -1065,11 +1119,6 @@ def _start_research(
 ) -> None:
     state[_START_IN_FLIGHT_KEY] = True
     state[_START_ERROR_KEY] = None
-    # Enqueue the documented transitional cue before the synchronous
-    # controller bootstrap.  The stable rerun below then moves to the live
-    # session view once the controller owns the worker.
-    render_status("starting")
-    st.caption("Preparing research plan before the research run begins.")
     try:
         snapshot = controller.start(
             question=question.strip(),
@@ -1102,6 +1151,32 @@ def _start_research(
     st.rerun()
 
 
+def _start_pending_research(
+    controller: LocalResearchController,
+    state: MutableMapping[str, Any],
+) -> None:
+    """Consume exactly one queued request after its Starting render."""
+    request = state.pop(_PENDING_START_KEY, None)
+    if not isinstance(request, dict):
+        state[_START_IN_FLIGHT_KEY] = False
+        return
+    question = request.get("question")
+    max_iterations = request.get("max_iterations")
+    if not isinstance(question, str) or not isinstance(max_iterations, int):
+        state[_START_ERROR_KEY] = (
+            _START_VALIDATION_MESSAGE,
+            _START_VALIDATION_HINT,
+        )
+        state[_START_IN_FLIGHT_KEY] = False
+        return
+    _start_research(
+        controller,
+        question=question,
+        max_iterations=max_iterations,
+        state=state,
+    )
+
+
 def _render_new_research_content(controller: LocalResearchController) -> None:
     """Render the question-first New Research screen and its start form."""
     state = st.session_state
@@ -1111,6 +1186,7 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
         if isinstance(startup_error, ResearchConfigurationError):
             error_details = _configuration_error_details(startup_error)
     _render_start_error(error_details)
+    start_in_flight = state.get(_START_IN_FLIGHT_KEY) is True
 
     with st.form("new_research_form", clear_on_submit=False):
         st.markdown(
@@ -1138,6 +1214,7 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
             placeholder=(
                 "Ask a focused question with a timeframe or scope where relevant."
             ),
+            disabled=start_in_flight,
         )
         st.caption("Be specific. Include a timeframe or scope where relevant.")
         st.divider()
@@ -1152,6 +1229,7 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
                 step=1,
                 key="max_iterations",
                 help="Macro refinement passes before the report is finalized.",
+                disabled=start_in_flight,
             )
         with config_right:
             st.markdown("**Output format**")
@@ -1163,7 +1241,6 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
             st.caption("Read-only for this local build.")
 
         question_is_blank = not isinstance(question, str) or not question.strip()
-        start_in_flight = state.get(_START_IN_FLIGHT_KEY) is True
         action_status, action_button = st.columns(
             [1, 0.5],
             gap="large",
@@ -1187,14 +1264,16 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
             )
 
         if submitted:
-            _start_research(
-                controller,
+            _queue_research_start(
                 question=question,
                 max_iterations=int(st.session_state["max_iterations"]),
                 state=state,
             )
-            if state.get(_VIEW_KEY) == "new":
-                _render_start_error(state.get(_START_ERROR_KEY))
+
+    if start_in_flight and state.get(_PENDING_START_KEY) is not None:
+        _start_pending_research(controller, state)
+        if state.get(_VIEW_KEY) == "new":
+            _render_start_error(state.get(_START_ERROR_KEY))
 
     st.markdown(
         '<div class="dr-shell-rule" aria-hidden="true"></div>'
@@ -1604,6 +1683,55 @@ def _render_source_detail(detail: UiSourceDetail) -> None:
     st.caption(f"Corroboration score · {detail.corroboration_score:.2f}")
 
 
+def _source_distribution_summary(summary: UiSourceSummary) -> str:
+    """Explain credibility counts without making an unsupported quality claim."""
+    counts = {
+        "high": summary.high,
+        "moderate": summary.moderate,
+        "low": summary.low,
+        "unrated": summary.unrated,
+    }
+    evaluated = sum(counts.values())
+    if evaluated == 0:
+        return "No evaluated sources are available to summarize."
+    if summary.unrated == evaluated:
+        return "All evaluated sources are unrated."
+
+    high_moderate = summary.high + summary.moderate
+    low_or_unrated = summary.low + summary.unrated
+    if high_moderate > evaluated / 2:
+        if high_moderate == evaluated:
+            return "All evaluated sources are high or moderate credibility."
+        remainder: list[str] = []
+        if summary.low:
+            verb = "is" if summary.low == 1 else "are"
+            remainder.append(f"{summary.low} {verb} low credibility")
+        if summary.unrated:
+            verb = "remains" if summary.unrated == 1 else "remain"
+            remainder.append(f"{summary.unrated} {verb} unrated")
+        return (
+            "Most evaluated sources are high or moderate credibility; "
+            + " and ".join(remainder)
+            + "."
+        )
+
+    dominant_tier, dominant_count = max(counts.items(), key=lambda item: item[1])
+    if dominant_count > evaluated / 2:
+        if dominant_tier == "unrated":
+            return "Most evaluated sources remain unrated."
+        return f"Most evaluated sources are {dominant_tier} credibility."
+    if high_moderate == low_or_unrated:
+        return "Credibility is mixed across the evaluated sources."
+    if high_moderate > low_or_unrated:
+        return (
+            "High and moderate credibility sources outnumber low and unrated "
+            "sources."
+        )
+    return (
+        "Low and unrated sources outnumber high and moderate credibility sources."
+    )
+
+
 def _render_claim_detail(detail: UiClaimDetail) -> None:
     st.markdown(f"**{escape(detail.text)}**")
     verdict = {
@@ -1634,6 +1762,7 @@ def _render_completed_details_rail(snapshot: UiSessionSnapshot) -> None:
             ("Unrated", source_summary.unrated),
         ),
     )
+    st.caption(_source_distribution_summary(source_summary))
     with st.expander("Source details", expanded=False):
         if source_summary.details:
             for detail in source_summary.details:

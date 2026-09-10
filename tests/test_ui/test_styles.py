@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from deep_research.ui import styles
 
 
@@ -57,3 +59,12 @@ def test_static_css_is_safe_and_stays_inside_approved_boundary() -> None:
     assert "max-width: 1120px" in css
     assert "font-family: Georgia" in css
     assert "box-shadow: none" in css
+    assert "min-height: 44px" in css
+    primary_rule = re.search(
+        r'button\[kind="primary"\],\s*'
+        r'button\[kind="primaryFormSubmit"\]\s*\{(?P<body>.*?)\}',
+        css,
+        flags=re.DOTALL,
+    )
+    assert primary_rule is not None
+    assert "min-height: 44px !important;" in primary_rule.group("body")

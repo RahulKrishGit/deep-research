@@ -48,6 +48,7 @@ from deep_research.utils.types import ResearchEvent
 from tests.test_ui.fakes import DemoController, FailingSyncRunner, GatedSyncRunner
 
 _LIVE_SESSION_STATE_KEY = "_deep_research_live_session_id"
+_PENDING_START_STATE_KEY = "_deep_research_pending_start_request"
 
 
 def _entry(
@@ -473,6 +474,7 @@ def test_valid_question_can_submit_and_forwards_markdown_configuration() -> None
         "max_iterations": 6,
         "output_format": "markdown",
     }
+    assert app.session_state[_PENDING_START_STATE_KEY] is None
 
 
 def test_configuration_error_preserves_draft_values() -> None:
@@ -536,6 +538,27 @@ def test_unexpected_start_error_surfaces_without_form_guidance() -> None:
     )
 
 
+def test_start_submission_persists_pending_request_before_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state: dict[str, object] = {}
+    rerun_calls: list[bool] = []
+    monkeypatch.setattr(components.st, "rerun", lambda: rerun_calls.append(True))
+
+    components._queue_research_start(
+        question="  A valid question  ",
+        max_iterations=7,
+        state=state,
+    )
+
+    assert state[_START_IN_FLIGHT_KEY] is True
+    assert state[_PENDING_START_STATE_KEY] == {
+        "question": "A valid question",
+        "max_iterations": 7,
+    }
+    assert rerun_calls == [True]
+
+
 def test_streamlit_container_uses_the_declared_keyed_container_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -569,6 +592,19 @@ def test_streamlit_dependency_floor_matches_keyed_container_contract() -> None:
     project_file = Path(__file__).parents[2] / "pyproject.toml"
 
     assert '"streamlit>=1.49"' in project_file.read_text(encoding="utf-8")
+
+
+def test_plan_streamlit_floor_matches_keyed_container_contract() -> None:
+    plan_file = (
+        Path(__file__).parents[2]
+        / "docs/superpowers/plans/2026-09-08-streamlit-ui.md"
+    )
+    plan_text = plan_file.read_text(encoding="utf-8")
+
+    assert "streamlit>=1.37" not in plan_text
+    assert "Streamlit `>=1.49`" in plan_text
+    assert plan_text.count("streamlit>=1.49") >= 2
+    assert "keyed `st.container` contract" in plan_text
 
 
 def test_invalid_controller_bootstrap_keeps_new_form_and_safe_error(
@@ -1188,6 +1224,8 @@ def test_starting_state_is_visible_and_prevents_duplicate_submission() -> None:
     visible = _visible_main_text(app)
     assert "Preparing research plan" in visible
     assert "Ready to start" not in visible
+    assert app.text_area(key="research_question").disabled is True
+    assert app.number_input(key="max_iterations").disabled is True
     assert app.button(key="start_research").disabled is True
 
 
@@ -1485,12 +1523,46 @@ def test_completed_source_details_disclose_provenance_without_an_opaque_score() 
     assert "Grid Storage Outlook" in visible
     assert "https://example.com/grid-storage" in visible
     assert "High" in visible
+    assert "Credibility is mixed across the evaluated sources." in visible
     assert "Primary market dataset with transparent methodology." in visible
     assert "Used in research topics" in visible
     assert "Battery cost curves" in visible
     assert "Corroboration" in visible
     assert "91%" not in visible
     assert "Average" not in visible
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        (
+            UiSourceSummary(total=0, high=0, moderate=0, low=0, unrated=0),
+            "No evaluated sources are available to summarize.",
+        ),
+        (
+            UiSourceSummary(total=6, high=3, moderate=2, low=1, unrated=0),
+            "Most evaluated sources are high or moderate credibility; "
+            "1 is low credibility.",
+        ),
+        (
+            UiSourceSummary(total=4, high=1, moderate=1, low=1, unrated=1),
+            "Credibility is mixed across the evaluated sources.",
+        ),
+        (
+            UiSourceSummary(total=3, high=0, moderate=0, low=0, unrated=3),
+            "All evaluated sources are unrated.",
+        ),
+        (
+            UiSourceSummary(total=4, high=1, moderate=0, low=3, unrated=0),
+            "Most evaluated sources are low credibility.",
+        ),
+    ],
+)
+def test_source_credibility_distribution_explanation_is_deterministic(
+    summary: UiSourceSummary,
+    expected: str,
+) -> None:
+    assert components._source_distribution_summary(summary) == expected
 
 
 def test_completed_claim_details_preserve_verdict_and_structured_evidence() -> None:
@@ -1781,6 +1853,70 @@ def test_selecting_older_active_session_sets_that_session_as_live_target() -> No
     assert app.session_state[_SELECTED_SESSION_KEY] == older_id
     assert app.session_state[_VIEW_KEY] == "current"
     assert "Older active question" in _visible_main_text(app)
+
+
+def test_concurrent_sidebar_refresh_keeps_status_with_its_session_row() -> None:
+    older_id = "c" * 32
+    newer_id = "d" * 32
+
+    class ConcurrentController(MultiActiveFakeController):
+        def __init__(self) -> None:
+            self.older_id = older_id
+            self.newer_id = newer_id
+            super().__init__(
+                [
+                    _entry(older_id, "Older active question", "running", 10),
+                    _entry(newer_id, "Newer active question", "running", 0),
+                ],
+                {older_id, newer_id},
+            )
+            self.live_snapshots = {
+                older_id: _snapshot(status="completed", report="Done").model_copy(
+                    update={"session_id": older_id}
+                ),
+                newer_id: _snapshot(status="running").model_copy(
+                    update={"session_id": newer_id}
+                ),
+            }
+
+        def snapshot(self, requested_id: str) -> UiSessionSnapshot:
+            return self.live_snapshots[requested_id].model_copy(deep=True)
+
+    controller = ConcurrentController()
+
+    def sidebar_script(active_controller) -> None:
+        import streamlit as st
+
+        from deep_research.ui.app import _ACTIVE_SESSION_KEY
+        from deep_research.ui.components import render_sidebar, render_sidebar_status
+
+        st.session_state[_ACTIVE_SESSION_KEY] = active_controller.newer_id
+        render_sidebar(active_controller)
+        render_sidebar_status(
+            active_controller,
+            active_controller.live_snapshots[active_controller.older_id],
+        )
+
+    app = AppTest.from_function(
+        sidebar_script,
+        kwargs={"active_controller": controller},
+    ).run()
+
+    older_row = app.sidebar.container(key=f"dr-session-row-{controller.older_id}")
+    newer_row = app.sidebar.container(key=f"dr-session-row-{controller.newer_id}")
+    older_text = "\n".join(
+        [item.value for item in older_row.markdown]
+        + [item.value for item in older_row.caption]
+    )
+    newer_text = "\n".join(
+        [item.value for item in newer_row.markdown]
+        + [item.value for item in newer_row.caption]
+    )
+
+    assert "Completed" in older_text
+    assert "Running" not in older_text
+    assert "Running" in newer_text
+    assert "Completed" not in newer_text
 
 
 @pytest.mark.parametrize(

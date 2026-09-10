@@ -6,7 +6,7 @@
 
 **Architecture:** Keep Streamlit a thin local frontend over the existing `run_research_sync` engine. A UI-local `LocalResearchController` owns one worker thread per started session, receives existing typed `ResearchEvent` callbacks, and exposes immutable UI snapshots. Pure projector functions transform event/state/outcome contracts into presentation models. Streamlit keeps view/navigation state in `st.session_state`, uses a persistent sidebar for New research/recent sessions/history, and refreshes only the running-state fragment every two seconds. Styling is centralized, token-driven, and limited to typography, content width, spacing rhythm, hairline borders, semantic status treatments, selected/active tints, and compact labels. No custom JavaScript is allowed.
 
-**Tech Stack:** Python 3.11+, Streamlit `>=1.37`, Pydantic v2, standard-library `threading`/`pathlib`/`json`, existing `deep_research.main`, existing `ResearchEvent` / `ResearchOutcome` / `ResearchState` contracts, pytest, Streamlit `streamlit.testing.v1.AppTest`, Ruff.
+**Tech Stack:** Python 3.11+, Streamlit `>=1.49`, Pydantic v2, standard-library `threading`/`pathlib`/`json`, existing `deep_research.main`, existing `ResearchEvent` / `ResearchOutcome` / `ResearchState` contracts, pytest, Streamlit `streamlit.testing.v1.AppTest`, Ruff.
 
 **Functional spec:** `docs/superpowers/specs/2026-07-25-14-streamlit-ui-design.md`
 
@@ -126,7 +126,7 @@ Additional layout rules:
 ## Global Engineering Constraints
 
 - Preserve `requires-python = ">=3.11"`.
-- Add exactly one runtime dependency: `streamlit>=1.37`. Do not add a separate frontend framework, refresh package, browser runtime, database, queue, or new HTTP client.
+- Add exactly one runtime dependency: `streamlit>=1.49`. This floor is required by the keyed `st.container` contract used for selected-row and editorial-column styling. Do not add a separate frontend framework, refresh package, browser runtime, database, queue, or new HTTP client.
 - The Streamlit UI calls the existing synchronous adapter `run_research_sync` from a worker thread. Do not duplicate orchestration logic and do not require FastAPI.
 - Preserve existing CLI/FastAPI behavior.
 - Markdown remains the only output format.
@@ -352,7 +352,7 @@ python -m pytest tests/test_ui/test_models.py -v
 
 Expected: import failure because the UI contracts do not exist.
 
-- [ ] **Step 4: Add the runtime dependency.** Add exactly `"streamlit>=1.37",` to the runtime dependency list.
+- [ ] **Step 4: Add the runtime dependency.** Add exactly `"streamlit>=1.49",` to the runtime dependency list. The floor supports the keyed `st.container` contract used by the UI styling.
 - [ ] **Step 5: Implement contracts.** Use a shared `ContractModel`-style Pydantic config (`extra="forbid"`, stripped strings, validated defaults). Avoid importing Streamlit from `models.py` or `ui/__init__.py`.
 - [ ] **Step 6: Add an explicit history compaction function.** `history_entry_from_snapshot` must copy summary counts but strip `source_summary.details` and `fact_check_summary.details` before persistence.
 - [ ] **Step 7: Run focused tests and lint.**

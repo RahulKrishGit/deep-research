@@ -17,6 +17,7 @@ _HISTORY_SEARCH_KEY = "_deep_research_history_search"
 _HISTORY_FILTER_KEY = "_deep_research_history_filter"
 _START_ERROR_KEY = "_deep_research_start_error"
 _START_IN_FLIGHT_KEY = "_deep_research_start_in_flight"
+_PENDING_START_KEY = "_deep_research_pending_start_request"
 
 _VALID_VIEWS = {"new", "current", "history"}
 
@@ -46,6 +47,7 @@ def _initialize_session_state() -> None:
         _HISTORY_FILTER_KEY: "All",
         _START_ERROR_KEY: None,
         _START_IN_FLIGHT_KEY: False,
+        _PENDING_START_KEY: None,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -79,7 +81,7 @@ def render_live_progress(controller: LocalResearchController) -> None:
         render_sidebar_status,
     )
 
-    render_sidebar_status(snapshot)
+    render_sidebar_status(controller, snapshot)
 
     if snapshot.status == "running":
         st.session_state.setdefault(_LIVE_SESSION_KEY, session_id)
@@ -141,6 +143,7 @@ __all__ = [
     "_HISTORY_FILTER_KEY",
     "_HISTORY_SEARCH_KEY",
     "_LIVE_SESSION_KEY",
+    "_PENDING_START_KEY",
     "_SELECTED_SESSION_KEY",
     "_START_ERROR_KEY",
     "_START_IN_FLIGHT_KEY",
