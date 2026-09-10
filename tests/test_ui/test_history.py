@@ -7,6 +7,7 @@ import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Barrier, BrokenBarrierError, Thread
 
 import pytest
 
@@ -344,6 +345,54 @@ def test_upsert_removes_temporary_file_after_atomic_replace_failure(
 
     assert target.read_text(encoding="utf-8") == previous
     assert not target.with_suffix(".json.tmp").exists()
+
+
+def test_independent_stores_commit_concurrent_entries_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_directory = tmp_path / "output"
+    store_a = SessionHistoryStore(output_directory=output_directory)
+    store_b = SessionHistoryStore(output_directory=output_directory)
+    entry_a = _entry("a" * 32, question="First question")
+    entry_b = _entry("b" * 32, question="Second question")
+    commit_barrier = Barrier(2)
+    original_replace = os.replace
+
+    def synchronized_replace(
+        source: os.PathLike[str], destination: os.PathLike[str]
+    ) -> None:
+        try:
+            commit_barrier.wait(timeout=5)
+        except BrokenBarrierError as error:
+            raise AssertionError(
+                "concurrent commit synchronization failed"
+            ) from error
+        original_replace(source, destination)
+
+    monkeypatch.setattr("deep_research.ui.history.os.replace", synchronized_replace)
+    errors: list[Exception] = []
+
+    def write_entry(store: SessionHistoryStore, entry: SessionHistoryEntry) -> None:
+        try:
+            store.upsert(entry)
+        except Exception as error:
+            errors.append(error)
+
+    writers = [
+        Thread(target=write_entry, args=(store_a, entry_a)),
+        Thread(target=write_entry, args=(store_b, entry_b)),
+    ]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join(timeout=5)
+
+    assert all(not writer.is_alive() for writer in writers)
+    assert errors == []
+    for store in (store_a, store_b):
+        assert store.get(entry_a.session_id) == entry_a
+        assert store.get(entry_b.session_id) == entry_b
 
 
 def test_history_store_preserves_running_status_for_controller_conversion(

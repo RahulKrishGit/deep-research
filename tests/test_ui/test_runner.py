@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Thread
 from time import sleep
 from typing import Any
 
@@ -83,6 +84,35 @@ def test_start_returns_running_before_gated_runner_finishes(tmp_path: Path) -> N
     terminal = controller.history_entry(snapshot.session_id)
     assert terminal is not None
     assert terminal.status == "completed"
+
+
+def test_valid_start_creates_and_starts_exactly_one_worker(tmp_path: Path) -> None:
+    runner = GatedSyncRunner()
+    created_workers: list[Thread] = []
+
+    def thread_factory(**kwargs: Any) -> Thread:
+        worker = Thread(**kwargs)
+        created_workers.append(worker)
+        return worker
+
+    controller = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=runner,
+        preflight=lambda **_: object(),
+        thread_factory=thread_factory,
+    )
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    try:
+        assert runner.started.wait(1)
+        assert len(created_workers) == 1
+        assert created_workers[0].is_alive()
+        assert len(runner.calls) == 1
+        assert runner.calls[0]["session_id"] == snapshot.session_id
+    finally:
+        runner.release.set()
+
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
 
 
 @pytest.mark.parametrize(
