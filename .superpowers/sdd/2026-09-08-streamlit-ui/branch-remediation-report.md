@@ -211,3 +211,93 @@ Visual checklist conclusions:
 - Browser-based screenshot comparison is blocked because no browser executable or browser automation package is available in this environment.
 - LibreOffice/`soffice` rendering is unavailable; DOCX visual re-rendering is therefore unverified. Structural/accessibility evidence does not substitute for that visual check.
 - No push, merge, publish, branch-wide review, or unrelated evaluation job was performed.
+
+## Task 11 — Residual re-review remediation and rendered acceptance
+
+Date: 2026-09-09
+Branch: `codex/streamlit-ui`
+Starting clean-worktree HEAD: `26acd1591a4313615f5790031c3ad52f9da05a22`
+Scope: the four Important residual findings, the Starting-state design gap,
+and the Figure 1–4 rendered acceptance check. No engine, provider, tracing,
+live-provider, or branch-wide review changes.
+
+### Remediated findings
+
+- Terminal polling now has a separate `_LIVE_SESSION_KEY`. When the selected
+  live snapshot first becomes terminal, the recurring fragment clears only the
+  poll target and triggers one full rerun; the selected session remains
+  preserved, and the stable terminal route owns the completed screen.
+- Selecting any session that `LocalResearchController.is_session_active`
+  reports as active makes that session the live-view target. The lifecycle
+  registry remains independent, so another running worker is not stopped or
+  relabeled when the user opens an older active session.
+- The package floor is now `streamlit>=1.49`, matching the keyed/gapped
+  `st.container` contract used by the CSS selectors. The installed verification
+  runtime was Streamlit 1.63.0.
+- Terminal sessions without a non-empty report now use a retained
+  progress/stopping-point screen. The completed report layout and source/fact
+  quality rail are rendered only when a real report exists; unavailable counts
+  are not represented by zero-valued quality summaries.
+- Starting now renders the teal `Preparing research plan` cue and disables
+  duplicate submission while the start operation is in flight.
+
+### Changed files
+
+- `pyproject.toml`
+- `src/deep_research/ui/app.py`
+- `src/deep_research/ui/components.py`
+- `tests/test_ui/test_app.py`
+- `.superpowers/sdd/2026-09-08-streamlit-ui/branch-remediation-report.md`
+
+### Regression coverage
+
+- Terminal fragment transition from Running to terminal, including one-time
+  poll-target clearing and selected-session preservation.
+- Live viewing of an older session while multiple sessions remain active.
+- Keyed container arguments and the Streamlit dependency floor.
+- Incomplete/no-report retained progress without source or fact-check rails.
+- Visible Starting state and disabled duplicate submission.
+
+### Fresh verification
+
+- `python -m pytest tests/test_ui -q` — PASS: **176 passed, 2 skipped**, 0
+  failed, 29.62s.
+- `python -m pytest -q` — PASS: **2057 passed, 2 skipped, 1 deselected**, 0
+  failed, 2 warnings, 58.05s. Warnings are the existing LangSmith
+  `ast.Str` deprecation and Starlette/httpx test-client integration
+  deprecation.
+- `python -m ruff check .` — PASS: `All checks passed!`
+- `git diff --check` — PASS; Git emitted only LF-to-CRLF normalization
+  warnings for edited text files.
+
+### Rendered Figure 1–4 acceptance
+
+The four reference images were inspected from
+`.superpowers/sdd/2026-09-08-streamlit-ui/evidence/docx-assets/word/media/image1.png`
+through `image4.png`. The offline mock was served with Streamlit on
+`127.0.0.1:8506` and inspected in the in-app browser at the New, Running,
+Completed, and History selector states. Fresh DOM snapshots and screenshots
+confirmed the following rendered surfaces:
+
+- Figure 1 / New Research: question-first heading, bounded editorial form,
+  configuration controls, ready/start action, and the three-step next-actions
+  rail.
+- Figure 2 / Running: selected-session tint, active subtopic row, current
+  researcher/action hierarchy, progress bar, health cue, recent activity, and
+  secondary details rail.
+- Figure 3 / Completed: report-dominant reading surface, report path,
+  limitations and execution-error sections, plus explicit source-credibility
+  and fact-check rails.
+- Figure 4 / History: persistent heading, search and status filters,
+  newest-first rows, selected-row treatment, statuses, and Open actions.
+
+This is a direct rendered comparison at the browser's default viewport and
+the reference captures' visual structure; exact pixel identity is not claimed
+because the reference images and live browser chrome use different viewport
+dimensions. LibreOffice/`soffice` remains unavailable, so the DOCX itself was
+not re-rendered. No live provider was invoked.
+
+### Scope boundary
+
+No merge or branch-wide review was run. The branch is ready for the user's
+separate re-review after the commit is pushed.

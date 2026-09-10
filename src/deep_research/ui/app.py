@@ -11,6 +11,7 @@ from deep_research.ui.runner import LocalResearchController
 _CONTROLLER_KEY = "_deep_research_controller"
 _VIEW_KEY = "_deep_research_view"
 _ACTIVE_SESSION_KEY = "_deep_research_active_session_id"
+_LIVE_SESSION_KEY = "_deep_research_live_session_id"
 _SELECTED_SESSION_KEY = "_deep_research_selected_session_id"
 _HISTORY_SEARCH_KEY = "_deep_research_history_search"
 _HISTORY_FILTER_KEY = "_deep_research_history_filter"
@@ -39,6 +40,7 @@ def _initialize_session_state() -> None:
     defaults: dict[str, Any] = {
         _VIEW_KEY: "new",
         _ACTIVE_SESSION_KEY: None,
+        _LIVE_SESSION_KEY: None,
         _SELECTED_SESSION_KEY: None,
         _HISTORY_SEARCH_KEY: "",
         _HISTORY_FILTER_KEY: "All",
@@ -60,7 +62,15 @@ def _current_view() -> str:
 @st.fragment(run_every="2s")
 def render_live_progress(controller: LocalResearchController) -> None:
     """Refresh only the active research region on the two-second cadence."""
-    session_id = st.session_state.get(_ACTIVE_SESSION_KEY)
+    # `_ACTIVE_SESSION_KEY` is lifecycle metadata for the most recently
+    # started session.  `_LIVE_SESSION_KEY` is the independently selectable
+    # session currently being polled by this fragment.  The fallback keeps
+    # direct callers that predate the separate key working until their first
+    # render initializes it.
+    if _LIVE_SESSION_KEY in st.session_state:
+        session_id = st.session_state.get(_LIVE_SESSION_KEY)
+    else:
+        session_id = st.session_state.get(_ACTIVE_SESSION_KEY)
     if not isinstance(session_id, str):
         return
     snapshot = controller.snapshot(session_id)
@@ -72,11 +82,15 @@ def render_live_progress(controller: LocalResearchController) -> None:
     render_sidebar_status(snapshot)
 
     if snapshot.status == "running":
+        st.session_state.setdefault(_LIVE_SESSION_KEY, session_id)
         _render_running_snapshot(snapshot)
     else:
-        from deep_research.ui.components import _render_terminal_snapshot
-
-        _render_terminal_snapshot(snapshot)
+        # A terminal snapshot must leave the recurring fragment.  Clearing the
+        # target is the idempotence guard: the app-level rerun below renders the
+        # selected terminal snapshot through the stable route exactly once.
+        st.session_state[_LIVE_SESSION_KEY] = None
+        st.rerun()
+        return
 
 
 def render_app(controller=None) -> None:
@@ -126,6 +140,7 @@ __all__ = [
     "_CONTROLLER_KEY",
     "_HISTORY_FILTER_KEY",
     "_HISTORY_SEARCH_KEY",
+    "_LIVE_SESSION_KEY",
     "_SELECTED_SESSION_KEY",
     "_START_ERROR_KEY",
     "_START_IN_FLIGHT_KEY",

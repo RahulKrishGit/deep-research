@@ -20,6 +20,7 @@ from deep_research.ui.app import (
     _HISTORY_SEARCH_KEY,
     _SELECTED_SESSION_KEY,
     _START_ERROR_KEY,
+    _START_IN_FLIGHT_KEY,
     _VIEW_KEY,
     render_app,
 )
@@ -45,6 +46,8 @@ from deep_research.ui.runner import LocalResearchController
 from deep_research.ui.styles import STATIC_CSS
 from deep_research.utils.types import ResearchEvent
 from tests.test_ui.fakes import DemoController, FailingSyncRunner, GatedSyncRunner
+
+_LIVE_SESSION_STATE_KEY = "_deep_research_live_session_id"
 
 
 def _entry(
@@ -533,17 +536,24 @@ def test_unexpected_start_error_surfaces_without_form_guidance() -> None:
     )
 
 
-def test_streamlit_container_fallback_drops_post_137_keywords(
+def test_streamlit_container_uses_the_declared_keyed_container_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
     sentinel = object()
 
-    def legacy_container(*, border: bool | None = None) -> object:
+    def current_container(
+        *,
+        key: str | None = None,
+        gap: str | None = None,
+        border: bool | None = None,
+    ) -> object:
+        captured["key"] = key
+        captured["gap"] = gap
         captured["border"] = border
         return sentinel
 
-    monkeypatch.setattr(components.st, "container", legacy_container)
+    monkeypatch.setattr(components.st, "container", current_container)
 
     result = components._st_container(
         key="newer-key",
@@ -552,7 +562,13 @@ def test_streamlit_container_fallback_drops_post_137_keywords(
     )
 
     assert result is sentinel
-    assert captured == {"border": True}
+    assert captured == {"key": "newer-key", "gap": "small", "border": True}
+
+
+def test_streamlit_dependency_floor_matches_keyed_container_contract() -> None:
+    project_file = Path(__file__).parents[2] / "pyproject.toml"
+
+    assert '"streamlit>=1.49"' in project_file.read_text(encoding="utf-8")
 
 
 def test_invalid_controller_bootstrap_keeps_new_form_and_safe_error(
@@ -1050,21 +1066,27 @@ def test_live_fragment_updates_sidebar_status_after_terminal_snapshot() -> None:
     class SequencedController(FakeController):
         def __init__(self) -> None:
             super().__init__([_entry(session_id, "Question", "running", 0)])
-            self.snapshots = iter([running, completed])
+            self.snapshot_calls = 0
 
         def snapshot(self, requested_id: str) -> UiSessionSnapshot:
             assert requested_id == session_id
-            return next(self.snapshots)
+            self.snapshot_calls += 1
+            return running if self.snapshot_calls == 1 else completed
 
     controller = SequencedController()
 
     def fragment_script(active_controller) -> None:
         import streamlit as st
 
-        from deep_research.ui.app import _ACTIVE_SESSION_KEY, render_live_progress
+        from deep_research.ui.app import (
+            _ACTIVE_SESSION_KEY,
+            _LIVE_SESSION_KEY,
+            render_live_progress,
+        )
         from deep_research.ui.components import render_sidebar
 
-        st.session_state[_ACTIVE_SESSION_KEY] = "g" * 32
+        st.session_state.setdefault(_ACTIVE_SESSION_KEY, "g" * 32)
+        st.session_state.setdefault(_LIVE_SESSION_KEY, "g" * 32)
 
         render_sidebar(active_controller)
         render_live_progress(active_controller)
@@ -1077,6 +1099,96 @@ def test_live_fragment_updates_sidebar_status_after_terminal_snapshot() -> None:
 
     assert "Completed" in sidebar_text
     assert "Running" not in sidebar_text
+
+
+def test_terminal_live_fragment_clears_poll_target_and_preserves_selection() -> None:
+    session_id = "h" * 32
+    running = _snapshot(status="running").model_copy(
+        update={"session_id": session_id}
+    )
+    completed = running.model_copy(
+        update={"status": "completed", "report": "Done"}
+    )
+
+    class SequencedController(FakeController):
+        def __init__(self) -> None:
+            super().__init__([_entry(session_id, "Question", "running", 0)])
+            self.snapshot_calls = 0
+
+        def snapshot(self, requested_id: str) -> UiSessionSnapshot:
+            assert requested_id == session_id
+            self.snapshot_calls += 1
+            return running if self.snapshot_calls == 1 else completed
+
+    controller = SequencedController()
+
+    def fragment_script(active_controller) -> None:
+        import streamlit as st
+
+        from deep_research.ui.app import (
+            _ACTIVE_SESSION_KEY,
+            _LIVE_SESSION_KEY,
+            _SELECTED_SESSION_KEY,
+            render_live_progress,
+        )
+        from deep_research.ui.components import render_sidebar
+
+        st.session_state.setdefault(_ACTIVE_SESSION_KEY, "h" * 32)
+        st.session_state.setdefault(_LIVE_SESSION_KEY, "h" * 32)
+        st.session_state.setdefault(_SELECTED_SESSION_KEY, "h" * 32)
+
+        render_sidebar(active_controller)
+        render_live_progress(active_controller)
+
+    app = AppTest.from_function(
+        fragment_script,
+        kwargs={"active_controller": controller},
+    ).run()
+
+    assert app.session_state[_LIVE_SESSION_STATE_KEY] is None
+    assert app.session_state[_SELECTED_SESSION_KEY] == session_id
+
+
+def test_incomplete_without_report_hides_quality_rail() -> None:
+    app = _running_app(
+        _snapshot(
+            status="incomplete",
+            report=None,
+            sub_topics=[
+                UiSubTopicProgress(
+                    index=2,
+                    title="Last active topic",
+                    status="running",
+                )
+            ],
+            recent_activity=[
+                UiRecentActivity(
+                    event_type="researcher.sub_topic.started",
+                    summary="Last known activity",
+                )
+            ],
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "RESEARCH INCOMPLETE" in visible
+    assert "Last active topic" in visible
+    assert "Last known activity" in visible
+    assert "No report was available for this session." in visible
+    assert "SOURCE CREDIBILITY" not in visible
+    assert "FACT-CHECK SUMMARY" not in visible
+
+
+def test_starting_state_is_visible_and_prevents_duplicate_submission() -> None:
+    app = _app([]).run()
+    app.text_area(key="research_question").set_value("A valid question").run()
+    app.session_state[_START_IN_FLIGHT_KEY] = True
+    app.run()
+
+    visible = _visible_main_text(app)
+    assert "Preparing research plan" in visible
+    assert "Ready to start" not in visible
+    assert app.button(key="start_research").disabled is True
 
 
 def test_running_screen_labels_derived_fraction_as_phase_progress() -> None:
@@ -1646,6 +1758,29 @@ def test_two_active_sessions_stay_running_when_history_is_opened() -> None:
     assert "Second active question" in reopened
     assert "Running" in reopened
     assert "Incomplete" not in reopened
+
+
+def test_selecting_older_active_session_sets_that_session_as_live_target() -> None:
+    older_id = "a" * 32
+    newer_id = "b" * 32
+    controller = MultiActiveFakeController(
+        [
+            _entry(older_id, "Older active question", "running", 10),
+            _entry(newer_id, "Newer active question", "running", 0),
+        ],
+        {older_id, newer_id},
+    )
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+
+    app.button(key=f"session_{older_id}").click().run()
+
+    assert app.session_state[_LIVE_SESSION_STATE_KEY] == older_id
+    assert app.session_state[_SELECTED_SESSION_KEY] == older_id
+    assert app.session_state[_VIEW_KEY] == "current"
+    assert "Older active question" in _visible_main_text(app)
 
 
 @pytest.mark.parametrize(

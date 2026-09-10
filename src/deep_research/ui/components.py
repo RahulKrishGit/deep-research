@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import re
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
@@ -36,6 +35,7 @@ if TYPE_CHECKING:
 
 _VIEW_KEY = "_deep_research_view"
 _ACTIVE_SESSION_KEY = "_deep_research_active_session_id"
+_LIVE_SESSION_KEY = "_deep_research_live_session_id"
 _SELECTED_SESSION_KEY = "_deep_research_selected_session_id"
 _START_ERROR_KEY = "_deep_research_start_error"
 _START_IN_FLIGHT_KEY = "_deep_research_start_in_flight"
@@ -540,6 +540,7 @@ _UNSAFE_EXCEPTION_MARKERS = (
 
 _STATUS_PRESENTATION: Mapping[str, tuple[str, str, str]] = {
     "ready": ("●", "Ready to start", "neutral"),
+    "starting": ("◌", "Preparing research plan", "running"),
     "running": ("◌", "Running", "running"),
     "completed": ("✓", "Completed", "completed"),
     "max_iterations": ("▲", "Max iterations", "max-iterations"),
@@ -581,28 +582,8 @@ def _st_container(
     gap: str | None = None,
     border: bool | None = None,
 ) -> Any:
-    """Call ``st.container`` with only the keywords this Streamlit supports.
-
-    The UI keeps the declared ``streamlit>=1.37`` contract.  ``key`` and
-    ``gap`` were added to ``st.container`` after that floor, so they are
-    retained on newer runtimes but omitted when the installed API does not
-    expose them.
-    """
-    try:
-        parameters = inspect.signature(st.container).parameters
-    except (TypeError, ValueError):
-        parameters = {}
-    accepts_kwargs = any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
-    values = {"key": key, "gap": gap, "border": border}
-    kwargs = {
-        name: value
-        for name, value in values.items()
-        if value is not None and (accepts_kwargs or name in parameters)
-    }
-    return st.container(**kwargs)
+    """Use the keyed container contract supported by the runtime floor."""
+    return st.container(key=key, gap=gap, border=border)
 
 
 def status_presentation(status: str) -> tuple[str, str, str]:
@@ -738,6 +719,21 @@ def _execution_error_presentations(
 
 def _set_view(view: str, state: MutableMapping[str, Any]) -> None:
     state[_VIEW_KEY] = view
+
+
+def _controller_session_is_active(
+    controller: LocalResearchController,
+    session_id: str,
+    state: Mapping[str, Any],
+) -> bool:
+    """Use controller lifecycle truth for the selected live-view target."""
+    checker = getattr(controller, "is_session_active", None)
+    if callable(checker):
+        try:
+            return bool(checker(session_id))
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+    return state.get(_ACTIVE_SESSION_KEY) == session_id
 
 
 def _select_session(session_id: str, state: MutableMapping[str, Any]) -> None:
@@ -948,14 +944,14 @@ def _snapshot_for_selection(
     selected_id = state.get(_SELECTED_SESSION_KEY)
     if not isinstance(selected_id, str):
         return None
-    active_id = state.get(_ACTIVE_SESSION_KEY)
     try:
         snapshot = controller.snapshot(selected_id)
     except (AttributeError, KeyError):
         snapshot = None
 
     if snapshot is not None and (
-        selected_id == active_id or snapshot.status != "running"
+        _controller_session_is_active(controller, selected_id, state)
+        or snapshot.status != "running"
     ):
         if snapshot.report is None and snapshot.status != "running":
             report = _read_history_report(controller, selected_id)
@@ -1068,6 +1064,12 @@ def _start_research(
     state: MutableMapping[str, Any],
 ) -> None:
     state[_START_IN_FLIGHT_KEY] = True
+    state[_START_ERROR_KEY] = None
+    # Enqueue the documented transitional cue before the synchronous
+    # controller bootstrap.  The stable rerun below then moves to the live
+    # session view once the controller owns the worker.
+    render_status("starting")
+    st.caption("Preparing research plan before the research run begins.")
     try:
         snapshot = controller.start(
             question=question.strip(),
@@ -1094,6 +1096,7 @@ def _start_research(
 
     state[_START_ERROR_KEY] = None
     state[_ACTIVE_SESSION_KEY] = snapshot.session_id
+    state[_LIVE_SESSION_KEY] = snapshot.session_id
     state[_SELECTED_SESSION_KEY] = snapshot.session_id
     state[_VIEW_KEY] = "current"
     st.rerun()
@@ -1167,8 +1170,12 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
             vertical_alignment="bottom",
         )
         with action_status:
-            render_status("ready")
-            if question_is_blank:
+            if start_in_flight:
+                render_status("starting")
+                st.caption("Preparing research plan before the research run begins.")
+            else:
+                render_status("ready")
+            if question_is_blank and not start_in_flight:
                 st.caption("Enter a research question to start.")
         with action_button:
             submitted = st.form_submit_button(
@@ -1486,16 +1493,16 @@ def _render_execution_errors(snapshot: UiSessionSnapshot) -> None:
     _render_safe_diagnostic_details(presentations)
 
 
-def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
-    has_retained_report = snapshot.report is not None
-    if snapshot.status in {"completed", "max_iterations", "incomplete"} or (
-        snapshot.status == "failed" and has_retained_report
-    ):
-        _render_completed_snapshot(snapshot)
-        return
-
+def _render_retained_progress_snapshot(snapshot: UiSessionSnapshot) -> None:
+    """Render terminal context when no report exists to read."""
+    eyebrow = {
+        "completed": "RESEARCH COMPLETED",
+        "max_iterations": "RESEARCH PAUSED",
+        "incomplete": "RESEARCH INCOMPLETE",
+        "failed": "RESEARCH FAILED",
+    }.get(snapshot.status, "RESEARCH SESSION")
     st.markdown(
-        '<div class="dr-editorial-column dr-section-label">RESEARCH SESSION</div>',
+        f'<div class="dr-editorial-column dr-section-label">{eyebrow}</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -1507,14 +1514,20 @@ def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
     st.caption(f"Markdown  ·  Max {snapshot.max_iterations} iterations")
     if snapshot.status == "failed":
         _render_execution_errors(snapshot)
-        if snapshot.report is None:
-            st.caption("No report was available for this session.")
-        _render_stopping_point(snapshot)
-        return
-    if snapshot.report:
-        st.markdown(snapshot.report)
     elif snapshot.status == "max_iterations":
         st.warning("The run reached its iteration limit before a report was available.")
+    st.caption("No report was available for this session.")
+    _render_stopping_point(snapshot)
+
+
+def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
+    has_retained_report = isinstance(snapshot.report, str) and bool(
+        snapshot.report.strip()
+    )
+    if has_retained_report:
+        _render_completed_snapshot(snapshot)
+        return
+    _render_retained_progress_snapshot(snapshot)
 
 
 def _format_datetime(value: datetime | None, *, prefix: str) -> str | None:
@@ -1782,14 +1795,20 @@ def render_current_session_view(controller: LocalResearchController) -> None:
         return
 
     if snapshot.status == "running":
-        active_id = st.session_state.get(_ACTIVE_SESSION_KEY)
-        if active_id == snapshot.session_id:
+        if _controller_session_is_active(
+            controller,
+            snapshot.session_id,
+            st.session_state,
+        ):
+            st.session_state[_LIVE_SESSION_KEY] = snapshot.session_id
             from deep_research.ui.app import render_live_progress
 
             render_live_progress(controller)
         else:
+            st.session_state[_LIVE_SESSION_KEY] = None
             _render_running_snapshot(snapshot)
         return
+    st.session_state[_LIVE_SESSION_KEY] = None
     _render_terminal_snapshot(snapshot)
 
 
