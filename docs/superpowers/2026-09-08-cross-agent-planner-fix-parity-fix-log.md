@@ -260,3 +260,12 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Invariants: no target-side typed `output_limit` appeared; global `llm.max_tokens=4096`, one repair attempt, no fabricated judge score, and all existing fallback semantics remain unchanged. No paid/provider-network/evaluation command ran during diagnosis.
 - Evidence report: `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/task-18-judge-boundary-diagnosis-report.md`. The branch and remote remained at `42a2b4a`; `.deepseek-runs/` was preserved and untracked.
 - Next action: keep the current judge/provider/evaluation implementation unchanged. Future work should gather a stable typed category, exact operation, attempt, and schema-proven field path before opening a new RED-test/repair decision.
+
+## 34. Task 19 Sequential Live-Agent Loop — Researcher Diagnosis Pending
+
+- Candidate: `c368849ac1da0280f5d1ea8428ad8b3974929fce`; one user-authorized live repetition was run for Researcher only. No retry or other agent run occurred.
+- Evidence: the tracked report is `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-sequential-live-researcher.md`; its preserved artifact has SHA-256 `715B268D060617907021CB0283258A64AEAFB0A49D90B44F9A8CA158722754A0`.
+- Observed result: `FAILED`, `12/14` hard gates, deterministic quality `0.70`; `citations_known` and `no_invented_sources` failed; `react_stop_reason=max_iterations`; `prohibited_call_count=0`.
+- Independent typed boundary: the judge was unscorable after `judge_schema_failure` diagnostics at `rationale` and `$`. No target-side typed `output_limit` appeared, so no budget amendment is permitted.
+- Classification: Researcher quality/trajectory signal requiring Sol High diagnosis; not yet a confirmed production defect. Judge/provider instability remains separate and supplies no Researcher score.
+- Next action: push this evidence, consult Sol High in the existing browser session with the current branch and repository-relative artifacts, then either implement the smallest reviewed Researcher repair or record an explicit no-change ruling. Run offline verification and one focused Researcher confirmation before advancing to Source Evaluator.
