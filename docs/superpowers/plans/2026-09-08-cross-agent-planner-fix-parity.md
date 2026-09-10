@@ -39,7 +39,8 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **In progress — user-authorized** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. |
+| 19. Sequential live-agent diagnosis and repair loop | **In progress — user-authorized** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. Researcher evidence is recorded; its confirmation is blocked on Task 20. |
+| 20. Researcher live provenance repair | **Ready to dispatch — Sol High reviewed** | Repair the confirmed evaluator/artifact provenance loss with bounded retrieval fingerprints; preserve the Researcher agent, prompt, cases, budgets, thresholds, and judge boundary. Then run offline verification and one focused Researcher confirmation. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -1776,6 +1777,77 @@ Post-review fix round 3 is complete: Sol High identified an OpenAI structured-re
 The authorized follow-up live wave is also complete at candidate `160c334`. It ran one sequential repetition for each of the six agents with no retries and is documented in `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-live-rerun.md`. The rerun confirms the required-field, Critic routing/context, no-prohibited-call, and no-target-budget conclusions, while judge instability remains unresolved. It does not justify prompt tuning, token-budget changes, a suite run, or a claim of quality improvement from one noisy repetition.
 
 Task 18 judge-boundary diagnosis is complete at candidate `42a2b4a`: across the preserved controlled and live artifacts, judge schema paths vary between `$` and `rationale`, and judge output limits remain intermittent judge-side diagnostics. No operation-specific target limit or repeatable contract defect was established, so the evidence-gated disposition is `no-change`. The diagnosis report is retained in the ignored SDD workspace; no provider, judge, prompt, budget, rubric, threshold, retry, or status change is authorized.
+
+### Task 19: Sequential Live-Agent Diagnosis and Repair Loop — IN PROGRESS
+
+Task 19 is the user-authorized control-plane for the post-review live work. It
+must complete one registered agent before the next begins: one live repetition;
+typed artifact diagnosis; Sol High review in the existing browser session after
+the latest evidence is pushed; one smallest evidence-backed repair or explicit
+no-change ruling; offline RED/GREEN verification; and one focused live
+confirmation for the same agent. A confirmation with an unscorable judge does
+not establish full success, and target-side output-limit evidence is required
+before any budget amendment. The first Researcher repetition and Sol High
+review are recorded in the tracked sequential-live Researcher report and fix
+log; Task 20 is the current repair task.
+
+### Task 20: Repair Researcher Live Retrieval Provenance — READY TO DISPATCH
+
+**Sol High diagnosis:** the Researcher live failure is not yet a confirmed
+Researcher prompt or agent defect. Successful tool results retain up to the
+existing evidence limit, while the evaluation artifact keeps only the
+configured short trajectory summary. The `citations_known`,
+`no_invented_sources`, and `sources_are_real_urls` checks then infer retrieval
+from that lossy summary. A legitimate source URL can therefore be available to
+Researcher extraction but absent from the evaluator's trajectory text. A
+single live artifact cannot determine whether every failed URL was truly
+retrieved, so no Researcher prompt/loop change is justified yet.
+
+**Scope:** Add an additive, bounded, secret-safe retrieval-provenance field to
+`DependencyLedger`, derived only from successful evidence-tool payloads before
+trajectory truncation. Store normalized-source URL SHA-256 fingerprints, never
+raw URLs. Preserve `ARTIFACT_SCHEMA_VERSION == 1`; old artifacts must validate
+with an empty default. Update only the live Researcher paths of
+`citations_known`, `no_invented_sources`, and `sources_are_real_urls` to accept
+a cited URL when its normalized fingerprint is present. Preserve controlled
+scripted-source semantics and all other agents' current semantics.
+
+**TDD requirements:**
+
+1. Add a model regression proving the new ledger field defaults empty for old
+   payloads, accepts only lower-case 64-hex SHA-256 values, rejects malformed
+   values and an over-bound list, and never serializes the source URL itself.
+2. Add a target regression with a successful Researcher evidence-tool result
+   whose source identity occurs after the 200-character observation summary.
+   Assert the trajectory remains bounded while the ledger carries the source
+   fingerprint. Include web search result URLs and the successful scraper and
+   document-reader source shapes that the production tools already emit.
+3. Add evaluator RED/GREEN regressions showing a live Researcher finding whose
+   URL is absent from the trajectory but present in the retrieval fingerprint
+   set passes all three source-provenance checks, while a URL absent from both
+   still fails. Do not change any case inputs, rubric, metric weights, or
+   thresholds.
+
+**Implementation constraints:** derive only from successful tool results and
+the established source-identity fields (`web_search.results[*].url`,
+`web_scraper.url`, and remote `document_reader.source`); normalize before
+hashing; deduplicate; use a named finite bound sufficient for every source
+identity reachable under the existing case tool budgets and search result
+limits; never record snippets, page-body URLs, thoughts, provider output,
+prompts, or raw URL values. Do not modify `src/deep_research/agents/researcher.py`,
+Researcher prompts, `config.yaml`, live cases, judge/provider code, budgets,
+thresholds, scoring, fallback semantics, or the global `4096` cap.
+
+**Verification:** watch each RED fail for the intended missing-provenance
+reason, implement the smallest GREEN change, run the focused model/target/
+evaluator/case/Researcher tests, then the full offline pytest suite, Ruff, and
+`git diff --check`. Record the exact counts and artifact-safe diagnosis in the
+Task 19 ledger. After task-scoped Luna-max review is clean, run exactly one
+focused Researcher live confirmation with the same frozen configuration and a
+fresh output namespace. If a cited URL still lacks a retrieval fingerprint,
+open a separate Researcher-agent TDD task; do not combine it with this harness
+repair. If provenance passes but `max_iterations` persists, record it as a
+separate trajectory signal without changing iteration or token budgets.
 
 ---
 
