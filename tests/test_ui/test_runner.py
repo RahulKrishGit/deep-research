@@ -85,6 +85,75 @@ def test_start_returns_running_before_gated_runner_finishes(tmp_path: Path) -> N
     assert terminal.status == "completed"
 
 
+@pytest.mark.parametrize(
+    ("config_name", "config_contents", "reason"),
+    [
+        ("missing.yaml", None, "config_file_missing"),
+        ("invalid.yaml", "graph: [", "config_invalid"),
+        (
+            "invalid-output.yaml",
+            yaml.safe_dump({"output": {"directory": 123}}),
+            "config_invalid",
+        ),
+    ],
+)
+def test_bootstrap_config_failures_are_safe_and_block_start(
+    tmp_path: Path,
+    config_name: str,
+    config_contents: str | None,
+    reason: str,
+) -> None:
+    config_path = tmp_path / config_name
+    if config_contents is not None:
+        config_path.write_text(config_contents, encoding="utf-8")
+    controller = LocalResearchController(
+        config_path=str(config_path),
+        runner=GatedSyncRunner(),
+        preflight=lambda **_: object(),
+        history_store=SessionHistoryStore(output_directory=tmp_path / "output"),
+    )
+
+    with pytest.raises(ResearchConfigurationError) as raised:
+        controller.start(question="Question", max_iterations=2)
+
+    error = raised.value
+    assert error.reason == reason
+    assert str(error) == "Research service configuration is unavailable."
+    assert "graph: [" not in str(error)
+    assert "config.yaml" not in str(error)
+    assert controller.list_history() == []
+
+
+def test_initial_history_failure_blocks_start_with_safe_actionable_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SessionHistoryStore(output_directory=tmp_path / "output")
+    secret = "private history payload"
+
+    def fail_upsert(_: Any) -> None:
+        raise OSError(secret)
+
+    monkeypatch.setattr(store, "upsert", fail_upsert)
+    controller = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=GatedSyncRunner(),
+        preflight=lambda **_: object(),
+        history_store=store,
+    )
+
+    with pytest.raises(ResearchConfigurationError) as raised:
+        controller.start(question="Question", max_iterations=2)
+
+    error = raised.value
+    assert error.reason == "history_unavailable"
+    assert str(error) == (
+        "Research session could not be started because local history is unavailable."
+    )
+    assert secret not in str(error)
+    assert controller.list_history() == []
+
+
 def test_strict_preflight_happens_before_session_registration(tmp_path: Path) -> None:
     runner = GatedSyncRunner()
     observed: list[bool] = []

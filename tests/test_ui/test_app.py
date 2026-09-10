@@ -12,6 +12,7 @@ import yaml
 from streamlit.testing.v1 import AppTest
 
 from deep_research.runtime.errors import configuration_error
+from deep_research.ui import components
 from deep_research.ui.app import (
     _ACTIVE_SESSION_KEY,
     _CONTROLLER_KEY,
@@ -23,6 +24,7 @@ from deep_research.ui.app import (
     render_app,
 )
 from deep_research.ui.components import _start_research
+from deep_research.ui.history import SessionHistoryStore
 from deep_research.ui.models import (
     SessionHistoryEntry,
     UiClaimDetail,
@@ -39,7 +41,7 @@ from deep_research.ui.progress import project_progress
 from deep_research.ui.runner import LocalResearchController
 from deep_research.ui.styles import STATIC_CSS
 from deep_research.utils.types import ResearchEvent
-from tests.test_ui.fakes import DemoController, FailingSyncRunner
+from tests.test_ui.fakes import DemoController, FailingSyncRunner, GatedSyncRunner
 
 
 def _entry(
@@ -171,6 +173,20 @@ def _app(
             "controller": FakeController(entries, start_error=start_error),
         },
     )
+
+
+def _config_file(tmp_path: Path) -> Path:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "graph": {"max_iterations": 4},
+                "output": {"directory": str(tmp_path / "output")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _button_values(app: AppTest) -> list[str]:
@@ -474,15 +490,238 @@ def test_unexpected_start_error_surfaces_without_form_guidance() -> None:
     )
     state: dict[str, object] = {_START_ERROR_KEY: None}
 
-    with pytest.raises(RuntimeError, match="unexpected persistence failure"):
-        _start_research(
-            controller,
-            question="A valid question",
-            max_iterations=4,
-            state=state,
-        )
+    _start_research(
+        controller,
+        question="A valid question",
+        max_iterations=4,
+        state=state,
+    )
 
-    assert state[_START_ERROR_KEY] is None
+    assert state[_START_ERROR_KEY] == (
+        "Research session could not be started.",
+        "Check the local output directory and try again.",
+    )
+
+
+def test_streamlit_container_fallback_drops_post_137_keywords(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def legacy_container(*, border: bool | None = None) -> object:
+        captured["border"] = border
+        return sentinel
+
+    monkeypatch.setattr(components.st, "container", legacy_container)
+
+    result = components._st_container(
+        key="newer-key",
+        gap="small",
+        border=True,
+    )
+
+    assert result is sentinel
+    assert captured == {"border": True}
+
+
+def test_invalid_controller_bootstrap_keeps_new_form_and_safe_error(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "invalid-config.yaml"
+    config_path.write_text("graph: [", encoding="utf-8")
+    controller = LocalResearchController(
+        config_path=str(config_path),
+        history_store=SessionHistoryStore(output_directory=tmp_path / "output"),
+    )
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+
+    app.text_area(key="research_question").set_value("A valid question").run()
+    app.button(key="start_research").click().run()
+
+    visible_text = "\n".join(
+        [item.value for item in app.main.markdown]
+        + [item.value for item in app.main.error]
+        + [item.value for item in app.main.caption]
+    )
+    assert "Research service configuration is unavailable." in visible_text
+    assert "Check config.yaml against the settings documented in README.md." in (
+        visible_text
+    )
+    assert "graph: [" not in visible_text
+    assert app.text_area(key="research_question").value == "A valid question"
+
+
+def test_invalid_output_path_bootstrap_keeps_form_and_safe_error(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "invalid-output-path.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"output": {"directory": "\x00"}}),
+        encoding="utf-8",
+    )
+
+    controller = LocalResearchController(config_path=str(config_path))
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+
+    app.text_area(key="research_question").set_value("Keep this question").run()
+    app.button(key="start_research").click().run()
+
+    visible_text = "\n".join(
+        [item.value for item in app.main.markdown]
+        + [item.value for item in app.main.error]
+        + [item.value for item in app.main.caption]
+    )
+    assert "Research service configuration is unavailable." in visible_text
+    assert "Check config.yaml against the settings documented in README.md." in (
+        visible_text
+    )
+    assert "embedded null" not in visible_text
+    assert app.text_area(key="research_question").value == "Keep this question"
+
+
+@pytest.mark.parametrize(
+    ("config_name", "config_contents", "raw_value", "safe_hint"),
+    [
+        (
+            "missing.yaml",
+            None,
+            "Config file not found",
+            "Pass --config with the path to a config.yaml file.",
+        ),
+        (
+            "malformed.yaml",
+            "graph: [",
+            "graph: [",
+            "Check config.yaml against the settings documented in README.md.",
+        ),
+        (
+            "invalid-output.yaml",
+            yaml.safe_dump({"output": {"directory": 123}}),
+            "directory: 123",
+            "Check config.yaml against the settings documented in README.md.",
+        ),
+    ],
+)
+def test_bootstrap_failures_keep_form_and_show_sanitized_guidance(
+    tmp_path: Path,
+    config_name: str,
+    config_contents: str | None,
+    raw_value: str,
+    safe_hint: str,
+) -> None:
+    config_path = tmp_path / config_name
+    if config_contents is not None:
+        config_path.write_text(config_contents, encoding="utf-8")
+    controller = LocalResearchController(
+        config_path=str(config_path),
+        runner=GatedSyncRunner(),
+        history_store=SessionHistoryStore(output_directory=tmp_path / "output"),
+    )
+
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+
+    app.text_area(key="research_question").set_value("Keep this question").run()
+    app.button(key="start_research").click().run()
+
+    visible_text = "\n".join(
+        [item.value for item in app.main.markdown]
+        + [item.value for item in app.main.error]
+        + [item.value for item in app.main.caption]
+    )
+    assert "Research service configuration is unavailable." in visible_text
+    assert safe_hint in visible_text
+    assert raw_value not in visible_text
+    assert app.text_area(key="research_question").value == "Keep this question"
+    assert app.session_state[_VIEW_KEY] == "new"
+
+
+def test_missing_secrets_are_sanitized_at_start_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "DEEPSEEK_API_KEY",
+        "TAVILY_API_KEY",
+        "OPENAI_API_KEY",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_PROJECT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    controller = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=GatedSyncRunner(),
+        history_store=SessionHistoryStore(output_directory=tmp_path / "output"),
+    )
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+
+    app.text_area(key="research_question").set_value("A valid question").run()
+    app.button(key="start_research").click().run()
+
+    visible_text = "\n".join(
+        [item.value for item in app.main.markdown]
+        + [item.value for item in app.main.error]
+        + [item.value for item in app.main.caption]
+    )
+    assert "Research service configuration is unavailable." in visible_text
+    assert "Set the selected chat provider's API key" in visible_text
+    assert "Missing required environment variables" not in visible_text
+    assert app.text_area(key="research_question").value == "A valid question"
+    assert app.session_state[_VIEW_KEY] == "new"
+
+
+def test_initial_history_failure_is_blocked_with_safe_app_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SessionHistoryStore(output_directory=tmp_path / "output")
+    secret = "raw permission denied details"
+
+    def fail_upsert(_: object) -> None:
+        raise OSError(secret)
+
+    monkeypatch.setattr(store, "upsert", fail_upsert)
+    controller = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=GatedSyncRunner(),
+        preflight=lambda **_: object(),
+        history_store=store,
+    )
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+
+    app.text_area(key="research_question").set_value("Keep this question").run()
+    app.button(key="start_research").click().run()
+
+    visible_text = "\n".join(
+        [item.value for item in app.main.markdown]
+        + [item.value for item in app.main.error]
+        + [item.value for item in app.main.caption]
+    )
+    assert (
+        "Research session could not be started because local history is unavailable."
+        in visible_text
+    )
+    assert "Check that the local output directory is writable and try again." in (
+        visible_text
+    )
+    assert secret not in visible_text
+    assert app.text_area(key="research_question").value == "Keep this question"
+    assert app.session_state[_VIEW_KEY] == "new"
 
 
 def test_start_stores_session_and_immediately_renders_running_view() -> None:

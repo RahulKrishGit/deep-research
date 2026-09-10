@@ -53,6 +53,9 @@ CONFIGURATION_HINTS = {
         "A resumed session already has its question; pass either a "
         "question or --resume, not both."
     ),
+    "history_unavailable": (
+        "Check that the local output directory is writable and try again."
+    ),
 }
 
 

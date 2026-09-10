@@ -18,6 +18,7 @@ from deep_research.main import (
 from deep_research.runtime.errors import (
     CONFIGURATION_HINTS,
     ResearchConfigurationError,
+    configuration_error,
 )
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.ui.history import SessionHistoryStore
@@ -44,6 +45,10 @@ Preflight: TypeAlias = Callable[..., object]
 
 _UNEXPECTED_FAILURE_MESSAGE = "Research run failed unexpectedly."
 _CONFIGURATION_FAILURE_MESSAGE = "Research service configuration is unavailable."
+_HISTORY_FAILURE_MESSAGE = (
+    "Research session could not be started because local history is unavailable."
+)
+_DEFAULT_MAX_ITERATIONS = 3
 _FALLBACK_CONFIGURATION_REASON = "configuration_error"
 _FALLBACK_CONFIGURATION_HINT = (
     "Review the research configuration and try again."
@@ -77,17 +82,55 @@ class LocalResearchController:
         self._config_path = str(config_path)
         self._runner = runner or run_research_sync
         self._preflight = preflight or prepare_research_settings
-        settings = load_config(self._config_path, strict=False)
-        self._default_max_iterations = settings.graph.max_iterations
-        self._history = history_store or SessionHistoryStore(
-            output_directory=Path(settings.output.directory)
+        self._bootstrap_error: ResearchConfigurationError | None = None
+        output_directory = Path("output")
+        try:
+            settings = load_config(self._config_path, strict=False)
+        except FileNotFoundError:
+            self._bootstrap_error = configuration_error(
+                reason="config_file_missing",
+                message=_CONFIGURATION_FAILURE_MESSAGE,
+            )
+            settings = None
+        except Exception:
+            self._bootstrap_error = configuration_error(
+                reason="config_invalid",
+                message=_CONFIGURATION_FAILURE_MESSAGE,
+            )
+            settings = None
+        self._default_max_iterations = (
+            settings.graph.max_iterations
+            if settings is not None
+            else _DEFAULT_MAX_ITERATIONS
         )
+        if settings is not None:
+            output_directory = Path(settings.output.directory)
+        if history_store is not None:
+            self._history = history_store
+        else:
+            try:
+                self._history = SessionHistoryStore(
+                    output_directory=output_directory
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                self._bootstrap_error = configuration_error(
+                    reason="config_invalid",
+                    message=_CONFIGURATION_FAILURE_MESSAGE,
+                )
+                self._history = SessionHistoryStore(
+                    output_directory=Path("output")
+                )
         self._lock = RLock()
         self._sessions: dict[str, _ActiveSession] = {}
 
     @property
     def default_max_iterations(self) -> int:
         return self._default_max_iterations
+
+    @property
+    def startup_error(self) -> ResearchConfigurationError | None:
+        """Return a safe configuration error captured during UI bootstrap."""
+        return self._bootstrap_error
 
     def start(
         self,
@@ -99,6 +142,8 @@ class LocalResearchController:
         """Validate configuration, register a session, and start one worker."""
         if type(max_iterations) is not int or max_iterations < 1:
             raise ValueError("max_iterations must be a positive integer")
+        if self._bootstrap_error is not None:
+            raise self._bootstrap_error
 
         # This is deliberately before the active-session record is registered.
         self._preflight(
@@ -122,7 +167,11 @@ class LocalResearchController:
         except Exception:
             with self._lock:
                 self._sessions.pop(session.session_id, None)
-            raise
+            raise ResearchConfigurationError(
+                _HISTORY_FAILURE_MESSAGE,
+                reason="history_unavailable",
+                hint=CONFIGURATION_HINTS["history_unavailable"],
+            ) from None
 
         worker = Thread(
             target=self._run,

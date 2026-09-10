@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping, MutableMapping
 from datetime import datetime, timezone
 from html import escape
@@ -36,9 +37,14 @@ _START_IN_FLIGHT_KEY = "_deep_research_start_in_flight"
 _SIDEBAR_STATUS_PLACEHOLDER_KEY = "_deep_research_sidebar_status_placeholder"
 
 _CONFIGURATION_FAILURE_MESSAGE = "Research service configuration is unavailable."
+_HISTORY_FAILURE_MESSAGE = (
+    "Research session could not be started because local history is unavailable."
+)
 _FALLBACK_CONFIGURATION_HINT = "Review the research configuration and try again."
 _START_VALIDATION_MESSAGE = "Research request could not be started."
 _START_VALIDATION_HINT = "Check the research question and settings, then try again."
+_START_FAILURE_MESSAGE = "Research session could not be started."
+_START_FAILURE_HINT = "Check the local output directory and try again."
 _HISTORY_FILTER_OPTIONS = ("All", "Running", "Completed", "Issues")
 _HISTORY_ISSUE_STATUSES = frozenset(
     {"max_iterations", "incomplete", "failed"}
@@ -70,6 +76,36 @@ REPORT_CSS = """
   margin: 4px 0 !important;
 }
 """
+
+
+def _st_container(
+    *,
+    key: str | None = None,
+    gap: str | None = None,
+    border: bool | None = None,
+) -> Any:
+    """Call ``st.container`` with only the keywords this Streamlit supports.
+
+    The UI keeps the declared ``streamlit>=1.37`` contract.  ``key`` and
+    ``gap`` were added to ``st.container`` after that floor, so they are
+    retained on newer runtimes but omitted when the installed API does not
+    expose them.
+    """
+    try:
+        parameters = inspect.signature(st.container).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    values = {"key": key, "gap": gap, "border": border}
+    kwargs = {
+        name: value
+        for name, value in values.items()
+        if value is not None and (accepts_kwargs or name in parameters)
+    }
+    return st.container(**kwargs)
 
 
 def status_presentation(status: str) -> tuple[str, str, str]:
@@ -178,7 +214,7 @@ def _render_recent_row(
         if entry.session_id == selected_id
         else f"dr-session-row-{entry.session_id}"
     )
-    with st.container(key=row_key, gap="small"):
+    with _st_container(key=row_key, gap="small"):
         st.markdown(
             f'<div class="dr-session-question">{escape(entry.question)}</div>',
             unsafe_allow_html=True,
@@ -247,7 +283,7 @@ def render_sidebar(controller: LocalResearchController) -> None:
                 state=state,
             )
 
-        with st.container(key="dr-sidebar-spacer"):
+        with _st_container(key="dr-sidebar-spacer"):
             st.markdown('<div aria-hidden="true"></div>', unsafe_allow_html=True)
         if st.button(
             "Session history",
@@ -354,7 +390,12 @@ def _configuration_error_details(
 ) -> tuple[str, str]:
     reason = error.reason if isinstance(error.reason, str) else ""
     hint = CONFIGURATION_HINTS.get(reason, _FALLBACK_CONFIGURATION_HINT)
-    return _CONFIGURATION_FAILURE_MESSAGE, hint
+    message = (
+        _HISTORY_FAILURE_MESSAGE
+        if reason == "history_unavailable"
+        else _CONFIGURATION_FAILURE_MESSAGE
+    )
+    return message, hint
 
 
 def _render_start_error(error_details: object) -> None:
@@ -392,6 +433,12 @@ def _start_research(
             _START_VALIDATION_HINT,
         )
         return
+    except Exception:
+        state[_START_ERROR_KEY] = (
+            _START_FAILURE_MESSAGE,
+            _START_FAILURE_HINT,
+        )
+        return
     finally:
         state[_START_IN_FLIGHT_KEY] = False
 
@@ -405,7 +452,12 @@ def _start_research(
 def render_new_research_view(controller: LocalResearchController) -> None:
     """Render the question-first New Research screen and its start form."""
     state = st.session_state
-    _render_start_error(state.get(_START_ERROR_KEY))
+    error_details = state.get(_START_ERROR_KEY)
+    if error_details is None:
+        startup_error = getattr(controller, "startup_error", None)
+        if isinstance(startup_error, ResearchConfigurationError):
+            error_details = _configuration_error_details(startup_error)
+    _render_start_error(error_details)
 
     with st.form("new_research_form", clear_on_submit=False):
         st.markdown(
@@ -623,7 +675,7 @@ def _render_recent_activity(snapshot: UiSessionSnapshot) -> None:
         unsafe_allow_html=True,
     )
     for index, activity in enumerate(snapshot.recent_activity[-3:]):
-        with st.container(key=f"dr-recent-activity-{index}", gap="small"):
+        with _st_container(key=f"dr-recent-activity-{index}", gap="small"):
             st.markdown(f"◷ {escape(activity.summary)}")
 
 
@@ -678,7 +730,7 @@ def _render_running_snapshot(snapshot: UiSessionSnapshot) -> None:
         )
         render_status("running")
         st.caption(f"Markdown  ·  Max {snapshot.max_iterations} iterations")
-        with st.container(border=True, key="dr-current-activity"):
+        with _st_container(border=True, key="dr-current-activity"):
             _render_current_activity(snapshot)
         _render_subtopic_sequence(snapshot)
         _render_recent_activity(snapshot)
@@ -1011,7 +1063,7 @@ def _render_history_row(
         if selected
         else f"dr-history-row-{entry.session_id}"
     )
-    with st.container(key=row_key, gap="small"):
+    with _st_container(key=row_key, gap="small"):
         if selected:
             st.caption("Selected session")
         question_column, status_column, action_column = st.columns(
@@ -1116,7 +1168,7 @@ def render_history_view(controller: LocalResearchController) -> None:
             state=state,
         )
         if index < len(visible_entries) - 1:
-            with st.container(key=f"dr-history-divider-{index}"):
+            with _st_container(key=f"dr-history-divider-{index}"):
                 st.divider()
     if not visible_entries:
         st.caption("No research sessions match this search and status filter.")
