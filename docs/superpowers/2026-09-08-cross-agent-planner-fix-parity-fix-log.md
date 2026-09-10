@@ -130,3 +130,13 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Review: the first Luna Max attempt was invalid because it imported the stale `.worktrees/streamlit-ui` package. That result was explicitly rejected and not used as evidence. A corrected rerun bound `PYTHONPATH` to this campaign worktree, confirmed the intended evaluator import, passed `66` tests, and was approved with no findings.
 - Commit: `12f9ebef1d3faf4020da8dc3badbf58cf2acc503`.
 - Remaining work: Critic ReAct context wiring and judge diagnosis from typed field paths. No token-budget change is authorized.
+
+## 20. Approved Repair Wave 3: Critic ReAct Context Wiring
+
+- Diagnosis: `CritiqueTask` already carried report, claims, sources, and subtopic titles, but `CriticAgent.build_task()` supplied empty `guidance`; `render_react_messages()` therefore omitted the planned subtopic/search-query context from the ReAct decision. The fail-closed scripted search client correctly exposed this missing context.
+- RED evidence: the first ReAct prompt did not contain the existing `Alpha` subtopic or exact planned query `alpha 2025`.
+- Fix: `src/deep_research/agents/critic.py` now renders existing subtopic titles and exact planned queries into deterministic `CritiqueTask.guidance` and instructs verbatim reuse for applicable spot checks. No scenario, query string, tool isolation, budget, report, claim, source, or other-agent behavior changed.
+- Tests: `tests/test_agents/test_critic.py` asserts the first ReAct provider prompt contains the planned context and instruction. Campaign-bound focused Critic/prompt tests passed `66`; Ruff and `git diff --check` passed.
+- Review: Luna Max approved with no findings after confirming the campaign source binding and the two-file scope. The reviewer stopped before executing its own collected tests; controller verification is the authoritative executed result.
+- Commit: `b7c2500bef5a071b660b77931cfd9d0322d0bf37`.
+- Remaining work: typed judge diagnosis from the immutable field paths `$` and `rationale`. No token-budget change is authorized.
