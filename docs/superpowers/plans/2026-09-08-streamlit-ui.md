@@ -40,7 +40,7 @@ This section is binding for the SDD controller.
 - **No parallel implementation subagents:** tasks share UI contracts and app state. Read-only analysis/review preparation may overlap, implementation may not.
 - **Task ledger:** use `.superpowers/sdd/2026-09-08-streamlit-ui/progress.md` and the plan-owned SDD workspace. Do not reuse another plan's ledger.
 - **Evidence directory:** task reviewers may save local screenshots/notes under `.superpowers/sdd/2026-09-08-streamlit-ui/evidence/`; this is execution evidence, not product source.
-- **Branch-review hard stop:** after Task 10's task-scoped reviewer approves, **STOP**. Do not dispatch a whole-branch reviewer, do not invoke `superpowers:requesting-code-review`, do not invoke `superpowers:finishing-a-development-branch`, and do not merge/push/publish. Record `Branch review: HALTED by explicit human instruction` and wait.
+- **Original branch-review hard stop (pre-authorization gate; superseded after explicit human authorization):** after Task 10's task-scoped reviewer approves, **STOP until the human explicitly authorizes branch review**. Do not dispatch a whole-branch reviewer, do not invoke `superpowers:requesting-code-review`, do not invoke `superpowers:finishing-a-development-branch`, and do not merge/push/publish. Before that authorization, record `Branch review: HALTED by explicit human instruction` and wait; after it, follow the reopened-review instructions below.
 
 ---
 
