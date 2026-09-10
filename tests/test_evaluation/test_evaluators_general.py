@@ -117,6 +117,136 @@ def test_a_missing_required_field_fails_its_gate(
     assert "sub_topics" in gate(results, "required_fields_present").detail
 
 
+def _production_target_output(
+    case: EvaluationCase,
+    *,
+    result: dict,
+    state_update: dict,
+) -> TargetOutput:
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id=f"required-fields-{case.agent_name}",
+        experiment_name=f"{case.agent_name}-required-fields",
+        trace_url="https://smith.langchain.com/o/x/r/required-fields",
+        completed=True,
+        result=result,
+        state_update=state_update,
+        react=ReActSummary(
+            iterations=0,
+            tool_calls=0,
+            stop_reason="finished",
+            max_iterations=case.expectations.max_iterations,
+            tool_budget=case.expectations.max_tool_calls,
+        ),
+        target_model_requested="deepseek-v4-flash",
+        target_model_returned="deepseek-v4-flash",
+        target_reasoning_effort="medium",
+    )
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "result", "state_update", "required_field"),
+    [
+        (
+            "source_evaluator",
+            {"sources": []},
+            {"evaluated_sources": []},
+            "evaluated_sources",
+        ),
+        (
+            "fact_checker",
+            {"claims": []},
+            {"verified_claims": []},
+            "verified_claims",
+        ),
+        (
+            "synthesizer",
+            {
+                "markdown": "",
+                "path": None,
+                "section_count": 0,
+                "citation_count": 0,
+                "source_count": 0,
+                "saved_findings": 0,
+            },
+            {"report": ""},
+            "report",
+        ),
+        (
+            "critic",
+            {
+                "score": 1,
+                "gaps": [],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "should_continue": False,
+                "rationale": "No report gaps found.",
+            },
+            {
+                "critique": {
+                    "score": 1,
+                    "gaps": [],
+                    "unsupported_claims": [],
+                    "recommended_queries": [],
+                    "should_continue": False,
+                    "rationale": "No report gaps found.",
+                }
+            },
+            "critique",
+        ),
+        (
+            "researcher",
+            {"findings": []},
+            {},
+            "findings",
+        ),
+    ],
+    ids=[
+        "source-evaluator-state-update",
+        "fact-checker-state-update",
+        "synthesizer-state-update",
+        "critic-state-update",
+        "researcher-result-control",
+    ],
+)
+def test_required_field_presence_accepts_production_output_boundaries(
+    controlled_case_for,
+    agent_name,
+    result,
+    state_update,
+    required_field,
+) -> None:
+    case = controlled_case_for(agent_name)
+    output = _production_target_output(
+        case, result=result, state_update=state_update
+    )
+
+    results = evaluate_general_gates(output, case, secrets=())
+
+    assert gate(results, "required_fields_present").passed is True
+    assert required_field in state_update or required_field in result
+
+
+def test_required_field_missing_from_result_and_state_update_fails(
+    controlled_case_for,
+) -> None:
+    case = controlled_case_for("source_evaluator")
+    output = _production_target_output(
+        case, result={"sources": []}, state_update={}
+    )
+
+    results = evaluate_general_gates(output, case, secrets=())
+
+    assert gate(results, "required_fields_present").passed is False
+    assert "evaluated_sources" in gate(
+        results, "required_fields_present"
+    ).detail
+
+
 def test_exceeding_the_iteration_budget_fails_the_budget_gate(
     planner_case, clean_target_output
 ) -> None:

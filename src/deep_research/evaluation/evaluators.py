@@ -148,10 +148,13 @@ def _gate_required_fields_present(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
     result = output.result if isinstance(output.result, Mapping) else {}
+    state_update = (
+        output.state_update if isinstance(output.state_update, Mapping) else {}
+    )
     missing = [
         name
         for name in case.expectations.required_output_fields
-        if name not in result
+        if name not in result and name not in state_update
     ]
     return GateResult(
         gate_id="required_fields_present",
