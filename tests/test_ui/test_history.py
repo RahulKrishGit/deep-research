@@ -383,16 +383,24 @@ def test_independent_stores_commit_concurrent_entries_atomically(
         Thread(target=write_entry, args=(store_a, entry_a)),
         Thread(target=write_entry, args=(store_b, entry_b)),
     ]
-    for writer in writers:
-        writer.start()
-    for writer in writers:
-        writer.join(timeout=5)
+    started_writers: list[Thread] = []
+    try:
+        for writer in writers:
+            writer.start()
+            started_writers.append(writer)
+        for writer in started_writers:
+            writer.join(timeout=5)
 
-    assert all(not writer.is_alive() for writer in writers)
-    assert errors == []
-    for store in (store_a, store_b):
-        assert store.get(entry_a.session_id) == entry_a
-        assert store.get(entry_b.session_id) == entry_b
+        assert all(not writer.is_alive() for writer in started_writers)
+        assert errors == []
+        for store in (store_a, store_b):
+            assert store.get(entry_a.session_id) == entry_a
+            assert store.get(entry_b.session_id) == entry_b
+    finally:
+        commit_barrier.abort()
+        for writer in started_writers:
+            writer.join(timeout=5)
+        assert all(not writer.is_alive() for writer in started_writers)
 
 
 def test_history_store_preserves_running_status_for_controller_conversion(

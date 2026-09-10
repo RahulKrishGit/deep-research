@@ -111,6 +111,9 @@ def test_valid_start_creates_and_starts_exactly_one_worker(tmp_path: Path) -> No
         assert runner.calls[0]["session_id"] == snapshot.session_id
     finally:
         runner.release.set()
+        for worker in created_workers:
+            worker.join(timeout=5)
+        assert all(not worker.is_alive() for worker in created_workers)
 
     _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
 
