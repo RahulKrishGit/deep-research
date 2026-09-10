@@ -197,3 +197,12 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Verification: focused provider/evaluation/runner suite `293 passed, 1 warning`; full offline pytest `1,973 passed, 1 deselected, 2 warnings`; changed-scope Ruff `All checks passed`; new validation module format check passed; `git diff --check` passed. The warnings are dependency deprecations and Git line-ending conversion notices only.
 - Review disposition: no task-scoped review was dispatched, per the explicit implementation-task instruction; controller review remains the next action. Whole-branch review remains deferred.
 - Safety state: no live, paid, controlled, suite, LangSmith, or provider command ran; `.deepseek-runs/` remains preserved and unstaged; no provider content, prompt, evaluator input, credential, raw validation context, or unredacted exception text was recorded.
+
+## 27. Task 17 Fix Round 2: DeepSeek Traceback-Context Leak
+
+- Candidate before implementation: `8d8a79d` on `codex/cross-agent-planner-fix-parity`; the pre-existing untracked `.deepseek-runs/` evidence was preserved.
+- Diagnosis: the public `StructuredOutputError` already had bounded diagnostics and no linked validation exception, but `complete_structured()` left schema-derived `instruction`, `schema_json`, and `repair` values in its provider traceback frame after the final two-attempt failure.
+- RED evidence: the fake-driven DeepSeek traceback regression failed `1` test with `98` deselected when a harmless schema-description marker was reachable through provider traceback locals; the public error still had no cause or context.
+- Minimal fix: replace those three request/prompt locals with safe empty values immediately before raising the existing typed error. The regression now proves the schema marker is present in both the initial instruction and repair request, but absent from the reachable typed error graph and provider traceback surfaces.
+- Verification: campaign-bound DeepSeek tests `99 passed, 1 warning`; provider/taxonomy/runner suite `221 passed, 1 warning`; full offline pytest `1,980 passed, 1 deselected, 2 warnings in 27.48s`; changed-file Ruff `All checks passed!`; `git diff --check` passed with only existing LF/CRLF conversion notices.
+- Implementation/test commit: `496c1ca` (`fix: scrub DeepSeek structured prompt locals`). No provider contract, retry behavior, repair count, token cap, runner precedence, target budget, evaluator threshold, frozen artifact, or fallback semantic changed. No push or review was started.
