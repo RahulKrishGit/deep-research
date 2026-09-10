@@ -178,3 +178,10 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Implementation commit: `d1ee97d1ed6d7dff6a47e4efbadebba8d541e419`.
 - Verification: focused Task 16 `27 passed`; relevant evaluation/case/model/target/runner tests `277 passed`; evaluation plus Critic tests `748 passed`; full offline suite `1,952 passed, 1 deselected, 2 warnings`; Ruff passed; `git diff --check` passed.
 - Safety boundary: no live-provider, paid, or suite evaluation ran; no secret, prompt, evaluator input, provider response, credential, or raw exception text was recorded; `.deepseek-runs/` remains preserved and unstaged. Task 17 and whole-branch review remain deferred.
+
+## 25. Task 16 Review Disposition
+
+- Luna-max task-scoped review: PASS; no blocking findings.
+- Independent verification reproduced the focused `27 passed`, expanded `277 passed`, evaluation-plus-Critic `748 passed`, and full offline `1,952 passed, 1 deselected, 2 warnings` results. Ruff and `git diff --check` also passed.
+- Review confirmed the branch and remote tip are both `5f0a1dd1fed16bd7cf28b61916c16175060de316`, with only the preserved untracked `.deepseek-runs/` evidence directory outside the tracked change set.
+- Scope review found no Task 17 judge/status changes, token or target-budget changes, rubric/threshold/weight changes, or live/paid/suite evaluation. Task 17 and whole-branch review remain deferred.
