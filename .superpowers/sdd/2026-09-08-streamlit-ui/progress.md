@@ -1,22 +1,15 @@
 # SDD ledger — plan: docs/superpowers/plans/2026-09-08-streamlit-ui.md
 
-Setup: worktree created from origin/main at 3de6839; plan-owned workspace initialized with native PowerShell because WSL is unavailable.
+Setup: worktree created from origin/main at 3de683931aae9bb91b55019cee0be0e77da381f6; plan-owned workspace initialized with native PowerShell because WSL is unavailable.
 Approved visual handoff available: YES (`docs/superpowers/plans/deep-research-streamlit-ui-design-handoff.docx`).
-Routing override received from human: use GPT-5.6 Luna High for Tasks 1-10 implementation/fix waves and GPT-5.6 Luna Max for each task-scoped review/re-review. Whole-branch review remains halted before dispatch.
+Routing override received from human: use GPT-5.6 Luna High for Tasks 1-10 implementation/fix waves and GPT-5.6 Luna Max for each task-scoped review/re-review. The original whole-branch-review hard stop was historical; explicit human authorization later reopened the final-review phase.
 
-Current state summary (2026-09-10): Tasks 1-10 implementation and task-scoped reviews are complete; Tasks 11-12 are retained historical follow-up records. Task 14 is the current branch-wide integration remediation pass for the six Important and three Minor findings supplied by the human reviewer. No new whole-branch review is to be dispatched after this pass; the next branch review remains human-owned.
+Current state summary (2026-09-10): Tasks 1-20 are complete, including the authorized post-review follow-up and this documentation reconciliation. Task 21 remains the deferred worker/history test-evidence follow-up. The original whole-branch-review hard stop is historical, and explicit human authorization reopened the final-review phase. Current review status: whole-branch review has not been dispatched in this follow-up; merge readiness is not claimed.
 
 Todo ledger:
-- [ ] Task 1: presentation contracts
-- [ ] Task 2: progress and quality projection
-- [ ] Task 3: safe local session history
-- [ ] Task 4: non-blocking research controller
-- [ ] Task 5: Editorial Research Canvas shell
-- [ ] Task 6: New Research screen
-- [x] Task 7: Running screen and fragment refresh
-- [ ] Task 8: Completed report-first screen
-- [ ] Task 9: searchable Session History screen
-- [ ] Task 10: offline visual acceptance and full verification
+- [x] Tasks 1-19: Phase-4 Streamlit UI and authorized post-review follow-up
+- [x] Task 20: reconcile branch-review documentation and evidence metadata
+- [ ] Task 21: close deferred worker/history test-evidence gaps
 
 Task 1: in progress
 Task 1: fix round 1 in progress — reviewer reported unredacted ResearchError.details in history compaction, possible error aliasing, and incomplete string-stripping coverage.
@@ -105,7 +98,11 @@ Task 18: complete (commits 6dd8ba2..419e6ba, review clean; Luna Max approved the
 
 Task 19: complete — browser verification exposed a Streamlit form-event incompatibility; the final adjudication restored atomic form submission, safe blank validation, stale-guidance removal, and explicit Task 6 plan documentation (commits 857ee01, dc9dab2, 9d1adb6; Luna Max scoped review: REVIEW CLEAN).
 
+Task 20: complete — README status, historical/reopened branch-review wording, and current ledger metadata reconciled; no new product, test, visual-acceptance, or merge-readiness evidence claimed.
+
 Fresh verification (2026-09-10):
+Origin/main merge base: 3de683931aae9bb91b55019cee0be0e77da381f6.
+Reviewed HEAD: 8e8c9d4479bb244fad778295f293789c0c945244.
 Offline UI suite: PASS — 205 passed, 2 skipped.
 Repository suite: PASS — 2089 passed, 2 skipped, 1 deselected, 2 warnings in 60.88s.
 Ruff: PASS — python -m ruff check .
@@ -114,6 +111,6 @@ Browser functional verification: PASS — fresh production app blank submission 
 Browser visual verification: PASS — agent-browser screenshots of New Research, Running, Completed, and History were compared against the extracted approved DOCX Figures 1–4; hierarchy, editorial width, sidebar, status cues, progress rail, report/quality rail, and history search/filter matched the handoff structure.
 DOCX rendered-page verification: LIMITED — LibreOffice/soffice.exe was unavailable in the bundled workspace runtime; approved figure assets were extracted from the DOCX and directly compared with the live browser screenshots.
 Live paid-provider smoke: NOT RUN.
-Whole-branch review: HALTED by explicit human instruction.
+Whole-branch review: REOPENED by explicit human instruction; not dispatched in this follow-up; merge readiness not claimed.
 FINISHING-A-DEVELOPMENT-BRANCH: NOT INVOKED.
 MERGE/PUSH/PUBLISH: NOT PERFORMED.

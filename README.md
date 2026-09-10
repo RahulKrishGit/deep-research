@@ -4,7 +4,7 @@ Multi-agent deep research system using LangGraph, DeepSeek, ChromaDB, and LangSm
 
 ## Project Status
 
-Foundation phase — package skeleton, typed configuration/state, the LangSmith observability foundation, selectable DeepSeek/OpenAI chat providers, local and OpenAI embedding providers, core tools, the three-layer memory stack, and the shared agent ReAct runtime.
+Phase 4 complete — the package foundation, typed configuration/state, LangSmith observability, selectable DeepSeek/OpenAI chat providers, local and OpenAI embedding providers, core tools, the three-layer memory stack, the shared agent ReAct runtime, CLI, FastAPI API, and Streamlit Editorial Research Canvas UI are implemented.
 
 ## Setup
 

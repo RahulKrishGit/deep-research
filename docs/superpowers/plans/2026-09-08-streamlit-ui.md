@@ -1100,11 +1100,11 @@ Never claim PASS for an item that did not run.
 
 ---
 
-## Branch Review Gate — HALTED
+## Branch Review Gate — HISTORICAL HARD STOP / REOPENED
 
-The normal `superpowers:subagent-driven-development` flow would eventually dispatch a broad whole-branch reviewer. **Do not do that for this plan yet.** The human explicitly requested that branch review remain halted until they mention it.
+The normal `superpowers:subagent-driven-development` flow would eventually dispatch a broad whole-branch reviewer. The following records the original pre-review hard stop: after Task 10's scoped review, the human explicitly required that whole-branch review remain halted until they mentioned it.
 
-After Task 10's scoped Luna Max review approves, stop in this exact state:
+After Task 10's scoped Luna Max review approved, the plan stopped in this historical state:
 
 ```text
 IMPLEMENTATION: COMPLETE
@@ -1116,4 +1116,44 @@ FINISHING-A-DEVELOPMENT-BRANCH: NOT INVOKED
 MERGE/PUSH/PUBLISH: NOT PERFORMED
 ```
 
-Only a later explicit human instruction such as `run the branch review` reopens the final-review phase.
+That original hard stop is historical. The explicit human instruction recorded in the post-review follow-up below reopened the final-review phase.
+
+---
+
+## Post-review follow-up — authorized by explicit human instruction
+
+The human explicitly reopened the branch-review phase after Task 10. The
+following follow-up tasks address the final Sol/High review's documentation,
+baseline, and deferred test-evidence recommendations. They do not expand the
+Streamlit product scope or change the engine/provider contracts.
+
+### Task 20: Reconcile branch-review documentation and evidence metadata
+
+- Update the README's prominent project-status statement so it agrees with the
+  completed Phase-4 interface status.
+- Refresh the top-of-file SDD ledger summary and checklist while preserving all
+  append-only historical task records. Record the current `origin/main` merge
+  base, reviewed HEAD, and the current verification/review status accurately.
+- Update this plan's branch-review section to reflect that the explicit human
+  instruction reopened review, while retaining the original pre-review hard
+  stop as historical context.
+- Do not claim fresh tests, visual acceptance, or merge readiness unless the
+  corresponding evidence is actually produced.
+
+### Task 21: Close the deferred worker/history test-evidence gaps
+
+- Add a focused offline regression proving one `LocalResearchController.start()`
+  creates and starts exactly one worker for a valid session.
+- Add a deterministic offline regression exercising concurrent writes from
+  independent history-store instances and proving that atomic commits leave
+  valid, independently readable history entries.
+- Keep the tests platform-safe: symlink privilege limitations may remain
+  explicitly skipped on Windows, and no live provider or network call is
+  allowed.
+- Do not change production behavior unless a test demonstrates a concrete
+  defect; if that happens, stop and report the exact contract conflict before
+  broadening scope.
+
+The follow-up tasks use the same SDD loop: a fresh Luna High implementer,
+Luna Max task-scoped review, focused verification, and an updated evidence
+package before any further branch-review request.
