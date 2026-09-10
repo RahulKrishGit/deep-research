@@ -61,6 +61,18 @@ _URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+")
 # compares equal to the canonical ``known_source_urls`` entry.
 _URL_TRAILING_PUNCTUATION = ".,;:!?)]}'\"'"
 _TRANSPORT_FAILURE_TYPE = "langsmith_tracing_failure"
+_PROVIDER_FAILURE_KINDS = frozenset(
+    {
+        "output_limit",
+        "schema_output",
+        "provider_timeout",
+        "provider_rate_limit",
+        "provider_transport",
+        "provider_http",
+        "provider_response",
+        "provider_failure",
+    }
+)
 
 
 class MissingMetricError(RuntimeError):
@@ -593,6 +605,24 @@ def _error_records(output: TargetOutput) -> list[dict[str, object]]:
     if isinstance(state_errors, list):
         entries.extend(state_errors)
     return [dict(entry) for entry in entries if isinstance(entry, Mapping)]
+
+
+def _has_typed_provider_fallback(
+    output: TargetOutput, *, operation: str
+) -> bool:
+    """Recognize one allow-listed provider fallback operation."""
+    for entry in _error_records(output):
+        details = entry.get("details")
+        if not isinstance(details, Mapping):
+            continue
+        if details.get("operation") != operation:
+            continue
+        provider_failure = details.get("provider_failure")
+        if not isinstance(provider_failure, Mapping):
+            continue
+        if provider_failure.get("kind") in _PROVIDER_FAILURE_KINDS:
+            return True
+    return False
 
 
 def _normalized_text(value: object) -> str:
@@ -1250,6 +1280,10 @@ def _gate_critique_actionable(
 
 def _route_consistent_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     critique = _artifact(output, "critique")
+    if _has_typed_provider_fallback(
+        output, operation="critic_report_review"
+    ):
+        return _field(critique, "should_continue") is False
     score = _field(critique, "score")
     if not isinstance(score, int) or isinstance(score, bool):
         return False

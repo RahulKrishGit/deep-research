@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from deep_research.agents.critic import fallback_critique
 from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.evaluators import (
     AGENT_GATE_IDS,
@@ -355,6 +356,44 @@ def test_the_critic_gate_uses_the_production_routing_rule(
     assert gate(
         evaluate_agent_gates(output, critic_case), "route_consistent"
     ).passed is False
+
+
+def test_the_critic_gate_accepts_a_typed_provider_fallback_stop(
+    critic_case, critic_output
+) -> None:
+    fallback, _ = fallback_critique(
+        reason="provider_unavailable",
+        iteration=critic_case.state.iteration,
+        max_iterations=critic_case.state.max_iterations,
+    )
+    output = critic_output.model_copy(
+        update={
+            "result": {"critique": fallback.model_dump(mode="json")},
+            "errors": [
+                {
+                    "error_type": "critic_review_provider_error",
+                    "source": "agent.critic",
+                    "message": "provider review fallback used",
+                    "timestamp": "2026-08-01T00:00:00+00:00",
+                    "recoverable": False,
+                    "details": {
+                        "operation": "critic_report_review",
+                        "provider_failure": {
+                            "kind": "provider_failure",
+                            "type": "ProviderError",
+                            "retryable": False,
+                            "status_code": None,
+                        },
+                    },
+                }
+            ],
+        }
+    )
+
+    assert fallback.should_continue is False
+    assert gate(
+        evaluate_agent_gates(output, critic_case), "route_consistent"
+    ).passed is True
 
 
 def test_the_critic_gate_forbids_continuing_with_no_budget_left(
