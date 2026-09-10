@@ -4,12 +4,12 @@ Setup: worktree created from origin/main at 3de683931aae9bb91b55019cee0be0e77da3
 Approved visual handoff available: YES (`docs/superpowers/plans/deep-research-streamlit-ui-design-handoff.docx`).
 Routing override received from human: use GPT-5.6 Luna High for Tasks 1-10 implementation/fix waves and GPT-5.6 Luna Max for each task-scoped review/re-review. The original whole-branch-review hard stop was historical; explicit human authorization later reopened the final-review phase.
 
-Current state summary (2026-09-10): Tasks 1-20 are complete, including the authorized post-review follow-up and this documentation reconciliation. Task 21 remains the deferred worker/history test-evidence follow-up. The original whole-branch-review hard stop is historical, and explicit human authorization reopened the final-review phase. Current review status: whole-branch review has not been dispatched in this follow-up; merge readiness is not claimed.
+Current state summary (2026-09-10): Tasks 1-21 are complete, including the authorized post-review follow-up, documentation reconciliation, and deferred worker/history test-evidence coverage. The original whole-branch-review hard stop is historical, and explicit human authorization reopened the final-review phase. Current review status: whole-branch review has not been dispatched after the follow-up; fresh verification is pending; merge readiness is not claimed.
 
 Todo ledger:
 - [x] Tasks 1-19: Phase-4 Streamlit UI and authorized post-review follow-up
 - [x] Task 20: reconcile branch-review documentation and evidence metadata
-- [ ] Task 21: close deferred worker/history test-evidence gaps
+- [x] Task 21: close deferred worker/history test-evidence gaps
 
 Task 1: in progress
 Task 1: fix round 1 in progress — reviewer reported unredacted ResearchError.details in history compaction, possible error aliasing, and incomplete string-stripping coverage.
@@ -101,11 +101,14 @@ Task 19: complete — browser verification exposed a Streamlit form-event incomp
 Task 20: complete — README status, historical/reopened branch-review wording, and current ledger metadata reconciled; no new product, test, visual-acceptance, or merge-readiness evidence claimed.
 Task 20: fix round 1/5 — 1 addressed, 0 open; commit 6ea82de; Luna Max scoped re-review returned ALL FINDINGS ADDRESSED.
 Task 20: complete (commits 8e8c9d4..6ea82de, review clean after 1 fix round).
+Task 21: fix round 1 in progress — Luna Max found missing bounded worker/barrier cleanup in the new concurrency regressions.
+Task 21: fix round 1/5 — 2 addressed, 0 open; commit 15ced61; Luna Max scoped re-review returned ALL FINDINGS ADDRESSED.
+Task 21: complete (commits e5059fc..15ced61, review clean after 1 fix round).
 
-Fresh verification (2026-09-10):
+Recorded verification at reviewed HEAD 8e8c9d4 (2026-09-10; before Tasks 20-21 follow-up):
 Origin/main merge base: 3de683931aae9bb91b55019cee0be0e77da381f6.
 Reviewed HEAD: 8e8c9d4479bb244fad778295f293789c0c945244.
-Post-review follow-up HEAD: 6ea82de709117b86569a439347e61469b00ee642.
+Post-review follow-up HEAD: 15ced61ef4e1743ec47d9e5081a87a9f8694dfbe.
 Offline UI suite: PASS — 205 passed, 2 skipped.
 Repository suite: PASS — 2089 passed, 2 skipped, 1 deselected, 2 warnings in 60.88s.
 Ruff: PASS — python -m ruff check .
@@ -115,5 +118,6 @@ Browser visual verification: PASS — agent-browser screenshots of New Research,
 DOCX rendered-page verification: LIMITED — LibreOffice/soffice.exe was unavailable in the bundled workspace runtime; approved figure assets were extracted from the DOCX and directly compared with the live browser screenshots.
 Live paid-provider smoke: NOT RUN.
 Whole-branch review: REOPENED by explicit human instruction; not dispatched in this follow-up; merge readiness not claimed.
+Post-follow-up fresh verification: PENDING.
 FINISHING-A-DEVELOPMENT-BRANCH: NOT INVOKED.
 MERGE/PUSH/PUBLISH: NOT PERFORMED.
