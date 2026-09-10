@@ -81,7 +81,14 @@ def test_static_css_includes_native_chrome_and_responsive_top_padding() -> None:
     assert '[data-testid="stHeader"] button' in css
     assert '[data-testid="stHeader"] svg' in css
     assert "fill: #172126;" in css
-    assert "opacity: 1;" in css
+    header_rule = re.search(
+        r'\[data-testid="stHeader"\] button,\s*'
+        r'\[data-testid="stHeader"\] svg\s*\{(?P<body>.*?)\}',
+        css,
+        flags=re.DOTALL,
+    )
+    assert header_rule is not None
+    assert "opacity: 1;" in header_rule.group("body")
 
     main_rule = re.search(
         r'\[data-testid="stMainBlockContainer"\]\s*\{(?P<body>.*?)\}',
@@ -107,12 +114,30 @@ def test_static_css_includes_focus_disabled_readonly_and_spacing_rules() -> None
     assert "outline: 3px solid #0F6F68;" in css
     assert "outline-offset: 2px;" in css
     assert 'button[kind="primary"]:focus-visible' in css
-    assert "outline-color: #172126;" in css
+    assert 'button[kind="primaryFormSubmit"]:focus-visible' in css
+    primary_focus_rule = re.search(
+        r'button\[kind="primary"\]:focus-visible,\s*'
+        r'button\[kind="primaryFormSubmit"\]:focus-visible\s*'
+        r'\{(?P<body>.*?)\}',
+        css,
+        flags=re.DOTALL,
+    )
+    assert primary_focus_rule is not None
+    assert "outline-color: #172126;" in primary_focus_rule.group("body")
 
     assert "input:disabled" in css
     assert "textarea:disabled" in css
     assert "button:disabled" in css
-    assert "cursor: not-allowed;" in css
+    disabled_rule = re.search(
+        r"input:disabled,\s*textarea:disabled,\s*button:disabled\s*"
+        r"\{(?P<body>.*?)\}",
+        css,
+        flags=re.DOTALL,
+    )
+    assert disabled_rule is not None
+    disabled_body = disabled_rule.group("body")
+    assert "opacity: 1;" in disabled_body
+    assert "cursor: not-allowed;" in disabled_body
 
     readonly_rule = re.search(
         r"\.dr-readonly-field\s*\{(?P<body>.*?)\}", css, flags=re.DOTALL
@@ -126,7 +151,11 @@ def test_static_css_includes_focus_disabled_readonly_and_spacing_rules() -> None
     assert "background: #F5F7F6;" in readonly_body
 
     assert ".dr-control-label" in css
-    assert ".dr-readonly-meta" in css
+    readonly_meta_rule = re.search(
+        r"\.dr-readonly-meta\s*\{(?P<body>.*?)\}", css, flags=re.DOTALL
+    )
+    assert readonly_meta_rule is not None
+    assert "color: var(--dr-text-muted);" in readonly_meta_rule.group("body")
     assert ".dr-screen-eyebrow" in css
     assert ".dr-subsection-heading" in css
     assert ".dr-next-steps" in css

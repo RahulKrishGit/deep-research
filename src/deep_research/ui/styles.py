@@ -384,7 +384,7 @@ button[kind="secondary"] {
 }
 
 .dr-readonly-meta {
-  color: #647276;
+  color: var(--dr-text-muted);
   font-size: 12px;
 }
 
@@ -415,7 +415,8 @@ textarea:focus-visible,
   outline-offset: 2px;
 }
 
-button[kind="primary"]:focus-visible {
+button[kind="primary"]:focus-visible,
+button[kind="primaryFormSubmit"]:focus-visible {
   outline-color: #172126;
 }
 
