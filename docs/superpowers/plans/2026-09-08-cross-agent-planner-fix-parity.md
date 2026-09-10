@@ -1754,7 +1754,7 @@ Sol High's re-review identified a harness contract defect: an injected in-memory
 - Do not alter target prompts, agent budgets, global `llm.max_tokens == 4096`, thresholds, scoring weights, or live dependencies in this task.
 - Required evidence: RED tests showing the current classification, GREEN tests for the separated classification and versioned case contract, focused evaluator/case/dependency tests, full offline gate, Luna-max implementation report, and Luna-max task review.
 
-### Task 17: Improve Judge Diagnostics and Status Precedence — COMPLETE (REVIEWED; LIVE EVIDENCE RECORDED)
+### Task 17: Improve Judge Diagnostics and Status Precedence — COMPLETE (REVIEWED; FIX ROUND 3 APPROVED; LIVE EVIDENCE RECORDED)
 
 This task follows Task 16 and addresses the remaining judge-only infrastructure boundary. Current `$` diagnostics are too coarse because root-level Pydantic failures can represent malformed JSON, root-shape mismatch, extra fields, or other schema categories. Judge-only failures also currently collapse into ordinary `FAILED` status when deterministic hard gates pass.
 
@@ -1764,6 +1764,8 @@ This task follows Task 16 and addresses the remaining judge-only infrastructure 
 - Implement judge-only infrastructure precedence without changing the existing mixed-failure rule: a repetition with deterministic hard-gate failure remains a quality `FAILED` case while retaining judge diagnostics; a case/experiment with all deterministic gates passing but no score due to typed judge infrastructure failure must be `INFRASTRUCTURE FAILURE` with a safe failure reason.
 - Preserve the no-fabricated-score rule, one structured repair attempt, global `llm.max_tokens == 4096`, frozen v1 artifacts, and all existing target/fallback semantics.
 - Required evidence: RED/GREEN provider and runner tests, focused evaluation/provider suite, full offline gate, Luna-max implementation report, and Luna-max task review.
+
+Post-review fix round 3 is complete: Sol High identified an OpenAI structured-repair traceback-local leak, and Luna High implemented the one-line local scrub plus a focused marker regression in `a95262f`. A fresh Luna-max task review approved the minimal two-file change with no Critical or Important findings. The controller must now run the full offline gate, Ruff, and whitespace checks, update the fix ledger, and push before any further paid/live validation or whole-branch review.
 
 ---
 
