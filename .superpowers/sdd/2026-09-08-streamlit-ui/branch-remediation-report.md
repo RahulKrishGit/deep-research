@@ -415,3 +415,59 @@ tracing, live-provider, or branch-wide review changes.
 
 No merge or branch-wide review was run. The branch is ready for the user's
 separate re-review after the final commit is pushed.
+
+## Task 14 — Branch-wide integration remediation
+
+Date: 2026-09-10
+Branch: `codex/streamlit-ui`
+Starting HEAD: `67fbba44726e45d47c0c545da404119f4f41373c`
+Scope: the six Important findings and three cleanup/process findings supplied
+by the human branch-wide reviewer. No engine, provider, tracing, live-provider,
+or CI changes.
+
+### Remediated findings
+
+- The New Research iteration control no longer imposes an arbitrary maximum of
+  20; it accepts every positive backend configuration value, with a regression
+  covering a configured default of 25.
+- Running health now projects typed graph node/session error counts and uses a
+  non-additive comparison with failed tool counts, so recoverable non-tool
+  errors are visible without counting the same tool failure twice.
+- Source credibility and fact-check summaries keep the last record for a
+  normalized source or claim identity, preventing macro-refinement records
+  from inflating completed totals while retaining the latest details.
+- Terminal controller state becomes authoritative before best-effort history
+  persistence. In-memory terminal overlays keep `snapshot`, `history_entry`,
+  and `list_history` consistent when the terminal upsert fails.
+- The sidebar promotes the selected/live/active session in that order, keeping
+  an older selected active session visible in the five-row recent window while
+  preserving live status refresh.
+- Worker construction and `start()` failures are covered by an injectable
+  thread factory and transition the registered session to a sanitized Failed
+  state instead of leaving a ghost Running entry.
+- Reopened empty quality details now explain that local history did not retain
+  detail payloads; the stale Streamlit 1.37 comment was removed. The existing
+  no-report Incomplete route remains retained-progress-only.
+- The append-only SDD ledger now has a current-state summary and a Task 14
+  completion record without deleting prior history.
+
+### TDD and fresh verification
+
+- Focused RED runs failed on the new contracts before the production changes;
+  focused GREEN runs passed after implementation.
+- `python -m pytest tests/test_ui -q` — PASS: **196 passed, 2 skipped**.
+- `python -m pytest -q` — PASS: **2080 passed, 2 skipped, 1 deselected**, 0
+  failed, 2 existing deprecation warnings.
+- `ruff check src tests` — PASS: `All checks passed!`
+- `git diff --check` — PASS; Git emitted only LF-to-CRLF normalization
+  warnings for edited text files.
+- Scoped Luna Max review — no actionable findings. Its noted evidence gaps
+  were closed with explicit live/terminal issue-count and worker-start-method
+  regressions.
+
+### Rendered verification and scope boundary
+
+No new browser-rendered Figure 1–4 comparison was available in this pass;
+pixel-level acceptance remains outside the offline test evidence. No live
+provider was invoked. No merge or whole-branch review was run; the branch is
+ready for the user's separate re-review after the final commit is pushed.

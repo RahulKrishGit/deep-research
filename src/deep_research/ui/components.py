@@ -750,8 +750,15 @@ def _entry_for_active_session(
     active_id = state.get(_ACTIVE_SESSION_KEY)
     if not isinstance(active_id, str):
         return None
+    return _entry_for_session(controller, active_id)
+
+
+def _entry_for_session(
+    controller: LocalResearchController,
+    session_id: str,
+) -> SessionHistoryEntry | None:
     try:
-        snapshot = controller.snapshot(active_id)
+        snapshot = controller.snapshot(session_id)
     except (AttributeError, KeyError):
         return None
     return history_entry_from_snapshot(snapshot)
@@ -817,13 +824,38 @@ def _recent_entries(
     state: MutableMapping[str, Any],
 ) -> list[SessionHistoryEntry]:
     entries = _history_entries(controller, state)
-    active_entry = _entry_for_active_session(controller, state)
-    if active_entry is not None:
-        active_entry = _history_entry_for_display(active_entry, state, controller)
+    promoted_entry: SessionHistoryEntry | None = None
+    promoted_ids = (
+        state.get(_SELECTED_SESSION_KEY),
+        state.get(_LIVE_SESSION_KEY),
+        state.get(_ACTIVE_SESSION_KEY),
+    )
+    for session_id in promoted_ids:
+        if not isinstance(session_id, str):
+            continue
+        # Prefer a fresh controller snapshot so a live row can refresh its
+        # status before the polling fragment reads the same session.
+        promoted_entry = _entry_for_session(controller, session_id)
+        if promoted_entry is None:
+            promoted_entry = next(
+                (entry for entry in entries if entry.session_id == session_id),
+                None,
+            )
+        if promoted_entry is not None:
+            promoted_entry = _history_entry_for_display(
+                promoted_entry,
+                state,
+                controller,
+            )
+            break
+
+    if promoted_entry is not None:
         entries = [
-            entry for entry in entries if entry.session_id != active_entry.session_id
+            entry
+            for entry in entries
+            if entry.session_id != promoted_entry.session_id
         ]
-        entries.insert(0, active_entry)
+        entries.insert(0, promoted_entry)
     return entries[:5]
 
 
@@ -1226,7 +1258,6 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
             st.number_input(
                 "Maximum iterations",
                 min_value=1,
-                max_value=20,
                 value=controller.default_max_iterations,
                 step=1,
                 key="max_iterations",
@@ -1341,8 +1372,11 @@ def _render_health(snapshot: UiSessionSnapshot) -> None:
             unsafe_allow_html=True,
         )
         return
-    issue_count = len(snapshot.errors)
-    issue_count += sum(call.failures for call in snapshot.tool_calls)
+    issue_count = max(
+        snapshot.issue_count,
+        len(snapshot.errors),
+        sum(call.failures for call in snapshot.tool_calls),
+    )
     if issue_count:
         noun = "issue" if issue_count == 1 else "issues"
         st.caption(f"{issue_count} {noun}; continuing")
@@ -1771,7 +1805,9 @@ def _render_completed_details_rail(snapshot: UiSessionSnapshot) -> None:
                 _render_source_detail(detail)
                 st.divider()
         else:
-            st.caption("No source details recorded.")
+            st.caption(
+                "Source details were not retained in local session history."
+            )
 
     fact_summary = snapshot.fact_check_summary
     _render_quality_rows(
@@ -1790,7 +1826,9 @@ def _render_completed_details_rail(snapshot: UiSessionSnapshot) -> None:
                 _render_claim_detail(detail)
                 st.divider()
         else:
-            st.caption("No claim details recorded.")
+            st.caption(
+                "Claim details were not retained in local session history."
+            )
 
     if snapshot.token_usage is not None:
         st.metric(
@@ -2046,8 +2084,8 @@ def render_history_view(controller: LocalResearchController) -> None:
                 label_visibility="collapsed",
             )
         else:
-            # Streamlit 1.37 is supported, but segmented_control is newer;
-            # retain the same values for older supported installations.
+            # segmented_control is optional; retain the same values when it
+            # is unavailable.
             selected_filter = st.selectbox(
                 "Status",
                 options=list(_HISTORY_FILTER_OPTIONS),

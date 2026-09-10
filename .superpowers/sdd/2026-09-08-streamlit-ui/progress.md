@@ -4,6 +4,8 @@ Setup: worktree created from origin/main at 3de6839; plan-owned workspace initia
 Approved visual handoff available: YES (`docs/superpowers/plans/deep-research-streamlit-ui-design-handoff.docx`).
 Routing override received from human: use GPT-5.6 Luna High for Tasks 1-10 implementation/fix waves and GPT-5.6 Luna Max for each task-scoped review/re-review. Whole-branch review remains halted before dispatch.
 
+Current state summary (2026-09-10): Tasks 1-10 implementation and task-scoped reviews are complete; Tasks 11-12 are retained historical follow-up records. Task 14 is the current branch-wide integration remediation pass for the six Important and three Minor findings supplied by the human reviewer. No new whole-branch review is to be dispatched after this pass; the next branch review remains human-owned.
+
 Todo ledger:
 - [ ] Task 1: presentation contracts
 - [ ] Task 2: progress and quality projection
@@ -87,3 +89,5 @@ Ruling: Task 11 uses task-11-brief.md as the sole requirements source, per the h
 
 Task 12: final re-review remediation in progress — focused pass covers the failed pending-start lifecycle regression for configuration, history, and unexpected start failures; the approved handoff path correction; and this append-only ledger update. Whole-branch review remains halted.
 Task 12: final re-review remediation complete — the three scoped follow-ups are implemented and verified: failed pending starts now persist safe errors, clear in-flight state, and trigger one full rerun; the plan points to the committed handoff; and this ledger retains an append-only completion record. Focused UI regressions: 3 passed; UI suite: 187 passed, 2 skipped; Ruff: pass. Whole-branch review remains halted.
+
+Task 14: branch-wide integration remediation complete — the supplied review findings for max-iteration parity, live health issue projection, refinement-safe quality summaries, authoritative terminal history state, selected-session sidebar promotion, worker-start rollback, history copy/comment cleanup, and the current-state ledger summary are implemented and verified. Whole-branch re-review remains human-owned.

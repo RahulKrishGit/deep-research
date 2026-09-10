@@ -329,6 +329,44 @@ def test_published_events_project_live_progress_and_snapshots_are_copies(
     _wait_for(lambda: controller.snapshot(first.session_id).status == "completed")
 
 
+def test_live_snapshot_projects_recoverable_graph_issue_count(
+    tmp_path: Path,
+) -> None:
+    runner = GatedSyncRunner(
+        events=[
+            _event(
+                "graph.node.completed",
+                metadata={"node": "researcher", "iteration": 1, "error_count": 1},
+            )
+        ]
+    )
+    controller = _controller(tmp_path, runner)
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    assert runner.started.wait(1)
+    assert controller.snapshot(snapshot.session_id).issue_count == 1
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
+
+
+def test_terminal_snapshot_projects_recoverable_graph_issue_count(
+    tmp_path: Path,
+) -> None:
+    event = _event(
+        "graph.node.completed",
+        metadata={"node": "researcher", "iteration": 1, "error_count": 1},
+    )
+    runner = GatedSyncRunner(events=[event])
+    controller = _controller(tmp_path, runner)
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    assert runner.started.wait(1)
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
+
+    assert controller.snapshot(snapshot.session_id).issue_count == 1
+
+
 def test_live_event_path_separates_planned_total_from_actual_subtopics(
     tmp_path: Path,
 ) -> None:
@@ -597,6 +635,70 @@ def test_terminal_history_write_failure_does_not_leave_outcome_running(
     assert finished.status == "completed"
     assert finished.report == "authoritative report"
     assert secret not in finished.model_dump_json()
+    persisted = controller.history_entry(snapshot.session_id)
+    assert persisted is not None
+    assert persisted.status == "completed"
+    listed = next(
+        entry
+        for entry in controller.list_history()
+        if entry.session_id == snapshot.session_id
+    )
+    assert listed.status == "completed"
+    assert not controller.is_session_active(snapshot.session_id)
+
+
+def test_worker_start_failure_transitions_session_to_safe_failed_state(
+    tmp_path: Path,
+) -> None:
+    secret = "private worker construction failure"
+
+    def failing_thread_factory(**_: Any) -> Any:
+        raise RuntimeError(secret)
+
+    controller = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=GatedSyncRunner(),
+        preflight=lambda **_: object(),
+        history_store=SessionHistoryStore(output_directory=tmp_path / "output"),
+        thread_factory=failing_thread_factory,
+    )
+
+    with pytest.raises(RuntimeError, match=secret):
+        controller.start(question="Question", max_iterations=2)
+
+    entries = controller.list_history()
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.status == "failed"
+    assert not controller.is_session_active(entry.session_id)
+    assert controller.snapshot(entry.session_id).status == "failed"
+    assert secret not in entry.model_dump_json()
+
+
+def test_worker_start_method_failure_transitions_session_to_safe_failed_state(
+    tmp_path: Path,
+) -> None:
+    secret = "private worker start failure"
+
+    class StartFailingWorker:
+        def start(self) -> None:
+            raise RuntimeError(secret)
+
+    controller = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=GatedSyncRunner(),
+        preflight=lambda **_: object(),
+        history_store=SessionHistoryStore(output_directory=tmp_path / "output"),
+        thread_factory=lambda **_: StartFailingWorker(),
+    )
+
+    with pytest.raises(RuntimeError, match=secret):
+        controller.start(question="Question", max_iterations=2)
+
+    entries = controller.list_history()
+    assert len(entries) == 1
+    assert entries[0].status == "failed"
+    assert not controller.is_session_active(entries[0].session_id)
 
 
 def test_unknown_configuration_failure_details_are_allowlisted(

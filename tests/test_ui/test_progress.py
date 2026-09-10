@@ -173,6 +173,47 @@ def test_project_progress_projects_agent_iteration_subtopics_and_tools() -> None
     ]
 
 
+def test_project_progress_projects_recoverable_graph_errors_without_double_counting(
+) -> None:
+    summary = project_progress(
+        [
+            event(
+                "researcher.tool_call",
+                metadata={"tool": "web_search", "success": False},
+            ),
+            event(
+                "graph.node.completed",
+                metadata={
+                    "node": "researcher",
+                    "iteration": 1,
+                    "event_count": 2,
+                    "error_count": 1,
+                },
+            ),
+        ]
+    )
+
+    assert summary.issue_count == 1
+
+
+def test_project_progress_projects_non_tool_graph_errors() -> None:
+    summary = project_progress(
+        [
+            event(
+                "graph.node.completed",
+                metadata={
+                    "node": "source_evaluator",
+                    "iteration": 1,
+                    "event_count": 1,
+                    "error_count": 2,
+                },
+            )
+        ]
+    )
+
+    assert summary.issue_count == 2
+
+
 def test_project_progress_uses_graph_iteration_not_researcher_react_iteration() -> None:
     summary = project_progress(
         [
@@ -541,6 +582,53 @@ def test_source_summary_groups_related_topics_by_normalized_url() -> None:
         "Market size",
         "Regulatory drivers",
     ]
+
+
+def test_source_summary_deduplicates_refinement_passes_and_keeps_latest_record(
+) -> None:
+    first = source(
+        "https://www.example.org/research/",
+        overall_score=0.9,
+    )
+    latest = source(
+        "https://example.org/research",
+        overall_score=0.4,
+    ).model_copy(update={"rationale": "Latest refinement rationale."})
+
+    summary = source_summary([first, latest], [])
+
+    assert summary.total == 1
+    assert summary.high == 0
+    assert summary.low == 0
+    assert summary.moderate == 1
+    assert summary.details[0].rationale == "Latest refinement rationale."
+
+
+def test_fact_check_summary_deduplicates_refinement_passes_and_keeps_latest_record(
+) -> None:
+    first = Claim(
+        text="The deployment target is achievable.",
+        source_urls=["https://www.example.org/research/"],
+        verdict="verified",
+        confidence=0.9,
+        evidence=["First pass evidence."],
+        contradictions=[],
+    )
+    latest = first.model_copy(
+        update={
+            "verdict": "contradicted",
+            "confidence": 0.4,
+            "evidence": ["Latest pass evidence."],
+            "contradictions": ["Latest pass contradiction."],
+        }
+    )
+
+    summary = fact_check_summary([first, latest])
+
+    assert summary.verified == 0
+    assert summary.contradicted == 1
+    assert summary.details[0].verdict == "contradicted"
+    assert summary.details[0].evidence == ["Latest pass evidence."]
 
 
 @pytest.mark.parametrize(

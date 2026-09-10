@@ -78,6 +78,7 @@ class LocalResearchController:
         runner: SyncRunner | None = None,
         preflight: Preflight | None = None,
         history_store: SessionHistoryStore | None = None,
+        thread_factory: Callable[..., Thread] | None = None,
     ) -> None:
         self._config_path = str(config_path)
         self._runner = runner or run_research_sync
@@ -122,6 +123,7 @@ class LocalResearchController:
                 )
         self._lock = RLock()
         self._sessions: dict[str, _ActiveSession] = {}
+        self._thread_factory = thread_factory or Thread
 
     @property
     def default_max_iterations(self) -> int:
@@ -173,18 +175,22 @@ class LocalResearchController:
                 hint=CONFIGURATION_HINTS["history_unavailable"],
             ) from None
 
-        worker = Thread(
-            target=self._run,
-            kwargs={
-                "session_id": session.session_id,
-                "question": question,
-                "max_iterations": max_iterations,
-                "output_format": output_format,
-            },
-            name=f"deep-research-{session.session_id}",
-            daemon=True,
-        )
-        worker.start()
+        try:
+            worker = self._thread_factory(
+                target=self._run,
+                kwargs={
+                    "session_id": session.session_id,
+                    "question": question,
+                    "max_iterations": max_iterations,
+                    "output_format": output_format,
+                },
+                name=f"deep-research-{session.session_id}",
+                daemon=True,
+            )
+            worker.start()
+        except Exception:
+            self._record_worker_start_failure(session.session_id)
+            raise
         return self.snapshot(session.session_id)
 
     def snapshot(self, session_id: str) -> UiSessionSnapshot:
@@ -262,19 +268,20 @@ class LocalResearchController:
             outcome_copy = deepcopy(outcome)
             finished_at = datetime.now(timezone.utc)
 
-        terminal_snapshot = self._snapshot_from_values(
-            session_id,
-            outcome=outcome_copy,
-            status=outcome_copy.status,
-            finished_at=finished_at,
-        )
-        self._persist_terminal(terminal_snapshot)
         with self._lock:
             session = self._sessions.get(session_id)
-            if session is not None:
-                session.outcome = outcome_copy
-                session.status = outcome_copy.status
-                session.finished_at = finished_at
+            if session is None:
+                return
+            session.outcome = outcome_copy
+            session.status = outcome_copy.status
+            session.finished_at = finished_at
+            terminal_snapshot = self._snapshot_from_values(
+                session_id,
+                outcome=outcome_copy,
+                status=outcome_copy.status,
+                finished_at=finished_at,
+            )
+        self._persist_terminal(terminal_snapshot)
 
     def _publish(self, session_id: str, event: ResearchEvent) -> None:
         with self._lock:
@@ -326,6 +333,9 @@ class LocalResearchController:
                 return
             session.events.append(event)
             finished_at = datetime.now(timezone.utc)
+            session.failure = error
+            session.status = "failed"
+            session.finished_at = finished_at
 
         terminal_snapshot = self._snapshot_from_values(
             session_id,
@@ -334,12 +344,31 @@ class LocalResearchController:
             failure=error,
         )
         self._persist_terminal(terminal_snapshot)
+
+    def _record_worker_start_failure(self, session_id: str) -> None:
+        """Turn a worker-construction failure into a safe terminal session."""
+        error = ResearchError(
+            error_type="ui.research.failed",
+            source="ui",
+            message=_UNEXPECTED_FAILURE_MESSAGE,
+            recoverable=False,
+        )
+        event = ResearchEvent(
+            event_type=error.error_type,
+            source="ui",
+            message=error.message,
+            metadata={},
+        )
         with self._lock:
             session = self._sessions.get(session_id)
-            if session is not None:
-                session.failure = error
-                session.status = "failed"
-                session.finished_at = finished_at
+            if session is None:
+                return
+            session.events.append(event)
+            session.failure = error
+            session.status = "failed"
+            session.finished_at = datetime.now(timezone.utc)
+            terminal_snapshot = self._snapshot(session_id)
+        self._persist_terminal(terminal_snapshot)
 
     def _snapshot(self, session_id: str) -> UiSessionSnapshot:
         with self._lock:
@@ -436,6 +465,7 @@ class LocalResearchController:
                 last_sub_topic=progress.last_sub_topic,
                 recent_activity=progress.recent_activity,
                 tool_calls=tool_calls,
+                issue_count=progress.issue_count,
                 token_usage=token_usage,
                 trace_url=outcome.trace_url,
                 report_path=outcome.report_path,
@@ -470,6 +500,7 @@ class LocalResearchController:
             last_sub_topic=progress.last_sub_topic,
             recent_activity=progress.recent_activity,
             tool_calls=progress.tool_calls,
+            issue_count=progress.issue_count,
             token_usage=None,
             trace_url=None,
             report_path=None,
@@ -508,6 +539,11 @@ class LocalResearchController:
             return
 
     def _display_history_entry(self, entry: SessionHistoryEntry) -> SessionHistoryEntry:
+        with self._lock:
+            session = self._sessions.get(entry.session_id)
+            if session is not None and session.status != "running":
+                return history_entry_from_snapshot(self._snapshot(entry.session_id))
+
         active = self.is_session_active(entry.session_id)
         if entry.status == "running" and not active:
             return entry.model_copy(

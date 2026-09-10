@@ -112,6 +112,7 @@ class UiSessionSnapshot(ContractModel):
     last_sub_topic: UiSubTopicProgress | None = None
     recent_activity: list[UiRecentActivity] = Field(default_factory=list)
     tool_calls: list[UiToolCallSummary] = Field(default_factory=list)
+    issue_count: int = Field(default=0, ge=0)
     token_usage: UiTokenUsage | None = None
     trace_url: str | None = None
     report_path: str | None = None

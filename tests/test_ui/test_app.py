@@ -231,6 +231,7 @@ def _snapshot(
     tool_calls: list[UiToolCallSummary] | None = None,
     report: str | None = None,
     report_path: str | None = None,
+    issue_count: int = 0,
 ) -> UiSessionSnapshot:
     from deep_research.utils.types import ResearchError
 
@@ -282,6 +283,7 @@ def _snapshot(
             insufficient_evidence=0,
         ),
         errors=[ResearchError.model_validate(error) for error in (errors or [])],
+        issue_count=issue_count,
     )
 
 
@@ -436,6 +438,20 @@ def test_new_research_screen_has_question_form_and_ready_state() -> None:
     assert any("Ready to start" in item.value for item in app.main.markdown)
     assert not any("Session history" in item.value for item in app.main.markdown)
     assert not any("Current session" in item.value for item in app.main.markdown)
+
+
+def test_new_research_screen_accepts_configured_default_above_twenty() -> None:
+    class HighIterationController(FakeController):
+        @property
+        def default_max_iterations(self) -> int:
+            return 25
+
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": HighIterationController([])},
+    ).run()
+
+    assert app.number_input(key="max_iterations").value == 25
 
 
 def test_start_research_is_the_only_filled_primary_action() -> None:
@@ -992,6 +1008,40 @@ def test_active_session_is_promoted_to_the_first_recent_row() -> None:
     assert any("Running" in item.value for item in active_row.markdown)
 
 
+def test_selected_older_active_session_is_promoted_into_recent_rows() -> None:
+    selected_id = "2" * 32
+    entries = [
+        _entry(selected_id, "Older selected active question", "running", 10),
+        *[
+            _entry(
+                f"{index + 10:032x}",
+                f"Newer completed question {index}",
+                "completed",
+                index,
+            )
+            for index in range(5)
+        ],
+    ]
+    controller = MultiActiveFakeController(entries, {selected_id})
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+    app.session_state[_SELECTED_SESSION_KEY] = selected_id
+    app.run()
+
+    row_keys = [container.key for container in app.sidebar.container]
+    assert row_keys[0] == f"dr-session-row-selected-{selected_id}"
+    selected_row = app.sidebar.container(
+        key=f"dr-session-row-selected-{selected_id}"
+    )
+    assert any(
+        "Older selected active question" in item.value
+        for item in selected_row.markdown
+    )
+    assert any("Running" in item.value for item in selected_row.markdown)
+
+
 def test_running_screen_preserves_narrative_sequence_and_three_recent_rows() -> None:
     snapshot = _snapshot(
         sub_topics=[
@@ -1135,6 +1185,23 @@ def test_recoverable_failed_tool_event_is_reflected_in_health() -> None:
 
     assert "1 issue; continuing" in visible
     assert "SECRET-PAYLOAD" not in visible
+
+
+def test_recoverable_non_tool_graph_error_is_reflected_in_health() -> None:
+    progress = project_progress(
+        [
+            ResearchEvent(
+                event_type="graph.node.completed",
+                source="graph.source_evaluator",
+                message="Node completed.",
+                metadata={"error_count": 1, "iteration": 1},
+            )
+        ]
+    )
+    app = _running_app(_snapshot(issue_count=progress.issue_count))
+
+    assert "1 issue; continuing" in _visible_main_text(app)
+    assert "No issues detected" not in _visible_main_text(app)
 
 
 def test_running_rerun_does_not_start_a_duplicate_worker() -> None:
@@ -1423,6 +1490,33 @@ def test_completed_report_is_on_base_canvas_with_secondary_quality_details() -> 
     assert any(item.label == "Session metadata" for item in app.expander)
     assert "Average source score" not in visible
     assert "Gauge" not in visible
+
+
+def test_empty_reopened_quality_details_explain_local_history_retention() -> None:
+    snapshot = _completed_report_snapshot().model_copy(
+        update={
+            "source_summary": UiSourceSummary(
+                total=0,
+                high=0,
+                moderate=0,
+                low=0,
+                unrated=0,
+            ),
+            "fact_check_summary": UiFactCheckSummary(
+                verified=0,
+                unverified=0,
+                contradicted=0,
+                insufficient_evidence=0,
+            ),
+        }
+    )
+    app = _running_app(snapshot)
+    visible = _visible_main_text(app)
+
+    assert "Source details were not retained in local session history." in visible
+    assert "Claim details were not retained in local session history." in visible
+    assert "No source details recorded." not in visible
+    assert "No claim details recorded." not in visible
 
 
 def test_report_quality_rows_and_path() -> None:

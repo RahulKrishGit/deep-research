@@ -40,6 +40,7 @@ class ProgressSummary(BaseModel):
     last_sub_topic: UiSubTopicProgress | None = None
     recent_activity: list[UiRecentActivity] = Field(default_factory=list)
     tool_calls: list[UiToolCallSummary] = Field(default_factory=list)
+    issue_count: int = Field(default=0, ge=0)
     events_seen: int = Field(default=0, ge=0)
 
 
@@ -218,6 +219,8 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
     topics: dict[int, dict[str, object]] = {}
     last_sub_topic: UiSubTopicProgress | None = None
     tools: dict[str, list[int]] = {}
+    tool_failure_count = 0
+    graph_error_count = 0
     activities: list[UiRecentActivity] = []
     fallback_activities: list[UiRecentActivity] = []
 
@@ -313,6 +316,16 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
             counts[0] += 1
             if metadata.get("success") is False:
                 counts[1] += 1
+                tool_failure_count += 1
+
+        if event.event_type == "graph.node.completed":
+            node_errors = _integer(metadata.get("error_count"))
+            if node_errors is not None:
+                graph_error_count += node_errors
+        elif event.event_type == "graph.session.completed":
+            session_errors = _integer(metadata.get("error_count"))
+            if session_errors is not None:
+                graph_error_count = max(graph_error_count, session_errors)
 
         activity = _activity_for_event(event)
         if activity is not None:
@@ -344,6 +357,11 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
             )
             for tool_name, counts in tools.items()
         ],
+        # A node-completed count includes recoverable non-tool errors as well
+        # as failed tool calls. During a live run the tool event may arrive
+        # before its node completes, so take the larger projection and never
+        # add the same failure twice.
+        issue_count=max(graph_error_count, tool_failure_count),
         events_seen=len(events),
     )
 
@@ -408,9 +426,13 @@ def source_summary(
         if topic not in topics:
             topics.append(topic)
 
+    latest_sources: dict[str, ScoredSource] = {}
+    for source in sources:
+        latest_sources[_normalize_source_url(source.url)] = source
+
     details: list[UiSourceDetail] = []
     tier_counts = {tier: 0 for tier in ("high", "moderate", "low", "unrated")}
-    for source in sources:
+    for source in latest_sources.values():
         tier = credibility_tier(source)
         tier_counts[tier] += 1
         details.append(
@@ -427,7 +449,7 @@ def source_summary(
             )
         )
     return UiSourceSummary(
-        total=len(sources),
+        total=len(latest_sources),
         high=tier_counts["high"],
         moderate=tier_counts["moderate"],
         low=tier_counts["low"],
@@ -443,8 +465,16 @@ def fact_check_summary(claims: Sequence[Claim]) -> UiFactCheckSummary:
         "contradicted": 0,
         "insufficient_evidence": 0,
     }
-    details = []
+    latest_claims: dict[tuple[str, tuple[str, ...]], Claim] = {}
     for claim in claims:
+        claim_text = " ".join(claim.text.split()).casefold()
+        source_ids = tuple(
+            sorted({_normalize_source_url(url) for url in claim.source_urls})
+        )
+        latest_claims[(claim_text, source_ids)] = claim
+
+    details = []
+    for claim in latest_claims.values():
         counts[claim.verdict] += 1
         details.append(
             UiClaimDetail(
