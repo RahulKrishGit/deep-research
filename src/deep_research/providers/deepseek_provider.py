@@ -709,4 +709,7 @@ class DeepSeekChatProvider:
         effective = None
         agent_name = None
         schema = BaseModel
+        instruction = None
+        schema_json = ""
+        repair = ""
         raise final_error

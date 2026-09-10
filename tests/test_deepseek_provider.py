@@ -851,6 +851,16 @@ async def test_deepseek_structured_failure_drops_provider_and_request_frames(
     response_marker = "DEEPSEEK_RESPONSE_FRAME_MARKER_4F9A"
     prompt_marker = "DEEPSEEK_PROMPT_FRAME_MARKER_8B2D"
     request_marker = "DEEPSEEK_REQUEST_FRAME_MARKER_C671"
+    schema_marker = "DEEPSEEK_SCHEMA_REQUEST_MARKER_6C31"
+
+    class MarkedTinyAnswer(BaseModel):
+        answer: str
+        confidence: int
+
+        model_config = ConfigDict(
+            json_schema_extra={"description": schema_marker}
+        )
+
     invalid_response = json.dumps(
         {"answer": response_marker, "confidence": "not-an-integer"}
     )
@@ -873,17 +883,27 @@ async def test_deepseek_structured_failure_drops_provider_and_request_frames(
     with pytest.raises(StructuredOutputError) as caught:
         async with tracker.session_span("session-1", prompt_marker):
             await provider.complete_structured(
-                [ChatMessage(role="user", content=prompt_marker)], TinyAnswer
+                [ChatMessage(role="user", content=prompt_marker)],
+                MarkedTinyAnswer,
             )
 
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
+    requests = json.dumps(completions.calls, default=repr, sort_keys=True)
+    assert schema_marker in requests
+    assert schema_marker in completions.calls[0]["messages"][-1]["content"]
+    assert schema_marker in completions.calls[1]["messages"][-1]["content"]
     surfaces = _provider_exception_surfaces(caught.value)
     assert surfaces
     assert all(
         marker not in surface
         for surface in surfaces
-        for marker in (response_marker, prompt_marker, request_marker)
+        for marker in (
+            response_marker,
+            prompt_marker,
+            request_marker,
+            schema_marker,
+        )
     )
 
 
