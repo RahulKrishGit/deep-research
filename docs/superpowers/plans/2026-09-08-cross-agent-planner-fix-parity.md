@@ -33,9 +33,9 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 10. Immutable controlled baselines | **Complete — five agents terminal-blocked after confirmation** | At candidate `d6a082c`, all five agents completed immutable 3-case × 3-repetition baselines and same-SHA confirmations. Windows preflight passed; typed judge/provider failures persisted, so each agent has `INFRASTRUCTURE_BLOCKED`, `repair_attempts: 0`, safe inventories, and a terminal record. |
 | 11. Evidence-gated output-budget repair | **Not started / not applicable** | Requires typed Task 10 target-side `output_limit` evidence; none exists. |
 | 12. Evidence-gated agent quality/trajectory repair | **Complete — repairs and integration correction; judge no-change decision** | Commits `7c58abc`, `12f9ebe`, `b7c2500`, and `8271dbc` repair cross-channel `required_fields_present`, typed Critic provider-fallback routing, Critic ReAct context wiring, and the package export-surface regression. Typed judge diagnostics split between `$` and `rationale`, so no judge/provider repair is justified without a repeatable contract failure. |
-| 13. Full controlled validation | **Ready — immediate authorization already granted** | Final repaired candidate `71465c6` passes the offline gate: repair-focused `1,197` passed, full suite `1,944` passed with one deselected, Ruff and diff checks passed. Run fresh controlled baselines from a new immutable namespace; no live or suite command is permitted. |
-| 14. Permanent cross-agent fix log | **Complete** | Updated with the candidate `d6a082c` controlled baseline/confirmation evidence, typed failure classes, hashes, and the no-budget/no-agent-repair decision. |
-| 15. Final offline verification and whole-branch review | **Offline verification complete — whole-branch review deferred** | After the Task 10/14 documentation update: focused config tests `47 passed`, `tests/test_evaluation` `697 passed`, full offline suite `1,936 passed, 1 deselected`, Ruff and `git diff --check` passed. Whole-branch review remains user-deferred. |
+| 13. Full controlled validation | **Complete — five repaired agents terminal-blocked after confirmation** | Candidate `1f790b0` completed fresh baseline/confirmation pairs for all five agents in `infrastructure-remediation/1f790b0-v1/`; all 90 repetitions completed, repaired hard gates held where applicable, and shared judge/provider failures remained typed. No live or suite command ran. |
+| 14. Permanent cross-agent fix log | **Complete — post-repair evidence recorded** | Fix log section 23 records all five fresh result hashes, gate counts, typed failures, provenance-capture errors/fixes, terminal states, and the no-budget/no-new-repair decisions. |
+| 15. Final offline verification and whole-branch review | **Offline verification complete — whole-branch review deferred** | After the final Task 13/14 documentation update: full offline suite `1,944 passed, 1 deselected, 2 warnings`, Ruff passed, and `git diff --check` passed. Whole-branch review remains user-deferred. |
 
 The following boundaries remain active: `--tier live` is prohibited; Task 9 is network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and the whole-branch review must remain deferred until the user explicitly requests it. The separately authorized GitHub push is complete, but it does not change the Task 15 review status.
 
@@ -1554,7 +1554,7 @@ After focused approval, commit only the agent-specific files with `fix($CliAgent
 
 ---
 
-### Task 13: Full Controlled Validation for Every Repaired Agent — NOT STARTED
+### Task 13: Full Controlled Validation for Every Repaired Agent — COMPLETE WITH INFRASTRUCTURE BLOCKS
 
 **Files:**
 - No tracked changes during validation
@@ -1564,7 +1564,7 @@ After focused approval, commit only the agent-specific files with `fix($CliAgent
 - Consumes: the final candidate commit for one agent after Tasks 11/12.
 - Produces: one authoritative nine-repetition full controlled artifact at that commit.
 
-- [ ] **Step 1: Re-run the full offline suite and verify clean Git state**
+- [x] **Step 1: Re-run the full offline suite and verify clean Git state**
 
 ```powershell
 python -m pytest -q -p no:cacheprovider
@@ -1573,11 +1573,13 @@ git diff --check
 if (git status --porcelain) { throw 'tracked worktree must be clean before controlled validation' }
 ```
 
-- [ ] **Step 2: Obtain immediate human confirmation for this agent's full controlled run**
+Result: final post-documentation verification passed with `1,944 passed, 1 deselected, 2 warnings`; Ruff and `git diff --check` passed. The tracked documentation changes were then prepared for commit; ignored evaluation evidence remains outside Git.
+
+- [x] **Step 2: Obtain immediate human confirmation for this agent's full controlled run**
 
 State exact candidate SHA, agent, command, model/reasoning configuration, effective non-secret budgets, and cost/network scope.
 
-- [ ] **Step 3: Run the full controlled dataset**
+- [x] **Step 3: Run the full controlled dataset**
 
 ```powershell
 python -m deep_research.evaluation agent <agent> `
@@ -1586,7 +1588,7 @@ python -m deep_research.evaluation agent <agent> `
   --verbose
 ```
 
-- [ ] **Step 4: Validate terminal state**
+- [x] **Step 4: Validate terminal state**
 
 A repaired agent is green only when:
 
@@ -1602,13 +1604,13 @@ no prohibited-call regression appeared
 
 If a typed provider infrastructure failure prevents a valid quality verdict after the approved retry policy, record `INFRASTRUCTURE_BLOCKED` for that run; do not disguise it as an agent-quality failure.
 
-- [ ] **Step 5: Record unchanged agents too**
+- [x] **Step 5: Record unchanged agents too**
 
 If an agent passed its Task 10 baseline and required no repair, its immutable baseline artifact is its authoritative validation; do not spend money rerunning it merely for symmetry unless later shared code changes touched its execution path. If later shared code did touch it, rerun only after immediate human confirmation.
 
 ---
 
-### Task 14: Create the Permanent Cross-Agent Fix Log — COMPLETE
+### Task 14: Create the Permanent Cross-Agent Fix Log — COMPLETE WITH POST-REPAIR EVIDENCE
 
 **Files:**
 - Create: `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`
@@ -1655,7 +1657,7 @@ Record `Task 14: complete` only after the log is updated with the final controll
 
 ---
 
-### Task 15: Final Offline Verification Complete; Whole-Branch Review Deferred
+### Task 15: Final Offline Verification; Whole-Branch Review Deferred
 
 **Files:**
 - No new production scope
@@ -1664,7 +1666,7 @@ Record `Task 14: complete` only after the log is updated with the final controll
 **Interfaces:**
 - Produces: review-clean branch and final execution handoff; no merge/push.
 
-- [x] **Step 1: Run authoritative full verification**
+- [x] **Step 1: Run authoritative full verification after the final Task 13/14 documentation update**
 
 ```powershell
 python -m pytest -q -p no:cacheprovider
@@ -1675,6 +1677,8 @@ git log --oneline --decorate --max-count=30
 ```
 
 Expected: full suite green; Ruff/whitespace green; clean tracked worktree.
+
+Result: `1,944 passed, 1 deselected, 2 warnings` in `30.23s`; Ruff passed; `git diff --check` passed. The warnings are third-party deprecations from LangSmith/FastAPI/httpx and are unrelated to this branch.
 
 - [x] **Step 2: Run reserved-data leakage checks over changed tracked files**
 

@@ -151,6 +151,19 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 
 ## 22. Post-Repair Validation Readiness
 
-- Repaired candidate: `71465c67933b412429f9b6fd6511843a15c28415`.
+- Repaired candidate used for the fresh controlled validation: `1f790b0e8914f1b4ba922d9d56314da99ebbcf28`.
 - Offline gate: repair-focused `1,197 passed`; full offline suite `1,944 passed, 1 deselected`; Ruff and `git diff --check` passed.
 - Controlled validation must use a fresh immutable evidence namespace and preserve the old `d6a082c-v3` artifacts. The global 4096-token cap, frozen cases, provider fallback contracts, judge no-score rule, and live/suite prohibition remain unchanged.
+
+## 23. Post-Repair Controlled Validation and Error/Fix Ledger
+
+- Candidate `1f790b0e8914f1b4ba922d9d56314da99ebbcf28` was validated in the fresh immutable namespace `infrastructure-remediation/1f790b0-v1/`. Every agent completed a baseline and one same-SHA confirmation with 9/9 repetitions; no Windows output-root preflight failure recurred.
+- Researcher: baseline `111/126`, mean `0.73`, SHA `a91486749bc5c3e62068e76af78ba5eb91340b0b62f9ad3383cded5701af5fef`; confirmation `112/126`, mean `0.66`, SHA `aa47a7c1004ce3ef54cb556ba88e8920f12b30f68aa5f624826ec1487529b8ce`. `required_fields_present` stayed fixed; `no_prohibited_calls`, selected coverage/budget gates, and judge `$`/`rationale` diagnostics remained.
+- Source Evaluator: baseline `126/126`, mean `0.95`, SHA `b666e25086f00e9a6524fe6b649e7ed37d6ae43fea959f11dc9a6543e9028a1d`; confirmation `126/126`, mean `0.94`, SHA `b02f164458495571ab6adf8425d8015c702b32d6545d7dd2b394edf69e675291`. `required_fields_present` stayed fixed; only typed judge schema/output-limit failures prevented promotion.
+- Fact Checker: baseline `119/135`, mean `0.75`, SHA `4ffd242fbc874ac1147fce5a528dfc2db0480e3e720ae4c06883586b61568600`; confirmation `119/135`, mean `0.58`, SHA `65a6e5773504ca163a157f622b775f828e51f2214d7e6a6d8c6ce2b884df14fb`. `required_fields_present` stayed fixed; `budgets_respected`/`no_prohibited_calls` and typed judge failures remained.
+- Synthesizer: baseline `135/135`, mean `0.91`, SHA `86160fea440dbb157e5031ce5bbcd5f5f27696620e1d5129f1d83ca39ee85c58`; confirmation `135/135`, mean `0.92`, SHA `e157d7fea64e8e8ba9f57945a6ad61d78522b329b9f76835472c6e57bfb99a0d`. `required_fields_present` stayed fixed; only typed judge schema/output-limit failures prevented promotion.
+- Critic: baseline `122/126`, mean `0.85`, SHA `71a56b57a2968dcd76063945f3750796d21d63a8c2fa4961936c426709b19bbe`; confirmation `121/126`, mean `0.79`, SHA `7a1a67a3fbb5ddd1e3e5cde9922104665ba952d79cda5e0774126b7719624998`. `required_fields_present` and `route_consistent` stayed fixed; `no_prohibited_calls` and typed judge schema/output-limit failures remained.
+- Each agent's baseline/confirmation inventory, environment-matched provenance, and `terminal-state.md` is preserved under `infrastructure-remediation/1f790b0-v1/agents/<agent>/`; each terminal state is `INFRASTRUCTURE_BLOCKED` with `repair_attempts: 0`. No live-tier or suite evaluation ran.
+- Error/fix ledger entries preserved the initial provenance-capture mistakes: Source Evaluator had two unusable confirmation captures (missing repository environment, then missing process overrides), and Fact Checker/Synthesizer/Critic exposed a helper limitation where default target effort was max while the approved run explicitly used high. These were retained/reconciled as non-secret evidence metadata; no provider output, prompt, evaluator input, credential, or environment dump was recorded.
+- No Task 11 budget amendment is authorized: no typed target-side `output_limit` appeared. No new judge/provider repair is authorized: schema paths remain mixed (`$` and `rationale`) rather than a repeatable contract defect. No new agent-quality repair is authorized from blocked quality rows.
+- The campaign terminal state remains `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTURE_BLOCKS`. The whole-branch review remains explicitly deferred until the user requests it.
