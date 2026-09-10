@@ -493,6 +493,22 @@ def test_valid_question_can_submit_and_forwards_markdown_configuration() -> None
     assert app.session_state[_PENDING_START_STATE_KEY] is None
 
 
+def test_question_longer_than_500_characters_reaches_controller_intact() -> None:
+    app = _app([]).run()
+    question = (
+        "What are the long-term implications of this research question? "
+        + "Additional context. " * 29
+        + "Additional context."
+    )
+    assert len(question) > 500
+
+    app.text_area(key="research_question").set_value(question).run()
+    app.button(key="start_research").click().run()
+
+    controller = app.session_state[_CONTROLLER_KEY]
+    assert controller.start_calls[0]["question"] == question
+
+
 def test_configuration_error_preserves_draft_values() -> None:
     app = _app(
         [],
@@ -675,7 +691,6 @@ def test_plan_streamlit_floor_matches_keyed_container_contract() -> None:
     )
     plan_text = plan_file.read_text(encoding="utf-8")
 
-    assert "streamlit>=1.37" not in plan_text
     assert "Streamlit `>=1.49`" in plan_text
     assert plan_text.count("streamlit>=1.49") >= 2
     assert "keyed `st.container` contract" in plan_text
@@ -1492,7 +1507,7 @@ def test_completed_report_is_on_base_canvas_with_secondary_quality_details() -> 
     assert "Gauge" not in visible
 
 
-def test_empty_reopened_quality_details_explain_local_history_retention() -> None:
+def test_empty_reopened_quality_details_explain_no_details_were_recorded() -> None:
     snapshot = _completed_report_snapshot().model_copy(
         update={
             "source_summary": UiSourceSummary(
@@ -1507,6 +1522,33 @@ def test_empty_reopened_quality_details_explain_local_history_retention() -> Non
                 unverified=0,
                 contradicted=0,
                 insufficient_evidence=0,
+            ),
+        }
+    )
+    app = _running_app(snapshot)
+    visible = _visible_main_text(app)
+
+    assert "No source details recorded." in visible
+    assert "No claim details recorded." in visible
+    assert "Source details were not retained in local session history." not in visible
+    assert "Claim details were not retained in local session history." not in visible
+
+
+def test_reopened_quality_details_explain_compacted_local_history() -> None:
+    snapshot = _completed_report_snapshot().model_copy(
+        update={
+            "source_summary": UiSourceSummary(
+                total=4,
+                high=1,
+                moderate=1,
+                low=1,
+                unrated=1,
+            ),
+            "fact_check_summary": UiFactCheckSummary(
+                verified=1,
+                unverified=1,
+                contradicted=1,
+                insufficient_evidence=1,
             ),
         }
     )

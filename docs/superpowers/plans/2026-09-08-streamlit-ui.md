@@ -343,7 +343,7 @@ class SessionHistoryEntry(BaseModel):
 ```
 
 - [ ] **Step 1: Write contract tests first.** Verify valid status/tier values, nonnegative counts, token total, queued/running/completed subtopic states, and Pydantic rejection of unknown statuses.
-- [ ] **Step 2: Verify persistent-history minimization.** Assert `SessionHistoryEntry` has no `report`, `events`, `recent_activity`, `raw_findings`, prompts, tool results, or model-message fields. `source_summary.details` and `fact_check_summary.details` must also be excluded from persisted history by using summary-only serialization helpers later; do not persist full per-source/per-claim rationale in history.
+- [ ] **Step 2: Verify persistent-history minimization.** The earlier “no `recent_activity`” minimization rule was superseded by the later stopping-point remediation: retain only the bounded plain-language `recent_activity` needed to preserve the last known stopping point. Assert `SessionHistoryEntry` has no report bodies, raw events, `raw_findings`, prompts, tool payloads/results, model messages, provider config, secrets, environment variables, or config file contents. `source_summary.details` and `fact_check_summary.details` must also be excluded from persisted history by using summary-only serialization helpers later; do not persist full per-source/per-claim rationale in history.
 - [ ] **Step 3: Run RED.**
 
 ```bash

@@ -1246,7 +1246,6 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
             "Research question",
             key="research_question",
             height=152,
-            max_chars=500,
             placeholder=(
                 "Ask a focused question with a timeframe or scope where relevant."
             ),
@@ -1806,6 +1805,8 @@ def _render_completed_details_rail(snapshot: UiSessionSnapshot) -> None:
             for detail in source_summary.details:
                 _render_source_detail(detail)
                 st.divider()
+        elif source_summary.total == 0:
+            st.caption("No source details recorded.")
         else:
             st.caption(
                 "Source details were not retained in local session history."
@@ -1827,6 +1828,15 @@ def _render_completed_details_rail(snapshot: UiSessionSnapshot) -> None:
             for detail in fact_summary.details:
                 _render_claim_detail(detail)
                 st.divider()
+        elif sum(
+            (
+                fact_summary.verified,
+                fact_summary.unverified,
+                fact_summary.contradicted,
+                fact_summary.insufficient_evidence,
+            )
+        ) == 0:
+            st.caption("No claim details recorded.")
         else:
             st.caption(
                 "Claim details were not retained in local session history."

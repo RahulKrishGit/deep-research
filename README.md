@@ -935,5 +935,5 @@ RUN_DEEPSEEK_LIVE_TESTS=1 python -m pytest -o addopts= -m live tests/live/test_d
 - Phase 1: Core package foundation, config, types, providers
 - Phase 2: Memory and tools
 - Phase 3: Agents and LangGraph orchestration ← complete (all six agents and the graph)
-- Phase 4: CLI ← complete; FastAPI API ← complete; Streamlit UI next
+- Phase 4: CLI ← complete; FastAPI API ← complete; Streamlit UI ← complete
 - Phase 5: Tests and verification
