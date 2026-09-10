@@ -68,3 +68,66 @@ def test_static_css_is_safe_and_stays_inside_approved_boundary() -> None:
     )
     assert primary_rule is not None
     assert "min-height: 44px !important;" in primary_rule.group("body")
+
+
+def test_static_css_includes_native_chrome_and_responsive_top_padding() -> None:
+    css = styles.STATIC_CSS
+
+    assert '[data-testid="stAppViewContainer"] header' in css
+    assert '[data-testid="stHeader"] {' in css
+    assert "background: #FCFCFA;" in css
+    assert "color: #172126;" in css
+    assert "border-bottom: 1px solid #DCE2DF;" in css
+    assert '[data-testid="stHeader"] button' in css
+    assert '[data-testid="stHeader"] svg' in css
+    assert "fill: #172126;" in css
+    assert "opacity: 1;" in css
+
+    main_rule = re.search(
+        r'\[data-testid="stMainBlockContainer"\]\s*\{(?P<body>.*?)\}',
+        css,
+        flags=re.DOTALL,
+    )
+    assert main_rule is not None
+    assert "padding-top: 64px;" in main_rule.group("body")
+    assert '@media (max-width: 900px)' in css
+    assert 'padding-top: 56px;' in css
+    assert '@media (max-width: 640px)' in css
+    assert 'padding-top: 48px;' in css
+
+
+def test_static_css_includes_focus_disabled_readonly_and_spacing_rules() -> None:
+    css = styles.STATIC_CSS
+
+    assert "button:focus-visible" in css
+    assert "a:focus-visible" in css
+    assert "input:focus-visible" in css
+    assert "textarea:focus-visible" in css
+    assert '[role="radio"]:focus-visible' in css
+    assert "outline: 3px solid #0F6F68;" in css
+    assert "outline-offset: 2px;" in css
+    assert 'button[kind="primary"]:focus-visible' in css
+    assert "outline-color: #172126;" in css
+
+    assert "input:disabled" in css
+    assert "textarea:disabled" in css
+    assert "button:disabled" in css
+    assert "cursor: not-allowed;" in css
+
+    readonly_rule = re.search(
+        r"\.dr-readonly-field\s*\{(?P<body>.*?)\}", css, flags=re.DOTALL
+    )
+    assert readonly_rule is not None
+    readonly_body = readonly_rule.group("body")
+    assert "display: flex;" in readonly_body
+    assert "align-items: center;" in readonly_body
+    assert "justify-content: space-between;" in readonly_body
+    assert "min-height: 44px;" in readonly_body
+    assert "background: #F5F7F6;" in readonly_body
+
+    assert ".dr-control-label" in css
+    assert ".dr-readonly-meta" in css
+    assert ".dr-screen-eyebrow" in css
+    assert ".dr-subsection-heading" in css
+    assert ".dr-next-steps" in css
+    assert ".dr-next-steps > div" in css

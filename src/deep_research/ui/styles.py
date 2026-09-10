@@ -83,6 +83,21 @@ STATIC_CSS = """
   background: var(--dr-background);
 }
 
+/* Native Streamlit chrome: keep Deploy/menu visible and readable. */
+[data-testid="stAppViewContainer"] header,
+[data-testid="stHeader"] {
+  background: #FCFCFA;
+  color: #172126;
+  border-bottom: 1px solid #DCE2DF;
+}
+
+[data-testid="stHeader"] button,
+[data-testid="stHeader"] svg {
+  color: #172126;
+  fill: #172126;
+  opacity: 1;
+}
+
 [data-testid="stSidebar"] {
   min-width: 240px;
   max-width: 270px;
@@ -98,6 +113,7 @@ STATIC_CSS = """
 [data-testid="stMainBlockContainer"] {
   max-width: 1120px;
   padding: 40px 48px 48px;
+  padding-top: 64px;
 }
 
 .dr-editorial-column {
@@ -347,10 +363,67 @@ button[kind="secondary"] {
 }
 
 .dr-readonly-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  background: #F5F7F6;
   border: 1px solid var(--dr-border);
   border-radius: var(--dr-radius-control);
   color: var(--dr-text);
   padding: var(--dr-space-2) var(--dr-space-3);
+}
+
+.dr-control-label {
+  margin: 0 0 8px;
+  color: #172126;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.dr-readonly-meta {
+  color: #647276;
+  font-size: 12px;
+}
+
+.dr-screen-eyebrow {
+  margin: 0 0 8px;
+}
+
+.dr-subsection-heading {
+  margin: 0;
+}
+
+.dr-next-steps {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid #DCE2DF;
+}
+
+.dr-next-steps > div {
+  padding-top: 8px;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[role="radio"]:focus-visible {
+  outline: 3px solid #0F6F68;
+  outline-offset: 2px;
+}
+
+button[kind="primary"]:focus-visible {
+  outline-color: #172126;
+}
+
+input:disabled,
+textarea:disabled,
+button:disabled {
+  opacity: 1;
+  cursor: not-allowed;
 }
 
 [data-testid="stSidebar"] .stButton > button {
@@ -362,10 +435,17 @@ button[kind="secondary"] {
 @media (max-width: 900px) {
   [data-testid="stMainBlockContainer"] {
     padding: 24px;
+    padding-top: 56px;
   }
 
   .dr-shell-title h1 {
     font-size: 36px;
+  }
+}
+
+@media (max-width: 640px) {
+  [data-testid="stMainBlockContainer"] {
+    padding-top: 48px;
   }
 }
 </style>
