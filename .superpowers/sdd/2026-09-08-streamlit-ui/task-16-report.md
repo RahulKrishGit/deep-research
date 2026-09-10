@@ -99,3 +99,83 @@ No live providers, network calls, or paid services were used.
 None identified for the scoped task. The pre-existing modification to
 `.superpowers/sdd/2026-09-08-streamlit-ui/progress.md` was preserved and was
 not included in the implementation commit.
+
+## Fix round 1 — lower-level source projection boundary
+
+### Review findings addressed
+
+The lower-level `SynthesisTask` boundary now uses one `_effective_sources()`
+projection based on the existing normalized-URL identity. `report_messages()`
+passes only the latest source record to provider input. `compose_report()` uses
+the same projected source list for its source appendix and `source_count`.
+`SynthesizerAgent.run()` normalizes the task before emitting the synthesis
+started event, so its `source_count` and all downstream report/completion
+metadata use the same effective source set. Claim identity and the append-only
+`ResearchState` contract are unchanged.
+
+### Changed files
+
+- `src/deep_research/agents/synthesizer.py`
+  - Added the shared lower-level task source projection.
+  - Applied it to provider source-quality input, report source counts, and the
+    run/event boundary.
+- `tests/test_agents/test_synthesizer.py`
+  - Added a raw `SynthesisTask` regression with duplicate normalized source
+    URLs, asserting one provider source record, one report appendix row,
+    `source_count == 1`, and matching completion metadata.
+
+### Red-green evidence
+
+Red run before the production fix:
+
+```text
+python -m pytest tests/test_agents/test_synthesizer.py::test_lower_level_synthesis_boundaries_project_duplicate_sources -q
+F                                                                        [100%]
+1 failed in 0.54s
+```
+
+The expected failure showed that provider input still contained both
+`https://WWW.example.org/a/` and `https://example.org/a`, despite the report
+appendix being one effective row.
+
+Green focused regression:
+
+```text
+python -m pytest tests/test_agents/test_synthesizer.py::test_lower_level_synthesis_boundaries_project_duplicate_sources -q
+.                                                                        [100%]
+1 passed in 0.21s
+```
+
+Covering synthesizer/report tests:
+
+```text
+python -m pytest tests/test_agents/test_synthesizer.py tests/test_agents/test_report.py -q
+46 passed in 0.34s
+```
+
+Ruff for the changed implementation and regression:
+
+```text
+python -m ruff check src/deep_research/agents/synthesizer.py tests/test_agents/test_synthesizer.py
+All checks passed!
+```
+
+Additional whitespace verification:
+
+```text
+git diff --check
+Passed with no whitespace errors.
+```
+
+No live providers, network calls, or paid services were used.
+
+### Fix-round commit IDs
+
+- Parent: `ac0fec3c1ec6efc537f1d5cc7a875be11767b7a3`
+- Fix implementation and regression: `b000ec26460fc61361103ddb04679f9ba772031f`
+
+### Fix-round concerns
+
+None identified. The pre-existing unstaged modification to
+`.superpowers/sdd/2026-09-08-streamlit-ui/progress.md` remains preserved and
+was not included in the fix commit.
