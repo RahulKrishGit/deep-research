@@ -685,7 +685,7 @@ git commit -m "feat: add editorial streamlit app shell"
 python -m pytest tests/test_ui/test_app.py -k "new_research or start or configuration" -v
 ```
 
-- [ ] **Step 6: Implement one atomic `st.form`.** Use `st.text_area`, `st.number_input`, read-only Markdown indicator, and `st.form_submit_button`. Keep max-iteration configuration visually subordinate.
+- [ ] **Step 6: Implement reactive native inputs.** Use native `st.text_area`, `st.number_input`, read-only Markdown indicator, and `st.button` so question edits rerun the screen and can enable the action in a browser. The original atomic `st.form` approach was superseded because Streamlit batches form edits; retain a genuinely disabled Start action for blank/invalid input and while a start is in flight. Keep max-iteration configuration visually subordinate.
 - [ ] **Step 7: Implement action-state behavior.** Start is disabled only for invalid/blank or in-flight submission; old terminal sessions do not block a new run.
 - [ ] **Step 8: Implement three-step reassurance.** Plain text, no cards: `Plan subtopics` -> `Search & evaluate` -> `Synthesize report`.
 - [ ] **Step 9: Run tests/lint.**
