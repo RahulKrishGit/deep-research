@@ -206,7 +206,9 @@ def test_published_events_project_live_progress_and_snapshots_are_copies(
     _wait_for(lambda: controller.snapshot(first.session_id).status == "completed")
 
 
-def test_live_event_path_preserves_planned_five_subtopic_state(tmp_path: Path) -> None:
+def test_live_event_path_separates_planned_total_from_actual_subtopics(
+    tmp_path: Path,
+) -> None:
     events = [
         _event(
             "planner.planning.completed",
@@ -229,13 +231,51 @@ def test_live_event_path_preserves_planned_five_subtopic_state(tmp_path: Path) -
     live = controller.snapshot(snapshot.session_id)
 
     assert live.current_agent == "researcher"
-    assert len(live.sub_topics) == 5
-    assert live.sub_topics[1].status == "running"
-    assert [topic.status for topic in live.sub_topics[2:]] == [
-        "queued",
-        "queued",
-        "queued",
+    assert live.planned_sub_topic_count == 5
+    assert len(live.sub_topics) == 1
+    assert live.sub_topics[0].title == "Grid adoption"
+    assert live.sub_topics[0].status == "running"
+    assert all("Queued subtopic" not in topic.title for topic in live.sub_topics)
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
+
+
+def test_later_agent_transition_clears_unvisited_research_rows(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _event(
+            "planner.planning.completed",
+            metadata={"sub_topic_count": 5},
+        ),
+        _event(
+            "graph.node.started",
+            metadata={"node": "researcher", "iteration": 1},
+        ),
+        _event(
+            "researcher.sub_topic.started",
+            metadata={"index": 1, "sub_topic": "Grid adoption"},
+        ),
+        _event(
+            "graph.node.completed",
+            metadata={"node": "researcher", "iteration": 1},
+        ),
+        _event(
+            "graph.node.started",
+            metadata={"node": "source_evaluator", "iteration": 1},
+        ),
     ]
+    runner = GatedSyncRunner(events=events)
+    controller = _controller(tmp_path, runner)
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    assert runner.started.wait(1)
+    live = controller.snapshot(snapshot.session_id)
+
+    assert live.current_agent == "source_evaluator"
+    assert live.planned_sub_topic_count == 5
+    assert live.sub_topics == []
+    assert live.research_phase_complete is True
     runner.release.set()
     _wait_for(lambda: controller.snapshot(snapshot.session_id).status == "completed")
 
@@ -273,7 +313,9 @@ def test_failed_event_path_preserves_last_agent_and_recoverable_tool_issue(
     failed = controller.snapshot(snapshot.session_id)
 
     assert failed.current_agent == "researcher"
-    assert len(failed.sub_topics) == 5
+    assert failed.planned_sub_topic_count == 5
+    assert len(failed.sub_topics) == 1
+    assert failed.sub_topics[0].title == "Grid adoption"
     assert failed.tool_calls[0].failures == 1
     assert "private provider failure" not in failed.model_dump_json()
     assert "provider_payload" not in failed.model_dump_json()

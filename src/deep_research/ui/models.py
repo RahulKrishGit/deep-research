@@ -95,6 +95,8 @@ class UiSessionSnapshot(ContractModel):
     current_agent: str | None = None
     iteration: int = Field(ge=0)
     max_iterations: int = Field(ge=1)
+    planned_sub_topic_count: int = Field(default=0, ge=0)
+    research_phase_complete: bool = False
     sub_topics: list[UiSubTopicProgress] = Field(default_factory=list)
     recent_activity: list[UiRecentActivity] = Field(default_factory=list)
     tool_calls: list[UiToolCallSummary] = Field(default_factory=list)

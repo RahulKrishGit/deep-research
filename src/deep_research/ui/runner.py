@@ -379,6 +379,10 @@ class LocalResearchController:
         if outcome is not None:
             events = [event.model_copy(deep=True) for event in outcome.state.events]
             progress = project_progress(events)
+            planned_sub_topic_count = max(
+                progress.planned_sub_topic_count,
+                len(outcome.state.sub_topics),
+            )
             source_result = source_summary(
                 outcome.state.evaluated_sources,
                 outcome.state.raw_findings,
@@ -405,6 +409,8 @@ class LocalResearchController:
                 ),
                 iteration=outcome.state.iteration,
                 max_iterations=outcome.state.max_iterations,
+                planned_sub_topic_count=planned_sub_topic_count,
+                research_phase_complete=progress.research_phase_complete,
                 sub_topics=progress.sub_topics,
                 recent_activity=progress.recent_activity,
                 tool_calls=tool_calls,
@@ -435,6 +441,8 @@ class LocalResearchController:
             ),
             iteration=progress.iteration,
             max_iterations=requested_max_iterations,
+            planned_sub_topic_count=progress.planned_sub_topic_count,
+            research_phase_complete=progress.research_phase_complete,
             sub_topics=progress.sub_topics,
             recent_activity=progress.recent_activity,
             tool_calls=progress.tool_calls,

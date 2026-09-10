@@ -22,7 +22,7 @@ from deep_research.ui.models import (
     UiSubTopicProgress,
     history_entry_from_snapshot,
 )
-from deep_research.ui.progress import display_agent_name
+from deep_research.ui.progress import display_agent_action, display_agent_name
 from deep_research.ui.styles import COLORS, RADII, SPACING
 
 if TYPE_CHECKING:
@@ -614,24 +614,29 @@ def _render_health(snapshot: UiSessionSnapshot) -> None:
 def _render_current_activity(snapshot: UiSessionSnapshot) -> None:
     active = _active_subtopic(snapshot)
     agent = display_agent_name(snapshot.current_agent)
-    if active is None:
+    if active is None or snapshot.current_agent != "researcher":
         st.markdown(f"**{agent}**")
-        st.caption("Working through the research plan")
+        st.caption(display_agent_action(snapshot.current_agent))
     else:
-        total = len(snapshot.sub_topics)
+        total = snapshot.planned_sub_topic_count
+        subtopic_label = (
+            f"Subtopic {active.index} of {total}"
+            if total
+            else f"Subtopic {active.index}"
+        )
         st.markdown(
-            f"**{agent}**  →  Subtopic {active.index} of {total}  →  "
-            "Searching and evaluating sources"
+            f"**{agent}**  →  {subtopic_label}  →  "
+            f"{display_agent_action(snapshot.current_agent)}"
         )
     st.caption(
         f"Macro iteration {snapshot.iteration} of {snapshot.max_iterations}"
     )
 
-    completed = sum(
-        topic.status == "completed" for topic in snapshot.sub_topics
-    )
-    total = len(snapshot.sub_topics)
-    if total and completed:
+    total = snapshot.planned_sub_topic_count
+    indexes = {topic.index for topic in snapshot.sub_topics}
+    has_complete_sequence = indexes == set(range(1, total + 1))
+    completed = sum(topic.status == "completed" for topic in snapshot.sub_topics)
+    if total and has_complete_sequence and completed:
         fraction = completed / total
         percentage = round(fraction * 100)
         st.progress(fraction, text="Phase progress")
@@ -644,6 +649,14 @@ def _render_subtopic_sequence(snapshot: UiSessionSnapshot) -> None:
         '<div class="dr-editorial-column dr-section-label">SUBTOPIC SEQUENCE</div>',
         unsafe_allow_html=True,
     )
+    if (
+        snapshot.planned_sub_topic_count
+        and len(snapshot.sub_topics) != snapshot.planned_sub_topic_count
+    ):
+        st.caption(
+            f"{len(snapshot.sub_topics)} known of "
+            f"{snapshot.planned_sub_topic_count} planned subtopics"
+        )
     for topic in snapshot.sub_topics:
         icon, label = {
             "completed": ("✓", "Complete"),

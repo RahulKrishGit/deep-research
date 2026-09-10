@@ -173,7 +173,56 @@ def test_project_progress_projects_agent_iteration_subtopics_and_tools() -> None
     ]
 
 
-def test_project_progress_preserves_planned_subtopic_denominator_from_events() -> None:
+def test_project_progress_uses_graph_iteration_not_researcher_react_iteration() -> None:
+    summary = project_progress(
+        [
+            event(
+                "graph.node.started",
+                metadata={"node": "researcher", "iteration": 1},
+            ),
+            event(
+                "researcher.sub_topic.started",
+                metadata={"index": 1, "sub_topic": "Market size"},
+            ),
+            event(
+                "researcher.tool_call",
+                metadata={
+                    "tool": "web_search",
+                    "success": True,
+                    "iteration": 6,
+                },
+            ),
+            event(
+                "researcher.tool_call",
+                metadata={
+                    "tool": "web_search",
+                    "success": True,
+                    "iteration": 7,
+                },
+            ),
+            event(
+                "graph.refinement.started",
+                metadata={"iteration": 2, "max_iterations": 4},
+            ),
+            event(
+                "graph.node.started",
+                metadata={"node": "researcher", "iteration": 2},
+            ),
+            event(
+                "researcher.tool_call",
+                metadata={
+                    "tool": "web_search",
+                    "success": True,
+                    "iteration": 8,
+                },
+            ),
+        ]
+    )
+
+    assert summary.iteration == 2
+
+
+def test_project_progress_separates_planned_total_from_known_actual_rows() -> None:
     summary = project_progress(
         [
             event(
@@ -182,19 +231,87 @@ def test_project_progress_preserves_planned_subtopic_denominator_from_events() -
             ),
             event(
                 "researcher.sub_topic.started",
-                metadata={"index": 2, "sub_topic": "Grid adoption"},
+                metadata={"index": 1, "sub_topic": "Grid adoption"},
+            ),
+            event(
+                "researcher.sub_topic.started",
+                metadata={"index": 2},
+            ),
+            event(
+                "researcher.sub_topic.completed",
+                metadata={
+                    "index": 1,
+                    "sub_topic": "Grid adoption",
+                    "findings": 3,
+                },
+            ),
+            event(
+                "researcher.research.completed",
+                metadata={
+                    "sub_topics_planned": 5,
+                    "sub_topics_researched": 1,
+                    "sub_topics_skipped": 4,
+                },
+            ),
+            event(
+                "graph.node.started",
+                metadata={"node": "source_evaluator", "iteration": 1},
             ),
         ]
     )
 
-    assert len(summary.sub_topics) == 5
-    assert summary.sub_topics[1].title == "Grid adoption"
-    assert summary.sub_topics[1].status == "running"
-    assert [topic.status for topic in summary.sub_topics[2:]] == [
-        "queued",
-        "queued",
-        "queued",
+    assert summary.planned_sub_topic_count == 5
+    assert [topic.model_dump() for topic in summary.sub_topics] == [
+        {
+            "index": 1,
+            "title": "Grid adoption",
+            "status": "completed",
+            "priority": None,
+            "findings": 3,
+        }
     ]
+    assert summary.research_phase_complete is True
+    assert summary.current_agent == "source_evaluator"
+    assert all("Queued subtopic" not in topic.title for topic in summary.sub_topics)
+
+
+def test_project_progress_preserves_all_real_titled_subtopics() -> None:
+    titles = ["Market size", "Grid adoption", "Policy", "Investment", "Pricing"]
+    events = [
+        event("planner.planning.completed", metadata={"sub_topic_count": 5})
+    ]
+    for index, title in enumerate(titles, start=1):
+        events.extend(
+            [
+                event(
+                    "researcher.sub_topic.started",
+                    metadata={"index": index, "sub_topic": title},
+                ),
+                event(
+                    "researcher.sub_topic.completed",
+                    metadata={"index": index, "findings": 1},
+                ),
+            ]
+        )
+    events.append(
+        event(
+            "researcher.research.completed",
+            metadata={
+                "sub_topics_planned": 5,
+                "sub_topics_researched": 5,
+                "sub_topics_skipped": 0,
+            },
+        )
+    )
+
+    summary = project_progress(events)
+
+    assert summary.planned_sub_topic_count == 5
+    assert [topic.title for topic in summary.sub_topics] == titles
+    assert [topic.status for topic in summary.sub_topics] == [
+        "completed"
+    ] * 5
+    assert summary.research_phase_complete is True
 
 
 def test_project_progress_preserves_subtopic_fields_on_completion() -> None:

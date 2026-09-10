@@ -270,6 +270,7 @@ def _demo_snapshot(
         current_agent="researcher" if status == "running" else None,
         iteration=iteration,
         max_iterations=max_iterations,
+        planned_sub_topic_count=5 if status == "running" else 0,
         sub_topics=_demo_topics() if status == "running" else [],
         recent_activity=_demo_activities() if status == "running" else [],
         tool_calls=(

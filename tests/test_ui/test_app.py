@@ -196,9 +196,11 @@ def _button_values(app: AppTest) -> list[str]:
 def _snapshot(
     *,
     status: str = "running",
+    current_agent: str | None = "researcher",
     token_usage: UiTokenUsage | None = None,
     trace_url: str | None = None,
     sub_topics: list[UiSubTopicProgress] | None = None,
+    planned_sub_topic_count: int | None = None,
     recent_activity: list[UiRecentActivity] | None = None,
     errors: list[object] | None = None,
     tool_calls: list[UiToolCallSummary] | None = None,
@@ -207,6 +209,7 @@ def _snapshot(
 ) -> UiSessionSnapshot:
     from deep_research.utils.types import ResearchError
 
+    actual_sub_topics = sub_topics or []
     return UiSessionSnapshot(
         session_id="s" * 32,
         question="How will grid-scale batteries reshape energy markets by 2030?",
@@ -217,10 +220,15 @@ def _snapshot(
             if status != "running"
             else None
         ),
-        current_agent="researcher",
+        current_agent=current_agent,
         iteration=2,
         max_iterations=4,
-        sub_topics=sub_topics or [],
+        planned_sub_topic_count=(
+            len(actual_sub_topics)
+            if planned_sub_topic_count is None
+            else planned_sub_topic_count
+        ),
+        sub_topics=actual_sub_topics,
         recent_activity=recent_activity or [],
         tool_calls=tool_calls
         or [
@@ -1075,6 +1083,53 @@ def test_running_screen_labels_derived_fraction_as_phase_progress() -> None:
     assert "20%" in visible
     assert "Overall progress" not in visible
     assert "ETA" not in visible.replace("SESSION DETAILS", "")
+
+
+def test_running_screen_omits_indefensible_partial_phase_percentage() -> None:
+    app = _running_app(
+        _snapshot(
+            current_agent="source_evaluator",
+            planned_sub_topic_count=5,
+            sub_topics=[
+                UiSubTopicProgress(
+                    index=1,
+                    title="Completed topic",
+                    status="completed",
+                )
+            ],
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "Source evaluator" in visible
+    assert "Evaluating source credibility" in visible
+    assert "Searching and evaluating sources" not in visible
+    assert "1 known of 5 planned subtopics" in visible
+    assert "Phase progress" not in visible
+    assert "Queued" not in visible
+    assert "Queued subtopic" not in visible
+
+
+def test_running_screen_uses_planned_total_for_known_active_subtopic() -> None:
+    app = _running_app(
+        _snapshot(
+            planned_sub_topic_count=5,
+            sub_topics=[
+                UiSubTopicProgress(
+                    index=2,
+                    title="Known active topic",
+                    status="running",
+                )
+            ],
+        )
+    )
+    visible = _visible_main_text(app)
+
+    assert "Researcher" in visible
+    assert "Subtopic 2 of 5" in visible
+    assert "Known active topic" in visible
+    assert "Phase progress" not in visible
+    assert "Queued subtopic" not in visible
 
 
 def test_running_screen_keeps_tool_and_agent_details_collapsed_and_safe() -> None:

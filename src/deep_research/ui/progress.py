@@ -34,6 +34,7 @@ class ProgressSummary(BaseModel):
     current_agent: str | None = None
     iteration: int = Field(default=0, ge=0)
     planned_sub_topic_count: int = Field(default=0, ge=0)
+    research_phase_complete: bool = False
     sub_topics: list[UiSubTopicProgress] = Field(default_factory=list)
     recent_activity: list[UiRecentActivity] = Field(default_factory=list)
     tool_calls: list[UiToolCallSummary] = Field(default_factory=list)
@@ -46,6 +47,26 @@ _TOOL_LABELS = {
     "save_to_memory": "Save to memory",
     "web_scraper": "Web scraper",
     "web_search": "Web search",
+}
+
+_GRAPH_ITERATION_EVENT_TYPES = frozenset(
+    {
+        "graph.node.started",
+        "graph.node.completed",
+        "graph.node.skipped",
+        "graph.refinement.started",
+        "graph.route.decided",
+        "graph.session.completed",
+    }
+)
+
+_AGENT_ACTIONS = {
+    "planner": "Planning research subtopics",
+    "researcher": "Searching and evaluating sources",
+    "source_evaluator": "Evaluating source credibility",
+    "fact_checker": "Checking research claims",
+    "synthesizer": "Drafting the research answer",
+    "critic": "Reviewing research quality",
 }
 
 
@@ -62,6 +83,16 @@ def _safe_label(value: str | None, fallback: str) -> str:
 def display_agent_name(agent: str | None) -> str:
     """Return a readable agent name without exposing its internal spelling."""
     return _safe_label(agent, "Unknown agent")
+
+
+def display_agent_action(agent: str | None) -> str:
+    """Return a safe, plain-language action for the current graph agent."""
+    if not isinstance(agent, str):
+        return "Working through the research plan"
+    return _AGENT_ACTIONS.get(
+        agent.strip().casefold(),
+        "Working through the research plan",
+    )
 
 
 def display_tool_name(tool_name: str) -> str:
@@ -96,6 +127,19 @@ def _tool_identifier(metadata: Mapping[str, object]) -> str | None:
     if tool is not None:
         return tool
     return _text(metadata.get("tool_name"))
+
+
+def _outer_iteration(event: ResearchEvent) -> int | None:
+    if event.event_type not in _GRAPH_ITERATION_EVENT_TYPES:
+        return None
+    return _integer(event.metadata.get("iteration"))
+
+
+def _clear_unvisited_topics(topics: dict[int, dict[str, object]]) -> None:
+    """Remove work that did not become a completed, titled research row."""
+    for index in list(topics):
+        if topics[index].get("status") != "completed":
+            del topics[index]
 
 
 def _activity_for_event(event: ResearchEvent) -> UiRecentActivity | None:
@@ -166,6 +210,8 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
     current_agent: str | None = None
     iteration = 0
     planned_sub_topic_count = 0
+    research_phase_seen = False
+    research_phase_complete = False
     topics: dict[int, dict[str, object]] = {}
     tools: dict[str, list[int]] = {}
     activities: list[UiRecentActivity] = []
@@ -173,13 +219,19 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
 
     for event in events:
         metadata = _metadata(event)
-        event_iteration = _integer(metadata.get("iteration"))
+        event_iteration = _outer_iteration(event)
         if event_iteration is not None:
             iteration = event_iteration
 
         if event.event_type == "graph.node.started":
             node = _text(metadata.get("node"))
             if node is not None:
+                if node == "researcher":
+                    research_phase_seen = True
+                    research_phase_complete = False
+                elif research_phase_seen:
+                    research_phase_complete = True
+                    _clear_unvisited_topics(topics)
                 current_agent = node
                 fallback_activities.append(
                     UiRecentActivity(
@@ -192,6 +244,9 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
             status = _text(metadata.get("status"))
             if status != "failed":
                 current_agent = None
+                if research_phase_seen:
+                    research_phase_complete = True
+                    _clear_unvisited_topics(topics)
 
         if event.event_type == "planner.planning.completed":
             planned_count = _integer(metadata.get("sub_topic_count"), minimum=1)
@@ -200,6 +255,20 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
                     planned_sub_topic_count,
                     planned_count,
                 )
+
+        if event.event_type == "researcher.research.completed":
+            research_phase_seen = True
+            research_phase_complete = True
+            planned_count = _integer(
+                metadata.get("sub_topics_planned"),
+                minimum=1,
+            )
+            if planned_count is not None:
+                planned_sub_topic_count = max(
+                    planned_sub_topic_count,
+                    planned_count,
+                )
+            _clear_unvisited_topics(topics)
 
         index = _integer(metadata.get("index"), minimum=1)
         if index is not None and event.event_type in {
@@ -211,16 +280,15 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
             topic = topics.get(index)
             if topic is None:
                 if title is None:
-                    topic = {}
-                else:
-                    topic = {
-                        "index": index,
-                        "title": title,
-                        "status": "queued",
-                        "priority": priority,
-                        "findings": None,
-                    }
-                    topics[index] = topic
+                    continue
+                topic = {
+                    "index": index,
+                    "title": title,
+                    "status": "queued",
+                    "priority": priority,
+                    "findings": None,
+                }
+                topics[index] = topic
             if topic:
                 if title is not None and "title" not in topic:
                     topic["title"] = title
@@ -251,26 +319,13 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
         for index in sorted(topics)
         if topics[index].get("title")
     ]
-    if planned_sub_topic_count:
-        topics_by_index = {topic.index: topic for topic in known_topics}
-        sub_topics = [
-            topics_by_index.get(
-                index,
-                UiSubTopicProgress(
-                    index=index,
-                    title=f"Queued subtopic {index}",
-                    status="queued",
-                ),
-            )
-            for index in range(1, planned_sub_topic_count + 1)
-        ]
-    else:
-        sub_topics = known_topics
+    sub_topics = known_topics
 
     return ProgressSummary(
         current_agent=current_agent,
         iteration=iteration,
         planned_sub_topic_count=planned_sub_topic_count,
+        research_phase_complete=research_phase_complete,
         sub_topics=sub_topics,
         recent_activity=meaningful[-3:],
         tool_calls=[
@@ -413,6 +468,7 @@ def limitations_from_outcome(outcome: ResearchOutcome) -> list[str]:
 __all__ = [
     "ProgressSummary",
     "credibility_tier",
+    "display_agent_action",
     "display_agent_name",
     "display_tool_name",
     "fact_check_summary",
