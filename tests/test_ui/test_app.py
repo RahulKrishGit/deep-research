@@ -518,6 +518,64 @@ def test_configuration_error_renders_only_safe_project_message() -> None:
     assert sensitive_message not in visible_text
 
 
+@pytest.mark.parametrize(
+    ("start_error", "safe_message", "safe_hint", "raw_error"),
+    [
+        (
+            configuration_error(
+                reason="missing_secrets",
+                message="secret=TOP-SECRET-PENDING-CONFIGURATION",
+            ),
+            "Research service configuration is unavailable.",
+            "Set the selected chat provider's API key",
+            "secret=TOP-SECRET-PENDING-CONFIGURATION",
+        ),
+        (
+            configuration_error(
+                reason="history_unavailable",
+                message="history-path=TOP-SECRET-PENDING-HISTORY",
+            ),
+            "Research session could not be started because "
+            "local history is unavailable.",
+            "Check that the local output directory is writable and try again.",
+            "history-path=TOP-SECRET-PENDING-HISTORY",
+        ),
+        (
+            RuntimeError("TOP-SECRET-PENDING-START-FAILURE"),
+            "Research session could not be started.",
+            "Check the local output directory and try again.",
+            "TOP-SECRET-PENDING-START-FAILURE",
+        ),
+    ],
+    ids=["configuration", "history", "unexpected"],
+)
+def test_failed_pending_start_rebuilds_an_enabled_form(
+    start_error: Exception,
+    safe_message: str,
+    safe_hint: str,
+    raw_error: str,
+) -> None:
+    app = _app([], start_error=start_error).run()
+
+    app.text_area(key="research_question").set_value("Keep this question").run()
+    app.number_input(key="max_iterations").set_value(7).run()
+    app.button(key="start_research").click().run()
+
+    controller = app.session_state[_CONTROLLER_KEY]
+    visible_text = _visible_main_text(app)
+    assert app.text_area(key="research_question").disabled is False
+    assert app.number_input(key="max_iterations").disabled is False
+    assert app.button(key="start_research").disabled is False
+    assert app.session_state[_START_IN_FLIGHT_KEY] is False
+    assert app.session_state[_PENDING_START_STATE_KEY] is None
+    assert len(controller.start_calls) == 1
+    assert safe_message in visible_text
+    assert safe_hint in visible_text
+    assert raw_error not in visible_text
+    assert app.text_area(key="research_question").value == "Keep this question"
+    assert app.number_input(key="max_iterations").value == 7
+
+
 def test_unexpected_start_error_surfaces_without_form_guidance() -> None:
     controller = FakeController(
         [],

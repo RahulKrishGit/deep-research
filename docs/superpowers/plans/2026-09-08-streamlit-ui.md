@@ -12,7 +12,7 @@
 
 **Parent design:** `docs/superpowers/specs/2026-07-25-agentic-deep-research-design.md`
 
-**Approved visual handoff:** `docs/superpowers/specs/2026-09-08-streamlit-ui-design-handoff.docx`
+**Approved visual handoff:** `docs/superpowers/plans/deep-research-streamlit-ui-design-handoff.docx`
 
 The visual handoff is the approved UX Pilot artifact titled **Deep Research Streamlit UI Design Handoff**, selected direction **Editorial Research Canvas**. If the DOCX is not committed at the path above, it must be attached to the implementation/review session. **No visual implementation task may start without access to the handoff screenshots.**
 

@@ -370,3 +370,48 @@ re-rendered. No live provider was invoked.
 
 No merge or branch-wide review was run. The branch is ready for the user's
 separate re-review after the final commits are pushed.
+
+## Task 13 — Post-start-failure follow-up
+
+Date: 2026-09-10
+Branch: `codex/streamlit-ui`
+Starting clean-worktree HEAD: `8bed188e05f190956c71dccaebd71902290691f4`
+Scope: the final Sol High follow-up after Task 12. No engine, provider,
+tracing, live-provider, or branch-wide review changes.
+
+### Remediated findings
+
+- A failed queued start now clears the in-flight state and triggers one full
+  rerun after the safe configuration, history, or unexpected-start error is
+  stored. The rerun reconstructs New Research with enabled controls while
+  preserving the question and iteration drafts; successful starts retain
+  their existing path.
+- The plan now points to the committed handoff at
+  `docs/superpowers/plans/deep-research-streamlit-ui-design-handoff.docx`.
+- The plan-owned `progress.md` ledger retains its identity and historical
+  entries, includes the Task 12 completion record, and is explicitly
+  force-added so it is tracked despite the repository-wide `.superpowers/`
+  ignore rule. Whole-branch review remains halted.
+
+### TDD and fresh verification
+
+- Luna Max RED: three expected pending-start failure regressions failed
+  before the production change.
+- `python -m pytest tests/test_ui/test_app.py -q -k failed_pending_start` —
+  PASS: **3 passed, 90 deselected**, 2.48s.
+- `python -m pytest tests/test_ui -q` — PASS: **187 passed, 2 skipped**, 0
+  failed, 28.56s.
+- `python -m pytest -q` — PASS: **2068 passed, 2 skipped, 1 deselected**, 0
+  failed, 2 warnings in 54.96s. Warnings are the existing LangSmith
+  `ast.Str` deprecation and Starlette/httpx test-client integration
+  deprecation.
+- `python -m ruff check .` — PASS: `All checks passed!`
+- `git diff --check` — PASS; Git emitted only LF-to-CRLF normalization
+  warnings for edited text files.
+- Scoped Luna Max review: code/regression checks passed; the only open
+  process finding was ledger tracking, which this pass resolves explicitly.
+
+### Scope boundary
+
+No merge or branch-wide review was run. The branch is ready for the user's
+separate re-review after the final commit is pushed.

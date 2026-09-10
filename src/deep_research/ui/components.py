@@ -1142,6 +1142,8 @@ def _start_research(
         return
     finally:
         state[_START_IN_FLIGHT_KEY] = False
+        if state.get(_START_ERROR_KEY) is not None:
+            st.rerun()
 
     state[_START_ERROR_KEY] = None
     state[_ACTIVE_SESSION_KEY] = snapshot.session_id
