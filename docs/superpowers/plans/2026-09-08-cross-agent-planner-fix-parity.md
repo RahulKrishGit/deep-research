@@ -1769,6 +1769,8 @@ Post-review fix round 3 is complete: Sol High identified an OpenAI structured-re
 
 The authorized follow-up live wave is also complete at candidate `160c334`. It ran one sequential repetition for each of the six agents with no retries and is documented in `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-live-rerun.md`. The rerun confirms the required-field, Critic routing/context, no-prohibited-call, and no-target-budget conclusions, while judge instability remains unresolved. It does not justify prompt tuning, token-budget changes, a suite run, or a claim of quality improvement from one noisy repetition.
 
+Task 18 judge-boundary diagnosis is complete at candidate `42a2b4a`: across the preserved controlled and live artifacts, judge schema paths vary between `$` and `rationale`, and judge output limits remain intermittent judge-side diagnostics. No operation-specific target limit or repeatable contract defect was established, so the evidence-gated disposition is `no-change`. The diagnosis report is retained in the ignored SDD workspace; no provider, judge, prompt, budget, rubric, threshold, retry, or status change is authorized.
+
 ---
 
 ## Subagent-Driven Development Execution Contract

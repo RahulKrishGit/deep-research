@@ -251,3 +251,12 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Minor finding: the plan retained stale chronology at the Task 17 section and incomplete top-level Task 17 bookkeeping after the `a95262f` fix. The plan was corrected to describe the completed offline verification, live evidence, and current whole-branch review.
 - Verification qualification: Sol High did not rerun tests or provider evaluations; its assessment relied on current GitHub source plus recorded evidence. The authoritative recorded offline result remains `1,980 passed, 1 deselected, 2 warnings`, with Ruff and `git diff --check` passing.
 - Remaining follow-ups: characterize the shared DeepSeek judge boundary using bounded typed field paths and gather repeated target-quality evidence before any prompt/budget change. These are non-blocking post-review work.
+
+## 33. Task 18 Judge Boundary Diagnosis — No-Change Decision
+
+- Candidate: `42a2b4a6f0d1654706b37e4c90c1711df41b2dbe`; read-only diagnosis across 22 preserved `results.json` artifacts and 192 repetitions from the controlled and two live waves.
+- Typed grouping: judge `schema_output` paths varied between `$`, `rationale`, and combined paths across agents, waves, and attempts. Judge `output_limit` appeared intermittently as a judge-side `not_run_reason`; it did not carry an operation. Operation-bearing `react_decision`/other fallback diagnostics were kept separate and were not promoted to target failures.
+- Decision: no synthetic RED test, judge schema change, provider parsing change, judge budget, target budget, prompt, rubric, threshold, scoring, retry, status, or fallback change is justified. `$` does not identify a particular missing `JudgeVerdict` field, and inventing a provider response shape would violate the typed-evidence boundary.
+- Invariants: no target-side typed `output_limit` appeared; global `llm.max_tokens=4096`, one repair attempt, no fabricated judge score, and all existing fallback semantics remain unchanged. No paid/provider-network/evaluation command ran during diagnosis.
+- Evidence report: `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/task-18-judge-boundary-diagnosis-report.md`. The branch and remote remained at `42a2b4a`; `.deepseek-runs/` was preserved and untracked.
+- Next action: keep the current judge/provider/evaluation implementation unchanged. Future work should gather a stable typed category, exact operation, attempt, and schema-proven field path before opening a new RED-test/repair decision.
