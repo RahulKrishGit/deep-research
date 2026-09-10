@@ -132,8 +132,8 @@ class FakeController:
         self.started_snapshots[session_id] = snapshot
         return snapshot
 
-    def list_history(self, *, limit: int = 50) -> list[SessionHistoryEntry]:
-        return self.entries[:limit]
+    def list_history(self, *, limit: int | None = None) -> list[SessionHistoryEntry]:
+        return self.entries if limit is None else self.entries[:limit]
 
     def history_entry(self, session_id: str) -> SessionHistoryEntry | None:
         return next(
@@ -160,6 +160,24 @@ class FakeController:
 
     def read_history_report(self, entry: SessionHistoryEntry) -> str | None:
         return self.history_reports.get(entry.session_id)
+
+
+class MultiActiveFakeController(FakeController):
+    def __init__(
+        self,
+        entries: list[SessionHistoryEntry],
+        active_session_ids: set[str],
+    ) -> None:
+        super().__init__(entries)
+        self.active_session_ids = active_session_ids
+
+    def is_session_active(self, session_id: str) -> bool:
+        return session_id in self.active_session_ids
+
+
+class RestartedFakeController(FakeController):
+    def snapshot(self, session_id: str) -> UiSessionSnapshot:
+        raise KeyError(session_id)
 
 
 def _app(
@@ -1415,6 +1433,161 @@ def test_active_running_session_keeps_running_status_in_history() -> None:
     assert "Active research question" in visible
     assert "Running" in visible
     assert "Incomplete" not in visible
+
+
+def test_history_archive_is_complete_searchable_filtered_and_newest_first() -> None:
+    entries = [
+        _entry(
+            f"{index + 1:032x}",
+            f"Archive question {index + 1:02d}",
+            "failed" if index == 59 else "completed",
+            index,
+        )
+        for index in range(60)
+    ]
+    app = _history_app(entries)
+    visible = _visible_main_text(app)
+
+    assert "60 sessions total" in visible
+    assert "Archive question 01" in visible
+    assert "Archive question 60" in visible
+    assert visible.index("Archive question 01") < visible.index(
+        "Archive question 60"
+    )
+
+    app.text_input(key=_HISTORY_SEARCH_KEY).set_value(
+        "ARCHIVE QUESTION 60"
+    ).run()
+    searched = _visible_main_text(app)
+    assert "Archive question 60" in searched
+    assert "Archive question 01" not in searched
+
+    app.segmented_control(key=_HISTORY_FILTER_KEY).set_value("Issues").run()
+    filtered = _visible_main_text(app)
+    assert "Archive question 60" in filtered
+    assert "Archive question 01" not in filtered
+
+
+def test_two_active_sessions_stay_running_when_history_is_opened() -> None:
+    first_id = "a" * 32
+    second_id = "b" * 32
+    controller = MultiActiveFakeController(
+        [
+            _entry(first_id, "First active question", "running", 0),
+            _entry(second_id, "Second active question", "running", 1),
+        ],
+        {first_id, second_id},
+    )
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+    app.session_state[_ACTIVE_SESSION_KEY] = first_id
+    app.session_state[_VIEW_KEY] = "history"
+    app.run()
+
+    visible = _visible_main_text(app)
+    assert "First active question" in visible
+    assert "Second active question" in visible
+    assert "Running" in visible
+    assert "Incomplete" not in visible
+
+    app.button(key=f"history_open_{second_id}").click().run()
+    reopened = _visible_main_text(app)
+    assert "Second active question" in reopened
+    assert "Running" in reopened
+    assert "Incomplete" not in reopened
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_label", "report", "report_path"),
+    [
+        ("failed", "Failed", None, None),
+        (
+            "failed",
+            "Failed",
+            "# Failed partial report",
+            "reports/failed-partial.md",
+        ),
+        ("incomplete", "Incomplete", None, None),
+        (
+            "max_iterations",
+            "Max iterations",
+            "# Max-iteration report",
+            "reports/max.md",
+        ),
+        ("completed", "Completed", "# Completed report", "reports/completed.md"),
+    ],
+)
+def test_restarted_history_reopens_each_terminal_state_without_rerunning(
+    status: str,
+    expected_label: str,
+    report: str | None,
+    report_path: str | None,
+) -> None:
+    topic = UiSubTopicProgress(
+        index=2,
+        title="Last active topic",
+        status="running",
+    )
+    session_id = f"{200 + len(status):032x}"
+    entry = SessionHistoryEntry(
+        session_id=session_id,
+        question="Restart-safe question",
+        status=status,
+        started_at=datetime(2026, 9, 9, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 9, 9, 0, 10, tzinfo=timezone.utc),
+        current_agent=None,
+        last_agent="researcher",
+        iteration=2,
+        max_iterations=4,
+        planned_sub_topic_count=5,
+        research_phase_complete=False,
+        sub_topics=[topic],
+        last_sub_topic=topic,
+        recent_activity=[
+            UiRecentActivity(event_type="one", summary="Last known activity"),
+            UiRecentActivity(event_type="two", summary="Older activity"),
+        ],
+        report_path=report_path,
+        source_summary=UiSourceSummary(
+            total=0,
+            high=0,
+            moderate=0,
+            low=0,
+            unrated=0,
+        ),
+        fact_check_summary=UiFactCheckSummary(
+            verified=0,
+            unverified=0,
+            contradicted=0,
+            insufficient_evidence=0,
+        ),
+    )
+    controller = RestartedFakeController([entry])
+    if report is not None:
+        controller.history_reports[session_id] = report
+
+    app = AppTest.from_function(
+        render_app,
+        kwargs={"controller": controller},
+    ).run()
+    app.button(key="session_history").click().run()
+    app.button(key=f"history_open_{session_id}").click().run()
+
+    visible = _visible_main_text(app)
+    assert expected_label in visible
+    assert controller.start_calls == []
+    if status == "completed":
+        assert report in visible
+    else:
+        assert "Researcher" in visible
+        assert "Last active topic" in visible
+        assert "Last known activity" in visible
+    if report_path is None:
+        assert "No report was available for this session." in visible
+    else:
+        assert report_path in visible
 
 
 def test_history_open_rebuilds_completed_report_in_same_shell_without_rerun() -> None:

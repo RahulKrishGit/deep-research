@@ -93,11 +93,13 @@ class UiSessionSnapshot(ContractModel):
     started_at: datetime
     finished_at: datetime | None = None
     current_agent: str | None = None
+    last_agent: str | None = None
     iteration: int = Field(ge=0)
     max_iterations: int = Field(ge=1)
     planned_sub_topic_count: int = Field(default=0, ge=0)
     research_phase_complete: bool = False
     sub_topics: list[UiSubTopicProgress] = Field(default_factory=list)
+    last_sub_topic: UiSubTopicProgress | None = None
     recent_activity: list[UiRecentActivity] = Field(default_factory=list)
     tool_calls: list[UiToolCallSummary] = Field(default_factory=list)
     token_usage: UiTokenUsage | None = None
@@ -126,8 +128,15 @@ class SessionHistoryEntry(ContractModel):
     status: UiSessionStatus
     started_at: datetime
     finished_at: datetime | None = None
+    current_agent: str | None = None
+    last_agent: str | None = None
     iteration: int = Field(ge=0)
     max_iterations: int = Field(ge=1)
+    planned_sub_topic_count: int = Field(default=0, ge=0)
+    research_phase_complete: bool = False
+    sub_topics: list[UiSubTopicProgress] = Field(default_factory=list)
+    last_sub_topic: UiSubTopicProgress | None = None
+    recent_activity: list[UiRecentActivity] = Field(default_factory=list)
     report_path: str | None = None
     trace_url: str | None = None
     token_usage: UiTokenUsage | None = None
@@ -145,6 +154,15 @@ class SessionHistoryEntry(ContractModel):
             return [_sanitize_history_error(error) for error in value]
         return value
 
+    @field_validator("recent_activity", mode="before")
+    @classmethod
+    def cap_recent_activity(cls, value: object) -> object:
+        if isinstance(value, Iterable) and not isinstance(
+            value, (str, bytes, bytearray, Mapping)
+        ):
+            return list(value)[-3:]
+        return value
+
 
 def history_entry_from_snapshot(snapshot: UiSessionSnapshot) -> SessionHistoryEntry:
     """Build a compact history record without persisting report detail payloads."""
@@ -160,8 +178,22 @@ def history_entry_from_snapshot(snapshot: UiSessionSnapshot) -> SessionHistoryEn
         status=snapshot.status,
         started_at=snapshot.started_at,
         finished_at=snapshot.finished_at,
+        current_agent=snapshot.current_agent,
+        last_agent=snapshot.last_agent,
         iteration=snapshot.iteration,
         max_iterations=snapshot.max_iterations,
+        planned_sub_topic_count=snapshot.planned_sub_topic_count,
+        research_phase_complete=snapshot.research_phase_complete,
+        sub_topics=[topic.model_copy(deep=True) for topic in snapshot.sub_topics],
+        last_sub_topic=(
+            snapshot.last_sub_topic.model_copy(deep=True)
+            if snapshot.last_sub_topic is not None
+            else None
+        ),
+        recent_activity=[
+            activity.model_copy(deep=True)
+            for activity in snapshot.recent_activity[-3:]
+        ],
         report_path=snapshot.report_path,
         trace_url=snapshot.trace_url,
         token_usage=snapshot.token_usage,

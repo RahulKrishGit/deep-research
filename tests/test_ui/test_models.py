@@ -80,8 +80,11 @@ def _snapshot() -> UiSessionSnapshot:
         started_at=datetime(2026, 9, 9, tzinfo=timezone.utc),
         finished_at=datetime(2026, 9, 9, 0, 1, tzinfo=timezone.utc),
         current_agent="Researcher",
+        last_agent="Critic",
         iteration=2,
         max_iterations=3,
+        planned_sub_topic_count=3,
+        research_phase_complete=False,
         sub_topics=[
             UiSubTopicProgress(
                 index=1,
@@ -91,6 +94,13 @@ def _snapshot() -> UiSessionSnapshot:
                 findings=2,
             )
         ],
+        last_sub_topic=UiSubTopicProgress(
+            index=1,
+            title="Background",
+            status="completed",
+            priority=1,
+            findings=2,
+        ),
         recent_activity=[
             UiRecentActivity(event_type="search", summary="Searched sources")
         ],
@@ -219,8 +229,15 @@ def test_history_entry_contains_only_persistable_metadata() -> None:
         "status",
         "started_at",
         "finished_at",
+        "current_agent",
+        "last_agent",
         "iteration",
         "max_iterations",
+        "planned_sub_topic_count",
+        "research_phase_complete",
+        "sub_topics",
+        "last_sub_topic",
+        "recent_activity",
         "report_path",
         "trace_url",
         "token_usage",
@@ -232,7 +249,8 @@ def test_history_entry_contains_only_persistable_metadata() -> None:
     forbidden_fields = {
         "report",
         "events",
-        "recent_activity",
+        "tool_calls",
+        "events_seen",
         "raw_findings",
         "prompts",
         "tool_results",
@@ -252,6 +270,36 @@ def test_history_entry_from_snapshot_strips_detail_payloads() -> None:
     assert payload["fact_check_summary"]["verified"] == 1
     assert "report" not in payload
     assert "events" not in payload
+    assert history.current_agent == "Researcher"
+    assert history.last_agent == "Critic"
+    assert history.planned_sub_topic_count == 3
+    assert history.sub_topics[0].title == "Background"
+    assert history.last_sub_topic is not None
+    assert history.last_sub_topic.title == "Background"
+
+
+def test_history_entry_caps_recent_activity_without_persisting_raw_events() -> None:
+    snapshot = _snapshot().model_copy(
+        update={
+            "recent_activity": [
+                UiRecentActivity(
+                    event_type=f"event-{index}",
+                    summary=f"Activity {index}",
+                )
+                for index in range(4)
+            ]
+        }
+    )
+
+    history = history_entry_from_snapshot(snapshot)
+
+    assert [activity.summary for activity in history.recent_activity] == [
+        "Activity 1",
+        "Activity 2",
+        "Activity 3",
+    ]
+    assert "event-0" not in history.model_dump_json()
+    assert "raw events" not in history.model_dump_json()
 
 
 def test_history_entry_sanitizes_errors_and_breaks_snapshot_aliases() -> None:

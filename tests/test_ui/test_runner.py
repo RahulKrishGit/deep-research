@@ -86,6 +86,128 @@ def test_start_returns_running_before_gated_runner_finishes(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
+    ("status", "report", "report_path"),
+    [
+        ("failed", None, None),
+        ("failed", "# Failed partial report", "reports/failed-partial.md"),
+        ("incomplete", None, None),
+        ("max_iterations", "# Max-iteration report", "reports/max.md"),
+        ("completed", "# Completed report", "reports/completed.md"),
+    ],
+)
+def test_terminal_presentation_metadata_survives_controller_restart(
+    tmp_path: Path,
+    status: str,
+    report: str | None,
+    report_path: str | None,
+) -> None:
+    events = [
+        _event("planner.planning.completed", metadata={"sub_topic_count": 5}),
+        _event(
+            "graph.node.started",
+            metadata={"node": "researcher", "iteration": 2},
+        ),
+        _event(
+            "researcher.sub_topic.started",
+            metadata={"index": 1, "sub_topic": "Finished topic"},
+        ),
+        _event(
+            "researcher.sub_topic.completed",
+            metadata={"index": 1, "sub_topic": "Finished topic", "findings": 2},
+        ),
+        _event(
+            "researcher.sub_topic.started",
+            metadata={"index": 2, "sub_topic": "Last active topic"},
+        ),
+        _event(
+            "researcher.tool_call",
+            metadata={"tool": "web_search", "success": True},
+        ),
+        _event(
+            "graph.session.completed",
+            metadata={"iteration": 2, "status": status},
+        ),
+    ]
+    runner = GatedSyncRunner(
+        events=events,
+        outcome_kwargs={
+            "status": status,
+            "iteration": 2,
+            "report": report,
+            "report_path": report_path,
+        },
+    )
+    store = SessionHistoryStore(output_directory=tmp_path / "output")
+    controller = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=runner,
+        preflight=lambda **_: object(),
+        history_store=store,
+    )
+
+    snapshot = controller.start(question="Question", max_iterations=2)
+    assert runner.started.wait(1)
+    persisted_live = store.get(snapshot.session_id)
+    assert persisted_live is not None
+    assert persisted_live.current_agent == "researcher"
+    assert persisted_live.last_agent == "researcher"
+    assert persisted_live.planned_sub_topic_count == 5
+    assert persisted_live.last_sub_topic is not None
+    assert persisted_live.last_sub_topic.title == "Last active topic"
+    assert [topic.title for topic in persisted_live.sub_topics] == [
+        "Finished topic",
+        "Last active topic",
+    ]
+    assert len(persisted_live.recent_activity) <= 3
+
+    if report_path is not None and report is not None:
+        report_file = (tmp_path / "output" / report_path).resolve()
+        report_file.parent.mkdir(parents=True, exist_ok=True)
+        report_file.write_text(report, encoding="utf-8")
+
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(snapshot.session_id).status == status)
+
+    restarted = LocalResearchController(
+        config_path=str(_config_file(tmp_path)),
+        runner=GatedSyncRunner(),
+        preflight=lambda **_: object(),
+        history_store=store,
+    )
+    restored = restarted.history_entry(snapshot.session_id)
+
+    assert restored is not None
+    assert restored.status == status
+    assert restored.current_agent is None
+    assert restored.last_agent == "researcher"
+    assert restored.planned_sub_topic_count == 5
+    assert restored.last_sub_topic is not None
+    assert restored.last_sub_topic.title == "Last active topic"
+    assert len(restored.recent_activity) <= 3
+    if report_path is not None and report is not None:
+        assert restarted.read_history_report(restored) == report
+
+
+def test_multiple_running_sessions_remain_running_in_history(tmp_path: Path) -> None:
+    runner = GatedSyncRunner()
+    controller = _controller(tmp_path, runner)
+
+    first = controller.start(question="First question", max_iterations=2)
+    second = controller.start(question="Second question", max_iterations=2)
+
+    assert runner.started.wait(1)
+    entries = {entry.session_id: entry for entry in controller.list_history()}
+    assert entries[first.session_id].status == "running"
+    assert entries[second.session_id].status == "running"
+    assert controller.history_entry(first.session_id).status == "running"
+    assert controller.history_entry(second.session_id).status == "running"
+
+    runner.release.set()
+    _wait_for(lambda: controller.snapshot(first.session_id).status == "completed")
+    _wait_for(lambda: controller.snapshot(second.session_id).status == "completed")
+
+
+@pytest.mark.parametrize(
     ("config_name", "config_contents", "reason"),
     [
         ("missing.yaml", None, "config_file_missing"),
@@ -192,14 +314,15 @@ def test_published_events_project_live_progress_and_snapshots_are_copies(
 
     first = controller.start(question="Question", max_iterations=2)
     assert runner.started.wait(1)
-    assert first.current_agent == "researcher"
-    assert first.iteration == 2
-    assert first.sub_topics[0].title == "Market size"
-    assert first.recent_activity[-1].summary == (
+    live = controller.snapshot(first.session_id)
+    assert live.current_agent == "researcher"
+    assert live.iteration == 2
+    assert live.sub_topics[0].title == "Market size"
+    assert live.recent_activity[-1].summary == (
         "Evaluated new evidence for the research question"
     )
 
-    first.sub_topics[0].title = "mutated"
+    live.sub_topics[0].title = "mutated"
     second = controller.snapshot(first.session_id)
     assert second.sub_topics[0].title == "Market size"
     runner.release.set()

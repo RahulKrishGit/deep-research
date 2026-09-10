@@ -193,10 +193,21 @@ class LocalResearchController:
                 raise KeyError(f"unknown research session: {session_id!r}")
         return self._snapshot(session_id)
 
-    def list_history(self, *, limit: int = 50) -> list[SessionHistoryEntry]:
+    def list_history(self, *, limit: int | None = None) -> list[SessionHistoryEntry]:
         with self._lock:
             entries = self._history.list_entries(limit=limit)
         return [self._display_history_entry(entry) for entry in entries]
+
+    def is_session_active(self, session_id: str) -> bool:
+        """Return whether this controller currently owns a running session ID.
+
+        Multiple sessions are allowed to run concurrently.  The controller's
+        ID-keyed session registry, rather than the UI's selected-session key,
+        is the lifecycle source of truth.
+        """
+        with self._lock:
+            session = self._sessions.get(session_id)
+            return session is not None and session.status == "running"
 
     def history_entry(self, session_id: str) -> SessionHistoryEntry | None:
         with self._lock:
@@ -269,8 +280,17 @@ class LocalResearchController:
         with self._lock:
             copied_event = event.model_copy(deep=True)
             session = self._sessions.get(session_id)
-            if session is not None:
-                session.events.append(copied_event)
+            if session is None:
+                return
+            session.events.append(copied_event)
+
+        # Persist the latest compact presentation projection as events arrive.
+        # This makes a process restart recover the last known stopping point
+        # without writing the event stream or provider payloads to history.
+        try:
+            self._persist(self._snapshot(session_id))
+        except Exception:
+            return
 
     def _record_failure(
         self,
@@ -407,11 +427,13 @@ class LocalResearchController:
                 current_agent=(
                     progress.current_agent if status == "failed" else None
                 ),
+                last_agent=progress.last_agent,
                 iteration=outcome.state.iteration,
                 max_iterations=outcome.state.max_iterations,
                 planned_sub_topic_count=planned_sub_topic_count,
                 research_phase_complete=progress.research_phase_complete,
                 sub_topics=progress.sub_topics,
+                last_sub_topic=progress.last_sub_topic,
                 recent_activity=progress.recent_activity,
                 tool_calls=tool_calls,
                 token_usage=token_usage,
@@ -435,15 +457,17 @@ class LocalResearchController:
             started_at=started_at,
             finished_at=finished_at,
             current_agent=(
-                progress.current_agent
+                (progress.current_agent or progress.last_agent)
                 if status in {"running", "failed"}
                 else None
             ),
+            last_agent=progress.last_agent,
             iteration=progress.iteration,
             max_iterations=requested_max_iterations,
             planned_sub_topic_count=progress.planned_sub_topic_count,
             research_phase_complete=progress.research_phase_complete,
             sub_topics=progress.sub_topics,
+            last_sub_topic=progress.last_sub_topic,
             recent_activity=progress.recent_activity,
             tool_calls=progress.tool_calls,
             token_usage=None,
@@ -484,10 +508,24 @@ class LocalResearchController:
             return
 
     def _display_history_entry(self, entry: SessionHistoryEntry) -> SessionHistoryEntry:
-        with self._lock:
-            active = entry.session_id in self._sessions
+        active = self.is_session_active(entry.session_id)
         if entry.status == "running" and not active:
-            return entry.model_copy(update={"status": "incomplete"})
+            return entry.model_copy(
+                deep=True,
+                update={
+                    "status": "incomplete",
+                    "current_agent": None,
+                    "last_agent": entry.last_agent or entry.current_agent,
+                },
+            )
+        if entry.status != "running":
+            return entry.model_copy(
+                deep=True,
+                update={
+                    "current_agent": None,
+                    "last_agent": entry.last_agent or entry.current_agent,
+                },
+            )
         return entry.model_copy(deep=True)
 
 

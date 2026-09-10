@@ -32,10 +32,12 @@ if TYPE_CHECKING:
 
 class ProgressSummary(BaseModel):
     current_agent: str | None = None
+    last_agent: str | None = None
     iteration: int = Field(default=0, ge=0)
     planned_sub_topic_count: int = Field(default=0, ge=0)
     research_phase_complete: bool = False
     sub_topics: list[UiSubTopicProgress] = Field(default_factory=list)
+    last_sub_topic: UiSubTopicProgress | None = None
     recent_activity: list[UiRecentActivity] = Field(default_factory=list)
     tool_calls: list[UiToolCallSummary] = Field(default_factory=list)
     events_seen: int = Field(default=0, ge=0)
@@ -208,11 +210,13 @@ def _activity_for_event(event: ResearchEvent) -> UiRecentActivity | None:
 def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
     """Project structured events into truthful, user-facing progress data."""
     current_agent: str | None = None
+    last_agent: str | None = None
     iteration = 0
     planned_sub_topic_count = 0
     research_phase_seen = False
     research_phase_complete = False
     topics: dict[int, dict[str, object]] = {}
+    last_sub_topic: UiSubTopicProgress | None = None
     tools: dict[str, list[int]] = {}
     activities: list[UiRecentActivity] = []
     fallback_activities: list[UiRecentActivity] = []
@@ -233,6 +237,7 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
                     research_phase_complete = True
                     _clear_unvisited_topics(topics)
                 current_agent = node
+                last_agent = node
                 fallback_activities.append(
                     UiRecentActivity(
                         event_type=event.event_type,
@@ -244,9 +249,8 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
             status = _text(metadata.get("status"))
             if status != "failed":
                 current_agent = None
-                if research_phase_seen:
+                if status == "completed" and research_phase_seen:
                     research_phase_complete = True
-                    _clear_unvisited_topics(topics)
 
         if event.event_type == "planner.planning.completed":
             planned_count = _integer(metadata.get("sub_topic_count"), minimum=1)
@@ -301,6 +305,7 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
                     findings = _integer(metadata.get("findings"))
                     if findings is not None:
                         topic["findings"] = findings
+                last_sub_topic = UiSubTopicProgress.model_validate(topic)
 
         tool = _tool_identifier(metadata)
         if tool is not None:
@@ -323,10 +328,12 @@ def project_progress(events: Sequence[ResearchEvent]) -> ProgressSummary:
 
     return ProgressSummary(
         current_agent=current_agent,
+        last_agent=last_agent,
         iteration=iteration,
         planned_sub_topic_count=planned_sub_topic_count,
         research_phase_complete=research_phase_complete,
         sub_topics=sub_topics,
+        last_sub_topic=last_sub_topic,
         recent_activity=meaningful[-3:],
         tool_calls=[
             UiToolCallSummary(

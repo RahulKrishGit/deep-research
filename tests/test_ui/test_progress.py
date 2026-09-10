@@ -349,7 +349,34 @@ def test_project_progress_clears_agent_after_terminal_iteration() -> None:
     )
 
     assert summary.current_agent is None
+    assert summary.last_agent == "critic"
     assert summary.iteration == 4
+
+
+def test_project_progress_retains_stopping_subtopic_for_terminal_budget_stop() -> None:
+    summary = project_progress(
+        [
+            event(
+                "graph.node.started",
+                metadata={"node": "researcher", "iteration": 2},
+            ),
+            event(
+                "researcher.sub_topic.started",
+                metadata={"index": 2, "sub_topic": "Last active topic"},
+            ),
+            event(
+                "graph.session.completed",
+                metadata={"iteration": 2, "status": "max_iterations"},
+            ),
+        ]
+    )
+
+    assert summary.current_agent is None
+    assert summary.last_agent == "researcher"
+    assert summary.last_sub_topic is not None
+    assert summary.last_sub_topic.title == "Last active topic"
+    assert [topic.title for topic in summary.sub_topics] == ["Last active topic"]
+    assert summary.sub_topics[0].status == "running"
 
 
 def test_project_progress_ignores_malformed_metadata() -> None:

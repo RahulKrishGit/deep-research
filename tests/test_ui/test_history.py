@@ -141,6 +141,31 @@ def test_list_entries_returns_newest_first_and_honors_limit(tmp_path: Path) -> N
     assert store.list_entries(limit=0) == []
 
 
+def test_list_entries_without_limit_returns_the_complete_archive(
+    tmp_path: Path,
+) -> None:
+    store = SessionHistoryStore(output_directory=tmp_path)
+    base = datetime(2026, 9, 9, tzinfo=timezone.utc)
+
+    for index in range(60):
+        session_id = f"{index + 1:032x}"
+        store.upsert(
+            _entry(
+                session_id,
+                started_at=base + timedelta(minutes=index),
+                question=f"Archive question {index + 1}",
+                status="failed" if index == 0 else "completed",
+            )
+        )
+
+    entries = store.list_entries()
+
+    assert len(entries) == 60
+    assert entries[0].session_id == f"{60:032x}"
+    assert entries[-1].session_id == f"{1:032x}"
+    assert len(store.list_entries(limit=50)) == 50
+
+
 def test_list_entries_sorts_mixed_naive_and_aware_timestamps(tmp_path: Path) -> None:
     store = SessionHistoryStore(output_directory=tmp_path)
     store.upsert(_entry("a" * 32, started_at=datetime(2026, 9, 9, 12)))

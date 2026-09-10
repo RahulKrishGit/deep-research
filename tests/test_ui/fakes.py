@@ -349,8 +349,9 @@ class DemoController:
     def snapshot(self, session_id: str) -> UiSessionSnapshot:
         return self._snapshots[session_id].model_copy(deep=True)
 
-    def list_history(self, *, limit: int = 50) -> list[SessionHistoryEntry]:
-        return [entry.model_copy(deep=True) for entry in self._entries[:limit]]
+    def list_history(self, *, limit: int | None = None) -> list[SessionHistoryEntry]:
+        entries = self._entries if limit is None else self._entries[:limit]
+        return [entry.model_copy(deep=True) for entry in entries]
 
     def history_entry(self, session_id: str) -> SessionHistoryEntry | None:
         for entry in self._entries:

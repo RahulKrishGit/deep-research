@@ -152,11 +152,37 @@ def _entry_for_active_session(
 def _history_entry_for_display(
     entry: SessionHistoryEntry,
     state: Mapping[str, Any],
+    controller: LocalResearchController | None = None,
 ) -> SessionHistoryEntry:
-    """Normalize persisted running metadata unless it is live in this session."""
-    active_id = state.get(_ACTIVE_SESSION_KEY)
-    if entry.status == "running" and entry.session_id != active_id:
-        return entry.model_copy(update={"status": "incomplete"})
+    """Use controller lifecycle truth when normalizing persisted entries."""
+    active = False
+    checker = getattr(controller, "is_session_active", None)
+    if callable(checker):
+        try:
+            active = bool(checker(entry.session_id))
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            active = False
+    else:
+        active_id = state.get(_ACTIVE_SESSION_KEY)
+        active = entry.session_id == active_id
+
+    if entry.status == "running" and not active:
+        return entry.model_copy(
+            deep=True,
+            update={
+                "status": "incomplete",
+                "current_agent": None,
+                "last_agent": entry.last_agent or entry.current_agent,
+            },
+        )
+    if entry.status != "running":
+        return entry.model_copy(
+            deep=True,
+            update={
+                "current_agent": None,
+                "last_agent": entry.last_agent or entry.current_agent,
+            },
+        )
     return entry.model_copy(deep=True)
 
 
@@ -172,8 +198,8 @@ def _history_entries(
     state: MutableMapping[str, Any],
 ) -> list[SessionHistoryEntry]:
     entries = [
-        _history_entry_for_display(entry, state)
-        for entry in controller.list_history(limit=50)
+        _history_entry_for_display(entry, state, controller)
+        for entry in controller.list_history()
     ]
     return sorted(entries, key=_history_sort_key, reverse=True)
 
@@ -185,7 +211,7 @@ def _recent_entries(
     entries = _history_entries(controller, state)
     active_entry = _entry_for_active_session(controller, state)
     if active_entry is not None:
-        active_entry = _history_entry_for_display(active_entry, state)
+        active_entry = _history_entry_for_display(active_entry, state, controller)
         entries = [
             entry for entry in entries if entry.session_id != active_entry.session_id
         ]
@@ -339,6 +365,20 @@ def _snapshot_for_selection(
         finished_at=entry.finished_at,
         iteration=entry.iteration,
         max_iterations=entry.max_iterations,
+        current_agent=entry.current_agent,
+        last_agent=entry.last_agent,
+        planned_sub_topic_count=entry.planned_sub_topic_count,
+        research_phase_complete=entry.research_phase_complete,
+        sub_topics=[topic.model_copy(deep=True) for topic in entry.sub_topics],
+        last_sub_topic=(
+            entry.last_sub_topic.model_copy(deep=True)
+            if entry.last_sub_topic is not None
+            else None
+        ),
+        recent_activity=[
+            activity.model_copy(deep=True)
+            for activity in entry.recent_activity
+        ],
         report_path=entry.report_path,
         report=report,
         source_summary=entry.source_summary,
@@ -359,7 +399,7 @@ def _history_entry(
         return None
     if entry is None:
         return None
-    return _history_entry_for_display(entry, state)
+    return _history_entry_for_display(entry, state, controller)
 
 
 def _read_history_report(
@@ -644,6 +684,44 @@ def _render_current_activity(snapshot: UiSessionSnapshot) -> None:
     _render_health(snapshot)
 
 
+def _render_stopping_point(snapshot: UiSessionSnapshot) -> None:
+    """Render compact durable context for a non-live session."""
+    st.markdown(
+        '<div class="dr-editorial-column dr-section-label">STOPPING POINT</div>',
+        unsafe_allow_html=True,
+    )
+    agent = snapshot.last_agent or snapshot.current_agent
+    topic = snapshot.last_sub_topic or _active_subtopic(snapshot)
+    if agent:
+        st.caption(f"Last known agent · {display_agent_name(agent)}")
+    if topic is not None:
+        total = snapshot.planned_sub_topic_count
+        subtopic_label = (
+            f"Subtopic {topic.index} of {total}"
+            if total
+            else f"Subtopic {topic.index}"
+        )
+        st.caption(f"Last known subtopic · {subtopic_label} · {topic.title}")
+    if snapshot.research_phase_complete:
+        st.caption("Research phase · Complete")
+
+    has_progress = bool(
+        agent
+        or topic is not None
+        or snapshot.research_phase_complete
+        or snapshot.sub_topics
+        or snapshot.recent_activity
+        or snapshot.planned_sub_topic_count
+    )
+    if not has_progress:
+        st.caption("No stopping-point metadata was recorded.")
+        return
+    if snapshot.sub_topics or snapshot.planned_sub_topic_count:
+        _render_subtopic_sequence(snapshot)
+    if snapshot.recent_activity:
+        _render_recent_activity(snapshot)
+
+
 def _render_subtopic_sequence(snapshot: UiSessionSnapshot) -> None:
     st.markdown(
         '<div class="dr-editorial-column dr-section-label">SUBTOPIC SEQUENCE</div>',
@@ -765,9 +843,7 @@ def _safe_failure_message(snapshot: UiSessionSnapshot) -> str:
 
 
 def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
-    has_retained_report = (
-        snapshot.report is not None or snapshot.report_path is not None
-    )
+    has_retained_report = snapshot.report is not None
     if snapshot.status in {"completed", "max_iterations", "incomplete"} or (
         snapshot.status == "failed" and has_retained_report
     ):
@@ -787,9 +863,9 @@ def _render_terminal_snapshot(snapshot: UiSessionSnapshot) -> None:
     st.caption(f"Markdown  ·  Max {snapshot.max_iterations} iterations")
     if snapshot.status == "failed":
         st.error(_safe_failure_message(snapshot))
-        _render_current_activity(snapshot)
-        _render_subtopic_sequence(snapshot)
-        _render_recent_activity(snapshot)
+        if snapshot.report is None:
+            st.caption("No report was available for this session.")
+        _render_stopping_point(snapshot)
         return
     if snapshot.report:
         st.markdown(snapshot.report)
@@ -1003,6 +1079,7 @@ def _render_completed_snapshot(snapshot: UiSessionSnapshot) -> None:
             st.markdown(snapshot.report)
         else:
             st.caption("No report was available for this session.")
+        _render_stopping_point(snapshot)
         _render_report_issues(snapshot)
 
     with details_column:

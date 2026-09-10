@@ -66,9 +66,9 @@ class SessionHistoryStore:
         path = self.metadata_directory / f"{session_id}.json"
         return self._read_entry(path, expected_session_id=session_id)
 
-    def list_entries(self, *, limit: int = 50) -> list[SessionHistoryEntry]:
-        """Load valid records newest-first while isolating bad files."""
-        if limit < 0:
+    def list_entries(self, *, limit: int | None = None) -> list[SessionHistoryEntry]:
+        """Load the complete valid archive newest-first unless explicitly capped."""
+        if limit is not None and limit < 0:
             raise ValueError("limit must be non-negative")
         if limit == 0 or not self._metadata_directory_is_safe():
             return []
@@ -83,7 +83,7 @@ class SessionHistoryStore:
                 entries.append(entry)
 
         entries.sort(key=_entry_sort_key, reverse=True)
-        return entries[:limit]
+        return entries if limit is None else entries[:limit]
 
     def read_report(self, entry: SessionHistoryEntry) -> str | None:
         """Read an entry's report only when it resolves beneath the output root."""
