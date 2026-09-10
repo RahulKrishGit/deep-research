@@ -13,6 +13,7 @@ from deep_research.observability import TokenUsage
 from deep_research.providers.contracts import (
     FinishReasonCategory,
     ProviderFailureKind,
+    StructuredDiagnosticCategory,
 )
 from deep_research.utils.config import ReasoningEffort
 from deep_research.utils.types import ContractModel, ResearchState, UnitScore
@@ -316,6 +317,10 @@ class EvaluatorDiagnostic(ContractModel):
 
     kind: EvaluatorDiagnosticKind
     attempt: PositiveInt | None = None
+    category: StructuredDiagnosticCategory | None = Field(
+        default=None,
+        exclude_if=lambda value: value in (None, "schema_output"),
+    )
     field_paths: tuple[str, ...] = Field(
         default_factory=tuple, max_length=_MAX_DIAGNOSTIC_PATHS
     )

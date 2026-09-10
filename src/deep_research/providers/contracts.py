@@ -31,7 +31,16 @@ ProviderFailureKind: TypeAlias = Literal[
     "provider_response",
     "provider_failure",
 ]
-StructuredDiagnosticCategory: TypeAlias = Literal["schema_output"]
+StructuredDiagnosticCategory: TypeAlias = Literal[
+    "schema_output",
+    "json_invalid",
+    "missing",
+    "extra_forbidden",
+    "type_mismatch",
+    "numeric_bounds",
+    "string_bounds",
+    "other_schema",
+]
 PositiveInt: TypeAlias = Annotated[int, Field(gt=0, strict=True)]
 
 _FIELD_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$|^[0-9]+$")

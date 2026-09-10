@@ -138,6 +138,11 @@ def safe_failure_details(error: BaseException) -> EvaluationFailureDetails | Non
                     EvaluatorDiagnostic(
                         kind="schema_output",
                         attempt=item.attempt,
+                        category=(
+                            None
+                            if item.category in (None, "schema_output")
+                            else item.category
+                        ),
                         field_paths=item.field_paths[:16],
                     )
                 )

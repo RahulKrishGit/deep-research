@@ -15,7 +15,15 @@ from openai import (
     OpenAIError,
     RateLimitError,
 )
-from pydantic import BaseModel, ValidationError, create_model, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    ValidationError,
+    create_model,
+    field_validator,
+)
 
 import deep_research.providers.contracts as contracts_module
 import deep_research.providers.deepseek_provider as deepseek_module
@@ -132,6 +140,32 @@ def deepseek_config(**updates: object) -> LLMConfig:
 class TinyAnswer(BaseModel):
     answer: str
     confidence: int
+
+
+class NestedDiagnosticPayload(BaseModel):
+    count: int = Field(ge=1, le=4)
+    label: str = Field(min_length=2, max_length=5)
+
+
+class StrictDiagnosticEnvelope(BaseModel):
+    nested: NestedDiagnosticPayload
+    required: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RootDiagnosticPayload(RootModel[list[str]]):
+    pass
+
+
+class OtherDiagnosticPayload(BaseModel):
+    answer: str
+
+    @field_validator("answer")
+    @classmethod
+    def reject_answer(cls, value: str) -> str:
+        del value
+        raise ValueError("answer is not accepted")
 
 
 def test_deepseek_requires_key_without_injected_client(monkeypatch) -> None:
@@ -716,12 +750,12 @@ async def test_deepseek_structured_error_retains_safe_diagnostics() -> None:
         {
             "attempt": 1,
             "field_paths": ["$"],
-            "category": "schema_output",
+            "category": "other_schema",
         },
         {
             "attempt": 2,
             "field_paths": ["$"],
-            "category": "schema_output",
+            "category": "other_schema",
         },
     ]
     serialized = json.dumps(
@@ -913,6 +947,108 @@ def test_structured_validation_diagnostic_normalizes_and_bounds_paths() -> None:
             field_paths=("title",),
             category="schema_output",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schema", "invalid_json", "expected_category", "expected_paths"),
+    [
+        (TinyAnswer, "not-json", "json_invalid", ("$",)),
+        (
+            TinyAnswer,
+            '{"answer":"ok"}',
+            "missing",
+            ("confidence",),
+        ),
+        (
+            StrictDiagnosticEnvelope,
+            '{"nested":{"count":"bad","label":"ok"},"required":"ok"}',
+            "type_mismatch",
+            ("nested.count",),
+        ),
+        (
+            RootDiagnosticPayload,
+            '{"not":"a list"}',
+            "type_mismatch",
+            ("$",),
+        ),
+        (
+            StrictDiagnosticEnvelope,
+            '{"nested":{"count":2,"label":"ok"},"required":"ok",'
+            '"unexpected":"provider-value"}',
+            "extra_forbidden",
+            ("$",),
+        ),
+        (
+            StrictDiagnosticEnvelope,
+            '{"nested":{"count":9,"label":"ok"},"required":"ok"}',
+            "numeric_bounds",
+            ("nested.count",),
+        ),
+        (
+            StrictDiagnosticEnvelope,
+            '{"nested":{"count":2,"label":"x"},"required":"ok"}',
+            "string_bounds",
+            ("nested.label",),
+        ),
+        (
+            OtherDiagnosticPayload,
+            '{"answer":"ok"}',
+            "other_schema",
+            ("answer",),
+        ),
+    ],
+)
+async def test_structured_validation_diagnostic_classifies_local_pydantic_errors(
+    schema: type[BaseModel],
+    invalid_json: str,
+    expected_category: str,
+    expected_paths: tuple[str, ...],
+) -> None:
+    completions = RecordingCompletions(
+        chat_response(text=invalid_json),
+        chat_response(text=invalid_json),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "classify this"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="classify this")], schema
+            )
+
+    assert [item.category for item in caught.value.diagnostics] == [
+        expected_category,
+        expected_category,
+    ]
+    assert [item.field_paths for item in caught.value.diagnostics] == [
+        expected_paths,
+        expected_paths,
+    ]
+
+
+def test_structured_validation_category_is_finite_and_legacy_compatible() -> None:
+    diagnostic_type = contracts_module.StructuredValidationDiagnostic
+    for category in (
+        "schema_output",
+        "json_invalid",
+        "missing",
+        "extra_forbidden",
+        "type_mismatch",
+        "numeric_bounds",
+        "string_bounds",
+        "other_schema",
+    ):
+        diagnostic = diagnostic_type(
+            attempt=1, field_paths=("$",), category=category
+        )
+        assert diagnostic.category == category
+
+    with pytest.raises(ValidationError):
+        diagnostic_type(attempt=1, field_paths=("$",), category="raw_value")
 
 
 def test_structured_output_error_retains_only_two_diagnostics() -> None:

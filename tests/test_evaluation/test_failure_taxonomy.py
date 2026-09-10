@@ -233,3 +233,25 @@ def test_safe_schema_projection_skips_malformed_diagnostics_without_raising() ->
         ],
     }
     assert "REJECTED_PROVIDER_MARKER_7E5C" not in details.model_dump_json()
+
+
+def test_safe_schema_projection_preserves_a_new_typed_category() -> None:
+    diagnostic = StructuredValidationDiagnostic(
+        attempt=2,
+        field_paths=("scores.completeness",),
+        category="numeric_bounds",
+    )
+    error = StructuredOutputError("safe schema failure", diagnostics=(diagnostic,))
+
+    details = _taxonomy_module().safe_failure_details(error)
+
+    assert isinstance(details, models_module.SchemaFailureDetails)
+    assert details.diagnostics[0].category == "numeric_bounds"
+    assert details.model_dump(mode="json")["diagnostics"] == [
+        {
+            "kind": "schema_output",
+            "attempt": 2,
+            "field_paths": ["scores.completeness"],
+            "category": "numeric_bounds",
+        }
+    ]

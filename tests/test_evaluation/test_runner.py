@@ -27,6 +27,7 @@ from deep_research.evaluation.runner import (
     build_evaluation_summary_feedback,
     build_repetition_result,
     decide_status,
+    evaluation_failure_reason,
     run_agent_evaluation,
 )
 from tests.evaluation_fakes import (
@@ -236,6 +237,96 @@ def test_controlled_status_is_failed_when_one_repetition_fails(
     )
 
     assert status == "FAILED"
+
+
+@pytest.mark.parametrize(
+    "judge_reason",
+    [
+        "judge_schema_failure",
+        "judge_output_limit",
+        "judge_transport",
+        "judge_http",
+        "judge_provider_failure",
+    ],
+)
+def test_judge_only_infrastructure_failure_precedes_quality_failure(
+    repetition_without_judge, runtime_config_for, judge_reason
+) -> None:
+    judge = repetition_without_judge.judge
+    assert judge is not None
+    repetition = repetition_without_judge.model_copy(
+        update={
+            "judge": judge.model_copy(update={"not_run_reason": judge_reason})
+        }
+    )
+    case = build_case_result(None, [repetition], threshold=0.80)
+    runtime = runtime_config_for("planner")
+
+    assert case.passed is False
+    assert decide_status([case], tier="controlled", runtime=runtime) == (
+        "INFRASTRUCTURE FAILURE"
+    )
+    assert evaluation_failure_reason(
+        [case],
+        status="INFRASTRUCTURE FAILURE",
+        runtime=runtime,
+    ) == f"focused-decomposition repetition 99 failed {judge_reason}"
+
+
+def test_mixed_deterministic_and_judge_failure_remains_quality_failed(
+    repetition_with_failed_gate, repetition_without_judge, runtime_config_for
+) -> None:
+    judge = repetition_without_judge.judge
+    assert judge is not None
+    mixed_repetition = repetition_with_failed_gate.model_copy(
+        update={
+            "judge": judge.model_copy(
+                update={"not_run_reason": "judge_schema_failure"}
+            ),
+            "aggregate_quality": None,
+        }
+    )
+    case = build_case_result(None, [mixed_repetition], threshold=0.80)
+
+    assert decide_status(
+        [case], tier="controlled", runtime=runtime_config_for("planner")
+    ) == "FAILED"
+
+
+@pytest.mark.parametrize("stage", ["setup", "trace"])
+def test_setup_and_trace_failures_remain_infrastructure_failures(
+    runtime_config_for, stage
+) -> None:
+    failure = EvaluationFailure(
+        stage=stage,
+        reason="safe_infrastructure_failure",
+        message="safe message",
+    )
+
+    assert decide_status(
+        [],
+        tier="controlled",
+        runtime=runtime_config_for("planner"),
+        errors=[failure],
+    ) == "INFRASTRUCTURE FAILURE"
+
+
+def test_deterministic_target_failure_remains_quality_failed(
+    judge_not_run_experiment_result, runtime_config_for
+) -> None:
+    case = judge_not_run_experiment_result.cases[0]
+
+    assert decide_status(
+        [case], tier="controlled", runtime=runtime_config_for("planner")
+    ) == "FAILED"
+
+
+def test_scored_threshold_failure_remains_quality_failed(
+    failing_case, runtime_config_for
+) -> None:
+    assert decide_status(
+        [failing_case], tier="controlled", runtime=runtime_config_for("planner")
+    ) == "FAILED"
 
 
 def _summary_values(payload) -> dict[str, str]:

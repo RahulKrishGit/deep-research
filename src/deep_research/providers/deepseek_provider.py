@@ -35,6 +35,7 @@ from deep_research.providers.contracts import (
     StructuredValidationDiagnostic,
 )
 from deep_research.providers.retry import with_retries
+from deep_research.providers.validation import validation_category
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -250,7 +251,7 @@ def _validation_diagnostic(
     return StructuredValidationDiagnostic(
         attempt=attempt,
         field_paths=tuple(paths) or ("$",),
-        category="schema_output",
+        category=validation_category(error),
     )
 
 

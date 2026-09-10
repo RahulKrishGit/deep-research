@@ -666,9 +666,55 @@ def decide_status(
     del tier, runtime
     if any(error.stage in ("trace", "setup") for error in errors):
         return "INFRASTRUCTURE FAILURE"
+    if any(
+        _has_deterministic_failure(repetition)
+        for case in cases
+        for repetition in case.repetitions
+    ):
+        return "FAILED"
+    if any(
+        _has_judge_infrastructure_failure(repetition)
+        for case in cases
+        for repetition in case.repetitions
+    ):
+        return "INFRASTRUCTURE FAILURE"
     if any(not case.passed for case in cases):
         return "FAILED"
     return "REVIEW REQUIRED"
+
+
+def _has_deterministic_failure(repetition: RepetitionResult) -> bool:
+    """Return whether target execution or deterministic gates failed."""
+    return (
+        bool(repetition.errors)
+        or not repetition.completed
+        or not repetition.gates.passed
+    )
+
+
+_JUDGE_INFRASTRUCTURE_REASONS = frozenset(
+    {
+        "setup_failure",
+        "unhandled_exception",
+        "judge_output_limit",
+        "judge_transport",
+        "judge_http",
+        "judge_provider_failure",
+        "judge_schema_failure",
+    }
+)
+
+
+def _has_judge_infrastructure_failure(repetition: RepetitionResult) -> bool:
+    """Return whether deterministic checks passed but judging was unavailable."""
+    judge = repetition.judge
+    return (
+        repetition.completed
+        and repetition.gates.passed
+        and judge is not None
+        and judge.status == "judge_not_run"
+        and judge.not_run_reason in _JUDGE_INFRASTRUCTURE_REASONS
+    )
 
 
 def _quality_thresholds(

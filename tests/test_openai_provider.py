@@ -635,6 +635,32 @@ async def test_complete_structured_raises_after_two_pydantic_validation_errors()
 
 
 @pytest.mark.asyncio
+async def test_openai_structured_validation_never_retains_provider_content() -> None:
+    marker = "OPENAI_PROVIDER_MARKER_7E5C"
+    with pytest.raises(ValidationError) as exc_info:
+        Outline.model_validate({"title": 3, "points": marker})
+    validation_error = exc_info.value
+
+    responses = RecordingResponses(validation_error, validation_error)
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "Create an outline"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="Create an outline")], Outline
+            )
+
+    assert len(responses.parse_calls) == 2
+    assert marker not in repr(responses.parse_calls[1])
+    assert marker not in repr(caught.value)
+    assert marker not in repr(vars(caught.value))
+    assert caught.value.diagnostics[0].category == "type_mismatch"
+
+
+@pytest.mark.asyncio
 async def test_complete_translates_connection_errors() -> None:
     tracker = local_tracker()
     provider = OpenAIChatProvider(
