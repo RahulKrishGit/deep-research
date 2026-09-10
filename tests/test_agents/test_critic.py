@@ -372,6 +372,28 @@ def test_build_task_carries_the_report_budget_and_quality_signals(
 
 
 @pytest.mark.asyncio
+async def test_first_spot_check_receives_planned_search_query_guidance(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Enough context.", "No spot check needed.")],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(tracker, completer, tool_budget=1)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert outcome.react.stop_reason == "finished"
+    first_call = completer.calls[0]
+    assert first_call[0] == "ReActDecision"
+    user_prompt = first_call[2][1].content
+    assert "Alpha" in user_prompt
+    assert "alpha 2025" in user_prompt
+    assert "use an applicable planned search query verbatim" in user_prompt
+
+
+@pytest.mark.asyncio
 async def test_an_acceptable_report_ends_the_graph(tracker: Tracker) -> None:
     agent = _critic(
         tracker, ScriptedCompleter(decisions=[], outputs=[_draft(score=9)])

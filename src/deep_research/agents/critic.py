@@ -49,6 +49,7 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     ScoredSource,
+    SubTopic,
 )
 
 CRITIC_NAME = "critic"
@@ -118,6 +119,19 @@ class CritiqueTask(AgentTask):
     sources: list[ScoredSource] = []
     sub_topics: list[str] = []
     error_count: int = Field(default=0, ge=0)
+
+
+def render_spot_check_guidance(sub_topics: Sequence[SubTopic]) -> str:
+    """Render the planner's search context for the Critic's spot check."""
+    lines = [
+        "When performing a spot check, use an applicable planned search "
+        "query verbatim.",
+        "Planned sub-topics and search queries:",
+    ]
+    for sub_topic in sub_topics:
+        lines.append(f"- {sub_topic.title}")
+        lines.extend(f"  - {query}" for query in sub_topic.search_queries)
+    return "\n".join(lines)
 
 
 def clamp_score(value: int) -> int:
@@ -453,6 +467,7 @@ class CriticAgent(BaseAgent[Critique]):
         """Bind this review to the report and the remaining budget."""
         return CritiqueTask(
             instruction=state.original_question,
+            guidance=render_spot_check_guidance(state.sub_topics),
             report=state.report or "",
             iteration=state.iteration,
             max_iterations=state.max_iterations,
