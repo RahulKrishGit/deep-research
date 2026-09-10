@@ -36,6 +36,8 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 13. Full controlled validation | **Complete — five repaired agents terminal-blocked after confirmation** | Candidate `1f790b0` completed fresh baseline/confirmation pairs for all five agents in `infrastructure-remediation/1f790b0-v1/`; all 90 repetitions completed, repaired hard gates held where applicable, and shared judge/provider failures remained typed. No live or suite command ran. |
 | 14. Permanent cross-agent fix log | **Complete — post-repair evidence recorded** | Fix log section 23 records all five fresh result hashes, gate counts, typed failures, provenance-capture errors/fixes, terminal states, and the no-budget/no-new-repair decisions. |
 | 15. Final offline verification and whole-branch review | **Offline verification complete — whole-branch review deferred** | After the final Task 13/14 documentation update: full offline suite `1,944 passed, 1 deselected, 2 warnings`, Ruff passed, and `git diff --check` passed. Whole-branch review remains user-deferred. |
+| 16. Controlled scenario-miss contract repair | **Ready — approved by user on 2026-09-10** | Separate unscripted fake-query misses from true prohibited dependency access without weakening network isolation; version changed controlled cases/contracts and preserve v1 evidence. |
+| 17. Judge telemetry and status-precedence repair | **Ready — approved by user on 2026-09-10** | Add finite structured-validation categories and explicit judge-only infrastructure status precedence; keep the 4096 cap and no-fabricated-score rule. |
 
 The following boundaries remain active: `--tier live` is prohibited; Task 9 is network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and the whole-branch review must remain deferred until the user explicitly requests it. The separately authorized GitHub push is complete, but it does not change the Task 15 review status.
 
@@ -1736,6 +1738,31 @@ Do not merge, push, open a PR, deploy, or begin live evaluation as part of this 
 
 ---
 
+### Task 16: Repair Controlled Scenario-Miss Semantics — READY
+
+Sol High's re-review identified a harness contract defect: an injected in-memory search double currently records every query absent from the exact scenario map as `prohibited_calls`, even though this is a scenario miss rather than an attempted real-service access. This task must preserve fail-closed controlled isolation while separating `scenario_misses`/`unscripted_queries` from true prohibited dependency/tool access.
+
+- Keep `real_services_used` empty and do not re-enable Tavily, HTTP, Chroma, or any other live dependency in controlled mode.
+- Preserve the existing `no_prohibited_calls` security/isolation gate for actual forbidden dependency access; scenario misses must not be promoted to that gate.
+- Add bounded typed telemetry for scenario misses, including the tool and query identity needed to diagnose cases but excluding secrets, prompts, raw provider responses, and unbounded payloads.
+- Introduce a versioned evaluator/case contract for any changed controlled scenario. Preserve all v1 cases, v1 inputs, v1 inventories, and v1 results as immutable evidence; never silently rewrite v1.
+- Register tests against the real case registry and scenario definitions, including the Critic strong case's planned-query-to-scripted-query relationship. Correct the stale Critic test comment and remove duplicated provider-failure vocabulary only if the implementation surface already exposes a safe shared constant.
+- Do not alter target prompts, agent budgets, global `llm.max_tokens == 4096`, thresholds, scoring weights, or live dependencies in this task.
+- Required evidence: RED tests showing the current classification, GREEN tests for the separated classification and versioned case contract, focused evaluator/case/dependency tests, full offline gate, Luna-max implementation report, and Luna-max task review.
+
+### Task 17: Improve Judge Diagnostics and Status Precedence — READY
+
+This task follows Task 16 and addresses the remaining judge-only infrastructure boundary. Current `$` diagnostics are too coarse because root-level Pydantic failures can represent malformed JSON, root-shape mismatch, extra fields, or other schema categories. Judge-only failures also currently collapse into ordinary `FAILED` status when deterministic hard gates pass.
+
+- Extend structured-validation telemetry with a finite allow-list of local validation categories such as `json_invalid`, `missing`, `extra_forbidden`, `type_mismatch`, `numeric_bounds`, `string_bounds`, and `other_schema`. Derive categories locally from stable Pydantic error types; never retain provider content, `input_value`, exception messages, prompts, request payloads, or raw validation context.
+- Add offline RED/GREEN coverage for malformed JSON, missing fields, nested field errors, root-level shape errors, bounded serialization, and compatibility of existing typed diagnostics.
+- Add explicit status tests for setup/trace infrastructure failure; deterministic target failure; all deterministic gates passing plus judge provider/schema/output-limit/transport failure; mixed deterministic plus judge failure; threshold failure after scored judging; and clean review-required results.
+- Implement judge-only infrastructure precedence without changing the existing mixed-failure rule: a repetition with deterministic hard-gate failure remains a quality `FAILED` case while retaining judge diagnostics; a case/experiment with all deterministic gates passing but no score due to typed judge infrastructure failure must be `INFRASTRUCTURE FAILURE` with a safe failure reason.
+- Preserve the no-fabricated-score rule, one structured repair attempt, global `llm.max_tokens == 4096`, frozen v1 artifacts, and all existing target/fallback semantics.
+- Required evidence: RED/GREEN provider and runner tests, focused evaluation/provider suite, full offline gate, Luna-max implementation report, and Luna-max task review.
+
+---
+
 ## Subagent-Driven Development Execution Contract
 
 At execution time, use the current `superpowers:subagent-driven-development` process rather than giving one agent this entire plan as a monolithic prompt:
@@ -1766,6 +1793,10 @@ Use explicit model selection for every remaining implementation or review dispat
 | Task 13 task-scoped review | GPT-5.6 Luna | **max** |
 | Task 14 documentation/fix-log updates | GPT-5.6 Luna | **high** unless purely mechanical |
 | Task 14 task-scoped review | GPT-5.6 Luna | **max** |
+| Task 16 implementation and fix rounds | GPT-5.6 Luna | **max** |
+| Task 16 task-scoped review and re-review | GPT-5.6 Luna | **max** |
+| Task 17 implementation and fix rounds | GPT-5.6 Luna | **max** |
+| Task 17 task-scoped review and re-review | GPT-5.6 Luna | **max** |
 | Task 15 whole-branch review | **Do not dispatch** until the user explicitly requests it | deferred |
 
 Task 10 and Task 13 controlled target/judge runs must use the frozen evaluation model configuration. Implementation-model routing is not permission to change target model, judge model, reasoning effort, retry policy, or token budgets. High/max workers may require longer bounded controller waits; do not interpret slow reasoning as a repository-helper loop or launch duplicate workers.
