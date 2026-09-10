@@ -120,3 +120,13 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Commit: `7c58abc08b83ab6da6d36cead9fa1f7316ae646a`.
 - Review: Luna Max approved with no findings; review confirmed key-presence semantics, coverage of all five agents/controls, and unchanged gate ordering.
 - Remaining work: Critic fallback route predicate, Critic ReAct context wiring, and judge diagnosis from typed `field_paths` (`$` and `rationale`) remain separate repair/diagnosis items. No token-budget change is authorized.
+
+## 19. Approved Repair Wave 2: Critic Provider-Fallback Routing
+
+- Diagnosis: `fallback_critique(reason="provider_unavailable")` intentionally returns `should_continue=False`, but `_route_consistent_passes()` sent the fallback score and gaps through ordinary score-based `route_decision()`. With budget remaining, the evaluator could require continuation and fail a correct provider-outage fallback.
+- RED evidence: the typed `critic_report_review` fallback regression failed `route_consistent` before the production change; no raw provider message was needed.
+- Fix: `src/deep_research/evaluation/evaluators.py` now recognizes only the exact `critic_report_review` operation plus an allow-listed typed provider-failure kind, then evaluates the fallback using its intentional stop semantics. Normal quality routing and exhausted-budget routing remain unchanged.
+- Tests: `tests/test_evaluation/test_evaluators_agents.py` covers the fallback, normal-quality, and exhausted-budget paths. Focused Critic/evaluator tests passed `66`; Ruff and `git diff --check` passed.
+- Review: the first Luna Max attempt was invalid because it imported the stale `.worktrees/streamlit-ui` package. That result was explicitly rejected and not used as evidence. A corrected rerun bound `PYTHONPATH` to this campaign worktree, confirmed the intended evaluator import, passed `66` tests, and was approved with no findings.
+- Commit: `12f9ebef1d3faf4020da8dc3badbf58cf2acc503`.
+- Remaining work: Critic ReAct context wiring and judge diagnosis from typed field paths. No token-budget change is authorized.
