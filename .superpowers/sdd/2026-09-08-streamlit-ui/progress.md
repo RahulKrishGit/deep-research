@@ -4,7 +4,7 @@ Setup: worktree created from origin/main at 3de683931aae9bb91b55019cee0be0e77da3
 Approved visual handoff available: YES (`docs/superpowers/plans/deep-research-streamlit-ui-design-handoff.docx`).
 Routing override received from human: use GPT-5.6 Luna High for Tasks 1-10 implementation/fix waves and GPT-5.6 Luna Max for each task-scoped review/re-review. The original whole-branch-review hard stop was historical; explicit human authorization later reopened the final-review phase.
 
-Current state summary (2026-09-10): Tasks 1-21 are complete, including the authorized post-review follow-up, documentation reconciliation, and deferred worker/history test-evidence coverage. The original whole-branch-review hard stop is historical, and explicit human authorization reopened the final-review phase. Current review status: whole-branch review has not been dispatched after the follow-up; fresh verification is pending; merge readiness is not claimed.
+Current state summary (2026-09-10): Tasks 1-21 are complete, including the authorized post-review follow-up, documentation reconciliation, and deferred worker/history test-evidence coverage. Fresh post-follow-up offline and browser verification is complete at the current follow-up HEAD. The original whole-branch-review hard stop is historical, and explicit human authorization reopened the final-review phase. Current review status: final whole-branch review is pending; merge readiness is not claimed.
 
 Todo ledger:
 - [x] Tasks 1-19: Phase-4 Streamlit UI and authorized post-review follow-up
@@ -118,6 +118,17 @@ Browser visual verification: PASS — agent-browser screenshots of New Research,
 DOCX rendered-page verification: LIMITED — LibreOffice/soffice.exe was unavailable in the bundled workspace runtime; approved figure assets were extracted from the DOCX and directly compared with the live browser screenshots.
 Live paid-provider smoke: NOT RUN.
 Whole-branch review: REOPENED by explicit human instruction; not dispatched in this follow-up; merge readiness not claimed.
-Post-follow-up fresh verification: PENDING.
+Fresh post-follow-up verification (2026-09-10; tested code HEAD 15ced61):
+Focused worker/history tests: PASS — 44 passed, 2 skipped.
+Offline UI suite: PASS — 207 passed, 2 skipped.
+Repository suite: PASS — 2091 passed, 2 skipped, 1 deselected, 2 warnings in 60.21s.
+Ruff: PASS — python -m ruff check .
+git diff --check: PASS.
+Production browser functional verification: PASS — production app opened; blank submission returned the safe project-owned validation message without starting a provider run.
+Offline browser functional verification: PASS — New, Running, Completed, History, History search, status filtering, and retained partial-report route exercised through the deterministic Streamlit harness.
+Browser visual verification: PASS — live browser captures were directly inspected against the approved DOCX Figure 1-4 assets for hierarchy, editorial width, sidebar, status cues, progress rail, report/quality rail, and row-based history.
+DOCX rendered-page verification: LIMITED — bundled render_docx.py could not locate soffice.exe; approved figure assets were available and visually inspected.
+Live paid-provider smoke: NOT RUN.
+Whole-branch review: PENDING final native ChatGPT regular-Chat Sol/High review after branch synchronization.
 FINISHING-A-DEVELOPMENT-BRANCH: NOT INVOKED.
 MERGE/PUSH/PUBLISH: NOT PERFORMED.
