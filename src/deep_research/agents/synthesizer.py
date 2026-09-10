@@ -135,6 +135,11 @@ class SynthesizedReport(ContractModel):
     saved_findings: int = Field(default=0, ge=0)
 
 
+def _effective_sources(task: SynthesisTask) -> list[ScoredSource]:
+    """Return the latest normalized-URL source records for a task."""
+    return latest_scored_sources(task.sources)
+
+
 def limitation_reasons(state: ResearchState) -> list[str]:
     """Enumerate every limitation this pass must disclose, in report order.
 
@@ -310,7 +315,7 @@ def compose_report(
 ) -> SynthesizedReport:
     """Assemble the report and record the counts observability needs."""
     claims = latest_claims(task.claims)
-    sources = latest_scored_sources(task.sources)
+    sources = _effective_sources(task)
     index = build_citation_index(sources, claims)
     markdown = assemble_report(
         question=task.instruction,
@@ -326,7 +331,7 @@ def compose_report(
         markdown=markdown,
         section_count=len(sections),
         citation_count=len(index),
-        source_count=len(task.sources),
+        source_count=len(sources),
     )
 
 
@@ -337,6 +342,7 @@ def report_messages(
     claim_digest: int,
 ) -> list[ChatMessage]:
     """Build the messages that request one structured report draft."""
+    sources = _effective_sources(task)
     sections = [f"## Research question\n{task.instruction}"]
     if task.guidance.strip():
         sections.append(f"## Context\n{task.guidance}")
@@ -350,7 +356,7 @@ def report_messages(
                 "## Retrieved findings\n"
                 f"{render_finding_digest(list(task.findings)[:finding_digest])}"
             ),
-            f"## Source quality\n{render_source_quality(task.sources)}",
+            f"## Source quality\n{render_source_quality(sources)}",
             f"## Known limitations\n{render_limitations(task.limitations)}",
             f"## Response contract\n{REPORT_INSTRUCTION}",
         ]
@@ -728,6 +734,7 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
         from any other agent.
         """
         task = self.build_task(state)
+        task = task.model_copy(update={"sources": _effective_sources(task)})
         events: list[ResearchEvent] = [
             synthesis_started_event(
                 claim_count=len(task.claims),

@@ -26,6 +26,7 @@ from deep_research.agents.synthesizer import (
     render_revision_guidance,
     report_filename,
     report_messages,
+    synthesis_completed_event,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
@@ -354,6 +355,35 @@ def test_report_messages_drop_the_context_section_without_guidance() -> None:
     body = report_messages(_task(), finding_digest=10, claim_digest=10)[1].content
 
     assert "## Context" not in body
+
+
+def test_lower_level_synthesis_boundaries_project_duplicate_sources() -> None:
+    task = _task(
+        sources=[
+            _source(url="https://WWW.example.org/a/", overall=0.9),
+            _source(url="https://example.org/a", overall=0.4),
+        ]
+    )
+
+    messages = report_messages(task, finding_digest=10, claim_digest=10)
+    source_quality = messages[1].content.split("## Source quality\n", 1)[1]
+    source_quality = source_quality.split("## Known limitations\n", 1)[0]
+    report = compose_report(
+        task,
+        summary="Break-even was reached.",
+        sections=[],
+        uncertainty_notes="",
+        limitations=[],
+    )
+    completed = synthesis_completed_event(
+        report, limitations=[], claim_count=len(task.claims)
+    )
+
+    assert source_quality.count("- https://example.org/a:") == 1
+    assert "https://WWW.example.org/a/" not in source_quality
+    assert report.markdown.count("| 1 | QEC 2025") == 1
+    assert report.source_count == 1
+    assert completed.metadata["source_appendix_count"] == 1
 
 
 def _synthesizer(
