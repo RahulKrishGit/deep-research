@@ -39,6 +39,10 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 
 The following boundaries remain active: `--tier live` is prohibited; Task 9 is network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and the whole-branch review must remain deferred until the user explicitly requests it. The separately authorized GitHub push is complete, but it does not change the Task 15 review status.
 
+## Documentation and Error/Fix Ledger Requirement (Added 2026-09-10)
+
+Every repair wave must leave an auditable, secret-safe record of the errors and fixes used to restore the agents. Before and after each implementation or review attempt, update the ignored SDD ledger and the tracked permanent fix log with: the candidate SHA; the exact repository-relative files and tests involved; the observed typed error or failed gate; the classification and ruled-out alternatives; the smallest repair; the resulting commit; verification commands and counts; reviewer disposition; and any remaining blocker or next action. Preserve earlier failed artifacts and reports as immutable evidence; never overwrite, relabel, or delete them to make a later candidate appear successful. Do not record prompts, provider responses, evaluator inputs, hidden reasoning, raw exception messages, credentials, or environment dumps. A task cannot be marked complete until its error diagnosis, fix, review, and verification are recorded in both ledgers where applicable.
+
 ## Brainstorming Outcome
 
 This is an **architectural** change, not a bounded patch: the confirmed bug sits on a shared runtime boundary used by multiple agents, while provider-diagnostic and token-budget behavior crosses provider, runtime, evaluation, and agent-specific fallback interfaces.
