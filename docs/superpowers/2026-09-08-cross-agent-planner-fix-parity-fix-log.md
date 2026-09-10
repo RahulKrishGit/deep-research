@@ -135,8 +135,16 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 
 - Diagnosis: `CritiqueTask` already carried report, claims, sources, and subtopic titles, but `CriticAgent.build_task()` supplied empty `guidance`; `render_react_messages()` therefore omitted the planned subtopic/search-query context from the ReAct decision. The fail-closed scripted search client correctly exposed this missing context.
 - RED evidence: the first ReAct prompt did not contain the existing `Alpha` subtopic or exact planned query `alpha 2025`.
-- Fix: `src/deep_research/agents/critic.py` now renders existing subtopic titles and exact planned queries into deterministic `CritiqueTask.guidance` and instructs verbatim reuse for applicable spot checks. No scenario, query string, tool isolation, budget, report, claim, source, or other-agent behavior changed.
-- Tests: `tests/test_agents/test_critic.py` asserts the first ReAct provider prompt contains the planned context and instruction. Campaign-bound focused Critic/prompt tests passed `66`; Ruff and `git diff --check` passed.
+- Fix: `src/deep_research/agents/critic.py` now renders existing subtopic titles and exact planned queries into deterministic `CritiqueTask.guidance` and instructs verbatim reuse for applicable spot checks. The first full offline gate caught the new helper as a public-looking name missing from `deep_research.agents.__all__`; the helper was made private in `8271dbc`. No scenario, query string, tool isolation, budget, report, claim, source, or other-agent behavior changed.
+- Tests: `tests/test_agents/test_critic.py` asserts the first ReAct provider prompt contains the planned context and instruction. Campaign-bound focused Critic/prompt tests passed `66`; the first full gate exposed `test_agent_submodule_public_names_all_reach_all` (`1,943 passed, 1 failed`), then the corrected full gate passed `1,944` with one deselected. Ruff and `git diff --check` passed.
 - Review: Luna Max approved with no findings after confirming the campaign source binding and the two-file scope. The reviewer stopped before executing its own collected tests; controller verification is the authoritative executed result.
-- Commit: `b7c2500bef5a071b660b77931cfd9d0322d0bf37`.
+- Commits: `b7c2500bef5a071b660b77931cfd9d0322d0bf37` and integration correction `8271dbc69cd3124e897bca771d845e4c3aba53a5`.
 - Remaining work: typed judge diagnosis from the immutable field paths `$` and `rationale`. No token-budget change is authorized.
+
+## 21. Judge Boundary Diagnosis and No-Change Decision
+
+- Evidence source: the immutable confirmation `results.json` artifacts at candidate `d6a082c`, read only through typed `judge.not_run_reason` and `judge.diagnostics[].{kind,attempt,field_paths}`.
+- Observed schema paths: `$` occurred `15` times and `rationale` occurred `5` times across the five confirmation artifacts. The root path indicates a provider/schema shape failure without a safe field-level contract; `rationale` is a minority missing-field signal. There is no single repeatable `JudgeVerdict` field failure.
+- Existing boundary behavior remains correct: `JudgeVerdict.rationale` is bounded to `1..2000`; the provider performs exactly one structured repair attempt; typed schema/output-limit diagnostics are preserved; judge failures never receive fabricated scores.
+- Decision: no judge schema, prompt, provider, output-budget, status-aggregation, rubric, threshold, or scoring change is justified by the available typed evidence. A synthetic RED test would require guessing the provider response shape, which is prohibited by the campaign evidence rules.
+- Deferred issue: status aggregation can publish an ordinary `FAILED` result when a hard gate and unscorable judge failure coexist; this requires a separate explicit precedence decision and is not bundled into the agent repairs.
