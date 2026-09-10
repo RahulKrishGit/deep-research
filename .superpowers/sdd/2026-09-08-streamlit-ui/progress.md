@@ -91,3 +91,29 @@ Task 12: final re-review remediation in progress — focused pass covers the fai
 Task 12: final re-review remediation complete — the three scoped follow-ups are implemented and verified: failed pending starts now persist safe errors, clear in-flight state, and trigger one full rerun; the plan points to the committed handoff; and this ledger retains an append-only completion record. Focused UI regressions: 3 passed; UI suite: 187 passed, 2 skipped; Ruff: pass. Whole-branch review remains halted.
 
 Task 14: branch-wide integration remediation complete — the supplied review findings for max-iteration parity, live health issue projection, refinement-safe quality summaries, authoritative terminal history state, selected-session sidebar promotion, worker-start rollback, history copy/comment cleanup, and the current-state ledger summary are implemented and verified. Whole-branch re-review remains human-owned.
+
+Task 15: in progress — restore persisted token usage and LangSmith trace when a historical session is reconstructed after controller restart; add restarted-controller/AppTest coverage before implementation.
+Task 15: complete (commits 42623fe..c5d0049, review clean; Luna Max approved spec/design and code quality).
+Task 16: in progress — make refinement claim identity stable end to end; latest normalized claim-text judgments must drive both UI summaries and synthesis/report rendering.
+Task 16: fix round 1 in progress — Luna Max found lower-level synthesis can pass duplicate sources to provider input and report a raw source count that disagrees with the effective source appendix; fix scope is `synthesizer.py` plus regression coverage.
+Task 16: fix round 1/5 — 2 addressed, 0 open; commits d2cfde7..53bcc53; Luna Max scoped re-review returned ALL FINDINGS ADDRESSED.
+Task 16: complete (commits c5d0049..53bcc53, review clean after 1 fix round; Luna Max approved the effective claim/source invariant and lower-level synthesis boundary).
+Task 17: in progress — remove the undocumented 500-character question cap, distinguish genuinely empty quality details from compacted history, and update README/plan compatibility documentation.
+Task 17: complete (commits 53bcc53..6dd8ba2, review clean; Luna Max approved spec/design and code quality).
+Task 18: in progress — fresh full-suite verification exposed the missing agents-package export for latest_scored_sources; add the minimal public-surface export and rerun the verification gate.
+Task 18: complete (commits 6dd8ba2..419e6ba, review clean; Luna Max approved the public export remediation).
+
+Task 19: complete — browser verification exposed a Streamlit form-event incompatibility; the final adjudication restored atomic form submission, safe blank validation, stale-guidance removal, and explicit Task 6 plan documentation (commits 857ee01, dc9dab2, 9d1adb6; Luna Max scoped review: REVIEW CLEAN).
+
+Fresh verification (2026-09-10):
+Offline UI suite: PASS — 205 passed, 2 skipped.
+Repository suite: PASS — 2089 passed, 2 skipped, 1 deselected, 2 warnings in 60.88s.
+Ruff: PASS — python -m ruff check .
+git diff --check: PASS — only the expected Windows line-ending warning for this ledger.
+Browser functional verification: PASS — fresh production app blank submission showed safe validation without a provider run; fresh offline app accepted direct type-to-click valid submission; 963-character question remained visible and wrapped without a frontend cap; clearing input restored the validation state.
+Browser visual verification: PASS — agent-browser screenshots of New Research, Running, Completed, and History were compared against the extracted approved DOCX Figures 1–4; hierarchy, editorial width, sidebar, status cues, progress rail, report/quality rail, and history search/filter matched the handoff structure.
+DOCX rendered-page verification: LIMITED — LibreOffice/soffice.exe was unavailable in the bundled workspace runtime; approved figure assets were extracted from the DOCX and directly compared with the live browser screenshots.
+Live paid-provider smoke: NOT RUN.
+Whole-branch review: HALTED by explicit human instruction.
+FINISHING-A-DEVELOPMENT-BRANCH: NOT INVOKED.
+MERGE/PUSH/PUBLISH: NOT PERFORMED.
