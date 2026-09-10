@@ -23,10 +23,9 @@ from deep_research.evaluation.models import (
 )
 from deep_research.utils.types import ResearchState
 
-# The registry is empty until Tasks 10-15 land the case files, so the
-# fixtures below fall back to minimal sample cases whose dependency
-# scenarios are the real scenario keys. The moment a case file lands, the
-# registry lookup wins and these tests exercise the real cases.
+# The registry is the normal source for these fixtures. The fallback keeps
+# the bundle tests useful if they are run against a minimal case catalog, but
+# the populated campaign registry always wins and exercises real cases.
 
 _SAMPLE_CASE_IDS = {
     "planner": "focused-decomposition",
@@ -155,7 +154,7 @@ def test_controlled_documents_land_in_an_evaluation_only_directory(
 
 
 @pytest.mark.asyncio
-async def test_an_unscripted_search_is_a_prohibited_call(
+async def test_an_unscripted_search_returns_a_typed_scenario_miss(
     tracker, settings, tmp_path, runtime_config_for, planner_case
 ) -> None:
     bundle = build(runtime_config_for, tracker, settings, tmp_path, planner_case)
@@ -168,11 +167,60 @@ async def test_an_unscripted_search_is_a_prohibited_call(
 
     ledger = bundle.recorder.ledger()
     assert result.success is False
-    assert ledger.prohibited_calls
+    assert result.error is not None
+    assert result.error.type == "ScenarioMissError"
+    assert ledger.prohibited_calls == []
+    assert ledger.scenario_misses == [
+        "web_search: something nobody scripted"
+    ]
     assert any(
         summary.tool_name == "web_search" and summary.failures == 1
         for summary in ledger.tool_calls
     )
+
+
+@pytest.mark.asyncio
+async def test_an_unscripted_search_is_a_scenario_miss_not_prohibited_access(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    """A fake-query miss is telemetry, not evidence of real-service access."""
+    bundle = build(runtime_config_for, tracker, settings, tmp_path, planner_case)
+    search = next(
+        tool for tool in bundle.tools if tool.name == "web_search"
+    )
+
+    async with tracker.session_span("evaluation-1", "q"):
+        result = await search.execute(query="something nobody scripted")
+
+    ledger = bundle.recorder.ledger()
+    assert result.success is False
+    assert ledger.prohibited_calls == []
+    assert ledger.scenario_contract_version == 2
+    assert ledger.scenario_misses == [
+        "web_search: something nobody scripted"
+    ]
+    assert ledger.real_services_used == []
+
+
+@pytest.mark.asyncio
+async def test_a_long_unscripted_search_is_bounded_in_scenario_telemetry(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    bundle = build(runtime_config_for, tracker, settings, tmp_path, planner_case)
+    search = next(
+        tool for tool in bundle.tools if tool.name == "web_search"
+    )
+    query = "q" * 4096
+
+    async with tracker.session_span("evaluation-1", "q"):
+        result = await search.execute(query=query)
+
+    assert result.success is False
+    misses = bundle.recorder.ledger().scenario_misses
+    assert len(misses) == 1
+    assert len(misses[0]) <= 256
+    assert misses[0].startswith("web_search: q")
+    assert misses[0] != f"web_search: {query}"
 
 
 @pytest.mark.asyncio

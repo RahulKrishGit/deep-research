@@ -11,6 +11,7 @@ from deep_research.evaluation.models import (
     ARTIFACT_SCHEMA_VERSION,
     CLI_AGENT_NAMES,
     CaseExpectations,
+    DependencyLedger,
     DeterministicMetric,
     EvaluationCase,
     EvaluationFailure,
@@ -428,6 +429,28 @@ def test_target_output_records_thinking_mode_not_reasoning_mode() -> None:
 
     assert "reasoning_mode" not in TargetOutput.model_fields
     assert TargetOutput.model_fields["thinking_mode"].default == "enabled"
+
+
+def test_dependency_ledger_has_a_bounded_versioned_scenario_miss_contract() -> None:
+    ledger = DependencyLedger(
+        scenario_contract_version=2,
+        scenario_misses=["web_search: unscripted query"],
+    )
+
+    payload = ledger.model_dump(mode="json")
+    assert payload["scenario_contract_version"] == 2
+    assert payload["scenario_misses"] == ["web_search: unscripted query"]
+    assert DependencyLedger.model_validate(payload) == ledger
+    assert DependencyLedger().scenario_contract_version == 1
+
+    with pytest.raises(ValueError):
+        DependencyLedger(scenario_misses=["x" * 257])
+    with pytest.raises(ValueError):
+        DependencyLedger(
+            scenario_misses=[
+                f"web_search: {index}" for index in range(17)
+            ]
+        )
 
 
 def test_suite_result_round_trips_through_json(experiment_result) -> None:

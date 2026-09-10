@@ -507,8 +507,8 @@ async def test_the_mixed_double_serves_all_three_scripted_searches(
 ) -> None:
     """The scripted search double serves the three claim-keyed searches:
     corroboration for the supported claim, one contradicting result for the
-    refuted claim, nothing for the thin claim — and an unscripted query is
-    prohibited."""
+    refuted claim, nothing for the thin claim — and an unscripted query is a
+    recorded scenario miss."""
     case = _case("mixed-verdicts")
     bundle = build_controlled_dependencies(
         runtime_config_for("fact_checker"),
@@ -534,17 +534,18 @@ async def test_the_mixed_double_serves_all_three_scripted_searches(
     assert thin.success, thin.error
     assert thin.data["results"] == []
 
-    # An unscripted query is prohibited: it surfaces as a failed tool result
-    # (BaseTool.execute converts every client exception into a ToolResult)
-    # and is recorded in the ledger as a prohibited call.
+    # An unscripted query is a scenario miss: it still surfaces as a failed
+    # tool result (BaseTool.execute converts every client exception into a
+    # ToolResult), but it is not evidence of a real-service access.
     async with tracker.session_span("evaluation-1", "q"):
-        prohibited = await search.execute(query="something nobody scripted")
+        miss = await search.execute(query="something nobody scripted")
 
-    assert prohibited.success is False
-    assert prohibited.error is not None
-    assert prohibited.error.type == "ProhibitedDependencyError"
-    assert bundle.recorder.ledger().prohibited_calls == [
-        "tavily.search('something nobody scripted')"
+    assert miss.success is False
+    assert miss.error is not None
+    assert miss.error.type == "ScenarioMissError"
+    assert bundle.recorder.ledger().prohibited_calls == []
+    assert bundle.recorder.ledger().scenario_misses == [
+        "web_search: something nobody scripted"
     ]
 
 

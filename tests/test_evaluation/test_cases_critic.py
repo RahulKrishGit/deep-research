@@ -9,6 +9,7 @@ from deep_research.agents.critic import route_decision
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
+    CONTROLLED_SCENARIO_CONTRACT_VERSION,
     SCENARIOS,
     build_controlled_dependencies,
 )
@@ -47,14 +48,13 @@ _METRICS = {
     ),
 }
 
-# The scenario search keys are shared with the dependency scenarios: a
-# scripted client answers exactly one query per controlled case, so the
-# case tests pin the query literal on both sides. The gappy case's key is
-# also the participation subtopic's own search query, so the case file
-# carries it; the other two keys exist only in the scenario and here.
+# The scenario search keys are applicable planned queries from each
+# controlled case. The case tests pin that relationship on both sides so a
+# Critic spot check cannot miss merely because a scenario key drifted away
+# from the task context.
 
 _STRONG_SEARCH_KEY = (
-    "measured effect of urban tree canopy on summer surface temperature"
+    "urban tree canopy measured surface temperature reductions"
 )
 _GAPPY_SEARCH_KEY = "municipal composting mandates participation rates"
 _BUDGET_SEARCH_KEY = "congestion pricing particulate pollution evidence"
@@ -245,6 +245,37 @@ def test_every_case_names_its_scenario() -> None:
     assert _case("missing-evidence-or-budget-exhausted").dependency_scenario == (
         "critic-budget-exhausted"
     )
+
+
+@pytest.mark.parametrize(
+    ("case_id", "scenario_name"),
+    (
+        ("approve-strong-report", "critic-strong-report"),
+        ("request-more-research", "critic-gappy-report"),
+        (
+            "missing-evidence-or-budget-exhausted",
+            "critic-budget-exhausted",
+        ),
+    ),
+)
+def test_controlled_scenarios_match_planned_queries_and_contract_version(
+    case_id: str, scenario_name: str
+) -> None:
+    case = _case(case_id)
+    script = SCENARIOS[scenario_name]
+    planned_queries = {
+        query
+        for sub_topic in case.state.sub_topics
+        for query in sub_topic.search_queries
+    }
+
+    # The case/reference semantics remain v1; the controlled fake scenario
+    # contract is explicitly versioned so its repaired behavior is not
+    # mistaken for an old v1 run.
+    assert case.version == 1
+    assert script.contract_version == CONTROLLED_SCENARIO_CONTRACT_VERSION
+    assert script.search_responses
+    assert set(script.search_responses) <= planned_queries
 
 
 def test_the_live_case_uses_the_literal_live_scenario() -> None:

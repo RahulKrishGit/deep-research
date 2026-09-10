@@ -23,6 +23,8 @@ _MAX_ARTIFACT_DETERMINISTIC_METRICS = 16
 _MAX_ARTIFACT_METRIC_ID_LENGTH = 64
 _MAX_ARTIFACT_OPERATION_LENGTH = 96
 _MAX_ARTIFACT_PROHIBITED_CALL_COUNT = 10_000
+_MAX_SCENARIO_MISSES = 16
+_MAX_SCENARIO_MISS_LENGTH = 256
 _ARTIFACT_METRIC_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 AgentName: TypeAlias = Literal[
@@ -178,15 +180,29 @@ class ToolCallSummary(ContractModel):
     failures: int = Field(ge=0)
 
 
+ScenarioMissSummary: TypeAlias = Annotated[
+    str, Field(min_length=1, max_length=_MAX_SCENARIO_MISS_LENGTH)
+]
+
+
 class DependencyLedger(ContractModel):
     """What this repetition actually touched.
 
-    Controlled gates read ``prohibited_calls``; live gates read
+    ``scenario_misses`` are failed requests to an injected controlled double
+    for which no exact response was scripted. They are diagnostic telemetry,
+    not evidence that a real dependency was reached. Controlled security
+    gates read only ``prohibited_calls``; live gates read
     ``real_services_used``.
     """
 
+    # Additive field: older v1 artifacts validate with the default while new
+    # controlled artifacts identify the repaired scenario contract explicitly.
+    scenario_contract_version: int = Field(default=1, ge=1)
     tool_calls: list[ToolCallSummary] = Field(default_factory=list)
     prohibited_calls: list[str] = Field(default_factory=list)
+    scenario_misses: list[ScenarioMissSummary] = Field(
+        default_factory=list, max_length=_MAX_SCENARIO_MISSES
+    )
     real_services_used: list[str] = Field(default_factory=list)
     memory_writes: int = Field(default=0, ge=0)
     memory_reads: int = Field(default=0, ge=0)

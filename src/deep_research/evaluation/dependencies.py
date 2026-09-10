@@ -6,10 +6,11 @@ document sink, and a per-repetition ledger. Nothing in the controlled half
 can construct a real Tavily client, a real httpx client, a ChromaDB
 collection, or an OpenAI embedding call — the scripted collaborators are
 always injected and ``tavily_api_key=""`` is always passed, so even an
-accidentally constructed client could not authenticate. Unscripted search
-queries and HTTP fetches raise ``ProhibitedDependencyError``, which
-``BaseTool.execute`` converts into a failed ``ToolResult`` the agent can
-see and the gates can count.
+accidentally constructed client could not authenticate. An unscripted search
+query raises ``ScenarioMissError`` and an unscripted HTTP fetch raises
+``ProhibitedDependencyError``; ``BaseTool.execute`` converts either into a
+failed ``ToolResult`` the agent can see, while the controlled security gate
+counts only the latter.
 
 The live half builds production-parity bundles: real Chroma-backed
 ``LongTermMemory`` under a per-repetition persist path, real document
@@ -85,6 +86,11 @@ _ENTRY_FIELD_KEYS = frozenset(
 
 _EMBEDDING_DIMENSION = 8
 
+# Additive controlled-harness contract marker. Existing v1 case identities
+# and artifacts stay unchanged; new controlled outputs identify this repaired
+# fake-dependency behavior through ``DependencyLedger``.
+CONTROLLED_SCENARIO_CONTRACT_VERSION = 2
+
 
 class ProhibitedDependencyError(RuntimeError):
     """A controlled bundle was asked to touch a real external service."""
@@ -93,6 +99,15 @@ class ProhibitedDependencyError(RuntimeError):
         super().__init__(
             f"{service}.{operation} is prohibited in controlled evaluation"
         )
+
+
+class ScenarioMissError(RuntimeError):
+    """A controlled fake received a request with no scripted response."""
+
+    def __init__(self) -> None:
+        # Keep the tool-facing error static; the bounded query identity lives
+        # in the dependency ledger rather than in an exception message.
+        super().__init__("controlled scenario has no scripted response")
 
 
 class MissingCredentialError(RuntimeError):
@@ -206,9 +221,11 @@ class DependencyRecorder:
     with one ``ToolCallSummary`` per invoked tool name.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, scenario_contract_version: int = 1) -> None:
+        self._scenario_contract_version = scenario_contract_version
         self._outcomes: dict[str, list[bool]] = {}
         self._prohibited: list[str] = []
+        self._scenario_misses: list[str] = []
         self._real_services: list[str] = []
         self._memory_reads = 0
         self._memory_writes = 0
@@ -219,6 +236,18 @@ class DependencyRecorder:
 
     def record_prohibited(self, description: str) -> None:
         self._prohibited.append(description)
+
+    def record_scenario_miss(self, tool_name: str, query: str) -> None:
+        """Record one bounded, provider-content-free fake-query identity."""
+        if len(self._scenario_misses) >= 16:
+            return
+        normalized_query = " ".join(query.split())
+        summary = f"{tool_name}: {normalized_query}"
+        if len(summary) > 256:
+            digest = sha256(normalized_query.encode("utf-8")).hexdigest()[:16]
+            suffix = f"…#{digest}"
+            summary = f"{summary[:256 - len(suffix)]}{suffix}"
+        self._scenario_misses.append(summary)
 
     def record_real_service(self, name: str) -> None:
         self._real_services.append(name)
@@ -234,6 +263,7 @@ class DependencyRecorder:
 
     def ledger(self) -> DependencyLedger:
         return DependencyLedger(
+            scenario_contract_version=self._scenario_contract_version,
             tool_calls=[
                 ToolCallSummary(
                     tool_name=name,
@@ -243,6 +273,7 @@ class DependencyRecorder:
                 for name, outcomes in sorted(self._outcomes.items())
             ],
             prohibited_calls=list(self._prohibited),
+            scenario_misses=list(self._scenario_misses),
             real_services_used=list(self._real_services),
             memory_reads=self._memory_reads,
             memory_writes=self._memory_writes,
@@ -276,6 +307,7 @@ class ScenarioScript:
     reputation_failures: Mapping[str, Exception] = field(default_factory=dict)
     failures: dict[str, Exception] = field(default_factory=dict)
     scripted_search_urls: Sequence[str] = field(default_factory=tuple)
+    contract_version: int = CONTROLLED_SCENARIO_CONTRACT_VERSION
 
 
 @dataclass(frozen=True)
@@ -408,7 +440,7 @@ class _InMemoryCollection:
 
 
 class _ScriptedSearchClient:
-    """Serves scripted Tavily responses; any unscripted query is prohibited."""
+    """Serves scripted responses; an unknown query is a scenario miss."""
 
     def __init__(
         self, script: ScenarioScript, *, recorder: DependencyRecorder
@@ -426,9 +458,9 @@ class _ScriptedSearchClient:
         del search_depth, max_results
         response = self._responses.get(query)
         if response is None:
-            self._recorder.record_prohibited(f"tavily.search({query!r})")
+            self._recorder.record_scenario_miss("web_search", query)
             self._recorder.record_tool_call("web_search", success=False)
-            raise ProhibitedDependencyError("tavily", "search")
+            raise ScenarioMissError()
         if isinstance(response, Exception):
             self._recorder.record_tool_call("web_search", success=False)
             raise response
@@ -763,7 +795,9 @@ def build_controlled_dependencies(
         runtime, case_id=case.case_id, repetition=repetition
     )
 
-    recorder = DependencyRecorder()
+    recorder = DependencyRecorder(
+        scenario_contract_version=script.contract_version
+    )
     collection = _InMemoryCollection()
     embeddings = _DeterministicEmbeddings()
     long_term = LongTermMemory(
@@ -911,9 +945,9 @@ def build_live_dependencies(
     )
 
 
-# Sample scenarios. Each agent gets exactly one scenario here so the Task 7
-# bundle tests have something real to drive; the per-agent task (10-15)
-# replaces the helper with the full three-scenario script.
+# Controlled scenarios mirror the registered case catalog. Each agent has
+# three deterministic scripts, and every script carries the current
+# controlled-harness contract version.
 
 # The scripted URLs mirror cases/researcher.py's known_source_urls: the
 # gates check every finding's source_url against the case's declared list,
@@ -1372,8 +1406,7 @@ def _critic_scenarios() -> dict[str, ScenarioScript]:
     return {
         "critic-strong-report": ScenarioScript(
             search_responses={
-                "measured effect of urban tree canopy on summer surface "
-                "temperature": {
+                "urban tree canopy measured surface temperature reductions": {
                     "results": [
                         {
                             "url": (

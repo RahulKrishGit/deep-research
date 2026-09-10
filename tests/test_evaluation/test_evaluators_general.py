@@ -497,6 +497,35 @@ def test_a_prohibited_call_fails_its_gate(
     assert gate(results, "no_prohibited_calls").passed is False
 
 
+def test_a_scenario_miss_does_not_fail_the_prohibited_call_gate(
+    planner_case, clean_target_output
+) -> None:
+    ledger = clean_target_output.dependencies.model_copy(
+        update={"scenario_misses": ["web_search: unscripted"]}
+    )
+    output = clean_target_output.model_copy(update={"dependencies": ledger})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "no_prohibited_calls").passed is True
+
+
+def test_a_prohibited_call_still_fails_with_a_scenario_miss(
+    planner_case, clean_target_output
+) -> None:
+    ledger = clean_target_output.dependencies.model_copy(
+        update={
+            "scenario_misses": ["web_search: unscripted"],
+            "prohibited_calls": ["tavily.search"],
+        }
+    )
+    output = clean_target_output.model_copy(update={"dependencies": ledger})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "no_prohibited_calls").passed is False
+
+
 def test_a_missing_trace_url_fails_the_trace_gate(
     planner_case, clean_target_output
 ) -> None:
