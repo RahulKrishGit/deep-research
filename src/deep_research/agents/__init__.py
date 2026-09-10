@@ -196,6 +196,7 @@ from deep_research.agents.sources import (
     SourceGroup,
     corroboration_score,
     group_findings_by_url,
+    latest_scored_sources,
     normalize_source_url,
     source_domain,
 )
@@ -402,6 +403,7 @@ __all__ = [
     "invalid_section_error",
     "is_high_priority",
     "known_source_urls",
+    "latest_scored_sources",
     "limitation_reasons",
     "low_confidence_count",
     "memory_payload",
