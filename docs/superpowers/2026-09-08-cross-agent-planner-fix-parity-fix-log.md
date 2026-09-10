@@ -148,3 +148,9 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Existing boundary behavior remains correct: `JudgeVerdict.rationale` is bounded to `1..2000`; the provider performs exactly one structured repair attempt; typed schema/output-limit diagnostics are preserved; judge failures never receive fabricated scores.
 - Decision: no judge schema, prompt, provider, output-budget, status-aggregation, rubric, threshold, or scoring change is justified by the available typed evidence. A synthetic RED test would require guessing the provider response shape, which is prohibited by the campaign evidence rules.
 - Deferred issue: status aggregation can publish an ordinary `FAILED` result when a hard gate and unscorable judge failure coexist; this requires a separate explicit precedence decision and is not bundled into the agent repairs.
+
+## 22. Post-Repair Validation Readiness
+
+- Repaired candidate: `71465c67933b412429f9b6fd6511843a15c28415`.
+- Offline gate: repair-focused `1,197 passed`; full offline suite `1,944 passed, 1 deselected`; Ruff and `git diff --check` passed.
+- Controlled validation must use a fresh immutable evidence namespace and preserve the old `d6a082c-v3` artifacts. The global 4096-token cap, frozen cases, provider fallback contracts, judge no-score rule, and live/suite prohibition remain unchanged.
