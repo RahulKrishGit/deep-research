@@ -8,6 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field
 
+from deep_research.agents.sources import latest_scored_sources
 from deep_research.ui.models import (
     UiClaimDetail,
     UiCredibilityTier,
@@ -19,6 +20,7 @@ from deep_research.ui.models import (
     UiTokenUsage,
     UiToolCallSummary,
 )
+from deep_research.utils.claims import latest_claims
 from deep_research.utils.types import (
     Claim,
     Finding,
@@ -426,13 +428,11 @@ def source_summary(
         if topic not in topics:
             topics.append(topic)
 
-    latest_sources: dict[str, ScoredSource] = {}
-    for source in sources:
-        latest_sources[_normalize_source_url(source.url)] = source
+    latest_sources = latest_scored_sources(sources)
 
     details: list[UiSourceDetail] = []
     tier_counts = {tier: 0 for tier in ("high", "moderate", "low", "unrated")}
-    for source in latest_sources.values():
+    for source in latest_sources:
         tier = credibility_tier(source)
         tier_counts[tier] += 1
         details.append(
@@ -465,16 +465,8 @@ def fact_check_summary(claims: Sequence[Claim]) -> UiFactCheckSummary:
         "contradicted": 0,
         "insufficient_evidence": 0,
     }
-    latest_claims: dict[tuple[str, tuple[str, ...]], Claim] = {}
-    for claim in claims:
-        claim_text = " ".join(claim.text.split()).casefold()
-        source_ids = tuple(
-            sorted({_normalize_source_url(url) for url in claim.source_urls})
-        )
-        latest_claims[(claim_text, source_ids)] = claim
-
     details = []
-    for claim in latest_claims.values():
+    for claim in latest_claims(claims):
         counts[claim.verdict] += 1
         details.append(
             UiClaimDetail(

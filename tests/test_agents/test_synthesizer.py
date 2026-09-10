@@ -427,6 +427,96 @@ def test_build_task_carries_the_evidence_limitations_and_revision_notes(
     assert "No cost data." in task.guidance
 
 
+def test_build_task_projects_one_latest_claim_judgment_without_mutating_history(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    first = _claim(
+        text="The deployment target is achievable.",
+        verdict="verified",
+        confidence=0.9,
+        urls=["https://example.org/a"],
+    )
+    latest = _claim(
+        text="  The deployment target is   achievable. ",
+        verdict="contradicted",
+        confidence=0.4,
+        urls=["https://example.org/a", "https://example.org/b"],
+    )
+    state = _state(
+        verified_claims=[first, latest],
+        evaluated_sources=[
+            _source(url="https://WWW.example.org/a/"),
+            _source(url="https://example.org/a", overall=0.4),
+            _source(url="https://example.org/b"),
+        ],
+    )
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+
+    task = agent.build_task(state)
+
+    assert state.verified_claims == [first, latest]
+    assert task.claims == [latest]
+    assert task.claims[0].verdict == "contradicted"
+    assert task.claims[0].source_urls == [
+        "https://example.org/a",
+        "https://example.org/b",
+    ]
+    assert [source.url for source in task.sources] == [
+        "https://example.org/a",
+        "https://example.org/b",
+    ]
+    assert task.limitations == ["no_verified_claims", "contradicted_claims"]
+
+
+@pytest.mark.asyncio
+async def test_report_uses_only_latest_claim_judgment_for_sections_memory_and_counts(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    first = _claim(
+        text="The deployment target is achievable.",
+        verdict="verified",
+        confidence=0.9,
+        urls=["https://example.org/a"],
+    )
+    latest = _claim(
+        text="  The deployment target is   achievable. ",
+        verdict="contradicted",
+        confidence=0.4,
+        urls=["https://example.org/a", "https://example.org/b"],
+    )
+    state = _state(
+        verified_claims=[first, latest],
+        evaluated_sources=[_source(url="https://example.org/a")],
+    )
+    memory = FakeMemory()
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft()]),
+        synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert "(no claim reached a verified verdict)" in outcome.result.markdown
+    assert "### Contradicted by independent sources" in outcome.result.markdown
+    assert outcome.result.markdown.count(
+        "- The deployment target is   achievable."
+    ) == 1
+    assert "[2]" in outcome.result.markdown
+    assert "[1] (confidence 0.90)" not in outcome.result.markdown
+    assert outcome.result.citation_count == 2
+    assert outcome.result.saved_findings == 0
+    assert memory.saved == []
+    completed = outcome.state_update["events"][-1].metadata
+    assert completed["claim_count"] == 1
+
+
 @pytest.mark.asyncio
 async def test_a_run_writes_the_report_and_records_its_counts(
     tracker: Tracker, tmp_path: Path

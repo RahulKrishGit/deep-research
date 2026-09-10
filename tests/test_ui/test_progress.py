@@ -608,7 +608,7 @@ def test_fact_check_summary_deduplicates_refinement_passes_and_keeps_latest_reco
 ) -> None:
     first = Claim(
         text="The deployment target is achievable.",
-        source_urls=["https://www.example.org/research/"],
+        source_urls=["https://example.org/a"],
         verdict="verified",
         confidence=0.9,
         evidence=["First pass evidence."],
@@ -616,6 +616,7 @@ def test_fact_check_summary_deduplicates_refinement_passes_and_keeps_latest_reco
     )
     latest = first.model_copy(
         update={
+            "source_urls": ["https://example.org/a", "https://example.org/b"],
             "verdict": "contradicted",
             "confidence": 0.4,
             "evidence": ["Latest pass evidence."],
