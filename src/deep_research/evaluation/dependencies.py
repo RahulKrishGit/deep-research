@@ -41,7 +41,7 @@ from deep_research.agents.source_evaluator import (
     ReputationSource,
     SourceEvaluatorAgent,
 )
-from deep_research.agents.sources import source_domain
+from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.evaluation.config import EvaluationRuntimeConfig
 from deep_research.evaluation.factory import evaluation_session_id
@@ -85,6 +85,7 @@ _ENTRY_FIELD_KEYS = frozenset(
 )
 
 _EMBEDDING_DIMENSION = 8
+_MAX_SOURCE_URL_FINGERPRINTS = 128
 
 # Additive controlled-harness contract marker. Existing v1 case identities
 # and artifacts stay unchanged; new controlled outputs identify this repaired
@@ -226,6 +227,7 @@ class DependencyRecorder:
         self._outcomes: dict[str, list[bool]] = {}
         self._prohibited: list[str] = []
         self._scenario_misses: list[str] = []
+        self._source_url_fingerprints: list[str] = []
         self._real_services: list[str] = []
         self._memory_reads = 0
         self._memory_writes = 0
@@ -248,6 +250,52 @@ class DependencyRecorder:
             suffix = f"…#{digest}"
             summary = f"{summary[:256 - len(suffix)]}{suffix}"
         self._scenario_misses.append(summary)
+
+    def record_source_url_fingerprints(self, urls: Sequence[str]) -> None:
+        """Record bounded, normalized URL identities without retaining URLs."""
+        for url in urls:
+            if not isinstance(url, str):
+                continue
+            fingerprint = sha256(
+                normalize_source_url(url).encode("utf-8")
+            ).hexdigest()
+            if fingerprint in self._source_url_fingerprints:
+                continue
+            if len(self._source_url_fingerprints) >= _MAX_SOURCE_URL_FINGERPRINTS:
+                return
+            self._source_url_fingerprints.append(fingerprint)
+
+    def record_source_url_payload(self, tool_name: str, payload: object) -> None:
+        """Extract source identities from a successful source-tool payload."""
+        if not isinstance(payload, Mapping):
+            return
+        urls: list[str] = []
+        if tool_name == "web_search":
+            results = payload.get("results")
+            if isinstance(results, list):
+                urls.extend(
+                    item["url"]
+                    for item in results
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("url"), str)
+                )
+        elif tool_name == "web_scraper":
+            url = payload.get("url")
+            if isinstance(url, str):
+                urls.append(url)
+        elif tool_name == "document_reader":
+            source = payload.get("source")
+            if isinstance(source, str):
+                try:
+                    is_remote = urlsplit(source).scheme.lower() in {
+                        "http",
+                        "https",
+                    }
+                except ValueError:
+                    is_remote = False
+                if is_remote:
+                    urls.append(source)
+        self.record_source_url_fingerprints(urls)
 
     def record_real_service(self, name: str) -> None:
         self._real_services.append(name)
@@ -274,6 +322,7 @@ class DependencyRecorder:
             ],
             prohibited_calls=list(self._prohibited),
             scenario_misses=list(self._scenario_misses),
+            source_url_fingerprints=list(self._source_url_fingerprints),
             real_services_used=list(self._real_services),
             memory_reads=self._memory_reads,
             memory_writes=self._memory_writes,
@@ -744,6 +793,37 @@ class _RecordingDocumentWriter(WriteDocumentTool):
         return result
 
 
+class _FingerprintingTool(BaseTool):
+    """Proxy a live source tool and retain only URL fingerprints."""
+
+    def __init__(
+        self,
+        wrapped: BaseTool,
+        tracker: Tracker,
+        *,
+        recorder: DependencyRecorder,
+    ) -> None:
+        super().__init__(tracker)
+        self._wrapped = wrapped
+        self._recorder = recorder
+        self.name = wrapped.name
+        self.description = wrapped.description
+        self.input_schema = dict(wrapped.input_schema)
+        self.output_schema = dict(wrapped.output_schema)
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        result = await self._wrapped.execute(**kwargs)
+        if result.success:
+            self._recorder.record_source_url_payload(
+                self.name, result.data
+            )
+        return result
+
+    async def _execute(self, context: Any, **kwargs: Any) -> Any:
+        del context, kwargs
+        raise NotImplementedError("the proxy delegates to its wrapped tool")
+
+
 def build_controlled_dependencies(
     runtime: EvaluationRuntimeConfig,
     case: Any,
@@ -928,6 +1008,14 @@ def build_live_dependencies(
         search_client=search_client,
         http_client=http_client,
     )
+    tools = [
+        (
+            _FingerprintingTool(tool, tracker, recorder=recorder)
+            if tool.name in {"web_search", "web_scraper", "document_reader"}
+            else tool
+        )
+        for tool in tools
+    ]
     procedural = ProceduralMemory.from_config(
         isolated.memory.procedural, tracker=tracker
     )

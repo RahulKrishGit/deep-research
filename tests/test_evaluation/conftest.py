@@ -1514,7 +1514,10 @@ def live_target_harness(tracker, settings, tmp_path):
                 "results": [
                     {
                         "url": _LIVE_FINDING_URL,
-                        "title": "Sodium-ion energy density report",
+                        "title": (
+                            "Sodium-ion energy density report "
+                            + "x" * 240
+                        ),
                         "content": (
                             "Cell-level energy density reported at "
                             "160 Wh/kg."

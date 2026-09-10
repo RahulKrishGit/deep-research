@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
+from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
     SCENARIOS,
+    DependencyRecorder,
     ProhibitedDependencyError,
     build_controlled_dependencies,
     isolated_settings,
@@ -263,6 +266,34 @@ async def test_a_scripted_search_succeeds_and_is_recorded(
         for summary in ledger.tool_calls
     )
     assert ledger.real_services_used == []
+
+
+def test_source_payload_telemetry_fingerprints_all_remote_source_shapes() -> None:
+    recorder = DependencyRecorder()
+    urls = [
+        "https://www.example.com/search-result/",
+        "https://example.com/article",
+        "https://example.com/report.pdf",
+    ]
+
+    recorder.record_source_url_payload(
+        "web_search", {"results": [{"url": urls[0]}]}
+    )
+    recorder.record_source_url_payload("web_scraper", {"url": urls[1]})
+    recorder.record_source_url_payload(
+        "document_reader", {"source": urls[2]}
+    )
+    recorder.record_source_url_payload(
+        "document_reader", {"source": "C:/local/report.pdf"}
+    )
+
+    fingerprints = recorder.ledger().source_url_fingerprints
+    expected = [
+        sha256(normalize_source_url(url).encode("utf-8")).hexdigest()
+        for url in urls
+    ]
+    assert fingerprints == expected
+    assert all(url not in repr(fingerprints) for url in urls)
 
 
 @pytest.mark.asyncio

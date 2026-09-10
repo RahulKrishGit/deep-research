@@ -26,6 +26,7 @@ _MAX_ARTIFACT_OPERATION_LENGTH = 96
 _MAX_ARTIFACT_PROHIBITED_CALL_COUNT = 10_000
 _MAX_SCENARIO_MISSES = 16
 _MAX_SCENARIO_MISS_LENGTH = 256
+_MAX_SOURCE_URL_FINGERPRINTS = 128
 _ARTIFACT_METRIC_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 AgentName: TypeAlias = Literal[
@@ -184,6 +185,9 @@ class ToolCallSummary(ContractModel):
 ScenarioMissSummary: TypeAlias = Annotated[
     str, Field(min_length=1, max_length=_MAX_SCENARIO_MISS_LENGTH)
 ]
+SourceURLFingerprint: TypeAlias = Annotated[
+    str, Field(pattern=r"^[0-9a-f]{64}$")
+]
 
 
 class DependencyLedger(ContractModel):
@@ -203,6 +207,12 @@ class DependencyLedger(ContractModel):
     prohibited_calls: list[str] = Field(default_factory=list)
     scenario_misses: list[ScenarioMissSummary] = Field(
         default_factory=list, max_length=_MAX_SCENARIO_MISSES
+    )
+    # Additive, secret-safe provenance telemetry. The raw URLs stay out of
+    # evaluation artifacts; live Researcher gates can compare these bounded
+    # fingerprints with the URLs reported in the final findings.
+    source_url_fingerprints: list[SourceURLFingerprint] = Field(
+        default_factory=list, max_length=_MAX_SOURCE_URL_FINGERPRINTS
     )
     real_services_used: list[str] = Field(default_factory=list)
     memory_writes: int = Field(default=0, ge=0)

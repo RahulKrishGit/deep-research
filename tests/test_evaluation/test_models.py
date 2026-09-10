@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 
 import pytest
 
@@ -451,6 +452,23 @@ def test_dependency_ledger_has_a_bounded_versioned_scenario_miss_contract() -> N
                 f"web_search: {index}" for index in range(17)
             ]
         )
+
+
+def test_dependency_ledger_round_trips_bounded_source_url_fingerprints() -> None:
+    fingerprint = sha256(
+        "https://example.com/source".encode("utf-8")
+    ).hexdigest()
+    ledger = DependencyLedger(source_url_fingerprints=[fingerprint])
+
+    payload = ledger.model_dump(mode="json")
+
+    assert payload["source_url_fingerprints"] == [fingerprint]
+    assert DependencyLedger.model_validate(payload) == ledger
+
+    with pytest.raises(ValueError):
+        DependencyLedger(source_url_fingerprints=["not-a-sha256"])
+    with pytest.raises(ValueError):
+        DependencyLedger(source_url_fingerprints=[fingerprint] * 129)
 
 
 def test_suite_result_round_trips_through_json(experiment_result) -> None:

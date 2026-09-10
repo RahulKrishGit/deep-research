@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
+from hashlib import sha256
 from typing import TypeAlias
 
 from langsmith.schemas import Example, Run
@@ -250,6 +251,27 @@ def _normalized(url: str) -> str:
         return url
 
 
+def _researcher_live_url_fingerprints(
+    output: TargetOutput, case: EvaluationCase
+) -> set[str]:
+    """Return provenance fingerprints only for live Researcher outputs."""
+    if case.tier != "live" or case.agent_name != "researcher":
+        return set()
+    values = _field(output.dependencies, "source_url_fingerprints")
+    if not isinstance(values, (list, tuple)):
+        return set()
+    return {value for value in values if isinstance(value, str)}
+
+
+def _url_is_known(
+    url: str, allowed: set[str], fingerprints: set[str]
+) -> bool:
+    normalized = _normalized(url)
+    if normalized in allowed:
+        return True
+    return sha256(normalized.encode("utf-8")).hexdigest() in fingerprints
+
+
 def _gate_citations_known(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
@@ -307,6 +329,7 @@ def _gate_citations_known(
                 _normalized(url)
                 for url in _url_like_strings(_field(step, "observation_summary"))
             )
+    fingerprints = _researcher_live_url_fingerprints(output, case)
     cited = {
         _normalized(url)
         for url in (
@@ -314,7 +337,9 @@ def _gate_citations_known(
             | _url_like_strings(output.state_update)
         )
     }
-    unknown = sorted(cited - allowed)
+    unknown = sorted(
+        url for url in cited if not _url_is_known(url, allowed, fingerprints)
+    )
     return GateResult(
         gate_id="citations_known",
         passed=not unknown,
@@ -872,12 +897,15 @@ def _no_invented_sources_passes(
                 normalize_source_url(url)
                 for url in _url_like_strings(_field(step, "observation_summary"))
             )
+    fingerprints = _researcher_live_url_fingerprints(output, case)
     findings = _artifact(output, "findings")
     if not isinstance(findings, list):
         return False
     for finding in findings:
         url = _field(finding, "source_url")
-        if not isinstance(url, str) or normalize_source_url(url) not in allowed:
+        if not isinstance(url, str) or not _url_is_known(
+            url, allowed, fingerprints
+        ):
             return False
     return True
 
@@ -1608,12 +1636,15 @@ def _sources_are_real_urls_passes(
             normalize_source_url(url)
             for url in _url_like_strings(_field(step, "observation_summary"))
         )
+    fingerprints = _researcher_live_url_fingerprints(output, case)
     findings = _artifact(output, "findings")
     if not isinstance(findings, list):
         return False
     for finding in findings:
         url = _field(finding, "source_url")
-        if not isinstance(url, str) or normalize_source_url(url) not in trajectory_urls:
+        if not isinstance(url, str) or not _url_is_known(
+            url, trajectory_urls, fingerprints
+        ):
             return False
     return True
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 import pytest
 
 from deep_research.agents.errors import PlanningError
@@ -282,6 +284,37 @@ async def test_the_ledger_records_real_services_for_a_live_run(
     output = TargetOutput.model_validate(payload)
 
     assert "tavily" in output.dependencies.real_services_used
+
+
+@pytest.mark.asyncio
+async def test_a_live_researcher_records_only_source_url_fingerprints(
+    runtime_config_for, live_case_for, live_target_harness
+) -> None:
+    case = live_case_for("researcher")
+    target = live_target_harness(case, runtime_config_for("researcher", tier="live"))
+
+    output = TargetOutput.model_validate(
+        await target(
+            {
+                "case_id": case.case_id,
+                "case_version": case.version,
+                "agent": "researcher",
+                "tier": "live",
+            }
+        )
+    )
+
+    expected = sha256(
+        "https://example.com/sodium-ion-energy-density".encode("utf-8")
+    ).hexdigest()
+    assert output.dependencies.source_url_fingerprints == [expected]
+    assert all(
+        len(step.observation_summary) <= 200 for step in output.trajectory
+    )
+    assert "https://example.com/sodium-ion-energy-density" not in " ".join(
+        step.observation_summary for step in output.trajectory
+    )
+    assert "example.com" not in repr(output.dependencies)
 
 
 @pytest.mark.asyncio

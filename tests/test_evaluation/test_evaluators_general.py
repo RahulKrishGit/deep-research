@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 import pytest
 
 from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.evaluators import (
     GENERAL_GATE_IDS,
+    METRIC_FUNCTIONS,
     MissingMetricError,
     deterministic_metric_scores,
     deterministic_quality,
+    evaluate_agent_gates,
     evaluate_general_gates,
     evaluate_target,
     evaluate_target_with_metrics,
@@ -382,6 +386,74 @@ def test_a_live_case_without_known_urls_accepts_trajectory_urls(
     assert gate(results, "citations_known").passed is True
     # Not the old auto-pass skip: the trajectory branch really ran.
     assert "skipped" not in gate(results, "citations_known").detail
+
+
+def test_live_researcher_url_fingerprints_repair_lossy_trajectory_gates(
+    live_case_for, researcher_target_output
+) -> None:
+    live_case = live_case_for("researcher")
+    discovered = "https://discovered.example.com/page"
+    fingerprint = sha256(
+        discovered.encode("utf-8")
+    ).hexdigest()
+    output = researcher_target_output.model_copy(
+        update={
+            "case_id": live_case.case_id,
+            "case_version": live_case.version,
+            "tier": "live",
+            "result": {"findings": [{"source_url": discovered}]},
+            "trajectory": [],
+            "evidence": EvidenceContext(),
+            "dependencies": DependencyLedger(
+                source_url_fingerprints=[fingerprint]
+            ),
+        }
+    )
+
+    general = evaluate_general_gates(output, live_case, secrets=())
+    agent = evaluate_agent_gates(output, live_case)
+
+    assert gate(general, "citations_known").passed is True
+    assert gate(agent, "no_invented_sources").passed is True
+    assert deterministic_metric_scores(
+        output, live_case, metric_functions=METRIC_FUNCTIONS
+    )[
+        "sources_are_real_urls"
+    ] == 1.0
+
+
+def test_source_url_fingerprints_do_not_change_controlled_researcher_semantics(
+    live_case_for, researcher_target_output
+) -> None:
+    researcher_case = live_case_for("researcher").model_copy(
+        update={"tier": "controlled"}
+    )
+    discovered = "https://discovered.example.com/page"
+    output = researcher_target_output.model_copy(
+        update={
+            "case_id": researcher_case.case_id,
+            "case_version": researcher_case.version,
+            "tier": "controlled",
+            "result": {"findings": [{"source_url": discovered}]},
+            "evidence": EvidenceContext(),
+            "dependencies": DependencyLedger(
+                source_url_fingerprints=[
+                    sha256(discovered.encode("utf-8")).hexdigest()
+                ]
+            ),
+        }
+    )
+
+    general = evaluate_general_gates(output, researcher_case, secrets=())
+    agent = evaluate_agent_gates(output, researcher_case)
+
+    assert gate(general, "citations_known").passed is False
+    assert gate(agent, "no_invented_sources").passed is False
+    assert deterministic_metric_scores(
+        output, researcher_case, metric_functions=METRIC_FUNCTIONS
+    )[
+        "sources_are_real_urls"
+    ] == 0.0
 
 
 def test_a_live_case_accepts_urls_from_the_recorded_trajectory(
