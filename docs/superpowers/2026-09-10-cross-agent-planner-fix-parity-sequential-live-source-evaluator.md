@@ -62,3 +62,35 @@ failure with an independently healthy judge. This closes Source Evaluator's
 sequential diagnosis/confirmation step without a production change. The
 judge-side failures from the first repetition remain separate evidence, no
 target-side `output_limit` appeared, and Fact Checker is the next agent.
+
+## Production-readiness correction and Sol High plan
+
+The preceding no-change conclusion is superseded as a completion decision by
+the user's production-readiness requirement. Source Evaluator is not ready for
+review while its live contract reports `13/14` gates solely because the v1
+fixture makes the expected low-confidence result incompatible with the
+production scoring geometry.
+
+Sol High reviewed the current remote branch at `8e0e0fb` and classified the
+implementation as `NOT READY` with a bounded, case-only repair path. The
+controlled Source Evaluator evidence is green, so the production agent,
+scoring formula, weights, threshold, evaluator gate, and fallback semantics
+remain unchanged. The live case must be versioned as `(case_id, case_version)`:
+preserve v1 artifacts, give the forum/anecdotal finding a distinct meaningful
+subtopic, set `_LIVE` to version `2`, and keep the expected URL partitions
+unchanged.
+
+Before another paid call, add production-shaped case tests proving that v2
+isolates the expected low-confidence URL with zero corroboration while
+authoritative URLs retain positive corroboration. Run the focused and
+neighboring offline tests, the complete source-first offline suite, Ruff, and
+`git diff --check`; push the candidate; then obtain a scoped Sol High review.
+Only after that review is clean may exactly one fresh Source Evaluator v2 live
+repetition run. Review-ready acceptance requires case version `2`, `14/14`
+hard gates, deterministic quality `1.00`, a scored judge with no diagnostics,
+aggregate quality `>= 0.75`, no target/judge provider failures or fallback,
+zero prohibited calls, and runner status `REVIEW REQUIRED`. A v2 failure is
+diagnosed once; it is not retried or repaired by lowering thresholds.
+
+Fact Checker evidence remains preserved and deferred until this Source
+Evaluator production-readiness gate is satisfied.

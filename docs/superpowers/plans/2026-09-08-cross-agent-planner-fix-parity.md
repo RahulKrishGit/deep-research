@@ -39,7 +39,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **Paused — Source Evaluator production readiness unresolved** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. The Source Evaluator case mismatch is documented, but the user requires production fitness with all metrics good; a no-change ruling is not sufficient. Fact Checker evidence is preserved, but the sequence is paused until Source Evaluator receives an approved production-readiness contract/repair decision. |
+| 19. Sequential live-agent diagnosis and repair loop | **Paused — Source Evaluator v2 production-readiness repair pending** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. The Source Evaluator v1 live case mismatch is documented, but the user requires production fitness with all metrics good; a no-change ruling is not sufficient. Fact Checker evidence is preserved, and the sequence remains paused until the reviewed v2 live case produces a clean Source Evaluator confirmation. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
@@ -1838,6 +1838,73 @@ Fact Checker was already launched before this correction and its evidence is
 preserved below, but it does not count as advancing the sequential loop or as
 evidence that the branch is production-ready. No further agent run starts
 until the Source Evaluator readiness decision is reviewed and recorded.
+
+### Sol High Production-Readiness Plan — Source Evaluator Live Case v2
+
+Sol High's task-scoped review at remote HEAD `8e0e0fb` concluded `NOT READY`
+with a bounded repair path. The production scoring implementation passed the
+controlled Source Evaluator baseline and confirmation; the failure is instead
+that live case v1 places all four findings under the same generic subtopic.
+That topology gives the weak/forum source cross-domain corroboration `1.0`
+and makes the required `low_confidence=True` expectation geometrically
+incoherent with the unchanged production threshold. Candidate `424ed6c`
+therefore remains immutable v1 evidence and does not establish production
+readiness for a corrected contract.
+
+The approved route is an evaluation-fixture correction only:
+
+1. Add RED tests in `tests/test_evaluation/test_cases_source_evaluator.py`
+   that require the live case version to be `2`, assert that the expected
+   low-confidence URL has `corroboration_score == 0.0` after grouping and
+   normalization, and retain a control proving authoritative URLs still have
+   positive corroboration. The controlled case must remain green.
+2. Update only `_LIVE` in
+   `src/deep_research/evaluation/cases/source_evaluator.py`: give the
+   designated forum/anecdotal finding a distinct meaningful subtopic such as
+   `Dataset discrepancy anecdotes`, set `version=2`, and leave the expected
+   URL partition unchanged.
+3. Preserve the Source Evaluator agent, scoring formula, weights `0.30/0.30/0.20/0.20`,
+   `LOW_CONFIDENCE_THRESHOLD`, evaluator gate, controlled cases, datasets,
+   dependency scenarios, rubrics, global `llm.max_tokens == 4096`, and all v1
+   artifacts. This is a versioned live-fixture correction, not a mutation of a
+   frozen controlled case or an agent-quality tuning change.
+4. Run the focused case tests, the neighboring Source Evaluator/evaluation
+   tests, the full offline suite with the campaign `src` directory first on
+   `sys.path`, Ruff, and `git diff --check`. No provider, suite, or live call
+   runs before the task-scoped Sol High review.
+5. Push the reviewed candidate and ask Sol High to verify case identity
+   `(source-evaluator-live-ranking, 2)`, isolated forum corroboration,
+   authoritative corroboration, unchanged expected URLs and gates, and no
+   production scoring changes. After a clean review, run exactly one fresh
+   Source Evaluator live repetition.
+
+The live confirmation is review-ready only if it reports case version `2`,
+`14/14` target gates, deterministic quality `1.00`, a scored judge with no
+diagnostics, aggregate quality at least `0.75`, no target or judge provider
+failure, zero prohibited calls, and runner status `REVIEW REQUIRED`. A failure
+after v2 is not retried or hidden by lowering thresholds; it reopens the
+diagnosis boundary. Fact Checker remains deferred until these conditions are
+met.
+
+### Task 19A: Repair Source Evaluator Live-Case Topology for Production Readiness — PENDING
+
+**Files:**
+- Modify: `src/deep_research/evaluation/cases/source_evaluator.py` — `_LIVE` only.
+- Test: `tests/test_evaluation/test_cases_source_evaluator.py` — live version and corroboration geometry regressions.
+- Update: `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-sequential-live-source-evaluator.md` and the permanent fix log after implementation/review evidence exists.
+
+**Interfaces and invariants:**
+- Preserve the live case identity as `source-evaluator-live-ranking` and make its version `2`; v1 artifacts remain immutable evidence.
+- Give only the designated forum/anecdotal finding a distinct meaningful subtopic, such as `Dataset discrepancy anecdotes`, so the production `group_findings_by_url`/`corroboration_score` geometry yields zero corroboration for the expected low-confidence URL.
+- Keep `authoritative_urls`, `weak_urls`, and `expected_low_confidence_urls` unchanged.
+- Do not change `SourceEvaluatorAgent`, prompts, scoring formula, weights `0.30/0.30/0.20/0.20`, `LOW_CONFIDENCE_THRESHOLD`, evaluator gates, controlled cases, dependency scenarios, rubrics, dataset semantics, budgets, provider behavior, fallback behavior, or `llm.max_tokens == 4096`.
+
+- [ ] **Step 1: Add RED case-contract tests.** Require the registered live case to have `version == 2`; compute groups from the case's raw findings using the production source helpers and assert every expected low-confidence URL has corroboration `0.0`; add a control asserting each authoritative URL has positive corroboration; keep the existing URL/reference and controlled-case tests unchanged.
+- [ ] **Step 2: Run the focused RED tests.** Run `python -m pytest tests/test_evaluation/test_cases_source_evaluator.py -q -p no:cacheprovider`; the new version assertion and v2 topology assertions must fail against the current v1 fixture before implementation.
+- [ ] **Step 3: Make the minimal GREEN fixture repair.** Change only the forum/anecdotal finding's `sub_topic_title` and `_LIVE`'s `version=2`; do not alter production scoring or expected URL partitions.
+- [ ] **Step 4: Verify offline.** Run `python -m pytest tests/test_evaluation/test_cases_source_evaluator.py -q -p no:cacheprovider`; then run `python -m pytest tests/test_evaluation/test_cases_source_evaluator.py tests/test_evaluation/test_cases_registry.py tests/test_evaluation/test_datasets.py tests/test_evaluation/test_evaluators_agents.py tests/test_agents/test_source_evaluator.py tests/test_agents/test_sources.py -q -p no:cacheprovider`; run the full source-first offline pytest gate, repository-wide Ruff, and `git diff --check`.
+- [ ] **Step 5: Commit and push.** Commit the source/test change, push the branch, and report the exact SHA and fresh verification counts. Do not run provider, suite, or live evaluation in this task.
+- [ ] **Step 6: Review gate.** The controller creates a scoped diff package and sends the exact range and acceptance invariants to the existing Sol High browser conversation. Only a clean scoped review authorizes the single v2 live confirmation.
 
 ### Task 20: Repair Researcher Live Retrieval Provenance — CONFIRMATION COMPLETE, JUDGE INFRASTRUCTURE BLOCKED
 
