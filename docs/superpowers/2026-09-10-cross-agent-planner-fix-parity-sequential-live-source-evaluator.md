@@ -114,3 +114,25 @@ Evaluator production-readiness gate is satisfied.
   fallback; zero prohibited calls; and runner status `REVIEW REQUIRED`.
   No retry, suite, other agent, prompt/threshold/budget/provider change, or
   automatic approval is authorized. Fact Checker remains deferred.
+
+## V2 live preflight blocker — dataset update contract
+
+The authorized v2 launch using the reviewed code stopped before target or judge
+execution with exit `1` and the typed message
+`dataset synchronization failed: dataset_unavailable`. No evaluation result
+artifact, target quality metric, judge score, or provider failure evidence was
+produced. This is not a Source Evaluator result.
+
+The v2 case identity correctly caused synchronization to update the existing
+remote v1 example. The production LangSmith `update_examples` contract
+requires each update payload to carry the existing example `id`, but
+`synchronize_dataset` forwarded the fresh case payload without that ID. The
+offline fake accepted the incomplete update and therefore missed this
+integration boundary.
+
+The next repair is a bounded TDD fix in the dataset synchronization path and
+its fake-driven tests: prove the update payload carries the remote example ID,
+add the smallest implementation change, run the offline dataset/evaluation
+gate, obtain a fresh scoped Sol High review, and push. No paid retry is
+authorized until that fix is reviewed. The v2 case repair and all production
+agent/scoring/budget/provider invariants remain unchanged.

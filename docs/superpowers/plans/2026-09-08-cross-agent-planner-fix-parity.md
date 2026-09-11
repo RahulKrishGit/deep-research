@@ -1886,6 +1886,27 @@ after v2 is not retried or hidden by lowering thresholds; it reopens the
 diagnosis boundary. Fact Checker remains deferred until these conditions are
 met.
 
+### Task 19A Live Preflight Blocker — Dataset Version-Update Contract
+
+The first authorized v2 launch at the reviewed code state stopped before any
+target or judge model call with `dataset synchronization failed:
+dataset_unavailable` (exit `1`). The case-version bump exercised the real
+LangSmith dataset update path for the existing v1 example. `synchronize_dataset`
+passes a fresh payload to `client.update_examples(updates=...)`, but the
+payload has no existing example `id`; the real LangSmith client requires that
+identifier, while the permissive fake only counted updates. Therefore the
+offline dataset-version test did not cover the production update contract.
+
+This is a harness integration defect exposed by the v2 readiness correction,
+not Source Evaluator quality evidence. Do not retry the paid launch until a
+TDD fix adds a strict fake/update regression proving the existing example ID is
+preserved in the update payload, implements the smallest dataset-sync repair,
+passes the offline dataset/evaluation gate, receives a scoped Sol High review,
+and is pushed. The v2 case, production scoring, thresholds, weights, budgets,
+provider behavior, and global `4096` cap remain unchanged. The original v1
+artifacts remain immutable, and the single v2 confirmation authorization is
+paused pending this fix/review.
+
 ### Task 19A: Repair Source Evaluator Live-Case Topology for Production Readiness — REVIEWED; CONFIRMATION AUTHORIZED
 
 **Files:**
