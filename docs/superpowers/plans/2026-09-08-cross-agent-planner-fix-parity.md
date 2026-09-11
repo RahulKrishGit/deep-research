@@ -2588,3 +2588,27 @@ load-bearing candidate is Stream C's shared Critic evaluator behavior.
   from this artifact alone. Preserve the live artifact, keep the global
   `4096` cap, and treat the shared judge/provider boundary as the remaining
   campaign blocker.
+
+### Task 22: Characterize Critic Rationale Grounding — IN PROGRESS
+
+This is an offline, test-only follow-up to the Critic live diagnosis. It must
+use the registered `critic-live-review` metric path and a production-shaped
+`TargetOutput`: flat Critique fields in `result` with the Critique state
+artifact in `state_update["critique"]`.
+
+- Add one evaluator-level regression proving that a normal report-grounded
+  Critique returns `rationale_present == 1.0` while the existing typed
+  `provider_unavailable` fallback returns `rationale_present == 0.0`.
+- Preserve and assert the fallback controls: `score_bounded == 1.0`,
+  `route_consistent == 1.0`, and `no_spurious_gaps == 1.0` with the typed
+  `critic_report_review` provider diagnostic.
+- Do not change production code, Critic fallback semantics, evaluator logic,
+  frozen cases, themes, thresholds, weights, prompts, retry behavior, model
+  budgets, judge contracts, or `llm.max_tokens == 4096`.
+- Run the focused Critic/evaluator tests, the required offline gate, Ruff, and
+  `git diff --check`. If the expected `1.0/0.0` distinction does not hold,
+  stop and report a separate evaluator/harness finding; do not repair it in
+  this task.
+- After implementation, synchronize the branch and obtain a scoped Sol High
+  task review. A paid/live confirmation remains disallowed unless a separate
+  typed production defect is discovered and repaired.
