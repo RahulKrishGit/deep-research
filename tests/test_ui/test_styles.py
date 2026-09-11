@@ -103,6 +103,32 @@ def test_static_css_includes_native_chrome_and_responsive_top_padding() -> None:
     assert 'padding-top: 48px;' in css
 
 
+def test_static_css_stacks_new_research_form_columns_at_tablet_width() -> None:
+    css = styles.STATIC_CSS
+    tablet_start = css.index("@media (max-width: 900px)")
+    narrow_start = css.index("@media (max-width: 640px)", tablet_start)
+    tablet_css = css[tablet_start:narrow_start]
+
+    form_row_rule = re.search(
+        r'\[data-testid="stForm"\]\s*'
+        r'\[data-testid="stHorizontalBlock"\]\s*\{(?P<body>.*?)\}',
+        tablet_css,
+        flags=re.DOTALL,
+    )
+    assert form_row_rule is not None
+    assert "flex-wrap: wrap;" in form_row_rule.group("body")
+
+    form_column_rule = re.search(
+        r'\[data-testid="stForm"\]\s*'
+        r'\[data-testid="stHorizontalBlock"\]\s*>\s*'
+        r'\[data-testid="stColumn"\]\s*\{(?P<body>.*?)\}',
+        tablet_css,
+        flags=re.DOTALL,
+    )
+    assert form_column_rule is not None
+    assert "min-width: 100% !important;" in form_column_rule.group("body")
+
+
 def test_static_css_includes_focus_disabled_readonly_and_spacing_rules() -> None:
     css = styles.STATIC_CSS
 

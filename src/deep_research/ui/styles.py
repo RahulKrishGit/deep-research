@@ -439,6 +439,15 @@ button:disabled {
     padding-top: 56px;
   }
 
+  /* Keep the form's weighted columns readable beside the persistent sidebar. */
+  [data-testid="stForm"] [data-testid="stHorizontalBlock"] {
+    flex-wrap: wrap;
+  }
+
+  [data-testid="stForm"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    min-width: 100% !important;
+  }
+
   .dr-shell-title h1 {
     font-size: 36px;
   }
