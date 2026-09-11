@@ -601,3 +601,44 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   changes and C's evaluator finding, then implement only the approved shared
   evaluator repair, rerun the offline gate, and defer live confirmation until
   the resulting evidence is interpretable.
+
+## 57. Scoped Sol High Review and Packaging Disposition — 2026-09-10
+
+- Review base: integrated branch HEAD `77bfd3d8031379d8effa8b9027d5717b7a1c59a2`,
+  equal to `origin/codex/cross-agent-planner-fix-parity` before this cleanup.
+  Sol High returned **NOT READY as currently packaged** and reported no
+  Critical finding.
+- Packaging correction: the worker commits had force-added
+  `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/parallel-stream-j-report.md`
+  and
+  `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/parallel-stream-fact-checker-report.md`
+  even though `.superpowers/` is ignored scratch space. Both files were
+  removed from the Git index with explicit `git rm --cached` paths; local
+  ignored copies are retained, and no credentials or live artifacts were
+  copied into the repository. Their durable conclusions are captured in this
+  tracked fix log.
+- Stream disposition: J's adaptive DeepSeek structured-repair implementation
+  is technically ready within its approved boundary; F and S remain
+  characterization-only with no justified production or budget change; C's
+  `no_spurious_gaps=0.0` unresolved-limitation control is a supported shared
+  evaluator defect candidate. The next implementation is one serialized
+  Luna-Max TDD repair limited to `_no_spurious_gaps_passes` and the two C
+  controls. No case/rubric/threshold/weight/prompt/tool/budget/route/provider
+  changes are authorized.
+- Verification ledger: the integrated J/F/S wave recorded `277 passed` in
+  combined focused tests, `1,251 passed` in the evaluation/agent/provider
+  contract gate, and `2,000 passed, 1 deselected` in the full offline suite;
+  Ruff and `git diff --check` passed. The first focused attempt used a stale
+  editable install from an unrelated worktree; reinstalling with
+  `python -m pip install -e ".[dev]"` from this campaign checkout corrected
+  import provenance before the passing rerun. Sol did not independently run
+  these commands.
+- Planning-reference correction: use
+  `docs/superpowers/plans/2026-09-10-cross-agent-planner-fix-parity-parallel-repair.md`,
+  `docs/superpowers/plans/2026-09-10-parallel-stream-judge-brief.md`, and the
+  root Stream F/S/C briefs for future worktree dispatches. The current parent
+  plan remains `docs/superpowers/plans/2026-09-08-cross-agent-planner-fix-parity.md`.
+- Gate: live/provider/LangSmith/suite runs remain **NO-GO** until the C
+  evaluator repair is reviewed and the full offline gate is green. The global
+  `llm.max_tokens == 4096` cap and all fallback/judge failure semantics remain
+  unchanged.

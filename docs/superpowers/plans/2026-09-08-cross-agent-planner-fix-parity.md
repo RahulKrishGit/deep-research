@@ -35,13 +35,13 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 12. Evidence-gated agent quality/trajectory repair | **Complete — repairs and integration correction; judge no-change decision** | Commits `7c58abc`, `12f9ebe`, `b7c2500`, and `8271dbc` repair cross-channel `required_fields_present`, typed Critic provider-fallback routing, Critic ReAct context wiring, and the package export-surface regression. Typed judge diagnostics split between `$` and `rationale`, so no judge/provider repair is justified without a repeatable contract failure. |
 | 13. Full controlled validation | **Complete — five repaired agents terminal-blocked after confirmation** | Candidate `1f790b0` completed fresh baseline/confirmation pairs for all five agents in `infrastructure-remediation/1f790b0-v1/`; all 90 repetitions completed, repaired hard gates held where applicable, and shared judge/provider failures remained typed. No live or suite command ran. |
 | 14. Permanent cross-agent fix log | **Complete — post-repair evidence recorded** | Fix log section 23 records all five fresh result hashes, gate counts, typed failures, provenance-capture errors/fixes, terminal states, and the no-budget/no-new-repair decisions. |
-| 15. Final offline verification and whole-branch review | **Complete — Ready with follow-ups** | Post-a95262f recorded full offline suite `1,980 passed, 1 deselected, 2 warnings`, Ruff passed, and `git diff --check` passed. Sol High's current-HEAD review at `6a01175` found no Critical/Important blocker and one non-blocking documentation chronology issue. |
+| 15. Final offline verification and whole-branch review | **Complete — current packaging follow-ups open** | Post-a95262f recorded full offline suite `1,980 passed, 1 deselected, 2 warnings`, Ruff passed, and `git diff --check` passed. The later scoped Sol High review at `77bfd3d` found no Critical finding, but the package remains not ready until the tracked scratch reports are removed and the supported Critic evaluator candidate is repaired and re-verified. |
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker live evidence collected; Sol diagnosis pending** | The user explicitly authorized one fresh Fact Checker live repetition while the shared-judge plan was under review. Source Evaluator v2 remains target-green but judge-blocked. Fact Checker now has `15/15` hard gates and deterministic `1.00`, but scored judge `0.3675` and aggregate `0.6205` fail the quality threshold; its typed fallback diagnostic records `output_limit` for `react_decision` without a top-level target failure. Preserve both agent results, send the exact evidence to Sol High, and do not retry or advance until the current agent's diagnosis and disposition are complete. |
+| 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker diagnosis complete; repair wave reviewed; serialized Critic evaluator repair next** | The user-authorized Fact Checker evidence remains target-contract green (`15/15` hard gates, deterministic `1.00`) with a scorable below-threshold judge and fallback `react_decision` `output_limit`; Sol's review supports no Fact Checker production or budget change. Source Evaluator remains target-green but judge-blocked. Do not start another live run until the evaluator repair and offline gate are complete. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
-| 21. Parallel evidence-driven repair wave | **Streams complete — integration and scoped Sol review pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C produced a genuine RED for `no_spurious_gaps`, identifying a shared evaluator defect candidate without editing shared evaluators. J/F/S are integrated locally; C's intentional RED remains diagnostic and is not yet integrated. No live/provider/LangSmith/suite run is authorized before the evaluator disposition and offline gate. |
+| 21. Parallel evidence-driven repair wave | **Streams complete — scoped Sol review complete; packaging cleanup and serialized Critic evaluator repair pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C produced a genuine RED for `no_spurious_gaps`, identifying a shared evaluator defect candidate without editing shared evaluators. J/F/S are integrated at `77bfd3d`; the tracked worker scratch reports are being untracked, and the C evaluator repair is the next serialized Luna-Max task. No live/provider/LangSmith/suite run is authorized before the repair and offline gate. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -2351,3 +2351,40 @@ quality evidence. Sol High must classify whether the low judge score reflects
 Fact Checker behavior, the fallback trajectory, or a shared evaluation issue
 before any prompt, budget, or agent repair. No retry, later-agent run, or suite
 run is authorized from this artifact alone.
+
+### Scoped Sol High review disposition (2026-09-10, integrated HEAD `77bfd3d`)
+
+Sol High reviewed the integrated parallel-repair package and returned
+**NOT READY as currently packaged**, with no Critical finding. Streams J, F,
+and S remain supported within their approved boundaries. The supported
+load-bearing candidate is Stream C's shared Critic evaluator behavior.
+
+- The force-tracked worker reports beneath the ignored SDD scratch directory
+  are not permanent evidence. They are being removed from the Git index while
+  local ignored copies remain available; the tracked plan and fix log are the
+  durable record.
+- The next implementation is one serialized Luna-Max TDD task limited to
+  `_no_spurious_gaps_passes` in
+  `src/deep_research/evaluation/evaluators.py` and the two production-shaped
+  controls in `tests/test_evaluation/test_cases_critic.py`. The covered-
+  evidence control must remain `0`, and the acknowledged unresolved-limitation
+  control must become `1`. Case inputs, themes, rubric, weights, thresholds,
+  prompts, tools, budgets, routes, providers, and fallback semantics remain
+  frozen.
+- The correct tracked planning references are
+  `docs/superpowers/plans/2026-09-10-cross-agent-planner-fix-parity-parallel-repair.md`,
+  `docs/superpowers/plans/2026-09-10-parallel-stream-judge-brief.md`, and the
+  root Stream F/S/C briefs. Future worktree dispatches and review packages
+  must use those repository-relative paths.
+- Coordinator verification for the integrated J/F/S wave is `277 passed` in
+  the combined focused tests, `1,251 passed` in the evaluation/agent/provider
+  contract gate, and `2,000 passed, 1 deselected` in the full offline suite;
+  Ruff and `git diff --check` were clean. The initial focused failure came
+  from a stale editable install resolving an unrelated worktree; after
+  `python -m pip install -e ".[dev]"` from this campaign checkout, imports
+  resolved to the campaign source and the rerun passed. These are coordinator
+  counts, not independent Sol execution.
+- Live/provider/LangSmith/suite execution remains **NO-GO** until the C repair
+  is integrated, reviewed, and the offline gate is green. The global
+  `llm.max_tokens == 4096` cap and all judge/fallback semantics remain
+  unchanged.
