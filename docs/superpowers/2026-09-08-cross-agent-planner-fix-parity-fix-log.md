@@ -1098,3 +1098,45 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   no target repair is opened from this evidence alone. Stop before Critic; its
   paid command requires a separate immediate authorization under the campaign
   gate.
+
+## 72. Authorized Critic Canary — TARGET PROVIDER BOUNDARY; SOL HIGH DIAGNOSIS REQUIRED
+
+- Authorization and scope: the user authorized exactly one Critic paid live
+  command. One live repetition ran sequentially after Synthesizer; no retry,
+  parallel run, second agent, suite, prompt change, budget change, or provider
+  change ran.
+- Candidate provenance: `2e8b25f5988ae222b74aee4d5272e5590cae2644`. The tracked
+  and index tree was clean before the run; the safe artifact metadata's
+  `git_dirty=true` reflects only the preserved, uninspected `.deepseek-runs/`
+  runtime directory.
+- Frozen configuration: target and judge `deepseek-v4-flash`; Critic target
+  effort `max`; judge effort `max`; one live repetition; concurrency `1`;
+  `llm.max_tokens=4096`; Planner final cap `4096`; retry count `5` with
+  `1.0` initial and `16.0` maximum delay; native judge transport
+  `deepseek_responses_json_schema_v1`.
+- Result: runner exit `1`, status `FAILED`, one case and one repetition
+  completed, and all `14/14` target hard gates passed. Deterministic quality was
+  `0.80`; judge quality was `0.2525`; aggregate quality was `0.4715`; the case
+  failed its quality threshold. The deterministic map recorded
+  `no_spurious_gaps=1.0`, `rationale_present=0.0`, `route_consistent=1.0`, and
+  `score_bounded=1.0`; prohibited-call count was `0` and target error list was
+  empty.
+- Target/provider boundary: the safe fallback projection is typed
+  `{kind: schema_output, operation: critic_report_review}` and the ReAct stop
+  reason is `provider_error`. This is target-side Critic report-review
+  evidence, not a judge failure. The judge itself was scored with
+  `judge.not_run_reason=null` and `judge.diagnostics=[]`; no target-side typed
+  `output_limit` evidence appeared. Treat the target/provider classification as
+  provisional pending Sol High diagnosis; do not infer that the model's
+  rationale quality alone is an agent defect.
+- Fingerprints: judge prompt `93edb1729cbb`; native-schema judge configuration
+  `924caf47aa0d`; transport `deepseek_responses_json_schema_v1`.
+- Immutable evidence: `output/evaluations/critic/cross-agent-planner-fix-parity-judge-native-schema-critic-canary-2e8b25f-critic-live-20260911T191641Z-2e8b25f/results.json`; SHA-256
+  `7E441C4DAAD0DDE3B501A1CEE137D8ADA1611524BE9C79A74C3E254ACBE96E0C`.
+  LangSmith experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/c53343aa-6fb3-4918-be14-3e377c428b07`.
+- Disposition: stop the sequential loop at Critic. Push this evidence, obtain
+  a task-scoped Sol High diagnosis in the existing browser conversation, and
+  only then decide whether a concrete offline RED justifies a minimal Critic
+  repair. Fact Checker remains deferred until Critic diagnosis and any
+  review/fix/no-change decision are complete.
