@@ -446,6 +446,58 @@ def test_new_research_screen_has_question_form_and_ready_state() -> None:
     assert not any("Current session" in item.value for item in app.main.markdown)
 
 
+def test_new_research_form_exposes_visible_labels_and_fixed_output_surface() -> None:
+    app = _app([]).run()
+
+    markdown_values = [item.value for item in app.main.markdown]
+    for label in ("Research question", "Maximum iterations", "Output format"):
+        assert any(
+            'class="dr-control-label"' in value and label in value
+            for value in markdown_values
+        )
+
+    readonly_fields = [
+        value for value in markdown_values if 'class="dr-readonly-field"' in value
+    ]
+    assert len(readonly_fields) == 1
+    assert "Markdown" in readonly_fields[0]
+    assert re.search(r"fixed|read-only", readonly_fields[0], re.IGNORECASE)
+    assert not any(
+        widget.label == "Output format"
+        for widget_list in (
+            app.text_input,
+            app.text_area,
+            app.number_input,
+            app.selectbox,
+            app.radio,
+        )
+        for widget in widget_list
+    )
+
+
+def test_new_research_next_steps_keep_heading_separate_from_first_step() -> None:
+    app = _app([]).run()
+
+    markdown_values = [item.value for item in app.main.markdown]
+    assert any('class="dr-next-steps"' in value for value in markdown_values)
+    assert any(
+        'class="dr-screen-eyebrow"' in value and "WHAT HAPPENS NEXT" in value
+        for value in markdown_values
+    )
+    heading_index = next(
+        index
+        for index, value in enumerate(markdown_values)
+        if 'class="dr-subsection-heading"' in value
+    )
+    first_step_index = next(
+        index
+        for index, value in enumerate(markdown_values)
+        if "1. Plan subtopics" in value
+    )
+    assert heading_index < first_step_index
+    assert markdown_values[heading_index] != markdown_values[first_step_index]
+
+
 def test_new_research_screen_accepts_configured_default_above_twenty() -> None:
     class HighIterationController(FakeController):
         @property
@@ -1406,6 +1458,10 @@ def test_starting_state_is_visible_and_prevents_duplicate_submission() -> None:
     assert app.text_area(key="research_question").disabled is True
     assert app.number_input(key="max_iterations").disabled is True
     assert app.button(key="start_research").disabled is True
+    assert "Research question" in visible
+    assert "Maximum iterations" in visible
+    assert app.session_state[_PENDING_START_STATE_KEY] is None
+    assert app.session_state[_CONTROLLER_KEY].start_calls == []
 
 
 def test_running_screen_labels_derived_fraction_as_phase_progress() -> None:

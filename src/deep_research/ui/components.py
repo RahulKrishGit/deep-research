@@ -1242,8 +1242,13 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
         unsafe_allow_html=True,
     )
     with st.form("new_research_form", clear_on_submit=False):
+        st.markdown(
+            '<div class="dr-control-label">Research question</div>',
+            unsafe_allow_html=True,
+        )
         question = st.text_area(
             "Research question",
+            label_visibility="collapsed",
             key="research_question",
             height=152,
             placeholder=(
@@ -1256,8 +1261,13 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
 
         config_left, config_right = st.columns(2, gap="large")
         with config_left:
+            st.markdown(
+                '<div class="dr-control-label">Maximum iterations</div>',
+                unsafe_allow_html=True,
+            )
             st.number_input(
                 "Maximum iterations",
+                label_visibility="collapsed",
                 min_value=1,
                 value=controller.default_max_iterations,
                 step=1,
@@ -1266,13 +1276,18 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
                 disabled=start_in_flight,
             )
         with config_right:
-            st.markdown("**Output format**")
             st.markdown(
-                '<div class="dr-readonly-field" aria-label="Output format: Markdown">'
-                "Markdown</div>",
+                '<div class="dr-control-label">Output format</div>',
                 unsafe_allow_html=True,
             )
-            st.caption("Read-only for this local build.")
+            st.markdown(
+                '<div class="dr-readonly-field" '
+                'aria-label="Output format: Markdown (fixed, read-only)">'
+                "<span>Markdown</span>"
+                '<span class="dr-readonly-meta">Fixed · read-only</span>'
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
         action_status, action_button = st.columns(
             [1, 0.5],
@@ -1315,25 +1330,32 @@ def _render_new_research_content(controller: LocalResearchController) -> None:
         if state.get(_VIEW_KEY) == "new":
             _render_start_error(state.get(_START_ERROR_KEY))
 
-    st.markdown(
-        '<div class="dr-shell-rule" aria-hidden="true"></div>'
-        '<div class="dr-section-label">WHAT HAPPENS NEXT</div>',
-        unsafe_allow_html=True,
-    )
-    next_steps = st.columns(3, gap="large")
-    for column, title, description in zip(
-        next_steps,
-        ("1. Plan subtopics", "2. Search & evaluate", "3. Synthesize report"),
-        (
-            "The question is decomposed into focused research subtopics.",
-            "Each subtopic is researched and sources are checked for credibility.",
-            "Findings are merged into one long-form Markdown report with citations.",
-        ),
-        strict=True,
-    ):
-        with column:
-            st.markdown(f"**{title}**")
-            st.caption(description)
+    with _st_container(key="dr-next-steps"):
+        st.markdown(
+            '<div class="dr-next-steps">'
+            '<div class="dr-screen-eyebrow">WHAT HAPPENS NEXT</div>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<h2 class="dr-subsection-heading">Research in three steps</h2>',
+            unsafe_allow_html=True,
+        )
+        next_steps = st.columns(3, gap="large")
+        for column, title, description in zip(
+            next_steps,
+            ("1. Plan subtopics", "2. Search & evaluate", "3. Synthesize report"),
+            (
+                "The question is decomposed into focused research subtopics.",
+                "Each subtopic is researched and sources are checked for credibility.",
+                "Findings are merged into one long-form Markdown report "
+                "with citations.",
+            ),
+            strict=True,
+        ):
+            with column:
+                st.markdown(f"**{title}**")
+                st.caption(description)
 
 
 def render_new_research_view(controller: LocalResearchController) -> None:
