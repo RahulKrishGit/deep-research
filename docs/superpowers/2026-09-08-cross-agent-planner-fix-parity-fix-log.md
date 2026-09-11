@@ -446,3 +446,34 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   budget/provider/fallback/judge/case change; global `llm.max_tokens == 4096`;
   no retry, suite, or later-agent run. Earlier preflight and v1/v2 artifacts
   remain immutable.
+
+## 52. Source Evaluator v2 Confirmation — Target Green, Shared Judge Schema Failure
+
+- Command scope: exactly one fresh Source Evaluator v2 live confirmation after
+  the reviewed dataset-sync repair. The secret-safe launcher loaded the
+  repository environment without printing it. No retry or later-agent run was
+  executed.
+- Artifact:
+  `output/evaluations/task19-source-evaluator-readiness-v2-3eab969/source-evaluator/task19-source-evaluator-readiness-v2-3eab969-source-evaluator-source-evaluator-live-20260911T024444Z-3eab969/results.json`
+- SHA-256:
+  `F9F8638E831D4FA3E8B9E137B397ED3F4D5BD84427883A075742FE627FCE3278`
+- LangSmith experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/2858d948-6ed8-46ef-b505-496755656d9d`;
+  repetition review:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/2858d948-6ed8-46ef-b505-496755656d9d/r/01a08e5a-83f5-7c80-b593-9f154a76ce6d?poll=true`.
+- Target result: case `source-evaluator-live-ranking`, version `2`, `1/1`
+  completed; `14/14` hard gates passed; deterministic quality `1.00`; all four
+  deterministic metrics were `1.00`; prohibited-call count `0`; target errors
+  empty; no target-side typed `output_limit` or fallback diagnostic.
+- Judge result: `judge_not_run` with `judge_schema_failure`; typed diagnostics
+  were `schema_output`, attempt `1`, field `$`, and `schema_output`, attempt
+  `2`, field `rationale`. No judge score or aggregate quality was fabricated.
+- Runner result: `INFRASTRUCTURE FAILURE`. Classification is shared judge
+  structured-output infrastructure, not Source Evaluator target quality and
+  not target-side output-limit evidence. The target repair is supported by the
+  live metrics, but production/review readiness is not established without a
+  scored judge aggregate.
+- Disposition: preserve the sole v2 evidence; do not retry, tune Source
+  Evaluator, change budgets/thresholds/weights/cases, run Fact Checker, or run
+  a suite. Next action is a typed judge-boundary diagnosis using the existing
+  `$`/`rationale` field paths and the prior judge evidence.

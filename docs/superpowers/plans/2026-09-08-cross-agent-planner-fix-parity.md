@@ -39,7 +39,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **Paused — Source Evaluator v2 confirmation unblocked; live evidence pending** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. The v1 live-case mismatch and both dataset-sync preflight layers are documented. Fix Round 2 passed scoped Sol High review with no findings; exactly one v2 live confirmation is now permitted, but production readiness remains pending its full metric and judge acceptance contract. Fact Checker evidence is preserved and the sequence remains paused. |
+| 19. Sequential live-agent diagnosis and repair loop | **Paused — Source Evaluator target metrics pass; shared judge schema failure blocks readiness** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. The v1 live-case mismatch and both dataset-sync preflight layers are documented. The single v2 confirmation reached the target successfully (`14/14`, deterministic `1.00`) but the shared judge failed typed structured-output validation, so aggregate quality is unavailable and production readiness is not established. Fact Checker evidence is preserved and the sequence remains paused pending judge-boundary disposition. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
@@ -2246,3 +2246,35 @@ fallback, zero prohibited calls, no target-side output-limit evidence, and
 runner status `REVIEW REQUIRED`. This code review does not itself establish
 those metrics. No retry, suite, later-agent run, prompt/threshold/budget/
 provider change, or automatic approval is authorized.
+
+### Task 19A V2 Live Confirmation — Target Green; Judge Infrastructure Blocked
+
+The single authorized Source Evaluator v2 confirmation ran once after the
+dataset-sync repair and completed target execution. It must not be interpreted
+as production-ready because the shared judge was unscorable.
+
+- Artifact:
+  `output/evaluations/task19-source-evaluator-readiness-v2-3eab969/source-evaluator/task19-source-evaluator-readiness-v2-3eab969-source-evaluator-source-evaluator-live-20260911T024444Z-3eab969/results.json`
+- Artifact SHA-256:
+  `F9F8638E831D4FA3E8B9E137B397ED3F4D5BD84427883A075742FE627FCE3278`
+- Case: `source-evaluator-live-ranking`, version `2`, repetition `1/1`.
+- Target evidence: `14/14` hard gates passed; `one_evaluation_per_source`,
+  `score_ordering`, `bounded_scores`, and `low_confidence_flagged` were all
+  `1.00`; deterministic quality was `1.00`; prohibited-call count was `0`;
+  target error list was empty; no target-side `output_limit` evidence or
+  fallback diagnostic was present.
+- Judge evidence: status `judge_not_run`, reason
+  `judge_schema_failure`; typed diagnostics were
+  `schema_output` attempt `1` at field `$` and attempt `2` at field
+  `rationale`. Aggregate quality was unavailable.
+- Runner disposition: `INFRASTRUCTURE FAILURE`, not a Source Evaluator quality
+  failure and not a production-readiness pass. The LangSmith experiment and
+  repetition review URLs are recorded in the permanent fix log; no retry was
+  run.
+
+The target-side Source Evaluator repair is therefore supported by the live
+metrics, but the agent cannot be marked review-ready while the shared judge
+boundary prevents a scored aggregate. The next decision is judge-boundary
+diagnosis from these typed field paths; do not tune Source Evaluator prompts,
+budgets, thresholds, weights, cases, or provider behavior, and do not advance
+to Fact Checker or a suite run.

@@ -188,3 +188,33 @@ agent/scoring/budget/provider invariants remain unchanged.
   `>= 0.75`, no target/judge/provider failure or fallback, zero prohibited
   calls, no target-side output-limit evidence, and runner status
   `REVIEW REQUIRED`.
+
+## Source Evaluator v2 live confirmation — target green, judge blocked
+
+- The one authorized v2 confirmation ran once after Fix Round 2 and completed
+  target execution. It is preserved as evidence, not retried or relabeled as a
+  pass.
+- Artifact:
+  `output/evaluations/task19-source-evaluator-readiness-v2-3eab969/source-evaluator/task19-source-evaluator-readiness-v2-3eab969-source-evaluator-source-evaluator-live-20260911T024444Z-3eab969/results.json`
+- SHA-256:
+  `F9F8638E831D4FA3E8B9E137B397ED3F4D5BD84427883A075742FE627FCE3278`
+- Case/version/repetition: `source-evaluator-live-ranking` / `2` / `1 of 1`.
+- Target metrics: `14/14` hard gates; deterministic quality `1.00`; each
+  deterministic metric (`one_evaluation_per_source`, `score_ordering`,
+  `bounded_scores`, `low_confidence_flagged`) `1.00`; zero prohibited calls;
+  empty target errors; no target-side `output_limit` or fallback diagnostic.
+- Judge metrics: `judge_not_run` with `judge_schema_failure`; typed
+  `schema_output` diagnostics at attempt `1`, field `$`, and attempt `2`, field
+  `rationale`; aggregate quality unavailable.
+- Runner status: `INFRASTRUCTURE FAILURE`. This is a shared judge-boundary
+  failure, not evidence of a Source Evaluator target-quality defect. The agent
+  is not yet production-ready or review-ready because the required scored
+  aggregate is absent.
+- LangSmith links: experiment
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/2858d948-6ed8-46ef-b505-496755656d9d`;
+  repetition review
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/2858d948-6ed8-46ef-b505-496755656d9d/r/01a08e5a-83f5-7c80-b593-9f154a76ce6d?poll=true`.
+- Disposition: preserve this as the sole v2 confirmation, do not rerun it, do
+  not tune Source Evaluator prompts/budgets/thresholds/weights/cases, and do
+  not advance to Fact Checker. Diagnose the shared judge boundary from the
+  typed field paths before any further live evaluation.
