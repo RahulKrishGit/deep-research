@@ -1030,3 +1030,35 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   step is a separately authorized, sequential Source Evaluator repetition and
   diagnosis only after preserving this evidence. No other live agent or suite
   run started in this step.
+
+## 70. Authorized Source Evaluator Judge-Transport Canary — PASS; STOP BEFORE SYNTHESIZER
+
+- Authorization and scope: the user requested sequential live evaluation of the
+  remaining agents. Exactly one Source Evaluator live repetition ran after the
+  Researcher canary, with no retry, parallel run, second agent, suite, prompt
+  change, budget change, or provider change.
+- Candidate provenance: `d902c579597d550f81b460982d614dbb0870b7d9`. The tracked
+  and index tree was clean before the run; the safe artifact metadata's
+  `git_dirty=true` reflects only the preserved, uninspected `.deepseek-runs/`
+  runtime directory.
+- Frozen configuration: target and judge `deepseek-v4-flash`; Source Evaluator
+  target effort `high`; judge effort `max`; one live repetition; concurrency
+  `1`; `llm.max_tokens=4096`; Planner final cap `4096`; retry count `5` with
+  `1.0` initial and `16.0` maximum delay; native judge transport
+  `deepseek_responses_json_schema_v1`.
+- Result: runner exit `0`, status `REVIEW REQUIRED`, one case/version `2`
+  completed, and one repetition completed. All `14/14` target gates passed;
+  deterministic quality was `1.00`; judge quality was `0.88`; aggregate
+  quality was `0.928`; prohibited-call count was `0`; target errors and
+  fallback provider diagnostics were empty.
+- Judge acceptance: `judge.status=scored`, `judge.not_run_reason=null`, and
+  `judge.diagnostics=[]`. The validated judge prompt fingerprint was
+  `93edb1729cbb`; the native-schema judge configuration fingerprint was
+  `924caf47aa0d`. No target-side typed `output_limit` evidence appeared.
+- Immutable evidence: `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-judge-native-schema-source-evaluator-canary-d902c57-source-evaluator-live-20260911T190947Z-d902c57/results.json`; SHA-256
+  `F6A910D4F428F43B4FFC9164C1B989C4BE8B529D57C0D2FA7A7ADB909C3CEEF2`.
+  LangSmith experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/6d92638c-900d-4ac1-a184-2fd3e0c2d464`.
+- Disposition: Source Evaluator passes this one-repetition judge-transport
+  canary with no target repair indicated. Stop before Synthesizer; its paid
+  command requires a separate immediate authorization under the campaign gate.
