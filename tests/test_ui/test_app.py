@@ -428,6 +428,12 @@ def _visible_main_text(app: AppTest) -> str:
     )
 
 
+def _main_markdown_values(app: AppTest) -> list[str]:
+    return [
+        item.value for item in app.main.markdown if "<style>" not in item.value
+    ]
+
+
 def test_new_research_screen_has_question_form_and_ready_state() -> None:
     app = _app([]).run()
 
@@ -1205,6 +1211,87 @@ def test_running_screen_preserves_narrative_sequence_and_three_recent_rows() -> 
     assert "Newest meaningful activity" in visible
 
 
+@pytest.mark.parametrize(
+    ("snapshot", "eyebrow", "subsection_headings"),
+    [
+        pytest.param(
+            _snapshot(
+                status="running",
+                sub_topics=[
+                    UiSubTopicProgress(
+                        index=1,
+                        title="Active research topic",
+                        status="running",
+                    )
+                ],
+                recent_activity=[
+                    UiRecentActivity(
+                        event_type="researcher.activity",
+                        summary="Recent activity",
+                    )
+                ],
+            ),
+            "RESEARCH IN PROGRESS",
+            ("SUBTOPIC SEQUENCE", "RECENT ACTIVITY"),
+            id="running",
+        ),
+        pytest.param(
+            _completed_report_snapshot(),
+            "RESEARCH COMPLETED",
+            ("SOURCE CREDIBILITY", "FACT-CHECK SUMMARY"),
+            id="completed",
+        ),
+        pytest.param(
+            _completed_report_snapshot(status="incomplete"),
+            "RESEARCH INCOMPLETE",
+            ("STOPPING POINT", "SOURCE CREDIBILITY", "FACT-CHECK SUMMARY"),
+            id="incomplete",
+        ),
+        pytest.param(
+            _snapshot(
+                status="failed",
+                errors=[
+                    {
+                        "error_type": "ui.research.failed",
+                        "source": "ui",
+                        "message": "safe failure",
+                        "recoverable": False,
+                        "details": {},
+                    }
+                ],
+                sub_topics=[
+                    UiSubTopicProgress(
+                        index=1,
+                        title="Last research topic",
+                        status="running",
+                    )
+                ],
+            ),
+            "RESEARCH FAILED",
+            ("STOPPING POINT",),
+            id="failed",
+        ),
+    ],
+)
+def test_cross_state_views_share_semantic_rhythm_classes(
+    snapshot: UiSessionSnapshot,
+    eyebrow: str,
+    subsection_headings: tuple[str, ...],
+) -> None:
+    app = _running_app(snapshot)
+    markdown_values = _main_markdown_values(app)
+
+    assert any(
+        "dr-screen-eyebrow" in value and eyebrow in value
+        for value in markdown_values
+    )
+    for heading in subsection_headings:
+        assert any(
+            "dr-subsection-heading" in value and heading in value
+            for value in markdown_values
+        )
+
+
 def test_running_screen_omits_unavailable_observability() -> None:
     app = _running_app(_snapshot())
     visible = _visible_main_text(app)
@@ -1665,11 +1752,21 @@ def test_report_quality_rows_and_path() -> None:
     assert "dr-quality-icon" in visible
     assert "dr-quality-row--source-high" in visible
     assert "dr-quality-row--fact-contradicted" in visible
-    assert app.code
-    assert app.code[0].value == "reports/grid-scale-batteries-2030.md"
+    assert not app.code
+    metadata = next(item for item in app.expander if item.label == "Session metadata")
     assert any(
-        item.value == "Report path" for item in app.main.caption
+        item.value == "Report path · reports/grid-scale-batteries-2030.md"
+        for item in metadata.caption
     )
+
+
+def test_long_report_is_kept_in_a_wrapping_surface() -> None:
+    long_report = "# Long report\n\n" + ("unbroken-segment-" * 120)
+    app = _running_app(_completed_report_snapshot(report=long_report))
+
+    assert app.container(key="dr-report-content") is not None
+    assert long_report in _visible_main_text(app)
+    assert "overflow-wrap: anywhere;" in components.REPORT_CSS
 
 
 def test_completed_without_execution_errors_keeps_neutral_issue_state() -> None:
@@ -2000,6 +2097,32 @@ def test_history_screen_has_searchable_newest_first_status_rows_and_open_actions
     )
     assert len([button for button in app.main.button if button.label == "Open"]) == 6
     assert len(app.dataframe) == 0
+
+
+def test_history_view_uses_shared_semantic_rhythm_classes() -> None:
+    app = _history_app()
+    markdown_values = _main_markdown_values(app)
+
+    assert any(
+        "dr-screen-eyebrow" in value and "SESSION HISTORY" in value
+        for value in markdown_values
+    )
+    assert any(
+        "dr-subsection-heading" in value and "QUESTION" in value
+        for value in markdown_values
+    )
+
+
+def test_history_row_keeps_a_long_question_in_its_wrapping_surface() -> None:
+    session_id = "l" * 32
+    question = "Question with an intentionally long unbroken value " + ("x" * 600)
+    app = _history_app([_entry(session_id, question, "completed", 0)])
+    row = app.main.container(key=f"dr-history-row-{session_id}")
+
+    assert any(
+        "dr-session-question" in item.value and question in item.value
+        for item in row.markdown
+    )
 
 
 def test_history_search_is_case_insensitive_and_survives_reruns() -> None:
@@ -2574,6 +2697,25 @@ def test_demo_controller_covers_all_offline_visual_scenarios() -> None:
     )
 
 
+def test_demo_controller_harness_exposes_deterministic_no_report_modes() -> None:
+    controller = DemoController()
+
+    assert {"Starting", "Incomplete/no-report", "Failed/no-report"} <= set(
+        controller.modes
+    )
+    for mode, expected_status in (
+        ("Incomplete/no-report", "incomplete"),
+        ("Failed/no-report", "failed"),
+    ):
+        session_id = controller.session_id_for_mode(mode)
+        assert session_id is not None
+        snapshot = controller.snapshot(session_id)
+        assert snapshot.status == expected_status
+        assert snapshot.report is None
+        assert snapshot.report_path is None
+    assert controller.start_calls == []
+
+
 def test_demo_controller_start_is_deterministic_and_stays_offline() -> None:
     controller = DemoController()
 
@@ -2609,8 +2751,11 @@ def test_manual_mock_app_exposes_only_development_state_selector() -> None:
     assert len(selectors) == 1
     assert selectors[0].options == [
         "New",
+        "Starting",
         "Running",
         "Completed",
+        "Incomplete/no-report",
+        "Failed/no-report",
         "History",
         "Max iterations",
         "Failed/partial",
@@ -2622,8 +2767,11 @@ def test_manual_mock_app_renders_each_selectable_offline_state() -> None:
     app = AppTest.from_file(Path(__file__).with_name("manual_mock_app.py")).run()
     expected_headings = {
         "New": "What would you like to research?",
+        "Starting": "Preparing research plan",
         "Running": "RESEARCH IN PROGRESS",
         "Completed": "RESEARCH COMPLETED",
+        "Incomplete/no-report": "RESEARCH INCOMPLETE",
+        "Failed/no-report": "RESEARCH FAILED",
         "History": "Research sessions",
         "Max iterations": "RESEARCH PAUSED",
         "Failed/partial": "RESEARCH FAILED",

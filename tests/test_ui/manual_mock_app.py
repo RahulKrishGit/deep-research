@@ -6,7 +6,10 @@ import streamlit as st
 
 from deep_research.ui.app import (
     _ACTIVE_SESSION_KEY,
+    _PENDING_START_KEY,
     _SELECTED_SESSION_KEY,
+    _START_ERROR_KEY,
+    _START_IN_FLIGHT_KEY,
     _VIEW_KEY,
     render_app,
 )
@@ -21,12 +24,18 @@ def main() -> None:
         help="Development-only selector; all data is deterministic and offline.",
     )
 
-    if mode == "New" or mode == "History":
-        st.session_state[_VIEW_KEY] = "new" if mode == "New" else "history"
+    if mode in {"New", "Starting", "History"}:
+        st.session_state[_VIEW_KEY] = "history" if mode == "History" else "new"
         st.session_state[_ACTIVE_SESSION_KEY] = None
-        if mode == "New":
+        st.session_state[_START_IN_FLIGHT_KEY] = mode == "Starting"
+        st.session_state[_START_ERROR_KEY] = None
+        st.session_state[_PENDING_START_KEY] = None
+        if mode in {"New", "Starting"}:
             st.session_state[_SELECTED_SESSION_KEY] = None
     else:
+        st.session_state[_START_IN_FLIGHT_KEY] = False
+        st.session_state[_START_ERROR_KEY] = None
+        st.session_state[_PENDING_START_KEY] = None
         session_id = controller.session_id_for_mode(mode)
         if session_id is None:
             raise ValueError(f"Unknown demo mode: {mode}")

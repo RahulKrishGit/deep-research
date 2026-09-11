@@ -575,6 +575,16 @@ REPORT_CSS = """
 [data-testid="stMainBlockContainer"] hr {
   margin: 16px 0 !important;
 }
+
+[class*="st-key-dr-report-content"] {
+  min-width: 0;
+  max-width: 100%;
+}
+
+[class*="st-key-dr-report-content"] [data-testid="stMarkdownContainer"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 """
 
 
@@ -1454,7 +1464,8 @@ def _render_current_activity(snapshot: UiSessionSnapshot) -> None:
 def _render_stopping_point(snapshot: UiSessionSnapshot) -> None:
     """Render compact durable context for a non-live session."""
     st.markdown(
-        '<div class="dr-editorial-column dr-section-label">STOPPING POINT</div>',
+        '<div class="dr-editorial-column dr-section-label '
+        'dr-subsection-heading">STOPPING POINT</div>',
         unsafe_allow_html=True,
     )
     agent = snapshot.last_agent or snapshot.current_agent
@@ -1491,7 +1502,8 @@ def _render_stopping_point(snapshot: UiSessionSnapshot) -> None:
 
 def _render_subtopic_sequence(snapshot: UiSessionSnapshot) -> None:
     st.markdown(
-        '<div class="dr-editorial-column dr-section-label">SUBTOPIC SEQUENCE</div>',
+        '<div class="dr-editorial-column dr-section-label '
+        'dr-subsection-heading">SUBTOPIC SEQUENCE</div>',
         unsafe_allow_html=True,
     )
     if (
@@ -1529,7 +1541,8 @@ def _render_subtopic_sequence(snapshot: UiSessionSnapshot) -> None:
 
 def _render_recent_activity(snapshot: UiSessionSnapshot) -> None:
     st.markdown(
-        '<div class="dr-editorial-column dr-section-label">RECENT ACTIVITY</div>',
+        '<div class="dr-editorial-column dr-section-label '
+        'dr-subsection-heading">RECENT ACTIVITY</div>',
         unsafe_allow_html=True,
     )
     for index, activity in enumerate(snapshot.recent_activity[-3:]):
@@ -1585,7 +1598,7 @@ def _render_running_snapshot(snapshot: UiSessionSnapshot) -> None:
     main_column, details_column = st.columns([3, 1], gap="large")
     with main_column:
         st.markdown(
-            '<div class="dr-editorial-column dr-section-label">'
+            '<div class="dr-editorial-column dr-section-label dr-screen-eyebrow">'
             "RESEARCH IN PROGRESS</div>",
             unsafe_allow_html=True,
         )
@@ -1602,7 +1615,8 @@ def _render_running_snapshot(snapshot: UiSessionSnapshot) -> None:
         _render_recent_activity(snapshot)
     with details_column:
         st.markdown(
-            '<div class="dr-section-label">SESSION DETAILS</div>',
+            '<div class="dr-section-label dr-subsection-heading">'
+            "SESSION DETAILS</div>",
             unsafe_allow_html=True,
         )
         _render_details_rail(snapshot)
@@ -1646,7 +1660,8 @@ def _render_retained_progress_snapshot(snapshot: UiSessionSnapshot) -> None:
         "failed": "RESEARCH FAILED",
     }.get(snapshot.status, "RESEARCH SESSION")
     st.markdown(
-        f'<div class="dr-editorial-column dr-section-label">{eyebrow}</div>',
+        f'<div class="dr-editorial-column dr-section-label '
+        f'dr-screen-eyebrow">{eyebrow}</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -1705,7 +1720,8 @@ def _render_quality_rows(
     rows: tuple[tuple[str, int], ...],
 ) -> None:
     st.markdown(
-        f'<div class="dr-section-label">{escape(heading)}</div>',
+        f'<div class="dr-section-label dr-subsection-heading">'
+        f'{escape(heading)}</div>',
         unsafe_allow_html=True,
     )
     rendered_rows = [
@@ -1914,7 +1930,8 @@ def _render_completed_report_body(
     status_label: str,
 ) -> None:
     st.markdown(
-        f'<div class="dr-editorial-column dr-section-label">{eyebrow}</div>',
+        f'<div class="dr-editorial-column dr-section-label '
+        f'dr-screen-eyebrow">{eyebrow}</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -1951,16 +1968,14 @@ def _render_completed_report_body(
     if finished_at:
         metadata.append(finished_at)
     st.caption(" · ".join(metadata))
-    if snapshot.report_path:
-        st.caption("Report path")
-        st.code(snapshot.report_path, language=None)
     if snapshot.status == "max_iterations":
         st.caption("The run reached its configured iteration limit.")
 
     if snapshot.report:
         # Keep report Markdown on the base canvas so the answer remains the
         # dominant object and Streamlit owns its safe Markdown rendering.
-        st.markdown(snapshot.report)
+        with _st_container(key="dr-report-content"):
+            st.markdown(snapshot.report)
     else:
         st.caption("No report was available for this session.")
     if snapshot.status != "completed":
@@ -2063,7 +2078,7 @@ def _render_history_row(
         question_column, status_column, action_column = st.columns(
             [3, 1.15, 0.5],
             gap="medium",
-            vertical_alignment="center",
+            vertical_alignment="top",
         )
         with question_column:
             st.markdown(
@@ -2089,6 +2104,11 @@ def render_history_view(controller: LocalResearchController) -> None:
     """Render a searchable, newest-first archive of local session metadata."""
     state = st.session_state
     entries = _history_entries(controller, state)
+    st.markdown(
+        '<div class="dr-editorial-column dr-section-label dr-screen-eyebrow">'
+        "SESSION HISTORY</div>",
+        unsafe_allow_html=True,
+    )
     st.markdown(
         '<div class="dr-editorial-column dr-shell-title">'
         "<h1>Research sessions</h1></div>",
@@ -2149,7 +2169,8 @@ def render_history_view(controller: LocalResearchController) -> None:
     ]
 
     st.markdown(
-        '<div class="dr-history-header dr-section-label">'
+        '<div class="dr-history-header dr-section-label '
+        'dr-subsection-heading">'
         "QUESTION <span>NEWEST FIRST</span></div>",
         unsafe_allow_html=True,
     )

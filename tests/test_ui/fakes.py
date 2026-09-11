@@ -43,8 +43,11 @@ _DEMO_TOPICS = (
 )
 _DEMO_MODES = (
     "New",
+    "Starting",
     "Running",
     "Completed",
+    "Incomplete/no-report",
+    "Failed/no-report",
     "History",
     "Max iterations",
     "Failed/partial",
@@ -308,6 +311,8 @@ class DemoController:
     no_telemetry_session_id = "6" * 32
     configuration_error_session_id = "7" * 32
     started_session_id = "0" * 32
+    incomplete_no_report_session_id = "e" * 31 + "0"
+    failed_no_report_session_id = "f" * 31 + "0"
 
     def __init__(self) -> None:
         self.start_calls: list[dict[str, object]] = []
@@ -387,6 +392,8 @@ class DemoController:
         return {
             "Running": self.running_session_id,
             "Completed": self.completed_session_id,
+            "Incomplete/no-report": self.incomplete_no_report_session_id,
+            "Failed/no-report": self.failed_no_report_session_id,
             "Max iterations": self.max_iterations_session_id,
             "Failed/partial": self.failed_partial_session_id,
         }.get(mode)
@@ -468,6 +475,18 @@ class DemoController:
                 token_usage=None,
                 trace_url=None,
                 errors=[configuration_error],
+                finished_at=_DEMO_TIME,
+            ),
+            self.incomplete_no_report_session_id: _demo_snapshot(
+                session_id=self.incomplete_no_report_session_id,
+                status="incomplete",
+                iteration=2,
+                finished_at=_DEMO_TIME,
+            ),
+            self.failed_no_report_session_id: _demo_snapshot(
+                session_id=self.failed_no_report_session_id,
+                status="failed",
+                errors=[failed_error],
                 finished_at=_DEMO_TIME,
             ),
         }
