@@ -781,6 +781,32 @@ def test_streamlit_dependency_floor_matches_keyed_container_contract() -> None:
     assert '"streamlit>=1.49"' in project_file.read_text(encoding="utf-8")
 
 
+def test_global_css_uses_non_iframed_html_injection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import streamlit as st
+
+    captured: list[str] = []
+    original_html = st.html
+
+    def capture_html(body: str, **kwargs: object) -> object:
+        captured.append(body)
+        return original_html(body, **kwargs)
+
+    monkeypatch.setattr(st, "html", capture_html)
+
+    _app([]).run()
+
+    assert captured == [
+        STATIC_CSS.replace(
+            "</style>",
+            f"{components.REPORT_CSS}</style>",
+            1,
+        )
+    ]
+    assert "@media (prefers-color-scheme: dark)" in captured[0]
+
+
 def test_plan_streamlit_floor_matches_keyed_container_contract() -> None:
     plan_file = (
         Path(__file__).parents[2]

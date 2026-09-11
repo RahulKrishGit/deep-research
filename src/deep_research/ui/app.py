@@ -118,9 +118,8 @@ def render_app(controller=None) -> None:
 
     resolved_controller = resolve_controller(controller)
     _initialize_session_state()
-    st.markdown(
+    st.html(
         STATIC_CSS.replace("</style>", f"{REPORT_CSS}</style>", 1),
-        unsafe_allow_html=True,
     )
     render_sidebar(resolved_controller)
 
