@@ -213,7 +213,7 @@ def synchronize_dataset(
         if to_create:
             client.create_examples(dataset_id=dataset.id, examples=to_create)
         if to_update:
-            client.update_examples(updates=to_update)
+            client.update_examples(dataset_id=dataset.id, updates=to_update)
     except Exception as error:
         raise DatasetSyncError("dataset_unavailable") from error
 

@@ -57,6 +57,7 @@ class FakeLangSmithClient:
         self.created_datasets: list[str] = []
         self.created_examples: list[dict[str, Any]] = []
         self.updated_examples: list[dict[str, Any]] = []
+        self.updated_dataset_ids: list[str] = []
         self.feedback: list[dict[str, Any]] = []
         self.read_project_calls: list[str | UUID] = []
         self.updated_projects: list[dict[str, Any]] = []
@@ -96,12 +97,26 @@ class FakeLangSmithClient:
                 )
             )
 
-    def update_examples(self, *, updates: Sequence[Mapping]):
+    def update_examples(
+        self, *, updates: Sequence[Mapping], dataset_id: str | None = None
+    ):
+        dataset = next(
+            (
+                candidate
+                for candidate in self._datasets.values()
+                if candidate.id == dataset_id
+            ),
+            None,
+        )
+        if dataset is None:
+            raise AssertionError(
+                "example updates must identify an existing dataset"
+            )
         known_ids = {
             example.id
-            for examples in self._examples.values()
-            for example in examples
+            for example in self._examples[dataset.name]
         }
+        self.updated_dataset_ids.append(dataset_id)
         for payload in updates:
             if payload.get("id") not in known_ids:
                 raise AssertionError(
