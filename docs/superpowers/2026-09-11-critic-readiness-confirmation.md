@@ -88,16 +88,71 @@ On this frozen case the reporting report declares its own themes, so
 `no_spurious_gaps` is a gradable signal, and r3's `0.0` is a real quality
 observation about the critique rather than an infrastructure artifact.
 
+## Gate fix and the gated confirmation
+
+The no-review-passing defect in Finding 2 is fixed by `cccc139`, which adds a
+`review_produced` hard gate to the Critic: a repetition in which the report
+review fell back to the provider-unavailable path cannot pass, because the
+fallback's placeholder score of `1` with empty lists satisfies every other
+gate. The gate is keyed to the `critic_report_review` operation specifically,
+so a fallback elsewhere does not over-block a run whose review succeeded.
+
+Three further live repetitions ran on `cccc139`:
+
+| Run | Deterministic | Judge | Aggregate | Gates | Fallback | `review_produced` |
+| --- | --- | --- | --- | --- | --- | --- |
+| r1 | `0.75` | `0.8175` | `0.7905` | `15/15` | none | pass |
+| r2 | `0.80` | `0.8265` | `0.8159` | `15/15` | none | pass |
+| r3 | `1.00` | `0.75` | `0.85` | `15/15` | `output_limit` / `react_decision` | pass |
+
+All three passed. Scores are both higher and tighter than the ungated set
+(`0.79`–`0.85` versus `0.71`–`0.88`), and no repetition in this set suffered a
+`critic_report_review` fallback.
+
+Artifacts (each SHA-256):
+
+- r1 `output/evaluations/live-critic-gated/critic/critic-gated-cccc139-r1-critic-live-20260911T225259Z-cccc139/results.json` — `88E3D544D54CC6036E663587753A23B866B2A25096F9BA2C2EB2AEDDB3D4660C`
+- r2 `output/evaluations/live-critic-gated/critic/critic-gated-cccc139-r2-critic-live-20260911T225435Z-cccc139/results.json` — `A81B6C438BC1925FB17A02D0CD7C49FF980C58E07D6ED965D788C8AA1C1527A5`
+- r3 `output/evaluations/live-critic-gated/critic/critic-gated-cccc139-r3-critic-live-20260911T225625Z-cccc139/results.json` — `F2B3083691192AA0B82A80B53944FA6B700FC4DFEB1A888E7845881A01C3551C`
+
+### Finding 4 — ReAct decisions truncate at the global cap
+
+r3 recorded `{kind: output_limit, operation: react_decision}`: the Critic's
+ReAct spot-check decision hit the global `llm.max_tokens = 4096` and was
+truncated. The review itself still succeeded, which is why the run passed and
+why `review_produced` correctly stayed `True`.
+
+This is the same budget defect as the review and the verdict, in the one place
+still pinned to the global cap. `llm.max_tokens = 4096` is therefore too small
+for the Critic's ReAct decisions as well, and the truncation silently degrades
+the spot-check phase rather than failing the run.
+
+## Status after the gate fix
+
+- **Reliability of the review path**: no `critic_report_review` fallback in the
+  last three repetitions, against `1 of 3` immediately before. The intermittent
+  structured-output failure is not proven gone — three repetitions is a small
+  sample — but it is no longer observed, and when it does occur it can no longer
+  be certified as a pass.
+- **Gate integrity**: repaired. A run with no review now fails a hard gate
+  regardless of how favourably the judge reads the fallback.
+- **Remaining known defect**: `react_decision` truncation at the global cap,
+  recorded as Finding 4 and not yet repaired.
+
 ## Boundary
 
-No configuration changed during this confirmation. The retry policy
+No configuration changed during either confirmation set. The retry policy
 (`retry_count = 2`, set by `.env`), the one-repair contract, the fallback
 semantics, the frozen case, the rubric, the metric weights, `llm.max_tokens =
 4096`, and the `0.75` threshold are all unchanged. `judge_configuration_
-fingerprint` remained `924caf47aa0d` in all three runs.
+fingerprint` remained `924caf47aa0d` in every run.
 
-No repair is proposed by this note. The three findings above are recorded so
-that the next change is chosen from evidence rather than from the single
-passing repetition recorded in
+The only production change between the two sets is the `review_produced` gate in
+`cccc139`. No token, retry, temperature, or threshold value was touched, and no
+repair to the intermittent structured-output failure is proposed by this note;
+Finding 4's `react_decision` truncation is recorded, not repaired.
+
+These results exist so that the next change is chosen from evidence rather than
+from the single passing repetition recorded in
 `docs/superpowers/2026-09-11-critic-readiness-final-canary.md`, which — read
 alone — would have overstated reliability.
