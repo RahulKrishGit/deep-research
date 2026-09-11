@@ -71,7 +71,7 @@
 
   .dr-control-label { margin: 0 0 8px; color: #172126; font-size: 13px; font-weight: 600; line-height: 1.35; }
   .dr-readonly-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 10px 12px; background: #F5F7F6; border: 1px solid #DCE2DF; border-radius: 6px; color: #172126; }
-  .dr-readonly-meta { color: #647276; font-size: 12px; }
+  .dr-readonly-meta { color: var(--dr-text-muted); font-size: 12px; }
   .dr-screen-eyebrow { margin: 0 0 8px; }
   .dr-subsection-heading { margin: 0; }
   .dr-next-steps { margin-top: 32px; padding-top: 16px; border-top: 1px solid #DCE2DF; }
