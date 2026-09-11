@@ -891,3 +891,30 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   `src` explicitly first on `sys.path` passed `2,006` tests with one
   deselection and two existing dependency warnings. Ruff and `git diff --check`
   remained green; no source change was made.
+
+## 66. Judge Observability Follow-Up — STOP / NO-CHANGE — 2026-09-10
+
+- A fresh read-only Luna Max audit and Sol High architecture review examined
+  whether the recurring judge `$`/`rationale` failures justified adding typed
+  operation, schema, prompt, or configuration fields. No source, test, tracked
+  documentation, budget, or live/provider state changed.
+- Existing `JudgeFeedback` and its evaluator/runner projections already retain
+  typed status and not-run reason, bounded diagnostics, prompt ID, rubric
+  version, judge model, prompt fingerprint, judge-configuration fingerprint,
+  and trace/source URLs. The prompt fingerprint includes the frozen
+  `JudgeVerdict` JSON schema; target-agent operation attribution remains a
+  separate fallback diagnostic boundary. The provider already records its
+  static structured-output operation and bounded attempt telemetry.
+- No second judge operation is interleaved with the current one, and no typed
+  projection loss, fingerprint collision, or consumer/schema mismatch was
+  reproduced. Adding duplicate telemetry would change the persisted v1 artifact
+  contract without resolving the observed provider response instability.
+- Offline evidence at `ca369b6`: judge tests `19 passed`, provider tests `103
+  passed`, targeted Ruff passed, and `git diff --check` passed. No live,
+  provider, LangSmith, suite, network, credential, raw-response, or
+  `.deepseek-runs` access was used.
+- Sol High decision: **A — STOP / NO-CHANGE**. Reopen only if a deterministic
+  offline RED demonstrates a projection mismatch, missing/colliding fingerprint,
+  indistinguishable real judge operations, or a typed consumer that cannot
+  represent required safe context. A paid run is not a substitute for that
+  evidence.
