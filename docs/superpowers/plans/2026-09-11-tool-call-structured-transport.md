@@ -41,6 +41,167 @@
 
 ---
 
+### Task 0: Reconnaissance — prove DeepSeek accepts the tool-call shape
+
+**Files:**
+- Create: `tools/probe_deepseek_tool_call.py` (throwaway, not committed)
+- No production or test change.
+
+**Interfaces:**
+- Consumes: `DEEPSEEK_API_KEY` from the repository `.env` via the repository launcher.
+- Produces: a recorded answer to two questions that decide whether Tasks 2–4 are viable as written: (1) does the DeepSeek Chat Completions endpoint accept a **function-specific** `tool_choice` for `deepseek-v4-flash`, and (2) does the model actually return a tool call under it.
+
+**Why this task exists.** The plan originally asserted the OpenAI tool-calling shape without verifying it. External evidence says that is unsafe for this provider:
+
+- `deepseek-ai/DeepSeek-V3#1376` — *"[BUG] DeepSeek V4 rejects `tool_choice="required"` and specific function `tool_choice` — breaks structured output in all agent frameworks"*.
+- `pydantic/pydantic-ai#5193` — *"`DeepSeekProvider` missing support for `deepseek-v4-flash` and `deepseek-v4-pro`: users hit 400 on tool-based structured output"*.
+- `vectorize-io/hindsight#1294` — a fix titled *"omit `tool_choice="auto"` and add deepseek as first-class provider"*.
+
+Those are third-party reports about this exact model, so the shape must be proven against the live endpoint **before** any paid evaluation repetition. This is a cheap single call, not a canary.
+
+- [ ] **Step 1: Write the probe**
+
+Create `tools/probe_deepseek_tool_call.py`:
+
+```python
+"""Throwaway probe: which tool_choice shapes does DeepSeek accept?
+
+One cheap call per shape. Prints the HTTP outcome and, on success, whether the
+response actually carried a tool call. Never prints the API key or the full
+response body.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from openai import AsyncOpenAI  # noqa: E402
+
+BASE_URL = "https://api.deepseek.com"
+MODEL = "deepseek-v4-flash"
+
+SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "score": {"type": "integer"},
+        "rationale": {"type": "string"},
+    },
+    "required": ["score", "rationale"],
+}
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "TinyAnswer",
+            "description": "Return the structured result as this function's arguments.",
+            "parameters": SCHEMA,
+        },
+    }
+]
+
+
+async def probe(client: AsyncOpenAI, label: str, tool_choice: object) -> None:
+    payload = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": "Score this: the sky is blue."}],
+        "max_tokens": 512,
+        "tools": TOOLS,
+    }
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    try:
+        response = await client.chat.completions.create(**payload)
+    except Exception as error:  # noqa: BLE001 - probe reports the class only
+        print(f"{label:<34} FAILED  {type(error).__name__}: {getattr(error, 'status_code', '')}")
+        return
+    message = response.choices[0].message
+    calls = getattr(message, "tool_calls", None) or []
+    has_call = len(calls) == 1
+    args = calls[0].function.arguments if has_call else None
+    valid = False
+    if isinstance(args, str):
+        try:
+            json.loads(args)
+            valid = True
+        except json.JSONDecodeError:
+            valid = False
+    print(
+        f"{label:<34} OK      tool_calls={len(calls)} "
+        f"finish={response.choices[0].finish_reason} json_valid={valid}"
+    )
+
+
+async def main() -> None:
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not key.strip():
+        print("DEEPSEEK_API_KEY is not set")
+        return
+    client = AsyncOpenAI(api_key=key, base_url=BASE_URL, max_retries=0)
+    await probe(client, "function-specific", {"type": "function", "function": {"name": "TinyAnswer"}})
+    await probe(client, "required-string", "required")
+    await probe(client, "auto-string", "auto")
+    await probe(client, "omitted", None)
+    await probe(client, "none-string", "none")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+- [ ] **Step 2: Run the probe with the repository credentials**
+
+```powershell
+$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
+& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" `
+  ".superpowers\sdd\2026-09-08-cross-agent-planner-fix-parity\run_with_repo_env.py" `
+  "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.env" `
+  "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" `
+  "tools\probe_deepseek_tool_call.py"
+```
+
+- [ ] **Step 3: Choose the shape from the recorded result**
+
+Read the five lines and pick exactly one, recording the choice in the fix-log entry for this task:
+
+| Observation | Decision |
+| --- | --- |
+| `function-specific` is OK with `json_valid=True` | **Preferred.** Keep Task 2 exactly as written. |
+| `function-specific` fails, `required-string` is OK with `json_valid=True` | Change Task 2's `tool_choice` to the string `"required"` and add `parallel_tool_calls: False` so the reply carries exactly one call. `_tool_call_arguments` already fails closed on more than one. |
+| Both fail, `auto-string` is OK with `json_valid=True` | Change Task 2's `tool_choice` to `"auto"`. Adequacy must then be proven by repetition count rather than by the API: expect occasional prose answers, which `_tool_call_arguments` turns into typed errors, and re-evaluate after Task 7's canary. |
+| Every tool shape fails, but `omitted` returns a tool call | Omit `tool_choice` entirely and rely on the tool being the only offered function. |
+| No shape returns a tool call at all | **Stop.** Tool calling is not viable for this model on this endpoint. Do not run Tasks 2–4 or any paid repetition. Report the probe output and re-decide with the user; the `json_schema` transport in `2fe4e32` remains the best available mechanism, and the next lever is the prompt or the model rather than the transport. |
+
+- [ ] **Step 4: Remove the probe**
+
+```powershell
+Remove-Item "tools\probe_deepseek_tool_call.py" -Force
+```
+
+Do not commit the probe. Record only its outcome, and never the API key or a raw response body.
+
+- [ ] **Step 5: Commit the decision**
+
+Record the chosen shape and the probe outcome by appending a section to
+`docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`, following that file's numbered-section format.
+
+```powershell
+git add docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md
+git commit -m "docs: record the deepseek tool-call shape probe"
+```
+
+**Gate:** Tasks 1–7 below assume the `function-specific` shape. If Step 3 selected a different shape, apply the corresponding change to Task 2's `tool_choice` before starting Task 2. If Step 3 selected **Stop**, do not start Task 1 either, and report back to the user.
+
+---
+
 ### Task 1: Add the `structured_transport` setting
 
 **Files:**
@@ -1046,8 +1207,8 @@ git commit -m "fix(critic): state the JSON reply contract in the review request"
 - No source changes.
 
 **Interfaces:**
-- Consumes: Tasks 1–5.
-- Produces: a recorded passing offline gate. Task 7 must not start without it.
+- Consumes: Tasks 0–5.
+- Produces: a recorded passing offline gate. Task 6 must not start without it.
 
 - [ ] **Step 1: Run the full suite**
 
@@ -1056,7 +1217,7 @@ $env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scrip
 & "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest -q
 ```
 
-Expected: the three named pre-existing failures plus roughly `2098` passing tests, and **no new failures**. The plan's base commit `a2ecc1c` recorded exactly `3 failed, 2086 passed, 1 deselected`. Tasks 1–5 add roughly 13 tests. Record the exact numbers. Any failure outside those three names is a regression from this plan: stop and diagnose rather than proceeding.
+Expected: the three named pre-existing failures plus roughly `2098` passing tests, and **no new failures**. The plan's base commit `a2ecc1c` recorded exactly `3 failed, 2086 passed, 1 deselected`. Tasks 0-5 add roughly 13 tests plus the Task 0 probe. Record the exact numbers. Any failure outside those three names is a regression from this plan: stop and diagnose rather than proceeding.
 
 - [ ] **Step 2: Run ruff and whitespace checks**
 
@@ -1167,7 +1328,9 @@ git commit -m "docs: record the tool-call transport canary"
 
 ## Self-Review
 
-**Spec coverage.** The user's requirement is "convert structured output into a tool call, and if it works update all the agents". Task 1 adds the selectable transport; Task 2 implements the tool-call mechanism; Task 3 makes both transports share one repair loop; Task 4 proves every agent inherits the switch without any agent-file change, and pins the existing Responses tests to their transport; Task 5 states the JSON contract in the review request; Task 6 is the offline gate; Task 7 is the paid canary that decides the "if it works" condition and scopes the OpenAI adapter from evidence. The earlier `json_invalid` evidence and the `review_produced` gate from the previous session are the justification and are cited rather than restated.
+**Spec coverage.** The user's requirement is "convert structured output into a tool call, and if it works update all the agents". Task 0 proves the mechanism is accepted by this provider before anything is built on it; Task 1 adds the selectable transport; Task 2 implements the tool-call mechanism; Task 3 makes both transports share one repair loop; Task 4 proves every agent inherits the switch without any agent-file change, and pins the existing Responses tests to their transport; Task 5 states the JSON contract in the review request; Task 6 is the offline gate; Task 7 is the paid canary that decides the "if it works" condition and scopes the OpenAI adapter from evidence. The `json_invalid` evidence, the `review_produced` gate, and Finding 5 are cited rather than restated.
+
+**The plan's biggest risk, and how it is handled.** The original draft assumed DeepSeek accepts the OpenAI tool-calling shape. It does not get to assume that: `deepseek-ai/DeepSeek-V3#1376` reports V4 rejecting `tool_choice="required"` and function-specific `tool_choice`, and `pydantic/pydantic-ai#5193` reports 400s on tool-based structured output for `deepseek-v4-flash` specifically. Task 0 therefore spends one cheap call to test five `tool_choice` shapes and names the exact change to make for each outcome, including a documented **stop** condition where tool calling is abandoned before any paid evaluation repetition or any of Tasks 1–6 run.
 
 **What this plan deliberately does not do.** It does not convert the six agent modules, because they contain no structured-output code to convert — the claim is pinned by `test_the_agent_modules_do_not_mention_the_transport`. It does not touch `openai_provider.py`, because that adapter uses a different mechanism (`responses.parse`) with different failure behaviour and no observed failure in this campaign; Task 7 makes that decision explicit and evidence-based instead of assumed.
 
