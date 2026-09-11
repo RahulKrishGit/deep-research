@@ -965,3 +965,28 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   `deepseek_responses_json_schema_v1` recorded as the transport identifier.
   `judge_prompt_fingerprint(rubric_version=1)` remains `93edb1729cbb`; the
   candidate contains no judging, model, or prompt-source change.
+
+## 68. Task 8 DeepSeek Judge Native-Schema Transport Review — OFFLINE COMPLETE; LIVE NO-GO
+
+- Reviewed implementation range: `dedccd7c129288b9753bb29a7838b8d03f9372ef..e914c13030e49ca0678f6d2cd6ee2ab76ee57228`.
+- Reviewed implementation head: `e914c13030e49ca0678f6d2cd6ee2ab76ee57228`.
+- Evidence commit: `8c6e655777ddc79d1f47c13206f178017891f3f2`.
+- Offline gate counts: `314` focused tests; `1,299` evaluation/agent/provider
+  contract tests; `2,043` full offline tests with `1` deselected.
+- Stage 1 cumulative implementation review (Sol High): **GO**; no Critical or
+  Important findings. The transport-only fingerprint regression coverage is
+  the deferred Minor.
+- Stage 2 fresh architecture/readiness review (Sol High): **PASS** for
+  transport correctness, contract/failure-semantic preservation, target/judge
+  isolation, provenance, and conditional readiness for one future Researcher
+  canary; no Critical or Important findings. The same Minor remains deferred.
+- Disposition: the judge native-schema transport repair is offline-complete and
+  reviewed. Live state is **NO-GO pending separate explicit authorization**.
+  Researcher is the preferred first future canary because its prior target
+  gates and deterministic quality were green and its unresolved boundary was
+  judge schema failure. This is eligibility only; no canary or provider request
+  has run.
+- No provider call, live/LangSmith/evaluation-suite run, paid canary, retry,
+  token increase, or mass agent evaluation ran or is authorized by this step.
+  No credentials or `.env` content was accessed, and no `.deepseek-runs`
+  artifact was inspected, staged, changed, or removed.

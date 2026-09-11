@@ -2661,3 +2661,27 @@ projection mismatch, colliding/missing fingerprints, indistinguishable real
 judge operations, or a typed consumer that cannot represent required context.
 Until then the judge disposition is `STOP / NO-CHANGE`, and no paid/live run is
 authorized merely to manufacture that evidence.
+
+### Task 8 follow-up: DeepSeek Judge Native-Schema Transport — OFFLINE COMPLETE / REVIEWED
+
+The judge native-schema transport repair is offline-complete and reviewed at
+implementation head `e914c13030e49ca0678f6d2cd6ee2ab76ee57228`, with evidence
+commit `8c6e655777ddc79d1f47c13206f178017891f3f2`. The recorded offline gates
+are `314` focused tests, `1,299` evaluation/agent/provider contract tests, and
+`2,043` full offline tests with `1` deselected.
+
+- Stage 1 cumulative implementation review (Sol High): **GO**, with no Critical
+  or Important findings. The transport-only fingerprint regression coverage is
+  the deferred Minor.
+- Stage 2 fresh architecture/readiness review (Sol High): **PASS** for
+  transport correctness, contract/failure-semantic preservation, target/judge
+  isolation, provenance, and conditional readiness for one future Researcher
+  canary; no Critical or Important findings. The same Minor remains deferred.
+
+Live state is **NO-GO pending separate explicit authorization**. This step
+authorizes no provider call, live/LangSmith/evaluation-suite run, paid canary,
+retry, token increase, or mass agent evaluation. If separately authorized,
+Researcher is the preferred first canary because its prior target gates and
+deterministic quality were green and its unresolved boundary was judge schema
+failure. This is future-canary eligibility only: no Researcher canary or
+provider request has run.
