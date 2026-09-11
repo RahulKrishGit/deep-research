@@ -1140,3 +1140,52 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   only then decide whether a concrete offline RED justifies a minimal Critic
   repair. Fact Checker remains deferred until Critic diagnosis and any
   review/fix/no-change decision are complete.
+
+## 73. Sol High Critic Diagnosis — EXPECTED FALLBACK; NO PRODUCTION CHANGE
+
+- Review surface: the existing Sol High browser conversation reviewed the
+  pushed Critic evidence at remote HEAD `c7a86d160618f7934c18229580fc572aacb775a2`.
+  That commit is documentation-only over the live candidate
+  `2e8b25f5988ae222b74aee4d5272e5590cae2644`; no post-canary production-code
+  drift exists.
+- Classification: **1 — expected Critic target/provider structured-output
+  fallback**. This is not a judge failure, not a demonstrated Critic
+  context/contract defect, and not an evaluator/artifact classification bug.
+- Root cause supported by typed evidence: the target Critic report-review
+  structured request exhausted its existing initial attempt plus one repair on
+  the normal DeepSeek Chat structured-output path, surfaced a typed
+  `StructuredOutputError`, and intentionally returned the `provider_unavailable`
+  fallback. The safe operation/kind projection is therefore exactly
+  `{operation=critic_report_review, kind=schema_output}`.
+- Code evidence: `src/deep_research/agents/critic.py:228-266` defines the
+  provider-unavailable fallback semantics; `critic.py:331-349` records the
+  bounded typed provider snapshot; `critic.py:462-519` catches the typed
+  provider error during review; and `critic.py:598-656` returns the fallback
+  result with ReAct stop reason `provider_error`. The target provider's
+  unchanged two-attempt structured path is `src/deep_research/providers/deepseek_provider.py:660-815`,
+  with safe snapshot mapping at `src/deep_research/providers/contracts.py:179-271`.
+- Artifact/evaluator evidence: `src/deep_research/evaluation/targets.py:548-589`
+  preserves a completed fallback result separately from agent-level errors;
+  `src/deep_research/evaluation/runner.py:489-548` projects only top-level
+  `TargetOutput.failure` into repetition errors; and
+  `src/deep_research/evaluation/evaluators.py:1336-1368` intentionally accepts
+  `should_continue=false` for the typed Critic fallback. The empty compact
+  repetition error list is therefore not loss of the typed fallback.
+- Regression evidence: `tests/test_agents/test_critic.py:354-391` pins the
+  planned spot-check context, `test_critic.py:517-545` pins provider-failure
+  fallback/stop behavior, and `tests/test_evaluation/test_cases_critic.py:222-312`
+  characterizes fallback `rationale_present=0.0` versus grounded rationale
+  `1.0`, with fallback route/score/gap gates passing. This exactly matches the
+  live vector `1.0 / 0.0 / 1.0 / 1.0`.
+- Judge separation: the live judge was independently `scored` with
+  `judge.not_run_reason=null` and empty diagnostics. Its low `0.2525` score
+  measured the intentionally generic fallback critique; it did not cause the
+  target fallback. No target-side `output_limit` evidence exists.
+- Sol High ruling: **NO-CHANGE**. No production Critic repair or TDD plan is
+  justified without a new deterministic offline RED proving a contract,
+  context, fallback-routing, projection, or output-limit classification defect.
+  Do not increase tokens, add retries, loosen `CritiqueDraft`, broaden prompt
+  tuning, or change thresholds from this occurrence.
+- Sequence disposition: Fact Checker remains deferred until this no-change
+  ruling is recorded. It is the next sequential candidate after the ruling,
+  but its live command still requires a separate explicit authorization.

@@ -78,3 +78,30 @@ authorized.
 The sequential loop stops here. The next action is a task-scoped diagnosis in
 the existing Sol High browser conversation. Only a concrete offline RED and a
 reviewed minimal repair or explicit no-change ruling can unblock Fact Checker.
+
+## Sol High diagnosis
+
+Sol High classified this as the expected Critic target/provider structured-output
+fallback and issued a **NO-CHANGE** ruling. The target-side request exhausted
+the existing initial structured attempt plus one repair on the normal DeepSeek
+Chat path, then Critic intentionally returned its `provider_unavailable`
+fallback. The typed `{kind: schema_output, operation: critic_report_review}`
+projection and `provider_error` stop reason are the designed evidence for that
+path.
+
+The empty compact repetition error list is not a lost error: the evaluator
+keeps a completed fallback result and agent-level typed error separate from a
+top-level `TargetOutput.failure`. The live judge was independently scored with
+no diagnostics, so its low score evaluated the fallback critique rather than
+causing the fallback.
+
+Sol found no deterministic RED proving a Critic context, contract, routing,
+serialization, or evaluator defect. The existing Critic and evaluator tests
+already characterize the planned spot-check context, provider fallback stop,
+typed operation, and fallback `rationale_present=0.0` versus grounded
+`rationale_present=1.0` behavior. No prompt, token, retry, schema, threshold,
+or production code change is justified.
+
+Fact Checker remains deferred until this no-change ruling is recorded. It is
+the next sequential candidate and still requires separate authorization for its
+paid live repetition.
