@@ -72,3 +72,55 @@ typed judge-side schema failure at `rationale` on both allowed attempts. Do not
 retry or fabricate a score. The exact field paths and attempts are preserved
 for Sol High diagnosis; no Fact Checker production repair or budget change is
 justified from this artifact alone.
+
+## Sol High diagnosis
+
+Sol High reviewed the pushed artifact at remote HEAD
+`eaa572a29c8106edfcf41f1c9328a1fa68d79830` in the existing browser
+conversation. The ruling is **provider/native-schema response conformance
+failure at the judge boundary; insufficient evidence for a repository change**.
+
+The typed evidence supports only that two completed native-schema judge
+responses reached local `JudgeVerdict` validation and were rejected at
+`rationale`. `src/deep_research/providers/deepseek_provider.py:825-922`
+performs the Responses normalization, output extraction, and local validation;
+the status mapping is at `deepseek_provider.py:367-381`, schema request at
+`deepseek_provider.py:846-861`, and the local `rationale` bounds are at
+`src/deep_research/evaluation/models.py:476-481`. The field path does not say
+whether the value was missing, wrong-typed, out of bounds, or failed another
+validation rule, so a guessed raw response would invent evidence.
+
+The judge/evaluator contract is behaving correctly. The typed failure mapping
+is in `src/deep_research/evaluation/judging.py:288-433` and
+`src/deep_research/evaluation/failure_taxonomy.py:45-157`; the runner keeps
+judge and aggregate quality unavailable and classifies the unscorable case as
+infrastructure failure (`src/deep_research/evaluation/runner.py:489-525` and
+`runner.py:640-704`). No score should be fabricated.
+
+The repeated `rationale` path does **not** justify a production RED. Existing
+coverage already exercises the native schema, local validation, exactly one
+repair, and typed exhaustion (`tests/test_deepseek_provider.py:347-597` and
+`tests/test_evaluation/test_judging.py:220-332`). An optional offline
+characterization may inject the typed `StructuredOutputError` boundary with
+two `("rationale",)` diagnostics and no invented categories, but it should
+pass and must not change production behavior.
+
+The Fact Checker target also requires no repair and no token increase. Its
+`{kind=output_limit, operation=react_decision}` is fallback telemetry, not
+target failure evidence; the conservative path is covered by
+`src/deep_research/agents/react.py:69-281`,
+`src/deep_research/agents/fact_checker.py:799-849`, and
+`tests/test_agents/test_fact_checker.py:976-1045`. Keep the target/judge
+adapter separation in `src/deep_research/providers/factory.py:31-74`.
+
+### Final disposition
+
+**NO-CHANGE. Fact Checker quality remains UNSCORABLE.** Do not retry this
+paid repetition, loosen the judge schema, add retries, broaden prompts, or
+increase a token budget. Preserve `llm.max_tokens=4096`, the existing retry
+policy, exactly one structured repair, scoreless judge failures, native-schema
+transport/fingerprints, frozen cases and rubric data, and the typed fallback
+taxonomy. Reopen only if new safe evidence demonstrates a concrete
+contract, extraction, repair, diagnostic-projection, or score-fabrication
+defect. Sol High performed read-only diagnosis only and did not execute tests,
+provider calls, LangSmith calls, live evaluation, or a suite run.

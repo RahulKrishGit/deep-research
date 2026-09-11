@@ -1227,3 +1227,61 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   quality conclusion or repair. Do not retry, increase tokens, or run another
   agent. Consult Sol High in the existing browser conversation and preserve
   the exact `rationale` field paths and attempts.
+
+## 75. Sol High Fact Checker Judge Diagnosis — NATIVE-SCHEMA BOUNDARY; NO CHANGE
+
+- Review surface: the existing Sol High browser conversation reviewed the
+  pushed Fact Checker evidence at remote HEAD `eaa572a29c8106edfcf41f1c9328a1fa68d79830`.
+  This commit is documentation-only over live candidate
+  `a503a7bca8203f5539c9cc0cb61117f741698bf0`; there is no post-canary
+  production-code drift.
+- Classification: **provider/native-schema response conformance failure at
+  the judge boundary; insufficient evidence for a repository change**.
+  The repeated typed path `rationale` localizes the failure but does not
+  establish whether the value was missing, wrong-typed, outside the
+  `1..2000` bounds, or invalid in another Pydantic-specific way.
+- Code evidence: `src/deep_research/providers/deepseek_provider.py:825-922`
+  normalizes a completed Responses result, extracts `output_text`, sends the
+  requested native JSON schema, and performs authoritative local validation;
+  the status mapping is at `deepseek_provider.py:367-381`, schema request at
+  `deepseek_provider.py:846-861`, and `JudgeVerdict.rationale` bounds are at
+  `src/deep_research/evaluation/models.py:476-481`. The evidence supports a
+  completed provider response rejected at local validation, but does not prove
+  a DeepSeek implementation defect or extraction corruption.
+- Harness evidence: `src/deep_research/evaluation/judging.py:288-433` maps
+  typed `StructuredOutputError` to `judge_schema_failure` without a verdict;
+  `src/deep_research/evaluation/failure_taxonomy.py:45-157` safely projects
+  bounded diagnostics; and `src/deep_research/evaluation/runner.py:489-525`
+  plus `runner.py:640-704` leaves quality unavailable and classifies the
+  unscorable repetition as infrastructure failure. The observed
+  `judge_not_run`, two `rationale` diagnostics, null judge/aggregate quality,
+  and no fabricated score are therefore the intended contract result.
+- Synthetic test decision: the repeated field path does **not** justify a
+  production RED. Existing tests already cover native schema submission,
+  local validation, one repair, and typed exhaustion in
+  `tests/test_deepseek_provider.py:347-597`, plus the judge integration
+  projection in `tests/test_evaluation/test_judging.py:220-332`. If an
+  additional characterization is desired, it may inject a typed
+  `StructuredOutputError` with two diagnostics whose field paths are exactly
+  `("rationale",)` and leave diagnostic categories unset; that should confirm
+  the existing scoreless boundary, not change production code.
+- Fact Checker target decision: **no target repair and no token increase**.
+  The live `{kind=output_limit, operation=react_decision}` is separate
+  fallback telemetry. `src/deep_research/agents/react.py:69-281` and
+  `src/deep_research/agents/fact_checker.py:799-849` intentionally preserve
+  the conservative non-propagating fallback; the direct regression at
+  `tests/test_agents/test_fact_checker.py:976-1045` pins cap `4096` and no
+  operation-specific token override. The target/judge adapters remain
+  separate (`src/deep_research/providers/factory.py:31-74`).
+- Sol High ruling: **NO-CHANGE; Fact Checker quality remains UNSCORABLE**.
+  Do not retry this paid repetition, fabricate a score, loosen `JudgeVerdict`,
+  add retries, broaden prompts, or increase any token budget. Reopen only if
+  new safe evidence demonstrates a concrete mishandled contract, extraction,
+  repair, diagnostic-projection, or score-fabrication defect.
+- Frozen invariants retained: `llm.max_tokens=4096`, repository retry values
+  from `config.yaml:13-22`, exactly one structured repair in
+  `deepseek_provider.py:925-1017`, native judge transport and fingerprints,
+  frozen cases/rubrics/thresholds/weights, scoreless judge failures, and the
+  typed target fallback taxonomy. Sol High performed read-only diagnosis only;
+  no tests, provider calls, LangSmith calls, live evaluation, or suite run was
+  executed during the review.
