@@ -47,3 +47,18 @@ next gate before any implementation decision.
 - Classification: frozen case/expectation mismatch. The live fixture places all four sources under one subtopic, and the deterministic corroboration rule therefore gives the designated weak source `1.0` corroboration, contributing a `0.20` floor before authority, recency, or relevance. The case nevertheless requires `low_confidence=True`, meaning the total must remain below `0.40`. The controlled analogue uses a separate subtopic for its expected-low-confidence source and does not have that floor. The same target-gate miss repeated across the earlier live waves and candidate `ce3a706`.
 - No-change ruling: do not change Source Evaluator production code, prompt, scoring formula, threshold, weights, case topology, rubric, provider, iteration count, token budget, or fallback behavior. Under the frozen-case invariant, this is an evaluation-contract limitation requiring a separately authorized evaluation-design decision if fixtures are ever unfrozen.
 - Next gate: exactly one focused Source Evaluator confirmation is safe after this recorded no-change ruling. Its interpretation must preserve the case mismatch, treat another `low_confidence_flagged` miss as expected contract evidence rather than an agent defect, and keep any judge `$`/`rationale` schema failure unscorable and separate.
+
+## Focused confirmation after the no-change ruling
+
+- Candidate: `424ed6ca948c41b1bda8d6152721d42060139cf3`; exactly one Source Evaluator live repetition ran with the same frozen configuration and a fresh output namespace. No code, case, prompt, budget, or evaluator change was made, and no retry or other agent ran.
+- LangSmith experiment: `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/231a04d4-dfc8-434d-8403-8c8e18cc71c8`
+- Repository-relative artifact: `output/evaluations/task19-source-evaluator-confirmation-424ed6c/source-evaluator/task19-source-evaluator-confirmation-424ed6c-source-evaluator-live-20260911T013412Z-424ed6c/results.json`
+- Artifact SHA-256: `68B8CACA796C6C7FF9B48B69DA9A05E8F954B59412167DE032655A1CEFE26BE7`
+- Exit/status: exit `1`, `FAILED`; `13/14` hard gates passed; deterministic quality `0.80`; only `low_confidence_flagged` failed.
+- Judge: scorable on this repetition with judge `0.77` and aggregate `0.78`; this does not override the deterministic case mismatch or authorize an agent repair.
+
+Interpretation: the focused confirmation reproduces the expected frozen-case
+failure with an independently healthy judge. This closes Source Evaluator's
+sequential diagnosis/confirmation step without a production change. The
+judge-side failures from the first repetition remain separate evidence, no
+target-side `output_limit` appeared, and Fact Checker is the next agent.
