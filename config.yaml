@@ -46,6 +46,14 @@ agents:
   # ResearchPlanDraft request only; ReAct decisions and judge calls keep
   # llm.max_tokens (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).
   planner_final_max_tokens: 4096
+  # Operation-specific output budget for the Critic's report-review request
+  # only (AGENTS_CRITIC_REVIEW_MAX_TOKENS overrides this). That call renders
+  # the report, the claims, the source scores, and the spot-check evidence,
+  # then asks for a score plus three lists plus a rationale in one object. At
+  # 4096 it returned non-JSON text on both the initial attempt and the single
+  # repair in three consecutive live canaries. Critic ReAct decisions keep
+  # llm.max_tokens.
+  critic_review_max_tokens: 8192
 
 graph:
   max_iterations: 3

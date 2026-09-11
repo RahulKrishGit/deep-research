@@ -201,6 +201,64 @@ def test_the_critic_is_told_the_report_is_already_in_front_of_it() -> None:
     assert "do not call a tool only to fetch it" in CRITIC_SYSTEM_PROMPT
 
 
+@pytest.mark.asyncio
+async def test_only_the_review_call_gets_the_operation_output_budget(
+    tracker: Tracker,
+) -> None:
+    """The report review is the one call that may exceed the global cap.
+
+    The Critic's review renders the report, claims, source scores, and
+    spot-check evidence and then asks for a score plus three lists plus a
+    rationale in one JSON object. At the global cap it returned non-JSON text
+    on both the initial attempt and the single repair in three consecutive
+    live canaries, so it carries an operation-specific budget. ReAct decisions
+    must stay at the global cap: widening them would change every agent's
+    loop, not this one call.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("Enough context.", "No spot check needed.")],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(tracker, completer, tool_budget=1)
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(_critic_state())
+
+    budgets = dict(
+        zip((call[0] for call in completer.calls), completer.budgets, strict=True)
+    )
+    assert budgets["ReActDecision"] is None
+    assert budgets["CritiqueDraft"] == AgentRuntimeConfig().critic_review_max_tokens
+
+
+@pytest.mark.asyncio
+async def test_the_review_budget_follows_the_agent_configuration(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Enough context.", "No spot check needed.")],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(
+        tracker,
+        completer,
+        tool_budget=1,
+        config=AgentRuntimeConfig(
+            max_iterations=2, tool_budget=1, critic_review_max_tokens=16384
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(_critic_state())
+
+    review_index = next(
+        index
+        for index, call in enumerate(completer.calls)
+        if call[0] == "CritiqueDraft"
+    )
+    assert completer.budgets[review_index] == 16384
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [(-4, 1), (0, 1), (1, 1), (7, 7), (10, 10), (99, 10)],
@@ -409,6 +467,7 @@ def _critic(
     *,
     tools: list[BaseTool] | None = None,
     tool_budget: int = 0,
+    config: AgentRuntimeConfig | None = None,
 ) -> CriticAgent:
     return CriticAgent(
         provider=completer,
@@ -417,7 +476,11 @@ def _critic(
             session_id="session-1", agent_name="critic", max_entries=20
         ),
         tools=tools if tools is not None else critic_tools(tracker),
-        config=AgentRuntimeConfig(max_iterations=2, tool_budget=tool_budget),
+        config=(
+            config
+            if config is not None
+            else AgentRuntimeConfig(max_iterations=2, tool_budget=tool_budget)
+        ),
     )
 
 

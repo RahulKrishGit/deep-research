@@ -530,6 +530,7 @@ class CriticAgent(BaseAgent[Critique]):
                 ),
                 CritiqueDraft,
                 agent_name=self.name,
+                max_tokens=self.config.critic_review_max_tokens,
             )
         except ProviderError as error:
             critique, reason = fallback_critique(

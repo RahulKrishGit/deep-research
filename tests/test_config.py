@@ -371,6 +371,12 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             "8192",
             8192,
         ),
+        (
+            "AGENTS_CRITIC_REVIEW_MAX_TOKENS",
+            ("agents", "critic_review_max_tokens"),
+            "16384",
+            16384,
+        ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
     ],
@@ -615,6 +621,27 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.prompt_context_entries == 8
     assert settings.agents.observation_summary_chars == 200
     assert settings.agents.planner_final_max_tokens == 4096
+    assert settings.agents.critic_review_max_tokens == 8192
+
+
+def test_the_critic_review_budget_exceeds_the_global_cap(config_path: Path) -> None:
+    """The critic review budget is not clamped to the global cap.
+
+    Deterministic metric ids are lower snake case; this asserts the same
+    spelling discipline on the config surface while pinning the deliberate
+    divergence: the review call asks for more room than ``llm.max_tokens``
+    because at the global cap it returned non-JSON text twice per repetition.
+    """
+    settings = load_config(str(config_path))
+
+    assert settings.agents.critic_review_max_tokens == 8192
+    assert settings.agents.critic_review_max_tokens > settings.llm.max_tokens
+
+
+def test_the_shipped_config_file_carries_the_critic_review_budget() -> None:
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["critic_review_max_tokens"] == 8192
 
 
 def test_the_planner_final_budget_defaults_to_the_global_cap(
@@ -640,6 +667,7 @@ def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
         ("prompt_context_entries", -1),
         ("observation_summary_chars", 0),
         ("planner_final_max_tokens", 0),
+        ("critic_review_max_tokens", 0),
     ],
 )
 def test_agent_runtime_config_rejects_unbounded_values(

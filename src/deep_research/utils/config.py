@@ -164,6 +164,14 @@ class AgentRuntimeConfig(BaseModel):
     ``planner_final_max_tokens`` is the operation-specific output budget for
     the planner's final ``ResearchPlanDraft`` request only; ReAct decisions
     and judge calls keep the global ``llm.max_tokens`` cap.
+
+    ``critic_review_max_tokens`` is the same kind of budget for the Critic's
+    ``critique_report_review`` request. That call renders the whole report,
+    the claim digest, the source scores, and the spot-check evidence, then
+    asks for a score, three lists, and a rationale in one JSON object. At the
+    global cap it returned non-JSON text on both the initial attempt and the
+    single repair in three consecutive live canaries. ReAct decisions keep
+    the global cap.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -173,6 +181,7 @@ class AgentRuntimeConfig(BaseModel):
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
     planner_final_max_tokens: int = Field(default=4096, ge=1)
+    critic_review_max_tokens: int = Field(default=8192, ge=1)
 
 
 class GraphConfig(BaseModel):
@@ -320,6 +329,10 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_PLANNER_FINAL_MAX_TOKENS": (
         "agents",
         "planner_final_max_tokens",
+    ),
+    "AGENTS_CRITIC_REVIEW_MAX_TOKENS": (
+        "agents",
+        "critic_review_max_tokens",
     ),
     "GRAPH_MAX_ITERATIONS": ("graph", "max_iterations"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),
