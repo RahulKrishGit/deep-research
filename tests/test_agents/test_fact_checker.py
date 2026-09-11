@@ -989,3 +989,64 @@ async def test_a_verification_provider_failure_stops_further_claims(
     assert provider["kind"] == "output_limit"
     assert provider["configured_max_tokens"] == 4096
     assert provider["request_attempt"] == 1
+
+
+@pytest.mark.asyncio
+async def test_react_decision_output_limit_remains_a_conservative_fallback(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[_output_limit_error()],
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(
+                        text="First.", source_urls=["https://example.org/a"]
+                    ),
+                    ClaimDraft(
+                        text="Second.", source_urls=["https://example.org/a"]
+                    ),
+                ]
+            )
+        ],
+    )
+    agent = _checker(tracker, completer)
+    state = _check_state([_check_finding("https://example.org/a")])
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [claim.text for claim in outcome.result.claims] == ["First."]
+    claim = outcome.result.claims[0]
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.confidence == pytest.approx(0.0)
+    assert claim.evidence == []
+    assert claim.contradictions == []
+
+    assert outcome.react.stop_reason == "provider_error"
+    assert outcome.react.steps == []
+    assert [error.error_type for error in outcome.errors] == [
+        "agent_provider_error"
+    ]
+    provider_error = outcome.errors[0]
+    assert provider_error.recoverable is False
+    assert provider_error.details["operation"] == "react_decision"
+    provider = provider_error.details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
+
+    checked = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "fact_checker.claim.checked"
+    )
+    assert checked.metadata["verdict"] == "insufficient_evidence"
+    assert checked.metadata["reason"] == "loop_failed"
+
+    assert [schema for schema, _, _ in completer.calls] == [
+        "ClaimsDraft",
+        "ReActDecision",
+    ]
+    assert completer.budgets == [None, None]
