@@ -53,13 +53,13 @@ agents:
   # 4096 it returned non-JSON text on both the initial attempt and the single
   # repair in three consecutive live canaries. Critic ReAct decisions keep
   # llm.max_tokens.
-  critic_review_max_tokens: 8192
+  critic_review_max_tokens: 32768
   # Operation-specific output budget for the judge's JudgeVerdict request
   # (AGENTS_JUDGE_MAX_TOKENS overrides this). The verdict carries six common
   # dimensions, the agent-specific dimensions, and a rationale; once the
   # Critic began producing a real critique the judge hit the global cap and
   # returned judge_output_limit with no score at all.
-  judge_max_tokens: 8192
+  judge_max_tokens: 32768
 
 graph:
   max_iterations: 3

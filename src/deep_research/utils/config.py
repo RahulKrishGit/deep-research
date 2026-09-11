@@ -187,8 +187,8 @@ class AgentRuntimeConfig(BaseModel):
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
     planner_final_max_tokens: int = Field(default=4096, ge=1)
-    critic_review_max_tokens: int = Field(default=8192, ge=1)
-    judge_max_tokens: int = Field(default=8192, ge=1)
+    critic_review_max_tokens: int = Field(default=32768, ge=1)
+    judge_max_tokens: int = Field(default=32768, ge=1)
 
 
 class GraphConfig(BaseModel):

@@ -627,7 +627,7 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.prompt_context_entries == 8
     assert settings.agents.observation_summary_chars == 200
     assert settings.agents.planner_final_max_tokens == 4096
-    assert settings.agents.critic_review_max_tokens == 8192
+    assert settings.agents.critic_review_max_tokens == 32768
 
 
 def test_the_critic_review_budget_exceeds_the_global_cap(config_path: Path) -> None:
@@ -640,14 +640,14 @@ def test_the_critic_review_budget_exceeds_the_global_cap(config_path: Path) -> N
     """
     settings = load_config(str(config_path))
 
-    assert settings.agents.critic_review_max_tokens == 8192
+    assert settings.agents.critic_review_max_tokens == 32768
     assert settings.agents.critic_review_max_tokens > settings.llm.max_tokens
 
 
 def test_the_shipped_config_file_carries_the_critic_review_budget() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["agents"]["critic_review_max_tokens"] == 8192
+    assert raw["agents"]["critic_review_max_tokens"] == 32768
 
 
 def test_the_judge_budget_exceeds_the_global_cap(config_path: Path) -> None:
@@ -661,14 +661,14 @@ def test_the_judge_budget_exceeds_the_global_cap(config_path: Path) -> None:
     """
     settings = load_config(str(config_path))
 
-    assert settings.agents.judge_max_tokens == 8192
+    assert settings.agents.judge_max_tokens == 32768
     assert settings.agents.judge_max_tokens > settings.llm.max_tokens
 
 
 def test_the_shipped_config_file_carries_the_judge_budget() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["agents"]["judge_max_tokens"] == 8192
+    assert raw["agents"]["judge_max_tokens"] == 32768
 
 
 def test_the_planner_final_budget_defaults_to_the_global_cap(
