@@ -65,6 +65,10 @@ CRITIC_CLAIM_DIGEST = 40
 CRITIC_EVIDENCE_CHARS = 2000
 DEFAULT_MAX_NOTES = 10
 
+# ``_clamp_report`` renders this for an empty report; the spot-check guidance
+# omits its report section entirely rather than embedding the placeholder.
+_NO_REPORT = "(no report)"
+
 _RATIONALE_CHARS = 600
 
 # Enumerated, project-generated routing reasons. Never provider text: these
@@ -121,13 +125,29 @@ class CritiqueTask(AgentTask):
     error_count: int = Field(default=0, ge=0)
 
 
-def _render_spot_check_guidance(sub_topics: Sequence[SubTopic]) -> str:
-    """Render the planner's search context for the Critic's spot check."""
-    lines = [
+def _render_spot_check_guidance(
+    report: str,
+    sub_topics: Sequence[SubTopic],
+    *,
+    report_chars: int,
+) -> str:
+    """Render the report and the planner's search context for the spot check.
+
+    The report is clamped with the same helper and budget the review prompt
+    uses, so the spot-check view can never be larger than the review view and
+    a long report is truncated identically in both.
+    """
+    lines: list[str] = []
+    clamped = _clamp_report(report, limit=report_chars)
+    if clamped != _NO_REPORT:
+        lines.append("Report under review:")
+        lines.append(clamped)
+        lines.append("")
+    lines.append(
         "When performing a spot check, use an applicable planned search "
-        "query verbatim.",
-        "Planned sub-topics and search queries:",
-    ]
+        "query verbatim."
+    )
+    lines.append("Planned sub-topics and search queries:")
     for sub_topic in sub_topics:
         lines.append(f"- {sub_topic.title}")
         lines.extend(f"  - {query}" for query in sub_topic.search_queries)
@@ -282,7 +302,7 @@ def _clamp_report(text: str, *, limit: int) -> str:
     """
     report = text.strip()
     if not report:
-        return "(no report)"
+        return _NO_REPORT
     if len(report) <= limit:
         return report
     return report[: limit - 3].rstrip() + "..."
@@ -467,7 +487,11 @@ class CriticAgent(BaseAgent[Critique]):
         """Bind this review to the report and the remaining budget."""
         return CritiqueTask(
             instruction=state.original_question,
-            guidance=_render_spot_check_guidance(state.sub_topics),
+            guidance=_render_spot_check_guidance(
+                state.report or "",
+                state.sub_topics,
+                report_chars=self._report_chars,
+            ),
             report=state.report or "",
             iteration=state.iteration,
             max_iterations=state.max_iterations,

@@ -12,6 +12,7 @@ from deep_research.agents.critic import (
     CriticAgent,
     CritiqueDraft,
     CritiqueTask,
+    _render_spot_check_guidance,
     build_critique,
     clamp_score,
     critique_messages,
@@ -22,6 +23,7 @@ from deep_research.agents.critic import (
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActDecision, ReActRun
+from deep_research.evaluation.cases.critic import LIVE_CASES
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -110,6 +112,88 @@ def _task(**overrides: object) -> CritiqueTask:
     }
     payload.update(overrides)
     return CritiqueTask.model_validate(payload)
+
+
+# A sentence that exists only inside the registered live case's report body, so
+# these tests measure the report's presence rather than a nearby label.
+_LIVE_REPORT_PROBE = "Low-carbon cement technologies have moved from pilot"
+
+
+def _live_report() -> str:
+    """The registered live critic case's fixed report."""
+    report = (
+        next(
+            case for case in LIVE_CASES if case.case_id == "critic-live-review"
+        )
+        .fresh_state()
+        .report
+    )
+    assert report is not None
+    assert _LIVE_REPORT_PROBE in report
+    return report
+
+
+def test_spot_check_guidance_carries_the_report_under_review() -> None:
+    guidance = _render_spot_check_guidance(
+        _live_report(), [], report_chars=6000
+    )
+
+    assert _LIVE_REPORT_PROBE in guidance
+    assert "Report under review:" in guidance
+
+
+def test_spot_check_guidance_keeps_the_planned_queries_beside_the_report() -> None:
+    guidance = _render_spot_check_guidance(
+        _live_report(),
+        [
+            SubTopic(
+                title="Alpha",
+                rationale="Alpha is load-bearing.",
+                search_queries=["alpha 2025"],
+                success_criteria=["A named source about Alpha."],
+                priority=1,
+            )
+        ],
+        report_chars=6000,
+    )
+
+    assert _LIVE_REPORT_PROBE in guidance
+    assert "- Alpha" in guidance
+    assert "  - alpha 2025" in guidance
+
+
+def test_spot_check_guidance_clamps_the_report_like_the_review_prompt() -> None:
+    report = "R" * 5000
+
+    guidance = _render_spot_check_guidance(report, [], report_chars=100)
+
+    assert report not in guidance
+    assert "R" * 97 + "..." in guidance
+
+
+def test_spot_check_guidance_omits_the_report_section_when_there_is_none() -> None:
+    guidance = _render_spot_check_guidance("", [], report_chars=6000)
+
+    assert "Report under review" not in guidance
+
+
+@pytest.mark.asyncio
+async def test_the_spot_check_prompt_renders_the_report(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Enough context.", "No spot check needed.")],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(tracker, completer, tool_budget=1)
+    state = _critic_state(report="# Research report: report-body-marker")
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(state)
+
+    first_call = completer.calls[0]
+    assert first_call[0] == "ReActDecision"
+    assert "report-body-marker" in first_call[2][1].content
 
 
 @pytest.mark.parametrize(
