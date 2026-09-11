@@ -78,10 +78,7 @@ def render_live_progress(controller: LocalResearchController) -> None:
     snapshot = controller.snapshot(session_id)
     from deep_research.ui.components import (
         _render_running_snapshot,
-        render_sidebar_status,
     )
-
-    render_sidebar_status(controller, snapshot)
 
     if snapshot.status == "running":
         st.session_state.setdefault(_LIVE_SESSION_KEY, session_id)

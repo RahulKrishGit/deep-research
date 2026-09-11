@@ -1513,6 +1513,16 @@ def test_live_fragment_updates_sidebar_status_after_terminal_snapshot() -> None:
     assert "Running" not in sidebar_text
 
 
+def test_live_fragment_does_not_write_outer_sidebar_status_placeholders() -> None:
+    import inspect
+
+    from deep_research.ui.app import render_live_progress
+
+    fragment_source = inspect.getsource(render_live_progress)
+
+    assert "render_sidebar_status" not in fragment_source
+
+
 def test_terminal_live_fragment_clears_poll_target_and_preserves_selection() -> None:
     session_id = "h" * 32
     running = _snapshot(status="running").model_copy(

@@ -157,6 +157,32 @@ def test_running_subtopic_row_uses_semantic_theme_tokens() -> None:
     assert not any(color in body for color in styles.COLORS.values())
 
 
+def test_subtopic_rows_have_readable_responsive_layout_contract() -> None:
+    css = styles.STATIC_CSS
+    row_body = _rule_body(css, r"\.dr-subtopic-row(?=\s*\{)")
+    title_body = _rule_body(css, r"\.dr-subtopic-title")
+    status_body = _rule_body(css, r"\.dr-subtopic-status")
+
+    assert "display: grid;" in row_body
+    assert "grid-template-columns: auto minmax(0, 1fr) auto;" in row_body
+    assert "align-items: start;" in row_body
+    assert "gap: var(--dr-space-2);" in row_body
+    assert "color: var(--dr-text);" in row_body
+    assert "line-height: 1.5;" in row_body
+
+    assert "min-width: 0;" in title_body
+    assert "overflow-wrap: anywhere;" in title_body
+
+    assert "align-self: start;" in status_body
+    assert "justify-self: end;" in status_body
+    assert "text-align: right;" in status_body
+    assert "white-space: nowrap;" in status_body
+    assert not any(
+        color in row_body + title_body + status_body
+        for color in styles.COLORS.values()
+    )
+
+
 def test_button_states_have_project_owned_theme_rules() -> None:
     css = styles.STATIC_CSS
 
