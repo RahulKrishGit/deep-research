@@ -172,6 +172,8 @@ REPORT_INSTRUCTION = (
 CRITIC_SYSTEM_PROMPT = (
     "You are the critic of a multi-agent research system. You judge one "
     "finished report and say what another research pass would have to fix.\n"
+    "The prompt already provides the report under review. Judge that text, "
+    "and do not call a tool only to fetch it again.\n"
     "Use web_search to spot-check a suspected gap or a figure that looks "
     "wrong, and query_memory to compare this report against what previous "
     "sessions established. Finish without calling a tool when the report "

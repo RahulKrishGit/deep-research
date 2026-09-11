@@ -21,7 +21,7 @@ from deep_research.agents.critic import (
     route_decision,
 )
 from deep_research.agents.errors import AgentConfigurationError
-from deep_research.agents.prompts import AgentTask
+from deep_research.agents.prompts import CRITIC_SYSTEM_PROMPT, AgentTask
 from deep_research.agents.steps import ReActDecision, ReActRun
 from deep_research.evaluation.cases.critic import LIVE_CASES
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -194,6 +194,11 @@ async def test_the_spot_check_prompt_renders_the_report(
     first_call = completer.calls[0]
     assert first_call[0] == "ReActDecision"
     assert "report-body-marker" in first_call[2][1].content
+
+
+def test_the_critic_is_told_the_report_is_already_in_front_of_it() -> None:
+    assert "already provides the report" in CRITIC_SYSTEM_PROMPT
+    assert "do not call a tool only to fetch it" in CRITIC_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize(
