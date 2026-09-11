@@ -2633,4 +2633,3 @@ A flaky external smoke must remain opt-in. Do not make it a default merge gate t
 ## Validation gaps
 
 The only intentionally unresolved implementation input is the exact dependency-version set for `constraints/dev-tested.txt`. Those versions must be captured later from a fresh isolated environment that passes the complete offline suite and repeated real Streamlit startup verification. This plan intentionally does not invent or preselect dependency pins.
-
