@@ -387,10 +387,41 @@ def test_static_css_includes_native_chrome_and_responsive_top_padding() -> None:
     )
     assert main_rule is not None
     assert "padding-top: 64px;" in main_rule.group("body")
-    assert '@media (max-width: 900px)' in css
-    assert 'padding-top: 56px;' in css
-    assert '@media (max-width: 640px)' in css
-    assert 'padding-top: 48px;' in css
+    tablet_start = css.index("@media (max-width: 900px)")
+    mobile_start = css.index("@media (max-width: 640px)", tablet_start)
+    assert "padding-top: 64px;" in css[tablet_start:mobile_start]
+    assert "padding-top: 64px;" in css[mobile_start:]
+
+
+def test_main_content_clears_fixed_header_at_every_responsive_breakpoint() -> None:
+    css = styles.STATIC_CSS
+    tablet_start = css.index("@media (max-width: 900px)")
+    mobile_start = css.index("@media (max-width: 640px)", tablet_start)
+    breakpoint_sections = {
+        "desktop": css[:tablet_start],
+        "tablet": css[tablet_start:mobile_start],
+        "mobile": css[mobile_start:],
+    }
+
+    for breakpoint, section in breakpoint_sections.items():
+        body = _rule_body(
+            section,
+            r'\[data-testid="stMainBlockContainer"\]',
+        )
+        match = re.search(r"padding-top:\s*(?P<pixels>\d+)px;", body)
+        assert match is not None, f"Missing top padding for {breakpoint}"
+        assert int(match.group("pixels")) >= 60, (
+            f"{breakpoint} top padding must clear Streamlit's 60px header"
+        )
+
+
+def test_shell_copy_markdown_boundary_removes_negative_bottom_spacing() -> None:
+    body = _rule_body(
+        styles.STATIC_CSS,
+        r'\[data-testid="stMarkdownContainer"\]:has\(\.dr-shell-copy\)',
+    )
+
+    assert "margin-bottom: 0 !important;" in body
 
 
 def test_static_css_stacks_new_research_form_columns_at_tablet_width() -> None:

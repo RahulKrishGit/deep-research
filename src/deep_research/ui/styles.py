@@ -234,6 +234,10 @@ body {
   line-height: 1.55;
 }
 
+[data-testid="stMarkdownContainer"]:has(.dr-shell-copy) {
+  margin-bottom: 0 !important;
+}
+
 .dr-section-label {
   color: var(--dr-text-muted);
   font-size: 12px;
@@ -610,7 +614,7 @@ button:disabled {
 @media (max-width: 900px) {
   [data-testid="stMainBlockContainer"] {
     padding: 24px;
-    padding-top: 56px;
+    padding-top: 64px;
   }
 
   /* Keep the form's weighted columns readable beside the persistent sidebar. */
@@ -629,7 +633,7 @@ button:disabled {
 
 @media (max-width: 640px) {
   [data-testid="stMainBlockContainer"] {
-    padding-top: 48px;
+    padding-top: 64px;
   }
 }
 </style>
