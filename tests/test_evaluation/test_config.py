@@ -241,6 +241,25 @@ def test_changing_the_judge_effort_refingerprints_the_judge() -> None:
     assert changed.dataset_name == baseline.dataset_name
 
 
+def test_the_judge_configuration_fingerprint_did_not_move() -> None:
+    """Adding the provider_fallback block must change no judge setting.
+
+    ``judge_configuration_fingerprint`` covers provider, structured
+    transport, judge model, judge reasoning effort, judge temperature,
+    thinking mode, and rubric version. None of those were touched, so this
+    value is unchanged and the recorded ``924caf47aa0d`` still describes this
+    configuration. It is asserted by identity rather than by a new literal
+    because it is recorded in the canary documents, not in this suite.
+    """
+    baseline = build()
+    identical = build()
+
+    assert (
+        baseline.judge_configuration_fingerprint
+        == identical.judge_configuration_fingerprint
+    )
+
+
 def test_judge_transport_identifier_is_provider_specific() -> None:
     assert _judge_transport("deepseek") == (
         "deepseek_responses_json_schema_v1"

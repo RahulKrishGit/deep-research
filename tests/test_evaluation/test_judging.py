@@ -816,3 +816,16 @@ def test_the_fallback_block_is_rendered_in_the_judge_prompt(
 def test_the_judge_is_told_how_to_read_a_fallback() -> None:
     assert "provider_fallback" in JUDGE_SYSTEM_PROMPT
     assert "no model review" in JUDGE_SYSTEM_PROMPT
+
+
+def test_the_judge_prompt_fingerprint_supersedes_the_pre_fallback_value() -> None:
+    """The judge prompt identity changed deliberately.
+
+    The asserted value is the fingerprint produced after the
+    ``provider_fallback`` block was added. The superseded value was
+    ``93edb1729cbb``; judge scores taken before and after that change are not
+    comparable, so this pin makes the next prompt edit a conscious act rather
+    than a silent invalidation of recorded scores.
+    """
+    assert judge_prompt_fingerprint(rubric_version=1) == "77a0898f4267"
+    assert judge_prompt_fingerprint(rubric_version=1) != "93edb1729cbb"
