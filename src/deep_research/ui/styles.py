@@ -18,6 +18,22 @@ COLORS = {
     "error_tint": "#FDECEA",
 }
 
+DARK_COLORS = {
+    "background": "#0E1117",
+    "surface": "#171C22",
+    "text": "#F2F4F3",
+    "text_muted": "#A9B4BA",
+    "border": "#5F6C73",
+    "active": "#5CC8BE",
+    "active_tint": "#163A37",
+    "success": "#72D49A",
+    "success_tint": "#173826",
+    "warning": "#F2C66D",
+    "warning_tint": "#3A2D12",
+    "error": "#FF8A80",
+    "error_tint": "#431F1F",
+}
+
 SPACING = {
     "1": "4px",
     "2": "8px",
@@ -61,6 +77,14 @@ STATIC_CSS = """
   --dr-warning-tint: #FFF4D6;
   --dr-error: #B42318;
   --dr-error-tint: #FDECEA;
+  --dr-on-active: #FCFCFA;
+  --dr-active-hover: #0B5F59;
+  --dr-active-pressed: #084F4B;
+  --dr-focus: #0F6F68;
+  --dr-primary-focus: #172126;
+  --dr-disabled-bg: #F5F7F6;
+  --dr-disabled-text: #66727A;
+  --dr-disabled-border: #DCE2DF;
   --dr-space-1: 4px;
   --dr-space-2: 8px;
   --dr-space-3: 12px;
@@ -73,10 +97,53 @@ STATIC_CSS = """
   --dr-radius-container: 8px;
 }
 
+html,
+body,
+.stApp {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --dr-background: #0E1117;
+    --dr-surface: #171C22;
+    --dr-text: #F2F4F3;
+    --dr-text-muted: #A9B4BA;
+    --dr-border: #5F6C73;
+    --dr-active: #5CC8BE;
+    --dr-active-tint: #163A37;
+    --dr-success: #72D49A;
+    --dr-success-tint: #173826;
+    --dr-warning: #F2C66D;
+    --dr-warning-tint: #3A2D12;
+    --dr-error: #FF8A80;
+    --dr-error-tint: #431F1F;
+    --dr-on-active: #0E1117;
+    --dr-active-hover: #74D8CE;
+    --dr-active-pressed: #4DB2AA;
+    --dr-focus: #5CC8BE;
+    --dr-primary-focus: #F2F4F3;
+    --dr-disabled-bg: #171C22;
+    --dr-disabled-text: #A9B4BA;
+    --dr-disabled-border: #5F6C73;
+  }
+
+  html,
+  body,
+  .stApp {
+    color-scheme: dark;
+  }
+}
+
+html,
+body {
+  background: var(--dr-background);
+  color: var(--dr-text);
+}
+
 .stApp {
   background: var(--dr-background);
   color: var(--dr-text);
-  color-scheme: light;
 }
 
 [data-testid="stAppViewContainer"] {
@@ -86,15 +153,15 @@ STATIC_CSS = """
 /* Native Streamlit chrome: keep Deploy/menu visible and readable. */
 [data-testid="stAppViewContainer"] header,
 [data-testid="stHeader"] {
-  background: #FCFCFA;
-  color: #172126;
-  border-bottom: 1px solid #DCE2DF;
+  background: var(--dr-background);
+  color: var(--dr-text);
+  border-bottom: 1px solid var(--dr-border);
 }
 
 [data-testid="stHeader"] button,
 [data-testid="stHeader"] svg {
-  color: #172126;
-  fill: #172126;
+  color: var(--dr-text);
+  fill: var(--dr-text);
   opacity: 1;
 }
 
@@ -148,7 +215,7 @@ STATIC_CSS = """
   justify-content: center;
   border-radius: var(--dr-radius-control);
   background: var(--dr-active);
-  color: var(--dr-background);
+  color: var(--dr-on-active);
   font-size: 16px;
 }
 
@@ -188,22 +255,27 @@ STATIC_CSS = """
 .dr-status--neutral,
 .dr-status--running {
   color: var(--dr-active);
+  background: var(--dr-active-tint);
 }
 
 .dr-status--completed {
   color: var(--dr-success);
+  background: var(--dr-success-tint);
 }
 
 .dr-status--max-iterations {
   color: var(--dr-warning);
+  background: var(--dr-warning-tint);
 }
 
 .dr-status--incomplete {
   color: var(--dr-text-muted);
+  background: var(--dr-surface);
 }
 
 .dr-status--failed {
   color: var(--dr-error);
+  background: var(--dr-error-tint);
 }
 
 .dr-quality-list {
@@ -316,7 +388,8 @@ STATIC_CSS = """
   line-height: 1.65;
 }
 
-.stButton > button {
+.stButton > button,
+[data-testid="stLinkButton"] {
   border-radius: var(--dr-radius-control);
   box-shadow: none;
   min-height: 44px;
@@ -326,13 +399,62 @@ button[kind="primary"],
 button[kind="primaryFormSubmit"] {
   background: var(--dr-active) !important;
   border-color: var(--dr-active) !important;
-  color: var(--dr-background) !important;
+  color: var(--dr-on-active) !important;
   min-height: 44px !important;
+}
+
+button[kind="primary"]:hover,
+button[kind="primaryFormSubmit"]:hover {
+  background: var(--dr-active-hover) !important;
+  border-color: var(--dr-active-hover) !important;
+}
+
+button[kind="primary"]:active,
+button[kind="primaryFormSubmit"]:active {
+  background: var(--dr-active-pressed) !important;
+  border-color: var(--dr-active-pressed) !important;
 }
 
 button[kind="secondary"] {
   background: var(--dr-background) !important;
   border-color: var(--dr-border) !important;
+  color: var(--dr-text) !important;
+}
+
+button[kind="secondary"]:hover {
+  background: var(--dr-surface) !important;
+  border-color: var(--dr-active) !important;
+}
+
+button[kind="secondary"]:active {
+  background: var(--dr-active-tint) !important;
+  border-color: var(--dr-active) !important;
+}
+
+a {
+  color: var(--dr-active);
+}
+
+a:hover {
+  color: var(--dr-active-hover);
+}
+
+[data-testid="stLinkButton"] {
+  background: var(--dr-background) !important;
+  border: 1px solid var(--dr-border) !important;
+  color: var(--dr-text) !important;
+  text-decoration: none;
+}
+
+[data-testid="stLinkButton"]:hover {
+  background: var(--dr-surface) !important;
+  border-color: var(--dr-active) !important;
+  color: var(--dr-text) !important;
+}
+
+[data-testid="stLinkButton"]:active {
+  background: var(--dr-active-tint) !important;
+  border-color: var(--dr-active) !important;
   color: var(--dr-text) !important;
 }
 
@@ -368,7 +490,7 @@ button[kind="secondary"] {
   justify-content: space-between;
   gap: 12px;
   min-height: 44px;
-  background: #F5F7F6;
+  background: var(--dr-surface);
   border: 1px solid var(--dr-border);
   border-radius: var(--dr-radius-control);
   color: var(--dr-text);
@@ -377,7 +499,7 @@ button[kind="secondary"] {
 
 .dr-control-label {
   margin: 0 0 8px;
-  color: #172126;
+  color: var(--dr-text);
   font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
@@ -399,7 +521,7 @@ button[kind="secondary"] {
 .dr-next-steps {
   margin-top: 32px;
   padding-top: 16px;
-  border-top: 1px solid #DCE2DF;
+  border-top: 1px solid var(--dr-border);
 }
 
 .dr-next-steps > div {
@@ -411,18 +533,21 @@ a:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 [role="radio"]:focus-visible {
-  outline: 3px solid #0F6F68;
+  outline: 3px solid var(--dr-focus);
   outline-offset: 2px;
 }
 
 button[kind="primary"]:focus-visible,
 button[kind="primaryFormSubmit"]:focus-visible {
-  outline-color: #172126;
+  outline-color: var(--dr-primary-focus);
 }
 
 input:disabled,
 textarea:disabled,
 button:disabled {
+  background: var(--dr-disabled-bg) !important;
+  border-color: var(--dr-disabled-border) !important;
+  color: var(--dr-disabled-text) !important;
   opacity: 1;
   cursor: not-allowed;
 }
@@ -473,6 +598,7 @@ __all__ = [
     "CANVAS_MAX_WIDTH",
     "COLORS",
     "CSS",
+    "DARK_COLORS",
     "DETAILS_RAIL_WIDTH",
     "RADII",
     "REPORT_WIDTH",
