@@ -127,30 +127,101 @@ still pinned to the global cap. `llm.max_tokens = 4096` is therefore too small
 for the Critic's ReAct decisions as well, and the truncation silently degrades
 the spot-check phase rather than failing the run.
 
+## Uniform-budget set — the current measured state
+
+Finding 4 was then repaired in `035d3c5` by removing every artificial cap:
+`llm.max_tokens`, `planner_final_max_tokens`, `critic_review_max_tokens`,
+`judge_max_tokens`, and `react_decision_max_tokens` are all `32768`. Four
+further live repetitions ran on that commit.
+
+| Run | Deterministic | Judge | Aggregate | Gates | `critic_report_review` fallback | `review_produced` |
+| --- | --- | --- | --- | --- | --- | --- |
+| r1 | `0.75` | `0.81` | `0.78` | `15/15` | none | pass |
+| r2 | `1.00` | `0.71` | `0.82` | `15/15` | none | pass |
+| r3 | `0.75` | `0.87` | `0.82` | `15/15` | none | pass |
+| r4 | `0.80` | n/a | n/a | `14/15` | **`schema_output`** | **fail** |
+
+Three passed and one failed. **r4 is the gate working correctly**, not a
+regression: it recorded
+
+```
+kind       = schema_output
+operation  = critic_report_review
+attempt 1  = json_invalid, field_paths ("$",)
+attempt 2  = json_invalid, field_paths ("$",)
+```
+
+`review_produced` failed with `"the report review fell back; no critique was
+produced"`, the judge never ran, and no aggregate was produced. Under the
+previous evaluator this same repetition shape passed at `0.767`.
+
+Artifacts (each SHA-256):
+
+- r1 `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r1-critic-live-20260911T230901Z-035d3c5/results.json` — `E71AD93BC68350CB6F711841F43A8077D530EF014B3FEC1864DB1796F136C5AF`
+- r2 `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r2-critic-live-20260911T231033Z-035d3c5/results.json` — `3E38938D4B5CF1EE128808B51874CE02D1762E29C45A52F2C102C7CF94C53F2C`
+- r3 `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r3-critic-live-20260911T231205Z-035d3c5/results.json` — `82DA977D508D3E9369A2C3FB4A17D71A7125A84E87D5E9397F7CE64DA1B24EB6`
+- r4 `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r4-critic-live-20260911T231359Z-035d3c5/results.json` — `155C76F0569A25222B47F7DA3C89F3849C56FCF044F42E319E6C89A344536971`
+
+### Finding 5 — the budget is provably not the residual cause
+
+r4's `json_invalid` occurred with a `32768` budget. A `length` finish reason
+would have raised `ProviderOutputLimitError` before validation ever ran, so the
+response was **not** truncated. The model returned non-empty text that was not
+parseable JSON, twice, at a budget 8x the one originally suspected.
+
+The response shape was therefore never the problem and no further budget
+increase can help. The remaining defect is the mechanism used to request JSON
+itself, which is addressed by
+`docs/superpowers/plans/2026-09-11-tool-call-structured-transport.md`.
+
+## Summary of every measured repetition
+
+| Set | Commit | Repetitions | Passed | `critic_report_review` fallbacks |
+| --- | --- | --- | --- | --- |
+| Pre-fix baseline | `fe434cf` | 1 | 0 | 1 |
+| Schema transport | `2fe4e32` | 1 | 0 | 1 |
+| Review budget | `750472b` | 1 | 0 | 1 |
+| Judge budget | `7f84378` | 1 | 0 | 1 |
+| Large budgets | `96fe8a9` | 1 | 1 | 0 |
+| Ungated confirmation | `6b2c9c3` | 3 | 2 | 1 |
+| Gated confirmation | `cccc139` | 3 | 3 | 0 |
+| Uniform budget | `035d3c5` | 4 | 3 | 1 |
+
+Across the eight post-fix repetitions: `7` passed, `1` fell back. The objective
+of "every repetition clears the threshold with no fallback" is therefore **not
+yet met** at `035d3c5`, and the residual rate is approximately `1 in 8` to
+`1 in 4` depending on which set is read. That is the number the tool-call
+transport must beat.
+
 ## Status after the gate fix
 
-- **Reliability of the review path**: no `critic_report_review` fallback in the
-  last three repetitions, against `1 of 3` immediately before. The intermittent
-  structured-output failure is not proven gone — three repetitions is a small
-  sample — but it is no longer observed, and when it does occur it can no longer
-  be certified as a pass.
+- **Reliability of the review path**: not yet established. Across the eight
+  post-fix repetitions, `7` passed and `1` recorded a
+  `critic_report_review` fallback. The gated set showed `3 of 3`, but the
+  larger uniform-budget set showed `3 of 4`, so the honest reading is a residual
+  rate between `1 in 8` and `1 in 4` rather than zero.
 - **Gate integrity**: repaired. A run with no review now fails a hard gate
-  regardless of how favourably the judge reads the fallback.
-- **Remaining known defect**: `react_decision` truncation at the global cap,
-  recorded as Finding 4 and not yet repaired.
+  regardless of how favourably the judge reads the fallback, which is what makes
+  the residual rate measurable at all.
+- **Budget defect**: fully repaired. All five budgets are `32768`, and Finding 5
+  proves the budget was never the residual cause.
+- **Remaining known defect**: the JSON request mechanism itself, recorded as
+  Finding 5 and planned in
+  `docs/superpowers/plans/2026-09-11-tool-call-structured-transport.md`.
 
 ## Boundary
 
-No configuration changed during either confirmation set. The retry policy
-(`retry_count = 2`, set by `.env`), the one-repair contract, the fallback
-semantics, the frozen case, the rubric, the metric weights, `llm.max_tokens =
-4096`, and the `0.75` threshold are all unchanged. `judge_configuration_
+No configuration changed during the first two confirmation sets. The retry
+policy (`retry_count = 2`, set by `.env`), the one-repair contract, the fallback
+semantics, the frozen case, the rubric, the metric weights, and the `0.75`
+threshold are all unchanged across every set, and `judge_configuration_
 fingerprint` remained `924caf47aa0d` in every run.
 
-The only production change between the two sets is the `review_produced` gate in
-`cccc139`. No token, retry, temperature, or threshold value was touched, and no
-repair to the intermittent structured-output failure is proposed by this note;
-Finding 4's `react_decision` truncation is recorded, not repaired.
+Two production changes separate the sets: the `review_produced` gate in
+`cccc139`, and the uniform `32768` budgets in `035d3c5`. No retry, temperature,
+or threshold value was touched, and no repair to the intermittent
+structured-output failure is proposed by this note. Findings 4 and 5 are the
+evidence base for the tool-call transport plan; neither is repaired here.
 
 These results exist so that the next change is chosen from evidence rather than
 from the single passing repetition recorded in
