@@ -5,7 +5,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from deep_research.agents.sources import source_domain
+from deep_research.agents.sources import (
+    corroboration_score,
+    group_findings_by_url,
+    normalize_source_url,
+    source_domain,
+)
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
     SCENARIOS,
@@ -174,6 +179,31 @@ def test_the_live_case_uses_the_literal_live_scenario() -> None:
     live = cases_for("source_evaluator", "live")[0]
 
     assert live.dependency_scenario == "live"
+
+
+def test_the_registered_live_case_uses_the_corrected_fixture_version() -> None:
+    live = cases_for("source_evaluator", "live")[0]
+
+    assert live.version == 2
+
+
+def test_the_live_fixture_separates_forum_and_authoritative_corroboration() -> None:
+    case = _case("source-evaluator-live-ranking")
+    groups = group_findings_by_url(case.state.raw_findings)
+    corroboration = {
+        normalize_source_url(group.url): corroboration_score(group, groups)
+        for group in groups
+    }
+    reference = case.expectations.reference
+
+    assert all(
+        corroboration[normalize_source_url(url)] == pytest.approx(0.0)
+        for url in reference["expected_low_confidence_urls"]
+    )
+    assert all(
+        corroboration[normalize_source_url(url)] > 0.0
+        for url in reference["authoritative_urls"]
+    )
 
 
 @pytest.mark.parametrize("case_id", CONTROLLED)

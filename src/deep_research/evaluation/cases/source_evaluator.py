@@ -371,6 +371,7 @@ _FAILURE = build_case(
 
 _LIVE = build_case(
     case_id="source-evaluator-live-ranking",
+    version=2,
     agent_name="source_evaluator",
     tier="live",
     title="Rank current public air quality datasets by trustworthiness",
@@ -415,7 +416,7 @@ _LIVE = build_case(
                 "between two public urban air quality datasets.",
                 url=_FORUM_DATA_URL,
                 title="Reddit thread: dataset discrepancies",
-                sub_topic_title="Urban air quality datasets",
+                sub_topic_title="Dataset discrepancy anecdotes",
             ),
         ),
     ),
