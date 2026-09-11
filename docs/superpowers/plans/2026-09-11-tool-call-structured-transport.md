@@ -109,24 +109,41 @@ TOOLS = [
 ]
 
 
-async def probe(client: AsyncOpenAI, label: str, tool_choice: object) -> None:
-    payload = {
+async def probe(
+    client: AsyncOpenAI,
+    label: str,
+    tool_choice: object,
+    *,
+    thinking: bool = True,
+) -> None:
+    """One request. ``thinking`` mirrors what the real provider sends.
+
+    The production path spreads ``_request_options``, which includes
+    ``extra_body={"thinking": {"type": "enabled"}}``, so a probe without that
+    key would test a request the system never actually sends.
+    """
+    payload: dict[str, object] = {
         "model": MODEL,
         "messages": [{"role": "user", "content": "Score this: the sky is blue."}],
         "max_tokens": 512,
         "tools": TOOLS,
     }
+    if thinking:
+        payload["extra_body"] = {"thinking": {"type": "enabled"}}
+        payload["reasoning_effort"] = "high"
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
     try:
         response = await client.chat.completions.create(**payload)
     except Exception as error:  # noqa: BLE001 - probe reports the class only
-        print(f"{label:<34} FAILED  {type(error).__name__}: {getattr(error, 'status_code', '')}")
+        print(
+            f"{label:<40} FAILED  {type(error).__name__} "
+            f"status={getattr(error, 'status_code', '')}"
+        )
         return
     message = response.choices[0].message
     calls = getattr(message, "tool_calls", None) or []
-    has_call = len(calls) == 1
-    args = calls[0].function.arguments if has_call else None
+    args = calls[0].function.arguments if len(calls) == 1 else None
     valid = False
     if isinstance(args, str):
         try:
@@ -135,7 +152,7 @@ async def probe(client: AsyncOpenAI, label: str, tool_choice: object) -> None:
         except json.JSONDecodeError:
             valid = False
     print(
-        f"{label:<34} OK      tool_calls={len(calls)} "
+        f"{label:<40} OK      tool_calls={len(calls)} "
         f"finish={response.choices[0].finish_reason} json_valid={valid}"
     )
 
@@ -146,11 +163,16 @@ async def main() -> None:
         print("DEEPSEEK_API_KEY is not set")
         return
     client = AsyncOpenAI(api_key=key, base_url=BASE_URL, max_retries=0)
-    await probe(client, "function-specific", {"type": "function", "function": {"name": "TinyAnswer"}})
-    await probe(client, "required-string", "required")
-    await probe(client, "auto-string", "auto")
-    await probe(client, "omitted", None)
-    await probe(client, "none-string", "none")
+    function_specific = {"type": "function", "function": {"name": "TinyAnswer"}}
+    # Each shape is tried with thinking enabled and disabled, because the
+    # production path enables thinking and the two modes may differ.
+    for thinking in (True, False):
+        suffix = "thinking=on" if thinking else "thinking=off"
+        await probe(client, f"function-specific ({suffix})", function_specific, thinking=thinking)
+        await probe(client, f"required-string ({suffix})", "required", thinking=thinking)
+        await probe(client, f"auto-string ({suffix})", "auto", thinking=thinking)
+        await probe(client, f"omitted ({suffix})", None, thinking=thinking)
+        await probe(client, f"none-string ({suffix})", "none", thinking=thinking)
 
 
 if __name__ == "__main__":
@@ -170,15 +192,19 @@ $env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scrip
 
 - [ ] **Step 3: Choose the shape from the recorded result**
 
-Read the five lines and pick exactly one, recording the choice in the fix-log entry for this task:
+The probe prints ten lines: five `tool_choice` shapes, each with thinking on and
+off. **Read the `thinking=on` lines first**, because that is what production
+sends. Pick exactly one row and record the choice, quoting the probe lines that
+justify it, in the fix-log entry for this task:
 
 | Observation | Decision |
 | --- | --- |
-| `function-specific` is OK with `json_valid=True` | **Preferred.** Keep Task 2 exactly as written. |
-| `function-specific` fails, `required-string` is OK with `json_valid=True` | Change Task 2's `tool_choice` to the string `"required"` and add `parallel_tool_calls: False` so the reply carries exactly one call. `_tool_call_arguments` already fails closed on more than one. |
-| Both fail, `auto-string` is OK with `json_valid=True` | Change Task 2's `tool_choice` to `"auto"`. Adequacy must then be proven by repetition count rather than by the API: expect occasional prose answers, which `_tool_call_arguments` turns into typed errors, and re-evaluate after Task 7's canary. |
-| Every tool shape fails, but `omitted` returns a tool call | Omit `tool_choice` entirely and rely on the tool being the only offered function. |
-| No shape returns a tool call at all | **Stop.** Tool calling is not viable for this model on this endpoint. Do not run Tasks 2–4 or any paid repetition. Report the probe output and re-decide with the user; the `json_schema` transport in `2fe4e32` remains the best available mechanism, and the next lever is the prompt or the model rather than the transport. |
+| `function-specific (thinking=on)` is OK with `json_valid=True` | **Preferred.** Keep Task 2 exactly as written. |
+| `function-specific (thinking=on)` fails, `required-string (thinking=on)` is OK with `json_valid=True` | Change Task 2's `tool_choice` to the string `"required"` and add `parallel_tool_calls: False` so the reply carries exactly one call. `_tool_call_arguments` already fails closed on more than one. |
+| Both fail, `auto-string (thinking=on)` is OK with `json_valid=True` | Change Task 2's `tool_choice` to `"auto"`. Adequacy must then be proven by repetition count rather than by the API: expect occasional prose answers, which `_tool_call_arguments` turns into typed errors, and re-evaluate after Task 7's canary. |
+| Every named shape fails, but `omitted (thinking=on)` returns a tool call | Omit `tool_choice` entirely and rely on the tool being the only offered function. |
+| **Only the `thinking=off` lines succeed, for any shape** | Tool calls and thinking mode are incompatible on this endpoint. This is a new constraint, so **stop and report it**: enabling tool calls would require disabling thinking for every target structured call, which contradicts the configured `thinking_mode: enabled` and is a scope decision for the user, not a silent workaround. |
+| No shape returns a tool call under either thinking setting | **Stop.** Tool calling is not viable for this model on this endpoint. Do not run Tasks 1–6 or any paid repetition. Report the probe output and re-decide with the user; the `json_schema` transport in `2fe4e32` remains the best available mechanism, and the next lever is the prompt or the model rather than the transport. |
 
 - [ ] **Step 4: Remove the probe**
 
@@ -804,7 +830,14 @@ Expected: FAIL. The `tool_call` case raises `TypeError` because `complete_struct
 
 - [ ] **Step 3: Move the loop into a shared method on `DeepSeekChatProvider`**
 
-In `src/deep_research/providers/deepseek_provider.py`, cut the entire attempt loop out of `_DeepSeekSchemaStructuredProvider.complete_structured` (the `diagnostics = []` line through the final `raise final_error`) and re-add it as this method on **`DeepSeekChatProvider`**, placed immediately after `DeepSeekChatProvider.complete_structured`:
+**Read this before editing — the file has two nearly identical attempt loops.** Both `DeepSeekChatProvider.complete_structured` and `_DeepSeekSchemaStructuredProvider.complete_structured` end with a block that begins `diagnostics: list[StructuredValidationDiagnostic] = []` and ends with a `raise final_error` preceded by a "Clear all provider-adjacent locals" comment. They differ in one decisive way:
+
+- `DeepSeekChatProvider.complete_structured` calls `self._structured_attempt(...)` and its cleanup block also clears `messages = []`, `agent_name = None`, and `instruction = None`.
+- `_DeepSeekSchemaStructuredProvider.complete_structured` calls `self._responses_structured_attempt(...)` and its cleanup block does **not** clear those three names.
+
+**Do not edit `DeepSeekChatProvider.complete_structured`'s loop.** The loop being extracted is the **`_responses_structured_attempt`** one: it is the later occurrence in the file, it contains the call `return await self._responses_structured_attempt(`, and its cleanup ends without `messages = []`. Anchor the extraction on that call line, verify with `Select-String -Path src/deep_research/providers/deepseek_provider.py -Pattern "_responses_structured_attempt\(" -Context 0,12` before cutting, and confirm afterwards that `DeepSeekChatProvider.complete_structured` still contains its own `_structured_attempt` call.
+
+Cut that loop and re-add it as this method on **`DeepSeekChatProvider`**, placed immediately after `DeepSeekChatProvider.complete_structured`:
 
 ```python
     async def _structured_repair_loop(
