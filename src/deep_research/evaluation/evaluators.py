@@ -2024,6 +2024,11 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
     ]
     report = " ".join((case.state.report or "").split()).casefold()
     report_sentences = re.split(r"(?<=[.!?])\s+", report)
+    report_clauses = [
+        clause
+        for sentence in report_sentences
+        for clause in re.split(r"[,;:]", sentence)
+    ]
     unresolved_markers = (
         "absence of",
         "do not yet exist",
@@ -2039,9 +2044,9 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
 
     def report_acknowledges_unresolved(tokens: set[str]) -> bool:
         return any(
-            tokens <= meaningful_tokens(sentence)
-            and any(marker in sentence for marker in unresolved_markers)
-            for sentence in report_sentences
+            tokens <= meaningful_tokens(clause)
+            and any(marker in clause for marker in unresolved_markers)
+            for clause in report_clauses
         )
 
     critique = _artifact(output, "critique")

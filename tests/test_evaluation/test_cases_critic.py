@@ -789,6 +789,12 @@ def test_live_no_spurious_gaps_accepts_full_theme_acknowledged_limitation() -> N
     assert _live_no_spurious_gaps_score(gap) == 1.0
 
 
+def test_live_no_spurious_gaps_rejects_compressive_strength_covered_gap() -> None:
+    gap = "The report does not cover compressive strength standards."
+
+    assert _live_no_spurious_gaps_score(gap) == 0.0
+
+
 @pytest.mark.asyncio
 async def test_the_budget_double_fails_memory_and_serves_the_search(
     tracker, settings, tmp_path, runtime_config_for
