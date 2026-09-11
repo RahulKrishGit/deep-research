@@ -208,7 +208,7 @@ def synchronize_dataset(
                 reused.append(case.case_id)
             else:
                 updated.append(case.case_id)
-                to_update.append(payload)
+                to_update.append({"id": str(remote.id), **payload})
 
         if to_create:
             client.create_examples(dataset_id=dataset.id, examples=to_create)

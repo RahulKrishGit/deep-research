@@ -61,6 +61,13 @@ def test_a_new_case_version_updates_that_example_only() -> None:
     client.created_examples.clear()
 
     cases = list(cases_for("planner", "controlled"))
+    existing = next(
+        example
+        for example in client.list_examples(
+            dataset_name="deep-research-planner-controlled-v1"
+        )
+        if example.metadata["case_id"] == cases[0].case_id
+    )
     cases[0] = cases[0].model_copy(
         update={"version": 2, "purpose": "A revised purpose."}
     )
@@ -68,6 +75,8 @@ def test_a_new_case_version_updates_that_example_only() -> None:
 
     assert report.updated_case_ids == (cases[0].case_id,)
     assert len(client.updated_examples) == 1
+    assert client.updated_examples[0]["id"] == existing.id
+    assert client.updated_examples[0]["metadata"]["case_version"] == 2
     assert len(report.reused_case_ids) == 2
 
 

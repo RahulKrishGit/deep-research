@@ -97,7 +97,16 @@ class FakeLangSmithClient:
             )
 
     def update_examples(self, *, updates: Sequence[Mapping]):
+        known_ids = {
+            example.id
+            for examples in self._examples.values()
+            for example in examples
+        }
         for payload in updates:
+            if payload.get("id") not in known_ids:
+                raise AssertionError(
+                    "example updates must identify an existing remote example"
+                )
             self.updated_examples.append(dict(payload))
 
     def create_feedback(self, run_id, key, **kwargs: Any) -> None:
