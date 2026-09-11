@@ -5,12 +5,18 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from deep_research.agents.report import build_citation_index
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
     SCENARIOS,
     build_controlled_dependencies,
 )
+from deep_research.evaluation.evaluators import (
+    METRIC_FUNCTIONS,
+    deterministic_metric_scores,
+)
+from deep_research.evaluation.models import TargetOutput
 
 CONTROLLED = (
     "complete-cited-report",
@@ -395,6 +401,206 @@ def test_the_live_case_carries_evidence_for_every_declared_subtopic() -> None:
     assert subtopic_titles
     assert finding_topics
     assert subtopic_titles == finding_topics
+
+
+_PARAPHRASED_LIVE_HEADINGS = {
+    "Heat-pump retrofit cost benchmarks": (
+        "Installed cost benchmarks in temperate climates"
+    ),
+    "Incentives and payback periods": "Payback periods",
+    "Cost comparisons with incumbent systems": (
+        "How incentives shift the comparison with incumbent heating"
+    ),
+}
+
+
+def _live_coverage_output(case, report: str) -> TargetOutput:
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id="evaluation-synthesizer-live-coverage",
+        experiment_name="synthesizer-live-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/synthesizer-live-coverage",
+        completed=True,
+        result={"report": report},
+        state_update={"report": report},
+        target_model_requested="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+
+def _live_findings_text(
+    case,
+    *,
+    included_topics: set[str] | None = None,
+    exact_titles: bool = False,
+) -> str:
+    citation_index = build_citation_index(
+        case.state.evaluated_sources, case.state.verified_claims
+    )
+    citation_numbers = {
+        normalize_source_url(citation.url): citation.number
+        for citation in citation_index
+    }
+    findings_by_topic = {
+        finding.related_sub_topic: finding for finding in case.state.raw_findings
+    }
+    blocks = []
+    for topic in case.state.sub_topics:
+        if included_topics is not None and topic.title not in included_topics:
+            continue
+        finding = findings_by_topic[topic.title]
+        heading = (
+            topic.title
+            if exact_titles
+            else _PARAPHRASED_LIVE_HEADINGS[topic.title]
+        )
+        marker = citation_numbers[normalize_source_url(finding.source_url)]
+        blocks.append(
+            f"### {heading}\n\n{finding.content} Sources: [{marker}]"
+        )
+    return "\n\n".join(blocks)
+
+
+def _live_report(case, findings: str, *, source_appendix: str | None = None) -> str:
+    citation_index = build_citation_index(
+        case.state.evaluated_sources, case.state.verified_claims
+    )
+    citations = "\n".join(
+        f"{citation.number}. {citation.title} — {citation.url}"
+        for citation in citation_index
+    )
+    appendix = source_appendix or citations
+    return (
+        "## Executive summary\n\n"
+        "The evidence describes current heat-pump retrofit economics.\n\n"
+        f"## Findings\n\n{findings}\n\n"
+        "## Verified claims\n\n(no claim reached a verified verdict)\n\n"
+        "## Uncertainty and conflicting evidence\n\n"
+        "The evidence base remains limited.\n\n"
+        "## Limitations\n\nThe evidence base is limited.\n\n"
+        f"## Citations\n\n{citations}\n\n"
+        f"## Source appendix\n\n{appendix}"
+    )
+
+
+def _coverage_score(case, report: str) -> float:
+    output = _live_coverage_output(case, report)
+    return deterministic_metric_scores(
+        output, case, metric_functions=METRIC_FUNCTIONS
+    )["coverage"]
+
+
+def test_coverage_accepts_paraphrased_findings_with_source_markers() -> None:
+    case = _case("synthesizer-live-report")
+    report = _live_report(case, _live_findings_text(case))
+
+    assert all(
+        _normalized_title not in report.casefold()
+        for _normalized_title in (
+            topic.title.casefold() for topic in case.state.sub_topics
+        )
+    )
+    assert _coverage_score(case, report) == 1.0
+
+
+def test_coverage_rejects_report_missing_one_topics_narrative_evidence() -> None:
+    case = _case("synthesizer-live-report")
+    included_topics = {
+        topic.title for topic in case.state.sub_topics[:-1]
+    }
+    report = _live_report(
+        case,
+        _live_findings_text(case, included_topics=included_topics),
+    )
+
+    assert _coverage_score(case, report) == 0.0
+
+
+def test_coverage_rejects_exact_titles_in_a_citation_only_appendix() -> None:
+    case = _case("synthesizer-live-report")
+    appendix = "\n".join(
+        f"- {topic.title}" for topic in case.state.sub_topics
+    )
+    report = _live_report(case, "(no findings were reported)", source_appendix=appendix)
+
+    assert _coverage_score(case, report) == 0.0
+
+
+def test_coverage_accepts_explicit_titles_in_findings() -> None:
+    case = _case("synthesizer-live-report")
+    report = _live_report(
+        case,
+        _live_findings_text(case, exact_titles=True),
+    )
+
+    assert _coverage_score(case, report) == 1.0
+
+
+@pytest.mark.parametrize(
+    "report_builder",
+    (
+        lambda case: "## Findings\n\n"
+        + _live_findings_text(case, exact_titles=True),
+        lambda case: "### Findings\n\n"
+        + _live_findings_text(case, exact_titles=True)
+        + "\n\n## Verified claims\n\n(no claims)",
+        lambda case: _live_report(case, _live_findings_text(case, exact_titles=True))
+        .replace("## Verified claims", "## Verified Claims"),
+    ),
+)
+def test_coverage_fails_closed_for_missing_or_malformed_findings_boundaries(
+    report_builder,
+) -> None:
+    case = _case("synthesizer-live-report")
+
+    assert _coverage_score(case, report_builder(case)) == 0.0
+
+
+def test_coverage_rejects_shared_source_associations() -> None:
+    original_case = _case("synthesizer-live-report")
+    case = original_case.model_copy(deep=True)
+    case.state.raw_findings.append(
+        case.state.raw_findings[0].model_copy(
+            update={
+                "related_sub_topic": case.state.sub_topics[1].title,
+            }
+        )
+    )
+    report = _live_report(
+        original_case,
+        _live_findings_text(original_case),
+    )
+
+    assert _coverage_score(case, report) == 0.0
+
+
+def test_coverage_rejects_missing_findings() -> None:
+    original_case = _case("synthesizer-live-report")
+    case = original_case.model_copy(deep=True)
+    case.state.raw_findings = []
+    report = _live_report(
+        original_case,
+        _live_findings_text(original_case),
+    )
+
+    assert _coverage_score(case, report) == 0.0
+
+
+def test_coverage_rejects_a_missing_citation_index() -> None:
+    original_case = _case("synthesizer-live-report")
+    case = original_case.model_copy(deep=True)
+    case.state.evaluated_sources = []
+    case.state.verified_claims = []
+    report = _live_report(
+        original_case,
+        _live_findings_text(original_case),
+    )
+
+    assert _coverage_score(case, report) == 0.0
 
 
 def test_the_complete_case_carries_matching_evaluated_sources() -> None:

@@ -25,6 +25,7 @@ from deep_research.agents.fact_checker import (
     claimed_domains_for,
     independent_domains,
 )
+from deep_research.agents.report import build_citation_index
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.config import contains_secret
@@ -57,6 +58,7 @@ _RESEARCH_ERROR_KEYS = frozenset(
     {"error_type", "source", "message", "timestamp"}
 )
 _URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+")
+_CITATION_MARKER_PATTERN = re.compile(r"\[(\d+)\]")
 # Greedy URL matching keeps trailing punctuation that belongs to prose
 # (markdown parens, commas, periods, ...). Strip it so the extracted string
 # compares equal to the canonical ``known_source_urls`` entry.
@@ -676,6 +678,23 @@ def _normalized_text(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return " ".join(value.split()).casefold()
+
+
+def _findings_section(report: str) -> str | None:
+    """Return only the narrative between the report's Findings boundaries."""
+    findings_matches = list(
+        re.finditer(r"(?m)^## Findings[ \t]*\r?$", report)
+    )
+    verified_matches = list(
+        re.finditer(r"(?m)^## Verified claims[ \t]*\r?$", report)
+    )
+    if len(findings_matches) != 1 or len(verified_matches) != 1:
+        return None
+    findings_heading = findings_matches[0]
+    verified_heading = verified_matches[0]
+    if findings_heading.end() > verified_heading.start():
+        return None
+    return report[findings_heading.end() : verified_heading.start()]
 
 
 def _reference_int(case: EvaluationCase, key: str, default: int) -> int:
@@ -1911,9 +1930,71 @@ def _report_present_in_state_passes(
 
 
 def _coverage_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    report = _report_body(output).casefold()
+    findings = _findings_section(_report_body(output))
+    if findings is None or not findings.strip():
+        return False
+
+    sub_topics = _field(case.state, "sub_topics")
+    if not isinstance(sub_topics, list):
+        return False
+    normalized_findings = _normalized_text(findings)
+    uncovered_topics: list[str] = []
+    for topic in sub_topics:
+        title = _normalized_text(_field(topic, "title"))
+        if not title:
+            return False
+        if title not in normalized_findings:
+            uncovered_topics.append(title)
+    if not uncovered_topics:
+        return True
+
+    raw_findings = _field(case.state, "raw_findings")
+    if not isinstance(raw_findings, list) or not raw_findings:
+        return False
+    evaluated_sources = _field(case.state, "evaluated_sources")
+    verified_claims = _field(case.state, "verified_claims")
+    try:
+        citation_index = build_citation_index(
+            evaluated_sources or (), verified_claims or ()
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not citation_index:
+        return False
+
+    citation_urls = {
+        citation.number: _normalized(citation.url)
+        for citation in citation_index
+        if isinstance(citation.number, int)
+        and isinstance(citation.url, str)
+        and _normalized(citation.url)
+    }
+    citation_numbers = {
+        int(number) for number in _CITATION_MARKER_PATTERN.findall(findings)
+    }
+    if not citation_numbers or not citation_numbers <= citation_urls.keys():
+        return False
+    cited_urls = {citation_urls[number] for number in citation_numbers}
+
+    source_topics: dict[str, set[str]] = {}
+    for finding in raw_findings:
+        source_url = _field(finding, "source_url")
+        related_sub_topic = _normalized_text(
+            _field(finding, "related_sub_topic")
+        )
+        if not isinstance(source_url, str) or not related_sub_topic:
+            return False
+        normalized_url = _normalized(source_url)
+        if not normalized_url:
+            return False
+        source_topics.setdefault(normalized_url, set()).add(related_sub_topic)
+
     return all(
-        _normalized_text(topic.title) in report for topic in case.state.sub_topics
+        any(
+            source_topics.get(url) == {topic_title}
+            for url in cited_urls
+        )
+        for topic_title in uncovered_topics
     )
 
 
