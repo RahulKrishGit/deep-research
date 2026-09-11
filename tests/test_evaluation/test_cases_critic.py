@@ -774,6 +774,12 @@ def test_live_no_spurious_gaps_accepts_acknowledged_durability_limitation() -> N
     assert _live_no_spurious_gaps_score(gap) == 1.0
 
 
+def test_live_no_spurious_gaps_rejects_paraphrased_covered_deployment() -> None:
+    gap = "The report does not cover deployment at commercial scale."
+
+    assert _live_no_spurious_gaps_score(gap) == 0.0
+
+
 @pytest.mark.asyncio
 async def test_the_budget_double_fails_memory_and_serves_the_search(
     tracker, settings, tmp_path, runtime_config_for

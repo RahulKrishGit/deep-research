@@ -1998,6 +1998,26 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
     ]
     if not themes:
         return True
+    stop_words = {
+        "a",
+        "an",
+        "and",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "with",
+    }
+    theme_tokens = [
+        set(re.findall(r"[a-z0-9]+", theme.casefold())) - stop_words
+        for theme in themes
+    ]
     critique = _artifact(output, "critique")
     gaps = _field(critique, "gaps")
     if not isinstance(gaps, list):
@@ -2005,8 +2025,8 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
     for gap in gaps:
         if not isinstance(gap, str):
             continue
-        folded = " ".join(gap.split()).casefold()
-        if any(theme.casefold() in folded for theme in themes):
+        gap_tokens = set(re.findall(r"[a-z0-9]+", gap.casefold())) - stop_words
+        if any(tokens and tokens <= gap_tokens for tokens in theme_tokens):
             return False
     return True
 
