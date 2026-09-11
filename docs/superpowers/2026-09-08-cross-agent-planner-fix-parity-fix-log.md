@@ -918,3 +918,50 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   indistinguishable real judge operations, or a typed consumer that cannot
   represent required safe context. A paid run is not a substitute for that
   evidence.
+
+## 67. Task 7 Consolidated DeepSeek Judge Native-Schema Offline Gate — 2026-09-11
+
+- Base SHA: `dedccd7c129288b9753bb29a7838b8d03f9372ef`.
+- Candidate code HEAD verified: `e914c13030e49ca0678f6d2cd6ee2ab76ee57228` on
+  `codex/cross-agent-planner-fix-parity`.
+- Historical scope check returned exactly these changed paths:
+  `docs/superpowers/plans/2026-09-11-deepseek-judge-native-schema-transport.md`,
+  `docs/superpowers/specs/2026-09-11-deepseek-judge-native-schema-transport-design.md`,
+  `src/deep_research/evaluation/cli.py`,
+  `src/deep_research/evaluation/config.py`,
+  `src/deep_research/evaluation/runner.py`,
+  `src/deep_research/providers/__init__.py`,
+  `src/deep_research/providers/deepseek_provider.py`,
+  `src/deep_research/providers/factory.py`,
+  `tests/test_deepseek_provider.py`,
+  `tests/test_evaluation/test_cli.py`,
+  `tests/test_evaluation/test_config.py`,
+  `tests/test_evaluation/test_judging.py`,
+  `tests/test_evaluation/test_suite.py`, and
+  `tests/test_provider_factory.py`. No agent, case, evaluator metric,
+  `judging.py`, `models.py`, prompt, or `config.yaml` path changed.
+- Fresh focused provider/judge/wiring gate: `314 passed`, `1 warning`,
+  `20.94s`.
+- Fresh evaluation/agent/provider contract gate: `1,299 passed`, `1 warning`,
+  `23.87s`.
+- Fresh full offline pytest: `2,043 passed`, `1 deselected`, `2 warnings`,
+  `30.23s`. Warnings were the existing LangSmith `ast.Str` deprecation and
+  FastAPI/Starlette `httpx` deprecation.
+- Static checks passed: `python -m ruff check .` returned `All checks passed!`;
+  `git diff --check` returned clean. The frozen-invariant script returned
+  `frozen judge invariants: OK` with `llm.max_tokens=4096`, the unchanged
+  `JudgeVerdict` rationale bounds, and `additionalProperties=False`.
+- No live-provider, provider-network, LangSmith, evaluation-suite, or paid
+  command ran. No credentials, `.env` content, raw provider output, full
+  prompt, hidden reasoning, or `.deepseek-runs/` artifact was accessed or
+  changed.
+- The target `DeepSeekChatProvider` remains unchanged in behavior and on its
+  existing Chat Completions path. The native `json_schema` Responses transport
+  is judge-only; the global `max_tokens=4096` cap and existing retry/repair
+  semantics remain in force.
+- For the same logical judge settings from `config.yaml`, the historical
+  judge configuration fingerprint was `99234793b79f` and the candidate
+  transport-aware fingerprint is `924caf47aa0d`, with
+  `deepseek_responses_json_schema_v1` recorded as the transport identifier.
+  `judge_prompt_fingerprint(rubric_version=1)` remains `93edb1729cbb`; the
+  candidate contains no judging, model, or prompt-source change.
