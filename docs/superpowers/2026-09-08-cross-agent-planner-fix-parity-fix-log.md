@@ -354,3 +354,17 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Result: exit code `1`, status `FAILED`; `13/14` hard gates passed, deterministic quality `0.80`, and only `low_confidence_flagged` failed. The judge was scorable on this confirmation with judge `0.77` and aggregate `0.78`.
 - Evidence: LangSmith experiment `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/231a04d4-dfc8-434d-8403-8c8e18cc71c8`; artifact `output/evaluations/task19-source-evaluator-confirmation-424ed6c/source-evaluator/task19-source-evaluator-confirmation-424ed6c-source-evaluator-live-20260911T013412Z-424ed6c/results.json`; SHA-256 `68B8CACA796C6C7FF9B48B69DA9A05E8F954B59412167DE032655A1CEFE26BE7`.
 - Decision: the independently scorable confirmation reproduces the same deterministic gate miss, confirming the frozen-case topology/expectation mismatch rather than a Source Evaluator implementation defect. Source Evaluator is complete for this sequential loop with no production change; Fact Checker is the next agent. The global `llm.max_tokens == 4096` and all judge/no-score and no-budget invariants remain unchanged.
+
+## 45. Task 19 Fact Checker Live Evidence — Preserved While Sequence Paused
+
+- Candidate: `ef143ef9660a524d26dc729d9eadae4f6cf4c296`; exactly one Fact Checker live repetition ran under the frozen configuration before the production-readiness correction paused the sequence. No retry, code, case, prompt, budget, evaluator, or suite change ran.
+- Result: exit code `1`, status `FAILED`; all `15/15` target hard gates passed and deterministic quality was `1.00`. The judge score was `0.48`, aggregate `0.69`, below the configured quality threshold; no target hard gate or target-side typed `output_limit` failure appeared.
+- Evidence: LangSmith experiment `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/18a62aee-ba09-4a79-9b38-890d1afbc490`; artifact `output/evaluations/task19-fact-checker-ef143ef/fact-checker/task19-fact-checker-ef143ef-fact-checker-live-20260911T013600Z-ef143ef/results.json`; SHA-256 `0059D095129C67F57C8609662B1976797C54A55B586F6E4F44DBD7EBFA9D5199`.
+- Disposition: preserve this evidence, but do not treat it as sequential advancement or production readiness. Fact Checker's agent-specific diagnosis is deferred until the Source Evaluator readiness issue is resolved.
+
+## 46. Production-Readiness Correction — Source Evaluator Must Be Reopened
+
+- User requirement: the campaign objective is production fitness with coherent, good metrics and review readiness, not merely avoidance of an unsupported agent-code change.
+- Consequence: the prior Source Evaluator no-change ruling is not a completion decision. The repeated `low_confidence_flagged` result is an evaluation-contract/production-readiness blocker until an approved decision reconciles the live-case topology/expected flag with the production scoring geometry and a clean focused confirmation is obtained.
+- Sequence control: Fact Checker evidence was already collected and preserved, but no later agent run starts. The current branch is not production-ready and must not be presented for final review.
+- Invariants: do not silently alter Source Evaluator code, prompt, thresholds, weights, cases, rubrics, budgets, provider behavior, or judge semantics. Obtain the next scoped plan/review first; keep `llm.max_tokens == 4096` and all raw-URL/secret-safe evidence boundaries unchanged.
