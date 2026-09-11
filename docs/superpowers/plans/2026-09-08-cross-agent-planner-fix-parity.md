@@ -1849,7 +1849,8 @@ open a separate Researcher-agent TDD task; do not combine it with this harness
 repair. If provenance passes but `max_iterations` persists, record it as a
 separate trajectory signal without changing iteration or token budgets.
 
-Implementation is committed and pushed at `1c9047b`. The additive
+Implementation is committed and pushed at `e954f47` (the initial
+implementation is `1c9047b`). The additive
 `DependencyLedger.source_url_fingerprints` field records deduplicated,
 bounded SHA-256 fingerprints from successful live evidence-tool payloads;
 only the live Researcher source-provenance paths consume it. Controlled
@@ -1863,7 +1864,8 @@ Verification: focused Task 20 tests `5 passed`; full offline pytest with
 `-p no:cacheprovider` `1,985 passed, 1 deselected, 2 warnings`; Ruff and
 `git diff --check` passed. The next action is a Luna-max task-scoped review,
 followed by exactly one focused Researcher live confirmation if the review
-is clean.
+is clean. The Luna-max task-review dispatch was closed after its extended
+bounded wait returned no result; no live confirmation has started.
 
 ---
 
