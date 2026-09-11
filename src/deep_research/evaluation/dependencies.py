@@ -1008,14 +1008,16 @@ def build_live_dependencies(
         search_client=search_client,
         http_client=http_client,
     )
-    tools = [
-        (
-            _FingerprintingTool(tool, tracker, recorder=recorder)
-            if tool.name in {"web_search", "web_scraper", "document_reader"}
-            else tool
-        )
-        for tool in tools
-    ]
+    if runtime.agent_name == "researcher":
+        tools = [
+            (
+                _FingerprintingTool(tool, tracker, recorder=recorder)
+                if tool.name
+                in {"web_search", "web_scraper", "document_reader"}
+                else tool
+            )
+            for tool in tools
+        ]
     procedural = ProceduralMemory.from_config(
         isolated.memory.procedural, tracker=tracker
     )

@@ -464,6 +464,9 @@ def test_dependency_ledger_round_trips_bounded_source_url_fingerprints() -> None
 
     assert payload["source_url_fingerprints"] == [fingerprint]
     assert DependencyLedger.model_validate(payload) == ledger
+    assert (
+        DependencyLedger.model_validate({}).source_url_fingerprints == []
+    )
 
     with pytest.raises(ValueError):
         DependencyLedger(source_url_fingerprints=["not-a-sha256"])
