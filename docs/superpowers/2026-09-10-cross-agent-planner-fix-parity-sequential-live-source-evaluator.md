@@ -164,3 +164,27 @@ agent/scoring/budget/provider invariants remain unchanged.
   `git diff --check` remain valid evidence for Fix Round 1 but do not close
   this SDK boundary. The v2 case repair and all prior failed artifacts remain
   immutable. The single paid v2 confirmation stays paused.
+
+## Sol High scoped re-review of Fix Round 2 — PASS; confirmation unblocked
+
+- Review surface: existing Sol High browser conversation, remote branch
+  `codex/cross-agent-planner-fix-parity`, implementation range
+  `c9b70621ec7dea2887cee3fd347d5eb9e65aefd6..4c4e6ce62f9ef3bfff20e3decf5975d08dffa34f`,
+  bookkeeping HEAD `6d6bf1ce57fd54c2fd8a1c82507859237bc932c9`.
+- Spec compliance: `PASS`. Task quality: `PASS`. Findings: no Critical,
+  Important, or Minor issues.
+- Sol verified that `client.update_examples(dataset_id=dataset.id,
+  updates=to_update)` closes the SDK contract while retaining the existing
+  remote example ID in each update. The strict fake validates both the dataset
+  and example identity, and the regression proves dataset ID, example ID, and
+  revised `metadata.case_version`.
+- The dataset-sync blocker is closed for the identified preflight failure.
+  Exactly one Source Evaluator v2 live confirmation is unblocked from the
+  scoped code-review gate. This verdict is not a live quality result and does
+  not authorize retries, suite runs, later-agent runs, or any prompt,
+  threshold, budget, provider, or fallback change.
+- Live acceptance remains unchanged: version `2`, `14/14` hard gates,
+  deterministic quality `1.00`, scored judge with no diagnostics, aggregate
+  `>= 0.75`, no target/judge/provider failure or fallback, zero prohibited
+  calls, no target-side output-limit evidence, and runner status
+  `REVIEW REQUIRED`.

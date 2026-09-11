@@ -421,3 +421,28 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Evidence preserved: the original preflight failure, Fix Round 1 commit
   `c9b7062`, its offline counts, and all v1/v2 artifacts remain immutable. No
   paid retry or later-agent run is authorized until Fix Round 2 is reviewed.
+
+## 51. Sol High Fix Round 2 Review — PASS; One V2 Confirmation Unblocked
+
+- Review surface: existing Sol High browser conversation, remote implementation
+  range `c9b70621ec7dea2887cee3fd347d5eb9e65aefd6..4c4e6ce62f9ef3bfff20e3decf5975d08dffa34f`,
+  bookkeeping HEAD `6d6bf1ce57fd54c2fd8a1c82507859237bc932c9`.
+- Verdict: spec compliance `PASS`; task quality `PASS`; no Critical,
+  Important, or Minor findings. The one-line production change supplies
+  `dataset_id=dataset.id` to `update_examples` while retaining Fix Round 1's
+  remote example ID in every structured update.
+- Sol verified the strict fake rejects missing/mismatched dataset identity and
+  unknown example IDs, and the regression proves the existing dataset ID,
+  existing example ID, and revised `metadata.case_version == 2`. Create/reuse,
+  secret scanning, version selection, and no-deletion behavior remain intact.
+- Disposition: the dataset-sync blocker is closed. Exactly one fresh Source
+  Evaluator v2 live confirmation is unblocked from the scoped review gate.
+  Production readiness is still unproven until the live artifact satisfies
+  version `2`, `14/14` hard gates, deterministic `1.00`, scored judge with no
+  diagnostics, aggregate `>= 0.75`, no target/judge/provider failure or
+  fallback, zero prohibited calls, no target-side output-limit evidence, and
+  runner status `REVIEW REQUIRED`.
+- Invariants: no Source Evaluator code/prompt/scoring/gate/threshold/weight/
+  budget/provider/fallback/judge/case change; global `llm.max_tokens == 4096`;
+  no retry, suite, or later-agent run. Earlier preflight and v1/v2 artifacts
+  remain immutable.

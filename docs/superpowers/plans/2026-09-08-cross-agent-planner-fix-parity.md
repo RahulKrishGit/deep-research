@@ -39,7 +39,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **Paused — Source Evaluator v2 dataset-sync repair incomplete; confirmation paused** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. The v1 live-case mismatch and the v2 dataset-sync preflight blocker are documented. Fix Round 1 preserved the remote example ID, but Sol High found that the real SDK call also requires dataset identity; production readiness remains pending the reviewed fix and one clean v2 confirmation. Fact Checker evidence is preserved and the sequence remains paused. |
+| 19. Sequential live-agent diagnosis and repair loop | **Paused — Source Evaluator v2 confirmation unblocked; live evidence pending** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. The v1 live-case mismatch and both dataset-sync preflight layers are documented. Fix Round 2 passed scoped Sol High review with no findings; exactly one v2 live confirmation is now permitted, but production readiness remains pending its full metric and judge acceptance contract. Fact Checker evidence is preserved and the sequence remains paused. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
@@ -2225,3 +2225,24 @@ The next bounded TDD repair must:
 No paid retry, other agent run, suite run, retry policy change, prompt tuning,
 threshold/rubric/weight change, or token-budget change is authorized by this
 repair. The failed preflight and Fix Round 1 remain immutable evidence.
+
+### Task 19A Fix Round 2 Review — PASS; One V2 Confirmation Unblocked
+
+Sol High reviewed remote implementation range
+`c9b70621ec7dea2887cee3fd347d5eb9e65aefd6..4c4e6ce62f9ef3bfff20e3decf5975d08dffa34f`
+with bookkeeping at remote HEAD `6d6bf1ce57fd54c2fd8a1c82507859237bc932c9`.
+The review found `PASS` for spec compliance and task quality, with no
+Critical, Important, or Minor findings. The production update now passes
+`dataset_id=dataset.id` alongside structured updates, while Fix Round 1's
+remote example ID remains in each update. The fake validates both identities,
+and the regression proves dataset ID, example ID, and revised case version.
+
+The dataset-sync blocker is closed for the identified failure boundary. Exactly
+one fresh Source Evaluator v2 live confirmation is now unblocked. It must still
+meet the existing production-readiness acceptance contract: case version `2`,
+`14/14` hard gates, deterministic quality `1.00`, a scored judge with no
+diagnostics, aggregate quality `>= 0.75`, no target/judge/provider failure or
+fallback, zero prohibited calls, no target-side output-limit evidence, and
+runner status `REVIEW REQUIRED`. This code review does not itself establish
+those metrics. No retry, suite, later-agent run, prompt/threshold/budget/
+provider change, or automatic approval is authorized.
