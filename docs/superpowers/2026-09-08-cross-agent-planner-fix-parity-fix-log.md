@@ -1322,3 +1322,110 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - No live rerun, prompt change, evaluator change, token change, provider call,
   LangSmith call, suite command, or production repair occurred. The existing
   `.deepseek-runs/` directory was not inspected or modified.
+
+## 77. Critic Live-Call Production Readiness — ROOT CAUSE FOUND; OFFLINE GATE PASSED
+
+Spec: `docs/superpowers/specs/2026-09-11-critic-live-call-production-readiness-design.md`.
+Plan: `docs/superpowers/plans/2026-09-11-critic-live-call-production-readiness.md`.
+Tasks 1-6 of that plan are complete. Task 7, the paid live canary, has **not**
+run and remains separately gated.
+
+### Root cause of the live Critic failure
+
+Section 73's NO-CHANGE ruling was reached on the artifact's evidence. A direct
+offline reproduction shows the artifact was missing the decisive evidence, and
+that the Critic carries a real defect.
+
+- **Confirmed defect 1 — the spot-check loop never saw the report.**
+  `render_react_messages` renders only `task.instruction` and `task.guidance`,
+  and `CritiqueTask.report` was never copied into either. Measured against the
+  registered `critic-live-review` case: the ReAct spot-check prompt was `1,199`
+  characters and did **not** contain the `2,877`-character report, while the
+  structured review prompt was `4,811` characters and did. The model was told
+  to spot-check a report it had never been shown, which is why the failing
+  trajectory opened with a `query_memory` call that returned nothing and then
+  concluded no report text was in context. This is a Critic defect rather than
+  project design: `ResearcherAgent.sub_topic_task` names its sub-topic and
+  `FactCheckerAgent.claim_task` names its claim in their loop prompts, so the
+  Critic was the only ReAct agent whose loop prompt omitted its own artifact.
+- **Confirmed defect 2 — the artifact discarded the structured diagnostics.**
+  `_fallback_provider_diagnostic` projected the snapshot onto
+  `{kind, operation}` and dropped the bounded `attempt` / `category` /
+  `field_paths` records. Direct execution proves those records were **already
+  present** at `output.errors[].details.provider_failure.diagnostics`; they were
+  lost only in the final projection, while the judge path already retained the
+  same shape safely as `JudgeFeedback.diagnostics`. The evidence was never
+  missing from the live run, only from the artifact that was reviewed.
+- **Confirmed defect 3 — a degraded run was scored as a bad review.**
+  `critique_actionable_passes` returns `True` whenever `should_continue` is not
+  `True`, so the empty fallback passed that gate; with `score_bounded=1.0` and
+  `route_consistent=1.0` the degraded run presented as `14/14` hard gates
+  passed. The judge had no way to distinguish an honest fallback from a real
+  judgement and scored the fallback's absent content as a critique that
+  "delivers nothing".
+- **Boundary not crossed.** The cause of the two `json_invalid` attempts is
+  still **unproven**. Reasoning over the current artifact cannot separate a
+  truncated completion from an empty one or from preamble text around otherwise
+  valid JSON, and the spec deliberately authorizes **no** token, retry,
+  repair-prompt, temperature, or budget change until the retained diagnostics
+  make the cause attributable.
+
+### Offline gate
+
+- Full offline suite: `2,070` collected (`1` deselected), **`3 failed, 2,067
+  passed`**, `2` warnings.
+- **All three failures are pre-existing and unrelated.** Verified by restoring
+  the session base commit `db89bdb` and re-running: that tree produced the same
+  three failures and `2,051` passed. The three are
+  `test_a_live_experiment_requests_one_repetition`,
+  `test_the_ledger_records_real_services_for_a_live_run`, and
+  `test_a_live_researcher_records_only_source_url_fingerprints`. The changes
+  under this entry add `16` passing tests and introduce no new failure.
+- `ruff check src tests` passed; `git diff --check` passed.
+- `git diff db89bdb..HEAD -- config.yaml` is empty, so no token, retry,
+  temperature, or threshold setting moved.
+
+### Fingerprints
+
+- Target prompt fingerprint (Critic): `242310dce29e` is superseded. The Critic
+  module and the shared prompt library are hashed together, so this moved with
+  defects 1 and 2's prompt text; the new value is `e984bf2d3d23`.
+- Judge prompt fingerprint: `93edb1729cbb` is superseded and is now pinned by a
+  test. The new value is **`77a0898f4267`**. Judge scores recorded before this
+  change are **not** comparable with scores after it.
+- Native-schema judge configuration fingerprint: **unchanged** at
+  `924caf47aa0d`. Verified by source inspection — it hashes provider, structured
+  transport, judge model, judge effort, judge temperature, thinking mode, and
+  rubric version, none of which this work touched.
+
+### Changed paths
+
+`src/deep_research/agents/critic.py`, `src/deep_research/agents/prompts.py`,
+`src/deep_research/evaluation/models.py`,
+`src/deep_research/evaluation/runner.py`,
+`src/deep_research/evaluation/judging.py`,
+`tests/test_agents/test_critic.py`, `tests/test_evaluation/conftest.py`,
+`tests/test_evaluation/test_config.py`,
+`tests/test_evaluation/test_judging.py`,
+`tests/test_evaluation/test_models.py`,
+`tests/test_evaluation/test_runner.py`, plus this fix log.
+
+### Commits
+
+- `5237b8a`, `5df9eee`, `b47d90d`, `0a7c0ed`, `db89bdb` — spec, plan, and
+  plan corrections.
+- `16d2565` — render the report in the spot-check guidance.
+- `9a89a24` — state that the report is already in the prompt.
+- `47bf9e2` — retain structured diagnostics in the artifact.
+- `e6a5ceb` — give the judge the provider fallback fact.
+- `b8baba0` — pin the post-fallback judge fingerprints.
+
+### Next action
+
+Task 7 of the plan: one paid Critic live repetition on the frozen
+configuration, sequentially, with a clean tree, behind separate immediate
+authorization. If it fails again, the artifact's
+`fallback_provider_diagnostic.diagnostics` now names whether no parseable JSON
+object was produced at all (`category=json_invalid`, `field_paths=("$",)`) or
+whether valid JSON arrived in the wrong shape (a named path), which is the
+distinction the previous three diagnoses could not make.
