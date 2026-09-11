@@ -41,7 +41,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
 | 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker diagnosis complete; repair wave reviewed; serialized Critic evaluator repair next** | The user-authorized Fact Checker evidence remains target-contract green (`15/15` hard gates, deterministic `1.00`) with a scorable below-threshold judge and fallback `react_decision` `output_limit`; Sol's review supports no Fact Checker production or budget change. Source Evaluator remains target-green but judge-blocked. Do not start another live run until the evaluator repair and offline gate are complete. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
-| 21. Parallel evidence-driven repair wave | **Sol reviewed with follow-up — consolidated offline gate pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; later Sol reviews found and corrected false positives for acknowledged durability language and sentence-level marker borrowing. Fix round 3 scopes unresolved evidence to comma/semicolon/colon-delimited clauses, with five production-path controls green. Sol High returned `PASS WITH FOLLOW-UP` for `c9f31ee..a08dbbd`, with no Critical or Important findings; the one-token-theme sensitivity remains deferred. J/F/S/C are integrated at `5763f8a`; live/provider/LangSmith/suite execution remains forbidden until the consolidated offline gate. |
+| 21. Parallel evidence-driven repair wave | **Complete — reviewed and offline gate green; sequential live confirmation pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; later Sol reviews found and corrected false positives for acknowledged durability language and sentence-level marker borrowing. Fix round 3 scopes unresolved evidence to comma/semicolon/colon-delimited clauses, with five production-path controls green. Sol High returned `PASS WITH FOLLOW-UP` for `c9f31ee..a08dbbd`, with no Critical or Important findings; the one-token-theme sensitivity remains deferred. J/F/S/C are integrated at `5763f8a`; the targeted offline gate is green. The sequential live loop remains at the Source Evaluator v2 confirmation checkpoint. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -2504,3 +2504,21 @@ load-bearing candidate is Stream C's shared Critic evaluator behavior.
 - Gate: proceed to the consolidated offline gate. Live/provider/LangSmith/
   suite execution remains **NO-GO** until that gate is green and any findings
   are handled.
+
+### Stream C consolidated offline gate (2026-09-10)
+
+- After the Sol High `PASS WITH FOLLOW-UP` disposition for `c9f31ee..a08dbbd`,
+  the coordinator ran the required offline gate at `61a4126`. The targeted
+  evaluation/agent/provider contract command passed `1,256` tests with one
+  existing LangSmith deprecation warning. The full no-cache suite passed
+  `2,005` tests with one deselected and two existing warnings. Repository-wide
+  Ruff and `git diff --check` passed.
+- The campaign worktree and remote both resolve to `61a4126`; the only
+  untracked item remains the pre-existing ignored `.deepseek-runs/` directory,
+  which was not inspected or staged.
+- Parallel repair work is complete and no additional C worker is needed. The
+  remaining live work follows the sequential Task 19 control plane: Source
+  Evaluator v2 is the current checkpoint, and Fact Checker remains deferred
+  until the Source Evaluator confirmation is accepted. Each paid command still
+  requires its own immediate authorization; no live/provider/LangSmith/suite
+  command ran in this gate.

@@ -760,3 +760,21 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Gate: proceed to the consolidated offline gate. Live/provider/LangSmith/
   suite execution remains **NO-GO** until that gate is green and any findings
   are handled.
+
+## 62. Stream C Consolidated Offline Gate — 2026-09-10
+
+- After the Sol High `PASS WITH FOLLOW-UP` disposition for `c9f31ee..a08dbbd`,
+  the coordinator ran the required offline gate at `61a4126`. The targeted
+  evaluation/agent/provider contract command passed `1,256` tests with one
+  existing LangSmith deprecation warning. The full no-cache suite passed
+  `2,005` tests with one deselected and two existing warnings. Repository-wide
+  Ruff and `git diff --check` passed.
+- The campaign worktree and remote both resolve to `61a4126`; the only
+  untracked item remains the pre-existing ignored `.deepseek-runs/` directory,
+  which was not inspected or staged.
+- Parallel repair work is complete and no additional C worker is needed. The
+  remaining live work follows the sequential Task 19 control plane: Source
+  Evaluator v2 is the current checkpoint, and Fact Checker remains deferred
+  until the Source Evaluator confirmation is accepted. Each paid command still
+  requires its own immediate authorization; no live/provider/LangSmith/suite
+  command ran in this gate.
