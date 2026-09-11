@@ -39,8 +39,8 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **In progress — user-authorized** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. Researcher evidence is recorded; its confirmation is blocked on Task 20. |
-| 20. Researcher live provenance repair | **Implemented — fix round 2 review pending** | Raw source validation now occurs before normalization, closing malformed path/query whitespace and valid bracketed IPv6 edge cases. The exact fix range must receive a clean Sol High browser re-review before the focused Researcher confirmation. |
+| 19. Sequential live-agent diagnosis and repair loop | **In progress — Researcher confirmation next** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. Researcher evidence and the Task 20 repair review are complete; its focused confirmation is next. |
+| 20. Researcher live provenance repair | **Review clean — focused confirmation next** | Raw source validation now occurs before normalization, closing malformed path/query whitespace and valid bracketed IPv6 edge cases. The exact fix range received `PASS WITH FOLLOW-UP` from the existing Sol High browser review, with no Critical or Important findings; exactly one focused Researcher confirmation is now unblocked. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -1791,7 +1791,7 @@ before any budget amendment. The first Researcher repetition and Sol High
 review are recorded in the tracked sequential-live Researcher report and fix
 log; Task 20 is the current repair task.
 
-### Task 20: Repair Researcher Live Retrieval Provenance — IMPLEMENTED, FIX ROUND 2 REVIEW PENDING
+### Task 20: Repair Researcher Live Retrieval Provenance — REVIEW CLEAN, FOCUSED CONFIRMATION NEXT
 
 **Sol High diagnosis:** the Researcher live failure is not yet a confirmed
 Researcher prompt or agent defect. Successful tool results retain up to the
@@ -1923,10 +1923,27 @@ the candidate, and preserves valid bracketed IPv6 identities for normalized
 hashing. The implementation report records the intended RED failure, final
 GREEN result, focused evaluation verification (`180 passed`), full offline
 pytest (`1,992 passed, 1 deselected, 2 warnings`), Ruff, and
-`git diff --check`; no live/provider command ran. A fresh task-scoped Sol High
-browser re-review of this fix range is the next gate. The deferred live
-non-Researcher wrapper regression remains parked and does not block this
-fix-round review unless a semantic scope defect is found.
+`git diff --check`; no live/provider command ran.
+
+The existing Sol High browser re-review of `45ff39a..63fda61` returned
+`PASS WITH FOLLOW-UP` with no Critical or Important findings. It confirmed that
+raw validation precedes normalization, valid bracketed IPv6 is admitted, the
+earlier completeness/overflow repair remains intact, the Researcher-only
+wrapper scope is preserved, and the frozen configuration and `4096` token cap
+are unchanged. The only follow-up is the deferred Minor non-Researcher
+wrapper regression, which does not block Task 20. Exactly one focused
+Researcher live confirmation is therefore unblocked; its target-gate result
+must still be reported separately from any independent judge/infrastructure
+failure, and no other live agent or suite run starts in this step.
+
+Controller verification after the review initially exposed a local package
+binding error: direct `python -m pytest -q -p no:cacheprovider` imported the
+installed `streamlit-ui-polish` worktree and stopped during collection with
+five missing-symbol errors. This was not a campaign test result. Re-running
+with the campaign checkout's `src` explicitly first on `sys.path` produced
+`1,992 passed, 1 deselected, 2 warnings` in `30.43s`; repository-wide Ruff
+and `git diff --check` also passed. The deferred live non-Researcher wrapper
+regression remains parked and no live/provider command ran during this gate.
 
 ---
 
