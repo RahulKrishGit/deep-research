@@ -689,17 +689,15 @@ def test_the_judge_is_told_how_to_read_a_fallback() -> None:
 
 Add to the `tests/test_evaluation/test_judging.py` import block: `JUDGE_SYSTEM_PROMPT`, `JudgeInput`, `_BLOCK_ORDER`, `build_judge_input`, `render_judge_messages` from `deep_research.evaluation.judging`; `fallback_provider_diagnostic` from `deep_research.evaluation.models`; and `GateReport` from `deep_research.evaluation.models`.
 
-`critic_live_case` must be a **pytest fixture**, not a plain function, so the tests can request it by name. Add it to `tests/test_evaluation/conftest.py` beside the other case fixtures (follow the `planner_case` fixture at `conftest.py:126-128` exactly):
+`critic_live_case` must be a **pytest fixture**, not a plain function, so the tests can request it by name. Add it to `tests/test_evaluation/conftest.py` immediately after `planner_case` (`conftest.py:126-128`), using the existing `live_case_for` fixture (`conftest.py:105-123`), which already returns the registry's first live case for an agent and skips cleanly when none is registered:
 
 ```python
 @pytest.fixture
-def critic_live_case():
+def critic_live_case(live_case_for):
     return live_case_for("critic")
 ```
 
-Use whatever accessor the surrounding fixtures use; `planner_case` is built from `controlled_case_for("planner")`, so use the live-tier sibling of that helper. If no live accessor exists in `conftest.py`, add one next to `controlled_case_for`, mirroring its implementation with `cases_for(agent_name, "live")`.
-
-Then add these two plain module-level helpers to `tests/test_evaluation/test_judging.py`:
+Then add this plain module-level helper to `tests/test_evaluation/test_judging.py`:
 
 ```python
 def critic_live_case_output(case) -> TargetOutput:
@@ -888,6 +886,8 @@ Run:
 ```
 
 Expected: one 12-hex-character value that is **not** `93edb1729cbb`. Record it; call it `<NEW_JUDGE_PROMPT_FINGERPRINT>` below and substitute it literally in Step 2.
+
+`93edb1729cbb` is the value on the branch before this plan and is recorded only in the canary documents under `docs/superpowers/`. **No test pins it today** — verified by searching the whole `tests/` tree. That is exactly why this step adds the pin: without it, a future judge-prompt edit would silently invalidate every recorded judge score with nothing in the suite objecting.
 
 - [ ] **Step 2: Write the pinning tests**
 
@@ -1089,6 +1089,12 @@ git commit -m "docs: record the critic readiness live canary"
 **One baseline correction.** An earlier draft of this plan asserted a `1,944 passed` baseline. The branch's own fix log records `1,944` at one stage and `1,952` at a later one (`docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`, lines 112, 155, 179). Task 6 therefore measures the baseline on the branch instead of asserting a number, so the gate cannot be passed or failed on a stale figure.
 
 **Type consistency.** `FallbackProviderDiagnostic` is defined in Task 3 with `diagnostics: tuple[EvaluatorDiagnostic, ...] = ()` and consumed under that exact name and type in Tasks 4–5. `_render_spot_check_guidance(report, sub_topics, *, report_chars)` is defined in Task 1 and called only from `build_task` in the same task. `build_judge_input(..., *, secrets, fallback=None)` is defined and called in Task 4. `JudgeInput.provider_fallback` is `dict[str, JsonValue] | None` in both the model and every test.
+
+**One correction from evidence gathered during planning.** An earlier draft told the implementer to add a live-case accessor to `conftest.py` "if none exists". `live_case_for` already exists (`conftest.py:105-123`) and already skips cleanly on an empty registry, so the plan uses it directly instead of hedging.
+
+**One thing the plan adds rather than preserves.** The `93edb1729cbb` and `924caf47aa0d` literals appear in **no** test file — only in the canary documents under `docs/superpowers/`. So Task 5 does not re-pin an existing assertion; it creates the pin that was missing. Task 5 Step 2 says so explicitly, so a reviewer does not go looking for a test that is not there.
+
+**One blast-radius risk checked and cleared.** `test_the_judge_input_carries_exactly_what_the_spec_permits` (`tests/test_evaluation/test_judging.py:157-183`) reads as though it asserts the exact `JudgeInput` key set. It does not — it loops `assert allowed in payload` over an allow-list (line 176). Adding an optional field therefore cannot break it, and no existing test asserts `_BLOCK_ORDER` at all. Task 4 Step 1 adds that missing guard.
 
 **Placeholder scan.** No step says "TBD", "implement later", "add appropriate error handling", or "similar to Task N". Every code step carries runnable code and every command step carries its exact command and expected result.
 
