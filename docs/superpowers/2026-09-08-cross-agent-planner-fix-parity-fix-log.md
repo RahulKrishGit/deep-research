@@ -672,3 +672,36 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   run the consolidated offline gate. Live/provider/LangSmith/suite execution
   remains **NO-GO** until both are complete. The global `4096` token cap and
   all fallback/judge semantics remain unchanged.
+
+## 59. Stream C Evaluator Fix Round 2 — 2026-09-10
+
+- Sol High's scoped re-review of the normalized matcher confirmed that the
+  ordinary commercial-deployment paraphrase was fixed, but found one remaining
+  Important false positive: the natural limitation
+  `Additional durability and long-term performance data under field exposure
+  are needed.` was still scored `0.0` even though the report explicitly marks
+  that theme as unresolved and accumulating. Sol required a fourth
+  production-path control with expected score `1.0`; weakening the whole-theme
+  matcher alone was not acceptable.
+- The existing Stream C worker was reused again, aligned to `872610d`; no new
+  worker fork or worktree was created. The worker added the exact regression,
+  observed the required RED (`1 failed, 55 deselected`, returned `0.0`), then
+  changed only `_no_spurious_gaps_passes` to use sentence-local report
+  evidence. A full theme-token match is exempted only when the same report
+  sentence contains explicit unresolved/insufficient-language markers. The
+  canonical covered-evidence, acknowledged field-record, paraphrased
+  commercial-deployment, and new full-theme durability controls are all green.
+- Worker commit `ab65e410c66de4990c763f7f3e964db9b34fb84a` was integrated as
+  `f711f67`. Changed paths remain exactly
+  `src/deep_research/evaluation/evaluators.py` and
+  `tests/test_evaluation/test_cases_critic.py`; frozen cases, reports, themes,
+  rubrics, weights, thresholds, prompts, tools, budgets, routes, providers,
+  fallback semantics, judge behavior, and the `4096` cap are unchanged.
+- Worker verification: all four production-path controls `4 passed, 52
+  deselected, 1 warning`; focused Critic tests `92 passed, 1 warning`; relevant
+  evaluator tests `97 passed, 1 warning`; Ruff and `git diff --check` passed.
+  No live/provider/LangSmith/suite command ran, and `.deepseek-runs/` was not
+  staged.
+- Gate: push `f711f67`, obtain a fresh scoped Sol High re-review of this fix
+  round, then run the consolidated offline gate. Live/provider/LangSmith/
+  suite execution remains **NO-GO** until both gates are complete.
