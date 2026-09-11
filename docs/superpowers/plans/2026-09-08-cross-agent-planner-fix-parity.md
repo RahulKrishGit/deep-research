@@ -41,7 +41,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
 | 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker diagnosis complete; repair wave reviewed; serialized Critic evaluator repair next** | The user-authorized Fact Checker evidence remains target-contract green (`15/15` hard gates, deterministic `1.00`) with a scorable below-threshold judge and fallback `react_decision` `output_limit`; Sol's review supports no Fact Checker production or budget change. Source Evaluator remains target-green but judge-blocked. Do not start another live run until the evaluator repair and offline gate are complete. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
-| 21. Parallel evidence-driven repair wave | **C fix round 2 integrated — scoped re-review and consolidated offline gate pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; fix round 1 added normalized whole-theme matching, and Sol's follow-up found a false positive for an explicitly acknowledged full-theme durability limitation. Fix round 2 adds sentence-local unresolved-evidence handling with four production-path controls green. J/F/S/C are integrated at `f711f67`; live/provider/LangSmith/suite execution remains forbidden until scoped re-review and the consolidated offline gate. |
+| 21. Parallel evidence-driven repair wave | **C fix round 3 integrated — scoped re-review and consolidated offline gate pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; fix round 1 added normalized whole-theme matching, and later Sol reviews found false positives for acknowledged durability language and sentence-level marker borrowing. Fix round 3 scopes unresolved evidence to comma/semicolon/colon-delimited clauses, with five production-path controls green. J/F/S/C are integrated at `5763f8a`; live/provider/LangSmith/suite execution remains forbidden until scoped re-review and the consolidated offline gate. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -2449,3 +2449,37 @@ load-bearing candidate is Stream C's shared Critic evaluator behavior.
 - Next gate: push `f711f67`, obtain a fresh scoped Sol High re-review of this
   fix round, then run the consolidated offline gate. Live/provider/LangSmith/
   suite execution remains **NO-GO** until both gates are complete.
+
+### Stream C evaluator repair fix round 3 (2026-09-10)
+
+- Sol High's scoped review of `872610d..c9f31ee` confirmed that the full-theme
+  durability limitation was fixed, but found a new current-case Important
+  false negative: the sentence containing covered `compressive strength
+  standards` also contains an unrelated `outstanding question` marker for
+  durability. The prior sentence-level exemption therefore accepted the
+  spurious gap `The report does not cover compressive strength standards.`
+  Sol required a production-path control expected to remain `0.0` and a
+  below-sentence-granularity association; the review returned **NOT APPROVED**
+  with no Critical finding. A one-token future-theme sensitivity was recorded
+  as Minor and deferred.
+- The existing Stream C worker was reused again, aligned to `c9f31ee`; no new
+  worker fork or worktree was created. An initial focused run unexpectedly
+  passed because the worker detected stale editable-install import provenance;
+  it corrected the source binding before accepting the TDD checkpoint. The
+  valid RED was `1 failed, 4 passed, 52 deselected, 1 warning`, with the new
+  compressive-strength gap returning `1.0` instead of `0.0`.
+- The worker changed only `_no_spurious_gaps_passes` and its production-path
+  regression, splitting report sentences into comma/semicolon/colon-delimited
+  clauses before associating unresolved markers with matched theme tokens. The
+  canonical covered deployment, acknowledged field-record limitation,
+  commercial paraphrase, full-theme durability limitation, and new
+  compressive-strength controls are all green. Worker commit
+  `10acab33021ec5e0839b83aee6a7c6358475b806` was integrated as `5763f8a`.
+- Worker verification: five production-path controls `5 passed, 52
+  deselected, 1 warning`; focused Critic tests `93 passed, 1 warning`; relevant
+  evaluator tests `97 passed, 1 warning`; Ruff and `git diff --check` passed.
+  No frozen case data, live/provider/LangSmith/suite command, or
+  `.deepseek-runs/` staging occurred.
+- Next gate: push the documented `5763f8a` state, obtain a fresh scoped Sol
+  High re-review, then run the consolidated offline gate. Live/provider/
+  LangSmith/suite execution remains **NO-GO** until both gates are complete.

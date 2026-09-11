@@ -705,3 +705,37 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Gate: push `f711f67`, obtain a fresh scoped Sol High re-review of this fix
   round, then run the consolidated offline gate. Live/provider/LangSmith/
   suite execution remains **NO-GO** until both gates are complete.
+
+## 60. Stream C Evaluator Fix Round 3 — 2026-09-10
+
+- Sol High's scoped review of `872610d..c9f31ee` confirmed that the full-theme
+  durability limitation was fixed, but found a new current-case Important
+  false negative: the sentence containing covered `compressive strength
+  standards` also contains an unrelated `outstanding question` marker for
+  durability. The prior sentence-level exemption therefore accepted the
+  spurious gap `The report does not cover compressive strength standards.`
+  Sol required a production-path control expected to remain `0.0` and a
+  below-sentence-granularity association; the review returned **NOT APPROVED**
+  with no Critical finding. A one-token future-theme sensitivity was recorded
+  as Minor and deferred.
+- The existing Stream C worker was reused again, aligned to `c9f31ee`; no new
+  worker fork or worktree was created. An initial focused run unexpectedly
+  passed because the worker detected stale editable-install import provenance;
+  it corrected the source binding before accepting the TDD checkpoint. The
+  valid RED was `1 failed, 4 passed, 52 deselected, 1 warning`, with the new
+  compressive-strength gap returning `1.0` instead of `0.0`.
+- The worker changed only `_no_spurious_gaps_passes` and its production-path
+  regression, splitting report sentences into comma/semicolon/colon-delimited
+  clauses before associating unresolved markers with matched theme tokens. The
+  canonical covered deployment, acknowledged field-record limitation,
+  commercial paraphrase, full-theme durability limitation, and new
+  compressive-strength controls are all green. Worker commit
+  `10acab33021ec5e0839b83aee6a7c6358475b806` was integrated as `5763f8a`.
+- Worker verification: five production-path controls `5 passed, 52
+  deselected, 1 warning`; focused Critic tests `93 passed, 1 warning`; relevant
+  evaluator tests `97 passed, 1 warning`; Ruff and `git diff --check` passed.
+  No frozen case data, live/provider/LangSmith/suite command, or
+  `.deepseek-runs/` staging occurred.
+- Gate: push the documented `5763f8a` state, obtain a fresh scoped Sol High
+  re-review, then run the consolidated offline gate. Live/provider/LangSmith/
+  suite execution remains **NO-GO** until both gates are complete.
