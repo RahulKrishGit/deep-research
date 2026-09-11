@@ -42,6 +42,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker diagnosis complete; repair wave reviewed; serialized Critic evaluator repair next** | The user-authorized Fact Checker evidence remains target-contract green (`15/15` hard gates, deterministic `1.00`) with a scorable below-threshold judge and fallback `react_decision` `output_limit`; Sol's review supports no Fact Checker production or budget change. Source Evaluator remains target-green but judge-blocked. Do not start another live run until the evaluator repair and offline gate are complete. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
 | 21. Parallel evidence-driven repair wave | **Complete — Critic fix confirmed; judge/provider no-change; next live run paused** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; later Sol reviews found and corrected false positives for acknowledged durability language and sentence-level marker borrowing. Fix round 3 scopes unresolved evidence to comma/semicolon/colon-delimited clauses, with five production-path controls green. Sol High returned `PASS WITH FOLLOW-UP` for `c9f31ee..a08dbbd`, with no Critical or Important findings; the one-token-theme sensitivity remains deferred. J/F/S/C are integrated at `5763f8a`; the targeted offline gate is green. The post-fix Critic confirmation held `no_spurious_gaps=1.00` and all 14 gates; Sol classified `rationale_present=0.00` as the intentional Critic provider fallback and the judge failure as independent shared judge/provider instability. No target/evaluator repair, budget change, retry, or next-agent run is justified from this artifact. |
+| 22. Critic rationale-grounding characterization | **Complete — test-only; Sol High PASS; no live confirmation** | Parallel J-D/C-R/F-Q diagnosis found no repeatable judge/provider contract defect, confirmed normal Critic grounding `1.0` versus intentional provider fallback `0.0`, and found Fact Checker target-contract green with no independent deterministic defect. Commit `726cfe0` adds one production-shaped evaluator characterization test only. Focused `125` and full offline `2,006` tests passed; Ruff and diff checks passed. Sol High returned PASS for spec compliance and task quality with no findings. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -2589,7 +2590,7 @@ load-bearing candidate is Stream C's shared Critic evaluator behavior.
   `4096` cap, and treat the shared judge/provider boundary as the remaining
   campaign blocker.
 
-### Task 22: Characterize Critic Rationale Grounding — IN PROGRESS
+### Task 22: Characterize Critic Rationale Grounding — COMPLETE (TEST-ONLY; SOL HIGH PASS)
 
 This is an offline, test-only follow-up to the Critic live diagnosis. It must
 use the registered `critic-live-review` metric path and a production-shaped
@@ -2612,3 +2613,23 @@ artifact in `state_update["critique"]`.
 - After implementation, synchronize the branch and obtain a scoped Sol High
   task review. A paid/live confirmation remains disallowed unless a separate
   typed production defect is discovered and repaired.
+
+Task 22 outcome:
+
+- The parallel offline judge audit found mixed typed `$`/`rationale` schema
+  diagnostics but no deterministic contract mismatch; its disposition is
+  judge/provider `NO-CHANGE`. The parallel Critic/Fact Checker characterization
+  confirmed normal grounded Critic rationale `1.0`, provider fallback rationale
+  `0.0`, all fallback controls `1.0`, and Fact Checker target-side gates and
+  deterministic quality `1.0` with no independent defect.
+- Commit `726cfe0100640ddb66f74bb4d2c139977bf85977` changes only
+  `tests/test_evaluation/test_cases_critic.py`. The new test uses flat Critique
+  fields in `TargetOutput.result`, `state_update["critique"]`, the registered
+  `critic-live-review` metrics, the real `fallback_critique()` helper, and the
+  typed `critic_report_review` diagnostic.
+- Verification: focused Critic/evaluator suite `125 passed`; full offline suite
+  `2,006 passed, 1 deselected`; Ruff and `git diff --check` passed. Existing
+  dependency deprecation warnings remain unchanged.
+- Scoped Sol High review of `1aef4e1..726cfe0`: spec compliance `PASS`, task
+  quality `PASS`, Critical/Important/Minor findings `None`. No production fix,
+  judge/provider change, or paid/live confirmation is justified by this task.

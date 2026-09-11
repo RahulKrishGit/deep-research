@@ -844,3 +844,43 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   from this artifact alone. Preserve the live artifact, keep the global
   `4096` cap, and treat the shared judge/provider boundary as the remaining
   campaign blocker.
+
+## 65. Parallel Offline Follow-Up and Task 22 — 2026-09-10
+
+- After the Critic live diagnosis, Sol High approved three independent offline
+  streams: a typed judge/provider audit, a Critic rationale characterization,
+  and a Fact Checker quality diagnosis. No stream inspected credentials or raw
+  provider responses, launched live/provider/LangSmith/suite commands, changed
+  production behavior, or modified the frozen evaluation contract.
+- The judge audit at branch HEAD `7449606` grouped the safe diagnostics as
+  mixed `schema_output` `extra_forbidden` at `$` and `string_bounds` at
+  `rationale` across agents and attempts. The existing offline judge/provider
+  tests passed (`19` judge tests and `103` provider tests), and no repeatable
+  current-code contract defect was identified. Required evidence for any
+  future judge/provider change remains a same-SHA typed reproduction or
+  deterministic offline RED that names the exact contract mismatch. No judge
+  schema, repair-count, prompt, retry, or token-budget change was made.
+- The Critic/Fact Checker characterization passed its focused offline suite
+  (`204 passed`). It confirmed the existing contract: normal report-grounded
+  Critic rationale scores `rationale_present=1.0`; the intentional
+  `provider_unavailable` fallback scores `rationale_present=0.0`; fallback
+  `score_bounded`, `route_consistent`, and `no_spurious_gaps` remain `1.0`.
+  Fact Checker remains target-contract green (`15/15`, deterministic `1.00`);
+  its `react_decision` `output_limit` is fallback evidence, not target-budget
+  authorization. No production or evaluator change was justified.
+- Task 22 added one evaluator-level characterization test in
+  `tests/test_evaluation/test_cases_critic.py`, using the registered
+  `critic-live-review` metrics, flat Critique fields in `TargetOutput.result`,
+  `state_update["critique"]`, the real `fallback_critique()` helper, and the
+  typed `critic_report_review` diagnostic. The test passed with the expected
+  `1.0/0.0` rationale distinction and all three fallback controls at `1.0`.
+- Implementation commit: `726cfe0100640ddb66f74bb4d2c139977bf85977`, pushed to
+  `origin/codex/cross-agent-planner-fix-parity`. Full verification passed:
+  `125` focused tests, `2,006` offline tests with one deselection, Ruff, and
+  `git diff --check`. Only the pre-existing ignored `.deepseek-runs/` remains
+  untracked.
+- Sol High scoped review of `1aef4e1..726cfe0`: spec compliance `PASS`, task
+  quality `PASS`, no Critical/Important/Minor findings. Task 22 is complete.
+  This characterization creates no reason for a paid confirmation; the judge
+  boundary remains `NO-CHANGE` and the next live state remains `NO-GO` until a
+  separate typed production defect is reproduced, repaired, and reviewed.
