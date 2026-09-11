@@ -2014,10 +2014,36 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
         "to",
         "with",
     }
+
+    def meaningful_tokens(value: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", value.casefold())) - stop_words
+
     theme_tokens = [
-        set(re.findall(r"[a-z0-9]+", theme.casefold())) - stop_words
+        meaningful_tokens(theme)
         for theme in themes
     ]
+    report = " ".join((case.state.report or "").split()).casefold()
+    report_sentences = re.split(r"(?<=[.!?])\s+", report)
+    unresolved_markers = (
+        "absence of",
+        "do not yet exist",
+        "insufficient",
+        "main uncertainty",
+        "not yet",
+        "outstanding question",
+        "still accumulating",
+        "uncertain",
+        "uncertainty",
+        "unresolved",
+    )
+
+    def report_acknowledges_unresolved(tokens: set[str]) -> bool:
+        return any(
+            tokens <= meaningful_tokens(sentence)
+            and any(marker in sentence for marker in unresolved_markers)
+            for sentence in report_sentences
+        )
+
     critique = _artifact(output, "critique")
     gaps = _field(critique, "gaps")
     if not isinstance(gaps, list):
@@ -2025,8 +2051,13 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
     for gap in gaps:
         if not isinstance(gap, str):
             continue
-        gap_tokens = set(re.findall(r"[a-z0-9]+", gap.casefold())) - stop_words
-        if any(tokens and tokens <= gap_tokens for tokens in theme_tokens):
+        gap_tokens = meaningful_tokens(gap)
+        if any(
+            tokens
+            and tokens <= gap_tokens
+            and not report_acknowledges_unresolved(tokens)
+            for tokens in theme_tokens
+        ):
             return False
     return True
 
