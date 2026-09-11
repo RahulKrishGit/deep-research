@@ -96,6 +96,7 @@ from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import (
     ProviderConfigurationError,
     build_chat_provider,
+    build_judge_provider,
     embedding_capability_for,
     resolve_request_settings,
 )
@@ -1535,7 +1536,7 @@ async def run_suite_evaluation(
                 tracker,
                 api_key=chat_key,
             )
-            judge_provider = build_chat_provider(
+            judge_provider = build_judge_provider(
                 judge_llm_config(runtime, settings.llm),
                 tracker,
                 api_key=chat_key,

@@ -6,6 +6,7 @@ import io
 
 import pytest  # noqa: F401 - available for tests that grow a pytest.raises
 
+from deep_research.evaluation import cli as cli_module
 from deep_research.evaluation.cli import (
     EXIT_FAILED,
     EXIT_INFRASTRUCTURE,
@@ -86,6 +87,38 @@ def test_non_focused_selection_leaves_dataset_name_path_untouched(
     runtime = runtime_config_for("planner")
 
     assert _focused_dataset_examples(None, runtime, [planner_case]) is None
+
+
+def test_cli_builds_target_and_judge_through_distinct_factories(
+    settings, runtime_config_for, monkeypatch
+) -> None:
+    target_builds: list[str] = []
+    judge_builds: list[str] = []
+    target_provider = object()
+    judge_provider = object()
+
+    def fake_chat_provider(config, tracker, *, api_key=None):
+        target_builds.append(config.model)
+        return target_provider
+
+    def fake_judge_provider(config, tracker, *, api_key=None):
+        judge_builds.append(config.model)
+        return judge_provider
+
+    monkeypatch.setattr(
+        cli_module, "build_chat_provider", fake_chat_provider
+    )
+    monkeypatch.setattr(
+        cli_module, "build_judge_provider", fake_judge_provider
+    )
+
+    providers = cli_module._build_pipeline_providers(
+        settings, runtime_config_for("planner"), object(), chat_key=None
+    )
+
+    assert providers == (target_provider, judge_provider)
+    assert len(target_builds) == 1
+    assert len(judge_builds) == 1
 
 
 # --- parsing ---------------------------------------------------------------

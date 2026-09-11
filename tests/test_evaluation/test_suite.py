@@ -6,9 +6,11 @@ import json
 
 import pytest
 
+from deep_research.evaluation import runner as runner_module
 from deep_research.evaluation.models import AGENT_NAMES, SuiteResult
 from deep_research.evaluation.reporting import render_suite, write_suite_artifact
 from deep_research.evaluation.runner import run_suite_evaluation
+from tests.evaluation_fakes import FakeStructuredProvider
 
 
 @pytest.mark.asyncio
@@ -133,6 +135,39 @@ async def test_each_agent_still_writes_its_own_results_artifact(
         "source-evaluator",
         "synthesizer",
     ]
+
+
+@pytest.mark.asyncio
+async def test_suite_builds_target_and_judge_through_distinct_factories(
+    settings, tmp_path, suite_harness, monkeypatch
+) -> None:
+    target_builds: list[str] = []
+    judge_builds: list[str] = []
+    target_provider = FakeStructuredProvider()
+    judge_provider = FakeStructuredProvider()
+
+    def fake_chat_provider(config, tracker, *, api_key=None):
+        target_builds.append(config.model)
+        return target_provider
+
+    def fake_judge_provider(config, tracker, *, api_key=None):
+        judge_builds.append(config.model)
+        return judge_provider
+
+    monkeypatch.setattr(
+        runner_module, "build_chat_provider", fake_chat_provider
+    )
+    monkeypatch.setattr(
+        runner_module, "build_judge_provider", fake_judge_provider
+    )
+
+    await run_suite_evaluation(settings, **suite_harness.kwargs(tmp_path))
+
+    assert len(target_builds) == len(AGENT_NAMES)
+    assert len(judge_builds) == len(AGENT_NAMES)
+    assert target_provider.calls == []
+    assert judge_provider.calls == []
+    assert suite_harness.runner.rows == []
 
 
 def test_the_suite_summary_lists_every_agent_and_its_status(
