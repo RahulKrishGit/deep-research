@@ -1189,3 +1189,41 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Sequence disposition: Fact Checker remains deferred until this no-change
   ruling is recorded. It is the next sequential candidate after the ruling,
   but its live command still requires a separate explicit authorization.
+
+## 74. Authorized Fact Checker Canary — JUDGE SCHEMA FAILURE; STOP FOR DIAGNOSIS
+
+- Authorization and scope: the user authorized one Fact Checker live
+  repetition after the Critic no-change ruling. Exactly one command ran;
+  there was no retry, parallel run, second agent, suite, prompt change, budget
+  change, or provider change.
+- Candidate provenance: `a503a7bca8203f5539c9cc0cb61117f741698bf0`. The tracked
+  and index tree was clean before the run; the safe artifact metadata's
+  `git_dirty=true` reflects only the preserved, uninspected `.deepseek-runs/`
+  runtime directory.
+- Frozen configuration: target and judge `deepseek-v4-flash`; Fact Checker
+  target effort `max`; judge effort `max`; one live repetition; concurrency
+  `1`; `llm.max_tokens=4096`; Planner final cap `4096`; retry count `5` with
+  `1.0` initial and `16.0` maximum delay; native judge transport
+  `deepseek_responses_json_schema_v1`.
+- Target result: runner completed one case/repetition with all `15/15` target
+  hard gates passed, deterministic quality `1.00`, zero prohibited calls, and
+  no compact target errors. The fallback projection is typed
+  `{kind=output_limit, operation=react_decision}` with ReAct stop reason
+  `provider_error`; this is fallback telemetry, not a top-level target
+  failure. It is not evidence for a target budget increase.
+- Judge result: runner exit `3`, status `INFRASTRUCTURE FAILURE`,
+  `judge.status=judge_not_run`, `judge.not_run_reason=judge_schema_failure`,
+  and `judge_quality=null`/`aggregate_quality=null`. Typed judge diagnostics
+  were `schema_output` at field `rationale` on attempts `1` and `2`. The judge
+  prompt fingerprint remained `93edb1729cbb`; native-schema judge
+  configuration remained `924caf47aa0d`; no target-side output-limit evidence
+  was created by the judge transport.
+- Immutable evidence: `output/evaluations/fact-checker/cross-agent-planner-fix-parity-judge-native-schema-fact-checker-canary-a503a7b-fact-checker-live-20260911T193525Z-a503a7b/results.json`; SHA-256
+  `53D77D8D3722DAD4F5F203F69E986D9C1C23D83DC404C791A0A0FFD67F38A20`.
+  LangSmith experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/73585ecd-8099-4d44-8bec-e20dbd126b67`.
+- Disposition: stop after this repetition. The judge failure is independent
+  of Fact Checker target quality and requires typed diagnosis before any
+  quality conclusion or repair. Do not retry, increase tokens, or run another
+  agent. Consult Sol High in the existing browser conversation and preserve
+  the exact `rationale` field paths and attempts.
