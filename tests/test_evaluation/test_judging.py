@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from deep_research.evaluation.judging import (
@@ -18,8 +21,9 @@ from deep_research.evaluation.models import (
     JudgeScores,
     JudgeVerdict,
 )
-from deep_research.observability import TokenUsage
+from deep_research.observability import LangSmithRuntimeConfig, TokenUsage, Tracker
 from deep_research.providers import (
+    DeepSeekJudgeProvider,
     OpenAIProviderError,
     ProviderOutputLimitError,
     ProviderResponseError,
@@ -28,7 +32,79 @@ from deep_research.providers import (
     StructuredOutputError,
     StructuredValidationDiagnostic,
 )
+from deep_research.utils.config import LLMConfig
 from tests.evaluation_fakes import FakeStructuredProvider
+
+
+class _RecordingResponses:
+    def __init__(self, *outcomes: object) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, object]] = []
+
+    async def create(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class _FakeDeepSeekClient:
+    def __init__(self, responses: _RecordingResponses) -> None:
+        self.responses = responses
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(calls=[]),
+        )
+
+
+def _responses_response(
+    *,
+    output_text: object,
+    status: str = "completed",
+    incomplete_reason: str | None = None,
+    input_tokens: int = 8,
+    output_tokens: int = 3,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="deepseek-response",
+        status=status,
+        incomplete_details=(
+            None
+            if incomplete_reason is None
+            else SimpleNamespace(reason=incomplete_reason)
+        ),
+        output_text=output_text,
+        model="deepseek-v4-flash",
+        usage=SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+        ),
+    )
+
+
+def _deepseek_judge_config() -> LLMConfig:
+    return LLMConfig.model_validate(
+        {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking_mode": "enabled",
+            "reasoning_effort": "high",
+        }
+    )
+
+
+def _offline_deepseek_judge_provider(
+    responses: _RecordingResponses,
+) -> tuple[DeepSeekJudgeProvider, _FakeDeepSeekClient, Tracker]:
+    client = _FakeDeepSeekClient(responses)
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    provider = DeepSeekJudgeProvider(
+        _deepseek_judge_config(),
+        tracker,
+        client=client,
+    )
+    return provider, client, tracker
 
 
 def test_the_common_weights_match_the_approved_table() -> None:
@@ -179,6 +255,132 @@ async def test_a_successful_judge_produces_scored_feedback(
     # The judge call never carries the planner-final budget: only the final
     # ResearchPlanDraft request may use the operation-specific value.
     assert provider.budgets == [None]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_adapter_produces_scored_feedback(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    verdict = JudgeVerdict(
+        scores=JudgeScores(
+            role_adherence=1.0,
+            completeness=0.5,
+            groundedness=0.75,
+            reasoning_quality=0.25,
+            usefulness=0.9,
+            uncertainty_calibration=0.1,
+        ),
+        agent_specific={"decomposition_quality": 0.8},
+        rationale="Grounded judge rationale.",
+    )
+    responses = _RecordingResponses(
+        _responses_response(output_text=verdict.model_dump_json())
+    )
+    provider, client, tracker = _offline_deepseek_judge_provider(responses)
+
+    async with tracker.session_span("session-1", "judge integration"):
+        feedback = await run_judge(
+            provider,
+            clean_target_output,
+            planner_case,
+            clean_gate_report,
+            runtime=runtime_config_for("planner"),
+            secrets=(),
+        )
+
+    assert feedback.status == "scored"
+    assert feedback.judge_quality == pytest.approx(judge_quality(verdict.scores))
+    assert feedback.verdict == verdict
+    assert feedback.diagnostics == ()
+    assert len(responses.calls) == 1
+    assert client.chat.completions.calls == []
+    assert feedback.prompt_fingerprint == judge_prompt_fingerprint(
+        rubric_version=1
+    )
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_adapter_schema_failures_stay_typed(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    verdict = JudgeVerdict(
+        scores=JudgeScores(**{name: 0.6 for name in COMMON_DIMENSION_WEIGHTS}),
+        agent_specific={},
+        rationale="A valid baseline rationale.",
+    )
+    first_payload = {
+        **verdict.model_dump(mode="json"),
+        "unexpected": "first-invalid-response",
+    }
+    second_payload = {
+        **verdict.model_dump(mode="json"),
+        "rationale": "",
+    }
+    responses = _RecordingResponses(
+        _responses_response(output_text=json.dumps(first_payload)),
+        _responses_response(output_text=json.dumps(second_payload)),
+    )
+    provider, client, tracker = _offline_deepseek_judge_provider(responses)
+
+    async with tracker.session_span("session-1", "judge integration"):
+        feedback = await run_judge(
+            provider,
+            clean_target_output,
+            planner_case,
+            clean_gate_report,
+            runtime=runtime_config_for("planner"),
+            secrets=(),
+        )
+
+    assert feedback.status == "judge_not_run"
+    assert feedback.not_run_reason == "judge_schema_failure"
+    assert feedback.judge_quality is None
+    assert feedback.verdict is None
+    assert len(feedback.diagnostics) == 2
+    assert [item.attempt for item in feedback.diagnostics] == [1, 2]
+    assert all(item.kind == "schema_output" for item in feedback.diagnostics)
+    assert all(
+        len(path) <= 128
+        for item in feedback.diagnostics
+        for path in item.field_paths
+    )
+    assert len(responses.calls) == 2
+    assert client.chat.completions.calls == []
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_adapter_output_limit_stays_typed(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    responses = _RecordingResponses(
+        _responses_response(
+            output_text="partial",
+            status="incomplete",
+            incomplete_reason="max_output_tokens",
+            output_tokens=4096,
+        )
+    )
+    provider, client, tracker = _offline_deepseek_judge_provider(responses)
+
+    async with tracker.session_span("session-1", "judge integration"):
+        feedback = await run_judge(
+            provider,
+            clean_target_output,
+            planner_case,
+            clean_gate_report,
+            runtime=runtime_config_for("planner"),
+            secrets=(),
+        )
+
+    assert feedback.status == "judge_not_run"
+    assert feedback.not_run_reason == "judge_output_limit"
+    assert feedback.judge_quality is None
+    assert feedback.diagnostics == (
+        EvaluatorDiagnostic(kind="output_limit", attempt=1),
+    )
+    assert all(item.kind != "schema_output" for item in feedback.diagnostics)
+    assert len(responses.calls) == 1
+    assert client.chat.completions.calls == []
 
 
 @pytest.mark.asyncio
