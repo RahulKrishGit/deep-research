@@ -393,3 +393,31 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Root cause: the v2 case identity caused the existing remote v1 dataset example to enter `synchronize_dataset`'s update path. The real LangSmith `Client.update_examples` contract requires each `ExampleUpdate` payload to include the existing example `id`, but the implementation forwarded `example_payload(case)` without that field. The permissive offline fake recorded the update without validating the ID, so the existing dataset-version test did not expose the production contract.
 - Classification: evaluation-harness/LangSmith dataset synchronization integration defect, not Source Evaluator quality evidence and not target-side output-limit evidence. The case v2 repair, production scoring, gates, thresholds, weights, budgets, provider/fallback behavior, and global `llm.max_tokens == 4096` remain unchanged.
 - Required TDD fix: add a strict fake-driven regression for the remote-example ID in update payloads, verify RED against the current implementation, add the smallest dataset-sync repair, run the focused/full offline evaluation gate and lint, then obtain a fresh scoped Sol High review. Preserve all v1 artifacts and do not retry the paid v2 command until the review is clean.
+
+## 50. Sol High Fix Round 1 Re-review — Dataset Identity Still Missing
+
+- Review surface: existing Sol High browser conversation, remote branch
+  `codex/cross-agent-planner-fix-parity`, exact range `82a951c..c9b7062`.
+- Verdict: `NOT READY`; the single Source Evaluator v2 paid confirmation remains
+  paused. Fix Round 1 closes the missing existing-example-ID layer, but the
+  real LangSmith update contract also requires dataset identity when
+  structured `updates` are supplied.
+- Verified detail: the installed `Client.update_examples` signature accepts
+  `dataset_name`/`dataset_id` and `updates`. The current production call sends
+  only `updates=to_update`; the update objects include the remote example `id`
+  but not `dataset_id`. The SDK can therefore reject the call locally before
+  any target or judge execution.
+- Classification: evaluation-harness/LangSmith dataset synchronization
+  integration defect, not Source Evaluator quality evidence and not target-side
+  output-limit evidence. No agent, prompt, scoring, gate, threshold, weight,
+  budget, provider, fallback, case, or global `llm.max_tokens == 4096` change is
+  justified.
+- Fix Round 2 requirement: add a RED dataset-identity regression, make the
+  strict fake validate the existing dataset ID in addition to the existing
+  example ID, pass `dataset_id=dataset.id` (or an equivalent contract-preserving
+  identity) in the smallest production change, run the focused/neighboring and
+  source-first offline gates plus Ruff and diff check, commit/push, and obtain
+  a fresh scoped Sol High review.
+- Evidence preserved: the original preflight failure, Fix Round 1 commit
+  `c9b7062`, its offline counts, and all v1/v2 artifacts remain immutable. No
+  paid retry or later-agent run is authorized until Fix Round 2 is reviewed.

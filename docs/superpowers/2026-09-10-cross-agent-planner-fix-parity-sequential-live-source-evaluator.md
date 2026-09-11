@@ -136,3 +136,31 @@ add the smallest implementation change, run the offline dataset/evaluation
 gate, obtain a fresh scoped Sol High review, and push. No paid retry is
 authorized until that fix is reviewed. The v2 case repair and all production
 agent/scoring/budget/provider invariants remain unchanged.
+
+## Sol High scoped re-review of Fix Round 1 — NOT READY
+
+- Review surface: existing Sol High browser conversation, remote branch
+  `codex/cross-agent-planner-fix-parity`, exact range `82a951c..c9b7062`.
+- Verdict: `NOT READY`; no live retry is authorized. Fix Round 1 correctly
+  preserves the existing remote example ID in each version-update payload and
+  strengthens the fake-driven regression, but the production LangSmith call
+  still invokes `client.update_examples(updates=to_update)` without dataset
+  identity.
+- Verified contract: the installed `Client.update_examples` API accepts
+  `dataset_name` or `dataset_id` alongside `updates`; when structured updates
+  are supplied, it requires dataset identity either as an explicit argument or
+  on the update objects. The current update payload carries `id` but not
+  `dataset_id`, so the call can fail before any target or judge model call.
+- Classification: evaluation-harness/LangSmith dataset synchronization
+  integration defect. This is not Source Evaluator quality evidence, target
+  output-limit evidence, or a reason to change the agent, prompt, scoring,
+  thresholds, weights, budgets, provider, fallback semantics, or global 4096
+  cap.
+- Required Fix Round 2: add a RED regression for dataset identity, make the
+  strict fake validate the existing dataset ID as well as the remote example
+  ID, pass the smallest production fix, run the offline gate and lint, append
+  the error/fix evidence, push, and obtain another scoped Sol High review.
+- The prior offline counts (`14`, `104`, and `1,994`), Ruff result, and
+  `git diff --check` remain valid evidence for Fix Round 1 but do not close
+  this SDK boundary. The v2 case repair and all prior failed artifacts remain
+  immutable. The single paid v2 confirmation stays paused.

@@ -39,7 +39,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **Paused — Source Evaluator v2 reviewed; focused confirmation authorized** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. The Source Evaluator v1 live case mismatch is documented, and the v2 case-only repair passed scoped review. Production readiness remains pending the single authorized v2 confirmation and its full acceptance contract. Fact Checker evidence is preserved and the sequence remains paused until that confirmation is clean. |
+| 19. Sequential live-agent diagnosis and repair loop | **Paused — Source Evaluator v2 dataset-sync repair incomplete; confirmation paused** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. The v1 live-case mismatch and the v2 dataset-sync preflight blocker are documented. Fix Round 1 preserved the remote example ID, but Sol High found that the real SDK call also requires dataset identity; production readiness remains pending the reviewed fix and one clean v2 confirmation. Fact Checker evidence is preserved and the sequence remains paused. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
@@ -2195,3 +2195,33 @@ Before execution, the controller must confirm:
 - Every tracked task ends with a test/review/commit boundary appropriate for a fresh subagent.
 - The permanent fix log is part of completion, so future agents do not have to reconstruct this campaign from chat history.
 - Final Task 15 offline verification is rerun after Task 9 and any later tracked repair; the current whole-branch review is complete, with only non-blocking follow-up evidence work remaining.
+
+### Task 19A Fix Round 2 — Dataset Identity in Version Updates
+
+Sol High's scoped re-review of Fix Round 1 at remote `c9b7062` found that the
+dataset synchronization contract is still incomplete. The installed LangSmith
+client accepts `update_examples(dataset_name=..., dataset_id=..., updates=...)`
+and, when `updates` is supplied, requires dataset identity either as an explicit
+argument or on the update objects. The current production call supplies only
+`updates=to_update`; the update objects now carry the remote example `id` but not
+`dataset_id`. This can fail locally before any target or judge model call.
+
+The next bounded TDD repair must:
+
+- add a RED regression proving the version-update call carries the existing
+  dataset identity;
+- update the strict fake to accept and validate `dataset_id` against the
+  existing dataset, while retaining the existing example-ID validation;
+- make the smallest production change, preferably passing `dataset_id=dataset.id`
+  to `client.update_examples`;
+- preserve create/reuse/version-selection behavior, no-deletion behavior,
+  payload secret scanning, and all Source Evaluator/case/scoring/gate/threshold/
+  weight/budget/provider/fallback/4096-cap invariants;
+- run the focused RED/GREEN dataset tests, neighboring dataset/evaluation tests,
+  the source-first offline gate, Ruff, and `git diff --check`;
+- commit and push, obtain another scoped Sol High review, and only then
+  reconsider exactly one Source Evaluator v2 live confirmation.
+
+No paid retry, other agent run, suite run, retry policy change, prompt tuning,
+threshold/rubric/weight change, or token-budget change is authorized by this
+repair. The failed preflight and Fix Round 1 remain immutable evidence.
