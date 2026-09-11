@@ -1062,3 +1062,39 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Disposition: Source Evaluator passes this one-repetition judge-transport
   canary with no target repair indicated. Stop before Synthesizer; its paid
   command requires a separate immediate authorization under the campaign gate.
+
+## 71. Authorized Synthesizer Judge-Transport Canary — PASS; STOP BEFORE CRITIC
+
+- Authorization and scope: the user authorized exactly one Synthesizer paid
+  live command. One live repetition ran sequentially after Source Evaluator;
+  no retry, parallel run, second agent, suite, prompt change, budget change,
+  or provider change ran.
+- Candidate provenance: `e1b8ae5baa3cfd13cdb11448dd2e74eb7b661b7c`. The tracked
+  and index tree was clean before the run; the safe artifact metadata's
+  `git_dirty=true` reflects only the preserved, uninspected `.deepseek-runs/`
+  runtime directory.
+- Frozen configuration: target and judge `deepseek-v4-flash`; Synthesizer
+  target effort `max`; judge effort `max`; one live repetition; concurrency
+  `1`; `llm.max_tokens=4096`; Planner final cap `4096`; retry count `5` with
+  `1.0` initial and `16.0` maximum delay; native judge transport
+  `deepseek_responses_json_schema_v1`.
+- Result: runner exit `0`, status `REVIEW REQUIRED`, one case and one
+  repetition completed. All `15/15` target gates passed; deterministic quality
+  was `0.75`; judge quality was `0.84`; aggregate quality was `0.804`;
+  prohibited-call count was `0`; target errors and fallback provider
+  diagnostics were empty. The deterministic metric map recorded
+  `coverage=0.0`, `citations_known=1.0`, `limitations_present=1.0`,
+  `persistence_truthful=1.0`, and `report_present=1.0`; this is recorded as
+  evidence and does not by itself justify a production repair.
+- Judge acceptance: `judge.status=scored`, `judge.not_run_reason=null`, and
+  `judge.diagnostics=[]`. The validated judge prompt fingerprint was
+  `93edb1729cbb`; the native-schema judge configuration fingerprint was
+  `924caf47aa0d`. No target-side typed `output_limit` evidence appeared.
+- Immutable evidence: `output/evaluations/synthesizer/cross-agent-planner-fix-parity-judge-native-schema-synthesizer-canary-e1b8ae5-synthesizer-live-20260911T191351Z-e1b8ae5/results.json`; SHA-256
+  `D9C01DE6A6F5B91771FED39F710EEAF674D7BF885DC4694C267FC27239821516`.
+  LangSmith experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/166d9a5a-6503-49cf-9751-e23ef0b1d6b9`.
+- Disposition: Synthesizer passes this one-repetition judge-transport canary;
+  no target repair is opened from this evidence alone. Stop before Critic; its
+  paid command requires a separate immediate authorization under the campaign
+  gate.
