@@ -40,7 +40,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
 | 19. Sequential live-agent diagnosis and repair loop | **In progress — user-authorized** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. Researcher evidence is recorded; its confirmation is blocked on Task 20. |
-| 20. Researcher live provenance repair | **Fix round 2 required — Sol High re-reviewed** | The bounded completeness repair is accepted, but raw source validation must occur before normalization to close malformed path whitespace and valid bracketed IPv6 edge cases. Preserve the Researcher agent, prompt, cases, budgets, thresholds, and judge boundary. |
+| 20. Researcher live provenance repair | **Implemented — fix round 2 review pending** | Raw source validation now occurs before normalization, closing malformed path/query whitespace and valid bracketed IPv6 edge cases. The exact fix range must receive a clean Sol High browser re-review before the focused Researcher confirmation. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -1791,7 +1791,7 @@ before any budget amendment. The first Researcher repetition and Sol High
 review are recorded in the tracked sequential-live Researcher report and fix
 log; Task 20 is the current repair task.
 
-### Task 20: Repair Researcher Live Retrieval Provenance — IMPLEMENTED, FIX ROUND 2 REQUIRED
+### Task 20: Repair Researcher Live Retrieval Provenance — IMPLEMENTED, FIX ROUND 2 REVIEW PENDING
 
 **Sol High diagnosis:** the Researcher live failure is not yet a confirmed
 Researcher prompt or agent defect. Successful tool results retain up to the
@@ -1915,6 +1915,18 @@ positive bracketed-IPv6 and negative path/query-whitespace regressions, keep
 the overflow/completeness and raw-URL-free contracts unchanged, run offline
 verification, and obtain a fresh scoped Sol High browser re-review before the
 focused Researcher live confirmation. No live confirmation has started.
+
+Fix round 2 is implemented and committed at `c117bf2` on top of
+`45ff39a`/`0140769`. The recorder now validates raw candidates before calling
+the shared normalizer, rejects literal whitespace/control characters across
+the candidate, and preserves valid bracketed IPv6 identities for normalized
+hashing. The implementation report records the intended RED failure, final
+GREEN result, focused evaluation verification (`180 passed`), full offline
+pytest (`1,992 passed, 1 deselected, 2 warnings`), Ruff, and
+`git diff --check`; no live/provider command ran. A fresh task-scoped Sol High
+browser re-review of this fix range is the next gate. The deferred live
+non-Researcher wrapper regression remains parked and does not block this
+fix-round review unless a semantic scope defect is found.
 
 ---
 
