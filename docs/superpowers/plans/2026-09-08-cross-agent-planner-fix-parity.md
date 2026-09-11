@@ -1791,7 +1791,7 @@ before any budget amendment. The first Researcher repetition and Sol High
 review are recorded in the tracked sequential-live Researcher report and fix
 log; Task 20 is the current repair task.
 
-### Task 20: Repair Researcher Live Retrieval Provenance — IMPLEMENTED, REVIEW PENDING
+### Task 20: Repair Researcher Live Retrieval Provenance — IMPLEMENTED, FIX ROUND 1 REQUIRED
 
 **Sol High diagnosis:** the Researcher live failure is not yet a confirmed
 Researcher prompt or agent defect. Successful tool results retain up to the
@@ -1862,10 +1862,34 @@ exact approved scope locally rather than launching a duplicate worker.
 
 Verification: focused Task 20 tests `5 passed`; full offline pytest with
 `-p no:cacheprovider` `1,985 passed, 1 deselected, 2 warnings`; Ruff and
-`git diff --check` passed. The next action is a Luna-max task-scoped review,
-followed by exactly one focused Researcher live confirmation if the review
-is clean. The Luna-max task-review dispatch was closed after its extended
-bounded wait returned no result; no live confirmation has started.
+`git diff --check` passed. The Luna-max task-review dispatch was closed after
+its extended bounded wait returned no result. A task-scoped Sol High browser
+review of the pushed `ac37cf7` candidate then returned `NOT READY` with two
+Important Task-20-local findings and one deferred Minor:
+
+1. `DependencyRecorder.record_source_url_payload()` fingerprints every string
+   in an authoritative URL field, including malformed/non-HTTP(S) values.
+   Fingerprints must be admitted only for valid absolute `http`/`https` URLs
+   with a host, with regression coverage for malformed search, scraper, and
+   remote document identities.
+2. The bounded 128-entry fingerprint list can silently truncate a legitimate
+   source because the existing `web_search.max_results` request is only
+     validated as positive and is not proven exhaustive by the repository.
+   Add bounded typed overflow/completeness telemetry (preferred, without
+   changing the frozen search behavior) so a truncated set is explicit and a
+   missing fingerprint is not reported as source invention, or prove a finite
+   upstream bound that makes the existing cap exhaustive. Add the corresponding
+   evaluator and artifact regressions.
+3. Deferred Minor: add a live non-Researcher regression proving the
+   Researcher-only wrapper guard leaves other live agents fingerprint-blind.
+
+Task 20 fix round 1 must address both Important findings with TDD, preserve
+the existing raw-URL-free artifact boundary, keep the `DependencyLedger`
+backward-compatible for old payloads, and leave Researcher code/prompts,
+search behavior, budgets, cases, config, judge/provider code, gates' intended
+known-source semantics, and the global `4096` cap unchanged. The fix round
+must be reviewed before the single focused Researcher live confirmation; no
+live confirmation has started.
 
 ---
 
