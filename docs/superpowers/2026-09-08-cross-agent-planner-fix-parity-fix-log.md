@@ -565,3 +565,39 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   the coordinator will integrate approved commits, run one consolidated
   offline gate, obtain a fresh scoped Sol High review, and only then consider
   one live confirmation per affected agent.
+
+## 56. Parallel Repair Wave Results — 2026-09-10
+
+- The four streams completed from coordinator base `69803d9` without live,
+  provider, LangSmith, or suite commands.
+- Stream J implemented the approved shared DeepSeek structured-output repair
+  and its TDD coverage. The worker commit was `05a6bb7`; it is integrated on
+  this branch as `b1cfb91`. Scoped verification recorded 122 passing tests,
+  Ruff success, and a clean diff check. The global `4096` token cap,
+  `extra="forbid"`, one structured repair, and no-score judge failure
+  semantics remain unchanged.
+- Stream F added a Fact Checker ReAct-fallback characterization test. Its
+  worker commit `255c409` is integrated as `3f0931d`. The typed live evidence
+  remains target-contract green (`15/15`, deterministic `1.00`); the
+  `react_decision` `output_limit` is fallback evidence, not target-side
+  output-limit evidence. No production or budget change is justified.
+- Stream S added a Synthesizer coverage-input characterization test. Its
+  worker commit `310d8c9` is integrated as `a70c817`. The test confirms all
+  required live topics reach the model input, so the typed `coverage=0.0`
+  result does not establish a target input defect. No production or evaluator
+  change is justified.
+- Stream C identified the exact typed metric `no_spurious_gaps=0.0`. The
+  covered-evidence control returned `0.0` as expected; the expressly
+  acknowledged unresolved-limitation control returned `0.0` instead of the
+  expected `1.0`. This is a shared evaluator defect candidate caused by
+  keyword-overlap rejection of a genuine actionable limitation. The worker
+  did not edit `evaluators.py`; its intentional RED test remains diagnostic
+  and is not integrated until the evaluator repair is separately reviewed.
+- A worker-context issue was corrected during Stream C recovery: fresh
+  worktrees contain tracked plans but not ignored live `results.json` files.
+  The coordinator supplied the verified typed metric and exact repository
+  paths; no live artifact or secret was copied into the branch.
+- Next gate: perform the scoped Sol High review of the integrated J/F/S
+  changes and C's evaluator finding, then implement only the approved shared
+  evaluator repair, rerun the offline gate, and defer live confirmation until
+  the resulting evidence is interpretable.
