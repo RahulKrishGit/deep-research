@@ -602,6 +602,7 @@ AGENT_GATE_IDS: dict[AgentName, tuple[str, ...]] = {
         "bounded_component_scores",
         "critique_actionable",
         "route_consistent",
+        "review_produced",
     ),
 }
 
@@ -1399,6 +1400,39 @@ def _gate_route_consistent(
     )
 
 
+def _review_produced_passes(output: TargetOutput) -> bool:
+    """A report review that fell back to the provider-unavailable path is not
+    a review.
+
+    When the structured review call fails, ``fallback_critique`` returns a
+    placeholder score of ``1`` with empty gap, unsupported-claim, and
+    recommended-query lists. Those empty lists then satisfy every other gate:
+    ``critique_actionable`` returns ``True`` whenever ``should_continue`` is not
+    ``True``, ``bounded_component_scores`` accepts the placeholder ``1``, and
+    ``route_consistent`` matches the fallback's own stop. A live repetition was
+    observed passing the aggregate quality threshold with no critique at all.
+
+    The fallback remains correct agent behaviour — an outage says nothing about
+    the report and must not buy another research cycle — and the judge remains
+    free to score the fallback's honesty. What this gate forbids is a *quality
+    gate* certifying a run in which the agent produced no review.
+    """
+    return not _has_typed_provider_fallback(
+        output, operation="critic_report_review"
+    )
+
+
+def _gate_review_produced(
+    output: TargetOutput, case: EvaluationCase
+) -> GateResult:
+    passed = _review_produced_passes(output)
+    return _agent_result(
+        "review_produced",
+        passed,
+        "" if passed else "the report review fell back; no critique was produced",
+    )
+
+
 _AGENT_GATE_FUNCTIONS: dict[
     AgentName, dict[str, Callable[[TargetOutput, EvaluationCase], GateResult]]
 ] = {
@@ -1435,6 +1469,7 @@ _AGENT_GATE_FUNCTIONS: dict[
         "bounded_component_scores": _gate_bounded_component_scores,
         "critique_actionable": _gate_critique_actionable,
         "route_consistent": _gate_route_consistent,
+        "review_produced": _gate_review_produced,
     },
 }
 

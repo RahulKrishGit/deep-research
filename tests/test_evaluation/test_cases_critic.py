@@ -14,8 +14,10 @@ from deep_research.evaluation.dependencies import (
     build_controlled_dependencies,
 )
 from deep_research.evaluation.evaluators import (
+    AGENT_GATE_IDS,
     METRIC_FUNCTIONS,
     deterministic_metric_scores,
+    evaluate_agent_gates,
 )
 from deep_research.evaluation.models import ReActSummary, TargetOutput
 from deep_research.utils.types import Critique
@@ -310,6 +312,81 @@ def test_rationale_metric_distinguishes_grounded_review_from_fallback() -> None:
     assert fallback_scores["score_bounded"] == 1.0
     assert fallback_scores["route_consistent"] == 1.0
     assert fallback_scores["no_spurious_gaps"] == 1.0
+
+
+def test_a_fallback_review_fails_a_hard_gate() -> None:
+    """A run with no critique must never be certifiable.
+
+    The fallback's placeholder score of 1 with empty lists satisfies
+    ``bounded_component_scores``, ``critique_actionable``, and
+    ``route_consistent``, and its favourable judge reading lifted a live
+    repetition's aggregate to 0.767, above the 0.75 threshold. Quality gates
+    are AND-conditions, so the review gate is what stops that.
+    """
+    case = _case("critic-live-review")
+    fallback, _ = fallback_critique(
+        reason="provider_unavailable",
+        iteration=case.state.iteration,
+        max_iterations=case.state.max_iterations,
+    )
+    output = _live_critic_metric_output([]).model_copy(
+        update={
+            "errors": [
+                {
+                    "error_type": "critic_review_provider_error",
+                    "source": "agent.critic",
+                    "message": "provider review fallback used",
+                    "timestamp": "2026-08-01T00:00:00+00:00",
+                    "recoverable": False,
+                    "details": {
+                        "operation": "critic_report_review",
+                        "provider_failure": {
+                            "kind": "schema_output",
+                            "exception_type": "StructuredOutputError",
+                        },
+                    },
+                }
+            ]
+        }
+    )
+    serialized = fallback.model_dump(mode="json")
+    output = output.model_copy(
+        update={"result": serialized, "state_update": {"critique": serialized}}
+    )
+
+    gates = {gate.gate_id: gate for gate in evaluate_agent_gates(output, case)}
+
+    assert gates["review_produced"].passed is False
+    assert "fell back" in gates["review_produced"].detail
+    # The other gates still pass, which is exactly why this one is required.
+    assert gates["bounded_component_scores"].passed is True
+    assert gates["critique_actionable"].passed is True
+    assert gates["route_consistent"].passed is True
+
+
+def test_a_grounded_review_passes_the_review_gate() -> None:
+    case = _case("critic-live-review")
+    critique = Critique(
+        score=8,
+        gaps=[],
+        unsupported_claims=[],
+        recommended_queries=[],
+        should_continue=False,
+        rationale="The report covers commercial-scale deployment.",
+    )
+    serialized = critique.model_dump(mode="json")
+    output = _live_critic_metric_output([]).model_copy(
+        update={"result": serialized, "state_update": {"critique": serialized}}
+    )
+
+    gates = {gate.gate_id: gate for gate in evaluate_agent_gates(output, case)}
+
+    assert gates["review_produced"].passed is True
+    assert gates["review_produced"].detail == ""
+
+
+def test_the_review_gate_is_registered_for_the_critic() -> None:
+    assert "review_produced" in AGENT_GATE_IDS["critic"]
 
 
 def _live_no_spurious_gaps_score(gap: str) -> float:
