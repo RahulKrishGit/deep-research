@@ -39,7 +39,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **In progress — Source Evaluator diagnosis pending** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. Researcher target gates passed in its focused confirmation, but the independent judge remained unscorable. Source Evaluator now has one typed target-gate failure awaiting Sol High diagnosis; no repair has started. |
+| 19. Sequential live-agent diagnosis and repair loop | **In progress — Source Evaluator no-change ruling; confirmation next** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. Source Evaluator's repeated `low_confidence_flagged` miss is classified as a frozen live-case expectation mismatch; no production repair is authorized, and its single focused confirmation is next. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
@@ -1790,7 +1790,27 @@ not establish full success, and target-side output-limit evidence is required
 before any budget amendment. The first Researcher repetition and Sol High
 review are recorded in the tracked sequential-live Researcher report and fix
 log; Task 20's focused confirmation is now recorded, and Source Evaluator is
-the next sequential task.
+the current sequential task.
+
+### Task 19 Source Evaluator Checkpoint — NO-CHANGE RULING, FOCUSED CONFIRMATION NEXT
+
+The Source Evaluator live result at candidate `ce3a706` failed only
+`low_confidence_flagged` (`13/14` hard gates, deterministic quality `0.80`).
+The existing Sol High browser diagnosis at remote HEAD `ecf2b98` classified
+this as a frozen case/expectation mismatch, not an agent or evaluator defect:
+the live fixture places all four sources under one subtopic, so the designated
+weak source receives deterministic corroboration `1.0` and a `0.20` score
+floor, while the production low-confidence flag requires `overall_score <
+0.40`. The controlled analogue does not have that same topology. The same
+target-gate miss occurred in the earlier live waves, so it is not treated as a
+stochastic provider event.
+
+No Source Evaluator production, prompt, evaluator, case, rubric, threshold,
+weight, provider, budget, or fallback change is authorized. The judge's typed
+schema failures remain independent and produced no score. After recording
+this no-change ruling, exactly one focused Source Evaluator confirmation is
+allowed; another `low_confidence_flagged` miss will not be treated as new
+agent-repair evidence, and a judge failure must remain infrastructure-blocked.
 
 ### Task 20: Repair Researcher Live Retrieval Provenance — CONFIRMATION COMPLETE, JUDGE INFRASTRUCTURE BLOCKED
 
