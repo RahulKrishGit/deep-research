@@ -778,3 +778,38 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   until the Source Evaluator confirmation is accepted. Each paid command still
   requires its own immediate authorization; no live/provider/LangSmith/suite
   command ran in this gate.
+
+## 63. Task 21 Critic Post-Fix Live Confirmation — 2026-09-10
+
+- Exactly one Critic live repetition ran at candidate `c74a4f2` after the
+  clause-local evaluator fix, with no retry, CLI effort override, budget change,
+  or next-agent run. The first invocation stopped before any provider call
+  because the worktree dotenv lookup did not expose credentials; a safe
+  boolean-only check confirmed the main repository `.env` contained the needed
+  variables, and the same command was rerun with that environment loaded
+  in-process. No credential values were printed.
+- Experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/03123327-2243-42bd-a53f-11c0137f67ec`
+- Repetition review:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/03123327-2243-42bd-a53f-11c0137f67ec/r/01a08ef8-1579-7693-ac8f-7efb89ce13c6?poll=true`
+- Artifact:
+  `output/evaluations/critic/cross-agent-planner-fix-parity-critic-confirmation-c74a4f2-critic-live-20260911T053652Z-c74a4f2/results.json`
+- Artifact SHA-256:
+  `825D4612700A25E4711997663F3DC2F153E7BF9E75A6C9822D271F3947533DD4`
+- Case/version/repetition: `critic-live-review` / `1` / `1 of 1`.
+  Target evidence: `14/14` hard gates; prohibited calls `0`; target errors
+  empty; deterministic quality `0.80`; `score_bounded=1.00`,
+  `route_consistent=1.00`, `no_spurious_gaps=1.00`, and
+  `rationale_present=0.00`. The repaired `no_spurious_gaps` behavior held in
+  the live path.
+- Judge evidence: status `judge_not_run`, reason `judge_schema_failure`;
+  typed diagnostics were `schema_output` attempt `1`, category
+  `string_bounds`, field `rationale`, and `schema_output` attempt `2`,
+  category `extra_forbidden`, field `$`. Aggregate quality was unavailable.
+  The preserved fallback diagnostic was typed `schema_output` for
+  `critic_report_review`; it is not target-side output-limit evidence.
+- Runner disposition: `INFRASTRUCTURE FAILURE`. The `rationale_present=0.00`
+  target metric is a separate Critic-output diagnosis candidate and must not be
+  conflated with the shared judge failure. No code or budget change is made
+  until Sol High reviews the typed artifact; no retry or next paid agent run is
+  authorized from this result alone.
