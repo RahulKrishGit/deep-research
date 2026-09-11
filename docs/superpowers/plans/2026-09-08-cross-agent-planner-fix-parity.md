@@ -2630,6 +2630,11 @@ Task 22 outcome:
 - Verification: focused Critic/evaluator suite `125 passed`; full offline suite
   `2,006 passed, 1 deselected`; Ruff and `git diff --check` passed. Existing
   dependency deprecation warnings remain unchanged.
+- The controller's first default-import full-suite attempt resolved the package
+  from an unrelated `streamlit-ui-polish` worktree and failed collection; the
+  same suite rerun with this campaign worktree's `src` first on `sys.path`
+  passed `2,006` tests. This was an environment-resolution issue only and did
+  not require a repository change.
 - Scoped Sol High review of `1aef4e1..726cfe0`: spec compliance `PASS`, task
   quality `PASS`, Critical/Important/Minor findings `None`. No production fix,
   judge/provider change, or paid/live confirmation is justified by this task.

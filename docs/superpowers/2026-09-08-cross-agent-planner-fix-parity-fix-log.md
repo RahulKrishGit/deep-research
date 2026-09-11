@@ -884,3 +884,10 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   This characterization creates no reason for a paid confirmation; the judge
   boundary remains `NO-CHANGE` and the next live state remains `NO-GO` until a
   separate typed production defect is reproduced, repaired, and reviewed.
+- Controller post-push verification initially hit an environment-only
+  collection failure because the default editable install resolved
+  `deep_research` from the unrelated `streamlit-ui-polish` worktree. The
+  failure was not a repository result; rerunning with this campaign worktree's
+  `src` explicitly first on `sys.path` passed `2,006` tests with one
+  deselection and two existing dependency warnings. Ruff and `git diff --check`
+  remained green; no source change was made.
