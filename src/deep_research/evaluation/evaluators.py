@@ -1998,12 +1998,6 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
     ]
     if not themes:
         return True
-    theme_words = {
-        word.casefold()
-        for theme in themes
-        for word in theme.split()
-        if len(word) >= 5
-    }
     critique = _artifact(output, "critique")
     gaps = _field(critique, "gaps")
     if not isinstance(gaps, list):
@@ -2013,8 +2007,6 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
             continue
         folded = " ".join(gap.split()).casefold()
         if any(theme.casefold() in folded for theme in themes):
-            return False
-        if theme_words & set(folded.split()):
             return False
     return True
 

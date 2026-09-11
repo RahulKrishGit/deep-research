@@ -13,6 +13,11 @@ from deep_research.evaluation.dependencies import (
     SCENARIOS,
     build_controlled_dependencies,
 )
+from deep_research.evaluation.evaluators import (
+    METRIC_FUNCTIONS,
+    deterministic_metric_scores,
+)
+from deep_research.evaluation.models import ReActSummary, TargetOutput
 from deep_research.utils.types import Critique
 
 CONTROLLED = (
@@ -200,6 +205,51 @@ def _case(case_id: str):
 
 def _word_count(report: str) -> int:
     return len(report.split())
+
+
+def _live_critic_metric_output(gaps: list[str]) -> TargetOutput:
+    case = _case("critic-live-review")
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id="evaluation-critic-live-review-control",
+        experiment_name="critic-live-review-control",
+        trace_url="https://smith.langchain.com/o/x/r/critic-live-review-control",
+        completed=True,
+        result={
+            "critique": {
+                "score": 8,
+                "gaps": gaps,
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "should_continue": False,
+                "rationale": "The report's evidence and limitations are clear.",
+            }
+        },
+        react=ReActSummary(
+            iterations=1,
+            tool_calls=0,
+            stop_reason="finished",
+            max_iterations=case.expectations.max_iterations,
+            tool_budget=case.expectations.max_tool_calls,
+        ),
+        target_model_requested="deepseek-v4-flash",
+        target_model_returned="deepseek-v4-flash",
+        target_reasoning_effort="high",
+    )
+
+
+def _live_no_spurious_gaps_score(gap: str) -> float:
+    case = _case("critic-live-review")
+    scores = deterministic_metric_scores(
+        _live_critic_metric_output([gap]),
+        case,
+        metric_functions=METRIC_FUNCTIONS,
+    )
+    return scores["no_spurious_gaps"]
 
 
 def test_the_three_controlled_cases_are_registered() -> None:
@@ -703,6 +753,25 @@ def test_the_reference_themes_map_to_the_reports_actual_content() -> None:
         assert themes, case_id
         for theme in themes:
             assert theme in report, (case_id, theme)
+
+
+def test_live_no_spurious_gaps_rejects_covered_commercial_deployment() -> None:
+    gap = (
+        "The report is missing commercial-scale deployment, although it "
+        "fully describes commercial-scale deployment."
+    )
+
+    assert _live_no_spurious_gaps_score(gap) == 0.0
+
+
+def test_live_no_spurious_gaps_accepts_acknowledged_durability_limitation() -> None:
+    gap = (
+        "The report acknowledges the absence of multi-decade field records "
+        "for newest formulations, and obtaining those records would resolve "
+        "durability and long-term performance under field exposure."
+    )
+
+    assert _live_no_spurious_gaps_score(gap) == 1.0
 
 
 @pytest.mark.asyncio
