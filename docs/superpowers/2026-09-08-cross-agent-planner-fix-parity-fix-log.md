@@ -990,3 +990,43 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   token increase, or mass agent evaluation ran or is authorized by this step.
   No credentials or `.env` content was accessed, and no `.deepseek-runs`
   artifact was inspected, staged, changed, or removed.
+
+## 69. Authorized Researcher Judge-Transport Canary — PASS; STOP BEFORE NEXT AGENT
+
+- Authorization and scope: the user explicitly authorized exactly one paid
+  canary after the Task 8 Sol High **PASS**. One Researcher live repetition ran
+  at branch `codex/cross-agent-planner-fix-parity`; no retry, second agent,
+  suite, prompt change, budget change, or provider change ran.
+- Candidate provenance: artifact metadata records `c13dd9d2701bf7491522ad4ac88c86be08800438`.
+  The executable tree is identical to the Sol-reviewed implementation
+  `e914c13030e49ca0678f6d2cd6ee2ab76ee57228`; the intervening commit contains
+  only the tracked plan/fix-log documentation. The tracked/index tree was
+  clean. The artifact's safe `git_dirty=true` bit reflects the pre-existing
+  untracked `.deepseek-runs/` runtime directory, which was preserved and not
+  inspected or changed.
+- Frozen configuration: target and judge `deepseek-v4-flash`; Researcher target
+  effort `high`; judge effort `max`; one live repetition; concurrency `1`;
+  `llm.max_tokens=4096`; Planner final cap `4096`; retry count `5` with
+  `1.0` initial and `16.0` maximum delay. The repository dotenv launcher was
+  used without recording any environment value.
+- Result: runner exit `0`, status `REVIEW REQUIRED`, one case completed, and
+  one repetition completed. All `14/14` Researcher target gates passed;
+  deterministic quality was `1.00`; judge quality was `0.6825`; aggregate
+  quality was `0.8095`; prohibited-call count was `0`; target errors and
+  fallback provider diagnostics were empty.
+- Judge acceptance: `judge.status=scored`, `judge.not_run_reason=null`, and
+  `judge.diagnostics=[]`. The validated judge prompt fingerprint is
+  `93edb1729cbb`, matching the pre-transport fingerprint; the native-schema
+  judge configuration fingerprint is `924caf47aa0d`; the artifact records
+  `deepseek_responses_json_schema_v1`. No target-side typed `output_limit`
+  evidence was created by the judge transport.
+- Immutable evidence: `output/evaluations/researcher/cross-agent-planner-fix-parity-judge-native-schema-researcher-canary-c13dd9d-researcher-live-20260911T185526Z-c13dd9d/results.json`; SHA-256
+  `DD5C68C045C12B5388EF59959DD6818BED0C3C4109C741B0093C90F7E4DA2FB5`.
+  LangSmith experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/f4dbc66f-7486-4181-9220-432e3468e71a`.
+- Disposition: the judge native-schema transport is empirically confirmed for
+  this Researcher canary. Stop here as required by the one-call authorization;
+  do not treat one repetition as universal agent production sign-off. The next
+  step is a separately authorized, sequential Source Evaluator repetition and
+  diagnosis only after preserving this evidence. No other live agent or suite
+  run started in this step.
