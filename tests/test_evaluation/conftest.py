@@ -129,6 +129,11 @@ def planner_case(controlled_case_for):
 
 
 @pytest.fixture
+def critic_live_case(live_case_for):
+    return live_case_for("critic")
+
+
+@pytest.fixture
 def researcher_case(controlled_case_for):
     return controlled_case_for("researcher")
 

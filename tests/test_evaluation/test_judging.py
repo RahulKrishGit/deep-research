@@ -8,8 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from deep_research.evaluation.judging import (
+    _BLOCK_ORDER,
     COMMON_DIMENSION_WEIGHTS,
     JUDGE_PROMPT_ID,
+    JUDGE_SYSTEM_PROMPT,
+    JudgeInput,
     build_judge_input,
     judge_prompt_fingerprint,
     judge_quality,
@@ -18,8 +21,12 @@ from deep_research.evaluation.judging import (
 )
 from deep_research.evaluation.models import (
     EvaluatorDiagnostic,
+    GateReport,
     JudgeScores,
     JudgeVerdict,
+    ReActSummary,
+    TargetOutput,
+    fallback_provider_diagnostic,
 )
 from deep_research.observability import LangSmithRuntimeConfig, TokenUsage, Tracker
 from deep_research.providers import (
@@ -683,3 +690,129 @@ async def test_judge_provider_failure_and_schema_reasons_are_distinct(
         assert feedback.not_run_reason == expected
         assert feedback.judge_quality is None
         assert feedback.diagnostics == ()
+
+
+def _fallback_error() -> dict[str, object]:
+    return {
+        "error_type": "critic_review_provider_error",
+        "source": "agent.critic",
+        "message": "provider review fallback used",
+        "recoverable": False,
+        "details": {
+            "operation": "critic_report_review",
+            "provider_failure": {
+                "kind": "schema_output",
+                "exception_type": "StructuredOutputError",
+                "diagnostics": [
+                    {
+                        "attempt": 1,
+                        "field_paths": ["$"],
+                        "category": "json_invalid",
+                    }
+                ],
+            },
+        },
+    }
+
+
+def critic_live_case_output(case) -> TargetOutput:
+    """A completed, healthy critic repetition for the live case."""
+    critique = {
+        "score": 8,
+        "gaps": [],
+        "unsupported_claims": [],
+        "recommended_queries": [],
+        "should_continue": False,
+        "rationale": "The report covers commercial-scale deployment.",
+    }
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id="evaluation-critic-live-review",
+        experiment_name="critic-live-review-control",
+        completed=True,
+        result={"critique": critique},
+        state_update={"critique": critique},
+        errors=[],
+        react=ReActSummary(
+            iterations=1,
+            tool_calls=0,
+            stop_reason="finished",
+            max_iterations=case.expectations.max_iterations,
+            tool_budget=case.expectations.max_tool_calls,
+        ),
+        target_model_requested="deepseek-v4-flash",
+        target_model_returned="deepseek-v4-flash",
+        target_reasoning_effort="max",
+    )
+
+
+def _judge_input_for(output, case, *, fallback=None):
+    return build_judge_input(
+        output, case, GateReport(), secrets=(), fallback=fallback
+    )
+
+
+def test_the_judge_input_names_a_provider_fallback(critic_live_case) -> None:
+    output = critic_live_case_output(critic_live_case).model_copy(
+        update={"errors": [_fallback_error()]}
+    )
+
+    judge_input = _judge_input_for(
+        output,
+        critic_live_case,
+        fallback=fallback_provider_diagnostic(output),
+    )
+
+    assert judge_input.provider_fallback is not None
+    assert judge_input.provider_fallback["kind"] == "schema_output"
+    assert judge_input.provider_fallback["operation"] == "critic_report_review"
+    assert judge_input.provider_fallback["diagnostics"][0]["category"] == (
+        "json_invalid"
+    )
+
+
+def test_the_judge_input_omits_the_fallback_block_for_a_healthy_run(
+    critic_live_case,
+) -> None:
+    output = critic_live_case_output(critic_live_case)
+
+    judge_input = _judge_input_for(
+        output,
+        critic_live_case,
+        fallback=fallback_provider_diagnostic(output),
+    )
+
+    assert judge_input.provider_fallback is None
+
+
+def test_every_judge_input_field_is_rendered_as_a_block() -> None:
+    """A field absent from _BLOCK_ORDER would be invisible to the judge."""
+    assert set(JudgeInput.model_fields) == set(_BLOCK_ORDER)
+
+
+def test_the_fallback_block_is_rendered_in_the_judge_prompt(
+    critic_live_case,
+) -> None:
+    output = critic_live_case_output(critic_live_case).model_copy(
+        update={"errors": [_fallback_error()]}
+    )
+
+    messages = render_judge_messages(
+        _judge_input_for(
+            output,
+            critic_live_case,
+            fallback=fallback_provider_diagnostic(output),
+        )
+    )
+
+    assert "## provider_fallback" in messages[1].content
+    assert "critic_report_review" in messages[1].content
+
+
+def test_the_judge_is_told_how_to_read_a_fallback() -> None:
+    assert "provider_fallback" in JUDGE_SYSTEM_PROMPT
+    assert "no model review" in JUDGE_SYSTEM_PROMPT

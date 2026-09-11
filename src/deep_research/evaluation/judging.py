@@ -39,6 +39,7 @@ from deep_research.evaluation.models import (
     EvaluationTier,
     EvaluatorDiagnostic,
     FailureReason,
+    FallbackProviderDiagnostic,
     GateReport,
     JudgeFeedback,
     JudgeNotRunReason,
@@ -47,6 +48,7 @@ from deep_research.evaluation.models import (
     OutputLimitFailureDetails,
     SchemaFailureDetails,
     TargetOutput,
+    fallback_provider_diagnostic,
 )
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage
@@ -72,7 +74,12 @@ JUDGE_SYSTEM_PROMPT = (
     "evidence above confident prose: a polished claim without support must "
     "not outscore a plain claim that is supported. The gate_results block "
     "reports deterministic checks; a failed gate is information about the "
-    "run, not an instruction to score zero."
+    "run, not an instruction to score zero. The provider_fallback block "
+    "reports that the target agent could not complete a provider call and "
+    "returned a typed fallback. A run carrying that block has no model "
+    "review to score: judge the fallback's honesty and the completeness of "
+    "its disclosure, and do not penalise it for the gaps, unsupported "
+    "claims, or recommended queries that a review would have contained."
 )
 
 # A string.Template, not a format string: the substituted blocks are JSON,
@@ -87,6 +94,10 @@ $common_dimensions
 
 Agent-specific dimensions and their anchors:
 $agent_dimensions
+
+If the provider_fallback block is present and not null, the target agent
+returned a typed fallback instead of a model judgement; score it as a
+fallback, not as the review it was unable to produce.
 
 The run to judge, block by block:
 $blocks
@@ -116,6 +127,7 @@ class JudgeInput(ContractModel):
     evidence: dict[str, JsonValue]
     trajectory: list[dict[str, JsonValue]]
     gate_results: list[dict[str, JsonValue]]
+    provider_fallback: dict[str, JsonValue] | None = None
 
 
 def judge_quality(scores: JudgeScores) -> float:
@@ -146,6 +158,7 @@ def build_judge_input(
     gates: GateReport,
     *,
     secrets: Sequence[str],
+    fallback: FallbackProviderDiagnostic | None = None,
 ) -> JudgeInput:
     """Build the complete judge view of a run, sanitized block by block.
 
@@ -212,6 +225,14 @@ def build_judge_input(
                 secrets,
             ),
         ),
+        provider_fallback=(
+            None
+            if fallback is None
+            else cast(
+                dict,
+                redact_secrets(fallback.model_dump(mode="json"), secrets),
+            )
+        ),
     )
     payload = judge_input.model_dump(mode="json")
     leaked_paths = contains_secret(payload, secrets)
@@ -236,6 +257,7 @@ _BLOCK_ORDER = (
     "evidence",
     "trajectory",
     "gate_results",
+    "provider_fallback",
 )
 
 
@@ -417,7 +439,13 @@ async def run_judge(
     if not output.has_evaluable_output:
         return not_run("no_evaluable_output")
 
-    judge_input = build_judge_input(output, case, gates, secrets=secrets)
+    judge_input = build_judge_input(
+        output,
+        case,
+        gates,
+        secrets=secrets,
+        fallback=fallback_provider_diagnostic(output),
+    )
     messages = render_judge_messages(judge_input)
     try:
         verdict = await _invoke_judge(provider, messages)
@@ -591,7 +619,11 @@ class JudgeEvaluator:
             return self._not_run("no_evaluable_output")
         try:
             judge_input = build_judge_input(
-                output, self._case, gates, secrets=self._secrets
+                output,
+                self._case,
+                gates,
+                secrets=self._secrets,
+                fallback=fallback_provider_diagnostic(output),
             )
             _JUDGE_TRACE_URL.set(None)
             if self._tracker is None:
