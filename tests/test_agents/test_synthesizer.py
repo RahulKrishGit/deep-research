@@ -27,6 +27,7 @@ from deep_research.agents.synthesizer import (
     report_filename,
     report_messages,
 )
+from deep_research.evaluation.cases import cases_for
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -362,6 +363,30 @@ def test_report_messages_carry_every_input_the_writer_needs() -> None:
     assert "## Source quality" in body
     assert "## Known limitations" in body
     assert "## Response contract" in body
+
+
+def test_live_report_messages_expose_every_required_coverage_topic() -> None:
+    live_case = cases_for("synthesizer", "live")[0]
+    state = live_case.state
+    task = SynthesisTask(
+        instruction=state.original_question,
+        session_id=state.session_id,
+        iteration=state.iteration,
+        claims=list(state.verified_claims),
+        sources=list(state.evaluated_sources),
+        findings=list(state.raw_findings),
+        limitations=[],
+    )
+
+    body = report_messages(
+        task,
+        finding_digest=len(task.findings),
+        claim_digest=len(task.claims),
+    )[1].content
+
+    required_topics = tuple(topic.title for topic in state.sub_topics)
+    assert required_topics
+    assert all(topic in body for topic in required_topics)
 
 
 def test_report_messages_drop_the_context_section_without_guidance() -> None:
