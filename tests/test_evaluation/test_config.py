@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from deep_research.evaluation import config as evaluation_config
 from deep_research.evaluation.config import (
     GitMetadata,
     SecretLeakError,
@@ -24,6 +25,7 @@ from deep_research.evaluation.config import (
     resolve_target_effort,
     target_llm_config,
 )
+from deep_research.evaluation.judging import judge_prompt_fingerprint
 from deep_research.utils.config import (
     AgentRuntimeConfig,
     ConfigSettings,
@@ -141,6 +143,12 @@ def build(*, settings=None, **kwargs):
     return build_runtime_config(settings or ConfigSettings(), **defaults)
 
 
+def _judge_transport(provider: str) -> str:
+    transport = getattr(evaluation_config, "judge_structured_transport", None)
+    assert callable(transport)
+    return transport(provider)
+
+
 def test_the_runtime_config_freezes_both_efforts() -> None:
     runtime = build()
 
@@ -231,6 +239,58 @@ def test_changing_the_judge_effort_refingerprints_the_judge() -> None:
         != baseline.judge_configuration_fingerprint
     )
     assert changed.dataset_name == baseline.dataset_name
+
+
+def test_judge_transport_identifier_is_provider_specific() -> None:
+    assert _judge_transport("deepseek") == (
+        "deepseek_responses_json_schema_v1"
+    )
+    assert _judge_transport("openai") == (
+        "openai_responses_parse_v1"
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "transport"),
+    [
+        ("deepseek", "deepseek_responses_json_schema_v1"),
+        ("openai", "openai_responses_parse_v1"),
+    ],
+)
+def test_judge_transport_provenance_is_recorded_in_experiment_metadata(
+    provider: str, transport: str
+) -> None:
+    settings = ConfigSettings(llm=LLMConfig(provider=provider))
+
+    metadata = experiment_metadata(build(settings=settings), settings)
+
+    assert metadata.get("judge_provider") == provider
+    assert metadata.get("judge_structured_transport") == transport
+
+
+def test_judge_transport_fingerprint_is_stable_and_provider_sensitive() -> None:
+    baseline = build()
+    identical = build()
+    openai_settings = ConfigSettings(llm=LLMConfig(provider="openai"))
+    changed_provider = build(settings=openai_settings)
+
+    assert (
+        baseline.judge_configuration_fingerprint
+        == identical.judge_configuration_fingerprint
+    )
+    assert (
+        changed_provider.judge_configuration_fingerprint
+        != baseline.judge_configuration_fingerprint
+    )
+
+
+def test_judge_prompt_fingerprint_is_unchanged_by_transport_provenance() -> None:
+    baseline = judge_prompt_fingerprint(rubric_version=1)
+
+    build()
+    build(settings=ConfigSettings(llm=LLMConfig(provider="openai")))
+
+    assert judge_prompt_fingerprint(rubric_version=1) == baseline
 
 
 def test_changing_the_planner_final_budget_refingerprints_the_configuration() -> None:

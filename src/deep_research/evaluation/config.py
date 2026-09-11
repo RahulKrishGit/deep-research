@@ -33,6 +33,7 @@ from deep_research.utils.config import (
     EmbeddingProviderName,
     EvaluationConfig,
     LLMConfig,
+    ProviderName,
     ReasoningEffort,
 )
 from deep_research.utils.types import ContractModel, JsonValue
@@ -54,6 +55,15 @@ _SECRET_ENVIRONMENT_VARIABLES = (
 )
 
 _EFFORT_ADAPTER = TypeAdapter(ReasoningEffort)
+
+_JUDGE_STRUCTURED_TRANSPORT = {
+    "deepseek": "deepseek_responses_json_schema_v1",
+    "openai": "openai_responses_parse_v1",
+}
+
+
+def judge_structured_transport(provider: ProviderName) -> str:
+    return _JUDGE_STRUCTURED_TRANSPORT[provider]
 
 
 def _validated_effort(value: str) -> ReasoningEffort:
@@ -298,6 +308,10 @@ def build_runtime_config(
     )
     judge_configuration_fingerprint = fingerprint(
         {
+            "provider": settings.llm.provider,
+            "structured_transport": judge_structured_transport(
+                settings.llm.provider
+            ),
             "judge_model": evaluation.judge_model,
             "judge_reasoning_effort": judge_effort,
             "judge_temperature": evaluation.judge_temperature,
@@ -465,6 +479,10 @@ def experiment_metadata(
             runtime, settings.llm
         ).model_dump(mode="json"),
         "configuration_fingerprint": runtime.configuration_fingerprint,
+        "judge_provider": settings.llm.provider,
+        "judge_structured_transport": judge_structured_transport(
+            settings.llm.provider
+        ),
         "judge_model": runtime.judge_model,
         "judge_reasoning_effort": runtime.judge_reasoning_effort,
         "judge_temperature": runtime.judge_temperature,
