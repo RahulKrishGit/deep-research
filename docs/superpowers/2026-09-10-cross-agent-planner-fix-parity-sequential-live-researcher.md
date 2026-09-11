@@ -45,6 +45,23 @@ judge/provider evidence and does not supply a Researcher quality score.
 No target-side typed `output_limit` was recorded, so no token-budget change is
 authorized. The global `llm.max_tokens == 4096` remains unchanged.
 
+## Focused confirmation after Task 20
+
+- Candidate: `9319024` on `codex/cross-agent-planner-fix-parity`; exactly one Researcher live repetition ran after the Task 20 fix and the scoped Sol High review.
+- Frozen execution: existing `config.yaml`, repository dotenv launcher, no CLI effort or budget overrides, global `llm.max_tokens == 4096`, and a fresh output namespace. No retry, suite run, or other agent ran in this confirmation.
+- LangSmith experiment: `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/45f357c5-ff0d-46f4-89c8-2248115c6b34`
+- Repository-relative artifact: `output/evaluations/task20-researcher-confirmation-9319024/researcher/task20-researcher-confirmation-9319024-researcher-live-20260911T011711Z-9319024/results.json`
+- Artifact SHA-256: `F4FC7B4ADD79E95D094BAF2CE6AD3A2159EEC3B1074D7CAD5EEF6C549E33B6B8`
+- Exit/status: exit `1`, `INFRASTRUCTURE FAILURE`; `14/14` hard gates passed; deterministic quality `1.00`; mean score `n/a`.
+- Judge boundary: `judge_not_run` because typed `judge_schema_failure` diagnostics occurred at `rationale` on attempt 1 and attempt 2. No target-side typed `output_limit` appeared.
+
+Interpretation: the focused run produced no target-gate failure after the
+provenance repair, so it does not justify a further Researcher prompt,
+iteration, budget, or provider change. It is not a full Researcher quality
+pass because the judge was unscorable. The result is preserved as separate
+judge-infrastructure evidence, and the sequential loop can advance to Source
+Evaluator without treating the Researcher target as repaired by score.
+
 ## Required next gate
 
 Provide this report, the current remote branch, and the relevant Researcher

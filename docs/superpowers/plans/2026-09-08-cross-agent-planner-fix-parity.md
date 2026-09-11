@@ -39,8 +39,8 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **In progress — Researcher confirmation next** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. Researcher evidence and the Task 20 repair review are complete; its focused confirmation is next. |
-| 20. Researcher live provenance repair | **Review clean — focused confirmation next** | Raw source validation now occurs before normalization, closing malformed path/query whitespace and valid bracketed IPv6 edge cases. The exact fix range received `PASS WITH FOLLOW-UP` from the existing Sol High browser review, with no Critical or Important findings; exactly one focused Researcher confirmation is now unblocked. |
+| 19. Sequential live-agent diagnosis and repair loop | **In progress — Researcher confirmation recorded; Source Evaluator next** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. Researcher target gates passed in its focused confirmation, but the independent judge remained unscorable, so no Researcher quality pass is claimed. No Researcher code or budget repair is authorized; Source Evaluator is next. |
+| 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -1789,9 +1789,10 @@ confirmation for the same agent. A confirmation with an unscorable judge does
 not establish full success, and target-side output-limit evidence is required
 before any budget amendment. The first Researcher repetition and Sol High
 review are recorded in the tracked sequential-live Researcher report and fix
-log; Task 20 is the current repair task.
+log; Task 20's focused confirmation is now recorded, and Source Evaluator is
+the next sequential task.
 
-### Task 20: Repair Researcher Live Retrieval Provenance — REVIEW CLEAN, FOCUSED CONFIRMATION NEXT
+### Task 20: Repair Researcher Live Retrieval Provenance — CONFIRMATION COMPLETE, JUDGE INFRASTRUCTURE BLOCKED
 
 **Sol High diagnosis:** the Researcher live failure is not yet a confirmed
 Researcher prompt or agent defect. Successful tool results retain up to the
@@ -1944,6 +1945,23 @@ with the campaign checkout's `src` explicitly first on `sys.path` produced
 `1,992 passed, 1 deselected, 2 warnings` in `30.43s`; repository-wide Ruff
 and `git diff --check` also passed. The deferred live non-Researcher wrapper
 regression remains parked and no live/provider command ran during this gate.
+
+Focused confirmation: at pushed candidate `9319024`, exactly one Researcher
+live repetition ran with the frozen `config.yaml`, the repository `.env`
+launcher, no CLI overrides, and a fresh output namespace. The experiment
+returned exit code `1` with `14/14` hard gates and deterministic quality
+`1.00`, but status `INFRASTRUCTURE FAILURE` and no mean score because the
+independent judge failed typed structured-output validation on `rationale` at
+attempts 1 and 2. The artifact is
+`output/evaluations/task20-researcher-confirmation-9319024/researcher/task20-researcher-confirmation-9319024-researcher-live-20260911T011711Z-9319024/results.json`, SHA-256
+`F4FC7B4ADD79E95D094BAF2CE6AD3A2159EEC3B1074D7CAD5EEF6C549E33B6B8`, with
+LangSmith experiment
+`https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/45f357c5-ff0d-46f4-89c8-2248115c6b34`.
+No target hard gate failed, no target-side typed `output_limit` appeared, and
+the result does not establish a full Researcher quality pass or authorize a
+budget/prompt change. The judge boundary remains independent; the sequential
+loop may advance to Source Evaluator while preserving this Researcher result
+as judge-infrastructure-blocked evidence.
 
 ---
 
