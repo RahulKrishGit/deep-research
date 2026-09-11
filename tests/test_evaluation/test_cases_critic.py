@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from deep_research.agents.critic import route_decision
+from deep_research.agents.critic import fallback_critique, route_decision
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
@@ -240,6 +240,76 @@ def _live_critic_metric_output(gaps: list[str]) -> TargetOutput:
         target_model_returned="deepseek-v4-flash",
         target_reasoning_effort="high",
     )
+
+
+def test_rationale_metric_distinguishes_grounded_review_from_fallback() -> None:
+    case = _case("critic-live-review")
+    base = _live_critic_metric_output([])
+    normal = Critique(
+        score=8,
+        gaps=[],
+        unsupported_claims=[],
+        recommended_queries=[],
+        should_continue=False,
+        rationale=(
+            "The report covers commercial-scale deployment and durability "
+            "and long-term performance data."
+        ),
+    )
+    fallback, _ = fallback_critique(
+        reason="provider_unavailable",
+        iteration=case.state.iteration,
+        max_iterations=case.state.max_iterations,
+    )
+    fallback_errors = [
+        {
+            "error_type": "critic_review_provider_error",
+            "source": "agent.critic",
+            "message": "provider review fallback used",
+            "timestamp": "2026-08-01T00:00:00+00:00",
+            "recoverable": False,
+            "details": {
+                "operation": "critic_report_review",
+                "provider_failure": {
+                    "kind": "provider_failure",
+                    "type": "ProviderError",
+                    "retryable": False,
+                    "status_code": None,
+                },
+            },
+        }
+    ]
+
+    def production_output(
+        critique: Critique,
+        *,
+        errors: list[dict[str, object]] | None = None,
+    ) -> TargetOutput:
+        serialized = critique.model_dump(mode="json")
+        return base.model_copy(
+            update={
+                "result": serialized,
+                "state_update": {"critique": serialized},
+                "errors": errors or [],
+            }
+        )
+
+    normal_scores = deterministic_metric_scores(
+        production_output(normal),
+        case,
+        metric_functions=METRIC_FUNCTIONS,
+    )
+    fallback_scores = deterministic_metric_scores(
+        production_output(fallback, errors=fallback_errors),
+        case,
+        metric_functions=METRIC_FUNCTIONS,
+    )
+
+    assert normal_scores["rationale_present"] == 1.0
+    assert fallback_scores["rationale_present"] == 0.0
+    assert fallback_scores["score_bounded"] == 1.0
+    assert fallback_scores["route_consistent"] == 1.0
+    assert fallback_scores["no_spurious_gaps"] == 1.0
 
 
 def _live_no_spurious_gaps_score(gap: str) -> float:
