@@ -95,10 +95,13 @@ and `operation`. The snapshot's bounded `diagnostics` —
 `providers/contracts.py:95-116` — are dropped.
 
 Those dropped fields are precisely what distinguishes the possible causes of a
-`json_invalid` result: a truncated completion, an empty completion, and
-preamble text around otherwise valid JSON are not separable without the
-per-attempt `attempt` and `category` values, and no cause can be confirmed
-without the completion's `usage` and `configured_max_tokens`.
+`json_invalid` result. A `json_invalid` whose only field path is `$` means no
+parseable JSON object was produced at all; a named field path carrying
+`missing`, `type_mismatch`, or a bounds category means valid JSON arrived in the
+wrong shape. Those two findings call for different follow-ups, and the artifact
+cannot currently tell them apart. The completion's `usage` and
+`configured_max_tokens` would narrow the first case further, and are
+deliberately not in scope — see the limit recorded under Fix 2.
 
 The same repository already retains this exact data safely on the judge path:
 `JudgeFeedback.diagnostics` (`models.py:518-520`) is a tuple of
@@ -186,15 +189,29 @@ names (`_normalize_field_path` in `providers/contracts.py:52-65` and
 `_normalize_diagnostic_path` in `models.py:317-326`), so no raw provider text
 can enter the artifact through this field.
 
-The bounded telemetry that defect 2 also needs in order to separate truncation
-from malformed text — `configured_max_tokens`, `usage`, and the finish-reason
-category — is added to the same projection. `ProviderFailureSnapshot` already
-carries `configured_max_tokens`, `usage`, `request_attempt`, and
-`structured_attempt` for the `output_limit` kind (`providers/contracts.py:209-242`);
-they are surfaced onto the fallback projection so a schema failure is as
-diagnosable as an output-limit failure already is. The finish-reason category is
-not currently retained on any snapshot and is added to
-`ProviderFailureSnapshot` for that reason alone.
+The diagnostics are **already present** in the target payload: `ProviderFailureSnapshot`
+is serialized into `ResearchError.details["provider_failure"]`, so
+`output.errors[].details.provider_failure.diagnostics` carries the full
+`attempt` / `category` / `field_paths` records. They are lost only at the last
+step, where the runner narrows the snapshot to two fields. No provider-layer
+change is therefore required, and the risk surface of this fix is one model and
+one projection function.
+
+This is the difference between the three prior NO-CHANGE rulings and this
+design: the evidence was never missing from a live run, only from the artifact
+that was reviewed.
+
+`StructuredOutputError` carries only diagnostics — it retains no `usage` or
+`configured_max_tokens`, because `DeepSeekChatProvider.complete_structured`
+(`deepseek_provider.py:739-819`) builds it from the diagnostics alone and a
+`length` finish reason raises `ProviderOutputLimitError` before validation ever
+runs. Threading that telemetry through would require changing the provider
+error contract, which this design does not do. The retained diagnostics are
+sufficient for the decision that matters: `category=json_invalid` with
+`field_paths=("$",)` means no parseable JSON object was produced at all, while a
+named path with `missing`, `type_mismatch`, or a bounds category means valid
+JSON arrived in the wrong shape. Those two cases call for different follow-ups,
+and today the artifact cannot tell them apart.
 
 Every added field is optional, because a snapshot that carries none of this
 telemetry must still round-trip. This is a schema change, so `_MAX_ARTIFACT_*`
@@ -253,11 +270,12 @@ Offline, deterministic, no network and no provider calls:
   is clamped in the spot-check prompt by the same rule the review prompt uses.
 - **Fix 1 missing report.** A test asserting no report is rendered and no
   provider call is made when `state.report` is empty.
-- **Fix 2 round-trip.** A test building a `TargetOutput` carrying a
-  `critic_review_provider_error` whose snapshot holds two diagnostics with
+- **Fix 2 round-trip.** A test building a `TargetOutput` and calling
+  `build_repetition_result`, with
+  `errors[].details.provider_failure.diagnostics` holding two records with
   `attempt`, `category`, and `field_paths`, asserting every value survives into
-  the artifact projection. A companion test asserts a snapshot with no
-  diagnostics still round-trips as `None`-safe empty.
+  `RepetitionResult.fallback_provider_diagnostic`. A companion test asserts a
+  snapshot with no diagnostics still round-trips with an empty tuple.
 - **Fix 2 no content leak.** A test asserting a diagnostic carrying an
   un-normalized field path is projected as `$`, so no provider text can reach
   the artifact through this field.
@@ -297,7 +315,8 @@ configuration, sequentially, recorded with its artifact SHA-256.
 | Put the report in `CritiqueTask.guidance` rather than a new prompt section | Keeps `render_react_messages` shared and unchanged for the Researcher and Fact Checker, and follows the two agents that already name their artifact in `guidance`. |
 | Reuse `_clamp_report` and `CRITIC_REPORT_CHARS` | One clamping rule for both Critic prompts; the spot-check prompt cannot exceed the review prompt. |
 | Keep the typed fallback rather than halting or retrying | The fallback is correct behaviour — an outage says nothing about the report and must not buy a research cycle. It was the *observability* and *scoring* of the fallback that were wrong. |
-| Retain diagnostics instead of adding raw response capture | Field paths, attempt numbers, categories, usage, and token caps are already normalized and provider-content-free. Raw text would introduce a leak surface the project's artifact redaction deliberately avoids. |
+| Retain diagnostics instead of adding raw response capture | Field paths, attempt numbers, and categories are already normalized and provider-content-free by `_normalize_field_path` (`contracts.py:52-65`). Raw text would introduce a leak surface the project's artifact redaction deliberately avoids. |
+| Do not thread `usage` / `configured_max_tokens` into the schema failure | `StructuredOutputError` does not carry them and a `length` finish reason already raises `ProviderOutputLimitError` first. Recovering them means changing the provider error contract, which buys less than the diagnostics already do. |
 | Add the fallback fact to `JudgeInput` rather than to `gate_results` | `gate_results` are pass/fail observations; the fallback is context the judge needs in order to apply its rubric correctly. |
 | Fix evidence retention for all agents, not only the Critic | The defect is in one shared projection. A Critic-only patch would leave the identical defect in every other fallback path and re-open the Fact Checker "UNSCORABLE" follow-up. |
 | Accept the `judge_prompt_fingerprint` change, keep `judge_configuration_fingerprint` fixed | The judge's *rubric definition* legitimately changes, so `judge_prompt_fingerprint` must move. `judge_configuration_fingerprint` covers provider, transport, model, effort, temperature, thinking mode, and rubric version; pinning it proves no judge setting was silently altered. |
