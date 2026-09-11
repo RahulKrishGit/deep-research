@@ -377,6 +377,12 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             "16384",
             16384,
         ),
+        (
+            "AGENTS_JUDGE_MAX_TOKENS",
+            ("agents", "judge_max_tokens"),
+            "12288",
+            12288,
+        ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
     ],
@@ -644,6 +650,27 @@ def test_the_shipped_config_file_carries_the_critic_review_budget() -> None:
     assert raw["agents"]["critic_review_max_tokens"] == 8192
 
 
+def test_the_judge_budget_exceeds_the_global_cap(config_path: Path) -> None:
+    """The judge is not clamped to the global output cap either.
+
+    Once the Critic produced a real critique, the judge hit the global cap
+    scoring it and returned ``judge_output_limit`` with no quality score at
+    all, which classifies the repetition as an infrastructure failure rather
+    than a quality result. The verdict carries six common dimensions, the
+    agent-specific dimensions, and a rationale.
+    """
+    settings = load_config(str(config_path))
+
+    assert settings.agents.judge_max_tokens == 8192
+    assert settings.agents.judge_max_tokens > settings.llm.max_tokens
+
+
+def test_the_shipped_config_file_carries_the_judge_budget() -> None:
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["judge_max_tokens"] == 8192
+
+
 def test_the_planner_final_budget_defaults_to_the_global_cap(
     config_path: Path,
 ) -> None:
@@ -668,6 +695,7 @@ def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
         ("observation_summary_chars", 0),
         ("planner_final_max_tokens", 0),
         ("critic_review_max_tokens", 0),
+        ("judge_max_tokens", 0),
     ],
 )
 def test_agent_runtime_config_rejects_unbounded_values(

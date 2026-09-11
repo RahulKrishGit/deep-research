@@ -172,6 +172,12 @@ class AgentRuntimeConfig(BaseModel):
     global cap it returned non-JSON text on both the initial attempt and the
     single repair in three consecutive live canaries. ReAct decisions keep
     the global cap.
+
+    ``judge_max_tokens`` is the budget for the judge's ``JudgeVerdict``
+    request. Once the Critic began producing a real critique, the judge hit
+    the global cap scoring it and returned ``judge_output_limit`` with no
+    quality score at all. The verdict carries six common dimensions, the
+    agent-specific dimensions, and a rationale, so it is not a small reply.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -182,6 +188,7 @@ class AgentRuntimeConfig(BaseModel):
     observation_summary_chars: int = Field(default=200, ge=1)
     planner_final_max_tokens: int = Field(default=4096, ge=1)
     critic_review_max_tokens: int = Field(default=8192, ge=1)
+    judge_max_tokens: int = Field(default=8192, ge=1)
 
 
 class GraphConfig(BaseModel):
@@ -333,6 +340,10 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_CRITIC_REVIEW_MAX_TOKENS": (
         "agents",
         "critic_review_max_tokens",
+    ),
+    "AGENTS_JUDGE_MAX_TOKENS": (
+        "agents",
+        "judge_max_tokens",
     ),
     "GRAPH_MAX_ITERATIONS": ("graph", "max_iterations"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),

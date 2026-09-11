@@ -244,6 +244,10 @@ class EvaluationRuntimeConfig(ContractModel):
     git: GitMetadata
     configuration_fingerprint: str
     judge_configuration_fingerprint: str
+    # The judge's own operation-specific output budget. The verdict carries
+    # six common dimensions, the agent-specific dimensions, and a rationale;
+    # at the global cap the adapter returned judge_output_limit and no score.
+    judge_max_tokens: int
     prompt_fingerprint: str
     package_version: str
 
@@ -351,6 +355,7 @@ def build_runtime_config(
         git=git,
         configuration_fingerprint=configuration_fingerprint,
         judge_configuration_fingerprint=judge_configuration_fingerprint,
+        judge_max_tokens=settings.agents.judge_max_tokens,
         prompt_fingerprint=agent_prompt_fingerprint(agent_name),
         package_version=EVALUATION_PACKAGE_VERSION,
     )

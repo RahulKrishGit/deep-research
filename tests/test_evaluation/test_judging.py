@@ -259,9 +259,11 @@ async def test_a_successful_judge_produces_scored_feedback(
     assert feedback.prompt_id == JUDGE_PROMPT_ID
     assert feedback.rubric_version == 1
     assert feedback.judge_model == "deepseek-v4-flash"
-    # The judge call never carries the planner-final budget: only the final
-    # ResearchPlanDraft request may use the operation-specific value.
-    assert provider.budgets == [None]
+    # The judge carries its own operation-specific budget, not the planner's
+    # and not the global cap. The verdict holds six common dimensions, the
+    # agent-specific dimensions, and a rationale; at the global cap the
+    # adapter returned output_limit with no score at all.
+    assert provider.budgets == [runtime_config_for("planner").judge_max_tokens]
 
 
 @pytest.mark.asyncio

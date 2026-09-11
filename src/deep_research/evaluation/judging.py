@@ -307,14 +307,23 @@ def render_judge_messages(judge_input: JudgeInput) -> list[ChatMessage]:
 
 
 async def _invoke_judge(
-    provider: StructuredCompleter, messages: list[ChatMessage]
+    provider: StructuredCompleter,
+    messages: list[ChatMessage],
+    *,
+    max_tokens: int | None = None,
 ) -> JudgeVerdict:
     """The one model-invocation step both ``run_judge`` and the LangSmith
     evaluator path use. ``JudgeEvaluator`` wraps this in its tracing
     decorator; ``run_judge`` calls it directly.
+
+    ``max_tokens`` carries the judge's operation-specific output budget. The
+    verdict is not a small reply — six common dimensions, the agent-specific
+    dimensions, and a rationale — and at the global cap the adapter returned
+    ``output_limit`` with no score at all, which is an infrastructure failure
+    rather than a quality result.
     """
     return await provider.complete_structured(
-        messages, JudgeVerdict, agent_name="judge"
+        messages, JudgeVerdict, agent_name="judge", max_tokens=max_tokens
     )
 
 
@@ -448,7 +457,9 @@ async def run_judge(
     )
     messages = render_judge_messages(judge_input)
     try:
-        verdict = await _invoke_judge(provider, messages)
+        verdict = await _invoke_judge(
+            provider, messages, max_tokens=runtime.judge_max_tokens
+        )
     except Exception as error:
         return not_run(
             _judge_not_run_reason(error),
@@ -587,7 +598,9 @@ class JudgeEvaluator:
             if captured is not None:
                 _JUDGE_TRACE_URL.set(captured)
             messages = render_judge_messages(judge_input)
-            return await _invoke_judge(provider, messages)
+            return await _invoke_judge(
+                provider, messages, max_tokens=runtime.judge_max_tokens
+            )
 
         self._trace_judge = trace_factory(
             name=JUDGE_PROMPT_ID,
