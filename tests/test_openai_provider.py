@@ -593,6 +593,12 @@ def outline_validation_error() -> ValidationError:
     return exc_info.value
 
 
+def outline_validation_error_with_marker(marker: str) -> ValidationError:
+    with pytest.raises(ValidationError) as exc_info:
+        Outline.model_validate({"title": 3, "points": marker})
+    return exc_info.value
+
+
 @pytest.mark.asyncio
 async def test_complete_structured_repairs_pydantic_validation_error() -> None:
     repaired = Outline(title="Repaired", points=["Valid"])
@@ -632,6 +638,56 @@ async def test_complete_structured_raises_after_two_pydantic_validation_errors()
             )
 
     assert len(responses.parse_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_failure_drops_provider_data() -> None:
+    marker = "OPENAI_STRUCTURED_PROVIDER_MARKER_8A2F"
+    responses = RecordingResponses(
+        outline_validation_error_with_marker(marker),
+        response(text=f"malformed {marker}", parsed=None),
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(), tracker, client=FakeOpenAIClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "safe prompt"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="Create an outline")], Outline
+            )
+
+    assert len(responses.parse_calls) == 2
+    repair_request = json.dumps(responses.parse_calls[1], default=repr, sort_keys=True)
+    assert marker not in repair_request
+    assert "category=type_mismatch; field_paths=title, points" in repair_request
+
+    assert [
+        (item.attempt, item.field_paths, item.category)
+        for item in caught.value.diagnostics
+    ] == [
+        (1, ("title", "points"), "type_mismatch"),
+        (2, ("$",), "json_invalid"),
+    ]
+
+    from deep_research.evaluation.failure_taxonomy import safe_failure_details
+
+    details = safe_failure_details(caught.value)
+    assert details is not None
+    surfaces = {
+        "exception": str(caught.value),
+        "diagnostics": json.dumps(
+            [item.model_dump(mode="json") for item in caught.value.diagnostics],
+            sort_keys=True,
+        ),
+        "evaluation": details.model_dump_json(),
+    }
+    assert all(marker not in value for value in surfaces.values())
+    assert [item.field_paths for item in details.diagnostics] == [
+        ("title", "points"),
+        ("$",),
+    ]
 
 
 @pytest.mark.asyncio

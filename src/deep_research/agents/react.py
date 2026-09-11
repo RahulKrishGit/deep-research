@@ -218,21 +218,22 @@ async def run_react_loop(
                     {
                         "agent_name": agent_name,
                         "iteration": iteration,
-                        "thought": summarize_text(
-                            decision.thought, limit=summary_limit
-                        ),
                         "action": decision.action,
                         "tool": (
                             None
-                            if decision.tool_name is None
-                            else summarize_text(
-                                decision.tool_name, limit=summary_limit
-                            )
-                        ),
-                        "observation": (
-                            None if observation is None else observation.summary
+                            if decision.tool_name not in tools.names
+                            else decision.tool_name
                         ),
                         "success": True if observation is None else observation.success,
+                        "error_type": (
+                            None
+                            if observation is None or observation.success
+                            else summarize_text(
+                                observation.error_type or "unknown",
+                                limit=64,
+                            )
+                        ),
+                        "error_count": len(errors),
                     }
                 )
         except ProviderError as error:
