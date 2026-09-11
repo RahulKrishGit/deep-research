@@ -41,7 +41,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
 | 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker diagnosis complete; repair wave reviewed; serialized Critic evaluator repair next** | The user-authorized Fact Checker evidence remains target-contract green (`15/15` hard gates, deterministic `1.00`) with a scorable below-threshold judge and fallback `react_decision` `output_limit`; Sol's review supports no Fact Checker production or budget change. Source Evaluator remains target-green but judge-blocked. Do not start another live run until the evaluator repair and offline gate are complete. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
-| 21. Parallel evidence-driven repair wave | **Complete — reviewed/offline green; Critic confirmation judge-blocked; Sol diagnosis pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; later Sol reviews found and corrected false positives for acknowledged durability language and sentence-level marker borrowing. Fix round 3 scopes unresolved evidence to comma/semicolon/colon-delimited clauses, with five production-path controls green. Sol High returned `PASS WITH FOLLOW-UP` for `c9f31ee..a08dbbd`, with no Critical or Important findings; the one-token-theme sensitivity remains deferred. J/F/S/C are integrated at `5763f8a`; the targeted offline gate is green. The post-fix Critic confirmation held `no_spurious_gaps=1.00` and all 14 gates, but `rationale_present=0.00` and the shared judge was unscorable; the typed live evidence is now awaiting Sol diagnosis before any next paid agent run. |
+| 21. Parallel evidence-driven repair wave | **Complete — Critic fix confirmed; judge/provider no-change; next live run paused** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; later Sol reviews found and corrected false positives for acknowledged durability language and sentence-level marker borrowing. Fix round 3 scopes unresolved evidence to comma/semicolon/colon-delimited clauses, with five production-path controls green. Sol High returned `PASS WITH FOLLOW-UP` for `c9f31ee..a08dbbd`, with no Critical or Important findings; the one-token-theme sensitivity remains deferred. J/F/S/C are integrated at `5763f8a`; the targeted offline gate is green. The post-fix Critic confirmation held `no_spurious_gaps=1.00` and all 14 gates; Sol classified `rationale_present=0.00` as the intentional Critic provider fallback and the judge failure as independent shared judge/provider instability. No target/evaluator repair, budget change, retry, or next-agent run is justified from this artifact. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -2517,11 +2517,11 @@ load-bearing candidate is Stream C's shared Critic evaluator behavior.
   untracked item remains the pre-existing ignored `.deepseek-runs/` directory,
   which was not inspected or staged.
 - Parallel repair work is complete and no additional C worker is needed. The
-  remaining live work follows the sequential Task 19 control plane: Source
-  Evaluator v2 is the current checkpoint, and Fact Checker remains deferred
-  until the Source Evaluator confirmation is accepted. Each paid command still
-  requires its own immediate authorization; no live/provider/LangSmith/suite
-  command ran in this gate.
+  remaining live work is paused by the shared judge/provider boundary after
+  the Critic confirmation; no next-agent run is authorized from that artifact.
+  Each paid command remains separately evidence-gated even though the user has
+  authorized paid live calls; no live/provider/LangSmith/suite command ran in
+  this offline gate.
 
 ### Task 21 Critic post-fix live confirmation (2026-09-10)
 
@@ -2557,3 +2557,34 @@ load-bearing candidate is Stream C's shared Critic evaluator behavior.
   conflated with the shared judge failure. No code or budget change is made
   until Sol High reviews the typed artifact; no retry or next paid agent run is
   authorized from this result alone.
+
+### Sol High Critic live diagnosis — judge/provider only, no change (2026-09-10)
+
+- Sol High reviewed the typed Critic confirmation and returned
+  **JUDGE/PROVIDER ONLY — NO-CHANGE**. The live `no_spurious_gaps=1.00` result
+  independently confirms that the clause-local Stream C evaluator repair held;
+  the unscorable judge cannot cause that target deterministic metric.
+- `rationale_present=0.00` is not evidence of an empty Critique rationale or a
+  `TargetOutput`/`state_update` serializer mismatch. The Critic's
+  `critic_report_review` provider failure produced the intentional generic
+  `provider_unavailable` fallback Critique, whose rationale is valid but not
+  grounded in a concrete report feature. That is why the grounding metric is
+  `0.00` while `score_bounded`, `route_consistent`, and `no_spurious_gaps` are
+  `1.00`.
+- The typed fallback diagnostic
+  `{kind: schema_output, operation: critic_report_review}` is target-agent
+  provider evidence, distinct from the later judge diagnostics (`rationale`
+  then `$`). Neither event is target-side `output_limit` evidence. The compact
+  `RepetitionResult.errors=[]` means no top-level target failure; it does not
+  erase the typed agent-level fallback diagnostic. This wording distinction is
+  recorded as a non-blocking documentation nuance.
+- Sol found no Critical or Important finding requiring code, evaluator,
+  serializer, prompt, case, threshold, weight, fallback, provider-budget, or
+  `llm.max_tokens` change. The optional future characterization is offline-only:
+  prove normal report-grounded Critique rationale scores `1.0` while the
+  existing provider fallback scores `0.0`; no production edit is authorized
+  unless that characterization contradicts the current contract.
+- Disposition: do not retry Critic and do not start the next paid agent run
+  from this artifact alone. Preserve the live artifact, keep the global
+  `4096` cap, and treat the shared judge/provider boundary as the remaining
+  campaign blocker.

@@ -813,3 +813,34 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   conflated with the shared judge failure. No code or budget change is made
   until Sol High reviews the typed artifact; no retry or next paid agent run is
   authorized from this result alone.
+
+## 64. Sol High Critic Live Diagnosis — Judge/Provider Only, No Change — 2026-09-10
+
+- Sol High reviewed the typed Critic confirmation and returned
+  **JUDGE/PROVIDER ONLY — NO-CHANGE**. The live `no_spurious_gaps=1.00` result
+  independently confirms that the clause-local Stream C evaluator repair held;
+  the unscorable judge cannot cause that target deterministic metric.
+- `rationale_present=0.00` is not evidence of an empty Critique rationale or a
+  `TargetOutput`/`state_update` serializer mismatch. The Critic's
+  `critic_report_review` provider failure produced the intentional generic
+  `provider_unavailable` fallback Critique, whose rationale is valid but not
+  grounded in a concrete report feature. That is why the grounding metric is
+  `0.00` while `score_bounded`, `route_consistent`, and `no_spurious_gaps` are
+  `1.00`.
+- The typed fallback diagnostic
+  `{kind: schema_output, operation: critic_report_review}` is target-agent
+  provider evidence, distinct from the later judge diagnostics (`rationale`
+  then `$`). Neither event is target-side `output_limit` evidence. The compact
+  `RepetitionResult.errors=[]` means no top-level target failure; it does not
+  erase the typed agent-level fallback diagnostic. This wording distinction is
+  recorded as a non-blocking documentation nuance.
+- Sol found no Critical or Important finding requiring code, evaluator,
+  serializer, prompt, case, threshold, weight, fallback, provider-budget, or
+  `llm.max_tokens` change. The optional future characterization is offline-only:
+  prove normal report-grounded Critique rationale scores `1.0` while the
+  existing provider fallback scores `0.0`; no production edit is authorized
+  unless that characterization contradicts the current contract.
+- Disposition: do not retry Critic and do not start the next paid agent run
+  from this artifact alone. Preserve the live artifact, keep the global
+  `4096` cap, and treat the shared judge/provider boundary as the remaining
+  campaign blocker.
