@@ -350,6 +350,29 @@ def test_source_payload_telemetry_rejects_invalid_and_unrelated_identities() -> 
     assert unrelated_url not in repr(fingerprints)
 
 
+def test_source_fingerprint_validates_raw_candidates_before_normalizing() -> None:
+    recorder = DependencyRecorder()
+    ipv6_url = "https://[2001:db8::1]/report"
+    invalid_urls = [
+        "https://example.com/a b",
+        "https://example.com/search?q=two words",
+        "https://example.com/a\tb",
+        "https://example.com/a\nb",
+        " https://example.com/leading-space",
+        "https://example.com/trailing-space ",
+    ]
+
+    recorder.record_source_url_fingerprints([ipv6_url, *invalid_urls])
+
+    fingerprints = recorder.ledger().source_url_fingerprints
+    expected = sha256(
+        normalize_source_url(ipv6_url).encode("utf-8")
+    ).hexdigest()
+
+    assert fingerprints == [expected]
+    assert recorder.ledger().source_url_fingerprints_complete is True
+
+
 @pytest.mark.asyncio
 async def test_fingerprinting_proxy_ignores_failed_source_results(tracker) -> None:
     recorder = DependencyRecorder()

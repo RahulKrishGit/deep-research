@@ -28,6 +28,7 @@ from hashlib import sha256
 from math import sqrt
 from pathlib import Path
 from typing import Any
+from unicodedata import category as unicode_category
 from urllib.parse import urlsplit
 
 import httpx
@@ -95,6 +96,11 @@ CONTROLLED_SCENARIO_CONTRACT_VERSION = 2
 
 def _is_valid_http_source_url(value: str) -> bool:
     """Admit only absolute HTTP(S) URLs with a safely parsed authority."""
+    if any(
+        character.isspace() or unicode_category(character) == "Cc"
+        for character in value
+    ):
+        return False
     try:
         parts = urlsplit(value)
         if (
@@ -275,11 +281,11 @@ class DependencyRecorder:
         for url in urls:
             if not isinstance(url, str):
                 continue
+            if not _is_valid_http_source_url(url):
+                continue
             try:
                 normalized = normalize_source_url(url)
             except (UnicodeError, ValueError):
-                continue
-            if not _is_valid_http_source_url(normalized):
                 continue
             fingerprint = sha256(normalized.encode("utf-8")).hexdigest()
             if fingerprint in self._source_url_fingerprints:
