@@ -602,6 +602,7 @@ class CriticAgent(BaseAgent[Critique]):
                 ),
                 ReActDecision,
                 agent_name=self.name,
+                max_tokens=self.config.react_decision_max_tokens,
             )
 
         react = await run_react_loop(

@@ -70,7 +70,7 @@ class LLMConfig(BaseModel):
     retry_initial_delay: float = Field(default=1.0, ge=0)
     retry_max_delay: float = Field(default=16.0, ge=0)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=4096, ge=1)
+    max_tokens: int = Field(default=32768, ge=1)
 
     def resolve_for(self, agent_name: str | None) -> EffectiveModelConfig:
         override = None if agent_name is None else self.model_overrides.get(agent_name)
@@ -178,6 +178,13 @@ class AgentRuntimeConfig(BaseModel):
     the global cap scoring it and returned ``judge_output_limit`` with no
     quality score at all. The verdict carries six common dimensions, the
     agent-specific dimensions, and a rationale, so it is not a small reply.
+
+    ``react_decision_max_tokens`` is the budget for every ReAct decision
+    request. A live Critic repetition recorded ``{kind: output_limit,
+    operation: react_decision}``: the spot-check decision hit the global cap
+    and was truncated, which silently degrades the spot-check phase instead of
+    failing the run. A decision is not a small reply either — it must carry the
+    agent's reasoning, one tool call, and that call's arguments.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -186,9 +193,10 @@ class AgentRuntimeConfig(BaseModel):
     tool_budget: int = Field(default=10, ge=0)
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
-    planner_final_max_tokens: int = Field(default=4096, ge=1)
+    planner_final_max_tokens: int = Field(default=32768, ge=1)
     critic_review_max_tokens: int = Field(default=32768, ge=1)
     judge_max_tokens: int = Field(default=32768, ge=1)
+    react_decision_max_tokens: int = Field(default=32768, ge=1)
 
 
 class GraphConfig(BaseModel):
@@ -344,6 +352,10 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_JUDGE_MAX_TOKENS": (
         "agents",
         "judge_max_tokens",
+    ),
+    "AGENTS_REACT_DECISION_MAX_TOKENS": (
+        "agents",
+        "react_decision_max_tokens",
     ),
     "GRAPH_MAX_ITERATIONS": ("graph", "max_iterations"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),

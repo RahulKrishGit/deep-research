@@ -37,7 +37,7 @@ def config_path(tmp_path: Path) -> Path:
                     "timeout": 45.0,
                     "retry_count": 2,
                     "temperature": 0.7,
-                    "max_tokens": 4096,
+                    "max_tokens": 32768,
                 },
                 "langsmith": {"tracing_enabled": False, "project": "yaml-project"},
                 "tavily": {"search_depth": "basic", "max_results": 5},
@@ -626,22 +626,34 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.tool_budget == 10
     assert settings.agents.prompt_context_entries == 8
     assert settings.agents.observation_summary_chars == 200
-    assert settings.agents.planner_final_max_tokens == 4096
+    assert settings.agents.planner_final_max_tokens == 32768
     assert settings.agents.critic_review_max_tokens == 32768
 
 
-def test_the_critic_review_budget_exceeds_the_global_cap(config_path: Path) -> None:
-    """The critic review budget is not clamped to the global cap.
+def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
+    """Every output budget is generous, and none is clamped below the global.
 
-    Deterministic metric ids are lower snake case; this asserts the same
-    spelling discipline on the config surface while pinning the deliberate
-    divergence: the review call asks for more room than ``llm.max_tokens``
-    because at the global cap it returned non-JSON text twice per repetition.
+    A previous revision set the global cap to 4096 and let only a few
+    operations exceed it. Truncation then produced a different failure mode per
+    operation: the Critic's review returned non-JSON text twice per repetition,
+    the judge returned ``judge_output_limit`` with no score at all, and a ReAct
+    decision returned ``{kind: output_limit, operation: react_decision}`` while
+    silently degrading the spot-check phase. A budget that is never used costs
+    nothing; a budget that truncates costs the whole repetition, so the uniform
+    value is the safe default and any per-operation speed concern belongs in
+    that operation's prompt instead.
     """
     settings = load_config(str(config_path))
+    budgets = {
+        "llm.max_tokens": settings.llm.max_tokens,
+        "planner_final_max_tokens": settings.agents.planner_final_max_tokens,
+        "critic_review_max_tokens": settings.agents.critic_review_max_tokens,
+        "judge_max_tokens": settings.agents.judge_max_tokens,
+        "react_decision_max_tokens": settings.agents.react_decision_max_tokens,
+    }
 
-    assert settings.agents.critic_review_max_tokens == 32768
-    assert settings.agents.critic_review_max_tokens > settings.llm.max_tokens
+    for name, value in budgets.items():
+        assert value >= 32768, f"{name} is still pinned at {value}"
 
 
 def test_the_shipped_config_file_carries_the_critic_review_budget() -> None:
@@ -650,25 +662,14 @@ def test_the_shipped_config_file_carries_the_critic_review_budget() -> None:
     assert raw["agents"]["critic_review_max_tokens"] == 32768
 
 
-def test_the_judge_budget_exceeds_the_global_cap(config_path: Path) -> None:
-    """The judge is not clamped to the global output cap either.
-
-    Once the Critic produced a real critique, the judge hit the global cap
-    scoring it and returned ``judge_output_limit`` with no quality score at
-    all, which classifies the repetition as an infrastructure failure rather
-    than a quality result. The verdict carries six common dimensions, the
-    agent-specific dimensions, and a rationale.
-    """
-    settings = load_config(str(config_path))
-
-    assert settings.agents.judge_max_tokens == 32768
-    assert settings.agents.judge_max_tokens > settings.llm.max_tokens
-
-
-def test_the_shipped_config_file_carries_the_judge_budget() -> None:
+def test_the_shipped_config_file_carries_the_uniform_token_budget() -> None:
+    """The shipped YAML raises the global cap and every operation with it."""
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
+    assert raw["llm"]["max_tokens"] == 32768
+    assert raw["agents"]["planner_final_max_tokens"] == 32768
     assert raw["agents"]["judge_max_tokens"] == 32768
+    assert raw["agents"]["react_decision_max_tokens"] == 32768
 
 
 def test_the_planner_final_budget_defaults_to_the_global_cap(
@@ -677,13 +678,13 @@ def test_the_planner_final_budget_defaults_to_the_global_cap(
     """The operation-specific planner-final budget defaults to the global cap."""
     settings = load_config(str(config_path))
 
-    assert settings.agents.planner_final_max_tokens == 4096
+    assert settings.agents.planner_final_max_tokens == 32768
 
 
 def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["agents"]["planner_final_max_tokens"] == 4096
+    assert raw["agents"]["planner_final_max_tokens"] == 32768
 
 
 @pytest.mark.parametrize(

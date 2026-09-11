@@ -218,6 +218,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                 messages,
                 ReActDecision,
                 agent_name=self._name,
+                max_tokens=self._config.react_decision_max_tokens,
             )
 
         async with self._tracker.agent_span(self._name) as span:

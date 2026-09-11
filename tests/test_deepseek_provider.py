@@ -339,7 +339,7 @@ async def test_deepseek_plain_completion_translates_roles_and_thinking() -> None
     ]
     assert call["extra_body"] == {"thinking": {"type": "enabled"}}
     assert call["reasoning_effort"] == "high"
-    assert call["max_tokens"] == 4096
+    assert call["max_tokens"] == 32768
     assert "temperature" not in call
 
 
@@ -369,7 +369,7 @@ async def test_deepseek_judge_uses_responses_json_schema_with_prompt_parity() ->
     assert len(responses.calls) == 1
     call = responses.calls[0]
     assert call["model"] == "deepseek-v4-flash"
-    assert call["max_output_tokens"] == 4096
+    assert call["max_output_tokens"] == 32768
     assert call["reasoning"] == {"effort": "high"}
     assert "temperature" not in call
     assert call["text"] == {
@@ -485,7 +485,7 @@ async def test_deepseek_judge_responses_output_limit_is_typed() -> None:
             )
 
     assert caught.value.telemetry.finish_reason_category == "length"
-    assert caught.value.telemetry.configured_max_tokens == 4096
+    assert caught.value.telemetry.configured_max_tokens == 32768
     assert caught.value.telemetry.structured_attempt == 1
 
 
@@ -891,7 +891,7 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
     assert telemetry_type is not None
     telemetry = telemetry_type(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
         structured_attempt=2,
@@ -899,7 +899,7 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
 
     assert telemetry.model_dump(mode="json") == {
         "finish_reason_category": "length",
-        "configured_max_tokens": 4096,
+        "configured_max_tokens": 32768,
         "usage": {
             "input_tokens": 8,
             "output_tokens": 4096,
@@ -919,14 +919,14 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
     with pytest.raises(ValueError):
         telemetry_type(
             finish_reason_category="length",
-            configured_max_tokens=4096,
+            configured_max_tokens=32768,
             usage=TokenUsage(),
             request_attempt=0,
         )
     with pytest.raises(ValueError):
         telemetry_type(
             finish_reason_category="length",
-            configured_max_tokens=4096,
+            configured_max_tokens=32768,
             usage=TokenUsage(),
             request_attempt=1,
             raw_finish_reason="length",
@@ -936,7 +936,7 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
 def test_provider_response_telemetry_rejects_top_level_mutation() -> None:
     telemetry = contracts_module.ProviderResponseTelemetry(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
     )
@@ -948,7 +948,7 @@ def test_provider_response_telemetry_rejects_top_level_mutation() -> None:
 def test_provider_response_telemetry_rejects_nested_usage_replacement() -> None:
     telemetry = contracts_module.ProviderResponseTelemetry(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
     )
@@ -961,7 +961,7 @@ def test_provider_response_telemetry_rejects_nested_mutation_and_stays_bounded(
 ) -> None:
     telemetry = contracts_module.ProviderResponseTelemetry(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
     )
@@ -973,7 +973,7 @@ def test_provider_response_telemetry_rejects_nested_mutation_and_stays_bounded(
     assert telemetry.model_dump(mode="json") == serialized_before
     assert json.loads(telemetry.model_dump_json()) == {
         "finish_reason_category": "length",
-        "configured_max_tokens": 4096,
+        "configured_max_tokens": 32768,
         "usage": {
             "input_tokens": 8,
             "output_tokens": 4096,
@@ -1032,7 +1032,7 @@ async def test_deepseek_output_limit_finish_reason_telemetry_is_finite_and_safe(
             assert type(caught.value).__name__ == "ProviderOutputLimitError"
             assert getattr(caught.value, "telemetry").model_dump(mode="json") == {
                 "finish_reason_category": "length",
-                "configured_max_tokens": 4096,
+                "configured_max_tokens": 32768,
                 "usage": {
                     "input_tokens": 8,
                     "output_tokens": 4096,
@@ -1061,7 +1061,7 @@ async def test_deepseek_output_limit_finish_reason_telemetry_is_finite_and_safe(
     assert tracker.llm_outputs == [
         {
             "finish_reason_category": expected_category,
-            "configured_max_tokens": 4096,
+            "configured_max_tokens": 32768,
             "usage": {
                 "input_tokens": 8,
                 "output_tokens": 4096,
@@ -1103,7 +1103,7 @@ async def test_deepseek_structured_length_error_carries_structured_attempt() -> 
     assert type(caught.value).__name__ == "ProviderOutputLimitError"
     assert getattr(caught.value, "telemetry").model_dump(mode="json") == {
         "finish_reason_category": "length",
-        "configured_max_tokens": 4096,
+        "configured_max_tokens": 32768,
         "usage": {
             "input_tokens": 8,
             "output_tokens": 4096,
@@ -1533,7 +1533,7 @@ def test_structured_output_error_retains_only_two_diagnostics() -> None:
 def test_provider_output_limit_error_keeps_typed_telemetry() -> None:
     telemetry = ProviderResponseTelemetry(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
     )
@@ -1758,7 +1758,7 @@ async def test_deepseek_structured_defaults_max_tokens_to_the_global_cap() -> No
             [ChatMessage(role="user", content="decide")], TinyAnswer
         )
 
-    assert completions.calls[0]["max_tokens"] == 4096
+    assert completions.calls[0]["max_tokens"] == 32768
 
 
 @pytest.mark.asyncio
@@ -2562,7 +2562,7 @@ async def test_schema_target_structured_uses_responses_json_schema() -> None:
     assert call["text"]["format"]["type"] == "json_schema"
     assert call["text"]["format"]["name"] == "TinyAnswer"
     assert call["text"]["format"]["schema"] == TinyAnswer.model_json_schema()
-    assert call["max_output_tokens"] == 4096
+    assert call["max_output_tokens"] == 32768
 
 
 @pytest.mark.asyncio

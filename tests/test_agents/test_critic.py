@@ -227,7 +227,9 @@ async def test_only_the_review_call_gets_the_operation_output_budget(
     budgets = dict(
         zip((call[0] for call in completer.calls), completer.budgets, strict=True)
     )
-    assert budgets["ReActDecision"] is None
+    assert budgets["ReActDecision"] == (
+        AgentRuntimeConfig().react_decision_max_tokens
+    )
     assert budgets["CritiqueDraft"] == AgentRuntimeConfig().critic_review_max_tokens
 
 

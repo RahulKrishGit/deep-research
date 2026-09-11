@@ -18,7 +18,12 @@ llm:
   retry_initial_delay: 1.0
   retry_max_delay: 16.0
   temperature: 0.7
-  max_tokens: 4096
+  # Output budget ceiling. Every request type now carries a generous budget:
+  # the global cap and each operation-specific budget are all 32768. A low cap
+  # does not save money when it is unused, but it does cost a whole repetition
+  # when it truncates a large structured reply. If a particular operation
+  # proves slow, reduce its prompt rather than this ceiling.
+  max_tokens: 32768
 
 langsmith:
   tracing_enabled: false
@@ -45,14 +50,13 @@ agents:
   # Operation-specific output budget for the planner's final
   # ResearchPlanDraft request only; ReAct decisions and judge calls keep
   # llm.max_tokens (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).
-  planner_final_max_tokens: 4096
+  planner_final_max_tokens: 32768
   # Operation-specific output budget for the Critic's report-review request
   # only (AGENTS_CRITIC_REVIEW_MAX_TOKENS overrides this). That call renders
   # the report, the claims, the source scores, and the spot-check evidence,
   # then asks for a score plus three lists plus a rationale in one object. At
   # 4096 it returned non-JSON text on both the initial attempt and the single
-  # repair in three consecutive live canaries. Critic ReAct decisions keep
-  # llm.max_tokens.
+  # repair in three consecutive live canaries.
   critic_review_max_tokens: 32768
   # Operation-specific output budget for the judge's JudgeVerdict request
   # (AGENTS_JUDGE_MAX_TOKENS overrides this). The verdict carries six common
@@ -60,6 +64,13 @@ agents:
   # Critic began producing a real critique the judge hit the global cap and
   # returned judge_output_limit with no score at all.
   judge_max_tokens: 32768
+  # Output budget for every ReAct decision request
+  # (AGENTS_REACT_DECISION_MAX_TOKENS overrides this). A live Critic repetition
+  # recorded {kind: output_limit, operation: react_decision}: the spot-check
+  # decision hit the global cap and was truncated, which degrades the
+  # spot-check phase silently rather than failing the run. A decision carries
+  # the agent's reasoning, one tool call, and that call's arguments.
+  react_decision_max_tokens: 32768
 
 graph:
   max_iterations: 3

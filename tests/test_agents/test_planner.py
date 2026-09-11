@@ -354,10 +354,18 @@ async def test_the_planner_turns_a_question_into_a_validated_plan(
 
 
 @pytest.mark.asyncio
-async def test_react_decision_requests_carry_no_max_tokens_override(
+async def test_react_decision_requests_carry_the_react_decision_budget(
     tracker: Tracker,
 ) -> None:
-    """ReAct decisions never receive the planner-final budget override."""
+    """ReAct decisions carry their own budget, never the planner-final one.
+
+    This replaces the earlier invariant that decisions carried no override at
+    all. A live Critic repetition recorded ``{kind: output_limit,
+    operation: react_decision}``, so decisions were being truncated at the
+    global cap. The separation that still matters is which budget reaches
+    which request: decisions get ``react_decision_max_tokens`` and only plan
+    drafts get ``planner_final_max_tokens``.
+    """
     completer = ScriptedCompleter(
         decisions=[
             use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
@@ -375,7 +383,8 @@ async def test_react_decision_requests_carry_no_max_tokens_override(
         "ReActDecision",
         "ResearchPlanDraft",
     ]
-    assert completer.budgets == [None, None, 4096]
+    decision_budget = AgentRuntimeConfig().react_decision_max_tokens
+    assert completer.budgets == [decision_budget, decision_budget, 32768]
 
 
 @pytest.mark.asyncio
@@ -403,7 +412,8 @@ async def test_only_final_plan_requests_use_the_planner_final_budget(
     async with tracker.session_span("session-1", "q"):
         await agent.run(_state())
 
-    assert completer.budgets == [None, None, 8192]
+    decision_budget = AgentRuntimeConfig().react_decision_max_tokens
+    assert completer.budgets == [decision_budget, decision_budget, 8192]
 
 
 @pytest.mark.asyncio
@@ -439,14 +449,15 @@ async def test_repair_plan_requests_also_use_the_planner_final_budget(
 
     assert outcome.result is not None
     assert outcome.result.repair_attempted is True
-    assert completer.budgets == [None, 8192, 8192]
+    decision_budget = AgentRuntimeConfig().react_decision_max_tokens
+    assert completer.budgets == [decision_budget, 8192, 8192]
 
 
 def _output_limit_error() -> ProviderOutputLimitError:
     return ProviderOutputLimitError(
         ProviderResponseTelemetry(
             finish_reason_category="length",
-            configured_max_tokens=4096,
+            configured_max_tokens=32768,
             usage=TokenUsage(input_tokens=5, output_tokens=4096),
             request_attempt=1,
             structured_attempt=1,

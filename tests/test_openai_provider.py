@@ -163,7 +163,7 @@ async def test_complete_parses_text_and_records_usage() -> None:
             "model": "gpt-4o-mini",
             "input": [{"role": "user", "content": "Summarize this."}],
             "temperature": 0.7,
-            "max_output_tokens": 4096,
+            "max_output_tokens": 32768,
         }
     ]
     token_metric = next(
@@ -321,7 +321,7 @@ async def test_openai_structured_defaults_max_output_tokens_to_the_global_cap() 
             [ChatMessage(role="user", content="Create an outline")], Outline
         )
 
-    assert responses.parse_calls[0]["max_output_tokens"] == 4096
+    assert responses.parse_calls[0]["max_output_tokens"] == 32768
 
 
 @pytest.mark.asyncio

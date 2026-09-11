@@ -1049,4 +1049,7 @@ async def test_react_decision_output_limit_remains_a_conservative_fallback(
         "ClaimsDraft",
         "ReActDecision",
     ]
-    assert completer.budgets == [None, None]
+    assert completer.budgets == [
+        None,
+        AgentRuntimeConfig().react_decision_max_tokens,
+    ]
