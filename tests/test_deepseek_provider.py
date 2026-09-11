@@ -355,14 +355,15 @@ async def test_deepseek_judge_uses_responses_json_schema_with_prompt_parity() ->
         deepseek_config(), tracker, client=client
     )
 
-    result = await provider.complete_structured(
-        [
-            ChatMessage(role="developer", content="judge policy"),
-            ChatMessage(role="user", content="judge input"),
-        ],
-        JudgeVerdict,
-        agent_name="judge",
-    )
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [
+                ChatMessage(role="developer", content="judge policy"),
+                ChatMessage(role="user", content="judge input"),
+            ],
+            JudgeVerdict,
+            agent_name="judge",
+        )
 
     assert result == JudgeVerdict.model_validate(verdict_payload)
     assert len(responses.calls) == 1
@@ -385,6 +386,275 @@ async def test_deepseek_judge_uses_responses_json_schema_with_prompt_parity() ->
     assert "response_format" not in call
     assert "max_tokens" not in call
     assert client.chat.completions.calls == []
+
+
+def test_deepseek_judge_responses_usage_absent_maps_to_zero_tokens() -> None:
+    response = responses_response(output_text="unused")
+    del response.usage
+
+    usage = deepseek_module._responses_usage_from_response(response)
+
+    assert usage == TokenUsage()
+
+
+def test_deepseek_judge_responses_usage_maps_counts_and_total() -> None:
+    response = SimpleNamespace(
+        usage=SimpleNamespace(input_tokens=8, output_tokens=3, total_tokens=11)
+    )
+
+    usage = deepseek_module._responses_usage_from_response(response)
+
+    assert usage.model_dump() == {
+        "input_tokens": 8,
+        "output_tokens": 3,
+        "total_tokens": 11,
+    }
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        SimpleNamespace(input_tokens=True, output_tokens=2, total_tokens=3),
+        SimpleNamespace(input_tokens="8", output_tokens=2, total_tokens=10),
+        SimpleNamespace(input_tokens=8, output_tokens=-1, total_tokens=7),
+        SimpleNamespace(input_tokens=8, output_tokens=None, total_tokens=8),
+        SimpleNamespace(input_tokens=8, output_tokens=2, total_tokens=5),
+        SimpleNamespace(input_tokens=8, output_tokens=2, total_tokens="10"),
+        SimpleNamespace(input_tokens=8, output_tokens=True, total_tokens=9),
+    ],
+)
+def test_deepseek_judge_responses_usage_rejects_malformed(
+    usage: SimpleNamespace,
+) -> None:
+    with pytest.raises(ProviderResponseError, match="malformed usage"):
+        deepseek_module._responses_usage_from_response(
+            SimpleNamespace(usage=usage)
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "incomplete_reason", "expected"),
+    [
+        ("completed", None, "stop"),
+        ("incomplete", "max_output_tokens", "length"),
+        ("incomplete", "content_filter", "content_filter"),
+        ("failed", None, "other"),
+        ("unknown", None, "other"),
+        (None, None, "other"),
+        (42, None, "other"),
+        ("incomplete", "unknown", "other"),
+        ("incomplete", None, "other"),
+    ],
+)
+def test_deepseek_judge_responses_status_normalizes_to_finite_category(
+    status: object, incomplete_reason: object, expected: str
+) -> None:
+    response = SimpleNamespace(
+        status=status,
+        incomplete_details=(
+            None
+            if incomplete_reason is None
+            else SimpleNamespace(reason=incomplete_reason)
+        ),
+    )
+
+    assert deepseek_module._responses_finish_reason(response) == expected
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_output_limit_is_typed() -> None:
+    responses = RecordingResponses(
+        responses_response(
+            output_text="partial",
+            status="incomplete",
+            incomplete_reason="max_output_tokens",
+            output_tokens=4096,
+        )
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        with pytest.raises(ProviderOutputLimitError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="judge input")],
+                JudgeVerdict,
+                agent_name="judge",
+            )
+
+    assert caught.value.telemetry.finish_reason_category == "length"
+    assert caught.value.telemetry.configured_max_tokens == 4096
+    assert caught.value.telemetry.structured_attempt == 1
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_repair_succeeds_once() -> None:
+    extra_key = "undeclared_responses_property"
+    marker = "RESPONSES_FIRST_OUTPUT_MARKER_93A7"
+    first_payload = _judge_payload(rationale="valid judge rationale")
+    first_payload[extra_key] = marker
+    second_payload = _judge_payload(rationale="repaired judge rationale")
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(first_payload)),
+        responses_response(output_text=json.dumps(second_payload)),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert result == JudgeVerdict.model_validate(second_payload)
+    assert len(responses.calls) == 2
+    assert provider._client.chat.completions.calls == []
+    for call in responses.calls:
+        assert call["text"]["format"]["type"] == "json_schema"
+        assert call["text"]["format"]["schema"] == JudgeVerdict.model_json_schema()
+    repair_input = str(responses.calls[1]["input"])
+    assert "previous JSON response failed JudgeVerdict validation" in repair_input
+    assert "category=extra_forbidden; field_paths=$" in repair_input
+    assert "only properties declared" in repair_input
+    assert extra_key not in repair_input
+    assert marker not in repair_input
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_repair_exhaustion_is_typed_and_safe() -> None:
+    extra_key = "undeclared_responses_property"
+    first_marker = "RESPONSES_FIRST_OUTPUT_MARKER_1B42"
+    second_marker = "RESPONSES_SECOND_OUTPUT_MARKER_7C18"
+    first_payload = _judge_payload(rationale="valid judge rationale")
+    first_payload[extra_key] = first_marker
+    second_payload = _judge_payload(
+        rationale=second_marker + ("x" * (2001 - len(second_marker)))
+    )
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(first_payload)),
+        responses_response(output_text=json.dumps(second_payload)),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="judge input")],
+                JudgeVerdict,
+                agent_name="judge",
+            )
+
+    assert len(responses.calls) == 2
+    assert provider._client.chat.completions.calls == []
+    assert str(caught.value) == (
+        "DeepSeek output failed JudgeVerdict validation after one repair attempt"
+    )
+    assert [
+        (item.category, item.field_paths) for item in caught.value.diagnostics
+    ] == [
+        ("extra_forbidden", ("$",)),
+        ("string_bounds", ("rationale",)),
+    ]
+    second_input = str(responses.calls[1]["input"])
+    assert "only properties declared" in second_input
+    assert extra_key not in second_input
+    assert first_marker not in second_input
+    assert first_marker not in str(caught.value)
+    assert second_marker not in str(caught.value)
+    assert second_marker not in json.dumps(
+        [item.model_dump(mode="json") for item in caught.value.diagnostics],
+        sort_keys=True,
+    )
+    for call in responses.calls:
+        assert call["text"]["format"]["type"] == "json_schema"
+        assert call["text"]["format"]["schema"] == JudgeVerdict.model_json_schema()
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_failure_drops_provider_and_request_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_marker = "RESPONSES_RESPONSE_FRAME_MARKER_2A61"
+    prompt_marker = "RESPONSES_PROMPT_FRAME_MARKER_5D37"
+    request_marker = "RESPONSES_REQUEST_FRAME_MARKER_8F24"
+    schema_marker = "RESPONSES_SCHEMA_REQUEST_MARKER_6C31"
+
+    class MarkedTinyAnswer(BaseModel):
+        answer: str
+        confidence: int
+
+        model_config = ConfigDict(
+            json_schema_extra={"description": schema_marker}
+        )
+
+    invalid_response = json.dumps(
+        {"answer": response_marker, "confidence": "not-an-integer"}
+    )
+    responses = RecordingResponses(
+        responses_response(output_text=invalid_response),
+        responses_response(output_text=invalid_response),
+    )
+    tracker = CapturingTracker()
+    client = FakeDeepSeekClient(responses=responses)
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=client
+    )
+    original_options = deepseek_module._responses_request_options
+
+    def marked_options(config, agent_name):
+        effective, request, metadata = original_options(config, agent_name)
+        return effective, {**request, "request_marker": request_marker}, metadata
+
+    monkeypatch.setattr(
+        deepseek_module, "_responses_request_options", marked_options
+    )
+
+    with pytest.raises(StructuredOutputError) as caught:
+        async with tracker.session_span("session-1", prompt_marker):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content=prompt_marker)],
+                MarkedTinyAnswer,
+            )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    from deep_research.evaluation.failure_taxonomy import safe_failure_details
+
+    details = safe_failure_details(caught.value)
+    assert details is not None
+    surfaces = {
+        "exception_frames": repr(_provider_exception_surfaces(caught.value)),
+        "exception_strings": repr([str(caught.value)]),
+        "exception_attributes": repr(vars(caught.value)),
+        "provider_diagnostics": json.dumps(
+            [item.model_dump(mode="json") for item in caught.value.diagnostics],
+            sort_keys=True,
+        ),
+        "evaluation_projection": details.model_dump_json(),
+    }
+    assert all(
+        marker not in surface
+        for surface in surfaces.values()
+        for marker in (
+            response_marker,
+            prompt_marker,
+            request_marker,
+            schema_marker,
+        )
+    )
+    recorded_requests = json.dumps(responses.calls, default=repr, sort_keys=True)
+    assert prompt_marker in recorded_requests
+    assert request_marker in recorded_requests
+    assert schema_marker in recorded_requests
 
 
 @pytest.mark.asyncio

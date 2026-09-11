@@ -327,6 +327,60 @@ def _usage_from_response(response: Any) -> TokenUsage:
     )
 
 
+def _responses_usage_from_response(response: Any) -> TokenUsage:
+    """Map a Responses usage object to project-owned token counts."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return TokenUsage()
+    input_tokens = getattr(usage, "input_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    if (
+        isinstance(input_tokens, bool)
+        or not isinstance(input_tokens, int)
+        or input_tokens < 0
+        or isinstance(output_tokens, bool)
+        or not isinstance(output_tokens, int)
+        or output_tokens < 0
+    ):
+        response = None
+        usage = None
+        input_tokens = None
+        output_tokens = None
+        raise ProviderResponseError("DeepSeek response contained malformed usage")
+    total_tokens = getattr(usage, "total_tokens", None)
+    if total_tokens is not None and (
+        isinstance(total_tokens, bool)
+        or not isinstance(total_tokens, int)
+        or total_tokens != input_tokens + output_tokens
+    ):
+        response = None
+        usage = None
+        input_tokens = None
+        output_tokens = None
+        total_tokens = None
+        raise ProviderResponseError("DeepSeek response contained malformed usage")
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+    )
+
+
+def _responses_finish_reason(response: Any) -> FinishReasonCategory:
+    """Map the Responses terminal status to the finite project taxonomy."""
+    status = getattr(response, "status", None)
+    if status == "completed":
+        return "stop"
+    if status == "incomplete":
+        details = getattr(response, "incomplete_details", None)
+        reason = getattr(details, "reason", None)
+        if reason == "max_output_tokens":
+            return "length"
+        if reason == "content_filter":
+            return "content_filter"
+    return "other"
+
+
 def _normalize_finish_reason(value: object) -> FinishReasonCategory:
     """Map an untrusted provider finish value to the finite safe taxonomy."""
     if not isinstance(value, str) or len(value) > 64:
@@ -779,28 +833,93 @@ class DeepSeekJudgeProvider(DeepSeekChatProvider):
         configured_max_tokens: int,
         attempt: int,
     ) -> SchemaT:
-        response = await self._client.responses.create(
-            **{
-                **request,
-                "input": messages,
-                "max_output_tokens": configured_max_tokens,
-                "text": {
-                    "format": {
-                        "type": "json_schema",
-                        "name": schema.__name__,
-                        "schema": schema.model_json_schema(),
-                    }
-                },
-            }
-        )
-        text = getattr(response, "output_text", None)
-        if not isinstance(text, str):
-            raise ProviderResponseError(
-                "DeepSeek Responses output did not contain text"
+        async with self._tracker.llm_span(
+            model,
+            {
+                **metadata,
+                "operation": "structured_output",
+                "attempt": attempt,
+                "message_count": len(messages),
+            },
+        ) as span:
+            _sdk = _openai_errors()
+            request_attempt = 0
+
+            async def _request() -> Any:
+                nonlocal request_attempt
+                request_attempt += 1
+                try:
+                    return await self._client.responses.create(
+                        **{
+                            **request,
+                            "input": messages,
+                            "max_output_tokens": configured_max_tokens,
+                            "text": {
+                                "format": {
+                                    "type": "json_schema",
+                                    "name": schema.__name__,
+                                    "schema": schema.model_json_schema(),
+                                }
+                            },
+                        }
+                    )
+                except (
+                    _sdk.APITimeoutError,
+                    _sdk.RateLimitError,
+                    _sdk.APIConnectionError,
+                    _sdk.APIStatusError,
+                ) as error:
+                    _raise_deepseek_error(error)
+                except _sdk.OpenAIError as error:
+                    raise ProviderResponseError(
+                        "DeepSeek Responses request failed"
+                    ) from error
+
+            response = await with_retries(
+                _request,
+                retry_count=self._config.retry_count,
+                initial_delay=self._config.retry_initial_delay,
+                max_delay=self._config.retry_max_delay,
             )
-        parsed = schema.model_validate_json(text)
-        self._last_model_returned = getattr(response, "model", None) or model
-        return parsed
+            telemetry = ProviderResponseTelemetry(
+                finish_reason_category=_responses_finish_reason(response),
+                configured_max_tokens=configured_max_tokens,
+                usage=_responses_usage_from_response(response),
+                request_attempt=request_attempt,
+                structured_attempt=attempt,
+            )
+            _set_span_result(span, telemetry)
+            if telemetry.finish_reason_category == "length":
+                response = None
+                raise ProviderOutputLimitError(telemetry)
+            if telemetry.finish_reason_category != "stop":
+                response = None
+                raise ProviderResponseError(
+                    "DeepSeek Responses request did not complete cleanly"
+                )
+            text = getattr(response, "output_text", None)
+            if not isinstance(text, str):
+                response = None
+                raise ProviderResponseError(
+                    "DeepSeek Responses output did not contain text"
+                )
+            try:
+                parsed = schema.model_validate_json(text)
+            except (json.JSONDecodeError, ValidationError) as error:
+                diagnostic = _validation_diagnostic(
+                    error,
+                    attempt=attempt,
+                    schema=schema,
+                )
+            else:
+                self._last_model_returned = (
+                    getattr(response, "model", None) or model
+                )
+                return parsed
+            response = None
+            text = ""
+            parsed = None
+            raise _StructuredValidationFailure(schema.__name__, diagnostic) from None
 
     async def complete_structured(
         self,
@@ -823,12 +942,64 @@ class DeepSeekJudgeProvider(DeepSeekChatProvider):
             *_translated_messages(messages),
             {"role": "system", "content": instruction.content},
         ]
-        return await self._responses_structured_attempt(
-            current_messages,
-            schema,
-            model=effective.model,
-            request=request,
-            metadata=metadata,
-            configured_max_tokens=resolved_max_tokens,
-            attempt=1,
-        )
+
+        diagnostics: list[StructuredValidationDiagnostic] = []
+        final_error: StructuredOutputError | None = None
+        for attempt in (1, 2):
+            try:
+                return await self._responses_structured_attempt(
+                    current_messages,
+                    schema,
+                    model=effective.model,
+                    request=request,
+                    metadata=metadata,
+                    configured_max_tokens=resolved_max_tokens,
+                    attempt=attempt,
+                )
+            except _StructuredValidationFailure as error:
+                diagnostics.append(error.diagnostic)
+                if attempt == 2:
+                    final_error = StructuredOutputError(
+                        f"DeepSeek output failed {schema.__name__} validation "
+                        "after one repair attempt",
+                        diagnostics=tuple(diagnostics),
+                    )
+                    break
+                schema_json = json.dumps(
+                    schema.model_json_schema(), sort_keys=True, separators=(",", ":")
+                )
+                repair_guidance = _validation_repair_guidance(error.diagnostic)
+                repair = (
+                    f"The previous JSON response failed {schema.__name__} "
+                    "validation. Return only one JSON object that validates "
+                    "against the supplied JSON Schema. Do not add Markdown or "
+                    "explanatory text. "
+                    f"Validation summary: {_validation_summary(error.diagnostic)}\n"
+                    f"{repair_guidance}"
+                    f"JSON Schema:\n{schema_json}"
+                )
+                current_messages = [
+                    *current_messages,
+                    {"role": "system", "content": repair},
+                ]
+
+        if final_error is None:
+            raise AssertionError("structured output attempt loop did not return")
+
+        # Do not raise while handling the internal validation failure: that
+        # would retain it through ``__context__``/``__cause__``. Clear all
+        # provider-adjacent locals before the public error's traceback is
+        # captured, leaving only the bounded typed diagnostics.
+        self = None
+        messages = []
+        current_messages = []
+        request = {}
+        metadata = {}
+        effective = None
+        agent_name = None
+        schema = BaseModel
+        instruction = None
+        schema_json = ""
+        repair = ""
+        repair_guidance = ""
+        raise final_error
