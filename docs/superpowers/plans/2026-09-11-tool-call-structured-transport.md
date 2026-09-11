@@ -926,14 +926,128 @@ git commit -m "test(provider): pin both transports and prove agents inherit the 
 
 ---
 
-### Task 5: Full offline gate
+### Task 5: State the JSON contract in the review request itself
+
+**Files:**
+- Modify: `src/deep_research/agents/prompts.py` (`CRITIQUE_INSTRUCTION`)
+- Modify: `src/deep_research/agents/critic.py` (`critique_messages`)
+- Test: `tests/test_agents/test_critic.py`
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks. This task is independent of the transport switch and can land before or after Tasks 1–4.
+- Produces: no new symbol. `CRITIQUE_INSTRUCTION` and the rendered review body change, so the Critic's target prompt fingerprint moves.
+
+This is defence in depth, not the fix. `critique_messages` never used the word "JSON" at all: the only place JSON was requested was the trailing system message the provider appends. Task 7's canary note depends on this task having landed, because it is the reason the target prompt fingerprint changes.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_agents/test_critic.py`:
+
+```python
+def test_the_review_request_demands_raw_json() -> None:
+    """The review body must ask for JSON in words, not only via the transport.
+
+    The structured call failed with ``json_invalid`` at the field root on both
+    the initial attempt and the single repair in roughly one live repetition in
+    four. ``critique_messages`` never contained the word JSON; only a trailing
+    provider-built system message did. The transport is fixed separately in
+    this plan; this pins the belt-and-braces prompt contract.
+    """
+    body = critique_messages(
+        _task(),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[1].content
+
+    assert "Reply with one JSON object and nothing else" in body
+    assert "Do not wrap it in Markdown code fences" in body
+    assert "## Reply format" in body
+    # The concrete shape is the last thing the model reads.
+    assert body.rstrip().endswith(
+        '"recommended_queries": ["..."], "rationale": "..."}'
+    )
+    for field in ("score", "gaps", "unsupported_claims", "rationale"):
+        assert f'"{field}"' in body
+
+
+def test_the_review_request_keeps_the_quality_contract_intact() -> None:
+    """The JSON demand is additive; the scoring contract is unchanged."""
+    body = critique_messages(
+        _task(),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[1].content
+
+    assert "an integer from 1 to 10" in body
+    assert "list a gap only when closing it would materially change the" in body
+    assert "Do not decide whether research continues" in body
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+```powershell
+$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
+& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_agents/test_critic.py -q -k "raw_json"
+```
+
+Expected: FAIL on `"Reply with one JSON object and nothing else"`.
+
+- [ ] **Step 3: Extend the instruction**
+
+In `src/deep_research/agents/prompts.py`, append these sentences to the end of `CRITIQUE_INSTRUCTION` (inside the existing tuple, after the `"from your score, your gaps, and the remaining budget."` element):
+
+```python
+    "\nReply with one JSON object and nothing else. Do not wrap it in Markdown "
+    "code fences, do not write any sentence before or after it, and do not "
+    "add fields beyond the ones above. The first character of your reply "
+    "must be { and the last must be }."
+```
+
+- [ ] **Step 4: Add the concrete reply shape to the rendered request**
+
+In `src/deep_research/agents/critic.py`, in `critique_messages`, change the final element of `sections` so the reply format is the last thing the model reads:
+
+```python
+        f"## Response contract\n{CRITIQUE_INSTRUCTION}",
+        (
+            "## Reply format\n"
+            "Respond with exactly this JSON object shape and nothing else:\n"
+            '{"score": 8, "gaps": ["..."], "unsupported_claims": ["..."], '
+            '"recommended_queries": ["..."], "rationale": "..."}'
+        ),
+    ]
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+```powershell
+$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
+& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_agents/test_critic.py -q
+```
+
+Expected: PASS, including the pre-existing `test_first_spot_check_receives_planned_search_query_guidance`.
+
+- [ ] **Step 6: Run ruff and commit**
+
+```powershell
+& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m ruff check src/deep_research/agents/prompts.py src/deep_research/agents/critic.py tests/test_agents/test_critic.py
+git diff --check
+git add src/deep_research/agents/prompts.py src/deep_research/agents/critic.py tests/test_agents/test_critic.py
+git commit -m "fix(critic): state the JSON reply contract in the review request"
+```
+
+---
+
+### Task 6: Full offline gate
 
 **Files:**
 - No source changes.
 
 **Interfaces:**
-- Consumes: Tasks 1–4.
-- Produces: a recorded passing offline gate. Task 6 must not start without it.
+- Consumes: Tasks 1–5.
+- Produces: a recorded passing offline gate. Task 7 must not start without it.
 
 - [ ] **Step 1: Run the full suite**
 
@@ -942,7 +1056,7 @@ $env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scrip
 & "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest -q
 ```
 
-Expected: the three named pre-existing failures plus `2088`-ish passing tests, and **no new failures**. The base commit `035d3c5` recorded `3 failed, 2086 passed, 1 deselected`. Tasks 1–4 add roughly 11 tests. Record the exact numbers. Any failure outside those three names is a regression from this plan: stop and diagnose rather than proceeding.
+Expected: the three named pre-existing failures plus roughly `2098` passing tests, and **no new failures**. The plan's base commit `a2ecc1c` recorded exactly `3 failed, 2086 passed, 1 deselected`. Tasks 1–5 add roughly 13 tests. Record the exact numbers. Any failure outside those three names is a regression from this plan: stop and diagnose rather than proceeding.
 
 - [ ] **Step 2: Run ruff and whitespace checks**
 
@@ -956,8 +1070,8 @@ Expected: both clean.
 - [ ] **Step 3: Confirm no budget or threshold moved**
 
 ```powershell
-git diff 035d3c5 -- config.yaml
-git diff 035d3c5 --stat
+git diff a2ecc1c -- config.yaml
+git diff a2ecc1c --stat
 ```
 
 Expected: `config.yaml` shows only the added `structured_transport` key and its comment; no `max_tokens` value, retry value, temperature, or threshold changed.
@@ -974,13 +1088,13 @@ git commit -m "docs: record the tool-call transport offline gate"
 
 ---
 
-### Task 6: Live canary, then decide the OpenAI scope
+### Task 7: Live canary, then decide the OpenAI scope
 
 **Files:**
 - Create: `docs/superpowers/2026-09-11-tool-call-transport-canary.md`
 
 **Interfaces:**
-- Consumes: the offline gate (Task 5), the frozen configuration, the `critic-live-review` case.
+- Consumes: the offline gate (Task 6), the frozen configuration, the `critic-live-review` case.
 - Produces: a recorded canary result and the evidence needed to decide whether the OpenAI adapter also moves to tool calls.
 
 **This task spends money. Do not run it without the user's explicit go-ahead in this session.**
@@ -1053,12 +1167,12 @@ git commit -m "docs: record the tool-call transport canary"
 
 ## Self-Review
 
-**Spec coverage.** The user's requirement is "convert structured output into a tool call, and if it works update all the agents". Task 1 adds the selectable transport; Task 2 implements the tool-call mechanism; Task 3 makes both transports share one repair loop; Task 4 proves every agent inherits the switch without any agent-file change, and pins the existing Responses tests to their transport; Task 5 is the offline gate; Task 6 is the paid canary that decides the "if it works" condition and scopes the OpenAI adapter from evidence. The earlier `json_invalid` evidence and the `review_produced` gate from the previous session are the justification and are cited rather than restated.
+**Spec coverage.** The user's requirement is "convert structured output into a tool call, and if it works update all the agents". Task 1 adds the selectable transport; Task 2 implements the tool-call mechanism; Task 3 makes both transports share one repair loop; Task 4 proves every agent inherits the switch without any agent-file change, and pins the existing Responses tests to their transport; Task 5 states the JSON contract in the review request; Task 6 is the offline gate; Task 7 is the paid canary that decides the "if it works" condition and scopes the OpenAI adapter from evidence. The earlier `json_invalid` evidence and the `review_produced` gate from the previous session are the justification and are cited rather than restated.
 
-**What this plan deliberately does not do.** It does not convert the six agent modules, because they contain no structured-output code to convert — the claim is pinned by `test_the_agent_modules_do_not_mention_the_transport`. It does not touch `openai_provider.py`, because that adapter uses a different mechanism (`responses.parse`) with different failure behaviour and no observed failure in this campaign; Task 6 makes that decision explicit and evidence-based instead of assumed.
+**What this plan deliberately does not do.** It does not convert the six agent modules, because they contain no structured-output code to convert — the claim is pinned by `test_the_agent_modules_do_not_mention_the_transport`. It does not touch `openai_provider.py`, because that adapter uses a different mechanism (`responses.parse`) with different failure behaviour and no observed failure in this campaign; Task 7 makes that decision explicit and evidence-based instead of assumed.
 
 **Type consistency.** `_tool_schema` returns `dict[str, object]` and is used only as `parameters`. `_tool_call_arguments` returns `str` and feeds `schema.model_validate_json`. `_tool_call_structured_attempt` matches the keyword signature the shared loop calls it with (`messages, schema, *, model, request, metadata, configured_max_tokens, attempt`) and returns `SchemaT`. `_structured_repair_loop` is defined on `DeepSeekChatProvider` and called as `self._structured_repair_loop(...)` from `_DeepSeekSchemaStructuredProvider`, which inherits it. `attempt_call` is passed as a bound method and called with the same keyword set it declares.
 
-**Placeholder scan.** No step says "TBD", "implement later", "add validation", or "similar to Task N". Every code step carries runnable code. One substitution token exists by necessity — `<SHORT_SHA>` in Task 6 Step 3 — because it is the hash of a commit Task 5 has not yet produced; Step 2 records it immediately before use.
+**Placeholder scan.** No step says "TBD", "implement later", "add validation", or "similar to Task N". Every code step carries runnable code. One substitution token exists by necessity — `<SHORT_SHA>` in Task 7 Step 3 — because it is the hash of a commit Task 6 has not yet produced; Task 7 Step 2 records it immediately before use.
 
-**Known risk to watch in Task 6.** A forced tool call changes what the model is being asked to do, so a `json_invalid` rate of zero could come with a change in output quality rather than an improvement. The canary note therefore requires the aggregate quality of each passing repetition to be recorded alongside the fallback count, so a future reader can see whether quality held rather than only that the failures stopped.
+**Known risk to watch in Task 7.** A forced tool call changes what the model is being asked to do, so a `json_invalid` rate of zero could come with a change in output quality rather than an improvement. The canary note therefore requires the aggregate quality of each passing repetition to be recorded alongside the fallback count, so a future reader can see whether quality held rather than only that the failures stopped.
