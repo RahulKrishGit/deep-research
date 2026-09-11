@@ -41,6 +41,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
 | 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker live evidence collected; Sol diagnosis pending** | The user explicitly authorized one fresh Fact Checker live repetition while the shared-judge plan was under review. Source Evaluator v2 remains target-green but judge-blocked. Fact Checker now has `15/15` hard gates and deterministic `1.00`, but scored judge `0.3675` and aggregate `0.6205` fail the quality threshold; its typed fallback diagnostic records `output_limit` for `react_decision` without a top-level target failure. Preserve both agent results, send the exact evidence to Sol High, and do not retry or advance until the current agent's diagnosis and disposition are complete. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
+| 21. Parallel evidence-driven repair wave | **In progress — Sol High plan approved; live runs paused** | The six-agent live evidence set is complete. Stream J is authorized to implement the narrowly scoped DeepSeek adaptive repair with TDD. Streams F, S, and C are diagnosis-first and may change production only after a typed target defect has a genuine offline RED. Their ownership briefs are in `docs/superpowers/2026-09-10-parallel-stream-*.md`; shared documentation remains coordinator-owned. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -51,6 +52,28 @@ The user explicitly overrode the plan's implementation-era live prohibition afte
 ### User-authorized sequential live-agent repair amendment (2026-09-10)
 
 The user authorized a sequential follow-up loop after the two one-repetition live waves. The controller must process one agent completely before advancing: run one live repetition; preserve the repository-relative artifact path, hash, typed gates, judge status, diagnostics, and LangSmith link; classify target-agent defects separately from shared judge/provider failures; provide the exact current-branch evidence to Sol High in the existing browser session; implement only the smallest Sol-reviewed, typed-evidence-backed repair (or record a no-change decision); run the required offline tests and lint; then run one focused live confirmation for that same agent. A confirmation may not be treated as success if the judge is unscorable, and no later agent may start while the current agent's diagnosis, review, fix/no-change decision, verification, and evidence ledger are incomplete. No global or operation-specific token increase, prompt tuning, rubric/threshold/weight change, suite run, or retry is implied without a separate typed-evidence decision.
+
+### Sol High parallel repair amendment (2026-09-10)
+
+Sol High approved four parallel offline streams from the verified branch tip:
+
+- Stream J: implement the adaptive DeepSeek structured-output repair
+  instruction in the provider and its provider/judge TDD tests.
+- Stream F: diagnose the Fact Checker fallback/quality trajectory; the
+  `react_decision` fallback remains distinct from target-side output-limit
+  evidence and cannot authorize a budget change.
+- Stream S: identify and reproduce the exact typed Synthesizer metric before
+  any target change.
+- Stream C: identify and reproduce the exact typed Critic metric before any
+  target/evaluator change; the older `critic_report_review` fallback is not
+  projected onto the latest rerun.
+
+The stream briefs define exclusive writable surfaces. Workers must not edit
+shared evaluators, prompts, configuration, cases/rubrics/weights, or
+documentation. The coordinator integrates only reviewed work, runs one
+offline gate, obtains a scoped Sol High review, and only then considers one
+live confirmation per affected agent. Planner, Researcher, and Source Evaluator
+receive no new code stream in this wave.
 
 ## Documentation and Error/Fix Ledger Requirement (Added 2026-09-10)
 

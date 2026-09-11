@@ -525,3 +525,43 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Classification/disposition: target contract green, Fact Checker quality
   below threshold. Preserve the artifact and require Sol High diagnosis before
   any Fact Checker prompt/behavior/budget change, retry, or later-agent run.
+
+## 55. Sol High Parallel Repair Plan — Four Disjoint Offline Streams
+
+- Review surface: existing Sol High browser conversation; current verified
+  remote branch tip at the time of planning was `c704ac9`. No live/provider
+  command, repository modification by Sol, or whole-branch review was
+  performed.
+- Evidence disposition: all six registered agents already have live evidence;
+  Planner is a passing control, Researcher and Source Evaluator are target
+  green but judge-blocked, Fact Checker is target-contract green with a
+  scorable below-threshold judge and a fallback `react_decision`
+  `output_limit`, Synthesizer is deterministic `0.75) with a separate
+  judge failure, and Critic is deterministic/judge below threshold with no
+  fallback in the latest rerun. No new live run is authorized before the
+  repair wave.
+- Approved Stream J ownership:
+  `src/deep_research/providers/deepseek_provider.py`,
+  `tests/test_deepseek_provider.py), and
+  `tests/test_evaluation/test_judging.py). Add RED tests for typed
+  `extra_forbidden/$) and `string_bounds/rationale), implement only static
+  category-aware repair guidance, preserve one repair attempt, no fabricated
+  scores, secret-safe diagnostics, and `llm.max_tokens=4096).
+- Diagnosis-only Stream F ownership:
+  Fact Checker agent/case tests, with production editing allowed only if a
+  typed target defect has a genuine local RED. The fallback remains separate
+  from top-level target failure; no token/retry/prompt tuning.
+- Diagnosis-only Stream S ownership:
+  Synthesizer agent/case tests; identify the exact typed metric and reproduce
+  it offline or stop with insufficient evidence. No production/evaluator
+  change from `0.75) alone.
+- Diagnosis-only Stream C ownership:
+  Critic agent/case tests; identify the exact typed metric, keep historical
+  `critic_report_review` fallback separate, and return any evaluator
+  candidate without editing shared evaluators.
+- Parallel safety: the four writable surfaces are disjoint; shared docs,
+  `evaluators.py), `prompts.py), config, cases/rubrics/weights, and other
+  provider files are coordinator-reserved. After task-scoped Luna Max reviews,
+  the coordinator will integrate approved commits, run one consolidated
+  offline gate, obtain a fresh scoped Sol High review, and only then consider
+  one live confirmation per affected agent.
