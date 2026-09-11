@@ -218,3 +218,26 @@ agent/scoring/budget/provider invariants remain unchanged.
   not tune Source Evaluator prompts/budgets/thresholds/weights/cases, and do
   not advance to Fact Checker. Diagnose the shared judge boundary from the
   typed field paths before any further live evaluation.
+
+## Sol High judge-boundary diagnosis — NO CHANGE; campaign paused
+
+- Review surface: existing Sol High browser conversation, current remote HEAD
+  `41707d3`, using the typed v2 artifact and the relevant judge/provider
+  implementation. No live command, repository modification, or whole-branch
+  review was performed.
+- Diagnosis: recurring shared judge structured-output/provider instability;
+  no deterministic Source Evaluator or judge-code defect is established. The
+  `$` and `rationale` field paths identify validation boundaries but not the
+  unseen invalid provider output. Existing offline coverage accepts and scores
+  valid `JudgeVerdict` values containing a rationale, so the schema is not
+  proven impossible to satisfy.
+- Repair ruling: `NO CHANGE`. Do not loosen schema constraints, make rationale
+  optional, alter parsing or provider/retry behavior, add another structured
+  repair, change reasoning effort, or raise the `4096` cap without new typed
+  evidence identifying a repeatable concrete contract violation.
+- Readiness classification: Source Evaluator target side `GREEN`; overall
+  production/review readiness `NOT READY` because the required scored judge
+  aggregate is unavailable and the runner correctly reports
+  `INFRASTRUCTURE FAILURE`.
+- Sequence: preserve the sole v2 confirmation, keep the campaign paused, and
+  do not retry Source Evaluator, run Fact Checker, or run a suite.

@@ -2278,3 +2278,22 @@ boundary prevents a scored aggregate. The next decision is judge-boundary
 diagnosis from these typed field paths; do not tune Source Evaluator prompts,
 budgets, thresholds, weights, cases, or provider behavior, and do not advance
 to Fact Checker or a suite run.
+
+### Task 19A Judge-Boundary Diagnosis — NO CHANGE; Campaign Paused
+
+Sol High reviewed the v2 live evidence against remote HEAD `41707d3` in the
+existing browser conversation. The ruling is a recurring shared
+judge-structured-output/provider instability, with no specific deterministic
+defect in Source Evaluator or judge code established from the typed evidence.
+The prior Task 18 no-change decision remains valid: the recorded paths `$` and
+`rationale` do not identify the invalid provider output, and valid offline
+`JudgeVerdict` values containing a rationale are accepted and scored. No RED
+test can be honestly written without inventing an unseen response shape.
+
+No code change is justified. Do not loosen the rationale schema, add another
+repair attempt, alter parsing or retry/provider behavior, change reasoning
+effort, or raise the global `4096` cap. The precise campaign classification is
+Target-side Source Evaluator `GREEN`, overall production/review readiness
+`NOT READY` because the required judge score and aggregate are unavailable.
+Preserve the sole v2 confirmation, keep the campaign paused, and do not run a
+Source Evaluator retry, Fact Checker, or suite.

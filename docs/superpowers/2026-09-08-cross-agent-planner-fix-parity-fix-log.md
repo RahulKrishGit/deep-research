@@ -477,3 +477,24 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   Evaluator, change budgets/thresholds/weights/cases, run Fact Checker, or run
   a suite. Next action is a typed judge-boundary diagnosis using the existing
   `$`/`rationale` field paths and the prior judge evidence.
+
+## 53. Sol High Judge-Boundary Diagnosis — NO CHANGE; Campaign Paused
+
+- Review surface: existing Sol High browser conversation at remote HEAD
+  `41707d3`, using the typed Source Evaluator v2 artifact and the current
+  judge/provider boundary. No live command, code modification, or whole-branch
+  review was performed.
+- Diagnosis: recurring shared judge structured-output/provider instability; no
+  deterministic defect in Source Evaluator or judge code is established. The
+  typed fields `$` and `rationale` do not reveal the unseen invalid provider
+  output, and prior offline tests accept valid `JudgeVerdict` values including
+  a rationale. A RED test for a guessed field violation would be invalid.
+- Repair decision: `NO CHANGE`. Do not loosen or remove rationale constraints,
+  alter JSON parsing, add another structured repair, change provider/retry or
+  reasoning behavior, or raise the global `4096` cap without stronger typed
+  evidence identifying one repeatable concrete contract failure.
+- Readiness: Source Evaluator target side `GREEN`; overall production/review
+  readiness `NOT READY` because judge status is `judge_not_run`, aggregate
+  quality is unavailable, and runner status is `INFRASTRUCTURE FAILURE`.
+- Sequence disposition: preserve the sole v2 confirmation; no Source
+  Evaluator retry, Fact Checker run, or suite run. The campaign remains paused.
