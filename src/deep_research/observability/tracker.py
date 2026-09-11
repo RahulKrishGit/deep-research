@@ -79,6 +79,8 @@ _SENSITIVE_KEY_SUFFIXES = frozenset(
         ("refresh", "token"),
     }
 )
+_REACT_ACTIONS = frozenset({"finish", "use_tool"})
+_REACT_ERROR_TYPE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
 
 def _semantic_error_type(error: BaseException | None) -> str | None:
@@ -662,6 +664,7 @@ class Tracker:
     def _end_remote_run(
         self,
         *,
+        kind: SpanKind,
         run: RunLike | None,
         handle: SpanHandle,
         context: TraceContext,
@@ -689,7 +692,7 @@ class Tracker:
 
         try:
             run.end(
-                outputs=_redact_optional_mapping(self._redact, handle.outputs),
+                outputs=self._remote_outputs(kind, handle.outputs),
                 error=self._redact(str(error)) if error is not None else None,
                 metadata=_redact_mapping(self._redact, completion_metadata),
             )
@@ -701,6 +704,48 @@ class Tracker:
                 context=context,
                 error=langsmith_error,
             )
+
+    def _remote_outputs(
+        self,
+        kind: SpanKind,
+        outputs: Mapping[str, Any] | None,
+    ) -> dict[str, JsonValue] | None:
+        if kind != "react_iteration":
+            return _redact_optional_mapping(self._redact, outputs)
+        if outputs is None:
+            return None
+
+        safe: dict[str, JsonValue] = {}
+        agent_name = outputs.get("agent_name")
+        if isinstance(agent_name, str) and 0 < len(agent_name) <= 128:
+            safe["agent_name"] = agent_name
+        iteration = outputs.get("iteration")
+        if type(iteration) is int and 0 < iteration <= 10000:
+            safe["iteration"] = iteration
+        action = outputs.get("action")
+        if isinstance(action, str) and action in _REACT_ACTIONS:
+            safe["action"] = action
+        tool = outputs.get("tool")
+        if tool is None:
+            safe["tool"] = None
+        elif isinstance(tool, str) and 0 < len(tool) <= 128:
+            safe["tool"] = tool
+        success = outputs.get("success")
+        if type(success) is bool:
+            safe["success"] = success
+        error_type = outputs.get("error_type")
+        if error_type is None:
+            safe["error_type"] = None
+        elif isinstance(error_type, str) and _REACT_ERROR_TYPE_PATTERN.fullmatch(
+            error_type
+        ):
+            safe["error_type"] = error_type
+        else:
+            safe["error_type"] = "unknown"
+        error_count = outputs.get("error_count")
+        if type(error_count) is int and 0 <= error_count <= 10000:
+            safe["error_count"] = error_count
+        return _redact_mapping(self._redact, safe)
 
     async def _exit_remote_span(
         self,
@@ -799,6 +844,7 @@ class Tracker:
             success = operation_error is None
             error_type = _semantic_error_type(operation_error)
             self._end_remote_run(
+                kind=kind,
                 run=run,
                 handle=handle,
                 context=bound_context,

@@ -25,8 +25,14 @@ from deep_research.providers.contracts import (
     ProviderResponseError,
     ProviderTimeoutError,
     StructuredOutputError,
+    StructuredValidationDiagnostic,
 )
 from deep_research.providers.retry import with_retries
+from deep_research.providers.validation import (
+    validation_diagnostic,
+    validation_diagnostic_from_text,
+    validation_summary,
+)
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -156,9 +162,13 @@ def _raise_provider_error(error: Exception) -> None:
 
 
 class _StructuredValidationFailure(RuntimeError):
-    def __init__(self, schema_name: str, output_text: str) -> None:
+    def __init__(
+        self,
+        schema_name: str,
+        diagnostic: StructuredValidationDiagnostic,
+    ) -> None:
         super().__init__(f"OpenAI output failed {schema_name} validation")
-        self.output_text = output_text
+        self.diagnostic = diagnostic
 
 
 class OpenAIChatProvider:
@@ -321,8 +331,11 @@ class OpenAIChatProvider:
                     ) from error
                 except ValidationError as error:
                     raise _StructuredValidationFailure(
-                        schema.__name__, str(error)
-                    ) from error
+                        schema.__name__,
+                        validation_diagnostic(
+                            error, attempt=attempt, schema=schema
+                        ),
+                    ) from None
 
             response = await with_retries(
                 _request,
@@ -334,9 +347,14 @@ class OpenAIChatProvider:
             _set_span_result(span, response, usage)
             parsed = getattr(response, "output_parsed", None)
             if not isinstance(parsed, schema):
-                raise _StructuredValidationFailure(
-                    schema.__name__, str(getattr(response, "output_text", ""))
+                diagnostic = validation_diagnostic_from_text(
+                    getattr(response, "output_text", None),
+                    attempt=attempt,
+                    schema=schema,
                 )
+                raise _StructuredValidationFailure(
+                    schema.__name__, diagnostic
+                ) from None
             self._last_model_returned = getattr(response, "model", None) or model
             return parsed
 
@@ -357,6 +375,8 @@ class OpenAIChatProvider:
         request = {**request, "max_output_tokens": resolved_max_tokens}
         current_messages = list(messages)
 
+        diagnostics: list[StructuredValidationDiagnostic] = []
+        final_error: StructuredOutputError | None = None
         for attempt in (1, 2):
             try:
                 return await self._structured_attempt(
@@ -368,20 +388,37 @@ class OpenAIChatProvider:
                     attempt=attempt,
                 )
             except _StructuredValidationFailure as error:
+                diagnostics.append(error.diagnostic)
                 if attempt == 2:
-                    raise StructuredOutputError(
+                    final_error = StructuredOutputError(
                         f"OpenAI output failed {schema.__name__} validation "
-                        "after one repair attempt"
-                    ) from error
+                        "after one repair attempt",
+                        diagnostics=tuple(diagnostics),
+                    )
+                    break
                 repair_instruction = (
                     f"The previous response failed {schema.__name__} validation. "
                     "Return a corrected response that matches the supplied schema "
-                    "exactly. Invalid response: "
-                    f"{error.output_text}"
+                    "exactly. "
+                    f"Validation summary: {validation_summary(error.diagnostic)}"
                 )
                 current_messages = [
                     *messages,
                     ChatMessage(role="developer", content=repair_instruction),
                 ]
 
-        raise AssertionError("structured output attempt loop did not return")
+        if final_error is None:
+            raise AssertionError("structured output attempt loop did not return")
+
+        # Raise outside the validation handler so the public error cannot retain
+        # provider-bearing exception context or prompt-bearing locals.
+        self = None
+        messages = ()
+        current_messages = []
+        request = {}
+        metadata = {}
+        effective = None
+        agent_name = None
+        schema = BaseModel
+        repair_instruction = ""
+        raise final_error

@@ -414,7 +414,8 @@ async def test_unknown_tool_error_details_clamp_an_oversized_tool_name(
 
     assert len(run.errors[0].details["tool"]) <= 50
     assert captured[0] is not None
-    assert len(captured[0]["tool"]) <= 50
+    assert captured[0]["tool"] is None
+    assert oversized_tool_name not in repr(captured[0])
 
 
 @pytest.mark.asyncio
@@ -584,20 +585,26 @@ async def test_on_step_receives_every_completed_step(tracker: Tracker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_each_iteration_emits_a_metric_and_span_outputs(
+async def test_each_iteration_emits_metadata_only_span_outputs_and_preserves_local_step(
     tracker: Tracker,
 ) -> None:
     captured = _capture_iteration_outputs(tracker)
+    thought_marker = "REACT_THOUGHT_SENTINEL_7B1A"
+    observation_marker = "REACT_OBSERVATION_SENTINEL_3D4C"
 
     async with agent_scope(tracker):
-        await run_react_loop(
+        run = await run_react_loop(
             agent_name="researcher",
             tracker=tracker,
             tools=_toolset(tracker, "echo"),
             decide=_decider(
                 [
-                    use_tool("Check the echo.", "echo", '{"value": "hello"}'),
-                    finish("Done.", "It echoed hello."),
+                    use_tool(
+                        thought_marker,
+                        "echo",
+                        f'{{"value": "{observation_marker}"}}',
+                    ),
+                    finish("REACT_FINISH_THOUGHT_SENTINEL_5F2E", "It echoed hello."),
                 ]
             ),
             max_iterations=4,
@@ -607,18 +614,31 @@ async def test_each_iteration_emits_a_metric_and_span_outputs(
     assert len(captured) == 2
     tool_outputs, finish_outputs = captured
     assert tool_outputs is not None
-    assert tool_outputs["agent_name"] == "researcher"
-    assert tool_outputs["iteration"] == 1
-    assert tool_outputs["action"] == "use_tool"
-    assert tool_outputs["tool"] == "echo"
-    assert tool_outputs["success"] is True
-    assert "echo succeeded" in tool_outputs["observation"]
+    assert tool_outputs == {
+        "agent_name": "researcher",
+        "iteration": 1,
+        "action": "use_tool",
+        "tool": "echo",
+        "success": True,
+        "error_type": None,
+        "error_count": 0,
+    }
     assert finish_outputs is not None
-    assert finish_outputs["action"] == "finish"
-    assert finish_outputs["observation"] is None
-    # No observation on a finish step: success must default to True, not
-    # crash on `observation.success` against a None observation.
-    assert finish_outputs["success"] is True
+    assert finish_outputs == {
+        "agent_name": "researcher",
+        "iteration": 2,
+        "action": "finish",
+        "tool": None,
+        "success": True,
+        "error_type": None,
+        "error_count": 0,
+    }
+
+    # The local ReAct records retain provider/tool prose for the next decision.
+    # Only the iteration span outputs are metadata-only.
+    assert run.steps[0].thought == thought_marker
+    assert run.steps[0].observation is not None
+    assert observation_marker in run.steps[0].observation.summary
 
     iteration_metrics = [
         metric

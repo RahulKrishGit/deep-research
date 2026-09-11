@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -370,6 +371,50 @@ async def test_enabled_tracing_emits_nested_runs_and_captures_trace_url() -> Non
         metric for metric in tracker.metrics if isinstance(metric, SessionMetric)
     )
     assert session_metric.trace_url.endswith("/1")
+
+
+@pytest.mark.asyncio
+async def test_remote_react_iteration_outputs_are_metadata_only() -> None:
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=trace_factory,
+    )
+    marker = "REMOTE_REACT_TRACE_SENTINEL_91C3"
+
+    async with tracker.session_span("session-1", "question"):
+        async with tracker.agent_span("researcher"):
+            async with tracker.react_iteration_span(1) as span:
+                span.set_outputs(
+                    {
+                        "agent_name": "researcher",
+                        "iteration": 1,
+                        "action": "use_tool",
+                        "tool": "echo",
+                        "success": True,
+                        "error_type": None,
+                        "error_count": 0,
+                        "thought": marker,
+                        "observation": marker,
+                    }
+                )
+
+    remote_outputs = trace_factory.managers[2].run.end_calls[-1]["outputs"]
+    assert marker not in json.dumps(remote_outputs, sort_keys=True)
+    assert remote_outputs == {
+        "agent_name": "researcher",
+        "iteration": 1,
+        "action": "use_tool",
+        "tool": "echo",
+        "success": True,
+        "error_type": None,
+        "error_count": 0,
+    }
 
 
 @pytest.mark.asyncio
