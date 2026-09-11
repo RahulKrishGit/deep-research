@@ -30,6 +30,7 @@ from deep_research.providers.deepseek_provider import (
     DEEPSEEK_BASE_URL,
     DeepSeekChatProvider,
     DeepSeekJudgeProvider,
+    DeepSeekSchemaChatProvider,
 )
 from deep_research.providers.embedding_capabilities import (
     EmbeddingModelCapability,
@@ -61,6 +62,7 @@ __all__ = [
     "DEFAULT_EMBEDDING_MODEL",
     "DeepSeekChatProvider",
     "DeepSeekJudgeProvider",
+    "DeepSeekSchemaChatProvider",
     "EmbeddingAdapter",
     "EmbeddingModelCapability",
     "JudgeAdapter",

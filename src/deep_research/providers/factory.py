@@ -19,8 +19,8 @@ from deep_research.providers.capabilities import (
 )
 from deep_research.providers.contracts import ProviderConfigurationError
 from deep_research.providers.deepseek_provider import (
-    DeepSeekChatProvider,
     DeepSeekJudgeProvider,
+    DeepSeekSchemaChatProvider,
 )
 from deep_research.providers.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
@@ -31,7 +31,7 @@ from deep_research.providers.embeddings import (
 from deep_research.providers.openai_provider import OpenAIChatProvider
 from deep_research.utils.config import EmbeddingProviderName, LLMConfig
 
-ChatAdapter: TypeAlias = OpenAIChatProvider | DeepSeekChatProvider
+ChatAdapter: TypeAlias = OpenAIChatProvider | DeepSeekSchemaChatProvider
 JudgeAdapter: TypeAlias = OpenAIChatProvider | DeepSeekJudgeProvider
 EmbeddingAdapter: TypeAlias = LocalEmbeddingProvider | OpenAIEmbeddingProvider
 
@@ -45,9 +45,14 @@ def build_chat_provider(
     evaluation harness passes its own ``environ`` mapping — supply the key
     explicitly. ``None`` keeps the adapters' default behaviour of reading
     the process environment, which is what production wiring relies on.
+
+    The DeepSeek target adapter is ``DeepSeekSchemaChatProvider``: plain
+    completions still use Chat Completions, but structured output is asked
+    for through the provider's native schema, because JSON mode alone left
+    target structured calls returning non-JSON text in live canaries.
     """
     if config.provider == "deepseek":
-        return DeepSeekChatProvider(config, tracker, api_key=api_key)
+        return DeepSeekSchemaChatProvider(config, tracker, api_key=api_key)
     if config.provider == "openai":
         return OpenAIChatProvider(config, tracker, api_key=api_key)
     raise ProviderConfigurationError(

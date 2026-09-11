@@ -5,12 +5,14 @@ import pytest
 import deep_research.providers.factory as factory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import (
-    DeepSeekChatProvider,
     OpenAIChatProvider,
     ProviderConfigurationError,
     build_chat_provider,
 )
-from deep_research.providers.deepseek_provider import DeepSeekJudgeProvider
+from deep_research.providers.deepseek_provider import (
+    DeepSeekJudgeProvider,
+    DeepSeekSchemaChatProvider,
+)
 from deep_research.utils.config import LLMConfig
 
 
@@ -28,7 +30,7 @@ def tracker() -> Tracker:
 @pytest.mark.parametrize(
     ("provider_name", "model", "expected"),
     [
-        ("deepseek", "deepseek-v4-flash", DeepSeekChatProvider),
+        ("deepseek", "deepseek-v4-flash", DeepSeekSchemaChatProvider),
         ("openai", "gpt-4o", OpenAIChatProvider),
     ],
 )
@@ -161,6 +163,15 @@ def test_public_judge_symbols_are_reexported() -> None:
     assert providers.build_judge_provider is factory.build_judge_provider
 
 
+def test_public_target_schema_symbol_is_reexported() -> None:
+    import deep_research.providers as providers
+
+    assert (
+        providers.DeepSeekSchemaChatProvider is DeepSeekSchemaChatProvider
+    )
+    assert providers.ChatAdapter is factory.ChatAdapter
+
+
 def test_build_embedding_provider_selects_the_local_model() -> None:
     from deep_research.providers import (
         LocalEmbeddingProvider,
@@ -215,7 +226,7 @@ def test_build_chat_provider_passes_an_explicit_key_through(tracker) -> None:
         if previous is not None:
             os.environ["DEEPSEEK_API_KEY"] = previous
 
-    assert isinstance(provider, DeepSeekChatProvider)
+    assert isinstance(provider, DeepSeekSchemaChatProvider)
     # the key came from the argument, not the (popped) environment
     #
     # DeepSeekChatProvider does not keep the raw string on an ``_api_key``

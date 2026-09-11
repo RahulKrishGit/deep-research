@@ -2524,3 +2524,162 @@ async def test_deepseek_plain_retries_server_status_errors(monkeypatch) -> None:
     assert result.text == "answer"
     assert len(completions.calls) == 3
     assert slept == [1.0, 2.0]
+
+
+# --- Schema-enforced target structured transport -------------------------
+#
+# The target structured path previously used Chat Completions JSON mode
+# (``response_format={"type": "json_object"}``) plus a JSON-Schema system
+# message. Live Critic canaries recorded ``json_invalid`` at ``$`` on both the
+# initial attempt and the single repair, which is only reachable when the
+# provider returns non-empty text that is not parseable JSON. These tests pin
+# the repaired transport: schema-enforced ``json_schema`` on the Responses
+# endpoint, with the Chat Completions path retained for plain completions.
+
+
+@pytest.mark.asyncio
+async def test_schema_target_structured_uses_responses_json_schema() -> None:
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps({"answer": "yes", "confidence": 9})
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            agent_name="critic",
+        )
+
+    assert result == TinyAnswer(answer="yes", confidence=9)
+    assert provider._client.chat.completions.calls == []
+    call = responses.calls[0]
+    assert call["text"]["format"]["type"] == "json_schema"
+    assert call["text"]["format"]["name"] == "TinyAnswer"
+    assert call["text"]["format"]["schema"] == TinyAnswer.model_json_schema()
+    assert call["max_output_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_schema_target_plain_completion_stays_on_chat_completions() -> None:
+    completions = RecordingCompletions(chat_response(text="answer"))
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+
+    assert result.text == "answer"
+    call = completions.calls[0]
+    assert call["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert "response_format" not in call
+
+
+@pytest.mark.asyncio
+async def test_schema_target_responses_carries_thinking_effort() -> None:
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps({"answer": "yes", "confidence": 9})
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(reasoning_effort="max"),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert responses.calls[0]["reasoning"] == {"effort": "max"}
+
+
+@pytest.mark.asyncio
+async def test_schema_target_validation_failure_repairs_exactly_once() -> None:
+    first = json.dumps({"answer": 3})
+    second = json.dumps({"answer": "yes", "confidence": 8})
+    responses = RecordingResponses(
+        responses_response(output_text=first),
+        responses_response(output_text=second),
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert result.confidence == 8
+    assert len(responses.calls) == 2
+    assert (
+        "previous JSON response failed TinyAnswer validation"
+        in str(responses.calls[1]["input"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_schema_target_unparseable_output_is_json_invalid_at_root() -> None:
+    """The exact live failure shape: readable text that is not JSON, twice."""
+    responses = RecordingResponses(
+        responses_response(output_text="I could not produce a review."),
+        responses_response(output_text="Still not JSON."),
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(contracts_module.StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    diagnostics = caught.value.diagnostics
+    assert [item.attempt for item in diagnostics] == [1, 2]
+    assert [item.category for item in diagnostics] == [
+        "json_invalid",
+        "json_invalid",
+    ]
+    assert [item.field_paths for item in diagnostics] == [("$",), ("$",)]
+    assert "I could not produce a review." not in str(caught.value)
+    assert len(responses.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_schema_target_output_limit_stays_typed() -> None:
+    responses = RecordingResponses(
+        responses_response(
+            output_text="",
+            status="incomplete",
+            incomplete_reason="max_output_tokens",
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(contracts_module.ProviderOutputLimitError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    assert caught.value.telemetry.finish_reason_category == "length"
+    assert len(responses.calls) == 1

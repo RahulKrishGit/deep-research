@@ -819,8 +819,23 @@ class DeepSeekChatProvider:
         raise final_error
 
 
-class DeepSeekJudgeProvider(DeepSeekChatProvider):
-    """DeepSeek judge access through the native Responses schema transport."""
+class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
+    """DeepSeek structured output through native Responses ``json_schema``.
+
+    Chat Completions JSON mode only guarantees JSON *syntax*; it neither
+    accepts a schema nor enforces one, so conformance is left to the model and
+    enforced locally by Pydantic. That was sufficient for the judge only after
+    this transport existed, and it is not sufficient for the target agents: a
+    live Critic canary recorded ``json_invalid`` at ``$`` on both the initial
+    attempt and the one repair, which is reachable only when the provider
+    returns non-empty text that is not parseable JSON at all.
+
+    This base asks the model for the exact requested schema, so the provider
+    constrains its own decoding. Pydantic remains the local authority, the
+    one-repair flow is unchanged, and every failure stays in the existing
+    typed taxonomy. Plain completions keep the Chat Completions path; only
+    ``complete_structured`` moves.
+    """
 
     async def _responses_structured_attempt(
         self,
@@ -1003,3 +1018,18 @@ class DeepSeekJudgeProvider(DeepSeekChatProvider):
         repair = ""
         repair_guidance = ""
         raise final_error
+
+
+class DeepSeekJudgeProvider(_DeepSeekSchemaStructuredProvider):
+    """DeepSeek judge access through the native Responses schema transport."""
+
+
+class DeepSeekSchemaChatProvider(_DeepSeekSchemaStructuredProvider):
+    """DeepSeek target-agent access with schema-enforced structured output.
+
+    Distinct from :class:`DeepSeekJudgeProvider` so the judge and target
+    transports stay separately selectable and separately testable: the
+    evaluation factory builds the target through ``build_chat_provider`` and
+    the judge through ``build_judge_provider``, and a single class would make
+    those two decisions impossible to vary independently.
+    """
