@@ -93,6 +93,24 @@ _MAX_SOURCE_URL_FINGERPRINTS = 128
 CONTROLLED_SCENARIO_CONTRACT_VERSION = 2
 
 
+def _is_valid_http_source_url(value: str) -> bool:
+    """Admit only absolute HTTP(S) URLs with a safely parsed authority."""
+    try:
+        parts = urlsplit(value)
+        if (
+            parts.scheme.casefold() not in {"http", "https"}
+            or not parts.netloc
+            or not parts.hostname
+            or any(character.isspace() for character in parts.netloc)
+        ):
+            return False
+        # Accessing ``port`` validates malformed and out-of-range ports.
+        parts.port
+    except (UnicodeError, ValueError):
+        return False
+    return True
+
+
 class ProhibitedDependencyError(RuntimeError):
     """A controlled bundle was asked to touch a real external service."""
 
@@ -228,6 +246,7 @@ class DependencyRecorder:
         self._prohibited: list[str] = []
         self._scenario_misses: list[str] = []
         self._source_url_fingerprints: list[str] = []
+        self._source_url_fingerprints_complete = True
         self._real_services: list[str] = []
         self._memory_reads = 0
         self._memory_writes = 0
@@ -256,12 +275,17 @@ class DependencyRecorder:
         for url in urls:
             if not isinstance(url, str):
                 continue
-            fingerprint = sha256(
-                normalize_source_url(url).encode("utf-8")
-            ).hexdigest()
+            try:
+                normalized = normalize_source_url(url)
+            except (UnicodeError, ValueError):
+                continue
+            if not _is_valid_http_source_url(normalized):
+                continue
+            fingerprint = sha256(normalized.encode("utf-8")).hexdigest()
             if fingerprint in self._source_url_fingerprints:
                 continue
             if len(self._source_url_fingerprints) >= _MAX_SOURCE_URL_FINGERPRINTS:
+                self._source_url_fingerprints_complete = False
                 return
             self._source_url_fingerprints.append(fingerprint)
 
@@ -291,7 +315,7 @@ class DependencyRecorder:
                         "http",
                         "https",
                     }
-                except ValueError:
+                except (UnicodeError, ValueError):
                     is_remote = False
                 if is_remote:
                     urls.append(source)
@@ -323,6 +347,7 @@ class DependencyRecorder:
             prohibited_calls=list(self._prohibited),
             scenario_misses=list(self._scenario_misses),
             source_url_fingerprints=list(self._source_url_fingerprints),
+            source_url_fingerprints_complete=self._source_url_fingerprints_complete,
             real_services_used=list(self._real_services),
             memory_reads=self._memory_reads,
             memory_writes=self._memory_writes,

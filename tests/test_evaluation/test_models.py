@@ -474,6 +474,31 @@ def test_dependency_ledger_round_trips_bounded_source_url_fingerprints() -> None
         DependencyLedger(source_url_fingerprints=[fingerprint] * 129)
 
 
+def test_dependency_ledger_marks_incomplete_source_fingerprint_provenance() -> None:
+    fingerprint = sha256(
+        "https://example.com/source".encode("utf-8")
+    ).hexdigest()
+    ledger = DependencyLedger(
+        source_url_fingerprints=[fingerprint],
+        source_url_fingerprints_complete=False,
+    )
+
+    payload = ledger.model_dump(mode="json")
+
+    assert payload["source_url_fingerprints_complete"] is False
+    assert "https://example.com/source" not in repr(payload)
+    assert (
+        DependencyLedger.model_validate({}).source_url_fingerprints_complete
+        is True
+    )
+    assert (
+        DependencyLedger.model_validate(
+            {"source_url_fingerprints": [fingerprint]}
+        ).source_url_fingerprints_complete
+        is True
+    )
+
+
 def test_suite_result_round_trips_through_json(experiment_result) -> None:
     suite = SuiteResult(
         suite_id="individual-agent-baseline",

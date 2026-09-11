@@ -263,6 +263,21 @@ def _researcher_live_url_fingerprints(
     return {value for value in values if isinstance(value, str)}
 
 
+def _researcher_live_provenance_incomplete(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Report whether bounded live Researcher provenance lost identities.
+
+    An absent field is the backward-compatible shape of an old artifact and
+    therefore means complete, while any present non-``True`` value is treated
+    as incomplete so malformed untyped payloads fail closed.
+    """
+    if case.tier != "live" or case.agent_name != "researcher":
+        return False
+    value = _field(output.dependencies, "source_url_fingerprints_complete")
+    return value is not None and value is not True
+
+
 def _url_is_known(
     url: str, allowed: set[str], fingerprints: set[str]
 ) -> bool:
@@ -344,7 +359,14 @@ def _gate_citations_known(
         gate_id="citations_known",
         passed=not unknown,
         detail=(
-            "unknown source urls: " + ", ".join(unknown) if unknown else ""
+            (
+                "source provenance incomplete; unknown source urls could not be "
+                "verified: " + ", ".join(unknown)
+            )
+            if unknown and _researcher_live_provenance_incomplete(output, case)
+            else "unknown source urls: " + ", ".join(unknown)
+            if unknown
+            else ""
         ),
     )
 
@@ -914,10 +936,18 @@ def _gate_no_invented_sources(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
     passed = _no_invented_sources_passes(output, case)
+    incomplete = _researcher_live_provenance_incomplete(output, case)
     return _agent_result(
         "no_invented_sources",
         passed,
-        "" if passed else "a finding cites a url outside the known sources",
+        ""
+        if passed
+        else (
+            "source provenance incomplete; cited source verification could not "
+            "be completed"
+            if incomplete
+            else "a finding cites a url outside the known sources"
+        ),
     )
 
 

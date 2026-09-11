@@ -422,6 +422,40 @@ def test_live_researcher_url_fingerprints_repair_lossy_trajectory_gates(
     ] == 1.0
 
 
+def test_incomplete_provenance_fails_closed_without_false_invention_detail(
+    live_case_for, researcher_target_output
+) -> None:
+    live_case = live_case_for("researcher")
+    discovered = "https://discovered.example.com/page"
+    output = researcher_target_output.model_copy(
+        update={
+            "case_id": live_case.case_id,
+            "case_version": live_case.version,
+            "tier": "live",
+            "result": {"findings": [{"source_url": discovered}]},
+            "trajectory": [],
+            "evidence": EvidenceContext(),
+            "dependencies": DependencyLedger(
+                source_url_fingerprints=[],
+                source_url_fingerprints_complete=False,
+            ),
+        }
+    )
+
+    general = evaluate_general_gates(output, live_case, secrets=())
+    agent = evaluate_agent_gates(output, live_case)
+    no_invented = gate(agent, "no_invented_sources")
+
+    assert gate(general, "citations_known").passed is False
+    assert "provenance incomplete" in gate(general, "citations_known").detail
+    assert no_invented.passed is False
+    assert "provenance incomplete" in no_invented.detail
+    assert "outside the known sources" not in no_invented.detail
+    assert deterministic_metric_scores(
+        output, live_case, metric_functions=METRIC_FUNCTIONS
+    )["sources_are_real_urls"] == 0.0
+
+
 def test_source_url_fingerprints_do_not_change_controlled_researcher_semantics(
     live_case_for, researcher_target_output
 ) -> None:

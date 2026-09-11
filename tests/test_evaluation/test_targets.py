@@ -318,6 +318,30 @@ async def test_a_live_researcher_records_only_source_url_fingerprints(
 
 
 @pytest.mark.asyncio
+async def test_live_researcher_artifact_marks_complete_source_provenance(
+    runtime_config_for, live_case_for, live_target_harness
+) -> None:
+    case = live_case_for("researcher")
+    target = live_target_harness(case, runtime_config_for("researcher", tier="live"))
+
+    payload = await target(
+        {
+            "case_id": case.case_id,
+            "case_version": case.version,
+            "agent": "researcher",
+            "tier": "live",
+        }
+    )
+
+    assert payload["dependencies"]["source_url_fingerprints_complete"] is True
+    assert (
+        TargetOutput.model_validate(payload)
+        .dependencies.source_url_fingerprints_complete
+        is True
+    )
+
+
+@pytest.mark.asyncio
 async def test_the_output_records_both_model_identifiers(
     runtime_config_for, planner_case, target_harness
 ) -> None:

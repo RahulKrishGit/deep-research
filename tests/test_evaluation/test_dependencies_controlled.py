@@ -13,6 +13,7 @@ from deep_research.evaluation.dependencies import (
     SCENARIOS,
     DependencyRecorder,
     ProhibitedDependencyError,
+    _FingerprintingTool,
     build_controlled_dependencies,
     isolated_settings,
 )
@@ -294,6 +295,104 @@ def test_source_payload_telemetry_fingerprints_all_remote_source_shapes() -> Non
     ]
     assert fingerprints == expected
     assert all(url not in repr(fingerprints) for url in urls)
+
+
+def test_source_payload_telemetry_rejects_invalid_and_unrelated_identities() -> None:
+    recorder = DependencyRecorder()
+    search_url = "https://example.com/search-result"
+    scraper_url = "https://example.com/article"
+    document_url = "https://example.com/report.pdf"
+    unrelated_url = "https://example.com/unrelated"
+    invalid_urls = [
+        "ftp://example.com/not-http",
+        "https://",
+        "https://[::1",
+        "https://example.com:99999/page",
+        "https://example.com:not-a-port/page",
+        "example.com/no-scheme",
+    ]
+
+    recorder.record_source_url_payload(
+        "web_search",
+        {
+            "results": [
+                {"url": search_url},
+                *({"url": url} for url in invalid_urls),
+                {"link": unrelated_url},
+            ],
+            "url": unrelated_url,
+        },
+    )
+    recorder.record_source_url_payload(
+        "web_scraper",
+        {"url": scraper_url, "source": unrelated_url},
+    )
+    recorder.record_source_url_payload(
+        "document_reader",
+        {"source": document_url, "url": unrelated_url},
+    )
+    for invalid_url in invalid_urls:
+        recorder.record_source_url_payload(
+            "web_scraper", {"url": invalid_url}
+        )
+        recorder.record_source_url_payload(
+            "document_reader", {"source": invalid_url}
+        )
+
+    fingerprints = recorder.ledger().source_url_fingerprints
+    expected = [
+        sha256(normalize_source_url(url).encode("utf-8")).hexdigest()
+        for url in (search_url, scraper_url, document_url)
+    ]
+
+    assert fingerprints == expected
+    assert all(url not in repr(fingerprints) for url in invalid_urls)
+    assert unrelated_url not in repr(fingerprints)
+
+
+@pytest.mark.asyncio
+async def test_fingerprinting_proxy_ignores_failed_source_results(tracker) -> None:
+    recorder = DependencyRecorder()
+
+    class FailedSourceTool:
+        name = "web_search"
+        description = "failed source tool"
+        input_schema = {}
+        output_schema = {"results": "array"}
+
+        async def execute(self, **kwargs):
+            del kwargs
+            return type(
+                "FailedResult",
+                (),
+                {
+                    "success": False,
+                    "data": {"results": [{"url": "https://example.com/failed"}]},
+                },
+            )()
+
+    proxy = _FingerprintingTool(
+        FailedSourceTool(), tracker, recorder=recorder
+    )
+
+    result = await proxy.execute(query="failed")
+
+    assert result.success is False
+    assert recorder.ledger().source_url_fingerprints == []
+
+
+def test_source_fingerprint_overflow_is_explicit() -> None:
+    recorder = DependencyRecorder()
+    urls = [f"https://example.com/source-{index}" for index in range(129)]
+
+    recorder.record_source_url_fingerprints(urls)
+
+    ledger = recorder.ledger()
+    assert len(ledger.source_url_fingerprints) == 128
+    assert ledger.source_url_fingerprints_complete is False
+    artifact = ledger.model_dump(mode="json")
+    assert artifact["source_url_fingerprints_complete"] is False
+    assert DependencyRecorder().ledger().source_url_fingerprints_complete is True
 
 
 @pytest.mark.asyncio

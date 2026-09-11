@@ -214,6 +214,10 @@ class DependencyLedger(ContractModel):
     source_url_fingerprints: list[SourceURLFingerprint] = Field(
         default_factory=list, max_length=_MAX_SOURCE_URL_FINGERPRINTS
     )
+    # ``False`` explicitly means that at least one valid source identity did
+    # not fit in the bounded fingerprint list. The default keeps old v1
+    # artifacts backward compatible: an absent field means complete.
+    source_url_fingerprints_complete: bool = True
     real_services_used: list[str] = Field(default_factory=list)
     memory_writes: int = Field(default=0, ge=0)
     memory_reads: int = Field(default=0, ge=0)
