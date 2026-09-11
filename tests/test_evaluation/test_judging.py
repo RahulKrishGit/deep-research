@@ -229,8 +229,23 @@ async def test_no_evaluable_output_is_judge_not_run_with_a_typed_reason(
 async def test_a_judge_provider_failure_is_typed_and_never_scored(
     planner_case, clean_target_output, clean_gate_report, runtime_config_for
 ) -> None:
+    error = StructuredOutputError(
+        "schema failed after one repair",
+        diagnostics=[
+            StructuredValidationDiagnostic(
+                attempt=1,
+                field_paths=("$",),
+                category="extra_forbidden",
+            ),
+            StructuredValidationDiagnostic(
+                attempt=2,
+                field_paths=("rationale",),
+                category="string_bounds",
+            ),
+        ],
+    )
     provider = FakeStructuredProvider(
-        responses=[StructuredOutputError("schema failed after one repair")]
+        responses=[error]
     )
 
     feedback = await run_judge(
@@ -245,6 +260,21 @@ async def test_a_judge_provider_failure_is_typed_and_never_scored(
     assert feedback.status == "judge_not_run"
     assert feedback.not_run_reason == "judge_schema_failure"
     assert feedback.judge_quality is None
+    assert len(provider.calls) == 1
+    assert feedback.diagnostics == (
+        EvaluatorDiagnostic(
+            kind="schema_output",
+            attempt=1,
+            category="extra_forbidden",
+            field_paths=("$",),
+        ),
+        EvaluatorDiagnostic(
+            kind="schema_output",
+            attempt=2,
+            category="string_bounds",
+            field_paths=("rationale",),
+        ),
+    )
 
 
 @pytest.mark.asyncio

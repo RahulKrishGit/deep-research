@@ -275,6 +275,23 @@ def _validation_summary(
     return summary
 
 
+def _validation_repair_guidance(
+    diagnostic: StructuredValidationDiagnostic,
+) -> str:
+    """Return static repair guidance for categories with known remedies."""
+    if diagnostic.category == "extra_forbidden":
+        return (
+            "Repair guidance: Return only properties declared by the schema. "
+            "Remove undeclared properties and re-check every retained value.\n"
+        )
+    if diagnostic.category == "string_bounds":
+        return (
+            "Repair guidance: Satisfy every string constraint declared by the "
+            "schema, including minLength, maxLength, and pattern.\n"
+        )
+    return ""
+
+
 def _usage_from_response(response: Any) -> TokenUsage:
     """Map a Chat Completions usage object to project-owned token counts.
 
@@ -681,12 +698,14 @@ class DeepSeekChatProvider:
                 schema_json = json.dumps(
                     schema.model_json_schema(), sort_keys=True, separators=(",", ":")
                 )
+                repair_guidance = _validation_repair_guidance(error.diagnostic)
                 repair = (
                     f"The previous JSON response failed {schema.__name__} "
                     "validation. Return only one JSON object that validates "
                     "against the supplied JSON Schema. Do not add Markdown or "
                     "explanatory text. "
                     f"Validation summary: {_validation_summary(error.diagnostic)}\n"
+                    f"{repair_guidance}"
                     f"JSON Schema:\n{schema_json}"
                 )
                 current_messages = [
@@ -712,4 +731,5 @@ class DeepSeekChatProvider:
         instruction = None
         schema_json = ""
         repair = ""
+        repair_guidance = ""
         raise final_error
