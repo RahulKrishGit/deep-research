@@ -213,15 +213,27 @@ fallback's honest disclosure rather than to content that was never produced.
 
 Three consequences are handled explicitly:
 
-1. `_BLOCK_ORDER` (`judging.py:223-239`) gains the new key, because the judge
-   prompt renders blocks in that fixed order.
-2. `judge_prompt_fingerprint` (`judging.py:129-140`) changes, because the
-   template changed. The current stable value `93edb1729cbb` is superseded. This
-   is intentional and must be recorded in the canary note, since it makes judge
-   scores from before and after this change non-comparable.
-3. `judge_configuration_fingerprint` (`924caf47aa0d`) is asserted by existing
-   tests and must be re-pinned to its new value in the same commit that changes
-   the template, never in a later one.
+1. `_BLOCK_ORDER` (`judging.py:223-239`) gains the new key, because
+   `_render_blocks` (`judging.py:259-268`) renders blocks in that fixed order
+   and indexes the payload by name. A `JudgeInput` key absent from
+   `_BLOCK_ORDER` would be silently invisible to the judge.
+2. `judge_prompt_fingerprint` (`judging.py:129-140`) changes, because it hashes
+   `JUDGE_SYSTEM_PROMPT`, `JUDGE_PROMPT_TEMPLATE`, and the `JudgeVerdict`
+   schema. The current stable value `93edb1729cbb` is superseded. This is
+   intentional and is recorded in the canary note, because judge scores taken
+   before and after this change are not comparable.
+3. `judge_configuration_fingerprint` (`config.py:309-321`) is **unchanged** at
+   `924caf47aa0d`. It hashes `provider`, `structured_transport`, `judge_model`,
+   `judge_reasoning_effort`, `judge_temperature`, `thinking_mode`, and
+   `rubric_version` — none of which this design touches. No existing test needs
+   re-pinning for it.
+4. `target_prompt_fingerprint` for the Critic changes, because
+   `agent_prompt_fingerprint` (`config.py:154-162`) hashes the source of both
+   `deep_research.agents.critic` and `deep_research.agents.prompts`. The current
+   value `242310dce29e` is superseded. Critic target prompt fingerprints from
+   before and after this change are not comparable. Other agents' fingerprints
+   change too, because they share `prompts.py`; that is expected and is not a
+   defect.
 
 The deterministic layer is unchanged by Fix 3. `rationale_present=0.0` remains
 the documented deterministic signature of a fallback and is already pinned by
@@ -253,6 +265,11 @@ Offline, deterministic, no network and no provider calls:
   for a fallback output and omits it for a healthy one, and that
   `_BLOCK_ORDER` contains every `JudgeInput` key, so a future field cannot be
   added without being rendered.
+- **Fix 3 fingerprints.** A test asserting `judge_prompt_fingerprint` differs
+  from the superseded `93edb1729cbb`, and a test asserting
+  `judge_configuration_fingerprint` is still `924caf47aa0d` for the frozen
+  configuration — that fingerprint must not move, and a change to it would mean
+  this design touched a judge setting it promised not to.
 - **Full gate.** `pytest` across the repository with no deselections beyond the
   documented baseline, plus `ruff check` and `git diff --check`.
 
@@ -283,4 +300,5 @@ configuration, sequentially, recorded with its artifact SHA-256.
 | Retain diagnostics instead of adding raw response capture | Field paths, attempt numbers, categories, usage, and token caps are already normalized and provider-content-free. Raw text would introduce a leak surface the project's artifact redaction deliberately avoids. |
 | Add the fallback fact to `JudgeInput` rather than to `gate_results` | `gate_results` are pass/fail observations; the fallback is context the judge needs in order to apply its rubric correctly. |
 | Fix evidence retention for all agents, not only the Critic | The defect is in one shared projection. A Critic-only patch would leave the identical defect in every other fallback path and re-open the Fact Checker "UNSCORABLE" follow-up. |
+| Accept the `judge_prompt_fingerprint` change, keep `judge_configuration_fingerprint` fixed | The judge's *rubric definition* legitimately changes, so `judge_prompt_fingerprint` must move. `judge_configuration_fingerprint` covers provider, transport, model, effort, temperature, thinking mode, and rubric version; pinning it proves no judge setting was silently altered. |
 | Defer all token, retry, and prompt-budget tuning | No cause can be confirmed from the current artifact, and defect 2 makes it confirmable. Tuning before then is guessing, which is what the three prior NO-CHANGE rulings correctly refused. |
