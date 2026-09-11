@@ -41,7 +41,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
 | 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker diagnosis complete; repair wave reviewed; serialized Critic evaluator repair next** | The user-authorized Fact Checker evidence remains target-contract green (`15/15` hard gates, deterministic `1.00`) with a scorable below-threshold judge and fallback `react_decision` `output_limit`; Sol's review supports no Fact Checker production or budget change. Source Evaluator remains target-green but judge-blocked. Do not start another live run until the evaluator repair and offline gate are complete. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
-| 21. Parallel evidence-driven repair wave | **Streams complete — scoped Sol review complete; packaging cleanup and serialized Critic evaluator repair pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C produced a genuine RED for `no_spurious_gaps`, identifying a shared evaluator defect candidate without editing shared evaluators. J/F/S are integrated at `77bfd3d`; the tracked worker scratch reports are being untracked, and the C evaluator repair is the next serialized Luna-Max task. No live/provider/LangSmith/suite run is authorized before the repair and offline gate. |
+| 21. Parallel evidence-driven repair wave | **C repair integrated — scoped re-review and consolidated offline gate pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; fix round 1 now uses normalized whole-theme token matching in `_no_spurious_gaps_passes`, with three production-path controls green. J/F/S/C are integrated at `1443e00`; live/provider/LangSmith/suite execution remains forbidden until scoped re-review and the consolidated offline gate. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -2388,3 +2388,31 @@ load-bearing candidate is Stream C's shared Critic evaluator behavior.
   is integrated, reviewed, and the offline gate is green. The global
   `llm.max_tokens == 4096` cap and all judge/fallback semantics remain
   unchanged.
+
+### Stream C evaluator repair fix round 1 (2026-09-10)
+
+- The first serialized C commit (`c644d77`) passed the original exact-theme and
+  acknowledged-limitation controls, but Sol High's scoped review rejected it
+  because exact-only matching would miss the ordinary paraphrase
+  `The report does not cover deployment at commercial scale.` for the theme
+  `commercial-scale deployment`. This was an Important behavioral finding,
+  not a scope or documentation issue.
+- TDD fix round: the worker added that paraphrased covered-evidence control,
+  observed the expected RED (`1.0` rather than `0.0`), then changed only
+  `_no_spurious_gaps_passes` to normalize case, punctuation, and hyphens and
+  reject only when all non-stop-word tokens from one reference theme occur in
+  the gap. Single-word overlap no longer rejects a gap. The canonical covered
+  control remains `0.0`, and the acknowledged durability/long-term limitation
+  remains `1.0`.
+- Worker commit `3d5fa91` was integrated into the campaign as `1443e00`. The
+  integrated range changes only
+  `src/deep_research/evaluation/evaluators.py` and
+  `tests/test_evaluation/test_cases_critic.py`; no case, report, theme,
+  rubric, weight, threshold, prompt, tool, budget, route, provider, fallback,
+  judge, or documentation semantics changed in the worker fix.
+- Fresh coordinator verification: `91 passed, 1 warning` for the combined
+  Critic agent/case tests, Ruff passed for the two changed files, and
+  `git diff --check` passed. No live/provider/LangSmith/suite command ran.
+- Next gate: push `1443e00`, obtain a scoped Sol High re-review of the fix
+  round, then run the consolidated offline gate. Live evaluation remains
+  **NO-GO** until those gates are complete.

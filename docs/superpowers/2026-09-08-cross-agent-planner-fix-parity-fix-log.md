@@ -642,3 +642,33 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   evaluator repair is reviewed and the full offline gate is green. The global
   `llm.max_tokens == 4096` cap and all fallback/judge failure semantics remain
   unchanged.
+
+## 58. Stream C Evaluator Fix Round 1 — 2026-09-10
+
+- Sol High's scoped review of `ba7b756..c644d77` returned **NOT APPROVED**
+  with no Critical finding. The Important finding was a material false
+  negative: exact-only matching missed the spurious paraphrase
+  `The report does not cover deployment at commercial scale.` for the
+  `commercial-scale deployment` reference theme. Sol required one additional
+  production-path control and normalized whole-theme matching.
+- The existing C worker was reused in its prepared worktree, aligned to
+  `c644d77`; no new worker fork was created. It added the paraphrase control,
+  reproduced the expected RED (`1.0` instead of `0.0`), and implemented only
+  `_no_spurious_gaps_passes` with casefolded alphanumeric tokenization,
+  local stop-word removal, and an all-meaningful-theme-tokens containment
+  check. The original covered-evidence and acknowledged-limitation controls
+  remain unchanged and green.
+- Worker commit: `3d5fa91e332147b6914b877d35ba8ebf00db7c8f`.
+  Coordinator integration commit: `1443e00`.
+  Changed paths are exactly:
+  `src/deep_research/evaluation/evaluators.py` and
+  `tests/test_evaluation/test_cases_critic.py`.
+- Fresh coordinator verification: combined Critic tests `91 passed, 1
+  warning`; Ruff passed on both changed files; `git diff --check` passed. No
+  live/provider/LangSmith/suite command ran. The worker reported the same
+  GREEN result (`3 passed, 52 deselected` for the controls and `91 passed`
+  combined).
+- Gate: push the integrated fix, obtain the scoped Sol High re-review, then
+  run the consolidated offline gate. Live/provider/LangSmith/suite execution
+  remains **NO-GO** until both are complete. The global `4096` token cap and
+  all fallback/judge semantics remain unchanged.
