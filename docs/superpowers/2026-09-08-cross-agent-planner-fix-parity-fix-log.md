@@ -498,3 +498,30 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   quality is unavailable, and runner status is `INFRASTRUCTURE FAILURE`.
 - Sequence disposition: preserve the sole v2 confirmation; no Source
   Evaluator retry, Fact Checker run, or suite run. The campaign remains paused.
+
+## 54. Fact Checker Live Evidence — Target Green; Judge Quality Below Threshold
+
+- Command scope: exactly one fresh Fact Checker live repetition, explicitly
+  authorized by the user while Sol High reviewed the shared judge plan. It ran
+  against remote `30d9921` with the existing config and secret-safe launcher,
+  no CLI effort/budget override, no code change, and no retry.
+- Artifact:
+  `output/evaluations/task21-fact-checker-readiness-30d9921/fact-checker/task21-fact-checker-readiness-30d9921-fact-checker-fact-checker-live-20260911T030226Z-30d9921/results.json`
+- SHA-256:
+  `CA5F682E801CAAF64D04A7BD15229B4EBB517E6860E0034CE36F804D8DFD8809`
+- LangSmith experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/ca1ecf5b-3517-46f9-897a-d44d8a7d54c5`;
+  repetition review:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/ca1ecf5b-3517-46f9-897a-d44d8a7d54c5/r/01a08e6a-b353-7402-a8c3-53c3f802f4db?poll=true`.
+- Target result: case `fact-checker-live-verification`, version `1`, `1/1`
+  completed; `15/15` hard gates passed; deterministic quality `1.00`; all
+  deterministic metrics `1.00`; prohibited calls `0`; target errors empty.
+- Fallback result: typed `fallback_provider_diagnostic.kind=output_limit`,
+  operation `react_decision`. It is fallback evidence, not a top-level target
+  failure and not sufficient by itself for a new token-budget field.
+- Quality result: judge scored `0.3675`; aggregate quality `0.6205`; runner
+  `FAILED` against the configured threshold. Judge status was `scored`; no
+  judge schema/transport failure occurred.
+- Classification/disposition: target contract green, Fact Checker quality
+  below threshold. Preserve the artifact and require Sol High diagnosis before
+  any Fact Checker prompt/behavior/budget change, retry, or later-agent run.

@@ -39,7 +39,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
 | 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
-| 19. Sequential live-agent diagnosis and repair loop | **Paused — Source Evaluator target metrics pass; shared judge schema failure blocks readiness** | Process one registered agent at a time: live evidence, typed diagnosis, Sol High browser review, smallest approved repair or explicit no-change ruling, offline verification, then one focused confirmation before advancing. The v1 live-case mismatch and both dataset-sync preflight layers are documented. The single v2 confirmation reached the target successfully (`14/14`, deterministic `1.00`) but the shared judge failed typed structured-output validation, so aggregate quality is unavailable and production readiness is not established. Fact Checker evidence is preserved and the sequence remains paused pending judge-boundary disposition. |
+| 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker live evidence collected; Sol diagnosis pending** | The user explicitly authorized one fresh Fact Checker live repetition while the shared-judge plan was under review. Source Evaluator v2 remains target-green but judge-blocked. Fact Checker now has `15/15` hard gates and deterministic `1.00`, but scored judge `0.3675` and aggregate `0.6205` fail the quality threshold; its typed fallback diagnostic records `output_limit` for `react_decision` without a top-level target failure. Preserve both agent results, send the exact evidence to Sol High, and do not retry or advance until the current agent's diagnosis and disposition are complete. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
@@ -2297,3 +2297,34 @@ Target-side Source Evaluator `GREEN`, overall production/review readiness
 `NOT READY` because the required judge score and aggregate are unavailable.
 Preserve the sole v2 confirmation, keep the campaign paused, and do not run a
 Source Evaluator retry, Fact Checker, or suite.
+
+### Task 19B Fact Checker Live Evidence — Target Gates Green; Quality Below Threshold
+
+The user explicitly authorized one fresh Fact Checker live repetition while
+Sol High was reviewing the shared judge repair plan. It ran against remote
+HEAD `30d9921` with no CLI effort/budget override, no code change, and no
+retry. This evidence is now awaiting the required Sol High diagnosis.
+
+- Artifact:
+  `output/evaluations/task21-fact-checker-readiness-30d9921/fact-checker/task21-fact-checker-readiness-30d9921-fact-checker-fact-checker-live-20260911T030226Z-30d9921/results.json`
+- Artifact SHA-256:
+  `CA5F682E801CAAF64D04A7BD15229B4EBB517E6860E0034CE36F804D8DFD8809`
+- LangSmith experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/ca1ecf5b-3517-46f9-897a-d44d8a7d54c5`
+- LangSmith repetition review:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/ca1ecf5b-3517-46f9-897a-d44d8a7d54c5/r/01a08e6a-b353-7402-a8c3-53c3f802f4db?poll=true`
+- Case/version/repetition: `fact-checker-live-verification` / `1` / `1 of 1`.
+- Target evidence: `15/15` hard gates; deterministic quality `1.00`; all
+  deterministic metrics `1.00`; prohibited calls `0`; target errors empty.
+- Target fallback evidence: `fallback_provider_diagnostic.kind=output_limit`,
+  operation `react_decision`. This is a preserved fallback diagnostic, not a
+  top-level target failure or proof that a new token budget is authorized.
+- Judge/quality evidence: judge scored `0.3675`; aggregate quality `0.6205`;
+  runner status `FAILED` against the configured threshold. No judge schema or
+  transport failure occurred in this repetition.
+
+The target contract is green, but Fact Checker is not production-ready on
+quality evidence. Sol High must classify whether the low judge score reflects
+Fact Checker behavior, the fallback trajectory, or a shared evaluation issue
+before any prompt, budget, or agent repair. No retry, later-agent run, or suite
+run is authorized from this artifact alone.
