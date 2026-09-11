@@ -437,6 +437,36 @@ def _set_span_result(span: Any, telemetry: ProviderResponseTelemetry) -> None:
     )
 
 
+def _responses_request_options(
+    config: LLMConfig,
+    agent_name: str | None,
+) -> tuple[EffectiveModelConfig, dict[str, object], dict[str, JsonValue]]:
+    effective = config.resolve_for(agent_name)
+    resolved = resolve_request_settings("deepseek", effective)
+    request: dict[str, object] = {
+        "model": effective.model,
+        "reasoning": {
+            "effort": (
+                resolved.reasoning_effort
+                if resolved.reasoning_effort is not None
+                else "none"
+            )
+        },
+    }
+    if resolved.include_temperature:
+        request["temperature"] = config.temperature
+    metadata: dict[str, JsonValue] = {
+        "provider": "deepseek",
+        "thinking_mode": effective.thinking_mode,
+        "requested_reasoning_effort": effective.reasoning_effort,
+    }
+    if agent_name is not None:
+        metadata["agent_name"] = agent_name
+    if resolved.reasoning_effort is not None:
+        metadata["effective_reasoning_effort"] = resolved.reasoning_effort
+    return effective, request, metadata
+
+
 class DeepSeekChatProvider:
     """Async plain and structured-output access through DeepSeek Chat Completions."""
 
@@ -733,3 +763,72 @@ class DeepSeekChatProvider:
         repair = ""
         repair_guidance = ""
         raise final_error
+
+
+class DeepSeekJudgeProvider(DeepSeekChatProvider):
+    """DeepSeek judge access through the native Responses schema transport."""
+
+    async def _responses_structured_attempt(
+        self,
+        messages: list[dict[str, str]],
+        schema: type[SchemaT],
+        *,
+        model: str,
+        request: dict[str, object],
+        metadata: dict[str, JsonValue],
+        configured_max_tokens: int,
+        attempt: int,
+    ) -> SchemaT:
+        response = await self._client.responses.create(
+            **{
+                **request,
+                "input": messages,
+                "max_output_tokens": configured_max_tokens,
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": schema.__name__,
+                        "schema": schema.model_json_schema(),
+                    }
+                },
+            }
+        )
+        text = getattr(response, "output_text", None)
+        if not isinstance(text, str):
+            raise ProviderResponseError(
+                "DeepSeek Responses output did not contain text"
+            )
+        parsed = schema.model_validate_json(text)
+        self._last_model_returned = getattr(response, "model", None) or model
+        return parsed
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[SchemaT],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> SchemaT:
+        if not messages:
+            raise ValueError("messages must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(
+            self._config.max_tokens, max_tokens
+        )
+        effective, request, metadata = _responses_request_options(
+            self._config, agent_name
+        )
+        instruction = _json_instruction(schema)
+        current_messages = [
+            *_translated_messages(messages),
+            {"role": "system", "content": instruction.content},
+        ]
+        return await self._responses_structured_attempt(
+            current_messages,
+            schema,
+            model=effective.model,
+            request=request,
+            metadata=metadata,
+            configured_max_tokens=resolved_max_tokens,
+            attempt=1,
+        )

@@ -63,9 +63,29 @@ class RecordingCompletions:
         return outcome
 
 
+class RecordingResponses:
+    def __init__(self, *outcomes: object) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, object]] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class FakeDeepSeekClient:
-    def __init__(self, completions: RecordingCompletions) -> None:
-        self.chat = SimpleNamespace(completions=completions)
+    def __init__(
+        self,
+        completions: RecordingCompletions | None = None,
+        responses: RecordingResponses | None = None,
+    ) -> None:
+        self.chat = SimpleNamespace(
+            completions=completions or RecordingCompletions()
+        )
+        self.responses = responses or RecordingResponses()
 
 
 def chat_response(
@@ -97,6 +117,33 @@ def chat_response(
                 and not isinstance(completion_tokens, bool)
                 else None
             ),
+        ),
+    )
+
+
+def responses_response(
+    *,
+    output_text: object,
+    status: str = "completed",
+    incomplete_reason: str | None = None,
+    input_tokens: int = 8,
+    output_tokens: int = 3,
+    model: str = "deepseek-v4-flash",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="deepseek-response",
+        status=status,
+        incomplete_details=(
+            None
+            if incomplete_reason is None
+            else SimpleNamespace(reason=incomplete_reason)
+        ),
+        output_text=output_text,
+        model=model,
+        usage=SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
         ),
     )
 
@@ -294,6 +341,50 @@ async def test_deepseek_plain_completion_translates_roles_and_thinking() -> None
     assert call["reasoning_effort"] == "high"
     assert call["max_tokens"] == 4096
     assert "temperature" not in call
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_uses_responses_json_schema_with_prompt_parity() -> None:
+    verdict_payload = _judge_payload(rationale="Grounded judge rationale.")
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(verdict_payload))
+    )
+    client = FakeDeepSeekClient(responses=responses)
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=client
+    )
+
+    result = await provider.complete_structured(
+        [
+            ChatMessage(role="developer", content="judge policy"),
+            ChatMessage(role="user", content="judge input"),
+        ],
+        JudgeVerdict,
+        agent_name="judge",
+    )
+
+    assert result == JudgeVerdict.model_validate(verdict_payload)
+    assert len(responses.calls) == 1
+    call = responses.calls[0]
+    assert call["model"] == "deepseek-v4-flash"
+    assert call["max_output_tokens"] == 4096
+    assert call["reasoning"] == {"effort": "high"}
+    assert "temperature" not in call
+    assert call["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "JudgeVerdict",
+            "schema": JudgeVerdict.model_json_schema(),
+        }
+    }
+    assert call["input"][0] == {"role": "system", "content": "judge policy"}
+    assert call["input"][1] == {"role": "user", "content": "judge input"}
+    assert call["input"][2]["role"] == "system"
+    assert "JSON Schema:" in call["input"][2]["content"]
+    assert "response_format" not in call
+    assert "max_tokens" not in call
+    assert client.chat.completions.calls == []
 
 
 @pytest.mark.asyncio
