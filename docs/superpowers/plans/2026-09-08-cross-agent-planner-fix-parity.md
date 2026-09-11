@@ -41,7 +41,7 @@ This table is the authoritative task bookkeeping for the remote branch `codex/cr
 | 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
 | 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker diagnosis complete; repair wave reviewed; serialized Critic evaluator repair next** | The user-authorized Fact Checker evidence remains target-contract green (`15/15` hard gates, deterministic `1.00`) with a scorable below-threshold judge and fallback `react_decision` `output_limit`; Sol's review supports no Fact Checker production or budget change. Source Evaluator remains target-green but judge-blocked. Do not start another live run until the evaluator repair and offline gate are complete. |
 | 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
-| 21. Parallel evidence-driven repair wave | **C fix round 3 integrated — scoped re-review and consolidated offline gate pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; fix round 1 added normalized whole-theme matching, and later Sol reviews found false positives for acknowledged durability language and sentence-level marker borrowing. Fix round 3 scopes unresolved evidence to comma/semicolon/colon-delimited clauses, with five production-path controls green. J/F/S/C are integrated at `5763f8a`; live/provider/LangSmith/suite execution remains forbidden until scoped re-review and the consolidated offline gate. |
+| 21. Parallel evidence-driven repair wave | **Sol reviewed with follow-up — consolidated offline gate pending** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; later Sol reviews found and corrected false positives for acknowledged durability language and sentence-level marker borrowing. Fix round 3 scopes unresolved evidence to comma/semicolon/colon-delimited clauses, with five production-path controls green. Sol High returned `PASS WITH FOLLOW-UP` for `c9f31ee..a08dbbd`, with no Critical or Important findings; the one-token-theme sensitivity remains deferred. J/F/S/C are integrated at `5763f8a`; live/provider/LangSmith/suite execution remains forbidden until the consolidated offline gate. |
 
 The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
 
@@ -2483,3 +2483,24 @@ load-bearing candidate is Stream C's shared Critic evaluator behavior.
 - Next gate: push the documented `5763f8a` state, obtain a fresh scoped Sol
   High re-review, then run the consolidated offline gate. Live/provider/
   LangSmith/suite execution remains **NO-GO** until both gates are complete.
+
+### Stream C scoped re-review disposition (2026-09-10)
+
+- Sol High reviewed the pushed range `c9f31ee..a08dbbd` and returned
+  **PASS WITH FOLLOW-UP**. It confirmed that the clause-local association fixes
+  the covered `compressive strength standards` false negative while preserving
+  the valid full-theme durability limitation. The review found no Critical or
+  Important findings.
+- The only remaining finding is the previously deferred Minor sensitivity for
+  a future reference theme with one meaningful token. None of the current six
+  Critic themes has that shape, so Sol required no action before the
+  consolidated offline gate.
+- Sol confirmed the production-path regression architecture, the exact
+  implementation scope in `5763f8a`, the documentation-only follow-up in
+  `a08dbbd`, the frozen case/report/theme/rubric/weight/threshold/prompt/tool/
+  budget/route/provider/fallback/judge invariants, and `llm.max_tokens: 4096`.
+  The reported verification counts remain coordinator evidence; Sol did not
+  independently execute them.
+- Gate: proceed to the consolidated offline gate. Live/provider/LangSmith/
+  suite execution remains **NO-GO** until that gate is green and any findings
+  are handled.

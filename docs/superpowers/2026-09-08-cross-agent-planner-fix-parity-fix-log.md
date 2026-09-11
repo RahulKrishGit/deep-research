@@ -739,3 +739,24 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
 - Gate: push the documented `5763f8a` state, obtain a fresh scoped Sol High
   re-review, then run the consolidated offline gate. Live/provider/LangSmith/
   suite execution remains **NO-GO** until both gates are complete.
+
+## 61. Stream C Scoped Re-Review Disposition — 2026-09-10
+
+- Sol High reviewed the pushed range `c9f31ee..a08dbbd` and returned
+  **PASS WITH FOLLOW-UP**. It confirmed that the clause-local association fixes
+  the covered `compressive strength standards` false negative while preserving
+  the valid full-theme durability limitation. The review found no Critical or
+  Important findings.
+- The only remaining finding is the previously deferred Minor sensitivity for
+  a future reference theme with one meaningful token. None of the current six
+  Critic themes has that shape, so Sol required no action before the
+  consolidated offline gate.
+- Sol confirmed the production-path regression architecture, the exact
+  implementation scope in `5763f8a`, the documentation-only follow-up in
+  `a08dbbd`, the frozen case/report/theme/rubric/weight/threshold/prompt/tool/
+  budget/route/provider/fallback/judge invariants, and `llm.max_tokens: 4096`.
+  The reported verification counts remain coordinator evidence; Sol did not
+  independently execute them.
+- Gate: proceed to the consolidated offline gate. Live/provider/LangSmith/
+  suite execution remains **NO-GO** until that gate is green and any findings
+  are handled.
