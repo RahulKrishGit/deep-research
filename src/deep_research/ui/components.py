@@ -27,7 +27,6 @@ from deep_research.ui.models import (
     history_entry_from_snapshot,
 )
 from deep_research.ui.progress import display_agent_action, display_agent_name
-from deep_research.ui.styles import COLORS, RADII, SPACING
 from deep_research.utils.types import ResearchError
 
 if TYPE_CHECKING:
@@ -1521,16 +1520,8 @@ def _render_subtopic_sequence(snapshot: UiSessionSnapshot) -> None:
             "queued": ("○", "Queued"),
         }[topic.status]
         row_class = f"dr-subtopic-row dr-subtopic-row--{topic.status}"
-        row_style = ""
-        if topic.status == "running":
-            row_style = (
-                f' style="background: {COLORS["active_tint"]}; '
-                f"border-radius: {RADII['container']}; "
-                f"padding: {SPACING['3']} {SPACING['2']};"
-                '"'
-            )
         st.markdown(
-            f'<div class="{row_class}"{row_style}>'
+            f'<div class="{row_class}">'
             f'<span class="dr-subtopic-icon" aria-hidden="true">{icon}</span>'
             f'<span class="dr-subtopic-title">{escape(topic.title)}</span>'
             f'<span class="dr-subtopic-status">{label}</span>'

@@ -1036,13 +1036,21 @@ def test_recent_questions_are_not_data_destructively_truncated() -> None:
     assert any(question in item.value for item in app.markdown)
 
 
-def test_new_research_navigation_sets_new_view() -> None:
-    app = _app([_entry("a" * 32, "Question", "completed", 0)]).run()
+def test_new_research_navigation_clears_selection_and_start_error() -> None:
+    session_id = "a" * 32
+    app = _app([_entry(session_id, "Question", "completed", 0)]).run()
 
     app.button(key="session_history").click().run()
+    app.session_state[_SELECTED_SESSION_KEY] = session_id
+    app.session_state[_START_ERROR_KEY] = ("Start failed", "Try again")
+    app.run()
     app.button(key="new_research").click().run()
 
     assert app.session_state[_VIEW_KEY] == "new"
+    assert app.session_state[_SELECTED_SESSION_KEY] is None
+    assert app.session_state[_START_ERROR_KEY] is None
+    assert app.container(key="dr-new-research-column") is not None
+    assert "Start failed" not in _visible_main_text(app)
 
 
 def test_history_navigation_sets_history_view() -> None:
@@ -1209,6 +1217,30 @@ def test_running_screen_preserves_narrative_sequence_and_three_recent_rows() -> 
     assert "Started subtopic 2" in visible
     assert "Evaluated new evidence" in visible
     assert "Newest meaningful activity" in visible
+
+
+def test_running_subtopic_markup_uses_semantic_class_without_inline_style() -> None:
+    app = _running_app(
+        _snapshot(
+            sub_topics=[
+                UiSubTopicProgress(
+                    index=2,
+                    title="Active research topic",
+                    status="running",
+                )
+            ]
+        )
+    )
+
+    running_rows = [
+        value
+        for value in _main_markdown_values(app)
+        if "dr-subtopic-row--running" in value
+    ]
+
+    assert len(running_rows) == 1
+    assert 'class="dr-subtopic-row dr-subtopic-row--running"' in running_rows[0]
+    assert "style=" not in running_rows[0]
 
 
 @pytest.mark.parametrize(

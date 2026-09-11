@@ -339,6 +339,12 @@ body {
   padding: var(--dr-space-2) 0 var(--dr-space-1);
 }
 
+.dr-subtopic-row--running {
+  background: var(--dr-active-tint);
+  border-radius: var(--dr-radius-container);
+  padding: var(--dr-space-3) var(--dr-space-2);
+}
+
 .st-key-dr-sidebar-spacer {
   flex: 1;
   min-height: var(--dr-space-8);

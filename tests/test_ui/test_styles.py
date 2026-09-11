@@ -148,6 +148,15 @@ def test_theme_sensitive_rules_use_semantic_variables() -> None:
         assert not any(color in body for color in styles.COLORS.values())
 
 
+def test_running_subtopic_row_uses_semantic_theme_tokens() -> None:
+    body = _rule_body(styles.STATIC_CSS, r"\.dr-subtopic-row--running")
+
+    assert "background: var(--dr-active-tint);" in body
+    assert "border-radius: var(--dr-radius-container);" in body
+    assert "padding: var(--dr-space-3) var(--dr-space-2);" in body
+    assert not any(color in body for color in styles.COLORS.values())
+
+
 def test_button_states_have_project_owned_theme_rules() -> None:
     css = styles.STATIC_CSS
 
