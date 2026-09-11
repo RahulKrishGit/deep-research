@@ -536,6 +536,7 @@ def test_repetition_result_accepts_bounded_typed_telemetry() -> None:
     assert payload["fallback_provider_diagnostic"] == {
         "kind": "output_limit",
         "operation": "react_decision",
+        "diagnostics": [],
     }
 
 

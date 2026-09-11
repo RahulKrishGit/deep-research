@@ -7,7 +7,13 @@ from collections.abc import Mapping
 from math import isfinite
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, JsonValue, field_validator, model_validator
+from pydantic import (
+    Field,
+    JsonValue,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from deep_research.observability import TokenUsage
 from deep_research.providers.contracts import (
@@ -27,6 +33,11 @@ _MAX_ARTIFACT_PROHIBITED_CALL_COUNT = 10_000
 _MAX_SCENARIO_MISSES = 16
 _MAX_SCENARIO_MISS_LENGTH = 256
 _MAX_SOURCE_URL_FINGERPRINTS = 128
+# Declared with the other module bounds, not beside EvaluatorDiagnostic:
+# FallbackProviderDiagnostic (defined above EvaluatorDiagnostic) reads it at
+# class-construction time, so a later definition is a NameError at import.
+_MAX_DIAGNOSTIC_PATHS = 16
+_MAX_DIAGNOSTIC_PATH_LENGTH = 128
 _ARTIFACT_METRIC_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 AgentName: TypeAlias = Literal[
@@ -261,13 +272,24 @@ class ReActSummary(ContractModel):
 
 
 class FallbackProviderDiagnostic(ContractModel):
-    """The bounded provider diagnosis safe to project into an artifact."""
+    """The bounded provider diagnosis safe to project into an artifact.
+
+    ``diagnostics`` carries the same normalized, provider-content-free
+    ``attempt``/``category``/``field_paths`` records the judge path already
+    retains as ``JudgeFeedback.diagnostics``. A ``json_invalid`` whose only
+    field path is ``$`` means no parseable JSON object was produced at all,
+    while a named path means valid JSON arrived in the wrong shape; without
+    these records an artifact cannot tell the two apart.
+    """
 
     kind: ProviderFailureKind
     operation: str = Field(
         min_length=1,
         max_length=_MAX_ARTIFACT_OPERATION_LENGTH,
         pattern=r"^[a-z][a-z0-9_]*$",
+    )
+    diagnostics: tuple[EvaluatorDiagnostic, ...] = Field(
+        default_factory=tuple, max_length=_MAX_DIAGNOSTIC_PATHS
     )
 
 
@@ -310,8 +332,6 @@ EvaluatorDiagnosticKind: TypeAlias = Literal[
 ]
 
 _FIELD_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$|^[0-9]+$")
-_MAX_DIAGNOSTIC_PATHS = 16
-_MAX_DIAGNOSTIC_PATH_LENGTH = 128
 
 
 def _normalize_diagnostic_path(value: object) -> str:
@@ -354,6 +374,57 @@ class EvaluatorDiagnostic(ContractModel):
 # The shorter name is retained for callers that describe this as an evaluation
 # diagnostic rather than an evaluator-facing one.
 EvaluationDiagnostic = EvaluatorDiagnostic
+
+
+def fallback_provider_diagnostic(
+    output: TargetOutput,
+) -> FallbackProviderDiagnostic | None:
+    """Project the first valid provider fallback from typed error details.
+
+    Lives beside the model it builds rather than in ``runner.py``: ``runner``
+    imports ``judging``, so a shared implementation here is the only placement
+    both can reach without an import cycle. It sits below
+    ``EvaluatorDiagnostic`` because it builds one, and below ``TargetOutput``
+    only in the sense that its argument is resolved at call time.
+
+    The snapshot's bounded diagnostics are retained rather than dropped. They
+    are already normalized to schema-proven field names and never carry
+    provider text, and they are what makes a live schema failure attributable
+    without repeating the paid call.
+    """
+    for error in output.errors:
+        details = error.get("details")
+        if not isinstance(details, Mapping):
+            continue
+        provider_failure = details.get("provider_failure")
+        if not isinstance(provider_failure, Mapping):
+            continue
+        raw_diagnostics = provider_failure.get("diagnostics")
+        diagnostics: list[EvaluatorDiagnostic] = []
+        if isinstance(raw_diagnostics, (list, tuple)):
+            for item in raw_diagnostics[:_MAX_DIAGNOSTIC_PATHS]:
+                if not isinstance(item, Mapping):
+                    continue
+                try:
+                    diagnostics.append(
+                        EvaluatorDiagnostic(
+                            kind="schema_output",
+                            attempt=item.get("attempt"),
+                            category=item.get("category"),
+                            field_paths=tuple(item.get("field_paths") or ()),
+                        )
+                    )
+                except ValidationError:
+                    continue
+        try:
+            return FallbackProviderDiagnostic(
+                kind=provider_failure.get("kind"),
+                operation=details.get("operation"),
+                diagnostics=tuple(diagnostics),
+            )
+        except ValidationError:
+            continue
+    return None
 
 
 class OutputLimitFailureDetails(ContractModel):

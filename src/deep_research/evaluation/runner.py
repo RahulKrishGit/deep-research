@@ -73,7 +73,6 @@ from deep_research.evaluation.models import (
     EvaluationTier,
     EvaluatorDiagnostic,
     ExperimentResult,
-    FallbackProviderDiagnostic,
     GateReport,
     GateResult,
     JudgeFeedback,
@@ -84,6 +83,7 @@ from deep_research.evaluation.models import (
     SuiteResult,
     TargetOutput,
     cli_agent_name,
+    fallback_provider_diagnostic,
 )
 from deep_research.evaluation.reporting import write_suite_artifact
 from deep_research.evaluation.targets import (
@@ -523,33 +523,12 @@ def build_repetition_result(
             or output.react is None
             else output.react.stop_reason
         ),
-        fallback_provider_diagnostic=_fallback_provider_diagnostic(output),
+        fallback_provider_diagnostic=fallback_provider_diagnostic(output),
         judge=judge,
         aggregate_quality=aggregate,
         trace_url=output.trace_url,
         errors=[output.failure] if output.failure is not None else [],
     )
-
-
-def _fallback_provider_diagnostic(
-    output: TargetOutput,
-) -> FallbackProviderDiagnostic | None:
-    """Project the first valid provider fallback from typed error details."""
-    for error in output.errors:
-        details = error.get("details")
-        if not isinstance(details, Mapping):
-            continue
-        provider_failure = details.get("provider_failure")
-        if not isinstance(provider_failure, Mapping):
-            continue
-        try:
-            return FallbackProviderDiagnostic(
-                kind=provider_failure.get("kind"),
-                operation=details.get("operation"),
-            )
-        except ValidationError:
-            continue
-    return None
 
 
 def build_case_result(

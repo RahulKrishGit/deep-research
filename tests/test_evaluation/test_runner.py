@@ -93,9 +93,115 @@ def test_repetition_result_projects_only_safe_typed_telemetry(
     assert result.fallback_provider_diagnostic.model_dump(mode="json") == {
         "kind": "output_limit",
         "operation": "react_decision",
+        "diagnostics": [],
     }
     assert "raw_provider_output" not in result.model_dump_json()
     assert "do not persist" not in result.model_dump_json()
+
+
+def test_repetition_result_retains_structured_diagnostics(
+    clean_target_output,
+) -> None:
+    output = clean_target_output.model_copy(
+        update={
+            "errors": [
+                {
+                    "details": {
+                        "operation": "critic_report_review",
+                        "provider_failure": {
+                            "kind": "schema_output",
+                            "exception_type": "StructuredOutputError",
+                            "diagnostics": [
+                                {
+                                    "attempt": 1,
+                                    "field_paths": ["rationale"],
+                                    "category": "json_invalid",
+                                },
+                                {
+                                    "attempt": 2,
+                                    "field_paths": ["gaps", "score"],
+                                    "category": "type_mismatch",
+                                },
+                            ],
+                        },
+                    },
+                }
+            ]
+        }
+    )
+
+    result = build_repetition_result(output, GateReport(), 0.5, None)
+
+    diagnostic = result.fallback_provider_diagnostic
+    assert diagnostic is not None
+    assert diagnostic.kind == "schema_output"
+    assert diagnostic.operation == "critic_report_review"
+    assert [item.attempt for item in diagnostic.diagnostics] == [1, 2]
+    assert [item.category for item in diagnostic.diagnostics] == [
+        "json_invalid",
+        "type_mismatch",
+    ]
+    assert [item.field_paths for item in diagnostic.diagnostics] == [
+        ("rationale",),
+        ("gaps", "score"),
+    ]
+
+
+def test_repetition_result_normalizes_an_unsafe_diagnostic_path(
+    clean_target_output,
+) -> None:
+    output = clean_target_output.model_copy(
+        update={
+            "errors": [
+                {
+                    "details": {
+                        "operation": "critic_report_review",
+                        "provider_failure": {
+                            "kind": "schema_output",
+                            "diagnostics": [
+                                {
+                                    "attempt": 1,
+                                    "field_paths": ["../../etc/passwd"],
+                                    "category": "other_schema",
+                                }
+                            ],
+                        },
+                    },
+                }
+            ]
+        }
+    )
+
+    result = build_repetition_result(output, GateReport(), 0.5, None)
+
+    diagnostic = result.fallback_provider_diagnostic
+    assert diagnostic is not None
+    assert [item.field_paths for item in diagnostic.diagnostics] == [("$",)]
+    assert "passwd" not in result.model_dump_json()
+
+
+def test_repetition_result_keeps_a_fallback_with_no_diagnostics(
+    clean_target_output,
+) -> None:
+    output = clean_target_output.model_copy(
+        update={
+            "errors": [
+                {
+                    "details": {
+                        "operation": "react_decision",
+                        "provider_failure": {"kind": "provider_timeout"},
+                    }
+                }
+            ]
+        }
+    )
+
+    result = build_repetition_result(output, GateReport(), 0.5, None)
+
+    diagnostic = result.fallback_provider_diagnostic
+    assert diagnostic is not None
+    assert diagnostic.kind == "provider_timeout"
+    assert diagnostic.diagnostics == ()
 
 
 @pytest.mark.parametrize("agent_name", ["source_evaluator", "synthesizer"])
