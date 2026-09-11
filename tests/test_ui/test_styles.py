@@ -25,6 +25,16 @@ def _contrast_ratio(foreground: str, background: str) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+def _rule_body(css: str, selector_pattern: str) -> str:
+    match = re.search(
+        rf"{selector_pattern}\s*\{{(?P<body>.*?)\}}",
+        css,
+        flags=re.DOTALL,
+    )
+    assert match is not None, f"Missing CSS rule matching {selector_pattern!r}"
+    return match.group("body")
+
+
 def test_style_tokens_match_approved_visual_handoff() -> None:
     assert styles.COLORS == {
         "background": "#FCFCFA",
@@ -116,29 +126,203 @@ def test_static_css_defines_light_and_dark_theme_contracts() -> None:
 def test_theme_sensitive_rules_use_semantic_variables() -> None:
     css = styles.STATIC_CSS
 
-    for selector in (
-        '[data-testid="stAppViewContainer"] header',
-        ".dr-readonly-field",
-        ".dr-control-label",
-        ".dr-next-steps",
-    ):
-        assert selector in css
-    assert "background: var(--dr-background);" in css
-    assert "background: var(--dr-surface);" in css
-    assert "color: var(--dr-text);" in css
-    assert "border-bottom: 1px solid var(--dr-border);" in css
+    header_body = _rule_body(
+        css,
+        r'\[data-testid="stAppViewContainer"\] header,\s*'
+        r'\[data-testid="stHeader"\]',
+    )
+    readonly_body = _rule_body(css, r"\.dr-readonly-field")
+    label_body = _rule_body(css, r"\.dr-control-label")
+    next_steps_body = _rule_body(css, r"\.dr-next-steps")
+
+    assert "background: var(--dr-background);" in header_body
+    assert "color: var(--dr-text);" in header_body
+    assert "border-bottom: 1px solid var(--dr-border);" in header_body
+    assert "background: var(--dr-surface);" in readonly_body
+    assert "border: 1px solid var(--dr-border);" in readonly_body
+    assert "color: var(--dr-text);" in readonly_body
+    assert "color: var(--dr-text);" in label_body
+    assert "border-top: 1px solid var(--dr-border);" in next_steps_body
+
+    for body in (header_body, readonly_body, label_body, next_steps_body):
+        assert not any(color in body for color in styles.COLORS.values())
 
 
 def test_button_states_have_project_owned_theme_rules() -> None:
     css = styles.STATIC_CSS
 
-    for state in (":hover", ":active", ":focus-visible"):
-        assert state in css
-    assert "--dr-active-hover" in css
-    assert "--dr-active-pressed" in css
-    assert "--dr-disabled-bg" in css
-    assert 'button[kind="secondary"]:hover' in css
-    assert "button:disabled" in css
+    contracts = (
+        (
+            "primary normal",
+            r'button\[kind="primary"\],\s*'
+            r'button\[kind="primaryFormSubmit"\]',
+            (
+                "background: var(--dr-active) !important;",
+                "border-color: var(--dr-active) !important;",
+                "color: var(--dr-on-active) !important;",
+            ),
+        ),
+        (
+            "primary hover",
+            r'button\[kind="primary"\]:not\(:disabled\):hover,\s*'
+            r'button\[kind="primaryFormSubmit"\]:not\(:disabled\):hover',
+            (
+                "background: var(--dr-active-hover) !important;",
+                "border-color: var(--dr-active-hover) !important;",
+            ),
+        ),
+        (
+            "primary active",
+            r'button\[kind="primary"\]:not\(:disabled\):active,\s*'
+            r'button\[kind="primaryFormSubmit"\]:not\(:disabled\):active',
+            (
+                "background: var(--dr-active-pressed) !important;",
+                "border-color: var(--dr-active-pressed) !important;",
+            ),
+        ),
+        (
+            "primary focus",
+            r'button\[kind="primary"\]:not\(:disabled\):focus-visible,\s*'
+            r'button\[kind="primaryFormSubmit"\]:not\(:disabled\):focus-visible',
+            ("outline-color: var(--dr-primary-focus);",),
+        ),
+        (
+            "primary disabled",
+            r'button\[kind="primary"\]:disabled,\s*'
+            r'button\[kind="primaryFormSubmit"\]:disabled',
+            (
+                "background: var(--dr-disabled-bg) !important;",
+                "border-color: var(--dr-disabled-border) !important;",
+                "color: var(--dr-disabled-text) !important;",
+            ),
+        ),
+        (
+            "secondary normal",
+            r'button\[kind="secondary"\]',
+            (
+                "background: var(--dr-background) !important;",
+                "border-color: var(--dr-border) !important;",
+                "color: var(--dr-text) !important;",
+            ),
+        ),
+        (
+            "secondary hover",
+            r'button\[kind="secondary"\]:not\(:disabled\):hover',
+            (
+                "background: var(--dr-surface) !important;",
+                "border-color: var(--dr-active) !important;",
+            ),
+        ),
+        (
+            "secondary active",
+            r'button\[kind="secondary"\]:not\(:disabled\):active',
+            (
+                "background: var(--dr-active-tint) !important;",
+                "border-color: var(--dr-active) !important;",
+            ),
+        ),
+        (
+            "secondary focus",
+            r'button\[kind="secondary"\]:not\(:disabled\):focus-visible',
+            ("outline-color: var(--dr-focus);",),
+        ),
+        (
+            "secondary disabled",
+            r'button\[kind="secondary"\]:disabled',
+            (
+                "background: var(--dr-disabled-bg) !important;",
+                "border-color: var(--dr-disabled-border) !important;",
+                "color: var(--dr-disabled-text) !important;",
+            ),
+        ),
+        (
+            "link normal",
+            r'\[data-testid="stLinkButton"\]\s+'
+            r'\[data-testid="stBaseLinkButton-secondary"\]',
+            (
+                "background: var(--dr-background) !important;",
+                "border: 1px solid var(--dr-border) !important;",
+                "color: var(--dr-text) !important;",
+                "min-height: 44px;",
+            ),
+        ),
+        (
+            "link hover",
+            r'\[data-testid="stLinkButton"\]\s+'
+            r'\[data-testid="stBaseLinkButton-secondary"\]'
+            r':not\(\[disabled\]\):hover',
+            (
+                "background: var(--dr-surface) !important;",
+                "border-color: var(--dr-active) !important;",
+                "color: var(--dr-text) !important;",
+            ),
+        ),
+        (
+            "link active",
+            r'\[data-testid="stLinkButton"\]\s+'
+            r'\[data-testid="stBaseLinkButton-secondary"\]'
+            r':not\(\[disabled\]\):active',
+            (
+                "background: var(--dr-active-tint) !important;",
+                "border-color: var(--dr-active) !important;",
+                "color: var(--dr-text) !important;",
+            ),
+        ),
+        (
+            "link focus",
+            r'\[data-testid="stLinkButton"\]\s+'
+            r'\[data-testid="stBaseLinkButton-secondary"\]'
+            r':not\(\[disabled\]\):focus-visible',
+            (
+                "outline: 3px solid var(--dr-focus);",
+                "outline-offset: 2px;",
+            ),
+        ),
+        (
+            "link disabled",
+            r'\[data-testid="stLinkButton"\]\s+'
+            r'\[data-testid="stBaseLinkButton-secondary"\]\[disabled\],\s*'
+            r'\[data-testid="stLinkButton"\]\s+'
+            r'\[data-testid="stBaseLinkButton-secondary"\]\[disabled\]:hover,\s*'
+            r'\[data-testid="stLinkButton"\]\s+'
+            r'\[data-testid="stBaseLinkButton-secondary"\]\[disabled\]:active',
+            (
+                "background: var(--dr-disabled-bg) !important;",
+                "border-color: var(--dr-disabled-border) !important;",
+                "color: var(--dr-disabled-text) !important;",
+                "cursor: not-allowed;",
+            ),
+        ),
+    )
+
+    for label, selector_pattern, declarations in contracts:
+        body = _rule_body(css, selector_pattern)
+        for declaration in declarations:
+            assert declaration in body, f"{label} missing {declaration}"
+
+
+def test_disabled_buttons_cannot_match_interactive_color_rules() -> None:
+    css = styles.STATIC_CSS
+
+    for selector_pattern in (
+        r'button\[kind="primary"\]:not\(:disabled\):hover,\s*'
+        r'button\[kind="primaryFormSubmit"\]:not\(:disabled\):hover',
+        r'button\[kind="primary"\]:not\(:disabled\):active,\s*'
+        r'button\[kind="primaryFormSubmit"\]:not\(:disabled\):active',
+        r'button\[kind="secondary"\]:not\(:disabled\):hover',
+        r'button\[kind="secondary"\]:not\(:disabled\):active',
+    ):
+        assert re.search(rf"{selector_pattern}\s*\{{", css)
+
+    for selector_pattern in (
+        r'\[data-testid="stLinkButton"\]\s+'
+        r'\[data-testid="stBaseLinkButton-secondary"\]'
+        r':not\(\[disabled\]\):hover',
+        r'\[data-testid="stLinkButton"\]\s+'
+        r'\[data-testid="stBaseLinkButton-secondary"\]'
+        r':not\(\[disabled\]\):active',
+    ):
+        assert re.search(rf"{selector_pattern}\s*\{{", css)
 
 
 def test_static_css_is_safe_and_stays_inside_approved_boundary() -> None:
@@ -236,11 +420,11 @@ def test_static_css_includes_focus_disabled_readonly_and_spacing_rules() -> None
     assert '[role="radio"]:focus-visible' in css
     assert "outline: 3px solid var(--dr-focus);" in css
     assert "outline-offset: 2px;" in css
-    assert 'button[kind="primary"]:focus-visible' in css
-    assert 'button[kind="primaryFormSubmit"]:focus-visible' in css
+    assert 'button[kind="primary"]:not(:disabled):focus-visible' in css
+    assert 'button[kind="primaryFormSubmit"]:not(:disabled):focus-visible' in css
     primary_focus_rule = re.search(
-        r'button\[kind="primary"\]:focus-visible,\s*'
-        r'button\[kind="primaryFormSubmit"\]:focus-visible\s*'
+        r'button\[kind="primary"\]:not\(:disabled\):focus-visible,\s*'
+        r'button\[kind="primaryFormSubmit"\]:not\(:disabled\):focus-visible\s*'
         r'\{(?P<body>.*?)\}',
         css,
         flags=re.DOTALL,

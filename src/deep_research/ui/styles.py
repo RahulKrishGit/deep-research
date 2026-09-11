@@ -388,8 +388,7 @@ body {
   line-height: 1.65;
 }
 
-.stButton > button,
-[data-testid="stLinkButton"] {
+.stButton > button {
   border-radius: var(--dr-radius-control);
   box-shadow: none;
   min-height: 44px;
@@ -403,14 +402,14 @@ button[kind="primaryFormSubmit"] {
   min-height: 44px !important;
 }
 
-button[kind="primary"]:hover,
-button[kind="primaryFormSubmit"]:hover {
+button[kind="primary"]:not(:disabled):hover,
+button[kind="primaryFormSubmit"]:not(:disabled):hover {
   background: var(--dr-active-hover) !important;
   border-color: var(--dr-active-hover) !important;
 }
 
-button[kind="primary"]:active,
-button[kind="primaryFormSubmit"]:active {
+button[kind="primary"]:not(:disabled):active,
+button[kind="primaryFormSubmit"]:not(:disabled):active {
   background: var(--dr-active-pressed) !important;
   border-color: var(--dr-active-pressed) !important;
 }
@@ -421,12 +420,12 @@ button[kind="secondary"] {
   color: var(--dr-text) !important;
 }
 
-button[kind="secondary"]:hover {
+button[kind="secondary"]:not(:disabled):hover {
   background: var(--dr-surface) !important;
   border-color: var(--dr-active) !important;
 }
 
-button[kind="secondary"]:active {
+button[kind="secondary"]:not(:disabled):active {
   background: var(--dr-active-tint) !important;
   border-color: var(--dr-active) !important;
 }
@@ -439,23 +438,46 @@ a:hover {
   color: var(--dr-active-hover);
 }
 
-[data-testid="stLinkButton"] {
+[data-testid="stLinkButton"] [data-testid="stBaseLinkButton-secondary"] {
+  border-radius: var(--dr-radius-control);
+  box-shadow: none;
   background: var(--dr-background) !important;
   border: 1px solid var(--dr-border) !important;
   color: var(--dr-text) !important;
+  min-height: 44px;
   text-decoration: none;
 }
 
-[data-testid="stLinkButton"]:hover {
+[data-testid="stLinkButton"]
+[data-testid="stBaseLinkButton-secondary"]:not([disabled]):hover {
   background: var(--dr-surface) !important;
   border-color: var(--dr-active) !important;
   color: var(--dr-text) !important;
 }
 
-[data-testid="stLinkButton"]:active {
+[data-testid="stLinkButton"]
+[data-testid="stBaseLinkButton-secondary"]:not([disabled]):active {
   background: var(--dr-active-tint) !important;
   border-color: var(--dr-active) !important;
   color: var(--dr-text) !important;
+}
+
+[data-testid="stLinkButton"]
+[data-testid="stBaseLinkButton-secondary"]:not([disabled]):focus-visible {
+  outline: 3px solid var(--dr-focus);
+  outline-offset: 2px;
+}
+
+[data-testid="stLinkButton"] [data-testid="stBaseLinkButton-secondary"][disabled],
+[data-testid="stLinkButton"]
+[data-testid="stBaseLinkButton-secondary"][disabled]:hover,
+[data-testid="stLinkButton"]
+[data-testid="stBaseLinkButton-secondary"][disabled]:active {
+  background: var(--dr-disabled-bg) !important;
+  border-color: var(--dr-disabled-border) !important;
+  color: var(--dr-disabled-text) !important;
+  opacity: 1;
+  cursor: not-allowed;
 }
 
 [data-testid="stTextArea"] textarea,
@@ -537,9 +559,30 @@ textarea:focus-visible,
   outline-offset: 2px;
 }
 
-button[kind="primary"]:focus-visible,
-button[kind="primaryFormSubmit"]:focus-visible {
+button[kind="primary"]:not(:disabled):focus-visible,
+button[kind="primaryFormSubmit"]:not(:disabled):focus-visible {
   outline-color: var(--dr-primary-focus);
+}
+
+button[kind="secondary"]:not(:disabled):focus-visible {
+  outline-color: var(--dr-focus);
+}
+
+button[kind="primary"]:disabled,
+button[kind="primaryFormSubmit"]:disabled {
+  background: var(--dr-disabled-bg) !important;
+  border-color: var(--dr-disabled-border) !important;
+  color: var(--dr-disabled-text) !important;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+button[kind="secondary"]:disabled {
+  background: var(--dr-disabled-bg) !important;
+  border-color: var(--dr-disabled-border) !important;
+  color: var(--dr-disabled-text) !important;
+  opacity: 1;
+  cursor: not-allowed;
 }
 
 input:disabled,
