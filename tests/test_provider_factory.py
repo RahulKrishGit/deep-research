@@ -10,6 +10,7 @@ from deep_research.providers import (
     ProviderConfigurationError,
     build_chat_provider,
 )
+from deep_research.providers.deepseek_provider import DeepSeekJudgeProvider
 from deep_research.utils.config import LLMConfig
 
 
@@ -57,6 +58,56 @@ def test_factory_builds_exactly_the_selected_adapter(
     assert built == [expected]
 
 
+@pytest.mark.parametrize(
+    ("provider_name", "model", "expected"),
+    [
+        ("deepseek", "deepseek-v4-flash", DeepSeekJudgeProvider),
+        ("openai", "gpt-4o", OpenAIChatProvider),
+    ],
+)
+def test_judge_factory_builds_the_selected_judge_adapter(
+    provider_name, model, expected, tracker, monkeypatch
+) -> None:
+    built: list[tuple[str, str | None]] = []
+    recorders: dict[str, type[object]] = {}
+
+    def make_recording_adapter(adapter_name: str):
+        class RecordingAdapter:
+            def __init__(self, config, received_tracker, *, api_key=None):
+                assert config.provider == provider_name
+                assert received_tracker is tracker
+                built.append((adapter_name, api_key))
+
+        recorders[adapter_name] = RecordingAdapter
+        return RecordingAdapter
+
+    monkeypatch.setattr(
+        factory,
+        "DeepSeekJudgeProvider",
+        make_recording_adapter("DeepSeekJudgeProvider"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        factory,
+        "OpenAIChatProvider",
+        make_recording_adapter("OpenAIChatProvider"),
+    )
+    config = LLMConfig(
+        provider=provider_name,
+        model=model,
+        thinking_mode="disabled" if provider_name == "openai" else "enabled",
+        reasoning_effort="none" if provider_name == "openai" else "high",
+    )
+
+    result = factory.build_judge_provider(
+        config, tracker, api_key="explicit-judge-key"
+    )
+
+    expected_name = expected.__name__
+    assert isinstance(result, recorders[expected_name])
+    assert built == [(expected_name, "explicit-judge-key")]
+
+
 class MinimalLLMConfig:
     """Bypass Pydantic so an unregistered provider value can be tested."""
 
@@ -72,6 +123,42 @@ def test_unknown_provider_is_rejected_without_fallback(tracker) -> None:
     assert "other" in message
     assert "deepseek" in message
     assert "openai" in message
+
+
+def test_judge_factory_rejects_unknown_provider_without_fallback(
+    tracker, monkeypatch
+) -> None:
+    built: list[str] = []
+
+    class UnexpectedAdapter:
+        def __init__(self, *args, **kwargs):
+            built.append("constructed")
+
+    monkeypatch.setattr(
+        factory, "DeepSeekJudgeProvider", UnexpectedAdapter, raising=False
+    )
+    monkeypatch.setattr(factory, "OpenAIChatProvider", UnexpectedAdapter)
+
+    with pytest.raises(ProviderConfigurationError) as caught:
+        factory.build_judge_provider(
+            MinimalLLMConfig("other"),
+            tracker,
+            api_key="explicit-judge-key",
+        )
+
+    message = str(caught.value)
+    assert "other" in message
+    assert "deepseek" in message
+    assert "openai" in message
+    assert built == []
+
+
+def test_public_judge_symbols_are_reexported() -> None:
+    import deep_research.providers as providers
+
+    assert providers.DeepSeekJudgeProvider is DeepSeekJudgeProvider
+    assert providers.JudgeAdapter is factory.JudgeAdapter
+    assert providers.build_judge_provider is factory.build_judge_provider
 
 
 def test_build_embedding_provider_selects_the_local_model() -> None:

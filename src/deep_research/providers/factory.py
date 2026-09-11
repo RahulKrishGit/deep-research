@@ -18,7 +18,10 @@ from deep_research.providers.capabilities import (
     resolve_request_settings,
 )
 from deep_research.providers.contracts import ProviderConfigurationError
-from deep_research.providers.deepseek_provider import DeepSeekChatProvider
+from deep_research.providers.deepseek_provider import (
+    DeepSeekChatProvider,
+    DeepSeekJudgeProvider,
+)
 from deep_research.providers.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     LOCAL_EMBEDDING_PROVIDER,
@@ -29,6 +32,7 @@ from deep_research.providers.openai_provider import OpenAIChatProvider
 from deep_research.utils.config import EmbeddingProviderName, LLMConfig
 
 ChatAdapter: TypeAlias = OpenAIChatProvider | DeepSeekChatProvider
+JudgeAdapter: TypeAlias = OpenAIChatProvider | DeepSeekJudgeProvider
 EmbeddingAdapter: TypeAlias = LocalEmbeddingProvider | OpenAIEmbeddingProvider
 
 
@@ -44,6 +48,23 @@ def build_chat_provider(
     """
     if config.provider == "deepseek":
         return DeepSeekChatProvider(config, tracker, api_key=api_key)
+    if config.provider == "openai":
+        return OpenAIChatProvider(config, tracker, api_key=api_key)
+    raise ProviderConfigurationError(
+        f"Unsupported chat provider {config.provider!r}; "
+        "accepted values: deepseek, openai"
+    )
+
+
+def build_judge_provider(
+    config: LLMConfig,
+    tracker: Tracker,
+    *,
+    api_key: str | None = None,
+) -> JudgeAdapter:
+    """Select the judge adapter by configured provider name."""
+    if config.provider == "deepseek":
+        return DeepSeekJudgeProvider(config, tracker, api_key=api_key)
     if config.provider == "openai":
         return OpenAIChatProvider(config, tracker, api_key=api_key)
     raise ProviderConfigurationError(

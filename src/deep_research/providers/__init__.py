@@ -29,6 +29,7 @@ from deep_research.providers.contracts import (
 from deep_research.providers.deepseek_provider import (
     DEEPSEEK_BASE_URL,
     DeepSeekChatProvider,
+    DeepSeekJudgeProvider,
 )
 from deep_research.providers.embedding_capabilities import (
     EmbeddingModelCapability,
@@ -44,8 +45,10 @@ from deep_research.providers.embeddings import (
 from deep_research.providers.factory import (
     ChatAdapter,
     EmbeddingAdapter,
+    JudgeAdapter,
     build_chat_provider,
     build_embedding_provider,
+    build_judge_provider,
     validate_agent_model_configs,
 )
 from deep_research.providers.openai_provider import OpenAIChatProvider
@@ -57,8 +60,10 @@ __all__ = [
     "DEEPSEEK_BASE_URL",
     "DEFAULT_EMBEDDING_MODEL",
     "DeepSeekChatProvider",
+    "DeepSeekJudgeProvider",
     "EmbeddingAdapter",
     "EmbeddingModelCapability",
+    "JudgeAdapter",
     "LOCAL_EMBEDDING_DIMENSION",
     "LOCAL_EMBEDDING_PROVIDER",
     "LocalEmbeddingProvider",
@@ -83,6 +88,7 @@ __all__ = [
     "StructuredOutputError",
     "build_chat_provider",
     "build_embedding_provider",
+    "build_judge_provider",
     "capability_for",
     "embedding_capability_for",
     "resolve_request_settings",
