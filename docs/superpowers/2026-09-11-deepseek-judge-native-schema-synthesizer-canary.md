@@ -72,3 +72,23 @@ stable typed metrics. It is not universal production sign-off from one
 repetition. The result is recorded and pushed, and the next agent is Critic.
 Its paid command remains behind the campaign's separate immediate-authorization
 gate.
+
+## Sol High diagnosis — NO-CHANGE
+
+The typed deterministic metric was `coverage=0.0`. Its exact metric definition
+is: `Every subtopic title appears in the report body.` The required context is
+present in the real model message input: the characterization uses
+`SynthesizerAgent.build_task(live_case.state)` and confirms that every live
+subtopic title is present in the rendered `report_messages()` input, with the
+task findings bound to the state's raw findings.
+
+The offline characterization passed, including the frozen live-case check that
+the non-empty set of declared subtopic titles equals the non-empty set of
+`finding.related_sub_topic` values. The safe artifact cannot identify whether
+the observed zero is lexical coverage (literal title matching) or semantic
+coverage (the report addressing the topic without the literal title).
+
+The judge was clean and scored (`judge.status=scored`, `judge_quality=0.84`,
+and empty judge diagnostics). Sol High's final ruling is **NO-CHANGE**: the
+coverage observation is real, but the required context is present and no
+production defect is demonstrated.

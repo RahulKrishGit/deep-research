@@ -365,18 +365,16 @@ def test_report_messages_carry_every_input_the_writer_needs() -> None:
     assert "## Response contract" in body
 
 
-def test_live_report_messages_expose_every_required_coverage_topic() -> None:
+def test_live_report_messages_expose_every_required_coverage_topic(
+    tracker: Tracker, tmp_path: Path
+) -> None:
     live_case = cases_for("synthesizer", "live")[0]
-    state = live_case.state
-    task = SynthesisTask(
-        instruction=state.original_question,
-        session_id=state.session_id,
-        iteration=state.iteration,
-        claims=list(state.verified_claims),
-        sources=list(state.evaluated_sources),
-        findings=list(state.raw_findings),
-        limitations=[],
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(),
+        synthesizer_tools(tracker, output_root=tmp_path),
     )
+    task = agent.build_task(live_case.state)
 
     body = report_messages(
         task,
@@ -384,9 +382,10 @@ def test_live_report_messages_expose_every_required_coverage_topic() -> None:
         claim_digest=len(task.claims),
     )[1].content
 
-    required_topics = tuple(topic.title for topic in state.sub_topics)
+    required_topics = tuple(topic.title for topic in live_case.state.sub_topics)
     assert required_topics
     assert all(topic in body for topic in required_topics)
+    assert task.findings == list(live_case.state.raw_findings)
 
 
 def test_report_messages_drop_the_context_section_without_guidance() -> None:

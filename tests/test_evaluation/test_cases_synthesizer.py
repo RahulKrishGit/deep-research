@@ -384,6 +384,19 @@ def test_the_live_case_cites_three_real_stable_domains() -> None:
     } == _LIVE_DOMAINS
 
 
+def test_the_live_case_carries_evidence_for_every_declared_subtopic() -> None:
+    case = _case("synthesizer-live-report")
+
+    subtopic_titles = {topic.title for topic in case.state.sub_topics}
+    finding_topics = {
+        finding.related_sub_topic for finding in case.state.raw_findings
+    }
+
+    assert subtopic_titles
+    assert finding_topics
+    assert subtopic_titles == finding_topics
+
+
 def test_the_complete_case_carries_matching_evaluated_sources() -> None:
     """One ScoredSource per finding URL, no extras, no strays."""
     case = _case("complete-cited-report")

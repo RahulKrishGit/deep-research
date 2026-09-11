@@ -1285,3 +1285,40 @@ The campaign terminal state is `CONTROLLED_BASELINES_COMPLETE_WITH_INFRASTRUCTUR
   typed target fallback taxonomy. Sol High performed read-only diagnosis only;
   no tests, provider calls, LangSmith calls, live evaluation, or suite run was
   executed during the review.
+
+## 76. Sol High Synthesizer Coverage Diagnosis — NO-CHANGE — 2026-09-11
+
+- Diagnosis: the typed Synthesizer deterministic metric was `coverage=0.0`.
+  Its exact definition is `Every subtopic title appears in the report body.`
+  The real model message input contains the required context: the updated
+  characterization calls `SynthesizerAgent.build_task(live_case.state)`, passes
+  the resulting task to `report_messages()`, and confirms every live subtopic
+  title is present while `task.findings` equals the state's raw findings.
+- Frozen-case characterization: the non-empty set of declared live subtopic
+  titles equals the non-empty set of `finding.related_sub_topic` values. This
+  proves the frozen live case carries evidence for every declared subtopic;
+  case data was not changed.
+- Safe-artifact limit: the available safe artifact cannot distinguish lexical
+  coverage, based on literal title matching, from semantic coverage, where the
+  report addresses the topic without repeating its exact title.
+- Judge result: the judge was clean and scored (`judge.status=scored`,
+  `judge_quality=0.84`, empty diagnostics). Sol High's final ruling is
+  **NO-CHANGE** because the zero coverage observation is real, but required
+  context is present and no production defect is demonstrated.
+- Offline verification, in order: `python -m pytest
+  tests/test_agents/test_synthesizer.py -q` — passed; `python -m pytest
+  tests/test_evaluation/test_cases_synthesizer.py -q` — passed; `python -m
+  pytest tests/test_agents/test_synthesizer.py
+  tests/test_evaluation/test_cases_synthesizer.py -q` — passed; `python -m
+  ruff check src/deep_research/agents/synthesizer.py
+  tests/test_agents/test_synthesizer.py
+  tests/test_evaluation/test_cases_synthesizer.py` — passed; `git diff
+  --check` — passed. Exact counts and warning output are recorded in the
+  task report.
+- Changed paths: `tests/test_agents/test_synthesizer.py`,
+  `tests/test_evaluation/test_cases_synthesizer.py`,
+  `docs/superpowers/2026-09-11-deepseek-judge-native-schema-synthesizer-canary.md`,
+  and this fix log.
+- No live rerun, prompt change, evaluator change, token change, provider call,
+  LangSmith call, suite command, or production repair occurred. The existing
+  `.deepseek-runs/` directory was not inspected or modified.
