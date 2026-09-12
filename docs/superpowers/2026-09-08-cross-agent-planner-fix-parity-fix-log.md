@@ -1658,3 +1658,91 @@ offline gate after that change recorded `3 failed, 2087 passed, 1 deselected`,
 which is the three named pre-existing failures plus the one new test.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 81. Critic JSON-Shaped Prompt — MEASURED NO IMPROVEMENT; VENDOR REMEDY #2 EXHAUSTED
+
+Date: 2026-09-11. Candidate: `9ea5a88` on `codex/cross-agent-planner-fix-parity`.
+Plan: `docs/superpowers/plans/2026-09-11-critic-prompt-json-conformance.md`,
+Tasks 2 and 3.
+
+### What changed
+
+`CRITIQUE_INSTRUCTION` gained a JSON demand, and `critique_messages` gained a
+`## Reply format` section naming all five fields. The example uses the
+placeholder `<integer 1-10>` rather than a concrete number, because a concrete
+score would anchor the model's scoring and change critique semantics while
+appearing to fix formatting.
+
+The new Critic target prompt fingerprint is `28617e508492`. The previous value
+was `2c519fadb064`, so scores recorded before and after this change are not
+comparable on that axis.
+
+### Measurement
+
+The identical probe and sample size were used, on the same case, model,
+thinking mode, effort, budget, and transport. Probe preserved at
+`output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/critic_json_baseline.py`.
+
+| Condition | Requests | Failures | Rate | `prompt_mentions_json` |
+| --- | --- | --- | --- | --- |
+| Baseline (no JSON signal) | 30 | 6 | `0.2000` | `false` |
+| Baseline with empty-content guard | 20 | 5 | `0.2500` | `false` |
+| **Baseline combined** | **50** | **11** | **`0.2200`** | `false` |
+| **JSON-shaped prompt** | **30** | **8** | **`0.2667`** | **`true`** |
+
+Per-run outcomes for the post-change set: 8 `json_invalid`, 22 ok, and **zero**
+`extra_forbidden`.
+
+### Finding — no improvement
+
+The prompt change is confirmed live (`prompt_mentions_json: true`, prompt grew
+from `5,656` to `6,066` chars) and did **not** reduce the failure rate. The
+observed `26.7%` against a `22.0%` baseline is not an improvement; at these
+sample sizes the difference is not statistically meaningful in either
+direction, so the honest reading is **no effect**.
+
+This exhausts DeepSeek's documented JSON Output remedy #2 for the remaining
+defect. Requirement #1 (`response_format`) and #3 (budget) were already
+satisfied, and requirement #4 (empty content) was excluded by section 80's
+measurement, where zero of 20 guarded responses were empty. All four documented
+requirements are now accounted for, and the `json_invalid` failure survives.
+
+One weak secondary signal: `extra_forbidden` appeared once in the baseline and
+zero times with the shape example. That is consistent with the field list
+discouraging undeclared fields, but one observation is not evidence, and
+`json_invalid` is the dominant mode.
+
+### Retained change
+
+`9ea5a88` is **retained** rather than reverted. It is additive, it
+matches vendor guidance, it costs nothing measurable, and it removed the only
+`extra_forbidden` observation. Reverting it would reintroduce a prompt that
+names neither JSON nor its own output shape. Its unit tests pin the contract and
+forbid a concrete example score.
+
+### Where this leaves the defect
+
+The residual `critic_report_review` `json_invalid` failure is now:
+
+- measured at roughly **22-27%** of review calls;
+- **not** truncation (a `length` finish reason raises `ProviderOutputLimitError`
+  first, and the budget is `32768`);
+- **not** empty content (section 80: zero of 20 guarded responses were empty);
+- **not** fixed by the vendor's documented prompting remedy (this section).
+
+Remaining untested levers, in the order the plan ranks them:
+
+1. **Reduce reasoning effort for the review call only.** At `reasoning_effort:
+   max`, output capacity may be consumed by reasoning before the JSON object is
+   emitted, which would present as non-empty, non-JSON text. This is testable
+   with the same cheap probe and is the next candidate.
+2. **Micro-decompose the review into smaller structured calls** (for example
+   score plus rationale in one call, gaps plus queries in another), mirroring
+   the Fact Checker's one-call-per-claim shape, so each target is small and
+   fixed.
+3. **Accept containment.** The `review_produced` gate in `cccc139` already
+   prevents a fallback from being certified as a pass, so the defect degrades
+   about one repetition in four rather than producing a false pass.
+
+No lever is authorized by this entry. No live response body, prompt text,
+secret, or reasoning content is recorded.
