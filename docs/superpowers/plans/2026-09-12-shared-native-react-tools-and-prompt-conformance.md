@@ -22,7 +22,7 @@
 - Never retain or expose provider reasoning, raw provider responses, prompts, tool arguments, secrets, or provider exception text in public errors, artifacts, logs, or review evidence. Offline tests use harmless sentinels.
 - Do not change `JudgeVerdict`, `JUDGE_SYSTEM_PROMPT`, `JUDGE_PROMPT_TEMPLATE`, Judge weights, score bands, or Judge routing. The pinned Judge prompt fingerprint must remain `74b9cddfbbee`.
 - Keep the Critic's tool-free review prompt, dynamic report fence, H1 envelope, score bands, examples, lenient `unsupported_claims` rule, score bands, and review reply format unchanged.
-- Preserve the Critic/Judge complete weak/strong JSON examples and their score bands. Both examples must remain schema-valid; never show malformed JSON as a negative example. Preserve Source Evaluator's dimension-specific positive/negative prose anchors, but do not add a complete static JSON example whose invented URL would contradict the exact-dossier-URL rule. Do not add domain examples to planning, extraction, verification, or synthesis without a measurement that supports them.
+- Every tool-free structured operation carries one compact, complete, schema-valid JSON example. A scoring or classification operation may carry a second example only to show the opposite semantic case; no prompt carries more than two. "Negative" means weak, empty, contradicted, or insufficient evidence, never malformed JSON. Synthetic input/output pairs use reserved `.test` URLs, explicitly forbid copying their values, and remain subordinate to the real request's URL/evidence allow-lists. Preserve the Critic/Judge examples and score bands unchanged.
 - No DeepSeek, OpenAI, Tavily, LangSmith, evaluation, live test, or other paid/network call is authorized by implementing Tasks 1-7. Task 8 stops for a separately stated request inventory and explicit authorization before each batch.
 - Preserve old artifacts. Every live run after the shared prompt and transport change uses a fresh output namespace and records the new commit, prompt fingerprint, and target ReAct transport.
 - Stage exact paths only. Every task ends with Ruff on touched Python, `git diff --check`, and an independently reviewable commit.
@@ -765,7 +765,7 @@ git commit -m "refactor(agents): share native ReAct tool selection"
 
 ---
 
-### Task 5: Apply the effective Critic/Judge prompt-conformance rules to all six agents
+### Task 5: Apply DeepSeek's JSON-example guidance and the effective Critic/Judge prompt rules
 
 **Files:**
 - Modify: `src/deep_research/agents/prompts.py`
@@ -785,15 +785,23 @@ git commit -m "refactor(agents): share native ReAct tool selection"
 
 **Interfaces:**
 - Consumes: existing field-level instructions and provider-appended JSON schema.
-- Produces: `STRUCTURED_REPLY_FORMAT`, `PLANNER_PLAN_SYSTEM_PROMPT`, H1 request envelopes, an explicit prompt-conformance matrix, and cross-agent prompt/transport congruence tests.
+- Produces: `STRUCTURED_REPLY_FORMAT`, `STRUCTURED_EXAMPLE_NOTICE`, `render_structured_reply_format(...)`, `PLANNER_PLAN_SYSTEM_PROMPT`, `retrieved_finding_urls(...)`, H1 request envelopes, an explicit prompt-conformance matrix, and cross-agent prompt/transport congruence tests.
+
+The [official DeepSeek JSON Output guide](https://api-docs.deepseek.com/guides/json_mode/)
+asks callers to include the word JSON and an example of the desired JSON format.
+This repository uses Responses `json_schema`, not the guide's Chat Completions
+`json_object`, so treat that as provider guidance rather than proof. The bounded
+examples below are required, but Task 8's per-agent canaries still decide whether
+they improve this transport in practice.
 
 The implementation must satisfy this matrix:
 
 | Operation class | Literal `JSON object` instruction | Request-owned H1 sections | Positive/negative cases | Score guidance |
 | --- | --- | --- | --- | --- |
 | Native ReAct turns | No; output selection is provider-native | Existing task structure | None | Not applicable |
-| Planner, Researcher, Fact Checker, Synthesizer tool-free calls | Exactly one final reply-format instruction | Yes | No invented domain examples; retain explicit empty/no-evidence behavior where valid | Not applicable |
-| Source Evaluator scoring | Exactly one final reply-format instruction | Yes | Dimension-specific strong/weak prose anchors; no static JSON object with a fake URL | One 0.0-1.0 direction, all three dimensions defined, current/superseded/undated recency cases explicit |
+| Planner, Researcher, Fact Checker claim extraction, Synthesizer | Exactly one final reply-format instruction | Yes | One compact schema-valid example input/output pair; retain explicit empty/no-evidence behavior where valid | Not applicable |
+| Fact Checker claim verification | Exactly one final reply-format instruction | Yes | Two compact schema-valid examples: verified and insufficient evidence | Verdict definitions remain mutually exclusive |
+| Source Evaluator scoring | Exactly one final reply-format instruction | Yes | Two compact schema-valid example input/output pairs: weak and strong | One 0.0-1.0 direction, all three dimensions defined, current/superseded/undated recency cases explicit |
 | Critic review | Preserve current wording | Preserve current H1 plus computed report fence | Preserve two complete schema-valid weak/strong JSON examples | Preserve complete 1-10 bands without routing-threshold leakage |
 | Judge evaluation | Preserve current wording and fingerprint | Preserve current H1/H2 hierarchy | Preserve two complete schema-valid weak/strong JSON examples | Preserve complete 0.0-1.0 bands and explicit weights |
 
@@ -828,7 +836,7 @@ PLANNER_PLAN_SYSTEM_PROMPT = (
 Use it only in `plan_messages`; keep `PlannerAgent.system_prompt` returning the
 tool-aware `PLANNER_SYSTEM_PROMPT` for native ReAct.
 
-- [ ] **Step 3: Add one shared tool-free reply-format rule**
+- [ ] **Step 3: Add one shared tool-free reply format and bounded example renderer**
 
 In `agents/prompts.py`, add and export:
 
@@ -837,7 +845,47 @@ STRUCTURED_REPLY_FORMAT = (
     "Return exactly one JSON object matching the supplied response schema, "
     "with no Markdown fence and no text before or after it."
 )
+
+STRUCTURED_EXAMPLE_NOTICE = (
+    "The compact examples below show format and field relationships only. "
+    "Each example input is separate from the real request. Do not copy its "
+    "facts, URLs, or wording into the real answer."
+)
+
+
+def render_structured_reply_format(
+    examples: Sequence[tuple[str, str]],
+) -> str:
+    """Render one or two compact, complete JSON-object examples."""
+    if not 1 <= len(examples) <= 2:
+        raise ValueError("structured prompts require one or two examples")
+    rendered: list[str] = []
+    for label, payload in examples:
+        if not label.strip() or "\n" in label:
+            raise ValueError("example labels must be non-blank single lines")
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise ValueError("structured examples must be valid JSON") from error
+        if not isinstance(decoded, dict):
+            raise ValueError("structured examples must be JSON objects")
+        compact = json.dumps(
+            decoded, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        rendered.append(
+            f"{label.strip()}\nExample JSON output:\n{compact}"
+        )
+    return (
+        f"{STRUCTURED_REPLY_FORMAT}\n{STRUCTURED_EXAMPLE_NOTICE}\n"
+        + "\n".join(rendered)
+    )
 ```
+
+In `tests/test_agents/test_prompts.py`, write RED tests proving the helper rejects
+zero examples, three examples, malformed JSON, arrays/scalars, blank labels, and
+multi-line labels; proves its output contains no Markdown fence; and proves each
+payload is introduced by `Example JSON output:` and normalized to one compact
+JSON-object line.
 
 For `plan_messages`, `extraction_messages`, `scoring_messages`,
 `claim_extraction_messages`, `claim_verification_messages`, and
@@ -846,8 +894,9 @@ For `plan_messages`, `extraction_messages`, `scoring_messages`,
 - promote each request-owned section from `##` to `#`, matching the effective
   Critic/Judge separation between instruction-owned headings and nested data;
 - keep the existing semantic response contract;
-- append `# Reply format\n{STRUCTURED_REPLY_FORMAT}` as the final section,
-  matching their explicit prose reply contracts;
+- append `# Reply format\n{render_structured_reply_format(operation_examples)}`
+  as the final section, matching DeepSeek's example guidance and the effective
+  Critic/Judge explicit prose reply contracts;
 - ensure this is the only prompt-owned output-shape sentence containing the
   literal phrase `JSON object`; field semantics may say `return`, but must not
   introduce a competing JSON convention;
@@ -862,39 +911,148 @@ bound into agent schemas: measurements support those only for `JudgeVerdict`.
 Do not claim the heading/reply-format changes alone caused the earlier validity
 improvements; the six fresh canaries in Task 8 are the falsification test.
 
-- [ ] **Step 4: Lock the scoring guidance and example scope**
+- [ ] **Step 4: Add one or two exact examples to every tool-free structured operation**
 
-In `tests/test_agents/test_source_evaluator.py`, add
-`test_source_scoring_guidance_has_one_direction_and_anchor_for_every_dimension`.
-Before the existing dimension definitions in `SOURCE_SCORING_INSTRUCTION`, add
-this exact shared direction:
+Define these module-local tuples and pass them to
+`render_structured_reply_format`. Keep each JSON payload on one logical line in
+the rendered request; source formatting may use adjacent string literals.
+
+In `planner.py`, add one example because there is no valid "empty plan" case:
+
+```python
+_PLAN_REPLY_EXAMPLES = (
+    (
+        "Example input: compare bus and rail options for a city.",
+        '{"sub_topics":['
+        '{"title":"travel demand and coverage","rationale":"Establish which trips each option must serve.","search_queries":["city bus rail travel demand route coverage"],"success_criteria":["Measured demand and coverage estimates are available for both options."],"priority":1},'
+        '{"title":"cost and delivery","rationale":"Compare the resources and time required to deliver each option.","search_queries":["city bus rail capital operating cost delivery time"],"success_criteria":["Comparable cost and delivery estimates are available."],"priority":2},'
+        '{"title":"benefits and risks","rationale":"Identify the main outcomes and failure modes for each option.","search_queries":["city bus rail benefits risks evidence"],"success_criteria":["Measured benefits and documented risks are available for both options."],"priority":3}'
+        "]}",
+    ),
+)
+```
+
+In `researcher.py`, add one evidence-backed example. The existing response
+contract continues to state the empty-list case:
+
+```python
+_FINDING_REPLY_EXAMPLES = (
+    (
+        "Example input: an example report at https://evidence.example.test/report states that the measured reduction was 12 percent.",
+        '{"findings":[{"content":"The example report measured a 12 percent reduction.","source_url":"https://evidence.example.test/report","source_title":"Example report","confidence":0.8}]}',
+    ),
+)
+```
+
+Before placing that synthetic URL in a production prompt, write RED tests for a
+new `retrieved_finding_urls(run)` helper and for `build_findings(...,
+known_urls=...)`. Cover all four evidence-bearing read tools using their real
+payload shapes: `web_search.results[].url`, `web_scraper.url` only when `text` is
+non-empty, `document_reader.source` only when `chunks` is non-empty, and
+`query_memory.matches[].source_url` or `matches[].metadata.source_url`. Prove
+failed calls, empty payloads, malformed entries, duplicates, and
+`https://evidence.example.test/report` are excluded unless that exact normalized
+URL was retrieved.
+
+Then implement `retrieved_finding_urls(run)` with those semantics, add the
+keyword-only `known_urls: Sequence[str]` argument to `build_findings`, normalize
+both sides with `normalize_source_url`, and reject a draft with `finding N: source
+url was not retrieved` when its URL is outside the allow-list. Pass
+`retrieved_finding_urls(run)` from `ResearcherAgent.finalize`. Update successful
+Researcher fixtures to carry realistic URL-bearing evidence. This closes a
+pre-existing provenance gap: `build_findings` currently checks only whether a
+URL is syntactically valid.
+
+In `source_evaluator.py`, add two internally consistent weak/strong examples:
+
+```python
+_SOURCE_SCORE_REPLY_EXAMPLES = (
+    (
+        "Weak example input: an anonymous, undated post at https://weak.example.test/post only mentions the topic.",
+        '{"sources":[{"url":"https://weak.example.test/post","authority_score":0.1,"recency_score":0.5,"relevance_score":0.2,"rationale":"The publisher is unidentified, there is no dating signal, and the excerpt only mentions the topic."}]}',
+    ),
+    (
+        "Strong example input: a current primary standard at https://strong.example.test/standard directly answers the topic.",
+        '{"sources":[{"url":"https://strong.example.test/standard","authority_score":0.95,"recency_score":0.9,"relevance_score":0.95,"rationale":"A current standards body publication directly answers the topic with primary material."}]}',
+    ),
+)
+```
+
+Before the Source Evaluator's dimension definitions, add this exact shared
+direction:
 
 ```python
 "All three scores use one direction: 0.0 is weakest and 1.0 is strongest. "
 "Use intermediate values in proportion to the evidence in the dossier.\n"
 ```
 
-In the `recency` definition, retain the exact neutral rule and add: `A clearly
-current version scores high; a demonstrably superseded source on a
-time-sensitive topic scores low.` Assert the rendered scoring request contains
-exactly one 0.0-to-1.0 direction, defines `authority`, `recency`, and `relevance`
-once each, retains both the strong and weak authority cases, retains the
-direct-versus-mention relevance cases, and retains `Use 0.5 when the excerpts
-carry no dating signal at all`. Assert it does not ask the model for
-`corroboration_score`, `overall_score`, or `low_confidence`, which remain locally
-computed.
+In its `recency` definition retain the neutral rule and add: `A clearly current
+version scores high; a demonstrably superseded source on a time-sensitive topic
+scores low.`
 
-In the existing Critic and Judge prompt tests, parse every weak/strong example
-with `json.loads`, validate it with `CritiqueDraft` or `JudgeVerdict`, and assert
-the weak values fall inside the declared weak band and the strong values inside
-the declared strong band. Assert no parsed example contains an angle-bracket
-sentinel or a value rejected by its schema. Keep the Judge fingerprint at
+In `fact_checker.py`, add one claim-extraction example and two verdict examples:
+
+```python
+_CLAIM_EXTRACTION_REPLY_EXAMPLES = (
+    (
+        "Example input: a finding from https://evidence.example.test/report states that the measured reduction was 12 percent.",
+        '{"claims":[{"text":"The example report measured a 12 percent reduction.","source_urls":["https://evidence.example.test/report"]}]}',
+    ),
+)
+
+_CLAIM_VERIFICATION_REPLY_EXAMPLES = (
+    (
+        "Verified example input: an independent study reports the same measured reduction.",
+        '{"verdict":"verified","confidence":0.9,"evidence":["An independent study reports the same measured reduction."],"contradictions":[]}',
+    ),
+    (
+        "Insufficient-evidence example input: no independent material was retrieved.",
+        '{"verdict":"insufficient_evidence","confidence":0.0,"evidence":[],"contradictions":[]}',
+    ),
+)
+```
+
+In `synthesizer.py`, add one evidence-bound example:
+
+```python
+_REPORT_REPLY_EXAMPLES = (
+    (
+        "Example input: a checked finding from https://evidence.example.test/report supports a measured reduction but supplies no evidence from other settings.",
+        '{"executive_summary":"The supplied evidence supports a measured reduction, with uncertainty about transfer to other settings.","sections":[{"title":"Measured result","body":"The example study reports the measured result and its stated limits.","source_urls":["https://evidence.example.test/report"]}],"uncertainty_notes":"Evidence from other settings was not supplied."}',
+    ),
+)
+```
+
+Add a parameterized test table pairing each tuple with its provider-facing schema:
+`ResearchPlanDraft`, `SubTopicFindingsDraft`, `SourceScoresDraft`, `ClaimsDraft`,
+`ClaimVerdictDraft`, and `ReportDraft`. Parse each payload with
+`schema.model_validate_json`; assert each tuple contains one or two items, every
+label names an isolated example input, every URL ends in `.example.test` or
+contains `.example.test/`, and no output contains angle-bracket sentinels or a
+Markdown fence. Add mutation tests proving malformed JSON and a third example
+are rejected by `render_structured_reply_format`.
+
+Retain and strengthen the existing Critic and Judge tests: parse every
+weak/strong example with `json.loads`, validate it with `CritiqueDraft` or
+`JudgeVerdict`, and assert weak values fall inside the declared weak band and
+strong values inside the declared strong band. Keep the Judge fingerprint at
 `74b9cddfbbee`; these are preservation tests, not Judge changes.
 
-For Planner, Researcher, Fact Checker, and Synthesizer, assert no production
-prompt labels a domain-content example as weak, strong, positive, or negative.
-Where the current contract permits an empty/no-evidence result, assert that
-behavior remains explicit instead of demonstrating invented content.
+Add focused regression tests proving copied example data fails closed:
+
+- `build_findings(..., known_urls=...)` drops the Researcher example URL and
+  records the local rejection when it was not retrieved;
+- `build_claim_drafts(..., known_urls=...)` drops the claim-extraction example
+  URL when it is absent from collected findings;
+- `SourceEvaluatorAgent.score_sources` ignores a returned score for the weak or
+  strong example URL, preserves the real group URL, and emits the existing
+  `not_scored_by_model` fallback for that real group; and
+- `build_report_sections(..., known_urls=...)` drops the Synthesizer example URL
+  from `source_urls` and records the existing not-in-evidence rejection.
+
+These are operation-specific allow-list tests, not one vague string scan. The
+Planner and claim-verification examples contain no URLs and require no analogous
+guard.
 
 - [ ] **Step 5: Add the cross-agent tool-free prompt inventory test**
 

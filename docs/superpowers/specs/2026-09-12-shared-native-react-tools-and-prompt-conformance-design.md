@@ -185,7 +185,10 @@ evidence supports.
 3. **Explicit structured reply shape.** Every tool-free structured prompt keeps
    its field-level semantic contract and adds one final reply-format section:
    return exactly one JSON object matching the supplied schema, with no Markdown
-   fence and no text before or after it.
+   fence and no text before or after it. It also carries one compact, complete,
+   schema-valid example of the desired JSON format. A scoring or classification
+   operation may carry a second example only when it demonstrates the opposite
+   end of the same scale or verdict set. No request carries more than two.
 4. **Request-owned headings outrank embedded material.** Tool-free structured
    prompt builders use H1 request sections. Opaque report content keeps the
    Critic's dynamically sized Markdown fence. Judge input remains JSON rendered
@@ -194,26 +197,40 @@ evidence supports.
 ### Apply only where the evidence supports it
 
 The complete weak/strong JSON examples and full score bands stay on the Critic
-and Judge, because those schemas have stable fields and those calls choose a
-holistic score on a continuous or ordinal scale. Both examples remain valid JSON;
-no production prompt demonstrates malformed output as a negative example.
+and Judge, because those calls choose a holistic score on a continuous or
+ordinal scale. Both examples remain valid JSON; "negative" always means a weak,
+empty, contradicted, or insufficient-evidence *semantic case*, never malformed
+JSON. This follows the [DeepSeek JSON Output
+guide](https://api-docs.deepseek.com/guides/json_mode/), which asks for the word
+JSON and an example of the desired JSON format. The repository uses Responses
+`json_schema`, not Chat Completions `json_object`, so the guide is supporting
+evidence rather than proof; the live canaries remain the falsification test.
 
-Source Evaluator is also a scoring call. Preserve its dimension-specific anchors
+Source Evaluator is also a scoring call. Give it two compact example
+input/output pairs, one weak and one strong, using reserved `.test` URLs and
+making each synthetic dossier internally consistent with its output. Preserve
+its dimension-specific anchors
 for authoritative versus anonymous publishing and directly relevant versus
 merely mentioning the topic. Add one explicit score direction for all three
 dimensions and make recency's positive, negative, and neutral cases explicit:
 current material scores high, demonstrably superseded material on a
 time-sensitive topic scores low, and no dating signal remains exactly 0.5. Tests
-make that 0.0-1.0 direction and all three definitions non-contradictory. It does
-not receive a complete static JSON example because every returned URL must be
-copied from the current dossier; a made-up example URL would directly contradict
-that contract and could be copied into output.
+make that 0.0-1.0 direction and all three definitions non-contradictory.
+The examples explicitly say their URLs belong only to their isolated example
+dossiers and must not be copied. Source Evaluator already keys returned scores
+to the real dossier URLs. Add an equivalent retrieved-URL allow-list to
+Researcher extraction, whose current local validator checks URL shape but not
+provenance, so a copied example URL is rejected rather than entering research
+state.
 
-Complete output examples are not copied into Planner, Researcher, Fact Checker,
-or Synthesizer: those calls do not choose a score, an invented domain example
-would anchor content, and no measurement shows those calls need one. Their
-schema-valid empty/no-evidence behavior remains stated in their semantic
-contracts where the operation permits an empty result.
+Planner, Researcher extraction, Fact Checker claim extraction, and Synthesizer
+receive one compact example input/output pair apiece. Claim verification receives
+two because `verified` and `insufficient_evidence` exercise opposite populated
+and empty-list shapes. All synthetic URLs use the reserved `.test` domain, every
+example is validated against the exact provider-facing draft schema, and the
+normal local URL/evidence guards remain authoritative. Schema-valid
+empty/no-evidence behavior remains stated in the semantic contract even when it
+is not the example shown.
 
 The Judge prompt and `JudgeVerdict` remain byte-for-byte unchanged. Its prompt
 revision was not a clean universal success: naming fields created extra keys,
