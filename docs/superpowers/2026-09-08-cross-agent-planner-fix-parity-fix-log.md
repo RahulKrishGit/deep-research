@@ -2709,3 +2709,85 @@ it: it is the measurement that makes (ii) actionable.
 
 Not authorized by this entry. No live response body, prompt text, secret, or
 reasoning content is recorded.
+
+## 92. Discriminating Probe — TOOL ADVERTISING CAUSES THE DSML; THE SCHEMA IS EXONERATED
+
+Date: 2026-09-12. Candidate: `e1dd3d2`. Probe:
+`react_shape_probe.py` with `REACT_PROBE_ARM=no_advertising`. Artifact:
+`react_shape_probe_30_no_advertising.jsonl`. Cost: **30 requests**, no repair retry.
+
+### Result
+
+Section 91 could not tell whether the DSML markup came from the tool catalogue or
+from the `ReActDecision` schema, because the two differed together. This control
+removed **only** the advertising, holding the schema, response contract, model,
+effort, token limit and transport fixed.
+
+| Arm | Tool advertising | Schema | First-attempt DSML | Gate |
+| --- | --- | --- | --- | --- |
+| production | system-prompt tool sentences + `## Tools` catalogue | `ReActDecision` | **16 / 30 (53%)** | 0/30 FAILED |
+| no_advertising | none, anywhere in the request | `ReActDecision` | **0 / 30** | **0/30 PASSED** |
+
+The control arm's request was verified before spending: `tool_names_in_request: []`,
+no descriptors, 5163 wire chars against the production arm's 5828 — with
+`text.format.name = ReActDecision` and the full `REACT_RESPONSE_CONTRACT` (which
+still names `action`, `tool_name` and `tool_input_json`) unchanged in both.
+
+**So the tool advertising is the cause and the schema is not.** That resolves the
+confound section 91 recorded, and it means option (ii) — how the catalogue is
+presented — is aimed at the right layer.
+
+### Two secondary observations
+
+- **Response length differs by an order of magnitude.** Production attempts are
+  95-1117 chars; the control's are 3807-7957. Without tools the model finishes with
+  a full answer rather than a short decision, which is consistent with the failing
+  production attempts being short *tool calls* rather than truncated prose.
+- **One non-markup failure remains.** Run 14 of the control returned balanced,
+  brace-initial, brace-final text that would not parse as JSON
+  (`json_invalid`, 7302 chars) — 1 of 30, a different and much rarer mode than the
+  markup. Recorded, not explained.
+
+### What this does not license
+
+Removing the advertising is **not** a viable production fix: the Critic must
+spot-check with `web_search` and `query_memory`, so the catalogue has to stay. The
+experiment identifies the trigger; it does not by itself supply the remedy.
+
+### Proposed (ii), and why it is shaped this way
+
+The catalogue currently renders as an API-tool-shaped list
+(`render_tool_catalog`, `prompts.py:241`):
+
+```
+## Tools
+- web_search: Search the web with Tavily and return ranked results. Arguments: {"max_results": "integer|null", "query": "string"}
+- query_memory: Query long-term memory for relevant research findings. Arguments: {"filters": "object", "query": "string", "top_k": "integer"}
+```
+
+Three candidate remedies, all keeping the tools available:
+
+1. **Merge the catalogue into the protocol.** Drop the `## Tools` section and name
+   the tools inside the response contract, so there is no standalone tool list to
+   read as an API definition — one place describes both what may be called and how
+   to call it.
+2. **Reframe the section in place.** Keep the list; add that these are not API
+   tools and must be requested through the decision fields. Careful: this is close
+   to option (i), which already failed in the system prompt, so proximity is the
+   only new variable.
+3. **Change the list's shape.** Keep the section but describe arguments in prose
+   instead of a JSON object, so the entry no longer resembles a tool definition.
+
+My lean is **(1)**: it removes the artefact the control implicates rather than
+annotating it, and it keeps one description of the protocol. It is a
+`render_react_messages` change, which is **shared** across ReAct agents — a
+localization tension, since a Critic canary could only validate one consumer.
+That choice needs the review's ruling before it is implemented. A cheaper
+Critic-local variant of the same idea exists (leave the section but move the tool
+names into the Critic's `guidance`), at the cost of splitting the protocol across
+two places.
+
+Validation would be 30 first-attempt requests with the same predeclared **0/30
+DSML** gate, then the three-repetition canary. Neither is authorized by this entry.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
