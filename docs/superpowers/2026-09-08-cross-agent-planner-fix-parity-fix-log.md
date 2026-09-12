@@ -1567,3 +1567,94 @@ verdict, not an `INCONCLUSIVE` transport failure.
   capability. That path needs its own plan and its own paid-run authorization.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 80. Critic Review JSON Baseline Measured — 22% FAILURE; EMPTY-CONTENT EXCLUDED
+
+Date: 2026-09-11. Candidate: `992136b` (first set) and `8d41fc1` (second set) on
+`codex/cross-agent-planner-fix-parity`.
+Plan: `docs/superpowers/plans/2026-09-11-critic-prompt-json-conformance.md`,
+Tasks 1 and 1b.
+
+### Why this measurement exists
+
+Three prior levers (evidence retention `fe434cf`, schema-enforced Responses
+transport `2fe4e32`, budgets to `32768` in `96fe8a9` and `035d3c5`) were each
+shipped without a before-and-after baseline, so no failure rate quoted from them
+was comparable with any other. This entry establishes the first measured
+baseline for the residual defect.
+
+`json_invalid` at `field_paths` `("$",)` is a property of the request the
+provider receives, so it is measurable without the evaluation harness, the
+judge, LangSmith, search, or repetitions.
+
+### Method
+
+The probe renders the production Critic review prompt through
+`CriticAgent.build_task` and `critique_messages` for the registered
+`critic-live-review` case, then sends it through the project's own provider
+stack with the configured model, `thinking_mode: enabled`, configured effort, and
+the `32768` budget. Each response is classified from the typed
+`StructuredOutputError` diagnostics.
+
+Probe preserved at
+`output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/critic_json_baseline.py`.
+
+### Set 1 — 30 authorized requests, no empty-content guard
+
+| Outcome | Count |
+| --- | --- |
+| ok | 24 |
+| `StructuredOutputError:json_invalid` | 5 |
+| `StructuredOutputError:extra_forbidden` | 1 |
+| **failure rate** | **0.2000** |
+
+Measured prompt facts: `prompt_chars: 5656`, `prompt_mentions_json: false`.
+
+### Set 2 — 20 authorized requests, with the empty-content guard
+
+The guard added in `8d41fc1` classifies a blank `output_text` as
+`category=schema_output` at the root instead of letting it reach
+`model_validate_json` and be recorded as `json_invalid`. Its unit test
+`test_an_empty_structured_response_is_its_own_category` pins that behaviour for
+both `""` and `"   "`. The guard is therefore verified to be live before this
+set ran, which is what makes the absence of `schema_output` informative.
+
+| Outcome | Count |
+| --- | --- |
+| ok | 15 |
+| `StructuredOutputError:json_invalid` | 5 |
+| `StructuredOutputError:schema_output` (empty body) | **0** |
+| **failure rate** | **0.2500** |
+
+### Findings
+
+- **Combined baseline: 11 failures in 50 requests, 22.0%** (20.0% then 25.0%,
+  stable across two independent sets).
+- **The empty-content hypothesis is excluded.** DeepSeek's JSON Output guide
+  warns that the API "may occasionally return empty content", and an empty body
+  previously produced exactly this `json_invalid` signature at the root. With
+  the guard live, zero of 20 responses were empty. The residual failures are
+  therefore **non-empty text that is not parseable JSON**, not empty content.
+- **`extra_forbidden` appeared once**, meaning on that request the model returned
+  valid JSON carrying undeclared fields. That is a distinct mode from
+  `json_invalid` and is not addressed by an emptiness guard.
+- **The prompt violates DeepSeek's documented JSON Output requirement.** The
+  vendor guide requires the word "json" in the prompt and an example of the
+  desired JSON format; the measured prompt contains neither
+  (`prompt_mentions_json: false`, and zero JSON lines from the earlier prompt
+  shape measurement in section 78's investigation).
+
+### Consequence
+
+The residual defect is now a measured `22%` failure rate with a named,
+vendor-documented remedy that is not yet implemented. The next change is the
+prompt-level JSON contract in Task 2 of the plan, followed by an identical probe
+at the same sample size for comparison.
+
+The empty-content guard in `8d41fc1` is retained regardless of the outcome: it
+removes a genuine misclassification on a shared provider path and mirrors the
+non-empty requirement `_choice_text` already applies on the chat path. The full
+offline gate after that change recorded `3 failed, 2087 passed, 1 deselected`,
+which is the three named pre-existing failures plus the one new test.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
