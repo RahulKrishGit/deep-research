@@ -1,7 +1,9 @@
 # Recommendation Request — Critic Score Calibration and the `unsupported_claims` Definition
 
 Date: 2026-09-12. Repository: `deep-research` (Python 3.12 multi-agent research
-system). Branch: `codex/cross-agent-planner-fix-parity`. HEAD: `5745704`.
+system). Branch: `codex/cross-agent-planner-fix-parity`. The work under review is
+the commit range `479065d..HEAD`; read the tip from the branch rather than from
+this document, which cannot track it.
 
 This is a request for a **recommendation on two open decisions**, with the full
 evidence behind them. It is not a request to re-open the defect that was fixed, and
@@ -109,8 +111,13 @@ the 0.75 threshold.
 Three clean runs are weak evidence alone: against the prior live rate of 4 of 17
 repetitions carrying `json_invalid` (≈24%), three clean runs occur with
 probability ≈0.44. Combined with the 30-request probe above — **33 consecutive
-clean Critic review calls** — the same prior gives ≈1 in 8,000. I do **not** claim
-the rate is exactly zero.
+clean Critic review calls** — the same prior gives ≈1 in 8,000. **That figure is
+weaker than it looks and should not be quoted as a probability.** It treats the
+4/17 historical rate as if it were known rather than estimated from 17 samples,
+and it assumes the probe calls and the canary calls are independent and
+identically distributed, which they are not: the probe uses a reconstructed judge
+input and a synthetic `ReActRun`. It supports *improvement* qualitatively, not a
+rate. I do **not** claim the rate is exactly zero.
 
 ### 3.4 The two anomalies the canary surfaced
 
@@ -122,9 +129,28 @@ report both carries those tokens and an "unresolved" marker. The trigger was a
 gap containing the theme `commercial-scale deployment` whose actual point was that
 the deployment is *unquantified* — the fixture names no plant, company, country or
 capacity figure, which is factually true of it. The token-subset heuristic cannot
-separate "the theme is missing" from "the theme is present but unquantified". The
-judge scored `gap_precision` 0.85–0.88 on those same gaps. **My assessment:
-heuristic false positive, unproven.**
+separate "the theme is missing" from "the theme is present but unquantified".
+**My assessment: heuristic false positive, unproven.**
+
+**The corroboration I originally offered for that assessment does not hold, and
+the reasoning is worth stating.** I cited the judge's `gap_precision` score
+(0.85–0.88 on those same gaps) as independent agreement. It is not independent
+agreement, for two reasons found later:
+
+1. **The judge confabulates harness state.** Rep 1's judge rationale asserts
+   *"every gate including critique_actionable and `no_spurious_gaps` passed"*,
+   while the artifact records `no_spurious_gaps = 0.0`. Worse, `no_spurious_gaps`
+   is **not a gate** — it is a deterministic metric — and the judge's input carries
+   `gate_results` but not the deterministic metrics, so it was never in a position
+   to know either way. A judge that misreports the harness's own checks cannot be
+   used as an independent check on one of them.
+2. **The target JSON is absent from `results.json`**, so verifying the claim would
+   require re-deriving the gap text from the trace rather than inspecting the
+   artifact.
+
+What survives is weaker: the judge *perceived* the gaps as precise. That is a
+signal, not proof, and source-entailment ground truth would need a labelled
+benchmark or inspection of the cited material.
 
 **(b) The Critic's score disagrees with the case's reference expectation.**
 All three repetitions returned **score 5 with `should_continue = True`**, while
@@ -134,7 +160,10 @@ the case's expectation is route `end` with `minimum_score: 7`.
 
 ## 4. Current state of the branch
 
-Commits on the branch, in order:
+The work under review is the commit range `479065d..HEAD`. These are its first six
+commits; the range has grown since (the review prompt and the `unsupported_claims`
+clarification were added after this document), so **read the tip from the branch**
+rather than from here:
 
 | Commit | Contents |
 | --- | --- |
@@ -146,13 +175,22 @@ Commits on the branch, in order:
 | `5745704` | docs: the Critic live canary and its calibration finding |
 
 Fix-log: `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`,
-sections **83–88** (83: Critic revision; 84: report fence; 85: shape probe;
-86: judge diagnosis; 87: judge revision; 88: the canary).
+sections **83–89** (83: Critic revision; 84: report fence; 85: shape probe;
+86: judge diagnosis; 87: judge revision; 88: the canary; 89: this review and the
+`unsupported_claims` clarification).
 
 Provenance fingerprints, both of which move on any prompt or schema change:
-`target_prompt_fingerprint = bf86f19981a6` (was `66a04109745c`);
-judge prompt fingerprint = `74b9cddfbbee` (was `77a0898f4267`, which is the value
-recorded on the older live artifacts).
+`target_prompt_fingerprint = bf86f19981a6` **at the time of the canary** — it is
+`2c0bd1210e21` after the `unsupported_claims` clarification. The judge prompt
+fingerprint is `74b9cddfbbee` (from `77a0898f4267`, the value recorded on the
+older live artifacts) and is unchanged by that clarification.
+
+**Fingerprint scope matters here.** `agent_prompt_fingerprint`
+(`src/deep_research/evaluation/config.py:154`) hashes the agent's own module *and
+the entire shared* `deep_research.agents.prompts` module, so a one-sentence change
+to one agent's contract moves the recorded `target_prompt_fingerprint` for **all
+six agents**. This document originally described the blast radius as covering the
+Critic; that was wrong.
 
 ---
 
@@ -180,17 +218,22 @@ expectations=CaseExpectations(
    `479065d`, **this session**. When the expectation was written, the Critic's
    entire scale was *"1 is unusable; 10 answers the question completely from
    strong, diverse, well-cited sources"* — no middle at all.
-2. **The fixture has no quantitative content.** The report answers a question
-   about *evidence for performance at scale* with five prose sections and three
-   named sources (GCGA roadmap, IEA, Nature review) and **no numbers at all** — no
-   emissions percentages, no CO₂ intensity, no capacity, no tonnage, no price. The
-   band table states explicitly that band 4–6 is *"a partial answer whose key
-   numbers, mechanisms, or trade-offs are missing or unsupported"*. So 5 is the
-   band-consistent reading of this report.
+2. **The fixture carries no decision-relevant measurements.** The report answers a
+   question about *evidence for performance at scale* with five prose sections and
+   three named sources (GCGA roadmap, IEA, Nature review) and no measured
+   performance, cost, emissions or capacity figure. It does contain vague
+   quantities — "several years", "under a decade", "a handful of countries" — so
+   the accurate statement is *no decision-relevant measured quantities*, not *no
+   quantitative content at all*. The band table states that band 4–6 is *"a
+   partial answer whose key numbers, mechanisms, or trade-offs are missing or
+   unsupported"*, which is what makes 5 the band-consistent reading.
 3. **It gates nothing.** `minimum_score` and `expected_route` appear **nowhere**
    in the source tree except the case definitions. No gate, evaluator, or routing
    decision reads them; they reach the judge as `reference_expectations` context
-   only.
+   only. Note what this does **not** mean: the expectation is still shown to the
+   judge, so its cost is not literally zero, and changing it requires a case
+   version bump, a dataset-sync update, updated pinned tests, and a fresh canary —
+   all itemised in section 5's options.
 
 ### Evidence pointing the other way
 
@@ -252,10 +295,14 @@ not one fixture.
 
 ### What the Critic actually did
 
-In the canary it returned four `unsupported_claims`, and every one reasons from
-the **verified claim set** rather than from the report's own citations — for
-example *"specific operational claims outside the two verified claims"*, and
-*"neither is among the verified claims"*.
+Across the three canary repetitions the Critic returned **4, 8 and 5**
+`unsupported_claims` respectively — those counts are read from the judge
+rationales, because `results.json` does not retain the primary target JSON, so the
+claim texts are trace-derived rather than independently inspectable from the
+artifact. The reasoning is visible in the trace and runs from the **verified claim
+set** rather than from the report's own citations — for example *"specific
+operational claims outside the two verified claims"*, and *"neither is among the
+verified claims"*.
 
 But the fixture report attributes those very statements inline to named sources
 ("The roadmap records that these plants have run for several years…", "The IEA
@@ -310,19 +357,30 @@ evaluation harness (where the goal is to measure the Critic, not to research)?
 
 ---
 
-## 7. My own lean, offered as input rather than as a conclusion
+## 7. My own lean — **and the outcome of the review**
 
-- **Decision 1:** option A, `minimum_score` reduced to match band 4–6 and
-  `expected_route` left as `end` only if a re-derived fixture warrants it.
-  Rationale: the scalar gates nothing, so the cost is near zero, and leaving a
-  documented expectation that the system contradicts on 3 of 3 runs trains readers
-  to ignore it.
+- **Decision 1:** option A, `minimum_score` reduced to match band 4–6. Rationale:
+  the scalar gates nothing mechanically, and leaving a documented expectation that
+  the system contradicts on 3 of 3 runs trains readers to ignore it. **Accepted by
+  the review, with the correction that "gates nothing" does not mean "costs
+  nothing": the expectation is still shown to the judge, and changing it requires a
+  case version bump, a dataset sync, updated pinned tests and a fresh canary.**
 - **Decision 2:** option A or C, not B. Rationale: the strict reading is the safer
-  default for a Critic whose job is to catch prose outrunning evidence, and C is
-  strictly more informative than either reword if the schema cost is acceptable.
-  I would want your view on whether the extra field earns its cost.
+  default for a Critic whose job is to catch prose outrunning evidence.
+  **Rejected by the review in favour of option B (lenient with a contrary-evidence
+  override), and the review is right.** The stronger evidence is structural rather
+  than the band-table inference I leaned on: claim extraction is deliberately
+  non-exhaustive, so strictness makes absence from the digest function as evidence
+  of unsupportedness; and the strong controlled case still expects `end` despite
+  containing a cited-but-unverified, explicitly qualified claim. My original
+  supporting argument — that the band table says 7–8 requires claims to be
+  *attributed* — is corroborative at best, because "attributed" itself admits both
+  readings.
 
-I hold both loosely. If the evidence above supports a different reading, say so.
+The review also noted, correctly, that the r3 judge observation I offered as
+evidence for option B shows only that the judge *perceived* over-reporting; that
+judge confabulated harness state in r1 and the target JSON is absent from the
+artifact, so it is support, not proof.
 
 ---
 
@@ -337,13 +395,19 @@ I hold both loosely. If the evidence above supports a different reading, say so.
    the judge fingerprint (`judge_prompt_fingerprint`, `judging.py:287`) covers the
    judge prompt **and** `JudgeVerdict.model_json_schema()`. Scores recorded before
    and after such a change are deliberately not comparable.
-   **Caveat worth knowing when reviewing a recommendation:** only the *judge*
-   fingerprint is pinned by a test
+   **Caveat worth knowing when reviewing a recommendation:** the *judge*
+   fingerprint has been pinned by a test since it was introduced
    (`test_judging.py::test_the_judge_prompt_fingerprint_supersedes_the_pre_fallback_value`).
-   The Critic's `target_prompt_fingerprint` is recorded on artifacts but pinned
-   nowhere, so a future Critic prompt change would move it silently. I noticed
-   this while checking the claims in this document; it is an open gap, not a
-   deliberate decision.
+   The Critic's `target_prompt_fingerprint` was recorded on artifacts but asserted
+   nowhere, so a Critic prompt change moved it silently — an open gap I found while
+   checking this document's claims. **It is now pinned**
+   (`test_config.py::test_the_critic_target_fingerprint_is_pinned_as_a_drift_alarm`),
+   and the review added the qualification that matters: the pin is a **drift alarm,
+   not an attribution mechanism**. Because the fingerprint covers the shared prompt
+   module, it cannot say *whose* prompt moved; what recovers attribution is that
+   artifacts also record `git_commit`, so a clean committed revision is explained
+   by its diff. Attribution is genuinely lost only when a fingerprint was recorded
+   from a dirty tree whose exact source snapshot was not retained.
 3. **Paid-run discipline.** Every live run is explicitly authorised with a stated
    request count in advance. One canary repetition costs 5–8 model calls
    (measured); a 3-repetition confirmation costs about 20. A 30-request
@@ -385,6 +449,27 @@ I hold both loosely. If the evidence above supports a different reading, say so.
 6. **Judge *quality* is unmeasured.** Nothing here tests whether the judge's
    scores are well calibrated; only that it returns valid verdicts reliably.
 
+**Added by the review, and accepted:**
+
+7. **I used the judge as corroboration it could not provide.** See §3.4(a): I cited
+   its `gap_precision` score as independent agreement that the
+   `no_spurious_gaps` trigger was a false positive, while the same judge output
+   asserted a *nonexistent gate* had passed. The judge perceives; it does not
+   verify. Anywhere this document leans on a judge score as evidence about the
+   harness, that lean is unsound.
+8. **I generalised unsupported-claim counts from one repetition.** I read the
+   count from repetition 1's trace and wrote "four"; the three runs differ (4, 8,
+   5). Where a number came from one run, this document should have said so.
+9. **This document cannot track the branch tip, and I wrote it as if it could.**
+   It named `5745704` as HEAD, and the review prompt it accompanies gave a commit
+   count and tip that were stale by the time the prompt itself was committed. Both
+   now point at the range instead of a fixed tip. The general lesson: a committed
+   document must not assert a mutable fact about the branch it lives on.
+10. **"No quantitative content" was too absolute**, and **"the cost is near zero"**
+    overlooked that the expectation is still shown to the judge and that changing
+    it triggers a case version bump, a dataset sync, updated pinned tests and a
+    fresh canary. Both corrected in place.
+
 ---
 
 ## 10. What this request is not asking for
@@ -400,7 +485,7 @@ I hold both loosely. If the evidence above supports a different reading, say so.
 
 | Path | What it is |
 | --- | --- |
-| `docs/superpowers/2026-09-08-...-fix-log.md` §§83–88 | The full measurement record |
+| `docs/superpowers/2026-09-08-...-fix-log.md` §§83–89 | The full measurement record |
 | `src/deep_research/agents/prompts.py:192` | `CRITIC_REVIEW_SYSTEM_PROMPT` (tool-free) |
 | `src/deep_research/agents/prompts.py:207` | `CRITIQUE_INSTRUCTION` — the `unsupported_claims` wording |
 | `src/deep_research/agents/critic.py:109,137` | Example scores and `_CRITIQUE_SCORE_BANDS` |

@@ -13,8 +13,10 @@ Your job is to produce a **recommendation**, not a summary and not an endorsemen
 
 ## Where to look
 
-- Branch: `codex/cross-agent-planner-fix-parity`. Tip `386c836`. The work under
-  review is the seven commits from `479065d` to `386c836`.
+- Branch: `codex/cross-agent-planner-fix-parity`. The work under review is the
+  commit range `479065d..HEAD`. **Read the tip and the commit count from the
+  branch**, not from these documents — an earlier version of this prompt stated a
+  fixed tip and a commit count, and was stale within one commit.
 - **Read first:**
   `docs/superpowers/2026-09-12-critic-calibration-recommendation-request.md`.
   It is self-contained: context, every measurement, both decisions, the options,

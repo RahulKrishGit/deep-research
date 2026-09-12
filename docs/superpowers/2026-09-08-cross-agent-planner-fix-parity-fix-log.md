@@ -2434,3 +2434,103 @@ score calibration is correct — only that it is consistently at odds with this
 case's reference expectation. One case, one repetition per run, three runs.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 89. External Review of the Critic Calibration Decisions — VERIFIED, TWO CORRECTIONS ACCEPTED, `unsupported_claims` CLARIFIED
+
+Date: 2026-09-12. Candidate: `7fdedf5` plus working-tree changes on
+`codex/cross-agent-planner-fix-parity`. Artifacts:
+`docs/superpowers/2026-09-12-critic-calibration-recommendation-request.md` (the
+brief), `...-review-prompt.md` (the review prompt). **No paid calls were made for
+this entry.**
+
+### What was reviewed
+
+Section 88 left two calibration questions open. A brief and a review prompt were
+written for an external reviewer, who returned a recommendation on both. Every
+substantive claim in that review was then checked against the codebase and the
+artifacts before anything was implemented.
+
+### Claims verified as correct
+
+| Claim | Evidence |
+| --- | --- |
+| `agent_prompt_fingerprint` hashes the **shared** `agents.prompts` module, so a one-sentence edit moves every agent's recorded `target_prompt_fingerprint` | `config.py:154-162` hashes `inspect.getsource(deep_research.agents.prompts)`. The brief had described the blast radius as the Critic's alone; wrong. |
+| A semantic case change **requires** a case version bump | Dataset identity is `(case_id, case_version)` (`datasets.py:5-7`, `:207`); `build_case(..., version: int = 1)` defaults, so `version=2` must be passed explicitly. |
+| The live reference **is** pinned in tests | `test_cases_critic.py:160-164` pins `expected_route: "end"` and `minimum_score: 7`. |
+| The canaries' unsupported-claim counts are **4, 8, 5**, not four | Read from the three judge rationales. Section 88 reported repetition 1's count as if it were all three. |
+| Rep 1's judge asserts `no_spurious_gaps` passed while the artifact records 0.0 | Its rationale reads "every gate including critique_actionable and no_spurious_gaps passed". |
+| The `results.json` artifacts omit the primary target JSON | The critique is recoverable only from the recorded trace. |
+| 162 tests pass at the tip | Reproduced exactly: `162 passed` across the critic agent, critic cases, and judging test modules; ruff clean. |
+
+One claim was found to be **worse than the review stated**: `no_spurious_gaps` is
+not merely a metric the judge misreported — it is **not a gate at all**, and the
+judge's input carries `gate_results` but never the deterministic metrics. The judge
+therefore asserted a fact about a check it had no access to. This invalidates the
+corroboration section 88 offered for its `no_spurious_gaps` diagnosis: the judge
+*perceives*, it does not verify.
+
+### Where the review overstated, and the review accepted the narrowing
+
+1. **"Any non-empty `unsupported_claims` list forces another research pass."** True
+   only when budget remains, a report exists, `score >= 7`, and `gaps` is empty —
+   `route_decision` checks in that order (`critic.py:274-284`). The review agreed
+   its wording overstated the marginal effect.
+2. **"An impossible evidence standard."** Too strong. The Critic's ReAct loop has
+   `web_search` and `query_memory`, the case declares
+   `required_live_dependencies=("tavily", "memory")`, and it used them — its
+   unsupported-claims reasoning cites live figures. The accurate criticism is that
+   strictness asks it to infer *exhaustive* citation entailment from a deliberately
+   non-exhaustive digest plus limited spot checks. The review agreed.
+3. **The band-table inference for Decision 2** ("7-8 requires claims to be
+   attributed") is corroborative, not decisive, because "attributed" admits both
+   readings. The review agreed and supplied stronger evidence.
+
+The review's own qualification of the fingerprint point is also correct and is
+recorded: the pin is a **drift alarm, not an attribution mechanism** — artifacts
+also record `git_commit`, so a clean committed revision is explained by its diff,
+and attribution is lost only for a dirty tree whose exact source snapshot was not
+kept.
+
+### Decision 2 implemented
+
+`CRITIQUE_INSTRUCTION` (`prompts.py:207`) now defines `unsupported_claims`
+leniently with an explicit override:
+
+- a statement is unsupported when it is *neither* clearly attributed to one of the
+  report's cited sources *nor* backed by a verified claim;
+- it must not be marked unsupported *solely* because it lacks a separate
+  verified-claim entry, because the claim digest is deliberately partial;
+- **a contrary claim verdict or spot-check evidence still makes it unsupported,
+  however it is cited** — the override that stops leniency from laundering
+  citations.
+
+Two tests added: a structural prompt test pinning all three parts of that
+distinction and asserting the superseded strict wording is gone
+(`test_prompts.py`), and the Critic target-fingerprint pin plus a test documenting
+the shared-module scope (`test_config.py`). The fingerprint moved
+`bf86f19981a6 -> 2c0bd1210e21`.
+
+### Decision 1 deferred, per the agreed order
+
+Decision 1 (case v2 with an expected 4-6 band and `refine` route) is **not**
+applied. The agreed sequencing is: apply Decision 2, canary it, then decide. If the
+canary moves the fixture consistently to 7/end, Decision 1 is paused rather than
+applied mechanically; if the fixture stays in 4-6/refine, it becomes a case-v2
+change with the expected band and route, a version bump, a dataset sync, updated
+pinned tests in `test_cases_critic.py`, and its own canary.
+
+The three-repetition canary for Decision 2 costs about 20 model calls and is **not
+authorized by this entry**.
+
+### Corrections applied to the committed brief
+
+The brief and the review prompt both carried errors this entry fixes: a fixed HEAD
+that could not stay true, "four unsupported_claims" generalised from one run, the
+judge-corroboration argument, "no quantitative content at all" (the report does
+contain vague quantities such as "several years"), the "1 in 8,000" figure quoted
+as a probability when it treats an estimate as known and assumes i.i.d. calls, "the
+cost is near zero", and the understated fingerprint blast radius. The brief's
+section 9 now lists these as accepted weaknesses, and both documents point at the
+commit range instead of a mutable tip.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
