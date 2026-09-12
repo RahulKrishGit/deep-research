@@ -2333,3 +2333,104 @@ revision, 30 for the `extra="ignore"` confirmation. Of these, 5 were spent on a
 configuration that never shipped.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 88. Critic Live Canary — THREE REPETITIONS; DEFECT CLASS FIXED, ONE CALIBRATION FINDING
+
+Date: 2026-09-12. Candidate: `bc3f472`. Command:
+`python -m deep_research.evaluation agent critic --tier live` — the critic canary,
+which runs the target agent, all fifteen deterministic gates, and the
+LLM-as-a-judge evaluator, and no other agent. Artifacts:
+`output/evaluations/live-critic-canary/critic/*/results.json`.
+
+Cost: **20 model calls**, measured from the recorded traces (7, 6, 7 per
+repetition, against an estimate of 5-8 derived from four earlier traces).
+
+### Result
+
+| Repetition | Status | Gates | Deterministic | Judge | Aggregate | Fallback | ReAct stop |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | REVIEW REQUIRED | **15/15** | 0.75 | 0.7755 | **0.7653** | none | finished |
+| 2 | REVIEW REQUIRED | **15/15** | **1.00** | 0.7520 | **0.8512** | none | finished |
+| 3 | REVIEW REQUIRED | **15/15** | **1.00** | 0.8150 | **0.8890** | none | finished |
+
+All three: `react_stop_reason = finished`, no `fallback_provider_diagnostic`,
+`prohibited_call_count = 0`, `errors = []`, judge `status = scored` with **zero
+diagnostics**, and aggregate above the 0.75 live threshold. Provenance:
+`target_prompt_fingerprint = bf86f19981a6` (the revised prompt of section 83),
+target effort `max`, judge effort `max`, judge transport
+`deepseek_responses_json_schema_v1`. `git_dirty` is true only because the
+untracked `output/`-adjacent artifact directories count as dirty; the tracked tree
+is clean.
+
+### The defect class is fixed
+
+Section 82's root cause produced `json_invalid` on the review call, which meant no
+critique, no judge, and an unscorable repetition. That did not occur: three
+consecutive canaries produced a critique, ran the judge, and passed every hard
+gate.
+
+Three repetitions alone would be weak evidence — against the prior live rate of
+4 of 17 repetitions carrying `json_invalid` (about 24%), three clean runs occur
+with probability `0.76^3`, roughly 44%. The strength comes from combining this
+with the section 85 shape probe: **33 consecutive critic review calls with no
+provider fallback and no judge failure**, which under the same 24% prior is about
+`0.76^33`, roughly 1 in 8000. No claim is made that the rate is exactly zero.
+
+### Finding: the score, not the critique, is the weak dimension
+
+The critic returned **score 5 with `should_continue = True` in all three
+repetitions**, while the case's reference expectation is route `end` with
+`minimum_score: 7`. That expectation is not gate-enforced: it reaches the judge as
+reference material, and the judge penalises it through the agent-specific
+dimensions.
+
+The judge's own verdicts show the same shape every time:
+
+| Dimension | Rep 1 | Rep 2 | Rep 3 |
+| --- | --- | --- | --- |
+| `critique_actionability` | 0.90 | 0.90 | 0.90 |
+| `gap_precision` | 0.88 | 0.85 | 0.85 |
+| `score_groundedness` | 0.75 | 0.60 | 0.80 |
+| `scoring_calibration` | 0.70 | 0.60 | 0.80 |
+
+The critique's actionable content is graded consistently high; the **score** is
+the weakest agent-specific dimension in every repetition. One hypothesis, not
+established here: the band table added in section 83 makes 5 the consistent
+reading of a report that carries no quantitative results, while the case's
+`minimum_score: 7` was written before those bands existed. Resolving it is a
+policy choice — revisit the case expectation, or revisit the critic's band
+placement — and this entry does neither.
+
+### Finding: one intermittent heuristic failure
+
+Repetition 1's `deterministic_quality` is 0.75 because `no_spurious_gaps`
+returned 0. The check fails when a gap's tokens contain all tokens of a reference
+theme and no single clause of the report both carries those tokens and an
+unresolved marker. The trigger was a gap containing the theme
+`commercial-scale deployment` whose actual point was that the deployment is
+unquantified — that the report names no plant, company, country or capacity
+figure — which the fixture report genuinely does not. The token-subset heuristic
+cannot separate "the theme is missing" from "the theme is present but
+unquantified".
+
+Assessed as a heuristic false positive, corroborated by the judge scoring
+`gap_precision` 0.85-0.88 on the same gaps. The trigger appeared in 1 of 3
+repetitions, so it is intermittent rather than systematic. The gap text was read
+from the recorded trace for this diagnosis and is not reproduced here.
+
+### Which bar the canary meets
+
+- Against the stated live threshold, aggregate `>= 0.75`: **3 of 3 pass**.
+- Against the stricter bar used in earlier canary dispositions,
+  `deterministic_quality == 1.00`: **2 of 3 pass**, the exception being the
+  heuristic above.
+- Against agreement with the case's reference expectation: **0 of 3**, the
+  calibration finding above.
+
+### What this entry does not claim
+
+It says nothing about any other agent, and it does not establish that the critic's
+score calibration is correct — only that it is consistently at odds with this
+case's reference expectation. One case, one repetition per run, three runs.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
