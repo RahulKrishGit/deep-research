@@ -8,12 +8,14 @@ from math import isfinite
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import (
+    ConfigDict,
     Field,
     JsonValue,
     ValidationError,
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from deep_research.observability import TokenUsage
 from deep_research.providers.contracts import (
@@ -555,10 +557,79 @@ class JudgeScores(ContractModel):
     uncertainty_calibration: UnitScore
 
 
+# The bound enforced on ``JudgeVerdict.rationale``, checked by a validator rather
+# than declared as a schema constraint so that it never reaches the model.
+#
+# The judge prompt states a hard 2000-character limit, which is the steering
+# device that keeps the model inside the range. If the transmitted schema also
+# carried a length, the request would present two different numbers for the same
+# field -- the prose said 2000 while the schema said this value -- and the model
+# would have to guess which to obey. So the length is enforced locally, after the
+# response returns, and the schema the model sees carries only ``minLength``.
+#
+# Measured with the limit declared in the schema: 5 of 30 production attempts
+# exceeded 2000 and became validation failures, against a maximum of 2,263 and a
+# median of 1,735. This bound is roughly nine times anything observed, so it
+# exists as a backstop against pathological output rather than as a live
+# constraint.
+#
+# Kept as a validator rather than removed because any bound makes an over-long
+# rationale a *validation* failure, and the structured attempt loop catches those
+# and retries once. With no bound at all the only remaining backstop is
+# ``max_tokens``, and hitting that is a truncated response -- a
+# ``ProviderOutputLimitError`` the same loop does not catch, so it is never
+# repaired.
+#
+# ``rationale`` is a recorded comment and never an input to ``judge_quality``,
+# which reads ``scores`` alone, so this bound cannot move a score.
+JUDGE_RATIONALE_SCHEMA_MAX = 20000
+
+
 class JudgeVerdict(ContractModel):
+    """One judge verdict, tolerating additive noise in the model's reply.
+
+    ``ContractModel`` forbids extra properties project-wide so that a model which
+    renames or invents a field is caught rather than silently half-read. This one
+    model relaxes that to ``ignore``, for a measured reason.
+
+    Naming the three fields in the judge prompt invited the model to append an
+    explanatory one: with no field named, 30 probe attempts added none, and with
+    the fields named, 11 of 30 added ``agent_specific_note``, ``agent_specific_notes``,
+    ``rationale_note`` or ``final_note``. One repair then invented a further key,
+    and 3 of 30 runs were lost outright as unscorable ``judge_schema_failure``.
+
+    An added note carries nothing this system reads: ``judge_quality`` consumes
+    ``scores`` alone and ``rationale`` is a recorded comment. Losing a whole
+    evaluation repetition over it is disproportionate, so additions are dropped
+    instead of fatal.
+
+    Drift is still caught. ``scores`` and ``rationale`` remain required, so a
+    rename or an omission still reports ``missing`` and still fails; only
+    addition is tolerated. Nested extras inside ``scores`` remain forbidden.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
     scores: JudgeScores
     agent_specific: dict[str, UnitScore] = Field(default_factory=dict)
-    rationale: str = Field(min_length=1, max_length=2000)
+    rationale: str = Field(min_length=1)
+
+    @field_validator("rationale")
+    @classmethod
+    def _rationale_within_bound(cls, value: str) -> str:
+        """Enforce the length the schema deliberately does not declare.
+
+        Registered as ``string_too_long`` so the shared diagnostic classifier
+        reports ``string_bounds`` and the one-repair flow still tells the model
+        to satisfy the string constraints.
+        """
+        if len(value) > JUDGE_RATIONALE_SCHEMA_MAX:
+            raise PydanticCustomError(
+                "string_too_long",
+                "String should have at most {max_length} characters",
+                {"max_length": JUDGE_RATIONALE_SCHEMA_MAX},
+            )
+        return value
 
 
 JudgeStatus: TypeAlias = Literal["scored", "judge_not_run"]

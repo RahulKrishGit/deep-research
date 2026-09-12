@@ -67,6 +67,82 @@ COMMON_DIMENSION_WEIGHTS: dict[str, float] = {
     "uncertainty_calibration": 0.10,
 }
 
+# What the prompt asks the judge for, and the limit it states as hard.
+#
+# The stated limit is deliberately HARDER than the enforced one:
+# ``JudgeVerdict.rationale`` accepts ``models.JUDGE_RATIONALE_SCHEMA_MAX``
+# characters. The two are different on purpose and neither should be reconciled
+# to the other. The statement is the steering device -- a credible hard limit is
+# what keeps the model inside the range in most cases -- while the wider schema
+# is the safety net, so the minority of runs that overshoot are still scored
+# instead of becoming an unscorable `string_too_long` failure.
+#
+# Measured: with both numbers at 2000, 5 of 30 production attempts exceeded it
+# and were rejected.
+#
+# The target sits below the stated maximum because the measured median (1,735
+# characters) sat against the limit rather than near the middle of the range.
+JUDGE_RATIONALE_GUIDANCE_MAX = 2000
+JUDGE_RATIONALE_GUIDANCE_TARGET = 1500
+
+_DIMENSION_COUNT = len(COMMON_DIMENSION_WEIGHTS)
+
+# The whole 0.0-1.0 range, so a judge has instruction in the middle of the scale
+# and not only at its endpoints. The bands are deliberately contiguous and the
+# last one is worded as a reservation, which is what keeps 0.8-1.0 from becoming
+# the default for an adequate run.
+_JUDGE_SCORE_BANDS: tuple[tuple[float, float, str], ...] = (
+    (
+        0.0,
+        0.2,
+        "the dimension is not met. The run does the opposite, or shows nothing "
+        "that could satisfy it.",
+    ),
+    (
+        0.2,
+        0.4,
+        "the dimension is barely present, and what is there is incidental rather "
+        "than deliberate.",
+    ),
+    (
+        0.4,
+        0.6,
+        "the dimension is partly met: the run does some of what it asks and "
+        "misses the rest.",
+    ),
+    (
+        0.6,
+        0.8,
+        "the dimension is met, with a specific shortfall you can name.",
+    ),
+    (
+        0.8,
+        1.0,
+        "the dimension is met in full and the run's own evidence shows it rather "
+        "than asserts it. Reserve 1.0 for a run that meets it without "
+        "overstating what it did.",
+    ),
+)
+
+# Illustration only. Each pair sits inside one band of the table above, so the
+# two examples demonstrate the range rather than one preferred value.
+_WEAK_SCORES = (0.2, 0.3, 0.15, 0.35, 0.25, 0.4)
+_WEAK_AGENT_SCORES = (0.2, 0.3, 0.25, 0.35)
+_WEAK_RATIONALE = (
+    "The run states its conclusions without pointing at the evidence behind "
+    "them, and the gaps it lists restate the question instead of naming missing "
+    "evidence, so groundedness and gap precision sit at the bottom of the scale."
+)
+
+_STRONG_SCORES = (0.9, 0.85, 0.95, 0.85, 0.9, 0.8)
+_STRONG_AGENT_SCORES = (0.9, 0.85, 0.9, 0.8)
+_STRONG_RATIONALE = (
+    "Every load-bearing figure is attributed to a named source, the run states "
+    "its own uncertainty rather than hiding it, and its gaps are specific enough "
+    "for a further pass to close, so groundedness and completeness score near "
+    "the top."
+)
+
 JUDGE_SYSTEM_PROMPT = (
     "You are an impartial quality judge for a single run of a research "
     "agent. Score only what is shown in the blocks below; never infer "
@@ -84,23 +160,93 @@ JUDGE_SYSTEM_PROMPT = (
 
 # A string.Template, not a format string: the substituted blocks are JSON,
 # whose braces would be eaten by str.format.
+#
+# Heading levels are load-bearing. Every section this template owns is `#`, and
+# the judged run's own blocks are `##` (``_render_blocks``), so the blocks nest
+# under "The run to judge" and no block name can be read as a section of this
+# instruction -- the same collision the Critic request had with its report's H2
+# headings. The contract's own subsections are `##` beneath their `#` parent.
+#
+# The response contract is stated in prose as well as in the appended schema,
+# because the schema alone does not constrain this provider. Measured: with
+# ``JudgeVerdict.rationale`` enforced at 2000 characters, 5 of 30 production
+# attempts at max effort exceeded it (`string_too_long`), with a median
+# rationale of 1,735 characters. The bound cannot be enforced by decoding --
+# adding ``strict`` to the ``text.format`` block returns HTTP 400 -- so prose is
+# the only lever. The schema bound was subsequently widened to
+# ``models.JUDGE_RATIONALE_SCHEMA_MAX`` so that overshoot past the stated
+# guidance is accepted rather than failing the run.
 JUDGE_PROMPT_TEMPLATE = """\
-Score the run below on every dimension. Each score is a number in [0.0, 1.0].
-The final quality score is the fixed weighted sum of the six common
-dimensions; agent-specific dimensions are reported but never weighted.
+# What you are scoring
 
-Common dimensions and their weights:
+Score the run on every dimension below. Each score is a number in [0.0, 1.0].
+Score only what the blocks show; never infer evidence, tool behaviour, or state
+that is not present.
+
+## Common dimensions and their weights
+
 $common_dimensions
 
-Agent-specific dimensions and their anchors:
+## Agent-specific dimensions and their anchors
+
 $agent_dimensions
 
-If the provider_fallback block is present and not null, the target agent
-returned a typed fallback instead of a model judgement; score it as a
-fallback, not as the review it was unable to produce.
+## How the final score is computed
 
-The run to judge, block by block:
+The final quality score is the fixed weighted sum of the six common dimensions,
+using these weights exactly:
+
+$weight_formula
+
+Those weights sum to $weight_total, so the final score is on the same [0.0, 1.0]
+scale as each dimension. Agent-specific dimensions carry no weight at all: they
+are reported for diagnosis and never enter the final score, so do not raise or
+lower a common score to compensate for one.
+
+# How to read the run
+
+If the provider_fallback block is present and not null, the target agent returned
+a typed fallback instead of a model judgement; score it as a fallback, not as the
+review it was unable to produce.
+
+# The run to judge, block by block
+
 $blocks
+
+# Response contract
+
+These three fields, and what each one means:
+
+- `scores`: every common dimension above, keyed by its exact dimension id, each a
+  number in [0.0, 1.0].
+- `agent_specific`: every agent-specific dimension above, keyed by its exact
+  dimension id. Use an empty object when the rubric lists none.
+- `rationale`: the reasoning behind the scores, in at most $rationale_max
+  characters. Aim for about $rationale_target. The limit is hard and a longer
+  answer is rejected outright.
+
+Do not add any other field. In particular, do not add a note, comment, summary,
+or explanation field: the reasoning behind every score belongs in `rationale`.
+
+## How to choose each score
+
+Choose each score from the evidence in front of you, not from the run's overall
+polish. A confident claim with no support behind it does not raise any dimension:
+
+$score_bands
+
+## Reply format
+
+Return exactly one JSON object carrying these three fields and no others. Return
+no text before or after it. Two complete examples follow, one for a weak run and
+one for a strong one, showing the scale in use. Their values are placeholders,
+not a target to match, and their rationales are shortened for brevity.
+
+Weak run:
+$weak_example
+
+Strong run:
+$strong_example
 """
 
 
@@ -290,15 +436,103 @@ def _render_blocks(payload: dict[str, JsonValue]) -> str:
     return "\n\n".join(sections)
 
 
+def _render_score_bands() -> str:
+    """The whole 0.0-1.0 scale, not just its endpoints.
+
+    A rubric's own anchors state only ``1.0`` and ``0.0``, which says nothing
+    about the middle: two judges can agree on the endpoints and still diverge by
+    0.3 on a middling run. These bands give every part of the range the same
+    kind of instruction the endpoints already had.
+    """
+    return "\n".join(
+        f"{low:.1f}-{high:.1f}: {text}" for low, high, text in _JUDGE_SCORE_BANDS
+    )
+
+
+def _render_weight_formula() -> str:
+    """The weighted sum written out, weight by weight.
+
+    Stated as arithmetic rather than described, because which dimension carries
+    which weight is a scoring decision: groundedness at 0.25 outweighs any
+    single agent dimension, and saying so explicitly is what stops a run from
+    being rewarded on prose.
+    """
+    lines = ["final = " + _weighted_term(0)]
+    lines.extend(
+        f"      + {_weighted_term(index)}" for index in range(1, _DIMENSION_COUNT)
+    )
+    return "\n".join(lines)
+
+
+def _weighted_term(index: int) -> str:
+    name, weight = list(COMMON_DIMENSION_WEIGHTS.items())[index]
+    return f"{weight:.2f} x {name}"
+
+
+def _render_examples(rubric: dict[str, JsonValue]) -> tuple[str, str]:
+    """A weak and a strong ``JudgeVerdict`` instance, both valid JSON.
+
+    Built from the rubric rather than hard-coded, because the agent-specific
+    dimension ids differ per agent: an invented id in an example is an invented
+    id in the answer. Two examples rather than one, and at opposite ends of the
+    scale, so the pair demonstrates the range instead of inviting the judge to
+    aim at a single illustrated value. Values are varied within each band for
+    the same reason.
+    """
+    agent_ids = _rubric_dimension_ids(rubric)
+    return (
+        _render_example(agent_ids, _WEAK_SCORES, _WEAK_AGENT_SCORES, _WEAK_RATIONALE),
+        _render_example(
+            agent_ids, _STRONG_SCORES, _STRONG_AGENT_SCORES, _STRONG_RATIONALE
+        ),
+    )
+
+
+def _rubric_dimension_ids(rubric: dict[str, JsonValue]) -> list[str]:
+    return [
+        str(cast(dict, dimension)["dimension_id"])
+        for dimension in cast(list, rubric["agent_dimensions"])
+    ]
+
+
+def _render_example(
+    agent_ids: list[str],
+    scores: tuple[float, ...],
+    agent_scores: tuple[float, ...],
+    rationale: str,
+) -> str:
+    common = {
+        name: scores[index % len(scores)]
+        for index, name in enumerate(COMMON_DIMENSION_WEIGHTS)
+    }
+    agent_specific = {
+        name: agent_scores[index % len(agent_scores)]
+        for index, name in enumerate(agent_ids)
+    }
+    payload = {
+        "scores": common,
+        "agent_specific": agent_specific,
+        "rationale": rationale,
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def render_judge_messages(judge_input: JudgeInput) -> list[ChatMessage]:
     """The judge's developer prompt plus one user message with the run."""
     payload = judge_input.model_dump(mode="json")
+    rubric = cast(dict, payload["rubric"])
+    weak, strong = _render_examples(rubric)
     body = Template(JUDGE_PROMPT_TEMPLATE).substitute(
         common_dimensions=_render_common_dimensions(),
-        agent_dimensions=_render_agent_dimensions(
-            cast(dict, payload["rubric"])
-        ),
+        agent_dimensions=_render_agent_dimensions(rubric),
+        weight_formula=_render_weight_formula(),
+        weight_total=f"{sum(COMMON_DIMENSION_WEIGHTS.values()):.2f}",
         blocks=_render_blocks(payload),
+        rationale_max=str(JUDGE_RATIONALE_GUIDANCE_MAX),
+        rationale_target=str(JUDGE_RATIONALE_GUIDANCE_TARGET),
+        score_bands=_render_score_bands(),
+        weak_example=weak,
+        strong_example=strong,
     )
     return [
         ChatMessage(role="developer", content=JUDGE_SYSTEM_PROMPT),
