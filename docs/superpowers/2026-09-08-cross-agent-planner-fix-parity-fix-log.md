@@ -1479,11 +1479,11 @@ control.
 
 Applying the plan's Task 0 Step 3 table:
 
-- **â€œFunction-specific has a classified tool-choice rejection for a required
-  setting, but `required` succeeds for every required settingâ€** â†’ does **not**
+- **“Function-specific has a classified tool-choice rejection for a required
+  setting, but `required` succeeds for every required setting”** → does **not**
   apply. `required` fails identically at `400` wherever thinking is enabled.
-- **â€œOnly `auto` or omitted choice returns calls with the configured thinking
-  modeâ€** â†’ **applies.** Both forced shapes are rejected precisely when thinking
+- **“Only `auto` or omitted choice returns calls with the configured thinking
+  mode”** → **applies.** Both forced shapes are rejected precisely when thinking
   is `enabled`, and both succeed when it is `disabled`.
 
 This blocks the forced-call hypothesis and triggers the plan's requirement to
@@ -1493,14 +1493,14 @@ and the plan forbids automatically enabling an unforced mode for all agents
 without its own decision and acceptance criteria.
 
 The result is consistent with the externally reported
-`deepseek-ai/DeepSeek-V3#1376` (â€œV4 rejects `tool_choice="required"` and
-specific function `tool_choice`â€) and with `pydantic/pydantic-ai#5193`
+`deepseek-ai/DeepSeek-V3#1376` (“V4 rejects `tool_choice="required"` and
+specific function `tool_choice`”) and with `pydantic/pydantic-ai#5193`
 (tool-based structured output failing for this model family), which is the
 reason the plan required this gate before any production change.
 
 ### Consequence
 
-**Tasks 1â€“6 of the transport plan are NOT executed.** No production file was
+**Tasks 1–6 of the transport plan are NOT executed.** No production file was
 changed by this gate: `src/deep_research/`, `config.yaml`, and every test file
 are untouched at `6cf0839`. The `json_schema` Responses transport already in
 place from `2fe4e32` remains the active target structured transport, and

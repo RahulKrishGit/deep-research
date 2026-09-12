@@ -229,3 +229,4 @@ __marimo__/
 
 # Local DeepSeek/Claude routing helper; never commit credentials or tooling.
 /.local-deepseek/
+.transport-probe-path.txt
