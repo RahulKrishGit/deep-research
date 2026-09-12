@@ -2791,3 +2791,85 @@ Validation would be 30 first-attempt requests with the same predeclared **0/30
 DSML** gate, then the three-repetition canary. Neither is authorized by this entry.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 93. Candidate 1 FALSIFIED AT 9/30 — AND THE ARM MATRIX RELOCATES THE EFFECT
+
+Date: 2026-09-12. Candidate: `1c12718`. Probe: `react_shape_probe.py` with
+`REACT_PROBE_ARM=candidate_1`. Artifact:
+`react_shape_probe_30_candidate_1.jsonl`. Cost: **30 requests**, no repair retry.
+
+### The predeclared gate failed
+
+| Measure | Result | Gate |
+| --- | --- | --- |
+| DSML markup | **9 / 30 (30%)** | 0/30 — **FAILED** |
+| Valid JSON | 21 / 30 | — |
+| Non-DSML schema failures | **0 / 30** | recorded separately, as required |
+| Finish reason | `stop` on 30 / 30 | — |
+
+Candidate 1 was implemented exactly as ruled: the standalone `## Tools` section
+removed, each tool's name, purpose and argument schema relocated into the
+`use_tool` sentence of the response contract, the system prompt left advertising
+both tools, and the emulation verified before spending (tools present in the
+request, section gone, other sections intact, schema/model/effort/token limit
+unchanged).
+
+So candidate 1 is **falsified as the remedy**. It roughly halves the rate and does
+not remove it.
+
+### The arm matrix is the useful result
+
+| Arm | System-prompt tool sentences | Catalogue placement | DSML |
+| --- | --- | --- | --- |
+| production | present | standalone `## Tools` section | 16 / 30 (53%) |
+| candidate 1 | present | inside the response contract | **9 / 30 (30%)** |
+| no_advertising | **absent** | absent | **0 / 30** |
+
+Two components contribute, and the matrix separates them:
+
+- **Removing the standalone section** (production -> candidate 1) roughly halves the
+  rate: 16 -> 9.
+- **Removing the system-prompt advertising as well** (candidate 1 ->
+  no_advertising) removes the rest: 9 -> 0.
+
+The system-prompt tool sentences are present in *both* failing arms and absent from
+the only clean one, so they are at minimum a causal component and plausibly the
+dominant remaining one. That also explains why option (i) failed: it **added** a
+sentence to those very sentences — it annotated the advertising rather than
+removing it.
+
+### Why candidate 3 is the wrong next test
+
+The review's rule was "if candidate 1 fails, skip candidate 2 and test candidate 3
+next". That ordering assumed the catalogue's *shape* was the main lever. The matrix
+says otherwise: candidate 3 changes how each entry is formatted while leaving the
+larger factor — the system-prompt advertising — in place, so it would be measuring
+the smaller contributor first.
+
+The missing cell is a configuration with the catalogue present but the system
+prompt **not** advertising tools. It is also a viable production configuration,
+because the tools remain selectable through the response contract:
+
+- **Arm B**: `tools_free_system_prompt()` (the same derivation the control used)
+  plus the candidate-1 contract carrying the catalogue.
+
+If Arm B reaches 0/30, the remedy is a Critic-local combination: relocate the
+catalogue into the contract *and* remove the tool sentences from
+`CRITIC_SYSTEM_PROMPT`. If Arm B still shows DSML, the contract's own listing is
+the remaining cause and candidate 3 becomes the right next test after all.
+
+That is 30 first-attempt requests with the same predeclared 0/30 gate, and it needs
+authorization. It is a re-ordering of the review's sequence based on this matrix,
+not a departure from it: candidate 3 stays next in line if Arm B fails.
+
+### Recorded, not explained
+
+- The control arm produced 1 non-markup JSON failure in 30; this arm produced 0.
+  The schema is therefore not exonerated from every malformed-output mode, and the
+  section 92 wording is corrected to the narrow claim the review asked for: tool
+  advertising causes **the DSML mode**; `ReActDecision` does not cause that mode.
+- Response lengths stay in the decision range here (331-1163 chars), unlike the
+  control's full answers (3807-7957), which is consistent with these attempts still
+  being tool requests.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
