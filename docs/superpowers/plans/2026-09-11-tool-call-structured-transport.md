@@ -1,6 +1,44 @@
 # Tool-Call Structured Transport Implementation Plan
 
 > **For agentic workers:** Use superpowers:subagent-driven-development or superpowers:executing-plans only when implementation is authorized. This document is the reviewed implementation plan; its review and commit do not authorize paid calls or claim the agents are fixed. Steps use checkbox (`- [ ]`) syntax.
+> ## ⛔ GATE STATUS — READ BEFORE STARTING ANY TASK
+>
+> **The Task 0 capability gate ran on 2026-09-11 and returned `BLOCKED_CAPABILITY`.**
+>
+> | Item | State |
+> | --- | --- |
+> | Task 0 (capability gate) | **Executed.** Recorded in fix-log section 78 |
+> | Decision | `BLOCKED_CAPABILITY` for the forced-call hypothesis |
+> | Tasks 1–6 (transport implementation) | **DORMANT — must not be started** |
+> | Task 7 (canary and rollout) | **DORMANT — must not be started** |
+>
+> **Evidence.** 15 authorized DeepSeek requests covering five `tool_choice`
+> shapes across three effective settings. `function` and `required` both
+> returned HTTP `400` whenever thinking was `enabled`, at both `high` and
+> `max` effort. `auto` and omitted succeeded with valid tool calls. The
+> `"none"` negative control returned zero calls, confirming the endpoint
+> honours `tool_choice` rather than ignoring it.
+>
+> **Why Tasks 1–6 are dormant.** They implement a forced tool-call transport
+> that this provider rejects under the configured `thinking_mode: enabled`.
+> The plan's Step 3 stop condition and its instruction to preserve the current
+> fallback both apply. Implementing them would ship a transport returning 400.
+>
+> **Do not** start Task 1 unless a fresh capability gate returns
+> `PROCEED_FUNCTION` or `PROCEED_REQUIRED`, with thinking enabled, at every
+> required effort. **Do not** re-run the probe without new authorization: the
+> 15-request authorization recorded in section 78 is spent.
+>
+> **Active transport today:** the Responses `json_schema` path from commit
+> `2fe4e32`, unchanged. `DeepSeekJudgeProvider` is untouched.
+>
+> **Residual defect this plan does not fix:** `critic_report_review` returning
+> `json_invalid` at `field_paths` `("$",)` in roughly one live repetition in
+> four to one in eight, at a `32768` budget, provably not truncation. See
+> Finding 5 of `docs/superpowers/2026-09-11-critic-readiness-confirmation.md`.
+> The next lever must be selected and pre-registered separately, with its own
+> paid-run authorization.
+>
 
 **Goal:** Test whether a validated tool-call transport improves structured-output reliability for all six DeepSeek target agents, retaining the current Responses transport until the evidence supports a rollout.
 
