@@ -1515,3 +1515,55 @@ unforced tool mode (its own experiment, with its own acceptance criteria), the
 by this entry.
 
 No live response body, prompt, secret, or reasoning content is recorded above.
+
+## 79. DeepSeek /beta Strict-Tools Probe — UNAVAILABLE; ENFORCED-JSON FAMILY ABANDONED
+
+Date: 2026-09-11. Candidate: `7c96a58` on `codex/cross-agent-planner-fix-parity`.
+Pre-registered plan: `docs/superpowers/plans/2026-09-11-deepseek-beta-strict-tools-probe.md`.
+
+### Scope and authorization
+
+The user authorized exactly 3 DeepSeek chat-completion requests. No LangSmith,
+no search, no application tool execution, no evaluation harness, no repetition.
+Probe preserved at
+`output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/beta_strict_probe.py`.
+
+### Results
+
+| # | Base URL | `strict` on function | HTTP | Error | `mentions_tool_choice` |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `api.deepseek.com` | absent | `400` | `BadRequestError` | `true` |
+| 2 | `api.deepseek.com/beta` | `true` | `400` | `BadRequestError` | `true` |
+| 3 | `api.deepseek.com/beta` | absent | `400` | `BadRequestError` | `true` |
+
+All three additionally reported `mentions_beta: false` and `mentions_strict:
+false`, so the rejection is about `tool_choice` and nothing else. Every check
+used `thinking: {"type": "enabled"}`, `reasoning_effort: high`, and a
+function-specific `tool_choice`, matching the reported behaviour of section 78.
+
+### Decision — `BETA_STRICT_UNAVAILABLE`
+
+Applying the pre-registered rule: check 2 returned `400`, so the beta strict
+path does **not** permit forced tool calls under the configured thinking mode.
+Check 1 reproduced the known `400` exactly, which is the control that makes
+checks 2 and 3 comparable rather than testing a different request shape.
+
+Because check 1 passed its own baseline test, this is a deterministic capability
+verdict, not an `INCONCLUSIVE` transport failure.
+
+**Consequences:**
+
+- The `strict` flag is not the active ingredient; the `/beta` base URL is not
+  either. The blocker is `tool_choice` combined with `thinking: enabled`.
+- The entire enforced-JSON family for DeepSeek targets is now closed: standard
+  endpoint forced choice is rejected (section 78), and `/beta` strict adds
+  nothing (this section). No further endpoint or strict-mode probe is
+  justified.
+- The dormant Tasks 1–6 of
+  `docs/superpowers/plans/2026-09-11-tool-call-structured-transport.md` remain
+  dormant and cannot be revived by an endpoint change.
+- Per the pre-registered plan, the next path is **prompt-level JSON
+  conformance** for the Critic review call, which requires no provider
+  capability. That path needs its own plan and its own paid-run authorization.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
