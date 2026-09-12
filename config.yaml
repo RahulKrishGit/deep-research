@@ -8,7 +8,10 @@ llm:
   embedding_provider: local
   embedding_model: text-embedding-3-small
   thinking_mode: enabled
-  reasoning_effort: high
+  # `max` matches what the live evaluation resolves for every agent through
+  # evaluation.target_reasoning_effort, so the runtime default and the measured
+  # path agree. DeepSeek maps `max` to the model's maximum reasoning effort.
+  reasoning_effort: max
   model_overrides: {}
   timeout: 60.0
   # Repo-owned retry policy: up to 5 retries with exponential backoff from

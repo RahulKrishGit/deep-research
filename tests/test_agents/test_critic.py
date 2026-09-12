@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from deep_research.agents.critic import (
@@ -21,7 +23,10 @@ from deep_research.agents.critic import (
     route_decision,
 )
 from deep_research.agents.errors import AgentConfigurationError
-from deep_research.agents.prompts import CRITIC_SYSTEM_PROMPT, AgentTask
+from deep_research.agents.prompts import (
+    CRITIC_REVIEW_SYSTEM_PROMPT,
+    AgentTask,
+)
 from deep_research.agents.steps import ReActDecision, ReActRun
 from deep_research.evaluation.cases.critic import LIVE_CASES
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -196,9 +201,101 @@ async def test_the_spot_check_prompt_renders_the_report(
     assert "report-body-marker" in first_call[2][1].content
 
 
-def test_the_critic_is_told_the_report_is_already_in_front_of_it() -> None:
-    assert "already provides the report" in CRITIC_SYSTEM_PROMPT
-    assert "do not call a tool only to fetch it" in CRITIC_SYSTEM_PROMPT
+def test_the_review_call_uses_a_prompt_that_names_no_tools() -> None:
+    """The review request offers no tools, so its prompt must not name any.
+
+    Measured root cause: the review payload carries no ``tools`` and no
+    ``tool_choice``, yet the shared system prompt announced ``web_search`` and
+    ``query_memory``. The model obeyed and emitted DeepSeek tool-invocation
+    markup into the message text, where local JSON validation rejected it — 16
+    of 30 first attempts. The tool-aware prompt still belongs to the ReAct
+    spot-check loop, which does offer the tools.
+    """
+    system = critique_messages(
+        _task(),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[0].content
+
+    assert system == CRITIC_REVIEW_SYSTEM_PROMPT
+    lowered = system.lower()
+    for forbidden in ("web_search", "query_memory", "tool"):
+        assert forbidden not in lowered, forbidden
+
+
+def _fence_bounds(body: str) -> tuple[int, int, str]:
+    """Return the line indices of the report fence, plus its backtick run.
+
+    The closing fence is matched by exact tick count, because a report may
+    itself contain a shorter backtick run that is not the closing fence.
+    """
+    lines = body.splitlines()
+    opening = next(
+        index for index, line in enumerate(lines) if line.startswith("```")
+    )
+    tick = lines[opening].removesuffix("report")
+    closing = next(
+        index for index in range(opening + 1, len(lines)) if lines[index] == tick
+    )
+    return opening, closing, tick
+
+
+def test_the_review_request_fences_the_report() -> None:
+    """The report is quoted in a Markdown fence, not between angle-bracket tags.
+
+    A fence is the one Markdown construct that delimits a verbatim region, and
+    fenced content is not parsed as Markdown, so the report's own headings cannot
+    be read as sections of this request. The opening fence is the begin marker
+    and the closing fence is the end marker; its info string names the block.
+    """
+    body = _review_body()
+    lines = body.splitlines()
+    opening, closing, _ = _fence_bounds(body)
+
+    assert lines[opening] == "```report"
+    assert "\n".join(lines[opening + 1 : closing]) == _task().report
+    assert "<<<REPORT BEGIN>>>" not in body
+    assert "<<<REPORT END>>>" not in body
+    # Supporting context follows the closing fence, not inside the report.
+    assert lines.index("# Sub-topics planned") > closing
+
+
+def test_no_request_line_uses_angle_bracket_markers() -> None:
+    """Nothing outside the report may be tagged with angle brackets.
+
+    The report is arbitrary provider-written Markdown, so this constrains the
+    request's own envelope only, never the report's content.
+    """
+    body = _review_body()
+    lines = body.splitlines()
+    opening, closing, _ = _fence_bounds(body)
+    envelope = "\n".join([*lines[:opening], *lines[closing + 1 :]])
+
+    assert "<" not in envelope
+    assert ">" not in envelope
+
+
+def test_a_report_containing_a_fence_cannot_close_the_enclosing_fence() -> None:
+    """The enclosing fence must outlast any backtick run in the report.
+
+    A synthesised report can quote a fenced block of its own. A fixed three-
+    backtick fence would be closed early by that content, exposing the rest of
+    the report as if it were request text.
+    """
+    report = "# Title\n\n```\nquoted code\n```\n\n## Limitations\nNone."
+    body = critique_messages(
+        _task(report=report),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[1].content
+    lines = body.splitlines()
+    opening, closing, tick = _fence_bounds(body)
+
+    assert tick == "````"
+    assert lines[opening] == "````report"
+    assert "\n".join(lines[opening + 1 : closing]) == report
 
 
 def _review_body() -> str:
@@ -208,6 +305,51 @@ def _review_body() -> str:
         report_chars=6000,
         claim_digest=40,
     )[1].content
+
+
+def test_no_request_heading_can_be_confused_with_a_report_heading() -> None:
+    """Request sections are H1; the report's own sections are H2.
+
+    The canonical report is ``REPORT_SECTIONS`` — H2 body sections with H3
+    sub-groups — and this request previously used H2 as well, so
+    ``## Recorded problems`` sat at the same visual level as the report's own
+    ``## Limitations``, separated only by the markers. At H1 every request
+    heading outranks the report, so the report reads as content nested inside
+    ``# Report under review``.
+    """
+    body = _review_body()
+    lines = body.splitlines()
+    opening, closing, _ = _fence_bounds(body)
+    envelope = "\n".join([*lines[:opening], *lines[closing + 1 :]])
+
+    collisions = [line for line in envelope.splitlines() if line.startswith("## ")]
+    assert not collisions, f"request sections at H2: {collisions}"
+    for section in (
+        "# Research question",
+        "# Report under review",
+        "# Sub-topics planned",
+        "# Claim verdicts",
+        "# Source quality",
+        "# Recorded problems",
+        "# Spot checks",
+        "# Response contract",
+        "# How to choose the score",
+        "# Reply format",
+    ):
+        assert section in envelope, section
+
+
+def test_the_report_section_says_whose_headings_are_whose() -> None:
+    """The model must know the report's headings belong to the report.
+
+    The report carries its own H2 sections, so the request has to say so rather
+    than relying on heading level alone to carry the boundary.
+    """
+    body = _review_body()
+
+    assert (
+        "its own headings belong to the report rather than to this request" in body
+    )
 
 
 def test_the_review_request_names_json_and_shows_its_shape() -> None:
@@ -226,7 +368,7 @@ def test_the_review_request_names_json_and_shows_its_shape() -> None:
     body = _review_body()
 
     assert "JSON" in body
-    assert "## Reply format" in body
+    assert "# Reply format" in body
     for field in (
         "score",
         "gaps",
@@ -237,13 +379,125 @@ def test_the_review_request_names_json_and_shows_its_shape() -> None:
         assert f'"{field}"' in body
 
 
-def test_the_reply_example_does_not_anchor_the_score() -> None:
-    """No concrete score may appear: an example number would bias scoring."""
+def test_the_reply_examples_are_valid_json_instances() -> None:
+    """Both examples must be real JSON instances, not placeholder skeletons.
+
+    The earlier skeleton used angle-bracket placeholders like
+    ``<integer 1-10>``, which is not valid JSON, so the model was shown
+    something that was neither a schema nor an example.
+    """
+    body = _review_body()
+    examples = [
+        json.loads(line) for line in body.splitlines() if line.startswith('{"score"')
+    ]
+
+    assert len(examples) == 2
+    for payload in examples:
+        assert sorted(payload) == [
+            "gaps",
+            "rationale",
+            "recommended_queries",
+            "score",
+            "unsupported_claims",
+        ]
+        assert isinstance(payload["score"], int)
+        assert 1 <= payload["score"] <= 10
+        assert isinstance(payload["gaps"], list)
+        assert isinstance(payload["unsupported_claims"], list)
+        assert isinstance(payload["recommended_queries"], list)
+        assert payload["rationale"].strip()
+    # No angle-bracket placeholder may remain anywhere in the request.
+    assert "<integer" not in body
+    assert "<string>" not in body
+
+
+def test_the_examples_bracket_the_outcome_threshold() -> None:
+    """One example sits below the acceptance score and one clearly above.
+
+    Two examples alone invite the model to split the difference. The pair must
+    actually exercise both sides of the threshold the system computes routing
+    from, so the scale in use is unambiguous.
+    """
+    body = _review_body()
+    scores = [
+        json.loads(line)["score"]
+        for line in body.splitlines()
+        if line.startswith('{"score"')
+    ]
+
+    assert min(scores) < ACCEPTANCE_SCORE
+    assert max(scores) > ACCEPTANCE_SCORE
+    assert "Weak report" in body
+    assert "Strong report" in body
+
+
+def test_the_request_gives_explicit_guidance_for_choosing_a_score() -> None:
+    """Both examples need a stated rule for choosing between them.
+
+    Before this, the only calibration was the endpoints "1 is unusable" and "10
+    answers completely", which says nothing about the middle of the scale.
+    """
     body = _review_body()
 
-    for anchored in ('"score": 8', '"score": 7', '"score": 9', '"score": 1'):
-        assert anchored not in body
-    assert '"score": <integer 1-10>' in body
+    assert "# How to choose the score" in body
+    for band in ("1-3:", "4-6:", "7-8:", "9-10:"):
+        assert band in body, band
+    # The rule must be anchored on evidence, not on prose quality.
+    assert "weakest load-bearing element" in body
+    assert "not from its overall polish" in body
+
+
+def test_each_example_demonstrates_the_band_it_is_labelled_with() -> None:
+    """The anchors must show their own band, not merely claim a number.
+
+    A labelled pair is worthless if the low example reads like a 4-6 and the
+    high example reads like a 7-8, because the model calibrates against what
+    the examples *show*. Band 1-3 turns on claims with no cited source, and
+    band 9-10 turns on completeness with narrow gaps, so the examples have to
+    differ on exactly those signals.
+    """
+    body = _review_body()
+    examples = [
+        json.loads(line) for line in body.splitlines() if line.startswith('{"score"')
+    ]
+    low, high = sorted(examples, key=lambda payload: payload["score"])
+
+    assert 1 <= low["score"] <= 3
+    assert low["unsupported_claims"], "band 1-3 is about unsourced central claims"
+    assert 9 <= high["score"] <= 10
+    assert high["unsupported_claims"] == []
+    assert len(high["gaps"]) <= 1, "band 9-10 allows at most narrow gaps"
+    assert len(low["gaps"]) > len(high["gaps"])
+
+
+def test_the_score_guidance_does_not_leak_routing_policy() -> None:
+    """Routing is computed locally; the prompt must not state the threshold.
+
+    `CRITIQUE_INSTRUCTION` tells the model not to decide continuation, so the
+    band table must describe report quality rather than publish the number the
+    router compares against.
+    """
+    body = _review_body()
+
+    assert "Do not decide whether research continues" in body
+    assert f"score {ACCEPTANCE_SCORE}" not in body
+    assert f"at least {ACCEPTANCE_SCORE}" not in body
+    assert "acceptance" not in body.lower()
+
+
+def test_the_request_states_its_json_requirement_once() -> None:
+    """One format requirement, not three competing renditions.
+
+    The request previously carried the response-contract prose, a skeleton and
+    the provider's trailing schema message, each phrasing the JSON demand
+    differently. The prose no longer repeats it; the example is the single
+    agent-side statement, and the provider message remains the schema.
+    """
+    body = _review_body()
+
+    assert body.count("# Reply format") == 1
+    assert "Reply with a single JSON object" not in body
+    assert "Do not wrap it in Markdown code fences" not in body
 
 
 def test_the_json_demand_preserves_the_scoring_contract() -> None:
@@ -483,18 +737,18 @@ def test_critique_messages_carry_the_report_and_every_quality_signal() -> None:
 
     assert [message.role for message in messages] == ["developer", "user"]
     body = messages[1].content
-    assert "## Research question" in body
-    assert "## Report under review" in body
+    assert "# Research question" in body
+    assert "# Report under review" in body
     assert "# Research report:" in body
-    assert "## Sub-topics planned" in body
+    assert "# Sub-topics planned" in body
     assert "- Alpha" in body
-    assert "## Claim verdicts" in body
+    assert "# Claim verdicts" in body
     assert "[verified 0.80]" in body
-    assert "## Source quality" in body
-    assert "## Recorded problems" in body
+    assert "# Source quality" in body
+    assert "# Recorded problems" in body
     assert "2 error(s)" in body
-    assert "## Spot checks" in body
-    assert "## Response contract" in body
+    assert "# Spot checks" in body
+    assert "# Response contract" in body
 
 
 def test_critique_messages_clamp_a_long_report_without_flattening_it() -> None:

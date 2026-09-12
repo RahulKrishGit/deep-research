@@ -9,6 +9,7 @@ from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
     CLAIM_VERIFICATION_INSTRUCTION,
     CLAIM_VERIFICATION_SYSTEM_PROMPT,
+    CRITIC_REVIEW_SYSTEM_PROMPT,
     CRITIC_SYSTEM_PROMPT,
     CRITIQUE_INSTRUCTION,
     FACT_CHECKER_SYSTEM_PROMPT,
@@ -462,3 +463,27 @@ def test_the_critic_prompt_states_the_gap_and_score_contracts() -> None:
     assert "materially" in CRITIQUE_INSTRUCTION
     assert "routing" not in CRITIQUE_INSTRUCTION
     assert "recommended" in CRITIQUE_INSTRUCTION
+
+
+def test_the_review_system_prompt_names_no_tools() -> None:
+    """The review request offers no tools, so its prompt must not name any.
+
+    Measured: the review payload carries no ``tools`` and no ``tool_choice``,
+    yet the prompt announced ``web_search`` and ``query_memory``. The model
+    obeyed and emitted DeepSeek tool-invocation markup into the message text,
+    which local JSON validation rejected — 16 of 30 first attempts.
+    """
+    lowered = CRITIC_REVIEW_SYSTEM_PROMPT.lower()
+    for forbidden in ("web_search", "query_memory", "tool", "spot-check"):
+        assert forbidden not in lowered, forbidden
+
+
+def test_the_review_prompt_describes_the_report_boundaries() -> None:
+    assert "fenced block" in CRITIC_REVIEW_SYSTEM_PROMPT
+    # No angle-bracket marker vocabulary may survive anywhere in the prompt.
+    assert "BEGIN" not in CRITIC_REVIEW_SYSTEM_PROMPT
+    assert "END marker" not in CRITIC_REVIEW_SYSTEM_PROMPT
+    assert "<" not in CRITIC_REVIEW_SYSTEM_PROMPT
+    # The tool-aware prompt still belongs to the ReAct spot-check loop.
+    assert "web_search" in CRITIC_SYSTEM_PROMPT
+    assert "query_memory" in CRITIC_SYSTEM_PROMPT

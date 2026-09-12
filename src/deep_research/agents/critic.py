@@ -13,6 +13,7 @@ may override, so it is settled before anything the model said is read.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from pydantic import Field
@@ -25,6 +26,7 @@ from deep_research.agents.errors import (
 )
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
+    CRITIC_REVIEW_SYSTEM_PROMPT,
     CRITIC_SYSTEM_PROMPT,
     CRITIQUE_INSTRUCTION,
     AgentTask,
@@ -68,6 +70,83 @@ DEFAULT_MAX_NOTES = 10
 # ``_clamp_report`` renders this for an empty report; the spot-check guidance
 # omits its report section entirely rather than embedding the placeholder.
 _NO_REPORT = "(no report)"
+
+# The report is quoted inside a Markdown fence of its own: the opening fence is
+# the begin marker and the closing fence is the end marker. A fence is the one
+# Markdown construct that delimits a verbatim region, and its content is not
+# parsed as Markdown, so no report heading can be read as a request section. The
+# fence is made longer than any backtick run inside the report so the report
+# cannot close it early.
+_REPORT_FENCE_MIN = 3
+_REPORT_FENCE_INFO = "report"
+
+
+def _report_fence(report: str) -> str:
+    """Return a backtick fence that no run inside ``report`` can close."""
+    longest = max((len(run) for run in re.findall(r"`+", report)), default=0)
+    return "`" * max(_REPORT_FENCE_MIN, longest + 1)
+
+
+# This request's own sections are `#` (H1). The canonical report is H2 body
+# sections (`REPORT_SECTIONS`) with H3 sub-groups, plus one H1 title,
+# `# Research report: <question>`. Request sections were previously `##`, which
+# put them at the same visual level as the report's own sections — `## Recorded
+# problems` directly followed the report's `## Limitations` with nothing to
+# distinguish them but the markers. At H1 every request heading outranks the
+# report, so the report reads as content nested inside `# Report under review`.
+# This also matches the spot-check path, which already introduces the report
+# with the H1 title above.
+
+# Two concrete, valid JSON instances that bracket the scale. The earlier
+# skeleton used angle-bracket placeholders like `<integer 1-10>`, which is not
+# valid JSON, so the model was shown something that was neither a schema nor an
+# example. Two labelled examples demonstrate the range, and the band table below
+# tells the model how to choose between them, because examples without
+# calibration guidance invite it to split the difference. The provider already
+# supplies the schema in a trailing system message, so this section supplies the
+# examples the DeepSeek JSON Output guide asks for, and nothing that competes
+# with it.
+_LOW_EXAMPLE_SCORE = 3
+_HIGH_EXAMPLE_SCORE = 9
+
+_CRITIQUE_LOW_EXAMPLE_JSON = (
+    '{"score": 3, "gaps": ["The report never states what share of cement '
+    'emissions clinker substitution can remove, which is the figure the '
+    'question turns on.", "It gives no cost figures for the alternatives it '
+    'recommends."], "unsupported_claims": ["The claim that commercial-scale '
+    'deployment is accelerating, which no cited source measures."], '
+    '"recommended_queries": ["clinker substitution share of cement emissions", '
+    '"low-carbon cement cost premium per tonne"], "rationale": "The report '
+    'names technologies and directions but supplies no measured figures, and '
+    'its central claim about deployment rests on no cited source at all, so '
+    'the question is answered only in generalities."}'
+)
+
+_CRITIQUE_HIGH_EXAMPLE_JSON = (
+    '{"score": 9, "gaps": ["The report does not cover how durability data are '
+    'expected to arrive."], "unsupported_claims": [], "recommended_queries": '
+    '["low-carbon cement durability field trial results"], "rationale": "The '
+    'report answers the question completely, every load-bearing figure is '
+    'attributed to a strong and diverse set of named sources, and it states '
+    'its own durability uncertainty plainly instead of hiding it."}'
+)
+
+# How to choose a score. The thresholds themselves are not published to the
+# model: routing is computed locally, and `CRITIQUE_INSTRUCTION` tells the model
+# not to decide continuation. This table describes report quality, not policy.
+_CRITIQUE_SCORE_BANDS = (
+    "Choose the score from the report's weakest load-bearing element, not from "
+    "its overall polish:\n"
+    "1-3: the question is largely unanswered, or the central claims rest on no "
+    "cited source.\n"
+    "4-6: a partial answer whose key numbers, mechanisms, or trade-offs are "
+    "missing or unsupported.\n"
+    "7-8: the question is answered and every load-bearing claim is attributed, "
+    "with at most narrow gaps.\n"
+    "9-10: reserve for an answer that is complete, strongly and diversely "
+    "sourced, and explicit about its own uncertainty."
+)
+
 
 _RATIONALE_CHARS = 600
 
@@ -320,38 +399,51 @@ def critique_messages(
         "\n".join(f"- {title}" for title in task.sub_topics)
         or "(none planned)"
     )
+    report_text = _clamp_report(task.report, limit=report_chars)
+    fence = _report_fence(report_text)
     sections = [
-        f"## Research question\n{task.instruction}",
+        f"# Research question\n{task.instruction}",
         (
-            "## Report under review\n"
-            f"{_clamp_report(task.report, limit=report_chars)}"
+            "# Report under review\n"
+            "The report to critique is the fenced block below, labelled "
+            f"`{_REPORT_FENCE_INFO}`, and its own headings belong to the report "
+            "rather than to this request. Critique only the text inside the "
+            "fence; the sections after it are supporting context, not part of "
+            "the report.\n"
+            f"{fence}{_REPORT_FENCE_INFO}\n"
+            f"{report_text}\n"
+            f"{fence}"
         ),
-        f"## Sub-topics planned\n{sub_topics}",
+        f"# Sub-topics planned\n{sub_topics}",
         (
-            "## Claim verdicts\n"
+            "# Claim verdicts\n"
             f"{render_claim_digest(list(task.claims)[:claim_digest])}"
         ),
-        f"## Source quality\n{render_source_quality(task.sources)}",
+        f"# Source quality\n{render_source_quality(task.sources)}",
         (
-            "## Recorded problems\n"
+            "# Recorded problems\n"
             f"{task.error_count} error(s) were recorded during this pass."
         ),
         (
-            "## Spot checks\n"
+            "# Spot checks\n"
             f"{render_evidence(run, limit=CRITIC_EVIDENCE_CHARS)}"
         ),
-        f"## Response contract\n{CRITIQUE_INSTRUCTION}",
+        f"# Response contract\n{CRITIQUE_INSTRUCTION}",
+        f"# How to choose the score\n{_CRITIQUE_SCORE_BANDS}",
         (
-            "## Reply format\n"
-            "Return one JSON object with these five fields and no others:\n"
-            '{"score": <integer 1-10>, "gaps": [<string>, ...], '
-            '"unsupported_claims": [<string>, ...], '
-            '"recommended_queries": [<string>, ...], '
-            '"rationale": "<string>"}'
+            "# Reply format\n"
+            "Return exactly one JSON object with these five fields and no "
+            "others, with no text before or after it. Two complete examples, "
+            "one for a weak report and one for a strong one, showing the scale "
+            "in use:\n"
+            f"Weak report, score {_LOW_EXAMPLE_SCORE}:\n"
+            f"{_CRITIQUE_LOW_EXAMPLE_JSON}\n"
+            f"Strong report, score {_HIGH_EXAMPLE_SCORE}:\n"
+            f"{_CRITIQUE_HIGH_EXAMPLE_JSON}"
         ),
     ]
     return [
-        ChatMessage(role="developer", content=CRITIC_SYSTEM_PROMPT),
+        ChatMessage(role="developer", content=CRITIC_REVIEW_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
 
