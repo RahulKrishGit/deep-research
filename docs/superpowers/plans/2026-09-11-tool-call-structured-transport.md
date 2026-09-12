@@ -1,414 +1,451 @@
 # Tool-Call Structured Transport Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Use superpowers:subagent-driven-development or superpowers:executing-plans only when implementation is authorized. This document is the reviewed implementation plan; its review and commit do not authorize paid calls or claim the agents are fixed. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Make every DeepSeek structured-output request ask for its JSON through a forced tool call instead of relying on output-format enforcement, eliminating the `json_invalid` failures that still occur in roughly one live Critic repetition in four.
+**Goal:** Test whether a validated tool-call transport improves structured-output reliability for all six DeepSeek target agents, retaining the current Responses transport until the evidence supports a rollout.
 
-**Architecture:** The switch lives in the **provider**, not in the agents. All six agents already reach the model through `DeepSeekSchemaChatProvider.complete_structured`, so one transport change covers every agent without touching a single agent module. A new `llm.structured_transport` setting selects `tool_call` (default) or `json_schema`. Both transports share one extracted repair loop, so the attempt count, the bounded diagnostics, and the fail-closed error type cannot diverge between them. The judge keeps its own already-validated Responses transport.
+**Architecture:** Keep one repair loop in `_DeepSeekSchemaStructuredProvider.complete_structured`. Select the attempt through a target-only hook on `DeepSeekSchemaChatProvider`; `DeepSeekJudgeProvider` always selects Responses `json_schema`. Tool arguments still require local Pydantic validation. A forced function invocation is not a guarantee of valid JSON or correct output.
 
-**Tech Stack:** Python 3.12, Pydantic v2 (`ContractModel`), pytest + pytest-asyncio, ruff, OpenAI SDK against the DeepSeek base URL, LangSmith evaluation harness.
+**Tech Stack:** Python 3.12, Pydantic v2, pytest + pytest-asyncio, Ruff, the installed OpenAI SDK against DeepSeek, and the existing evaluation harness.
 
-**Spec:** `docs/superpowers/2026-09-11-critic-live-call-production-readiness-design.md` and the evidence record `docs/superpowers/2026-09-11-critic-readiness-confirmation.md`.
+**References:** `docs/superpowers/specs/2026-09-11-critic-live-call-production-readiness-design.md`, `docs/superpowers/2026-09-11-critic-readiness-confirmation.md`, and `docs/superpowers/2026-09-11-critic-readiness-final-canary.md`.
 
-## Global Constraints
+## Review findings addressed
 
-- Work in the worktree `C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity` on branch `codex/cross-agent-planner-fix-parity`. Use the root interpreter `C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe`.
-- **Every test command must set `PYTHONPATH` to this worktree's `src`.** The root virtualenv's editable install points at a *different* worktree (`planner-remediation-integration`), so without this the tests silently exercise the wrong source tree:
-  ```powershell
-  $env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-  ```
-- Run every command from the worktree root.
-- The existing pre-existing failures are `test_a_live_experiment_requests_one_repetition`, `test_the_ledger_records_real_services_for_a_live_run`, and `test_a_live_researcher_records_only_source_url_fingerprints`. They fail on the base commit `035d3c5` too. They are **not** regressions; do not attempt to fix them in this plan.
-- All output budgets are `32768` (`llm.max_tokens`, `planner_final_max_tokens`, `critic_review_max_tokens`, `judge_max_tokens`, `react_decision_max_tokens`). Do not lower any of them.
-- Do not change the judge's transport. `DeepSeekJudgeProvider` must keep using the Responses `json_schema` path, which has scored every judged repetition with zero schema diagnostics.
-- Preserve: the one-repair contract (exactly two structured attempts maximum), `_StructuredValidationFailure` → `StructuredOutputError` fail-closed semantics, the bounded `StructuredValidationDiagnostic` records, the frozen cases, rubrics, metric weights, the `0.75` live threshold, and the fallback semantics.
-- Never record raw provider response text, prompts, secrets, or reasoning content in a diagnostic, test, or document. The repair message may carry only the bounded validation summary and the JSON Schema.
-- Every task ends with `ruff check` on the files it touched plus `git diff --check`.
+Reviewed against local and remote `a24c62ef9213a82fbea271356fe877e6d21c9c32`, branch `codex/cross-agent-planner-fix-parity`. The tracked tree matched; `.deepseek-runs/` and `tools/` already contained untracked work. Preserve both.
 
----
-
-## File Structure
-
-| File | Responsibility | Change |
+| Severity | Finding in the reviewed version | Impact and amendment |
 | --- | --- | --- |
-| `src/deep_research/utils/config.py` | Runtime settings | Add `LLMConfig.structured_transport`, its env override, and a validator |
-| `src/deep_research/providers/deepseek_provider.py` | DeepSeek transport | Add the tool-call attempt, extract the shared repair loop, dispatch on the setting |
-| `config.yaml` | Shipped settings | Document and set `llm.structured_transport: tool_call` |
-| `tests/test_config.py` | Settings contract | Transport default, env override, OpenAI rejection |
-| `tests/test_deepseek_provider.py` | Transport behaviour | New tool-call tests; existing Responses tests pinned to their transport |
+| **Critical** | Task 0 omitted the thinking toggle in its alleged off mode, used only 512 output tokens, treated any parseable JSON as success, and probed `high` although the Critic evaluation uses `max`. | **Invalidates the whole plan's proceed gate.** Explicitly disable thinking in controls, use the configured budget, distinguish inconclusive failures, validate the exact tool and schema, and cover production and evaluation settings. |
+| **Critical** | Task 3 changed the shared base's dispatch. `DeepSeekJudgeProvider` inherits that method, so it would switch to tools too. | **Invalidates Task 3 and every downstream quality comparison.** Add a target-only hook, with the base pinned to Responses and a judge regression under every setting. |
+| **Critical** | The extraction signature was false: both loops clear `messages`, `agent_name`, and `instruction`. The extracted loop retained a bound `attempt_call`, and its new caller retained the original prompts and provider in traceback locals. | **Invalidates Task 3's extraction and privacy contract.** Keep the loop in its existing frame, clear the bound callable, and verify public exception graphs with harmless sentinels. |
+| **Critical** | `tool_call` as a global default plus the OpenAI validator rejects `LLMConfig(provider="openai")`, the standard config fixture, and provider factories. Task 1's own positive OpenAI assertion cannot pass. | **Invalidates Task 1.** Use provider-neutral `auto`, initially resolving to `json_schema`; reject only explicitly unsupported OpenAI/tool combinations. Promote DeepSeek's automatic selection only after Task 7. |
+| **Important** | Prose, missing tools, and multiple calls raise `ProviderResponseError`, so they never reach attempt 2. The parser ignores function name/type; the repair asks for plain JSON even in tool mode. | Treat invalid tool envelopes as bounded `schema_output` diagnostics, validate name and type, retry once using a transport-specific instruction, and never execute the synthetic function. |
+| **Important** | Task 2 expects public-method tests to pass before Task 3 connects that method; Task 3 expects only six target-test failures despite also changing the judge. | Task 2 tests the private attempt directly. Add public integration tests only with dispatch in Task 3; pin the five Responses-specific target tests in that same task. Every task ends green relative to baseline. |
+| **Important** | `JudgeVerdict` labelled `synthesizer` and source-string scans do not establish real agent coverage. Flipping a default cannot invalidate tests that explicitly set `tool_call`. | Exercise the seven actual draft schemas and four ReAct call sites through the factory, assert shared provider wiring, and use a targeted dispatch mutation. |
+| **Important** | Task 5 demands textual braces and supplies a score of 8, competing with the tool channel and anchoring the score. Four clean runs are called decisive; OpenAI conclusions are inferred from DeepSeek. | Use a transport-neutral format reminder without a scored example. Pre-register a meaningful canary, report its limitations, and keep OpenAI decisions dependent on OpenAI evidence. |
+| **Minor** | The spec path omits `specs/`; Task 6 depends on itself; five Responses tests are called six; the original test arithmetic is wrong; a commit placeholder is unnecessary. | Correct paths/dependencies, compute the SHA in PowerShell, and count collected parametrized cases. Original code adds **16** tests (5 + 5 + 2 + 2 + 2), predicting 2102 passes from 2086, not 2098. |
 
-**Scoping note — what "all the agents" means here.** The Critic, Researcher, Fact Checker, Planner, Synthesizer, and Source Evaluator all call `complete_structured` on the provider. There is no per-agent structured-output code to convert. Tasks 1–4 therefore switch every DeepSeek agent at once, and Task 4 proves it with a test that asserts a non-Critic agent's schema also arrives as a tool definition. Task 6 covers the OpenAI adapter separately, because it uses the SDK's own `responses.parse` with different failure characteristics and cannot be validated by this campaign's canary.
+## Provider evidence and limits
+
+Checked 2026-09-11. The [thinking-mode guide](https://api-docs.deepseek.com/guides/thinking_mode/) says thinking defaults to enabled and documents explicit toggles and reasoning round-tripping for tool conversations. The [Chat Completions reference](https://api-docs.deepseek.com/api/create-chat-completion/) documents the five `tool_choice` values/shapes and warns that function arguments can be invalid JSON. It does not document `parallel_tool_calls`; do not send it or rely on it to ensure one call. The [Responses compatibility guide](https://api-docs.deepseek.com/guides/responses_api/) explicitly says that parameter is ignored on Responses.
+
+The reports [DeepSeek #1376](https://github.com/deepseek-ai/DeepSeek-V3/issues/1376) and [Pydantic AI #5193](https://github.com/pydantic/pydantic-ai/issues/5193) are evidence of forced-choice failures under V4 thinking, not proof of today's behavior for every endpoint. `auto` and omission permit prose; they do not satisfy a forced-call hypothesis. The [tool guide](https://api-docs.deepseek.com/guides/tool_calls/) also describes strict tool schemas on `/beta`, including unsupported string/array bounds and required-property rules. Beta strict mode and Responses function tools are additional experiments, not a drop-in version of this Chat Completions plan. Do not silently change endpoints, strip constraints, or claim all tool calling is impossible if this probe fails.
+
+**Assessment:** tool arguments are a reasonable hypothesis to test; unforced tool calls alone are not an established fix for this provider's intermittent failures. Preserve the current fallback if the forced shape cannot be demonstrated with the configured thinking settings.
+
+## Global constraints
+
+- Work only in `C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity`, branch `codex/cross-agent-planner-fix-parity`. Verify branch and tracked status before edits and commits; never stage unrelated untracked files.
+- Run commands from this worktree root. At the start of **each PowerShell session**, establish these variables. Every Python invocation below uses this source binding; the shared interpreter's editable install can point elsewhere.
+
+  ```powershell
+  $transportRoot = (Get-Location).Path
+  $transportPython = 'C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe'
+  $env:PYTHONPATH = Join-Path $transportRoot 'src'
+  & $transportPython -c "import deep_research; print(deep_research.__file__)"
+  git branch --show-current
+  git status --short
+  ```
+
+- Historical full gate at `a2ecc1c`: `3 failed, 2086 passed, 1 deselected`. The named failures are `tests/test_evaluation/test_runner.py::test_a_live_experiment_requests_one_repetition`, `tests/test_evaluation/test_targets.py::test_the_ledger_records_real_services_for_a_live_run`, and `tests/test_evaluation/test_targets.py::test_a_live_researcher_records_only_source_url_fingerprints`. Reproduce and compare failure reasons, not just counts. Do not repair these in this transport plan or assume an unrelated new failure must have been caused by this change.
+- Preserve all five output budgets at `32768`, retry policy, temperature, thinking/effort configuration, frozen cases, rubrics, weights, `0.75` live threshold, domain validators, and fallback behavior. Two **structured attempts** maximum; existing transient HTTP retries are separate and retain their own budget.
+- Never store live response bodies, prompts, secrets, or reasoning content in review evidence or diagnostics. Offline tests may use synthetic sentinel values. Repair receives only original caller messages, bounded diagnostics, and the schema/instructions; it must not replay the failed assistant response.
+- No paid DeepSeek, LangSmith, search, or other provider calls during this plan review. Task 0 and Task 7 each require authorization for a concrete request count and services before executing. Read-only documentation checks and offline fake tests need no additional permission.
+- Keep automatic transport selection on `json_schema` through Tasks 1–6. Paid tool candidates select it explicitly with `LLM_STRUCTURED_TRANSPORT=tool_call`. No runtime downgrade to a different transport, thinking mode, or model after an error.
+- Each implementation task runs its named checks, Ruff on touched Python files, and `git diff --check`, and stages exact paths only. No knowingly broken intermediate commits.
+
+## File structure and coverage
+
+| File | Responsibility |
+| --- | --- |
+| `src/deep_research/utils/config.py`, `config.yaml`, `tests/test_config.py` | Selection, legacy compatibility, env override, delayed rollout |
+| `src/deep_research/providers/deepseek_provider.py`, `tests/test_deepseek_provider.py` | Tool attempt, shared loop in place, bounded validation, judge isolation |
+| `tests/test_runtime/test_assembly.py` | All six agents receive the selected provider |
+| `src/deep_research/agents/prompts.py`, `tests/test_agents/test_critic.py` | Additive, transport-neutral Critic format reminder |
+| `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md` | Capability decision, exact offline evidence, rollout decision |
+| `docs/superpowers/2026-09-11-tool-call-transport-canary.md` | Pre-registered live results, provenance, explicit limitations |
+
+Actual provider schema inventory at the reviewed commit:
+
+| Agent | Draft schema(s) | Decision schema |
+| --- | --- | --- |
+| Planner | `ResearchPlanDraft` | `ReActDecision` |
+| Researcher | `SubTopicFindingsDraft` | `ReActDecision` |
+| Source Evaluator | `SourceScoresDraft` | none |
+| Fact Checker | `ClaimsDraft`, `ClaimVerdictDraft` | `ReActDecision` |
+| Synthesizer | `ReportDraft` | none |
+| Critic | `CritiqueDraft` | `ReActDecision` |
+
+The transport tool wraps these output contracts; it is distinct from application tools such as search. `ReActDecision.tool_input_json` remains a JSON **string**, and its existing action validators remain active. `JudgeVerdict` belongs only to the judge boundary.
 
 ---
+### Task 0: Establish the exact capability gate
 
-### Task 0: Reconnaissance — prove DeepSeek accepts the tool-call shape
+**Files:** temporary probe under a new task-owned directory in `output/transport-probes/`; update the fix log and this plan's selected-choice constant only after recording the outcome. Preserve the existing untracked `tools/probe_deepseek_tool_call.py`.
 
-**Files:**
-- Create: `tools/probe_deepseek_tool_call.py` (throwaway, not committed)
-- No production or test change.
+**Interfaces:** consumes loaded production settings and evaluation settings, produces `PROCEED_FUNCTION`, `PROCEED_REQUIRED`, `BLOCKED_CAPABILITY`, or `INCONCLUSIVE`. HTTP acceptance and output conformance are separate facts.
 
-**Interfaces:**
-- Consumes: `DEEPSEEK_API_KEY` from the repository `.env` via the repository launcher.
-- Produces: a recorded answer to two questions that decide whether Tasks 2–4 are viable as written: (1) does the DeepSeek Chat Completions endpoint accept a **function-specific** `tool_choice` for `deepseek-v4-flash`, and (2) does the model actually return a tool call under it.
+- [ ] **Step 1: Save this probe in a fresh directory and dry-run its request inventory**
 
-**Why this task exists.** The plan originally asserted the OpenAI tool-calling shape without verifying it. External evidence says that is unsafe for this provider:
+Create a UUID-named subdirectory under `output/transport-probes/` and save the following Python block as `$transportProbe`. The probe deliberately resolves the repository from the working directory, not the temporary script's parent. It does not print provider bodies or error messages.
 
-- `deepseek-ai/DeepSeek-V3#1376` — *"[BUG] DeepSeek V4 rejects `tool_choice="required"` and specific function `tool_choice` — breaks structured output in all agent frameworks"*.
-- `pydantic/pydantic-ai#5193` — *"`DeepSeekProvider` missing support for `deepseek-v4-flash` and `deepseek-v4-pro`: users hit 400 on tool-based structured output"*.
-- `vectorize-io/hindsight#1294` — a fix titled *"omit `tool_choice="auto"` and add deepseek as first-class provider"*.
-
-Those are third-party reports about this exact model, so the shape must be proven against the live endpoint **before** any paid evaluation repetition. This is a cheap single call, not a canary.
-
-- [ ] **Step 1: Write the probe**
-
-Create `tools/probe_deepseek_tool_call.py`:
+```powershell
+$transportProbeDirectory = Join-Path 'output/transport-probes' ([guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $transportProbeDirectory | Out-Null
+$transportProbe = Join-Path $transportProbeDirectory 'probe.py'
+```
 
 ```python
-"""Throwaway probe: which tool_choice shapes does DeepSeek accept?
-
-One cheap call per shape. Prints the HTTP outcome and, on success, whether the
-response actually carried a tool call. Never prints the API key or the full
-response body.
-"""
-
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+from openai import AsyncOpenAI
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from openai import AsyncOpenAI  # noqa: E402
+from deep_research.observability import LangSmithRuntimeConfig, Tracker
+from deep_research.providers.deepseek_provider import (
+    DEEPSEEK_BASE_URL,
+    DeepSeekChatProvider,
+)
+from deep_research.utils.config import load_config
 
-BASE_URL = "https://api.deepseek.com"
-MODEL = "deepseek-v4-flash"
-
-SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "score": {"type": "integer"},
-        "rationale": {"type": "string"},
-    },
-    "required": ["score", "rationale"],
-}
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "TinyAnswer",
-            "description": "Return the structured result as this function's arguments.",
-            "parameters": SCHEMA,
-        },
-    }
-]
+AGENTS = (
+    "planner",
+    "researcher",
+    "source_evaluator",
+    "fact_checker",
+    "synthesizer",
+    "critic",
+)
 
 
-async def probe(
-    client: AsyncOpenAI,
-    label: str,
-    tool_choice: object,
-    *,
-    thinking: bool = True,
-) -> None:
-    """One request. ``thinking`` mirrors what the real provider sends.
+class ProbeAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    score: int
+    rationale: str
 
-    The production path spreads ``_request_options``, which includes
-    ``extra_body={"thinking": {"type": "enabled"}}``, so a probe without that
-    key would test a request the system never actually sends.
-    """
-    payload: dict[str, object] = {
-        "model": MODEL,
-        "messages": [{"role": "user", "content": "Score this: the sky is blue."}],
-        "max_tokens": 512,
-        "tools": TOOLS,
-    }
-    if thinking:
-        payload["extra_body"] = {"thinking": {"type": "enabled"}}
-        payload["reasoning_effort"] = "high"
-    if tool_choice is not None:
-        payload["tool_choice"] = tool_choice
-    try:
-        response = await client.chat.completions.create(**payload)
-    except Exception as error:  # noqa: BLE001 - probe reports the class only
-        print(
-            f"{label:<40} FAILED  {type(error).__name__} "
-            f"status={getattr(error, 'status_code', '')}"
+
+def inventory():
+    settings = load_config(str(Path.cwd() / "config.yaml"), strict=False)
+    if settings.llm.provider != "deepseek":
+        raise SystemExit("This capability probe requires the deepseek provider")
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    configurations = []
+    for agent in AGENTS:
+        effective = settings.llm.resolve_for(agent)
+        production = settings.llm.model_copy(
+            update={
+                **effective.model_dump(),
+                "model_overrides": {},
+            }
         )
-        return
-    message = response.choices[0].message
-    calls = getattr(message, "tool_calls", None) or []
-    args = calls[0].function.arguments if len(calls) == 1 else None
-    valid = False
-    if isinstance(args, str):
-        try:
-            json.loads(args)
-            valid = True
-        except json.JSONDecodeError:
-            valid = False
+        evaluation = settings.llm.model_copy(
+            update={
+                "model": settings.evaluation.target_model,
+                "thinking_mode": "enabled",
+                "reasoning_effort": (
+                    settings.evaluation.target_reasoning_effort_overrides.get(
+                        agent, settings.evaluation.target_reasoning_effort
+                    )
+                ),
+                "model_overrides": {},
+            }
+        )
+        configurations.extend((production, evaluation))
+    unique = {}
+    for config in configurations:
+        # Include an explicit disabled control for each configured model.
+        for candidate in (
+            config,
+            config.model_copy(
+                update={
+                    "thinking_mode": "disabled",
+                    "reasoning_effort": "none",
+                }
+            ),
+        ):
+            provider = DeepSeekChatProvider(candidate, tracker, client=object())
+            _, request, _ = provider._request_options(None)
+            key = json.dumps(request, sort_keys=True)
+            unique[key] = request
+    return settings, list(unique.values())
+
+
+async def main(execute: bool):
+    settings, requests = inventory()
+    choices = {
+        "function": {"type": "function", "function": {"name": "ProbeAnswer"}},
+        "required": "required",
+        "auto": "auto",
+        "omitted": None,
+        "none": "none",
+    }
     print(
-        f"{label:<40} OK      tool_calls={len(calls)} "
-        f"finish={response.choices[0].finish_reason} json_valid={valid}"
+        json.dumps(
+            {
+                "request_count": len(requests) * len(choices),
+                "settings": requests,
+                "execute": execute,
+            },
+            sort_keys=True,
+        )
     )
-
-
-async def main() -> None:
+    if not execute:
+        return
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key.strip():
-        print("DEEPSEEK_API_KEY is not set")
-        return
-    client = AsyncOpenAI(api_key=key, base_url=BASE_URL, max_retries=0)
-    function_specific = {"type": "function", "function": {"name": "TinyAnswer"}}
-    # Each shape is tried with thinking enabled and disabled, because the
-    # production path enables thinking and the two modes may differ.
-    for thinking in (True, False):
-        suffix = "thinking=on" if thinking else "thinking=off"
-        await probe(client, f"function-specific ({suffix})", function_specific, thinking=thinking)
-        await probe(client, f"required-string ({suffix})", "required", thinking=thinking)
-        await probe(client, f"auto-string ({suffix})", "auto", thinking=thinking)
-        await probe(client, f"omitted ({suffix})", None, thinking=thinking)
-        await probe(client, f"none-string ({suffix})", "none", thinking=thinking)
+        raise SystemExit("DEEPSEEK_API_KEY is not set")
+    async with AsyncOpenAI(
+        api_key=key,
+        base_url=DEEPSEEK_BASE_URL,
+        max_retries=0,
+        timeout=settings.llm.timeout,
+    ) as client:
+        for request in requests:
+            for label, choice in choices.items():
+                payload = {
+                    **request,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Call ProbeAnswer exactly once with score 1 and a "
+                            "short rationale. Supply no ordinary text answer.",
+                        }
+                    ],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "ProbeAnswer",
+                                "description": "Submit the requested structured answer.",
+                                "parameters": ProbeAnswer.model_json_schema(),
+                            },
+                        }
+                    ],
+                }
+                if choice is not None:
+                    payload["tool_choice"] = choice
+                record = {"request": request, "choice": label}
+                try:
+                    response = await client.chat.completions.create(**payload)
+                except Exception as error:
+                    # Classify known rejection text locally without retaining it.
+                    status = getattr(error, "status_code", None)
+                    rejection = status == 400 and "tool_choice" in str(error).lower()
+                    record.update(
+                        outcome="request_failed",
+                        error_type=type(error).__name__,
+                        http_status=status,
+                        tool_choice_rejection=rejection,
+                    )
+                    print(json.dumps(record, sort_keys=True))
+                    continue
+                options = getattr(response, "choices", None) or []
+                finish = options[0].finish_reason if len(options) == 1 else None
+                message = options[0].message if len(options) == 1 else None
+                calls = getattr(message, "tool_calls", None) or []
+                valid = False
+                if len(calls) == 1 and calls[0].type == "function":
+                    function = calls[0].function
+                    if function.name == "ProbeAnswer":
+                        try:
+                            result = ProbeAnswer.model_validate_json(function.arguments)
+                            valid = result.score == 1 and bool(result.rationale.strip())
+                        except (ValidationError, TypeError):
+                            pass
+                record.update(
+                    outcome="http_success",
+                    finish_reason=finish,
+                    tool_count=len(calls),
+                    valid=valid,
+                    complete=finish in {"stop", "tool_calls"},
+                )
+                print(json.dumps(record, sort_keys=True))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--execute", action="store_true")
+    asyncio.run(main(parser.parse_args().execute))
 ```
 
-- [ ] **Step 2: Run the probe with the repository credentials**
+Run with the source binding from Global constraints. Set `$transportProbe` to the newly created script path, using `Join-Path` and the generated directory, rather than writing over an existing file. Run `& $transportPython $transportProbe` first. The current shipped config yields **15 requests**: `high`, `max`, and explicitly disabled, each with five choices. It is not a single cheap call. The `none` row is a negative control, never a usable candidate. No `parallel_tool_calls`, beta `strict`, or unverified shape is inserted.
+
+- [ ] **Step 2: Authorize and run the enumerated probe**
+
+Show the exact count, models, thinking modes, budget ceiling, and that this uses DeepSeek only, with no LangSmith tracing or external tools. Obtain authorization before running. Load credentials with the existing launcher; if the launcher is absent, stop and locate it instead of dumping `.env` or inventing credentials.
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" `
-  ".superpowers\sdd\2026-09-08-cross-agent-planner-fix-parity\run_with_repo_env.py" `
-  "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.env" `
-  "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" `
-  "tools\probe_deepseek_tool_call.py"
+$transportLauncher = '.superpowers\sdd\2026-09-08-cross-agent-planner-fix-parity\run_with_repo_env.py'
+$transportEnvFile = 'C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.env'
+if (-not (Test-Path -LiteralPath $transportLauncher)) { throw 'Missing approved launcher' }
+& $transportPython $transportLauncher $transportEnvFile $transportPython $transportProbe --execute
+if ($LASTEXITCODE -ne 0) { throw 'Probe did not complete' }
 ```
 
-- [ ] **Step 3: Choose the shape from the recorded result**
+- [ ] **Step 3: Apply this decision table to each required production/evaluation setting**
 
-The probe prints ten lines: five `tool_choice` shapes, each with thinking on and
-off. **Read the `thinking=on` lines first**, because that is what production
-sends. Pick exactly one row and record the choice, quoting the probe lines that
-justify it, in the fix-log entry for this task:
+Success means HTTP acceptance **and** a complete finish **and** exactly one correctly named function with locally valid arguments. A single success demonstrates feasibility, not reliability.
 
 | Observation | Decision |
 | --- | --- |
-| `function-specific (thinking=on)` is OK with `json_valid=True` | **Preferred.** Keep Task 2 exactly as written. |
-| `function-specific (thinking=on)` fails, `required-string (thinking=on)` is OK with `json_valid=True` | Change Task 2's `tool_choice` to the string `"required"` and add `parallel_tool_calls: False` so the reply carries exactly one call. `_tool_call_arguments` already fails closed on more than one. |
-| Both fail, `auto-string (thinking=on)` is OK with `json_valid=True` | Change Task 2's `tool_choice` to `"auto"`. Adequacy must then be proven by repetition count rather than by the API: expect occasional prose answers, which `_tool_call_arguments` turns into typed errors, and re-evaluate after Task 7's canary. |
-| Every named shape fails, but `omitted (thinking=on)` returns a tool call | Omit `tool_choice` entirely and rely on the tool being the only offered function. |
-| **Only the `thinking=off` lines succeed, for any shape** | Tool calls and thinking mode are incompatible on this endpoint. This is a new constraint, so **stop and report it**: enabling tool calls would require disabling thinking for every target structured call, which contradicts the configured `thinking_mode: enabled` and is a scope decision for the user, not a silent workaround. |
-| No shape returns a tool call under either thinking setting | **Stop.** Tool calling is not viable for this model on this endpoint. Do not run Tasks 1–6 or any paid repetition. Report the probe output and re-decide with the user; the `json_schema` transport in `2fe4e32` remains the best available mechanism, and the next lever is the prompt or the model rather than the transport. |
+| Function-specific choice succeeds for every required setting | `PROCEED_FUNCTION`. Keep `_STRUCTURED_TOOL_CHOICE = 'function'` in Task 2. |
+| Function-specific has a classified tool-choice rejection for a required setting, but `required` succeeds for every required setting | `PROCEED_REQUIRED`. Replace that constant with `'required'` in Task 2 before implementation. Keep cardinality validation; the API permits more than one call. A generic 400 does not establish this condition. |
+| Success depends on different choice shapes per effective model/effort | Stop this version and amend the capability policy; do not choose a global shape that fails one target. |
+| Only `auto` or omitted choice returns calls with the configured thinking mode | `BLOCKED_CAPABILITY` for the forced-call hypothesis. An unforced experiment requires its own decision and acceptance criteria; do not automatically enable it for all agents. |
+| Only explicitly disabled thinking succeeds | Stop and report the tradeoff. Preserve configured thinking. This shows a restriction on the tested forced mechanism, not that all tool use and thinking are incompatible. |
+| 401/403, timeout, connection failure, 429/5xx, malformed SDK result, or `length` | `INCONCLUSIVE`. Preserve the fallback; investigate the cause and obtain authorization for any extra calls. Do not call it unsupported transport. |
+| Valid `auto` produces prose, or a forced request produces invalid arguments | Record envelope/conformance failure separately from HTTP rejection; one sample is not a reliability estimate. No unconditional rollout. |
+| The `none` negative control returns a tool call | The endpoint may be ignoring `tool_choice`; stop and investigate rather than treating another row as proof of forcing. |
+| No usable forced shape after a complete, non-infrastructure matrix | Stop Tasks 1–7. Keep the current Responses implementation. Reconsider prompt/model, Responses function tools, or beta strict mode as separate hypotheses; do not claim the current mechanism is universally best. |
 
-- [ ] **Step 4: Remove the probe**
+- [ ] **Step 4: Commit the decision and close the gate**
 
-```powershell
-Remove-Item "tools\probe_deepseek_tool_call.py" -Force
-```
-
-Do not commit the probe. Record only its outcome, and never the API key or a raw response body.
-
-- [ ] **Step 5: Commit the decision**
-
-Record the chosen shape and the probe outcome by appending a section to
-`docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`, following that file's numbered-section format.
+Append safe matrix rows, current SDK version, candidate SHA, endpoint, exact request settings, and chosen outcome to the numbered fix log. Preserve the probe in its ignored output directory for reproducibility; do not delete the user's `tools/` files. If stopping, this evidence commit is the only requested repository change in execution. If proceeding with `required`, amend the constant and its expected test value in the plan before starting Task 1.
 
 ```powershell
-git add docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md
-git commit -m "docs: record the deepseek tool-call shape probe"
+git diff --check
+git add docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md docs/superpowers/plans/2026-09-11-tool-call-structured-transport.md
+git commit -m "docs: record verified deepseek transport capability gate"
 ```
-
-**Gate:** Tasks 1–7 below assume the `function-specific` shape. If Step 3 selected a different shape, apply the corresponding change to Task 2's `tool_choice` before starting Task 2. If Step 3 selected **Stop**, do not start Task 1 either, and report back to the user.
 
 ---
 
-### Task 1: Add the `structured_transport` setting
+### Task 1: Add a compatible transport setting with a delayed default
 
-**Files:**
-- Modify: `src/deep_research/utils/config.py` (the `LLMConfig` field block near `max_tokens`; the `_ENVIRONMENT_OVERRIDES` mapping)
-- Modify: `config.yaml` (the `llm:` block)
-- Test: `tests/test_config.py`
+**Files:** `src/deep_research/utils/config.py`, `config.yaml`, `tests/test_config.py`.
 
-**Interfaces:**
-- Consumes: nothing.
-- Produces: `LLMConfig.structured_transport: Literal["tool_call", "json_schema"]`, default `"tool_call"`; environment variable `LLM_STRUCTURED_TRANSPORT`; YAML key `llm.structured_transport`. Task 2 reads `self._config.structured_transport`.
+**Interfaces:** `structured_transport: Literal['auto', 'tool_call', 'json_schema'] = 'auto'`; `effective_structured_transport` returns a concrete transport. `auto` resolves to `json_schema` for both providers until Task 7. Explicit OpenAI `tool_call` is rejected. This preserves existing direct construction and provider-only environment overrides.
 
-- [ ] **Step 1: Write the failing tests**
-
-Append to `tests/test_config.py`:
+- [ ] **Step 1: Append the configuration tests and observe RED**
 
 ```python
-def test_the_target_structured_transport_defaults_to_tool_call() -> None:
-    """Tool calls are the default because schema enforcement alone was not enough.
-
-    Schema-enforced output still produced ``json_invalid`` at the field root on
-    both the initial attempt and the single repair in roughly one live Critic
-    repetition in four, at every budget up to 32768. A forced tool call makes
-    the model commit to a function invocation instead of being trusted to emit
-    well-formed text.
-    """
-    from deep_research.utils.config import LLMConfig
-
-    assert LLMConfig().structured_transport == "tool_call"
+@pytest.mark.parametrize("provider", ["deepseek", "openai"])
+def test_auto_transport_preserves_the_existing_default(provider):
+    config = LLMConfig(provider=provider)
+    assert config.structured_transport == "auto"
+    assert config.effective_structured_transport == "json_schema"
 
 
-def test_the_transport_is_overridable_from_the_environment(
-    monkeypatch: pytest.MonkeyPatch,
-    config_path: Path,
-) -> None:
-    monkeypatch.setenv("LLM_STRUCTURED_TRANSPORT", "json_schema")
-
-    settings = load_config(str(config_path))
-
-    assert settings.llm.structured_transport == "json_schema"
+@pytest.mark.parametrize("transport", ["auto", "json_schema", "tool_call"])
+def test_deepseek_transport_resolves_explicit_selection(transport):
+    config = LLMConfig(structured_transport=transport)
+    expected = "json_schema" if transport == "auto" else transport
+    assert config.effective_structured_transport == expected
 
 
-def test_the_shipped_config_file_carries_the_transport() -> None:
-    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+def test_openai_rejects_only_an_explicit_unsupported_transport():
+    with pytest.raises(ValidationError, match="tool_call"):
+        LLMConfig(provider="openai", structured_transport="tool_call")
+    assert LLMConfig(provider="openai", structured_transport="json_schema")
 
-    assert raw["llm"]["structured_transport"] == "tool_call"
 
-
-def test_the_transport_rejects_an_unknown_value() -> None:
-    from pydantic import ValidationError
-
-    from deep_research.utils.config import LLMConfig
-
+def test_unknown_structured_transport_is_rejected():
     with pytest.raises(ValidationError):
         LLMConfig(structured_transport="magic")
 
 
-def test_tool_call_transport_is_rejected_for_the_openai_provider() -> None:
-    """The setting is DeepSeek-only, and says so instead of silently no-opping.
+def test_transport_environment_override(monkeypatch, config_path):
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("LLM_STRUCTURED_TRANSPORT", "tool_call")
+    assert (
+        load_config(str(config_path)).llm.effective_structured_transport == "tool_call"
+    )
 
-    The OpenAI adapter asks for structure through the SDK's own
-    ``responses.parse``. Accepting ``tool_call`` for it would be a silent no-op
-    that reads as configured-but-inactive, so it is rejected loudly.
-    """
-    from pydantic import ValidationError
 
-    from deep_research.utils.config import LLMConfig
-
-    with pytest.raises(ValidationError, match="tool_call"):
-        LLMConfig(provider="openai", structured_transport="tool_call")
-
-    assert LLMConfig(provider="openai").structured_transport == "json_schema"
+def test_shipped_auto_transport_keeps_provider_switching_compatible(
+    monkeypatch,
+    tmp_path,
+):
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    assert raw["llm"]["structured_transport"] == "auto"
+    # Copy YAML away from any sibling .env; this is an offline config check.
+    path = tmp_path / "shipping.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.delenv("LLM_STRUCTURED_TRANSPORT", raising=False)
+    assert load_config(str(path)).llm.effective_structured_transport == "json_schema"
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+Run `& $transportPython -m pytest tests/test_config.py -q -k transport -p no:cacheprovider`. Expect failures caused by the missing field/property, not an import problem.
 
-```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_config.py -q -k "transport"
-```
+- [ ] **Step 2: Add the field, property, validator, and override**
 
-Expected: FAIL. `LLMConfig` has no `structured_transport` field, so the default test fails with `AttributeError` and the rejection tests fail because no `ValidationError` is raised.
-
-- [ ] **Step 3: Add the field and its validator**
-
-In `src/deep_research/utils/config.py`, add to `LLMConfig` immediately after the `max_tokens` line (currently line 73, `max_tokens: int = Field(default=32768, ge=1)`):
+In `LLMConfig`, after `max_tokens`:
 
 ```python
-    # How a DeepSeek target agent's structured request asks for JSON.
-    # ``tool_call`` forces a function invocation, so the model commits to a
-    # call and cannot drift into prose; ``json_schema`` relies on the
-    # provider's output-format enforcement, which still produced
-    # ``json_invalid`` in roughly one live repetition in four at every budget
-    # up to 32768. DeepSeek-only: the OpenAI adapter uses the SDK's own
-    # ``responses.parse``, and asking for ``tool_call`` there is rejected
-    # rather than silently ignored.
-    structured_transport: Literal["tool_call", "json_schema"] = "tool_call"
-```
+    structured_transport: Literal["auto", "tool_call", "json_schema"] = "auto"
 
-`LLMConfig` already has `model_config = ConfigDict(extra="forbid")`; confirm that before continuing. Add this validator to `LLMConfig`, next to any existing validator in the class:
 
-```python
+    @property
+    def effective_structured_transport(self) -> Literal["tool_call", "json_schema"]:
+        if self.structured_transport == "auto":
+            # Task 7 may promote DeepSeek after the capability and quality gates.
+            return "json_schema"
+        return self.structured_transport
+
+
     @model_validator(mode="after")
     def validate_structured_transport(self) -> "LLMConfig":
         if self.provider == "openai" and self.structured_transport == "tool_call":
             raise ValueError(
-                "structured_transport 'tool_call' is only supported for the "
-                "deepseek provider; the openai adapter structures output "
-                "through the SDK's own responses.parse"
+                "structured_transport 'tool_call' is supported only for deepseek; "
+                "use 'auto' or 'json_schema' with openai"
             )
         return self
 ```
 
-Add `model_validator` to the pydantic import at the top of the file if it is not already there.
-
-- [ ] **Step 4: Add the environment override**
-
-In the `_ENVIRONMENT_OVERRIDES` mapping, immediately after the `"LLM_MAX_TOKENS": ("llm", "max_tokens"),` entry:
+`model_validator` is already imported. Add this entry after `LLM_MAX_TOKENS` in `_ENVIRONMENT_OVERRIDES`:
 
 ```python
-    "LLM_STRUCTURED_TRANSPORT": ("llm", "structured_transport"),
+    'LLM_STRUCTURED_TRANSPORT': ('llm', 'structured_transport'),
 ```
 
-- [ ] **Step 5: Set the shipped YAML value**
-
-In `config.yaml`, in the `llm:` block, immediately after the `max_tokens: 32768` line:
+Add after `llm.max_tokens` in `config.yaml`:
 
 ```yaml
-  # How target agents ask for structured JSON. tool_call forces a function
-  # invocation, so the model commits to a call rather than being trusted to
-  # emit well-formed text; json_schema relies on output-format enforcement,
-  # which still returned non-JSON text in about one live repetition in four.
-  # DeepSeek-only; the OpenAI adapter is unaffected.
-  structured_transport: tool_call
+  # auto preserves Responses until the transport rollout gate passes.
+  # tool_call is an explicit DeepSeek target experiment; the judge stays on Responses.
+  # OpenAI supports auto/json_schema; explicit tool_call is rejected.
+  structured_transport: auto
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 3: Verify all config and factory compatibility checks, then commit**
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_config.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Run ruff and commit**
-
-```powershell
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m ruff check src/deep_research/utils/config.py tests/test_config.py
+& $transportPython -m pytest tests/test_config.py tests/test_provider_factory.py tests/test_openai_provider.py tests/test_evaluation/test_config.py -q -p no:cacheprovider
+& $transportPython -m ruff check src/deep_research/utils/config.py tests/test_config.py
 git diff --check
 git add src/deep_research/utils/config.py config.yaml tests/test_config.py
-git commit -m "feat(config): add a selectable structured-output transport"
+git commit -m "feat(config): add compatible opt-in structured transport"
 ```
+
+Expected: all pass. Do not paper over regressions by pinning every OpenAI fixture to `json_schema`; preserving omitted/default configuration is the point of `auto`.
 
 ---
 
-### Task 2: Add the forced-tool-call attempt
+### Task 2: Implement and test one tool attempt independently
 
-**Files:**
-- Modify: `src/deep_research/providers/deepseek_provider.py` (add two module-level helpers before `_DeepSeekSchemaStructuredProvider`; add `_tool_call_structured_attempt` to that class)
-- Test: `tests/test_deepseek_provider.py`
+**Files:** `src/deep_research/providers/deepseek_provider.py`, `tests/test_deepseek_provider.py`.
 
-**Interfaces:**
-- Consumes: `LLMConfig.structured_transport` (Task 1); existing `_response_telemetry`, `_set_span_result`, `_validation_diagnostic`, `_StructuredValidationFailure`, `with_retries`, `_raise_deepseek_error`, `ProviderOutputLimitError`, `ProviderResponseError`.
-- Produces: `_tool_schema(schema: type[BaseModel]) -> dict[str, object]`; `_tool_call_arguments(response: Any) -> str`; `_DeepSeekSchemaStructuredProvider._tool_call_structured_attempt(messages, schema, *, model, request, metadata, configured_max_tokens, attempt) -> SchemaT`.
+**Interfaces:** `_tool_schema(schema) -> dict[str, object]`, `_tool_choice(schema_name) -> object`, `_tool_instruction(schema) -> ChatMessage`, `_tool_call_arguments(response, *, expected_name, attempt) -> str`, and `_DeepSeekSchemaStructuredProvider._tool_call_structured_attempt` with the same keyword interface as `_responses_structured_attempt`.
 
-- [ ] **Step 1: Write the failing tests**
+No public dispatch changes in this task. Direct-attempt tests make this task independently green; public repair tests belong to Task 3.
 
-Append to `tests/test_deepseek_provider.py`. These use the existing helpers `RecordingCompletions` (line 53), `FakeDeepSeekClient` (line 79), `chat_response` (line 91), `local_tracker` (line 172), `deepseek_config` (line 199), and `TinyAnswer` (line 211).
+- [ ] **Step 1: Add response builders and direct-attempt tests, then observe RED**
 
-Add a helper next to the other response builders, after `chat_response`:
+Append these to `tests/test_deepseek_provider.py`, using its existing `SimpleNamespace`, `TinyAnswer`, `RecordingCompletions`, `FakeDeepSeekClient`, `local_tracker`, and `deepseek_config`. Synthetic response data is permitted.
 
 ```python
-def tool_call_response(
-    *,
-    arguments: object,
-    name: str = "TinyAnswer",
-    finish_reason: object = "stop",
-) -> SimpleNamespace:
-    """A Chat Completions response carrying exactly one tool call."""
+def tool_call_response(*, arguments, name="TinyAnswer", finish_reason="tool_calls"):
     return SimpleNamespace(
-        id="deepseek-response",
+        model="deepseek-v4-flash",
         choices=[
             SimpleNamespace(
                 finish_reason=finish_reason,
@@ -424,208 +461,202 @@ def tool_call_response(
                 ),
             )
         ],
-        usage=SimpleNamespace(
-            prompt_tokens=4, completion_tokens=2, total_tokens=6
-        ),
+        usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2, total_tokens=6),
     )
-```
 
-Then the tests:
 
-```python
-@pytest.mark.asyncio
-async def test_tool_call_transport_sends_a_forced_function_call() -> None:
-    completions = RecordingCompletions(
-        tool_call_response(arguments='{"answer":"yes","confidence":9}')
-    )
+async def direct_tool_attempt(completions, *, config=None, max_tokens=32768):
     tracker = local_tracker()
     provider = deepseek_module.DeepSeekSchemaChatProvider(
-        deepseek_config(structured_transport="tool_call"),
+        config or deepseek_config(structured_transport="tool_call"),
         tracker,
         client=FakeDeepSeekClient(completions),
     )
-
-    async with tracker.session_span("session-1", "question"):
-        result = await provider.complete_structured(
-            [ChatMessage(role="user", content="decide")],
+    effective, request, metadata = provider._request_options("critic")
+    async with tracker.session_span("session-1", "synthetic question"):
+        return await provider._tool_call_structured_attempt(
+            [{"role": "user", "content": "decide"}],
             TinyAnswer,
-            agent_name="critic",
+            model=effective.model,
+            request=request,
+            metadata=metadata,
+            configured_max_tokens=max_tokens,
+            attempt=1,
         )
 
+
+@pytest.mark.asyncio
+async def test_tool_attempt_sends_exact_schema_choice_and_budget():
+    completions = RecordingCompletions(
+        tool_call_response(
+            arguments='{"answer":"yes","confidence":9}',
+        )
+    )
+    result = await direct_tool_attempt(completions, max_tokens=12345)
     assert result == TinyAnswer(answer="yes", confidence=9)
+    assert len(completions.calls) == 1
     call = completions.calls[0]
+    assert call["max_tokens"] == 12345
+    # Task 0 chooses one of these two values; pin the recorded choice here.
     assert call["tool_choice"] == {
         "type": "function",
         "function": {"name": "TinyAnswer"},
     }
-    assert call["tools"][0]["type"] == "function"
-    function = call["tools"][0]["function"]
-    assert function["name"] == "TinyAnswer"
-    # The parameters are the schema itself, minus prose-only documentation.
-    assert function["parameters"]["properties"]["answer"] == {"type": "string"}
-    assert function["parameters"]["required"] == ["answer", "confidence"]
-    assert "title" not in function["parameters"]
-    assert "description" not in function["parameters"]
-    # The old Responses shape is absent, and schema JSON is not restated in
-    # the prompt: the tool definition carries it.
-    assert "text" not in call
-    assert "response_format" not in call
-    assert "JSON Schema" not in str(call["messages"])
+    assert call["tools"][0]["function"]["parameters"] == TinyAnswer.model_json_schema()
+    assert call["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert call["reasoning_effort"] == "high"
+    assert not {"response_format", "text", "parallel_tool_calls"} & call.keys()
 
 
 @pytest.mark.asyncio
-async def test_tool_call_transport_repairs_exactly_once() -> None:
-    completions = RecordingCompletions(
-        tool_call_response(arguments='{"answer":3}'),
-        tool_call_response(arguments='{"answer":"yes","confidence":8}'),
-    )
-    tracker = local_tracker()
-    provider = deepseek_module.DeepSeekSchemaChatProvider(
-        deepseek_config(structured_transport="tool_call"),
-        tracker,
-        client=FakeDeepSeekClient(completions),
-    )
+@pytest.mark.parametrize(
+    "case",
+    [
+        "prose",
+        "zero",
+        "multiple",
+        "wrong_name",
+        "wrong_type",
+        "no_function",
+        "empty_arguments",
+        "non_string",
+        "zero_choices",
+        "two_choices",
+    ],
+)
+async def test_tool_attempt_rejects_invalid_envelopes_with_bounded_diagnostic(case):
+    response = tool_call_response(arguments='{"answer":"yes","confidence":9}')
+    message = response.choices[0].message
+    if case == "prose":
+        message.content = "SYNTHETIC_PROSE_MARKER"
+        message.tool_calls = None
+    elif case == "zero":
+        message.tool_calls = []
+    elif case == "multiple":
+        message.tool_calls *= 2
+    elif case == "wrong_name":
+        message.tool_calls[0].function.name = "SYNTHETIC_WRONG_NAME"
+    elif case == "wrong_type":
+        message.tool_calls[0].type = "custom"
+    elif case == "no_function":
+        message.tool_calls[0].function = None
+    elif case == "empty_arguments":
+        message.tool_calls[0].function.arguments = "  "
+    elif case == "non_string":
+        message.tool_calls[0].function.arguments = {
+            "answer": "SYNTHETIC_ARGUMENT_MARKER"
+        }
+    elif case == "zero_choices":
+        response.choices = []
+    else:
+        response.choices *= 2
+    with pytest.raises(deepseek_module._StructuredValidationFailure) as caught:
+        await direct_tool_attempt(RecordingCompletions(response))
+    assert caught.value.diagnostic.category == "schema_output"
+    assert caught.value.diagnostic.field_paths == ("$",)
+    assert caught.value.diagnostic.attempt == 1
+    assert "SYNTHETIC_" not in str(caught.value)
 
-    async with tracker.session_span("session-1", "question"):
-        result = await provider.complete_structured(
-            [ChatMessage(role="user", content="decide")], TinyAnswer
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("arguments", "category"),
+    [
+        ("SYNTHETIC_NON_JSON", "json_invalid"),
+        ('{"answer":"yes"}', "missing"),
+    ],
+)
+async def test_tool_attempt_validates_arguments_locally(arguments, category):
+    completions = RecordingCompletions(tool_call_response(arguments=arguments))
+    with pytest.raises(deepseek_module._StructuredValidationFailure) as caught:
+        await direct_tool_attempt(completions)
+    assert caught.value.diagnostic.category == category
+    assert len(completions.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_attempt_output_limit_is_not_a_validation_repair():
+    completions = RecordingCompletions(
+        tool_call_response(
+            arguments="{}",
+            finish_reason="length",
         )
-
-    assert result.confidence == 8
-    assert len(completions.calls) == 2
-    assert (
-        "previous JSON response failed TinyAnswer validation"
-        in str(completions.calls[1]["messages"][-1]["content"])
     )
-
-
-@pytest.mark.asyncio
-async def test_tool_call_transport_exhaustion_is_typed_and_bounded() -> None:
-    completions = RecordingCompletions(
-        tool_call_response(arguments="I could not answer that."),
-        tool_call_response(arguments="Still not JSON."),
-    )
-    tracker = local_tracker()
-    provider = deepseek_module.DeepSeekSchemaChatProvider(
-        deepseek_config(structured_transport="tool_call"),
-        tracker,
-        client=FakeDeepSeekClient(completions),
-    )
-
-    async with tracker.session_span("session-1", "question"):
-        with pytest.raises(contracts_module.StructuredOutputError) as caught:
-            await provider.complete_structured(
-                [ChatMessage(role="user", content="decide")], TinyAnswer
-            )
-
-    diagnostics = caught.value.diagnostics
-    assert [item.attempt for item in diagnostics] == [1, 2]
-    assert [item.category for item in diagnostics] == [
-        "json_invalid",
-        "json_invalid",
-    ]
-    assert "I could not answer that." not in str(caught.value)
-    assert len(completions.calls) == 2
-
-
-@pytest.mark.asyncio
-async def test_tool_call_transport_rejects_a_prose_answer() -> None:
-    """A model that ignored tool_choice is a typed response error, not a parse."""
-    prose = chat_response(text="Here is my review: the report is fine.")
-    completions = RecordingCompletions(prose, prose)
-    tracker = local_tracker()
-    provider = deepseek_module.DeepSeekSchemaChatProvider(
-        deepseek_config(structured_transport="tool_call"),
-        tracker,
-        client=FakeDeepSeekClient(completions),
-    )
-
-    async with tracker.session_span("session-1", "question"):
-        with pytest.raises(contracts_module.ProviderResponseError):
-            await provider.complete_structured(
-                [ChatMessage(role="user", content="decide")], TinyAnswer
-            )
-
-
-@pytest.mark.asyncio
-async def test_tool_call_transport_output_limit_stays_typed() -> None:
-    completions = RecordingCompletions(
-        tool_call_response(arguments="{}", finish_reason="length")
-    )
-    tracker = local_tracker()
-    provider = deepseek_module.DeepSeekSchemaChatProvider(
-        deepseek_config(structured_transport="tool_call"),
-        tracker,
-        client=FakeDeepSeekClient(completions),
-    )
-
-    async with tracker.session_span("session-1", "question"):
-        with pytest.raises(contracts_module.ProviderOutputLimitError) as caught:
-            await provider.complete_structured(
-                [ChatMessage(role="user", content="decide")], TinyAnswer
-            )
-
+    with pytest.raises(ProviderOutputLimitError) as caught:
+        await direct_tool_attempt(completions)
     assert caught.value.telemetry.finish_reason_category == "length"
     assert len(completions.calls) == 1
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+Run `& $transportPython -m pytest tests/test_deepseek_provider.py -q -k tool_attempt -p no:cacheprovider`. Expected: missing-method failures before implementation. If Task 0 chose `required`, the success test must assert the literal `'required'`, not reuse the production helper to compute its expected value.
 
-```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_deepseek_provider.py -q -k "tool_call_transport"
-```
-
-Expected: FAIL. The provider still sends the Responses `json_schema` request, so `call["tool_choice"]` raises `KeyError` and `RecordingResponses` is never used.
-
-- [ ] **Step 3: Add the two module-level helpers**
-
-In `src/deep_research/providers/deepseek_provider.py`, immediately before `class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):`, add:
+- [ ] **Step 2: Add the tool helpers before `_DeepSeekSchemaStructuredProvider`**
 
 ```python
+# Fixed by the recorded Task 0 gate; never guess or downgrade at runtime.
+_STRUCTURED_TOOL_CHOICE = "function"
+
+
 def _tool_schema(schema: type[BaseModel]) -> dict[str, object]:
-    """The tool's ``parameters`` object for one Pydantic schema.
-
-    ``description`` and ``title`` are dropped at the top level: they document a
-    schema for a human reader rather than constraining a value, and a tool
-    definition does not need them.
-    """
-    payload = dict(schema.model_json_schema())
-    payload.pop("description", None)
-    payload.pop("title", None)
-    return payload
+    # Preserve descriptions, constraints, $defs, references, and defaults.
+    return schema.model_json_schema()
 
 
-def _tool_call_arguments(response: Any) -> str:
-    """Extract the forced tool call's JSON argument string.
+def _tool_choice(schema_name: str) -> object:
+    if _STRUCTURED_TOOL_CHOICE == "required":
+        return "required"
+    return {"type": "function", "function": {"name": schema_name}}
 
-    Reads exactly one choice carrying exactly one tool call, and fails closed on
-    every other shape. A model that ignored ``tool_choice`` and answered in
-    prose is therefore a typed response error rather than a silent empty parse.
-    """
+
+def _tool_instruction(schema: type[BaseModel]) -> ChatMessage:
+    return ChatMessage(
+        role="system",
+        content=(
+            f"Submit the structured result by calling {schema.__name__} exactly once. "
+            "Its arguments must contain the requested result and conform to the "
+            "provided function schema. Do not answer with ordinary message text. "
+            "This function submits the result; do not call any other function."
+        ),
+    )
+
+
+def _tool_call_arguments(
+    response: Any,
+    *,
+    expected_name: str,
+    attempt: int,
+) -> str:
     choices = getattr(response, "choices", None)
-    if not isinstance(choices, (list, tuple)) or len(choices) != 1:
-        raise ProviderResponseError("DeepSeek response contained malformed choices")
-    message = getattr(choices[0], "message", None)
-    tool_calls = (
-        getattr(message, "tool_calls", None) if message is not None else None
+    message = (
+        getattr(choices[0], "message", None)
+        if isinstance(choices, (list, tuple)) and len(choices) == 1
+        else None
     )
-    if not isinstance(tool_calls, (list, tuple)) or len(tool_calls) != 1:
-        raise ProviderResponseError(
-            "DeepSeek response did not contain exactly one tool call"
-        )
-    function = getattr(tool_calls[0], "function", None)
-    arguments = (
-        getattr(function, "arguments", None) if function is not None else None
-    )
-    if not isinstance(arguments, str) or not arguments.strip():
-        raise ProviderResponseError("DeepSeek tool call did not contain arguments")
-    return arguments.strip()
+    calls = getattr(message, "tool_calls", None)
+    call = calls[0] if isinstance(calls, (list, tuple)) and len(calls) == 1 else None
+    function = getattr(call, "function", None)
+    arguments = getattr(function, "arguments", None)
+    if (
+        getattr(call, "type", None) == "function"
+        and getattr(function, "name", None) == expected_name
+        and isinstance(arguments, str)
+        and arguments.strip()
+    ):
+        return arguments
+    # The returned name/content never enters a diagnostic or repair prompt.
+    raise _StructuredValidationFailure(
+        expected_name,
+        StructuredValidationDiagnostic(
+            attempt=attempt,
+            field_paths=("$",),
+            category="schema_output",
+        ),
+    ) from None
 ```
 
-- [ ] **Step 4: Add the attempt method**
+- [ ] **Step 3: Add the attempt method to `_DeepSeekSchemaStructuredProvider`**
 
-Inside `_DeepSeekSchemaStructuredProvider`, immediately before its `complete_structured` method, add:
+The method offers a single submission function and does not execute it. Do not add `strict=True`: that is a separate endpoint/schema compatibility decision. Keep the existing retry, telemetry, output-limit, and local-validation contracts.
 
 ```python
     async def _tool_call_structured_attempt(
@@ -639,14 +670,7 @@ Inside `_DeepSeekSchemaStructuredProvider`, immediately before its `complete_str
         configured_max_tokens: int,
         attempt: int,
     ) -> SchemaT:
-        """One forced-tool-call attempt on Chat Completions.
-
-        The schema is offered as a required function and ``tool_choice`` forces
-        it, so the model commits to an invocation instead of being trusted to
-        emit well-formed text. The argument string is still validated locally,
-        so Pydantic stays the source of truth and the one-repair flow is
-        unchanged.
-        """
+        """One tool-call attempt, with local argument validation."""
         async with self._tracker.llm_span(
             model,
             {
@@ -682,10 +706,7 @@ Inside `_DeepSeekSchemaStructuredProvider`, immediately before its `complete_str
                                     },
                                 }
                             ],
-                            "tool_choice": {
-                                "type": "function",
-                                "function": {"name": schema.__name__},
-                            },
+                            "tool_choice": _tool_choice(schema.__name__),
                         }
                     )
                 except (
@@ -715,147 +736,266 @@ Inside `_DeepSeekSchemaStructuredProvider`, immediately before its `complete_str
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
                 raise ProviderOutputLimitError(telemetry)
-            arguments = _tool_call_arguments(response)
+            arguments = _tool_call_arguments(
+                response, expected_name=schema.__name__, attempt=attempt
+            )
             try:
                 parsed = schema.model_validate_json(arguments)
             except (json.JSONDecodeError, ValidationError) as error:
-                diagnostic = _validation_diagnostic(
-                    error, attempt=attempt, schema=schema
-                )
+                diagnostic = _validation_diagnostic(error, attempt=attempt, schema=schema)
             else:
-                self._last_model_returned = (
-                    getattr(response, "model", None) or model
-                )
+                self._last_model_returned = getattr(response, "model", None) or model
                 return parsed
-            raise _StructuredValidationFailure(
-                schema.__name__, diagnostic
-            ) from None
+            response = None
+            arguments = ""
+            parsed = None
+            raise _StructuredValidationFailure(schema.__name__, diagnostic) from None
 ```
 
-- [ ] **Step 5: Run the tests to verify the request shape passes**
+- [ ] **Step 4: Verify the whole provider test file and commit**
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_deepseek_provider.py -q -k "tool_call_transport_sends or tool_call_transport_rejects or tool_call_transport_output_limit"
-```
-
-Expected: PASS. The repair and exhaustion tests still fail, because `complete_structured` does not yet dispatch to the new attempt.
-
-- [ ] **Step 6: Run ruff and commit**
-
-```powershell
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m ruff check src/deep_research/providers/deepseek_provider.py tests/test_deepseek_provider.py
+& $transportPython -m pytest tests/test_deepseek_provider.py -q -p no:cacheprovider
+& $transportPython -m ruff check src/deep_research/providers/deepseek_provider.py tests/test_deepseek_provider.py
 git diff --check
 git add src/deep_research/providers/deepseek_provider.py tests/test_deepseek_provider.py
-git commit -m "feat(provider): add a forced-tool-call structured attempt"
+git commit -m "feat(provider): validate one structured tool-call attempt"
 ```
+
+Expected: direct attempt tests and all existing tests pass. Public target and judge methods still use Responses at this task boundary.
 
 ---
 
-### Task 3: Extract the shared repair loop and dispatch on the transport
+### Task 3: Share the existing loop in place and isolate the judge
 
-**Files:**
-- Modify: `src/deep_research/providers/deepseek_provider.py` (`DeepSeekChatProvider.complete_structured`, `_DeepSeekSchemaStructuredProvider.complete_structured`)
-- Test: `tests/test_deepseek_provider.py`
+**Files:** `src/deep_research/providers/deepseek_provider.py`, `tests/test_deepseek_provider.py`.
 
-**Interfaces:**
-- Consumes: `_tool_call_structured_attempt` (Task 2); `LLMConfig.structured_transport` (Task 1).
-- Produces: `DeepSeekChatProvider._structured_repair_loop(current_messages, schema, *, attempt_call, model, request, metadata, configured_max_tokens) -> SchemaT`, a module-shared helper that both transports call.
+**Interfaces:** `_structured_transport()` selects a concrete transport; the shared base returns `json_schema`, only `DeepSeekSchemaChatProvider` reads the setting. `_structured_repair_message(schema, diagnostic, *, transport) -> str` carries no raw failed output.
 
-Extracting the loop is what guarantees the transport switch cannot alter the attempt count, the diagnostics, or the error type. Both transports must reach it.
+**Extraction correction:** At `a24c62e`, both cleanup blocks clear `messages`, `agent_name`, and `instruction`. Those locals cannot distinguish the loops. Identify the exact class and the call `return await self._responses_structured_attempt(`. Leave `DeepSeekChatProvider.complete_structured` and its `_structured_attempt` loop unchanged. No `_structured_repair_loop` wrapper is introduced: retaining one existing frame avoids an extra unsanitized traceback owner. A bound method retains `self`, so clearing `self` alone is insufficient; clear `attempt_call` too.
 
-- [ ] **Step 1: Write the failing test**
-
-Append to `tests/test_deepseek_provider.py`:
+- [ ] **Step 1: Add public integration tests and observe RED**
 
 ```python
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("transport", "expected_attempts"),
-    [
-        ("json_schema", 2),
-        ("tool_call", 2),
-    ],
-)
-async def test_both_transports_allow_exactly_one_repair(
-    transport: str, expected_attempts: int
-) -> None:
-    """The transport is the only difference; the attempt budget is shared.
-
-    A second attempt must be reachable on either transport, and a third must
-    never be. The one-repair contract is a campaign invariant, not a property
-    of one transport implementation.
-    """
-    if transport == "json_schema":
-        outcomes = [
-            responses_response(output_text='{"answer":3}'),
-            responses_response(output_text='{"answer":3}'),
-        ]
-        client = FakeDeepSeekClient(
-            responses=RecordingResponses(*outcomes)
+@pytest.mark.parametrize("transport", ["tool_call", "json_schema"])
+@pytest.mark.parametrize("repaired", [False, True])
+async def test_target_transport_has_one_bounded_repair(transport, repaired):
+    good = '{"answer":"yes","confidence":9}'
+    bad = "SYNTHETIC_INVALID_OUTPUT"
+    if transport == "tool_call":
+        recorder = RecordingCompletions(
+            tool_call_response(arguments=bad),
+            tool_call_response(arguments=good if repaired else bad),
         )
-        recorder = client.responses
+        client = FakeDeepSeekClient(recorder)
+        message_key = "messages"
     else:
-        outcomes = [
-            tool_call_response(arguments='{"answer":3}'),
-            tool_call_response(arguments='{"answer":3}'),
-        ]
-        client = FakeDeepSeekClient(RecordingCompletions(*outcomes))
-        recorder = client.chat.completions
+        recorder = RecordingResponses(
+            responses_response(output_text=bad),
+            responses_response(output_text=good if repaired else bad),
+        )
+        client = FakeDeepSeekClient(responses=recorder)
+        message_key = "input"
     tracker = local_tracker()
     provider = deepseek_module.DeepSeekSchemaChatProvider(
         deepseek_config(structured_transport=transport),
         tracker,
         client=client,
     )
+    original_messages = [ChatMessage(role="user", content="SYNTHETIC_PROMPT")]
+    async with tracker.session_span("session-1", "synthetic question"):
+        if repaired:
+            result = await provider.complete_structured(original_messages, TinyAnswer)
+            assert result.confidence == 9
+        else:
+            with pytest.raises(StructuredOutputError) as caught:
+                await provider.complete_structured(original_messages, TinyAnswer)
+            assert [d.attempt for d in caught.value.diagnostics] == [1, 2]
+            assert caught.value.__cause__ is None
+            assert caught.value.__context__ is None
+            surface = repr(_provider_exception_surfaces(caught.value))
+            assert bad not in surface
+            assert "SYNTHETIC_PROMPT" not in surface
+            tb = caught.value.__traceback__
+            while tb:
+                if tb.tb_frame.f_code.co_name == "complete_structured":
+                    assert tb.tb_frame.f_locals.get("attempt_call") is None
+                    assert tb.tb_frame.f_locals.get("self") is None
+                tb = tb.tb_next
+    assert len(recorder.calls) == 2
+    assert len(original_messages) == 1
+    first = recorder.calls[0][message_key]
+    second = recorder.calls[1][message_key]
+    assert second[:-1] == first
+    assert all(m["role"] not in {"assistant", "tool"} for m in second)
+    assert bad not in str(second)
+    assert "Validation summary:" in second[-1]["content"]
+    if transport == "tool_call":
+        assert "calling TinyAnswer exactly once" in second[-1]["content"]
+        assert "JSON Schema:" not in str(first)
+        assert recorder.calls[0]["tools"] == recorder.calls[1]["tools"]
+        assert recorder.calls[0]["tool_choice"] == recorder.calls[1]["tool_choice"]
+    else:
+        assert "Return only one JSON object" in second[-1]["content"]
 
-    async with tracker.session_span("session-1", "question"):
-        with pytest.raises(contracts_module.StructuredOutputError) as caught:
-            await provider.complete_structured(
-                [ChatMessage(role="user", content="decide")], TinyAnswer
-            )
 
-    assert len(recorder.calls) == expected_attempts
-    assert [item.attempt for item in caught.value.diagnostics] == [1, 2]
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repaired", [False, True])
+async def test_prose_answer_gets_one_tool_aware_repair(repaired):
+    prose = chat_response(text="SYNTHETIC_PROSE")
+    completions = RecordingCompletions(
+        prose,
+        tool_call_response(arguments='{"answer":"yes","confidence":9}')
+        if repaired
+        else prose,
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(structured_transport="tool_call"),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+    async with tracker.session_span("session-1", "synthetic question"):
+        if repaired:
+            assert (
+                await provider.complete_structured(
+                    [ChatMessage(role="user", content="decide")],
+                    TinyAnswer,
+                )
+            ).confidence == 9
+        else:
+            with pytest.raises(StructuredOutputError) as caught:
+                await provider.complete_structured(
+                    [ChatMessage(role="user", content="decide")],
+                    TinyAnswer,
+                )
+            assert [d.category for d in caught.value.diagnostics] == [
+                "schema_output",
+                "schema_output",
+            ]
+    assert len(completions.calls) == 2
+    assert "SYNTHETIC_PROSE" not in str(completions.calls[1]["messages"])
+    assert (
+        "calling TinyAnswer exactly once"
+        in completions.calls[1]["messages"][-1]["content"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["auto", "json_schema", "tool_call"])
+async def test_judge_keeps_responses_under_every_target_setting(transport):
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps(_judge_payload(rationale="Synthetic verdict.")),
+        )
+    )
+    client = FakeDeepSeekClient(responses=responses)
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(structured_transport=transport),
+        tracker,
+        client=client,
+    )
+    async with tracker.session_span("session-1", "synthetic question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+    assert isinstance(result, JudgeVerdict)
+    assert len(responses.calls) == 1
+    assert responses.calls[0]["text"]["format"]["type"] == "json_schema"
+    assert not client.chat.completions.calls
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+Run `& $transportPython -m pytest tests/test_deepseek_provider.py -q -k 'target_transport_has or prose_answer_gets or judge_keeps' -p no:cacheprovider`. The target tool cases fail before dispatch; judge and Responses controls should already pass.
 
-```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_deepseek_provider.py -q -k "both_transports_allow_exactly_one_repair"
-```
+- [ ] **Step 2: Add the transport-specific repair renderer**
 
-Expected: FAIL. The `tool_call` case raises `TypeError` because `complete_structured` never dispatches to `_tool_call_structured_attempt`.
-
-- [ ] **Step 3: Move the loop into a shared method on `DeepSeekChatProvider`**
-
-**Read this before editing — the file has two nearly identical attempt loops.** Both `DeepSeekChatProvider.complete_structured` and `_DeepSeekSchemaStructuredProvider.complete_structured` end with a block that begins `diagnostics: list[StructuredValidationDiagnostic] = []` and ends with a `raise final_error` preceded by a "Clear all provider-adjacent locals" comment. They differ in one decisive way:
-
-- `DeepSeekChatProvider.complete_structured` calls `self._structured_attempt(...)` and its cleanup block also clears `messages = []`, `agent_name = None`, and `instruction = None`.
-- `_DeepSeekSchemaStructuredProvider.complete_structured` calls `self._responses_structured_attempt(...)` and its cleanup block does **not** clear those three names.
-
-**Do not edit `DeepSeekChatProvider.complete_structured`'s loop.** The loop being extracted is the **`_responses_structured_attempt`** one: it is the later occurrence in the file, it contains the call `return await self._responses_structured_attempt(`, and its cleanup ends without `messages = []`. Anchor the extraction on that call line, verify with `Select-String -Path src/deep_research/providers/deepseek_provider.py -Pattern "_responses_structured_attempt\(" -Context 0,12` before cutting, and confirm afterwards that `DeepSeekChatProvider.complete_structured` still contains its own `_structured_attempt` call.
-
-Cut that loop and re-add it as this method on **`DeepSeekChatProvider`**, placed immediately after `DeepSeekChatProvider.complete_structured`:
+Before `_DeepSeekSchemaStructuredProvider`, add:
 
 ```python
-    async def _structured_repair_loop(
+def _structured_repair_message(
+    schema: type[BaseModel],
+    diagnostic: StructuredValidationDiagnostic,
+    *,
+    transport: str,
+) -> str:
+    if transport == "tool_call":
+        instruction = (
+            f"The previous structured submission failed {schema.__name__} validation. "
+            f"Regenerate the result by calling {schema.__name__} exactly once. "
+            "Use the provided function schema for its arguments; do not answer "
+            "with ordinary message text. "
+        )
+        schema_suffix = ""  # Both attempts already carry the identical tool schema.
+    else:
+        instruction = (
+            f"The previous JSON response failed {schema.__name__} validation. "
+            "Return only one JSON object that validates against the supplied "
+            "JSON Schema. Do not add Markdown or explanatory text. "
+        )
+        schema_suffix = "JSON Schema:\n" + json.dumps(
+            schema.model_json_schema(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    return (
+        instruction
+        + f"Validation summary: {_validation_summary(diagnostic)}\n"
+        + _validation_repair_guidance(diagnostic)
+        + schema_suffix
+    )
+```
+
+- [ ] **Step 3: Add hooks and replace only the shared base's public method**
+
+Add to `_DeepSeekSchemaStructuredProvider`:
+
+```python
+    def _structured_transport(self) -> str:
+        return "json_schema"
+```
+
+Add to `DeepSeekSchemaChatProvider` (not `DeepSeekJudgeProvider`):
+
+```python
+    def _structured_transport(self) -> str:
+        return self._config.effective_structured_transport
+```
+
+Replace `_DeepSeekSchemaStructuredProvider.complete_structured` with the following. Keep its `_responses_structured_attempt` unchanged, including its output-limit handling and raw-response cleanup. Update the shared class's obsolete Responses-only docstring to describe the selection hook and single loop; update the target class's docstring to describe both transports.
+
+```python
+    async def complete_structured(
         self,
-        current_messages: list[dict[str, str]],
+        messages: Sequence[ChatMessage],
         schema: type[SchemaT],
         *,
-        attempt_call: Any,
-        model: str,
-        request: dict[str, object],
-        metadata: dict[str, JsonValue],
-        configured_max_tokens: int,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
     ) -> SchemaT:
-        """One initial attempt plus exactly one repair, for any transport.
+        if not messages:
+            raise ValueError("messages must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(self._config.max_tokens, max_tokens)
+        transport = self._structured_transport()
+        if transport == "tool_call":
+            effective, request, metadata = self._request_options(agent_name)
+            instruction = _tool_instruction(schema)
+            attempt_call = self._tool_call_structured_attempt
+        else:
+            effective, request, metadata = _responses_request_options(
+                self._config, agent_name
+            )
+            instruction = _json_instruction(schema)
+            attempt_call = self._responses_structured_attempt
+        metadata = {**metadata, "structured_transport": transport}
+        current_messages = [
+            *_translated_messages(messages),
+            {"role": "system", "content": instruction.content},
+        ]
 
-        Shared so that changing transport cannot silently change the repair
-        count, the bounded diagnostics, or the fail-closed error type.
-        """
         diagnostics: list[StructuredValidationDiagnostic] = []
         final_error: StructuredOutputError | None = None
         for attempt in (1, 2):
@@ -863,10 +1003,10 @@ Cut that loop and re-add it as this method on **`DeepSeekChatProvider`**, placed
                 return await attempt_call(
                     current_messages,
                     schema,
-                    model=model,
+                    model=effective.model,
                     request=request,
                     metadata=metadata,
-                    configured_max_tokens=configured_max_tokens,
+                    configured_max_tokens=resolved_max_tokens,
                     attempt=attempt,
                 )
             except _StructuredValidationFailure as error:
@@ -878,20 +1018,10 @@ Cut that loop and re-add it as this method on **`DeepSeekChatProvider`**, placed
                         diagnostics=tuple(diagnostics),
                     )
                     break
-                schema_json = json.dumps(
-                    schema.model_json_schema(),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                repair_guidance = _validation_repair_guidance(error.diagnostic)
-                repair = (
-                    f"The previous JSON response failed {schema.__name__} "
-                    "validation. Return only one JSON object that validates "
-                    "against the supplied JSON Schema. Do not add Markdown or "
-                    "explanatory text. "
-                    f"Validation summary: {_validation_summary(error.diagnostic)}\n"
-                    f"{repair_guidance}"
-                    f"JSON Schema:\n{schema_json}"
+                repair = _structured_repair_message(
+                    schema,
+                    error.diagnostic,
+                    transport=transport,
                 )
                 current_messages = [
                     *current_messages,
@@ -905,143 +1035,114 @@ Cut that loop and re-add it as this method on **`DeepSeekChatProvider`**, placed
         # would retain it through ``__context__``/``__cause__``. Clear all
         # provider-adjacent locals before the public error's traceback is
         # captured, leaving only the bounded typed diagnostics.
+        attempt_call = None
         self = None
+        messages = []
         current_messages = []
         request = {}
         metadata = {}
-        model = ""
+        effective = None
+        agent_name = None
         schema = BaseModel
-        schema_json = ""
+        instruction = None
         repair = ""
-        repair_guidance = ""
         raise final_error
 ```
 
-- [ ] **Step 4: Dispatch in `_DeepSeekSchemaStructuredProvider.complete_structured`**
+**Exactly what attempt 2 sends:** the original translated caller messages, the same submission instruction, one additional system message containing the bounded category/field paths and regeneration instruction, the same `tools` and forced choice, and unchanged request settings/budget. It does not contain the failed prose, malformed JSON, assistant tool call, tool result, or reasoning. This is a fresh regeneration request, not a continuation of the failed assistant turn. Therefore it does not create a missing tool-result or reasoning round-trip obligation. Existing caller-supplied assistant history is preserved; arbitrary native tool conversations are outside the project's `ChatMessage` contract.
 
-That method's body becomes exactly this, with the Responses branch delegating to the shared loop instead of inlining it:
+- [ ] **Step 4: Pin existing transport assertions and verify all error boundaries**
 
-```python
-        if not messages:
-            raise ValueError("messages must contain at least one item")
-        resolved_max_tokens = _resolve_max_tokens(
-            self._config.max_tokens, max_tokens
-        )
-        if self._config.structured_transport == "tool_call":
-            effective, request, metadata = self._request_options(agent_name)
-            return await self._structured_repair_loop(
-                _translated_messages(messages),
-                schema,
-                attempt_call=self._tool_call_structured_attempt,
-                model=effective.model,
-                request=request,
-                metadata=metadata,
-                configured_max_tokens=resolved_max_tokens,
-            )
-        effective, request, metadata = _responses_request_options(
-            self._config, agent_name
-        )
-        instruction = _json_instruction(schema)
-        current_messages = [
-            *_translated_messages(messages),
-            {"role": "system", "content": instruction.content},
-        ]
-        return await self._structured_repair_loop(
-            current_messages,
-            schema,
-            attempt_call=self._responses_structured_attempt,
-            model=effective.model,
-            request=request,
-            metadata=metadata,
-            configured_max_tokens=resolved_max_tokens,
-        )
-```
+Pin `deepseek_config(structured_transport='json_schema')` in these **five** existing tests: `test_schema_target_structured_uses_responses_json_schema`, `test_schema_target_responses_carries_thinking_effort`, `test_schema_target_validation_failure_repairs_exactly_once`, `test_schema_target_unparseable_output_is_json_invalid_at_root`, and `test_schema_target_output_limit_stays_typed`. Wrap the surrounding constructor arguments over separate lines to respect the 88-column limit. Leave `test_schema_target_plain_completion_stays_on_chat_completions` unchanged. These pins are in this task so the default promotion cannot invalidate them later.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+Preserve existing keyword arguments while adding the pin. In particular, `test_schema_target_responses_carries_thinking_effort` currently uses `deepseek_config(reasoning_effort="max")`; change that argument to `deepseek_config(reasoning_effort="max", structured_transport="json_schema")`. Replacing it with a bare transport-only config would invalidate its effort assertion.
 
-```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_deepseek_provider.py -q
-```
-
-Expected: PASS for the new tests. The six existing `test_schema_target_*` tests fail, because the default transport is now `tool_call` and they assert the Responses request shape. Task 4 repairs them.
-
-- [ ] **Step 6: Run ruff and commit**
-
-```powershell
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m ruff check src/deep_research/providers/deepseek_provider.py
-git diff --check
-git add src/deep_research/providers/deepseek_provider.py tests/test_deepseek_provider.py
-git commit -m "refactor(provider): share one repair loop across both transports"
-```
-
----
-
-### Task 4: Pin the Responses tests and prove every agent inherits the switch
-
-**Files:**
-- Modify: `tests/test_deepseek_provider.py` (six `test_schema_target_*` tests)
-- Test: `tests/test_deepseek_provider.py`, `tests/test_agents/`
-
-**Interfaces:**
-- Consumes: the transport setting (Task 1) and both attempt methods (Tasks 2–3).
-- Produces: no new production symbol. Proves the claim that no agent module needs changing.
-
-- [ ] **Step 1: Pin the six existing Responses tests to their transport**
-
-In `tests/test_deepseek_provider.py`, the tests `test_schema_target_structured_uses_responses_json_schema` (line ~2541), `test_schema_target_responses_carries_thinking_effort` (line ~2588), `test_schema_target_validation_failure_repairs_exactly_once` (line ~2610), `test_schema_target_unparseable_output_is_json_invalid_at_root` (line ~2636), and `test_schema_target_output_limit_stays_typed` (line ~2665) each construct a provider with a `FakeDeepSeekClient(responses=...)` client. Change each construction's config argument from `deepseek_config()` to:
-
-```python
-        deepseek_config(structured_transport="json_schema"),
-```
-
-`test_schema_target_plain_completion_stays_on_chat_completions` (line ~2569) uses `FakeDeepSeekClient(completions)` and tests the plain path, which is unaffected; leave it unchanged.
-
-Also rename the module's section comment so it no longer claims the Responses transport is the target default. Replace the comment block beginning `# --- Schema-enforced target structured transport ---` with:
-
-```python
-# --- Target structured transports ---------------------------------------
-#
-# Two transports are selectable. ``json_schema`` asks the Responses endpoint to
-# enforce the schema; ``tool_call`` forces a function invocation on Chat
-# Completions. Live Critic canaries recorded ``json_invalid`` at ``$`` on both
-# the initial attempt and the single repair under ``json_schema``, in roughly
-# one repetition in four at every budget up to 32768, so ``tool_call`` is the
-# default. Tests that assert a specific request shape pin the transport they
-# exercise.
-```
-
-- [ ] **Step 2: Add the cross-agent inheritance test**
-
-Append to `tests/test_deepseek_provider.py`:
+Keep the original judge privacy coverage. Append these target-specific checks for private data retention, public output-limit behavior, and HTTP retry ownership:
 
 ```python
 @pytest.mark.asyncio
-async def test_every_agent_schema_becomes_a_tool_definition() -> None:
-    """No agent module changes when the transport changes.
+@pytest.mark.parametrize("transport", ["tool_call", "json_schema"])
+async def test_target_exhaustion_drops_private_request_and_schema_data(
+    transport, monkeypatch
+):
+    response_marker = "SYNTHETIC_RESPONSE_7C23"
+    prompt_marker = "SYNTHETIC_PROMPT_24AB"
+    request_marker = "SYNTHETIC_REQUEST_9A21"
+    schema_marker = "SYNTHETIC_SCHEMA_55CE"
 
-    All six agents reach the model through this one provider method, so the
-    transport is a provider concern. This pins that: a non-Critic agent's
-    schema arrives as a forced tool definition, driven only by the setting.
-    """
-    from deep_research.evaluation.models import JudgeVerdict
+    class MarkedTinyAnswer(BaseModel):
+        answer: str
+        confidence: int
+        model_config = ConfigDict(json_schema_extra={"description": schema_marker})
 
+    invalid = json.dumps({"answer": response_marker, "confidence": "invalid-int"})
+    tracker = CapturingTracker()
+    if transport == "tool_call":
+        recorder = RecordingCompletions(
+            *[
+                tool_call_response(arguments=invalid, name="MarkedTinyAnswer")
+                for _ in range(2)
+            ]
+        )
+        client = FakeDeepSeekClient(recorder)
+    else:
+        recorder = RecordingResponses(
+            *[responses_response(output_text=invalid) for _ in range(2)]
+        )
+        client = FakeDeepSeekClient(responses=recorder)
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(structured_transport=transport),
+        tracker,
+        client=client,
+    )
+    if transport == "tool_call":
+        original_options = provider._request_options
+
+        def marked_options(agent_name):
+            effective, request, metadata = original_options(agent_name)
+            return effective, {**request, "marker": request_marker}, metadata
+
+        monkeypatch.setattr(provider, "_request_options", marked_options)
+    else:
+        original_options = deepseek_module._responses_request_options
+
+        def marked_options(config, agent_name):
+            effective, request, metadata = original_options(config, agent_name)
+            return effective, {**request, "marker": request_marker}, metadata
+
+        monkeypatch.setattr(
+            deepseek_module, "_responses_request_options", marked_options
+        )
+    with pytest.raises(StructuredOutputError) as caught:
+        async with tracker.session_span("session-1", "synthetic question"):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content=prompt_marker)],
+                MarkedTinyAnswer,
+            )
+    from deep_research.evaluation.failure_taxonomy import safe_failure_details
+
+    details = safe_failure_details(caught.value)
+    assert details is not None
+    surface = (
+        repr(_provider_exception_surfaces(caught.value)) + details.model_dump_json()
+    )
+    for marker in (response_marker, prompt_marker, request_marker, schema_marker):
+        assert marker not in surface
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert len(recorder.calls) == 2
+    recorded_requests = json.dumps(recorder.calls)
+    for marker in (prompt_marker, request_marker, schema_marker):
+        assert marker in recorded_requests  # Non-vacuous sanitization assertions.
+    assert response_marker not in recorded_requests
+
+
+@pytest.mark.asyncio
+async def test_public_tool_output_limit_skips_repair():
     completions = RecordingCompletions(
         tool_call_response(
-            arguments=json.dumps(
-                {
-                    "scores": {
-                        "role_adherence": 1.0,
-                        "completeness": 1.0,
-                        "groundedness": 1.0,
-                        "reasoning_quality": 1.0,
-                        "usefulness": 1.0,
-                        "uncertainty_calibration": 1.0,
-                    },
-                    "rationale": "Grounded.",
-                }
-            ),
-            name="JudgeVerdict",
+            arguments="{}",
+            finish_reason="length",
         )
     )
     tracker = local_tracker()
@@ -1050,325 +1151,669 @@ async def test_every_agent_schema_becomes_a_tool_definition() -> None:
         tracker,
         client=FakeDeepSeekClient(completions),
     )
-
-    async with tracker.session_span("session-1", "question"):
-        result = await provider.complete_structured(
-            [ChatMessage(role="user", content="judge this")],
-            JudgeVerdict,
-            agent_name="synthesizer",
-        )
-
-    assert isinstance(result, JudgeVerdict)
-    call = completions.calls[0]
-    assert call["tools"][0]["function"]["name"] == "JudgeVerdict"
-    assert call["tool_choice"]["function"]["name"] == "JudgeVerdict"
-    assert "scores" in call["tools"][0]["function"]["parameters"]["properties"]
+    async with tracker.session_span("session-1", "synthetic question"):
+        with pytest.raises(ProviderOutputLimitError):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")],
+                TinyAnswer,
+            )
+    assert len(completions.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_the_agent_modules_do_not_mention_the_transport() -> None:
-    """The switch is provider-level, so no agent module names a transport."""
-    import inspect
-
-    import deep_research.agents.critic as critic_module
-    import deep_research.agents.fact_checker as fact_checker_module
-    import deep_research.agents.planner as planner_module
-    import deep_research.agents.researcher as researcher_module
-    import deep_research.agents.source_evaluator as source_evaluator_module
-    import deep_research.agents.synthesizer as synthesizer_module
-
-    for module in (
-        critic_module,
-        fact_checker_module,
-        planner_module,
-        researcher_module,
-        source_evaluator_module,
-        synthesizer_module,
-    ):
-        source = inspect.getsource(module)
-        assert "structured_transport" not in source, module.__name__
-        assert "tool_choice" not in source, module.__name__
-```
-
-- [ ] **Step 3: Run the tests to verify they pass**
-
-```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_deepseek_provider.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 4: Prove the tool-call tests are not vacuous**
-
-Temporarily change the default in `src/deep_research/utils/config.py` from `"tool_call"` to `"json_schema"`, then run the tool-call tests and confirm they fail:
-
-```powershell
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_deepseek_provider.py -q -k "tool_call_transport"
-```
-
-Expected: FAIL (the requests go to the Responses shape). Revert the default to `"tool_call"` and re-run to confirm PASS. Do not commit while the default is flipped.
-
-- [ ] **Step 5: Run ruff and commit**
-
-```powershell
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m ruff check tests/test_deepseek_provider.py
-git diff --check
-git add tests/test_deepseek_provider.py
-git commit -m "test(provider): pin both transports and prove agents inherit the switch"
-```
-
----
-
-### Task 5: State the JSON contract in the review request itself
-
-**Files:**
-- Modify: `src/deep_research/agents/prompts.py` (`CRITIQUE_INSTRUCTION`)
-- Modify: `src/deep_research/agents/critic.py` (`critique_messages`)
-- Test: `tests/test_agents/test_critic.py`
-
-**Interfaces:**
-- Consumes: nothing from earlier tasks. This task is independent of the transport switch and can land before or after Tasks 1–4.
-- Produces: no new symbol. `CRITIQUE_INSTRUCTION` and the rendered review body change, so the Critic's target prompt fingerprint moves.
-
-This is defence in depth, not the fix. `critique_messages` never used the word "JSON" at all: the only place JSON was requested was the trailing system message the provider appends. Task 7's canary note depends on this task having landed, because it is the reason the target prompt fingerprint changes.
-
-- [ ] **Step 1: Write the failing tests**
-
-Append to `tests/test_agents/test_critic.py`:
-
-```python
-def test_the_review_request_demands_raw_json() -> None:
-    """The review body must ask for JSON in words, not only via the transport.
-
-    The structured call failed with ``json_invalid`` at the field root on both
-    the initial attempt and the single repair in roughly one live repetition in
-    four. ``critique_messages`` never contained the word JSON; only a trailing
-    provider-built system message did. The transport is fixed separately in
-    this plan; this pins the belt-and-braces prompt contract.
-    """
-    body = critique_messages(
-        _task(),
-        ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=6000,
-        claim_digest=40,
-    )[1].content
-
-    assert "Reply with one JSON object and nothing else" in body
-    assert "Do not wrap it in Markdown code fences" in body
-    assert "## Reply format" in body
-    # The concrete shape is the last thing the model reads.
-    assert body.rstrip().endswith(
-        '"recommended_queries": ["..."], "rationale": "..."}'
-    )
-    for field in ("score", "gaps", "unsupported_claims", "rationale"):
-        assert f'"{field}"' in body
-
-
-def test_the_review_request_keeps_the_quality_contract_intact() -> None:
-    """The JSON demand is additive; the scoring contract is unchanged."""
-    body = critique_messages(
-        _task(),
-        ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=6000,
-        claim_digest=40,
-    )[1].content
-
-    assert "an integer from 1 to 10" in body
-    assert "list a gap only when closing it would materially change the" in body
-    assert "Do not decide whether research continues" in body
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_agents/test_critic.py -q -k "raw_json"
-```
-
-Expected: FAIL on `"Reply with one JSON object and nothing else"`.
-
-- [ ] **Step 3: Extend the instruction**
-
-In `src/deep_research/agents/prompts.py`, append these sentences to the end of `CRITIQUE_INSTRUCTION` (inside the existing tuple, after the `"from your score, your gaps, and the remaining budget."` element):
-
-```python
-    "\nReply with one JSON object and nothing else. Do not wrap it in Markdown "
-    "code fences, do not write any sentence before or after it, and do not "
-    "add fields beyond the ones above. The first character of your reply "
-    "must be { and the last must be }."
-```
-
-- [ ] **Step 4: Add the concrete reply shape to the rendered request**
-
-In `src/deep_research/agents/critic.py`, in `critique_messages`, change the final element of `sections` so the reply format is the last thing the model reads:
-
-```python
-        f"## Response contract\n{CRITIQUE_INSTRUCTION}",
-        (
-            "## Reply format\n"
-            "Respond with exactly this JSON object shape and nothing else:\n"
-            '{"score": 8, "gaps": ["..."], "unsupported_claims": ["..."], '
-            '"recommended_queries": ["..."], "rationale": "..."}'
+@pytest.mark.parametrize("status", [400, 503])
+async def test_tool_http_retries_are_separate_from_structured_repairs(status):
+    error = APIStatusError(
+        "Synthetic HTTP failure",
+        response=httpx.Response(
+            status, request=httpx.Request("POST", "https://example.com")
         ),
-    ]
+        body={"error": "synthetic"},
+    )
+    completions = RecordingCompletions(
+        error,
+        tool_call_response(arguments='{"answer":"yes","confidence":9}'),
+    )
+    config = deepseek_config(
+        structured_transport="tool_call",
+        retry_count=1,
+        retry_initial_delay=0,
+        retry_max_delay=0,
+    )
+    if status == 400:
+        with pytest.raises(ProviderResponseError) as caught:
+            await direct_tool_attempt(completions, config=config)
+        assert caught.value.http_status_code == 400
+        assert len(completions.calls) == 1
+    else:
+        assert (await direct_tool_attempt(completions, config=config)).confidence == 9
+        assert len(completions.calls) == 2
+        assert completions.calls[0] == completions.calls[1]
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
-
 ```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest tests/test_agents/test_critic.py -q
-```
-
-Expected: PASS, including the pre-existing `test_first_spot_check_receives_planned_search_query_guidance`.
-
-- [ ] **Step 6: Run ruff and commit**
-
-```powershell
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m ruff check src/deep_research/agents/prompts.py src/deep_research/agents/critic.py tests/test_agents/test_critic.py
+& $transportPython -m pytest tests/test_deepseek_provider.py tests/test_provider_factory.py tests/test_evaluation/test_judging.py tests/test_evaluation/test_failure_taxonomy.py -q -p no:cacheprovider
+& $transportPython -m ruff check src/deep_research/providers/deepseek_provider.py tests/test_deepseek_provider.py
 git diff --check
-git add src/deep_research/agents/prompts.py src/deep_research/agents/critic.py tests/test_agents/test_critic.py
-git commit -m "fix(critic): state the JSON reply contract in the review request"
+git add src/deep_research/providers/deepseek_provider.py tests/test_deepseek_provider.py
+git commit -m "fix(provider): share target repair without changing judge transport"
+```
+
+All targeted tests must pass before committing. Malformed tool envelopes use `schema_output`, malformed argument JSON uses `json_invalid`, and output limits/HTTP failures retain their original typed categories.
+
+---
+
+### Task 4: Verify real schemas, factory routing, and all-agent wiring
+
+**Files:** `tests/test_deepseek_provider.py`, `tests/test_runtime/test_assembly.py`.
+
+**Interfaces:** public `build_chat_provider`, the seven actual draft schemas and four ReAct call sites, and `build_agents`. This proves common transport coverage, not live semantic quality for each agent.
+
+- [ ] **Step 1: Test the real schema inventory through the factory**
+
+Append to `tests/test_deepseek_provider.py`. Use a nested value where a schema has `$defs`, retaining exactly the same schema supplied by the agent.
+
+```python
+from deep_research.agents.critic import CritiqueDraft
+from deep_research.agents.fact_checker import ClaimsDraft, ClaimVerdictDraft
+from deep_research.agents.planner import ResearchPlanDraft
+from deep_research.agents.researcher import SubTopicFindingsDraft
+from deep_research.agents.source_evaluator import SourceScoresDraft
+from deep_research.agents.synthesizer import ReportDraft
+
+AGENT_SCHEMA_CASES = [
+    (
+        "planner",
+        ResearchPlanDraft,
+        {
+            "sub_topics": [
+                {
+                    "title": "Evidence",
+                    "rationale": "Find evidence.",
+                    "search_queries": ["evidence"],
+                    "success_criteria": ["Find a source."],
+                    "priority": 1,
+                }
+            ]
+        },
+    ),
+    (
+        "researcher",
+        SubTopicFindingsDraft,
+        {
+            "findings": [
+                {
+                    "content": "Synthetic finding.",
+                    "source_url": "https://example.com/a",
+                    "source_title": "Synthetic source",
+                    "confidence": 0.8,
+                }
+            ]
+        },
+    ),
+    (
+        "source_evaluator",
+        SourceScoresDraft,
+        {
+            "sources": [
+                {
+                    "url": "https://example.com/a",
+                    "authority_score": 0.8,
+                    "recency_score": 0.8,
+                    "relevance_score": 0.8,
+                    "rationale": "Synthetic.",
+                }
+            ]
+        },
+    ),
+    (
+        "fact_checker",
+        ClaimsDraft,
+        {
+            "claims": [
+                {
+                    "text": "Synthetic claim.",
+                    "source_urls": ["https://example.com/a"],
+                }
+            ]
+        },
+    ),
+    (
+        "fact_checker",
+        ClaimVerdictDraft,
+        {
+            "verdict": "insufficient_evidence",
+            "confidence": 0.3,
+            "evidence": [],
+            "contradictions": [],
+        },
+    ),
+    (
+        "synthesizer",
+        ReportDraft,
+        {
+            "executive_summary": "Synthetic summary.",
+            "uncertainty_notes": "Limited.",
+            "sections": [
+                {
+                    "title": "Evidence",
+                    "body": "Synthetic evidence.",
+                    "source_urls": ["https://example.com/a"],
+                }
+            ],
+        },
+    ),
+    (
+        "critic",
+        CritiqueDraft,
+        {
+            "score": 7,
+            "gaps": [],
+            "unsupported_claims": [],
+            "recommended_queries": [],
+            "rationale": "Synthetic.",
+        },
+    ),
+] + [
+    (
+        agent,
+        ReActDecision,
+        {
+            "thought": "Synthetic decision.",
+            "action": "use_tool",
+            "tool_name": "web_search",
+            "tool_input_json": '{"query":"synthetic"}',
+            "final_answer": None,
+        },
+    )
+    for agent in ("planner", "researcher", "fact_checker", "critic")
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("agent", "schema", "payload"), AGENT_SCHEMA_CASES)
+async def test_actual_agent_schema_uses_selected_factory_transport(
+    agent,
+    schema,
+    payload,
+    monkeypatch,
+):
+    from deep_research.providers import build_chat_provider
+
+    completions = RecordingCompletions(
+        tool_call_response(
+            arguments=json.dumps(payload),
+            name=schema.__name__,
+        )
+    )
+    client = FakeDeepSeekClient(completions)
+    monkeypatch.setattr(deepseek_module, "_build_client", lambda *a, **kw: client)
+    tracker = local_tracker()
+    provider = build_chat_provider(
+        deepseek_config(structured_transport="tool_call"),
+        tracker,
+    )
+    async with tracker.session_span("session-1", "synthetic question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="synthetic task")],
+            schema,
+            agent_name=agent,
+        )
+    assert result == schema.model_validate(payload)
+    call = completions.calls[0]
+    function = call["tools"][0]["function"]
+    assert function["name"] == schema.__name__
+    assert function["parameters"] == schema.model_json_schema()
+    if schema is ReActDecision:
+        assert isinstance(result.tool_input_json, str)
+        assert json.loads(result.tool_input_json) == {"query": "synthetic"}
+    assert not client.responses.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("thinking", "effort"),
+    [
+        ("enabled", "high"),
+        ("enabled", "max"),
+        ("disabled", "none"),
+    ],
+)
+async def test_tool_transport_preserves_effective_agent_request_settings(
+    thinking, effort
+):
+    completions = RecordingCompletions(
+        tool_call_response(
+            arguments='{"answer":"yes","confidence":9}',
+        )
+    )
+    await direct_tool_attempt(
+        completions,
+        config=deepseek_config(
+            structured_transport="tool_call",
+            model_overrides={
+                "critic": {
+                    "model": "deepseek-v4-pro",
+                    "thinking_mode": thinking,
+                    "reasoning_effort": effort,
+                }
+            },
+        ),
+    )
+    call = completions.calls[0]
+    assert call["model"] == "deepseek-v4-pro"
+    assert call["extra_body"]["thinking"]["type"] == thinking
+    if thinking == "enabled":
+        assert call["reasoning_effort"] == effort
+        assert "temperature" not in call
+    else:
+        assert "reasoning_effort" not in call
+        assert call["temperature"] == deepseek_config().temperature
+```
+
+Move the imports into the file's import block and let Ruff order them. These tests assert complete parameter schemas, not a fabricated judge schema given a target label. The `deepseek-v4-pro` case verifies request propagation offline; it does not claim live capability for an unconfigured model.
+
+- [ ] **Step 2: Assert the real assembly passes the selected provider to every agent**
+
+Append to `tests/test_runtime/test_assembly.py`. Its existing `_recording_agent_class` calls the real constructors, so validation of each agent's toolset is retained.
+
+```python
+def test_all_six_agents_share_the_selected_structured_provider(tracker, monkeypatch):
+    received = []
+    for class_name in (
+        "PlannerAgent",
+        "ResearcherAgent",
+        "SourceEvaluatorAgent",
+        "FactCheckerAgent",
+        "SynthesizerAgent",
+        "CriticAgent",
+    ):
+        monkeypatch.setattr(
+            assembly,
+            class_name,
+            _recording_agent_class(
+                getattr(assembly, class_name),
+                kwarg="provider",
+                captured=received,
+            ),
+        )
+    provider = RecordingProvider()
+    settings = ConfigSettings(llm=LLMConfig(structured_transport="tool_call"))
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+    build_agents(
+        settings,
+        tracker=tracker,
+        provider=provider,
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+    assert len(received) == 6
+    assert all(item is provider for item in received)
+```
+
+Run the real agent tests alongside these boundary checks; their existing fake-driven runs cover domain parsing and fallback behavior. Do not add tests that search source strings for a field name: that does not prove dispatch or behavior.
+
+- [ ] **Step 3: Run the focused gate and one meaningful mutation**
+
+```powershell
+& $transportPython -m pytest tests/test_deepseek_provider.py tests/test_runtime/test_assembly.py tests/test_agents -q -p no:cacheprovider
+```
+
+Expected: all pass. To check sensitivity, temporarily make **only** `DeepSeekSchemaChatProvider._structured_transport` return `'json_schema'` unconditionally. Run the 11 `actual_agent_schema_uses_selected_factory_transport` cases and the public tool repair cases; they must fail because the supplied Chat Completions results are never consumed. Restore that exact method, then rerun those cases and confirm PASS. Keep a copy of the file and restore it in `finally`; do not use a broad checkout/reset that discards other work. Flipping the field default while tests explicitly set a transport is not a valid mutation and is removed from this plan.
+
+- [ ] **Step 4: Commit the passing coverage**
+
+```powershell
+& $transportPython -m ruff check tests/test_deepseek_provider.py tests/test_runtime/test_assembly.py
+git diff --check
+git add tests/test_deepseek_provider.py tests/test_runtime/test_assembly.py
+git commit -m "test(provider): cover real agent schemas and shared provider wiring"
 ```
 
 ---
 
-### Task 6: Full offline gate
+### Task 5: Add a transport-neutral Critic format reminder
 
-**Files:**
-- No source changes.
+**Files:** `src/deep_research/agents/prompts.py`, `tests/test_agents/test_critic.py`.
 
-**Interfaces:**
-- Consumes: Tasks 0–5.
-- Produces: a recorded passing offline gate. Task 6 must not start without it.
+**Interfaces:** the existing `CRITIQUE_INSTRUCTION`; no change to `CritiqueDraft`, scoring/domain logic, or `critique_messages`' sections. The provider supplies the concrete schema and response channel for every agent.
 
-- [ ] **Step 1: Run the full suite**
+- [ ] **Step 1: Add the prompt tests and observe RED on the format reminder**
 
-```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m pytest -q
+```python
+def test_review_format_reminder_uses_the_provider_selected_channel():
+    body = critique_messages(
+        _task(),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[1].content
+    assert "Use the structured response channel specified by the provider" in body
+    assert "Do not add Markdown or prose outside the structured result" in body
+    assert "The first character of your reply" not in body
+    assert '"score": 8' not in body
+
+
+def test_review_format_reminder_preserves_the_scoring_contract():
+    body = critique_messages(
+        _task(),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[1].content
+    for requirement in (
+        "an integer from 1 to 10",
+        "list a gap only when closing it would materially change the",
+        "an empty list when the report is materially complete",
+        "Do not decide whether research continues",
+    ):
+        assert requirement in body
 ```
 
-Expected: the three named pre-existing failures plus roughly `2098` passing tests, and **no new failures**. The plan's base commit `a2ecc1c` recorded exactly `3 failed, 2086 passed, 1 deselected`. Tasks 0-5 add roughly 13 tests plus the Task 0 probe. Record the exact numbers. Any failure outside those three names is a regression from this plan: stop and diagnose rather than proceeding.
+Run `& $transportPython -m pytest tests/test_agents/test_critic.py -q -k format_reminder -p no:cacheprovider`. The new format test fails; the preserved scoring contract should already pass.
 
-- [ ] **Step 2: Run ruff and whitespace checks**
+- [ ] **Step 2: Append the reminder and verify GREEN**
+
+Append to the end of the existing `CRITIQUE_INSTRUCTION` tuple, preserving every existing sentence:
+
+```python
+    '\nUse the structured response channel specified by the provider. '
+    'Supply the score, gaps, unsupported_claims, recommended_queries, and '
+    'rationale in that result. Do not add Markdown or prose outside the '
+    'structured result.'
+```
+
+No literal first/last character rule and no example numeric score is added. In tool mode the JSON is inside arguments; in Responses mode it is the response object. The scoring scale and continuation policy remain unchanged. This changes the target prompt fingerprint; Task 7 records it and uses the identical prompt for contemporaneous controls.
 
 ```powershell
-& "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m ruff check src tests
+& $transportPython -m pytest tests/test_agents/test_critic.py -q -p no:cacheprovider
+& $transportPython -m ruff check src/deep_research/agents/prompts.py tests/test_agents/test_critic.py
 git diff --check
+git add src/deep_research/agents/prompts.py tests/test_agents/test_critic.py
+git commit -m "fix(critic): align format reminder with structured response channel"
 ```
 
-Expected: both clean.
+---
 
-- [ ] **Step 3: Confirm no budget or threshold moved**
+### Task 6: Run and record the offline regression gate
+
+**Files:** fix log only after tests; source changes require rerunning affected checks.
+
+**Interfaces:** consumes Tasks 0–5; produces the offline gate required by **Task 7**. Do not call this gate passed when an unexplained test fails.
+
+- [ ] **Step 1: Compare the exact selected tests and baseline failures**
+
+Save baseline selected node IDs before implementation using `pytest --collect-only -q` at the reviewed commit, and candidate IDs at this task. Use a unique output directory so old results are not overwritten. The new tests include parametrized cases; count the collected IDs, not the number of `def test_` declarations. The original 1374-line plan described 16 new cases, not 13; this revision intentionally adds more boundary coverage and must use its actual collected count.
 
 ```powershell
-git diff a2ecc1c -- config.yaml
-git diff a2ecc1c --stat
+& $transportPython -m pytest --collect-only -q -p no:cacheprovider
+& $transportPython -m pytest -q -p no:cacheprovider
 ```
 
-Expected: `config.yaml` shows only the added `structured_transport` key and its comment; no `max_tokens` value, retry value, temperature, or threshold changed.
+Expected: no additional failing test identities or new failure reasons relative to the three documented baseline failures. Fewer failures are acceptable if explained by environment or a verified pre-existing fix; do not force the number to remain three. Confirm total selected tests increased by the actual new cases and none were accidentally deselected. The default `pyproject.toml` marker excludes live tests; do not override it.
 
-- [ ] **Step 4: Commit the gate record**
-
-Append the suite counts and the ruff result to
-`docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`, following that file's existing numbered-section format.
+- [ ] **Step 2: Check lint, whitespace, and protected settings**
 
 ```powershell
+& $transportPython -m ruff check src tests
+git diff --check
+git diff a24c62e -- config.yaml
+git diff a24c62e -- src/deep_research/agents src/deep_research/evaluation
+```
+
+Only the transport selection/comment and additive Critic reminder may differ in those protected surfaces. Budgets, thinking/effort, judge path, fallback/domain behavior, rubrics, weights, thresholds and frozen cases must be unchanged. Confirm the five Responses-specific target tests are pinned and the judge suite still passes with explicit target `tool_call`.
+
+- [ ] **Step 3: Record the exact gate and commit**
+
+Append the branch SHA, import path, Python/SDK versions, selected test count and delta, pass/fail/deselected counts, exact failing node IDs and reasons, Ruff result, and sensitivity-check result to the numbered fix log. Also record that no live calls have been made since Task 0 and that the automatic selection remains `json_schema`.
+
+```powershell
+git diff --check
 git add docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md
-git commit -m "docs: record the tool-call transport offline gate"
+git commit -m "docs: record exact structured transport offline gate"
 ```
 
 ---
 
-### Task 7: Live canary, then decide the OpenAI scope
+### Task 7: Pre-register the canary and gate the all-agent rollout
 
-**Files:**
-- Create: `docs/superpowers/2026-09-11-tool-call-transport-canary.md`
+**Files:** `docs/superpowers/2026-09-11-tool-call-transport-canary.md`, fix log, and only after successful evidence the automatic selector/comment and its default tests.
 
-**Interfaces:**
-- Consumes: the offline gate (Task 6), the frozen configuration, the `critic-live-review` case.
-- Produces: a recorded canary result and the evidence needed to decide whether the OpenAI adapter also moves to tool calls.
+**Interfaces:** consumes Task 6 and Task 0's verified settings; produces evidence and an explicit rollout decision. OpenAI remains on `responses.parse` and the judge remains on Responses regardless of target outcome.
 
-**This task spends money. Do not run it without the user's explicit go-ahead in this session.**
+- [ ] **Step 1: Obtain authorization for the actual campaign**
 
-- [ ] **Step 1: Ask for authorization**
+Four successes do not distinguish a 25% failure probability from zero: under independent identical trials, `P(0 failures | p=0.25) = 0.75^4 = 0.3164`; for three it is `0.4219`. Eleven zero-failure trials bring that probability below 5% (`0.04224`), but the one-sided 95% upper bound is still about 23.84%. No finite clean canary proves zero failures; 59 clean trials would be needed for that upper bound to fall below 5%. The historical rate is an approximate observation across a configuration family, not a known constant.
 
-Ask the user in one message for explicit authorization for four live Critic repetitions on the frozen configuration, and wait for a yes. Four is the number that distinguishes the observed `1-in-4` failure rate from zero; three cannot.
+Pre-register **11 candidate Critic repetitions for each distinct production/evaluation effort** and one contemporaneous `json_schema` control for each. For the current config that is 22 tool candidates plus 2 controls (`high` and `max`). Then, conditional on the Critic gate, run each other agent's live case once for each distinct production/evaluation setting: Planner high/max, Researcher high, Source Evaluator high, Fact Checker high/max, Synthesizer high/max = **8** further invocations. Total ceiling: **32 evaluation invocations**, each with its existing single live repetition and bounded internal requests. This uses DeepSeek target and judge, LangSmith, and the existing live tools; it is not 32 single model calls.
 
-- [ ] **Step 2: Confirm a clean tree and record the candidate**
+Show that count and scope and obtain explicit authorization before starting. If the user authorizes only a four-run pilot, run only that pilot, label it preliminary, and keep `auto` on `json_schema`. If effective models or overrides differ from this inventory, recompute the scope before authorization. Do not automatically run a suite. A stopping rule limits spending; it does not justify dropping failed trials or restarting the success count.
+
+- [ ] **Step 2: Record the candidate and execute sequentially without placeholders**
+
+Check tracked diff and staged diff are empty. Inventory and preserve untracked files; clean tracked state does not imply a completely empty `git status`, and the harness may truthfully report `git_dirty=true` for preserved untracked files. Record the complete candidate SHA and configuration/prompt fingerprints. Use a unique output root per campaign and per invocation, and restore the environment override in `finally`.
+
+Create a fresh output directory and save this result guard as `$transportResultGuard`. It validates typed artifacts and stops the loop without printing raw content. It does not make any provider call.
 
 ```powershell
-git status --short
-git rev-parse HEAD
+$transportGuardDirectory = Join-Path 'output/transport-probes' ([guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $transportGuardDirectory | Out-Null
+$transportResultGuard = Join-Path $transportGuardDirectory 'assert_canary.py'
 ```
 
-Expected: only the untracked `.deepseek-runs/` directory, which is pre-existing. Record the full commit SHA.
+```python
+from __future__ import annotations
 
-- [ ] **Step 3: Run four sequential repetitions**
+import sys
+from pathlib import Path
+
+from deep_research.evaluation.models import ExperimentResult
+
+
+def assert_canary(root, commit, transport, agent, effort):
+    paths = list(Path(root).rglob("results.json"))
+    if len(paths) != 1:
+        raise SystemExit("Expected exactly one result artifact for this invocation")
+    try:
+        result = ExperimentResult.model_validate_json(
+            paths[0].read_text(encoding="utf-8")
+        )
+    except Exception:
+        raise SystemExit("Result artifact could not be validated") from None
+    model_config = result.metadata.get("target_model_configuration", {})
+    if not isinstance(model_config, dict):
+        raise SystemExit("Missing effective target configuration")
+    if (
+        result.metadata.get("git_commit") != commit
+        or model_config.get("provider") != "deepseek"
+        or model_config.get("structured_transport") != transport
+        or model_config.get("reasoning_effort") != effort
+        or model_config.get("thinking_mode") != "enabled"
+        or result.metadata.get("judge_structured_transport")
+        != "deepseek_responses_json_schema_v1"
+        or result.agent_name != agent.replace("-", "_")
+        or result.tier != "live"
+        or result.status in {"FAILED", "INFRASTRUCTURE FAILURE"}
+        or result.errors
+        or len(result.cases) != 1
+    ):
+        raise SystemExit("Candidate provenance or experiment gate failed")
+    case = result.cases[0]
+    if not case.passed or len(case.repetitions) != 1:
+        raise SystemExit("Case gate or single-repetition contract failed")
+    repetition = case.repetitions[0]
+    gates = {gate.gate_id: gate.passed for gate in repetition.gates.results}
+    judge = repetition.judge
+    if (
+        not repetition.completed
+        or not gates
+        or not all(gates.values())
+        or repetition.errors
+        or repetition.prohibited_call_count
+        or repetition.fallback_provider_diagnostic is not None
+        or repetition.react_stop_reason == "provider_error"
+        or repetition.aggregate_quality is None
+        or repetition.aggregate_quality < 0.75
+        or judge is None
+        or judge.status != "scored"
+        or judge.diagnostics
+        or (result.agent_name == "critic" and not gates.get("review_produced"))
+    ):
+        raise SystemExit("Typed target, quality, or judge gate failed")
+    print("Typed canary gate passed for one invocation")
+
+
+if __name__ == "__main__":
+    assert_canary(*sys.argv[1:])
+```
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\cross-agent-planner-fix-parity\src"
-$launcher = ".superpowers\sdd\2026-09-08-cross-agent-planner-fix-parity\run_with_repo_env.py"
-foreach ($n in 1,2,3,4) {
-  & "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" $launcher "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.env" "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Scripts\python.exe" -m deep_research.evaluation agent critic --tier live --config config.yaml --output-directory output/evaluations/live-critic-toolcall --experiment-prefix critic-toolcall-<SHORT_SHA>-r$n --verbose
-  Write-Host "---- r$n exit: $LASTEXITCODE ----"
+$transportCandidate = (git rev-parse HEAD).Trim()
+$transportShortSha = (git rev-parse --short HEAD).Trim()
+$transportCampaign = 'toolcall-' + $transportShortSha + '-' + [guid]::NewGuid().ToString('N')
+$transportOutput = Join-Path 'output/evaluations' $transportCampaign
+$transportPreviousSelection = [Environment]::GetEnvironmentVariable('LLM_STRUCTURED_TRANSPORT', 'Process')
+$transportLauncher = '.superpowers\sdd\2026-09-08-cross-agent-planner-fix-parity\run_with_repo_env.py'
+$transportEnvFile = 'C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.env'
+if (-not (Test-Path -LiteralPath $transportResultGuard)) { throw 'Missing result guard' }
+git diff --quiet
+if ($LASTEXITCODE -ne 0) { throw 'Tracked worktree changes are present' }
+git diff --cached --quiet
+if ($LASTEXITCODE -ne 0) { throw 'Staged changes are present' }
+try {
+  foreach ($transportEffort in @('high', 'max')) {
+    foreach ($transportSelection in @('json_schema', 'tool_call')) {
+      $transportCount = if ($transportSelection -eq 'tool_call') { 11 } else { 1 }
+      $env:LLM_STRUCTURED_TRANSPORT = $transportSelection
+      foreach ($transportRun in 1..$transportCount) {
+        if ((git rev-parse HEAD).Trim() -ne $transportCandidate) { throw 'Candidate changed' }
+        $transportLabel = "$transportSelection-$transportEffort-r$transportRun"
+        $transportRunOutput = Join-Path $transportOutput $transportLabel
+        & $transportPython $transportLauncher $transportEnvFile $transportPython -m deep_research.evaluation agent critic --case critic-live-review --tier live --reasoning-effort $transportEffort --config config.yaml --output-directory $transportRunOutput --experiment-prefix "$transportCampaign-$transportLabel"
+        if ($LASTEXITCODE -ne 0) { throw "Stopped at $transportLabel; preserve this result" }
+        & $transportPython $transportResultGuard $transportRunOutput $transportCandidate $transportSelection critic $transportEffort
+        if ($LASTEXITCODE -ne 0) { throw "Typed gate stopped at $transportLabel" }
+      }
+    }
+  }
+} finally {
+  [Environment]::SetEnvironmentVariable('LLM_STRUCTURED_TRANSPORT', $transportPreviousSelection, 'Process')
 }
 ```
 
-Substitute `<SHORT_SHA>`. Run sequentially; no retry, no second agent, no suite.
+The guard checks **each** artifact before the next invocation. Exit code zero alone is insufficient: it stops on target transport/schema fallback, missing review, judge failure, hard-gate failure or a score below the frozen threshold. A failed control must be recorded and classified; a control failure caused by the historical target defect is comparison evidence, while judge/infrastructure failure makes the experiment inconclusive. Do not rerun a failed invocation under the same label. If a baseline target failure is reviewed and classified, continue only the remaining pre-authorized candidate invocations with fresh labels and include the failed control in the report. Record failed ordinal positions before resuming so the 32-invocation authorization ceiling is never reset.
 
-- [ ] **Step 4: Read the typed result per repetition**
+- [ ] **Step 3: Inspect the Critic evidence, then run the eight other-agent smoke invocations**
 
-For each artifact record: case passed, aggregate quality, `deterministic_metrics`, the `fallback_provider_diagnostic` if present, `review_produced`, judge status, and `react_stop_reason`. Hash every artifact.
+Require all 22 candidate Critic invocations to produce a review, no target provider fallback in **any** structured operation (including ReAct), all hard gates passing, scored judges without diagnostics, and aggregate quality at least `0.75`. Count structured attempt-1 failures repaired on attempt 2 separately from exhausted calls. Record telemetry from both transports, configured and served models, effective effort, prompt and configuration fingerprints, artifact paths and hashes. Any excluded infrastructure result stays in the denominator/report as inconclusive, never silently disappears. The two controls are descriptive; they are not a powered A/B test of quality or a proof that transport alone caused improvement.
 
-```powershell
-Get-ChildItem "output\evaluations\live-critic-toolcall" -Recurse -File -Filter "results.json" |
-  ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.FullName)" }
-```
-
-- [ ] **Step 5: Write the canary note**
-
-Create `docs/superpowers/2026-09-11-tool-call-transport-canary.md` following the structure of
-`docs/superpowers/2026-09-11-critic-readiness-final-canary.md`: Scope, Configuration, Evidence with artifact SHA-256 values, Typed result table for all four repetitions, then the boundary.
-
-The note must state, explicitly:
-
-1. How many of the four repetitions produced a review (`review_produced` passed) and how many fell back.
-2. Whether any repetition recorded a `critic_report_review` fallback, and if so its `diagnostics` categories and field paths.
-3. The comparison to the `json_schema` baseline in
-   `docs/superpowers/2026-09-11-critic-readiness-confirmation.md`, where the observed review-fallback rate was `1 in 4`.
-4. That the target prompt fingerprint changed, because `critique_messages` gained the reply-format section, so scores before and after are not comparable on that axis.
-
-- [ ] **Step 6: Decide the OpenAI scope from the recorded evidence**
-
-Add a section to the same note titled `## OpenAI adapter decision`, choosing exactly one outcome and stating the evidence for it:
-
-- **Move OpenAI to tool calls** — only if the DeepSeek tool-call repetitions produced a review in all four runs **and** at least one repetition previously failed under `json_schema` in the same session. Then open a separate plan: the OpenAI adapter uses `client.responses.parse(**{**request, "input": payload, "text_format": schema})` (`openai_provider.py:318-320`), which has different failure characteristics and cannot be validated by this campaign's DeepSeek canary.
-- **Leave the OpenAI adapter unchanged** — otherwise. Record that the OpenAI adapter is out of scope because its SDK-level parse path shows no observed failure in this campaign, and that the setting is already rejected for that provider rather than silently ignored.
-
-Do not change `openai_provider.py` in this plan either way.
-
-- [ ] **Step 7: Commit the canary note**
+Only after that Critic gate, use the remaining authorized scope:
 
 ```powershell
-git add docs/superpowers/2026-09-11-tool-call-transport-canary.md
-git commit -m "docs: record the tool-call transport canary"
+$transportSmokeRuns = @(
+  @('planner', 'high'), @('planner', 'max'),
+  @('researcher', 'high'), @('source-evaluator', 'high'),
+  @('fact-checker', 'high'), @('fact-checker', 'max'),
+  @('synthesizer', 'high'), @('synthesizer', 'max')
+)
+$transportPreviousSelection = [Environment]::GetEnvironmentVariable('LLM_STRUCTURED_TRANSPORT', 'Process')
+try {
+  $env:LLM_STRUCTURED_TRANSPORT = 'tool_call'
+  foreach ($transportSmoke in $transportSmokeRuns) {
+    if ((git rev-parse HEAD).Trim() -ne $transportCandidate) { throw 'Candidate changed' }
+    $transportAgent = $transportSmoke[0]
+    $transportEffort = $transportSmoke[1]
+    $transportLabel = "$transportAgent-$transportEffort"
+    $transportRunOutput = Join-Path $transportOutput $transportLabel
+    & $transportPython $transportLauncher $transportEnvFile $transportPython -m deep_research.evaluation agent $transportAgent --tier live --reasoning-effort $transportEffort --config config.yaml --output-directory $transportRunOutput --experiment-prefix "$transportCampaign-$transportLabel"
+    if ($LASTEXITCODE -ne 0) { throw "Stopped at $transportLabel; preserve this result" }
+    & $transportPython $transportResultGuard $transportRunOutput $transportCandidate tool_call $transportAgent $transportEffort
+    if ($LASTEXITCODE -ne 0) { throw "Typed gate stopped at $transportLabel" }
+  }
+} finally {
+  [Environment]::SetEnvironmentVariable('LLM_STRUCTURED_TRANSPORT', $transportPreviousSelection, 'Process')
+}
+Get-ChildItem -LiteralPath $transportOutput -Recurse -File -Filter results.json |
+  Get-FileHash -Algorithm SHA256
 ```
+
+Inspect typed outcomes between these invocations too. All must have scored judges, passing quality/hard gates, and no target provider fallback. Eight smoke runs establish basic cross-agent compatibility, not each agent's statistical reliability. A global default cannot be promoted from Critic-only evidence.
+
+- [ ] **Step 4: Write the evidence and the provider-specific decision**
+
+The canary note contains Scope, Pre-registered stopping rule/sample size, Candidate and configuration, Evidence with SHA-256 values, one typed result row per invocation (including failures), attempt-level diagnostics, Quality, Statistical limits, and Rollout decision. Use direct LangSmith UI links when available without exposing credentials. Compare the historical family and current controls explicitly; Task 5 changed the target prompt, so older scores do not isolate transport. Keep the judge fingerprint and transport unchanged.
+
+OpenAI decision: **unchanged and not validated by this campaign**. A DeepSeek success cannot justify migrating `OpenAIChatProvider`. Any OpenAI change needs OpenAI-specific failure evidence, a separate adapter review and separately authorized tests. Do not infer an OpenAI defect from the rejected configuration value.
+
+- [ ] **Step 5: Promote automatic selection only if the entire gate passes**
+
+If any required target setting or agent remains unverified, preserve `auto -> json_schema`, record the reason, and finish with the experiment's actual outcome. If all gates pass during authorized implementation of this plan, make the conditional default promotion below; no additional permission prompt is needed for that scoped code change. Change the `auto` branch of `LLMConfig.effective_structured_transport` to:
+
+```python
+        if self.structured_transport == "auto":
+            return "tool_call" if self.provider == "deepseek" else "json_schema"
+```
+
+Update `test_auto_transport_preserves_the_existing_default` to assert `tool_call` for DeepSeek and `json_schema` for OpenAI, and rename it `test_auto_transport_selects_the_validated_provider_default`. Update the `'auto'` expected case in `test_deepseek_transport_resolves_explicit_selection` to `'tool_call'`. Replace the first YAML transport comment with `# auto selects the validated DeepSeek tool transport or OpenAI Responses.` Explicit `json_schema` remains the rollback override; the judge hook is unchanged. Record which effective models/modes were validated; new model/effort combinations need their own capability check and canary before rollout claims.
+
+Add this default-routing regression to `tests/test_deepseek_provider.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_promoted_default_routes_target_to_tools():
+    completions = RecordingCompletions(
+        tool_call_response(
+            arguments='{"answer":"yes","confidence":9}',
+        )
+    )
+    client = FakeDeepSeekClient(completions)
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(),
+        tracker,
+        client=client,
+    )
+    async with tracker.session_span("session-1", "synthetic question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+        )
+    assert len(completions.calls) == 1
+    assert not client.responses.calls
+```
+
+Rerun the Task 6 gate after this default change and verify the effective DeepSeek request equals the explicit candidate request. Do not claim production deployment from a branch commit.
+
+- [ ] **Step 6: Commit the actual outcome**
+
+```powershell
+git diff --check
+git add docs/superpowers/2026-09-11-tool-call-transport-canary.md docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md
+git commit -m "docs: record structured transport experiment and rollout decision"
+```
+
+For an approved promotion, first stage and commit exactly `src/deep_research/utils/config.py`, `config.yaml`, `tests/test_config.py`, and `tests/test_deepseek_provider.py` after their checks, then record both the evaluated candidate SHA and promotion SHA in the evidence commit. If the gate fails, there is no promotion commit. The plan's success is evidence and a safe decision; agent reliability remains unproven if the hypothesis fails.
 
 ---
 
-## Self-Review
+## Execution self-review
 
-**Spec coverage.** The user's requirement is "convert structured output into a tool call, and if it works update all the agents". Task 0 proves the mechanism is accepted by this provider before anything is built on it; Task 1 adds the selectable transport; Task 2 implements the tool-call mechanism; Task 3 makes both transports share one repair loop; Task 4 proves every agent inherits the switch without any agent-file change, and pins the existing Responses tests to their transport; Task 5 states the JSON contract in the review request; Task 6 is the offline gate; Task 7 is the paid canary that decides the "if it works" condition and scopes the OpenAI adapter from evidence. The `json_invalid` evidence, the `review_produced` gate, and Finding 5 are cited rather than restated.
+- Task 0 tests the actual thinking modes and both production/evaluation effort settings, separates controls from candidates, and has a genuine stop before production changes.
+- Tasks 1–3 preserve OpenAI defaults and judge isolation, validate the synthetic function envelope, retain one repair and existing HTTP retries, and protect the final exception graph without adding a caller frame.
+- Task 4 uses real agent schemas and production assembly; source-string absence and misleading default flips are removed.
+- Task 5 leaves domain scoring and the output schema intact. Task 6 records exact collected tests and failure identities, with no invented pass count.
+- Task 7 uses computed SHAs, an explicit paid scope, proper denominators and uncertainty, and requires cross-agent compatibility before changing the DeepSeek automatic selection. No paid calls, application changes, or rollout are implied by committing this plan.
 
-**The plan's biggest risk, and how it is handled.** The original draft assumed DeepSeek accepts the OpenAI tool-calling shape. It does not get to assume that: `deepseek-ai/DeepSeek-V3#1376` reports V4 rejecting `tool_choice="required"` and function-specific `tool_choice`, and `pydantic/pydantic-ai#5193` reports 400s on tool-based structured output for `deepseek-v4-flash` specifically. Task 0 therefore spends one cheap call to test five `tool_choice` shapes and names the exact change to make for each outcome, including a documented **stop** condition where tool calling is abandoned before any paid evaluation repetition or any of Tasks 1–6 run.
+## Verification performed during this plan review
 
-**What this plan deliberately does not do.** It does not convert the six agent modules, because they contain no structured-output code to convert — the claim is pinned by `test_the_agent_modules_do_not_mention_the_transport`. It does not touch `openai_provider.py`, because that adapter uses a different mechanism (`responses.parse`) with different failure behaviour and no observed failure in this campaign; Task 7 makes that decision explicit and evidence-based instead of assumed.
-
-**Type consistency.** `_tool_schema` returns `dict[str, object]` and is used only as `parameters`. `_tool_call_arguments` returns `str` and feeds `schema.model_validate_json`. `_tool_call_structured_attempt` matches the keyword signature the shared loop calls it with (`messages, schema, *, model, request, metadata, configured_max_tokens, attempt`) and returns `SchemaT`. `_structured_repair_loop` is defined on `DeepSeekChatProvider` and called as `self._structured_repair_loop(...)` from `_DeepSeekSchemaStructuredProvider`, which inherits it. `attempt_call` is passed as a bound method and called with the same keyword set it declares.
-
-**Placeholder scan.** No step says "TBD", "implement later", "add validation", or "similar to Task N". Every code step carries runnable code. One substitution token exists by necessity — `<SHORT_SHA>` in Task 7 Step 3 — because it is the hash of a commit Task 6 has not yet produced; Task 7 Step 2 records it immediately before use.
-
-**Known risk to watch in Task 7.** A forced tool call changes what the model is being asked to do, so a `json_invalid` rate of zero could come with a change in output quality rather than an improvement. The canary note therefore requires the aggregate quality of each passing repetition to be recorded alongside the fallback count, so a future reader can see whether quality held rather than only that the failures stopped.
+- The original worktree's configuration, DeepSeek/OpenAI provider, and provider-factory tests passed: **278 passed**, one dependency deprecation warning.
+- The code fences were applied in a disposable copy outside the repository to check the proposed interfaces and examples. The focused provider/configuration/evaluation/assembly suite plus all agent tests passed **872** tests before promotion, and **873** with the proposed promotion and its additional default-routing regression. These are offline rehearsal results, not changes applied to the application branch or a replacement for Task 6's full gate.
+- Collection compared **2089** baseline selected node IDs with **2143** candidate IDs: **54 added, none removed**. Promotion adds one more test. The live marker remained excluded. The historical `3 failed, 2086 passed` result remains historical; a full execution gate must reproduce and compare the actual failure reasons.
+- The deliberate wrong-dispatch mutation failed all **11** real-schema cases; restoring dispatch passed all **20** selected schema/repair/judge cases. The canary artifact guard accepted a synthetic valid result and rejected seven bad or incomplete outcomes, including fallback, missing judge, failed quality, and wrong transport.
+- The probe dry-run enumerated **15** requests with explicit enabled/high, enabled/max, and disabled settings at the configured 32768 cap. No paid request was made. Python fences were parsed, the rehearsal's touched Python files passed Ruff, and the plan passed whitespace validation.
