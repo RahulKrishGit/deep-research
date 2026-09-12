@@ -1845,3 +1845,277 @@ The same 30-request shape probe can measure a candidate fix by counting
 exact defect. No live evaluation repetition is needed to test it.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 83. Critic Review Prompt Revised — TOOL-FREE PROMPT, CALIBRATED EXAMPLES, H1 ENVELOPE
+
+Date: 2026-09-11. Candidate: `57d4b68` plus uncommitted working-tree changes on
+`codex/cross-agent-planner-fix-parity`. Artifacts:
+`output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/PROMPT_FOR_APPROVAL.txt`
+and `FULL_PROMPT.txt`.
+
+This entry records the prompt revision built on the section 82 root cause. **No
+live request has been sent for this revision.** It is the version awaiting user
+approval, and the paid-run ledger is unchanged by this entry.
+
+### What changed
+
+1. **The review call no longer advertises tools.** `critique_messages` now carries
+   `CRITIC_REVIEW_SYSTEM_PROMPT`, which names no tool and states that everything
+   needed is printed in the request. `CRITIC_SYSTEM_PROMPT` is retained for the
+   ReAct spot-check loop, the one call that does offer tools. The section 82
+   defect was a prompt telling the model to use tools on a request carrying
+   `tools: NOT SENT`.
+2. **`CRITIQUE_INSTRUCTION` no longer restates JSON demands**, so the wire
+   carries exactly one statement of the output contract, in `# Reply format`.
+3. **The reply-format skeleton is replaced by two complete, valid JSON
+   instances**, labelled `Weak report, score 3:` and `Strong report, score 9:`.
+   The previous angle-bracket skeleton (`{"score": <integer 1-10>, ...}`) was
+   neither a schema nor an example, while the DeepSeek JSON Output guide asks for
+   "an example of the desired JSON format".
+4. **A `# How to choose the score` band table was added** (1-3 / 4-6 / 7-8 /
+   9-10), phrased as report quality. It deliberately does not publish the
+   acceptance threshold: routing is computed locally and `CRITIQUE_INSTRUCTION`
+   already forbids the model from deciding continuation.
+5. **The report is quoted in its own Markdown fence** (` ```report `), with an
+   explicit sentence that the report's own headings belong to the report.
+   Superseded the angle-bracket markers first written here; see section 84.
+6. **Every request section heading was promoted from H2 to H1.**
+
+### The examples were mis-calibrated on first draft, and that was caught offline
+
+The first version of the two-example change labelled the anchors 3 and 9 but
+wrote rationales that read like band 4-6 and band 7-8 respectively. Since a model
+calibrates against what an example *demonstrates* rather than the number attached
+to it, that pair would have pulled scores toward the middle of the scale — the
+opposite of the intent. Both rationales were rewritten to sit visibly inside
+their own band: the weak anchor now turns on a claim that "rests on no cited
+source at all" (band 1-3), and the strong anchor on an answer that is "complete"
+with "strong and diverse" sourcing that states its uncertainty (band 9-10).
+
+This was found by reading the rendered prompt, not by a live run, and it is now
+locked by a structural test rather than by prose assertion.
+
+### Why H1 for the request envelope
+
+`REPORT_SECTIONS` in `report.py` defines the canonical report body as **H2**
+headings (`## Executive summary`, `## Findings`, `## Limitations`, …) with H3
+sub-groups. The review request also used H2 for all ten of its own sections. The
+two were therefore at the same heading level, and `## Recorded problems` directly
+followed the report's `## Limitations` with only the markers to separate them.
+
+At H1 every request heading outranks the report, so the report reads as content
+nested inside `# Report under review`. The report carries exactly one H1 in
+production — the title `# Research report: <question>` from `REPORT_TITLE_PREFIX`
+— which sits immediately after the BEGIN marker and is not a section heading. The
+boundary is now carried by the markers *and* the heading level, not by markers
+alone.
+
+### Considered and rejected: pretty-printed examples
+
+Indented examples were proposed and measured. Cost is negligible: +72 characters
+(~20 tokens) across both examples, in a prompt of roughly 5,500 tokens. They are
+also safe for the parser, which is `schema.model_validate_json` and therefore
+whitespace-agnostic; a pretty-printed instance of the strong example was verified
+to validate into `CritiqueDraft`.
+
+They were rejected on signal, not on cost or correctness. The instruction is
+"Return exactly one JSON object … with no text before or after it", and a
+one-line example embodies that, whereas an 11-to-15-line indented block reads as
+a document region — closer to the prose register this model already drifts into,
+having emitted DSML tool markup as prose. Pretty examples would also put two JSON
+registers in one request, because the provider-appended schema message is
+deliberately compact (`_json_instruction` uses `sort_keys=True,
+separators=(",", ":")`) and is one line. Compact examples keep one register.
+The DeepSeek JSON Output guide requires an example but says nothing about
+indentation, so it does not settle this either way.
+
+### Offline verification
+
+- `python -m pytest`: **3 failed, 2100 passed, 1 deselected**. The three failures
+  are the pre-existing evaluation failures recorded throughout this log and are
+  untouched by this change.
+- `python -m ruff check src tests`: `All checks passed!`
+- New tests lock each decision: the review prompt names no tool; both examples
+  parse as JSON with exactly the five fields; the examples bracket the acceptance
+  score; each example demonstrates the band it is labelled with; no request
+  section sits at H2; the band table leaks no routing threshold.
+
+### What this entry does not claim
+
+The measured root cause was tool markup, so this revision targets that mismatch.
+It does **not** claim the `json_invalid` rate is fixed: section 81 measured that
+prompt-level JSON wording alone moved 22.0% to 26.7%, which is no improvement.
+The direct, content-free test of the fix is the section 82 shape probe — a
+30-request run counting `prose_no_json` first attempts against the 16/30 (53%)
+baseline — and that run is not authorized by this entry.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 84. Report Delimiter Changed from Angle-Bracket Markers to a Markdown Fence
+
+Date: 2026-09-11. Candidate: `57d4b68` plus uncommitted working-tree changes on
+`codex/cross-agent-planner-fix-parity`. Same revision as section 83; this entry
+supersedes the delimiter choice described there.
+
+**No live request has been sent for this revision.** The paid-run ledger is
+unchanged.
+
+### What changed
+
+The report was delimited by `<<<REPORT BEGIN>>>` and `<<<REPORT END>>>`. It is
+now quoted in a Markdown fence whose opening fence carries the info string
+`report`:
+
+    ```report
+    ...verbatim report...
+    ```
+
+The opening fence is the begin marker and the closing fence is the end marker, so
+no separate sentinel text is needed. `_REPORT_BEGIN` and `_REPORT_END` are
+removed. The system prompt sentence "the report under review between its BEGIN
+and END markers" was updated to "inside its own fenced block" — leaving it would
+have contradicted the request it accompanies.
+
+### Why a fence rather than angles
+
+A fence is the one Markdown construct that delimits a verbatim region, and
+**fenced content is not parsed as Markdown**, so the report's own `##` sections
+cannot be read as sections of the request at all. This does the boundary work more
+completely than heading level alone, and it removes the pseudo-XML delimiter the
+user rejected.
+
+### The fence length is computed, not fixed
+
+A synthesised report can quote a fenced block of its own. A fixed three-backtick
+fence would then be closed early by the report's content, exposing the remainder
+of the report as if it were request text. `_report_fence` therefore measures the
+longest backtick run in the report and emits one backtick more, with a floor of
+three: a report containing a three-backtick run is enclosed in a four-backtick
+fence, and the closing fence is matched by exact tick count.
+
+### New risk introduced, and how it is detected
+
+The request now demonstrates a fenced block, and models sometimes mirror input
+formatting in output. A reply wrapped in its own json code fence would fail JSON
+validation. Three existing guards apply: the `# Reply format` section shows
+unfenced single-line examples and requires "no text before or after it", the
+provider-appended schema message already forbids Markdown, and the section 82
+shape probe classifies a fenced reply as its own `fenced` shape. A regression of
+this kind is therefore measurable by the same 30-request probe that measures the
+original defect, at no extra cost.
+
+### Offline verification
+
+- `python -m pytest tests/test_agents/`: **427 passed**.
+- `python -m pytest`: **3 failed, 2102 passed, 1 deselected** — the three
+  pre-existing evaluation failures, untouched here.
+- `python -m ruff check src tests`: `All checks passed!`
+- Two mutation checks were run, and both guards failed as required before being
+  restored: reverting one request section to H2 fails
+  `test_no_request_heading_can_be_confused_with_a_report_heading`; pinning the
+  fence to three backticks fails
+  `test_a_report_containing_a_fence_cannot_close_the_enclosing_fence`.
+- `PROMPT_FOR_APPROVAL.txt` and `FULL_PROMPT.txt` regenerated: no `<<<` or `>>>`
+  remains in either artifact.
+
+### Envelope constraint recorded
+
+`test_no_request_line_uses_angle_bracket_markers` constrains the request envelope
+only, never the report body: the report is provider-written text and may
+legitimately contain angle brackets. Asserting their absence across the whole
+message would have been a test that the report's content must not look a certain
+way, which is not a property this system controls.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 85. Critic shape probe after the prompt revision — 0/30 FAILURES; PROMPT PROVENANCE VERIFIED
+
+Date: 2026-09-12. Candidate: `57d4b68` plus uncommitted working-tree changes on
+`codex/cross-agent-planner-fix-parity`. Probe:
+`output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/shape_probe.py`,
+30 requests, user-authorized. Verification:
+`verify_probe_prompt.py` (free; builds and hashes messages, contacts no provider).
+
+### Result
+
+| | Baseline (section 82) | This run |
+| --- | --- | --- |
+| First-attempt `prose_no_json` | **16 / 30 (53%)** | **0 / 30 (0%)** |
+| First-attempt `starts_with_brace` | 14 / 30 | **30 / 30** |
+| First-attempt `fenced` | 0 / 30 | 0 / 30 |
+| Response length (valid) | 3,837-5,191 | 2,233-3,662 |
+| Undeclared keys | none recorded | none recorded |
+| Outcomes | repair rescued 13, 3 hard-failed | 30 `ok`, no repair needed |
+
+All 30 first attempts were balanced-brace JSON objects beginning `{` and ending
+`}`. No response contained a code fence, so the mirroring risk introduced by
+fencing the report (section 84) **did not materialize** in 30 attempts.
+
+By the rule of three, 0/30 bounds the first-attempt failure rate at about 10%
+with 95% confidence, against a measured 53% at baseline and a `json_invalid` rate
+of 22% (11/50) in the live evaluation. Wall time was 3m48s for 30 requests.
+
+### Confound: reasoning effort changed with the prompt
+
+The baseline was measured at `reasoning_effort: high` (section 82 records the
+resolved critic setting). This run used **`max`**, because `llm.reasoning_effort`
+is now `max` globally and the probe builds its provider from `settings.llm`
+rather than from `resolve_for("critic")`. Two variables therefore changed at
+once, and this run does **not** isolate the prompt fix from the effort change.
+
+It is still the right measurement for the decision at hand: `max` is the
+production setting the user selected, so this measures the configuration that
+would ship. Isolating the two would require a further 30 requests with the old
+prompt at `max`, which this entry does not authorize.
+
+### Prompt provenance — the question "was the right prompt sent"
+
+The probe builds its messages with `critique_messages` from the imported package,
+so provenance was verified rather than assumed. `verify_probe_prompt.py` reports:
+
+- `deep_research.__file__` and `critic.__file__` both resolve inside **this
+  worktree's** `src`, not the root virtualenv's editable install, which points at
+  a different branch.
+- `_REPORT_BEGIN` and `_REPORT_END` are **absent** from the imported module and
+  `_report_fence` is present, which can only be true of the revised revision.
+- `prompt_chars = 7727`, matching the probe's own dry run.
+- Both messages appear **verbatim in `FULL_PROMPT.txt`**, the artifact put in
+  front of the user for approval, with `developer sha256[:16] = e7d73e8a96ae2957`
+  and `user sha256[:16] = f07e1d252d96ddbf`.
+- The request carries the fence info string, `# How to choose the score` with both
+  band ranges, both examples at scores 3 and 9, no angle-bracket markers, and no
+  tool name in the developer message.
+- The reply format still shows **two unfenced** example lines plus "with no text
+  before or after it".
+
+### Response length fell, and that is unexplained
+
+Valid responses shortened from 3,837-5,191 to 2,233-3,662 characters. Two changes
+could account for it and this run does not separate them: the examples now
+demonstrate a terse shape, and the effort change may alter verbosity. A shorter
+critique is not automatically a thinner one — every response is a complete,
+schema-valid object — but the content length is recorded here because it changed,
+not because it is understood.
+
+### Environment gotcha found while launching
+
+A first launch sent **zero** requests and failed with
+`ProviderConfigurationError: DEEPSEEK_API_KEY is required`. `load_config` calls
+`load_dotenv(dotenv_path=path.parent / ".env")`, resolved against the directory of
+the config file, and this worktree contains only `.env.example`; the real `.env`
+is in the main repository root. Probes run from a worktree must therefore load
+that file into the process environment first. The failed launch contacted no
+provider and incurred no cost.
+
+### What this entry does not claim
+
+This is a **request-shape** measurement, not an evaluation. It shows the review
+call now returns valid JSON on the first attempt. It does **not** measure whether
+the critic's *scores* are well calibrated, whether routing decisions are correct,
+or whether the evaluation aggregate (0.6 x judge + 0.4 x deterministic) clears the
+0.75 threshold. Those require an authorized live evaluation run, which this entry
+does not authorize.
+
+Paid-run ledger: **30 requests** (this probe). One failed launch sent 0.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
