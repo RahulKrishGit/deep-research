@@ -918,6 +918,22 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                 raise ProviderResponseError(
                     "DeepSeek Responses output did not contain text"
                 )
+            if not text.strip():
+                # DeepSeek documents that JSON Output "may occasionally return
+                # empty content". An empty body must not be reported as
+                # malformed JSON: both would otherwise record json_invalid at
+                # the root, making the two failure modes indistinguishable in
+                # an artifact. This mirrors the non-empty requirement
+                # ``_choice_text`` already applies on the chat path.
+                response = None
+                raise _StructuredValidationFailure(
+                    schema.__name__,
+                    StructuredValidationDiagnostic(
+                        attempt=attempt,
+                        field_paths=("$",),
+                        category="schema_output",
+                    ),
+                ) from None
             try:
                 parsed = schema.model_validate_json(text)
             except (json.JSONDecodeError, ValidationError) as error:

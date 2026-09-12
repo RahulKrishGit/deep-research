@@ -2683,3 +2683,44 @@ async def test_schema_target_output_limit_stays_typed() -> None:
 
     assert caught.value.telemetry.finish_reason_category == "length"
     assert len(responses.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_empty_structured_response_is_its_own_category() -> None:
+    """Empty output must not be reported as malformed JSON.
+
+    DeepSeek's JSON Output guide warns that "the API may occasionally return
+    empty content". ``_responses_structured_attempt`` accepts any ``str``,
+    including ``""``, and hands it to ``model_validate_json``, where it raises
+    ``JSONDecodeError`` and is recorded as ``json_invalid``. Empty and malformed
+    are therefore indistinguishable in an artifact, which blocks attributing a
+    measured improvement to the right failure mode.
+
+    ``category="schema_output"`` is the honest label for an empty envelope: it
+    is an existing member of ``StructuredDiagnosticCategory`` and never carries
+    provider text.
+    """
+    responses = RecordingResponses(
+        responses_response(output_text=""),
+        responses_response(output_text="   "),
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(contracts_module.StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    diagnostics = caught.value.diagnostics
+    assert [item.attempt for item in diagnostics] == [1, 2]
+    assert [item.category for item in diagnostics] == [
+        "schema_output",
+        "schema_output",
+    ]
+    assert [item.field_paths for item in diagnostics] == [("$",), ("$",)]
+    # Exactly one repair: an empty body is an envelope failure, not a new attempt.
+    assert len(responses.calls) == 2
