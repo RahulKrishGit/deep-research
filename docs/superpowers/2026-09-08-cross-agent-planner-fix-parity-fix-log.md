@@ -2225,3 +2225,111 @@ raises `RuntimeError` for a child span without one, before any HTTP call. The
 probe was corrected and re-run.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 87. Judge Prompt Revised — CONTRACT, SCALE BANDS, TWO EXAMPLES, EXPLICIT WEIGHTS; BOUND DECOUPLED
+
+Date: 2026-09-12. Candidate: `f51301d` plus uncommitted working-tree changes on
+`codex/cross-agent-planner-fix-parity`. Probes:
+`output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/judge_probe.py` and
+`verify_judge_probe.py`. 99 requests total, all user-authorized.
+
+### What changed
+
+1. **The request has proper heading levels.** Every section this instruction owns
+   is `#`; the judged run's sixteen blocks stay `##` and therefore nest beneath
+   "The run to judge". Previously a block named `## rubric` read as a section of
+   the instruction rather than as material — the same collision the Critic
+   request had with its report.
+2. **A response contract names the three fields** and what each means.
+3. **A band table covers the whole 0.0-1.0 scale.** The rubric's own anchors
+   state only `1.0` and `0.0`, so two judges could agree on both endpoints and
+   still differ by 0.3 on a middling run.
+4. **Two complete examples bracket the scale** (weak `<= 0.4`, strong `>= 0.8`),
+   generated from the rubric's own dimension ids, labelled as placeholders.
+5. **The weighting is stated as arithmetic**: each dimension with its weight, the
+   total, and that agent-specific dimensions carry no weight at all.
+6. **The length bound is decoupled from its enforcement.**
+
+### The bound: 2000 stated, 20000 enforced, neither declared to the model
+
+The prompt states "in at most 2000 characters ... The limit is hard and a longer
+answer is rejected outright". The schema the model receives declares **no** length
+for `rationale` — only `minLength: 1`. The 20000 bound is enforced locally after
+the response returns, by a validator that raises `string_too_long` so the shared
+classifier still reports `string_bounds` and the one-repair flow still applies.
+
+The stated limit is deliberately harder than the enforced one, and that is an
+explicit decision rather than an oversight: **the statement is the steering
+device** that keeps the model inside the range, and the wider enforcement is the
+**safety net** that stops the minority of overshoots from costing a score.
+
+An earlier iteration declared `maxLength: 20000` in the schema, which put two
+different numbers for the same field in front of the model — 2000 in prose, 20000
+in the schema. That was removed: the request now carries exactly one length
+signal. A test asserts the declared property is exactly
+`{"minLength": 1, "title": "Rationale", "type": "string"}`.
+
+Removing the bound entirely was considered and rejected: with no bound the only
+backstop is `max_tokens`, and hitting that is a truncated response — a
+`ProviderOutputLimitError` the attempt loop does not catch, so it is never
+repaired. A bound keeps the failure repairable.
+
+### `extra="ignore"` scoped to `JudgeVerdict`
+
+`ContractModel` forbids extra properties project-wide. Naming the three fields
+invited the model to add a fourth: measured at **0 of 30** first attempts when no
+field was named, and **11 of 30** once they were, with `agent_specific_note`,
+`agent_specific_notes`, `rationale_note` and `final_note` observed. An explicit
+prohibition in the prompt did not reduce it, and in one repair the model invented
+a further key rather than repeating.
+
+`JudgeVerdict` therefore sets `extra="ignore"`, and only that model. An added key
+carries nothing this system reads — `judge_quality` consumes `scores` alone and
+`rationale` is a recorded comment — so losing an entire evaluation repetition
+over it is disproportionate. Drift is still caught: `scores` and `rationale`
+remain required, so a rename or an omission still reports `missing` and still
+fails; nested extras inside `scores` remain forbidden.
+
+### Three measurements, and a regression found and fixed
+
+| First attempts, 30 requests at `max` | Baseline | Revision | Revision + `extra="ignore"` |
+| --- | --- | --- | --- |
+| `string_too_long` (length) | 5 | **0** | **0** |
+| Extra key added | 0 | **11** | 9 (tolerated) |
+| `json_invalid` (unparseable) | 0 | 0 | 2 (both repaired) |
+| **Terminal failures** | **0** | **3 (10%)** | **0** |
+| Rationale median | 1,735 | 1,716 | 1,724 |
+
+The middle column is a regression this work created: fixing length by naming the
+fields cost 3 of 30 runs outright, worse end-to-end than the baseline it was
+meant to improve. It was caught by measurement, not by reasoning, and the third
+column is the correction.
+
+Two things the measurements do **not** show: the prose guidance has not moved the
+rationale median (1,735 -> 1,724 across the revision), so the length improvement
+comes from the widened enforcement rather than from the prompt asking for it; and
+the 2 `json_invalid` attempts are new, both repaired, and unexplained.
+
+### Fingerprint history
+
+`77a0898f4267` (recorded on the `035d3c5` live artifacts) -> `6ca1874ed3bc` ->
+`0c90bd2185d8` -> **`74b9cddfbbee`**. `judge_prompt_fingerprint` covers
+`JudgeVerdict.model_json_schema()` as well as the prompt text, so the bound and
+`extra` changes move it too. That is stricter than strictly necessary — the bound
+cannot affect a score — but it is the safe direction, and the pin caught each
+change rather than letting one pass silently.
+
+### What this entry does not claim
+
+Judge **score** quality and calibration are not measured here: no statement is
+made about whether the bands produce better or more consistent scores, only that
+the request now returns a valid verdict reliably. A live evaluation remains the
+end-to-end gate.
+
+Paid-run ledger for the judge work: **99 requests** — 3 for the `strict`
+capability probe, 1 for its control, 30 for the original rationale measurement, 5
+on a superseded configuration that was killed mid-run, 30 for the corrected
+revision, 30 for the `extra="ignore"` confirmation. Of these, 5 were spent on a
+configuration that never shipped.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
