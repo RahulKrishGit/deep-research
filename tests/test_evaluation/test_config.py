@@ -11,6 +11,7 @@ from deep_research.evaluation import config as evaluation_config
 from deep_research.evaluation.config import (
     GitMetadata,
     SecretLeakError,
+    agent_prompt_fingerprint,
     build_runtime_config,
     contains_secret,
     dataset_name,
@@ -32,6 +33,20 @@ from deep_research.utils.config import (
     EvaluationConfig,
     LLMConfig,
 )
+
+# The Critic's recorded ``target_prompt_fingerprint`` after the
+# ``unsupported_claims`` definition was clarified to the lenient reading with a
+# contrary-evidence override. Superseded: ``bf86f19981a6``.
+#
+# This is a **drift alarm, not an attribution mechanism**. Because
+# ``agent_prompt_fingerprint`` hashes the whole shared ``agents.prompts`` module,
+# this value moves when *any* agent's prompt text changes — that is what makes it
+# useful as a "did a prompt edit land" signal, and useless for saying whose. And
+# attribution is recoverable anyway while the tree is clean: artifacts record
+# ``git_commit``, so the change is explained by its diff. Attribution is genuinely
+# lost only when a fingerprint was recorded from a dirty tree whose exact source
+# snapshot was not kept.
+CRITIC_PROMPT_FINGERPRINT = "2c0bd1210e21"
 
 NOW = datetime(2026, 8, 16, 10, 15, 0, tzinfo=timezone.utc)
 GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
@@ -310,6 +325,45 @@ def test_judge_prompt_fingerprint_is_unchanged_by_transport_provenance() -> None
     build(settings=ConfigSettings(llm=LLMConfig(provider="openai")))
 
     assert judge_prompt_fingerprint(rubric_version=1) == baseline
+
+
+def test_the_critic_target_fingerprint_is_pinned_as_a_drift_alarm() -> None:
+    """A prompt edit must be a conscious act, not a silent invalidation.
+
+    Before this pin, the Critic's ``target_prompt_fingerprint`` was recorded on
+    every artifact but asserted nowhere, so a prompt change would move it without
+    any test noticing — unlike the judge fingerprint, which has been pinned since
+    it was first introduced.
+    """
+    assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
+    assert agent_prompt_fingerprint("critic") != "bf86f19981a6"
+
+
+def test_the_target_fingerprint_covers_the_shared_prompt_module() -> None:
+    """Record why the pin above cannot attribute a change to one agent.
+
+    ``agent_prompt_fingerprint`` hashes the agent's own module *and* the shared
+    ``agents.prompts`` library, so clarifying one sentence of one agent's contract
+    moves the recorded fingerprint for all six. Verified here rather than assumed,
+    because it changes how a fingerprint move should be read.
+    """
+    fingerprints = {
+        name: agent_prompt_fingerprint(name)
+        for name in (
+            "critic",
+            "planner",
+            "researcher",
+            "synthesizer",
+            "fact_checker",
+            "source_evaluator",
+        )
+    }
+
+    assert len(set(fingerprints.values())) == len(fingerprints)
+    # Every agent's value is derived from the same shared module, so a change to
+    # that module is visible in all of them; the per-agent component is what keeps
+    # the values distinct.
+    assert fingerprints["critic"] == CRITIC_PROMPT_FINGERPRINT
 
 
 def test_changing_the_planner_final_budget_refingerprints_the_configuration() -> None:

@@ -487,3 +487,41 @@ def test_the_review_prompt_describes_the_report_boundaries() -> None:
     # The tool-aware prompt still belongs to the ReAct spot-check loop.
     assert "web_search" in CRITIC_SYSTEM_PROMPT
     assert "query_memory" in CRITIC_SYSTEM_PROMPT
+
+
+def test_unsupported_claims_are_defined_leniently_with_an_override() -> None:
+    """Attribution counts as support, unless evidence contradicts it.
+
+    Measured: the earlier wording — "statements the report makes that no cited
+    source or verified claim backs" — admitted two readings, and the Critic took
+    the strict one. Live canary judge rationales report 4, 8 and 5 unsupported
+    claims, reasoned from "outside the two verified claims" while the report
+    attributes those statements inline to named sources.
+
+    Strictness is self-defeating here for a structural reason: claim extraction
+    is deliberately partial (it selects only the most load-bearing claims), so
+    absence from the digest would function as evidence of unsupportedness, and
+    `route_decision` consults `unsupported_claims` after the score and gaps
+    checks, so over-reporting forces refinement on runs that would otherwise be
+    accepted.
+
+    The override matters as much as the leniency: a bare citation must not
+    survive a claim verdict or spot-check evidence that contradicts it.
+    """
+    prose = " ".join(CRITIQUE_INSTRUCTION.split())
+
+    # Lenient by default.
+    assert "neither clearly attributed to one of the report's cited sources" in prose
+    assert "nor backed by a verified claim" in prose
+    # Absence from the digest is explicitly not evidence of unsupportedness.
+    assert "the claim digest is deliberately partial" in prose
+    assert "absence from it is not evidence of unsupportedness" in prose
+    assert (
+        "Do not mark a cited statement unsupported solely because it lacks a "
+        "separate verified-claim entry" in prose
+    )
+    # …and the override keeps the lenient reading from laundering citations.
+    assert "A contrary claim verdict or spot-check evidence still makes a " in prose
+    assert "statement unsupported, however it is cited" in prose
+    # The superseded strict wording must be gone.
+    assert "that no cited source or verified claim backs" not in prose
