@@ -1429,3 +1429,89 @@ authorization. If it fails again, the artifact's
 object was produced at all (`category=json_invalid`, `field_paths=("$",)`) or
 whether valid JSON arrived in the wrong shape (a named path), which is the
 distinction the previous three diagnoses could not make.
+
+## 78. DeepSeek Tool-Call Capability Gate — BLOCKED; FORCED TOOL CHOICE REJECTED UNDER THINKING
+
+Date: 2026-09-11. Candidate: `6cf0839` on `codex/cross-agent-planner-fix-parity`.
+Plan: `docs/superpowers/plans/2026-09-11-tool-call-structured-transport.md`.
+
+### Scope and authorization
+
+The user authorized exactly 15 DeepSeek chat-completion requests: five
+`tool_choice` shapes across three unique effective request settings. No
+LangSmith tracing, no Tavily or search, no application tool execution, no
+evaluation harness, and no repetition. The probe is preserved at
+`output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/probe.py`. A dry run
+enumerated the inventory (**15** requests) and was reviewed before `--execute`
+ran.
+
+### Effective settings probed
+
+| # | Model | Thinking | Effort | Budget |
+| --- | --- | --- | --- | --- |
+| 1 | `deepseek-v4-flash` | `enabled` | `high` | `32768` |
+| 2 | `deepseek-v4-flash` | `disabled` (control) | `none` | `32768` |
+| 3 | `deepseek-v4-flash` | `enabled` | `max` | `32768` |
+
+The inventory deduplicated twelve agent-and-tier combinations to these three
+because every agent resolves to the same model. Setting 3 is the Critic
+evaluation's actual target effort, and setting 2 is the explicit disabled
+control.
+
+### Result matrix
+
+| Setting | `function` (specific) | `"required"` | `"auto"` | omitted | `"none"` (control) |
+| --- | --- | --- | --- | --- | --- |
+| thinking `enabled`, `high` | **400** | **400** | OK, 1 call, valid | OK, 1 call, valid | OK, 0 calls |
+| thinking `disabled` | OK, 1 call, valid | OK, 1 call, valid | OK, 1 call, valid | OK, 1 call, valid | OK, 0 calls |
+| thinking `enabled`, `max` | **400** | **400** | OK, 1 call, valid | OK, 1 call, valid | OK, 0 calls |
+
+- `function` and `required` failed with `BadRequestError`, HTTP `400`, and were
+  classified `tool_choice_rejection: true` by the probe's local check.
+- Every `auto` and `omitted` success returned `finish_reason=tool_calls` with
+  exactly one correctly named `ProbeAnswer` call whose arguments passed
+  `ProbeAnswer.model_validate_json` with `score == 1`.
+- The `"none"` negative control returned `finish_reason=stop` with zero tool
+  calls in all three settings, so the endpoint honours `tool_choice` rather than
+  ignoring it. The control therefore passes and the matrix is trustworthy.
+
+### Decision — `BLOCKED_CAPABILITY` for the forced-call hypothesis
+
+Applying the plan's Task 0 Step 3 table:
+
+- **â€œFunction-specific has a classified tool-choice rejection for a required
+  setting, but `required` succeeds for every required settingâ€** â†’ does **not**
+  apply. `required` fails identically at `400` wherever thinking is enabled.
+- **â€œOnly `auto` or omitted choice returns calls with the configured thinking
+  modeâ€** â†’ **applies.** Both forced shapes are rejected precisely when thinking
+  is `enabled`, and both succeed when it is `disabled`.
+
+This blocks the forced-call hypothesis and triggers the plan's requirement to
+preserve the current fallback. It is **not** a claim that all tool calling is
+impossible: unforced calls demonstrably work, including with thinking enabled,
+and the plan forbids automatically enabling an unforced mode for all agents
+without its own decision and acceptance criteria.
+
+The result is consistent with the externally reported
+`deepseek-ai/DeepSeek-V3#1376` (â€œV4 rejects `tool_choice="required"` and
+specific function `tool_choice`â€) and with `pydantic/pydantic-ai#5193`
+(tool-based structured output failing for this model family), which is the
+reason the plan required this gate before any production change.
+
+### Consequence
+
+**Tasks 1â€“6 of the transport plan are NOT executed.** No production file was
+changed by this gate: `src/deep_research/`, `config.yaml`, and every test file
+are untouched at `6cf0839`. The `json_schema` Responses transport already in
+place from `2fe4e32` remains the active target structured transport, and
+`DeepSeekJudgeProvider` is unchanged.
+
+The residual Critic defect recorded as Finding 5 of
+`docs/superpowers/2026-09-11-critic-readiness-confirmation.md` — `json_invalid`
+at `$` in roughly one repetition in four to one in eight, provably not a budget
+problem — therefore remains **unfixed**. The remaining untested levers are an
+unforced tool mode (its own experiment, with its own acceptance criteria), the
+`/beta` strict-schema endpoint, and model or prompt changes. None is authorized
+by this entry.
+
+No live response body, prompt, secret, or reasoning content is recorded above.
