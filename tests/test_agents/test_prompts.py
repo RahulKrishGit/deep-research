@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents import prompts as prompts_module
 from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
@@ -476,6 +477,60 @@ def test_the_review_system_prompt_names_no_tools() -> None:
     lowered = CRITIC_REVIEW_SYSTEM_PROMPT.lower()
     for forbidden in ("web_search", "query_memory", "tool", "spot-check"):
         assert forbidden not in lowered, forbidden
+
+
+def test_the_critic_names_its_own_tool_convention() -> None:
+    """The Critic's two tool conventions must not be left to the model to guess.
+
+    Measured: the Critic ReAct decision request describes `web_search` and
+    `query_memory` in prompt prose while the API request carries **no** `tools`
+    parameter, because the loop invokes tools through the structured
+    `action` / `tool_name` / `tool_input_json` fields instead. In 30 first-attempt
+    probe requests, 17 returned DeepSeek tool-call markup as message text and
+    failed JSON validation, all with `finish_reason = stop`.
+
+    The sentence is localized to the Critic rather than added to the shared
+    `REACT_RESPONSE_CONTRACT`, because editing the shared contract would change
+    every ReAct agent while a Critic canary could only validate one of them.
+    """
+    prose = " ".join(CRITIC_SYSTEM_PROMPT.split())
+
+    assert "This request does not expose API-native tools." in prose
+    assert (
+        "Select a tool only by returning action=\"use_tool\" with tool_name and "
+        "tool_input_json" in prose
+    )
+    assert "never emit tool-call markup" in prose
+    # `use_tool` is the real enum member, not a paraphrase.
+    from deep_research.agents.steps import ReActDecision
+
+    assert "use_tool" in ReActDecision.model_json_schema()["properties"]["action"][
+        "enum"
+    ]
+
+
+def test_the_tool_convention_sentence_is_not_shared_with_other_agents() -> None:
+    """The fix must be carried by exactly one prompt constant.
+
+    `REACT_RESPONSE_CONTRACT` is rendered for every ReAct agent, so a sentence
+    added there would change Researcher, Fact Checker and the rest at once — and a
+    Critic canary could validate only one of them. Rather than enumerate the other
+    prompts by name, this asserts that exactly one prompt constant in the module
+    carries the sentence.
+    """
+    sentence = "This request does not expose API-native tools."
+    carriers = sorted(
+        name
+        for name, value in vars(prompts_module).items()
+        if isinstance(value, str)
+        and name.endswith(("_SYSTEM_PROMPT", "_CONTRACT", "_INSTRUCTION"))
+        and sentence in value
+    )
+
+    assert carriers == ["CRITIC_SYSTEM_PROMPT"], carriers
+    assert sentence not in REACT_RESPONSE_CONTRACT
+    # The tool-free review prompt names no tools at all, so it needs no convention.
+    assert sentence not in CRITIC_REVIEW_SYSTEM_PROMPT
 
 
 def test_the_review_prompt_describes_the_report_boundaries() -> None:
