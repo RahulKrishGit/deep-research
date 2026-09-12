@@ -1746,3 +1746,102 @@ Remaining untested levers, in the order the plan ranks them:
 
 No lever is authorized by this entry. No live response body, prompt text,
 secret, or reasoning content is recorded.
+
+## 82. Critic json_invalid ROOT CAUSE FOUND — DSML TOOL MARKUP EMITTED WITH NO TOOLS OFFERED
+
+Date: 2026-09-11. Candidate: `fcc05ac` on `codex/cross-agent-planner-fix-parity`.
+Probes: `output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/shape_probe.py`
+and `family_probe.py` (shape probe 30 requests; family probe 20 requests; both
+authorized).
+
+### What was measured
+
+The shape probe recorded a bounded structural signature for every response and
+stored no content:
+
+| First-attempt shape | Count | Length | First/last char |
+| --- | --- | --- | --- |
+| `starts_with_brace` (a real JSON object) | 14 / 30 | 3,837-5,191 | `{` / `}` |
+| `prose_no_json` | 16 / 30 | 424-660 | `<` / `>` |
+
+No fenced output, no truncated JSON, no prose-prefixed JSON, and no empty body.
+Every failure shares one form: a short response that begins with `<` and ends
+with `>`.
+
+The family probe then recorded a redacted profile of those short responses. Every
+one of them contains the identifier **`DSML`** together with `invoke`,
+`parameter`, `name`, `string`, and `true`, plus the tool names `web_search` and
+`query_memory`. No response content was stored.
+
+`DSML` is DeepSeek's native tool-call markup. The model is attempting to **invoke
+a tool**, and because the request offers none, the markup is returned as ordinary
+message text instead of a tool call, where local JSON validation rejects it.
+
+### Root cause
+
+The Critic's review request offers no tools, but its system prompt tells the model
+to use them.
+
+- Verified: the review request payload contains exactly
+  `input`, `max_output_tokens`, `model`, `reasoning`, `text`.
+  **No `tools` and no `tool_choice`.**
+- Verified: `critique_messages` renders no tool definitions.
+- Verified: `CRITIC_SYSTEM_PROMPT` states "Use web_search to spot-check a
+  suspected gap or a figure that looks wrong, and query_memory to compare this
+  report against what previous sessions established."
+
+The agent has two provider calls. The ReAct spot-check loop correctly offers both
+tools. The structured review call offers none, but reuses the same system prompt.
+The model follows the instruction, attempts a tool invocation, and emits DSML
+markup into a channel with no tool support.
+
+### Why this explains every earlier observation
+
+| Observation | Explanation |
+| --- | --- |
+| `json_invalid` at `field_paths` `("$",)` | DSML markup is not JSON at all. |
+| Intermittent, roughly 50% of first attempts | A sampling choice: answer directly, or try the tools first. |
+| Unaffected by `max_tokens` raises | The response is short, not truncated. |
+| Unaffected by prompt-level JSON wording | The model is not attempting malformed JSON; it is not attempting JSON. |
+| Empty-content hypothesis failed | The body is non-empty markup. |
+| Repair rescues most cases | The repair instruction demands JSON, and the model then complies. |
+| 3 of 30 hard failures | Cases where the repair attempt also emitted DSML markup. |
+
+### Contribution and correction of the record
+
+The system prompt line that advertises the tools was added in `9a89a24`
+("fix(critic): state that the report is already in front of it"). It was a
+reasonable-looking mitigation at the time, and it is plausibly a contributor to
+this failure mode rather than an innocent bystander. This entry corrects the
+record accordingly: the campaign's own earlier fix may have introduced the
+dominant residual failure.
+
+### Effective settings for this probe
+
+- Model `deepseek-v4-flash`, thinking `enabled`, **`reasoning_effort: high`**
+  (the resolved critic request setting).
+- Note the discrepancy recorded in the audit: the *live evaluation* profile
+  resolves target effort `max`, while this prompt path runs `high`. Any
+  reasoning-effort experiment must state which it changes.
+
+### Consequence
+
+A first-class fix is now available, and it is not a tuning change. The two
+candidate directions are:
+
+1. **Do not advertise tools the review call cannot use.** Give the structured
+   review its own system prompt that drops the tool-invocation sentence, keeping
+   the tool-aware prompt for the ReAct spot-check loop only.
+2. **Offer the tools to the review call** so a tool request is honoured as a real
+   tool call rather than emitted as text.
+
+The first is smaller and removes the mismatch; the second changes the review
+call's contract and cost profile. Neither is authorized by this entry.
+
+### Verification available cheaply
+
+The same 30-request shape probe can measure a candidate fix by counting
+`prose_no_json` first attempts, which is a direct, content-free measure of this
+exact defect. No live evaluation repetition is needed to test it.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
