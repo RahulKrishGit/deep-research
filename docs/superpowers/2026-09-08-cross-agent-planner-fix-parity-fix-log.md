@@ -2964,3 +2964,89 @@ without re-running those 30-request arms, which is not proposed here unless the
 review wants it.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 95. ReAct Prompt Sequence STOPPED — ARM B FAILS ITS GATE; OPTION (i) SENTENCE REVERTED
+
+Date: 2026-09-12. Candidate: `82e8ef7` plus this entry's revert.
+
+### The ruling
+
+The predeclared 0/30 DSML gate is **not** reinterpreted after the fact. Arm B
+returned 1/30, so **Arm B fails**, and the earlier instruction not to relax
+acceptance criteria controls. The prompt-variant sequence therefore **stops**:
+
+- option (i) — the convention sentence — failed (16/30);
+- candidate 1 — catalogue relocated into the contract — failed (9/30);
+- Arm B — the strongest observed prompt configuration — failed (1/30).
+
+A fourth 30-call prompt probe would invite selecting a favourable batch rather
+than establishing causality. The next technically coherent remedy is native tool
+handling, option (iii), which is outside the authorized scope. **Within the current
+scope the ReAct issue is blocked**, and neither the D2 canary nor D1 proceeds.
+
+### Statistics corrected
+
+Section 94's wording is superseded. The errors, and the correct statements:
+
+| Section 94 said | Correct |
+| --- | --- |
+| "≈10% upper bound" for 1/30 | The rule of three applies only to **zero** events. For 1/30 the Clopper-Pearson bounds are **14.86%** one-sided and **17.22%** two-sided. |
+| "Arm B reaches the control's DSML level" | Fisher `p = 1.0` means the experiment **cannot distinguish** 1/30 from 0/30; it does not demonstrate equivalence. |
+| "traded DSML for fencing" | Causal language the evidence does not support. Fencing appeared **only** in Arm B and needs classification; it was not shown to be caused by removing the paragraph. |
+
+Both bounds were recomputed here by bisection on the binomial CDF (scipy is not
+installed) and reproduce the review's figures exactly: 14.86% / 17.22% for 1/30,
+and 9.50% / 11.57% for 0/30. The probability of an unchanged 30-call batch
+observing zero failures at a nominal 1/30 rate is **36.17%**, which is why
+candidate 3 must not be run under the same design: it could pass 0/30 by sampling
+variation, and that would not establish that its catalogue formatting caused the
+improvement.
+
+Defensible summary of the matrix: **Arm B reduced the observed DSML rate
+substantially, while this sample was too small to distinguish its residual rate
+from the control.**
+
+### Option (i) reverted
+
+`8997a8a` is removed. It added a tool-convention sentence to
+`CRITIC_SYSTEM_PROMPT`, the sentence then failed its predeclared gate, and it had
+moved the shared prompt fingerprint without demonstrated benefit. A prompt change
+that fails its own gate must not keep a fingerprint move.
+
+Reverted in full:
+
+- the sentence, gone from `CRITIC_SYSTEM_PROMPT` (back to 728 chars);
+- its two dedicated tests, `test_the_critic_names_its_own_tool_convention` and
+  `test_the_tool_convention_sentence_is_not_shared_with_other_agents`, and the
+  import they needed;
+- `CRITIC_PROMPT_FINGERPRINT`, back to `2c0bd1210e21` — the post-Decision-2 value
+  — with the comment recording that `b6b9b768a517` was reverted rather than
+  superseded.
+
+The judge fingerprint is untouched at `74b9cddfbbee`. Offline gate after the
+revert: **588 passed**, `ruff check src tests` clean.
+
+### What remains true
+
+- The DSML mechanism is identified: the Critic ReAct decision request advertises
+  tools in prompt prose while the API request carries no `tools` parameter, and
+  the model sometimes answers with native tool markup instead of the structured
+  decision. Removing the advertising entirely took it from 16/30 to 0/30
+  (sections 92 and 94).
+- The `ReActDecision` schema does not cause the DSML mode, but is not exonerated
+  from every malformed-output mode: the control produced one non-markup JSON
+  failure in 30.
+- Six canary repetitions (section 88 and the D2 batch) plus these probes leave the
+  section-82 review-call fix intact: no `critic_report_review` fallback in either
+  canary batch, 15 of 15 hard gates each time.
+
+### What is blocked, and what would reopen it
+
+The ReAct decision path remains unreliable at a level one 30-call batch cannot
+resolve. Reopening a prompt-only path requires a **prospectively defined
+equivalence margin** and a study powered for that margin; it cannot be rescued by
+redefining the completed 0/30 gate. Otherwise the coherent remedy is native tool
+handling (option (iii)), which changes the provider/loop contract and is outside
+the authorized scope.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
