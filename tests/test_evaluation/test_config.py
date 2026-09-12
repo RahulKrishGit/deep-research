@@ -34,11 +34,16 @@ from deep_research.utils.config import (
     LLMConfig,
 )
 
-# The Critic's recorded ``target_prompt_fingerprint`` after the Critic-only
-# tool-convention sentence was added to ``CRITIC_SYSTEM_PROMPT``, so that the
-# ReAct decision request states which of its two tool conventions is in force.
-# Superseded: ``2c0bd1210e21`` (post-``unsupported_claims`` clarification) and
-# ``bf86f19981a6`` (as recorded on the live canary artifacts).
+# The Critic's recorded ``target_prompt_fingerprint`` after the
+# ``unsupported_claims`` definition was clarified to the lenient reading with a
+# contrary-evidence override (fix-log section 89). Superseded: ``bf86f19981a6``,
+# the value recorded on the live canary artifacts.
+#
+# A later commit added a tool-convention sentence to ``CRITIC_SYSTEM_PROMPT`` and
+# moved this value to ``b6b9b768a517``. That sentence failed its predeclared 0/30
+# DSML gate (16 of 30 first attempts still returned tool-call markup), so it was
+# reverted — see fix-log sections 91 and 95 — and the pin moved back. A prompt
+# change that does not demonstrate benefit must not keep a fingerprint move.
 #
 # This is a **drift alarm, not an attribution mechanism**. Because
 # ``agent_prompt_fingerprint`` hashes the whole shared ``agents.prompts`` module,
@@ -48,7 +53,7 @@ from deep_research.utils.config import (
 # ``git_commit``, so the change is explained by its diff. Attribution is genuinely
 # lost only when a fingerprint was recorded from a dirty tree whose exact source
 # snapshot was not kept.
-CRITIC_PROMPT_FINGERPRINT = "b6b9b768a517"
+CRITIC_PROMPT_FINGERPRINT = "2c0bd1210e21"
 
 NOW = datetime(2026, 8, 16, 10, 15, 0, tzinfo=timezone.utc)
 GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
