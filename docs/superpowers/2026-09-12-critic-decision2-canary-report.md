@@ -55,9 +55,14 @@ Fingerprint moved `bf86f19981a6 → 2c0bd1210e21`. Judge fingerprint unchanged
 
 ## 3. The canary result
 
-`agent critic --tier live`, three repetitions. Cost: **13 model calls** — 3, 3 and
-7 — not the ~20 I estimated, because the two failing runs aborted the spot-check
-phase after two attempts each.
+`agent critic --tier live`, three repetitions. Cost: **13 target-agent calls** — 3,
+3 and 7 — not the ~20 I estimated, because the two failing runs aborted the
+spot-check phase after two attempts each. **These are target calls only.** Each
+repetition also invoked the judge once (every repetition has `judge.status =
+scored` with zero diagnostics, so no judge repair occurred), making the batch
+**16 model requests in total**. The earlier batch (section 88) was 20 target calls
+plus 3 judge calls = 23 requests, not the 20 I reported. Paid-run accounting should
+use the total.
 
 | Rep | Status | Gates | Deterministic | Judge | Aggregate | Fallback | ReAct stop | Model calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -112,25 +117,43 @@ the second. The mechanism was disconfirmed first.
 
 ---
 
-## 5. This failure mode predates the change
+## 5. This failure mode predates the change — **corrected**
 
-Every recorded live Critic repetition, by fallback operation:
+**Correction accepted.** My first version of this section claimed the mode was
+pre-existing on the strength of `cccc139-r3`. That artifact's ReAct fallback was
+`kind = output_limit` with **no diagnostics** — an output-limit failure from the
+4096-token configuration era, **not** the current `schema_output` / `json_invalid`
+mode. It shows that *a* ReAct fallback predates this change; it does **not** show
+that *this* failure mode does. Before this batch, `react_decision` +
+`json_invalid` had never been observed.
 
-| Operation | Repetitions with a fallback | Which |
+### Enumeration rule and totals — published so they can be reconciled
+
+Rule used: every `results.json` under `output/evaluations/**` in this worktree with
+`agent_name == "critic"`, counting one entry per repetition inside each
+`cases[].repetitions[]` list.
+
+| | My scan | Your scan |
 | --- | --- | --- |
-| `critic_report_review` | 6 | the section-82 family, now fixed |
-| `react_decision` | 3 | `cccc139-r3` (**before** this change), plus reps 1 and 2 here |
+| Pre-D2 live repetitions | **20** | 22 |
+| `critic_report_review` fallbacks (pre-D2) | **6** | 7 |
+| `react_decision` fallbacks (pre-D2) | **1** (`cccc139-r3`, `output_limit`) | 1 |
 
-So `react_decision` fallbacks occurred once in the 20 live Critic repetitions
-preceding this batch (about 5%) and twice in three here. **Two in three does not
-establish a rate.** What it does establish is that the mode exists independently of
-this change and can cost a run outright.
+**I cannot reproduce 22 / 7 / 1.** The worktree holds exactly 23 live critic
+repetitions (20 pre-D2, 3 in this batch) and 3 controlled ones; the main checkout's
+`output/evaluations/` contains **zero** critic repetitions. If your 22 comes from a
+superset — LangSmith experiment history, a deleted artifact, another worktree — the
+two extra repetitions and the seventh review fallback are worth naming, because
+they would change the pre-D2 denominator for the review-call rate. The corrected
+conclusion does not depend on it: the specific `json_invalid`-on-ReAct mode has
+**0 occurrences in 20 pre-D2 repetitions** under my rule and 0 in 22 under yours.
 
-It is also the **same failure family as the section-82 defect** — a structured call
-whose response is not JSON — but on the ReAct path instead of the review path, and
-undiagnosed. The retained traces carry telemetry only (`configured_max_tokens`,
-`finish_reason_category`, `request_attempt`, `structured_attempt`, `usage`) and no
-text, so the response shape cannot be classified from what was kept.
+### The rest of the scan
+
+Across all 23 live critic repetitions in this worktree, fallbacks by operation:
+`critic_report_review` 6 (all pre-D2, the section-82 family, now fixed) and
+`react_decision` 3 (`cccc139-r3` = `output_limit` pre-D2; this batch's r1 and r2 =
+`json_invalid`).
 
 ---
 
@@ -207,3 +230,87 @@ Constraint reminders: one change at a time, each paid batch authorised separatel
 with a stated call count before it runs, and any change to `prompts.py` moves the
 recorded target fingerprint for **all six agents** because
 `agent_prompt_fingerprint` hashes the shared module.
+
+---
+
+## 10. Update — the shape probe ran, reproduced the failure, and names the mechanism
+
+You chose **(a)**, the exact-request-shape probe. It has run.
+
+### What was sent
+
+30 independent **first-attempt** requests, no repair retry, so exactly 30 HTTP
+calls (the SDK client has retries disabled and the probe calls it directly).
+Built through the provider's own helpers rather than reconstructed by hand, and
+verified before spending:
+
+| Property | Value |
+| --- | --- |
+| Schema | `ReActDecision` |
+| Wire messages | `system`, `user`, `system` (provider-appended schema) |
+| Reasoning effort | **`max`** — the probe refuses to run otherwise, because loading the repo `.env` sets the global effort to `high` and only the evaluation runtime raises it to `max` |
+| Model | `deepseek-v4-flash` |
+| `max_output_tokens` | 32768 |
+| Temperature | **not sent** (thinking mode) |
+| Tool descriptors | `web_search`, `query_memory` |
+| Request keys | `model`, `reasoning`, `input`, `max_output_tokens`, `text` — **no `tools`** |
+
+### Result
+
+| Measure | Value |
+| --- | --- |
+| `not_json_start` (markup) | **17 / 30 (57%)** |
+| `starts_with_brace` (valid JSON) | 13 / 30 (43%) |
+| Schema validation | 17 invalid / 13 valid |
+| Finish reason | **`stop` — 30 / 30** |
+| Response length | 90–818 chars (markup 90–818; valid JSON 368–895) |
+| Markup markers | every failing response contains `DSML`, `invoke`, `parameter` and a tool name; first char `<`, last char `>` |
+| Truncation | none; 2 of 30 had unbalanced braces |
+
+### The mechanism
+
+**Every failing response is DSML tool-call markup emitted as plain text**, with
+`finish_reason = stop` — so it is not truncation, not a budget problem, and not a
+parse quirk. This is the **section-82 mechanism exactly**, on the other call path:
+the request describes tools in prompt prose while the API request carries **no
+`tools` parameter**, so the model tries to invoke a tool and the markup lands in
+message text.
+
+The review call was fixed in section 82 by *removing* the tool language, because
+that call needs no tools. **That fix is unavailable here**: the ReAct decision call
+is the tool-invoking loop. Its design expresses tool use through the structured
+`action` / `tool_name` / `tool_input_json` fields, while the prompt also presents a
+tool catalogue — so the model has two conventions available and sometimes picks the
+native one.
+
+### Why the canary only fails occasionally
+
+Production wraps this call in the one-repair flow, so the observed per-run fallback
+rate is roughly the first-attempt rate times the repair's failure rate. The two
+canary runs that fell back had **both** attempts return `json_invalid`. A 57%
+first-attempt rate therefore does not imply a 57% run-failure rate — but it does
+mean **the ReAct decision call depends on the repair retry to function**, and pays
+for it in requests. That reframes the section-88/§3 comparison: the two fallbacks
+were expected at this first-attempt rate, not bad luck.
+
+### Next hypothesis, per your gate
+
+You asked that the structural signatures determine the next hypothesis before any
+further canary. They point at the tool-convention collision above, and the
+candidate remedies are prompt-level or architectural:
+
+- **(i)** state in the ReAct contract that tool use must be expressed only through
+  `action` / `tool_name` / `tool_input_json`, and that no tool-call markup may
+  appear in the response;
+- **(ii)** change how the tool catalogue is presented so it does not read as a
+  native API tool list;
+- **(iii)** pass `tools` for real and consume native tool calls — an architecture
+  change to the ReAct loop, since it currently consumes a decision object.
+
+I have **not** run another canary and have not changed any prompt. My lean is (i)
+first, because it is the smallest change that addresses the mechanism directly, and
+because (iii) would replace a measured design rather than repair it.
+
+Revised ask: **which remedy, and is (i) acceptable as the next single change to
+validate?** A canary for it would be about 23 requests (3 repetitions × 7–8 target
+calls plus 3 judge calls), authorised separately.
