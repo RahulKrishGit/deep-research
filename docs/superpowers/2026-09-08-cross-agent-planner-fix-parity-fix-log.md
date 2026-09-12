@@ -2055,18 +2055,25 @@ By the rule of three, 0/30 bounds the first-attempt failure rate at about 10%
 with 95% confidence, against a measured 53% at baseline and a `json_invalid` rate
 of 22% (11/50) in the live evaluation. Wall time was 3m48s for 30 requests.
 
-### Confound: reasoning effort changed with the prompt
+### CORRECTION: the effort was `high`, and the prompt fix is isolated
 
-The baseline was measured at `reasoning_effort: high` (section 82 records the
-resolved critic setting). This run used **`max`**, because `llm.reasoning_effort`
-is now `max` globally and the probe builds its provider from `settings.llm`
-rather than from `resolve_for("critic")`. Two variables therefore changed at
-once, and this run does **not** isolate the prompt fix from the effort change.
+This entry first claimed the run used `reasoning_effort: max` and that effort was
+therefore a confound. **That was wrong, and the opposite is true.**
 
-It is still the right measurement for the decision at hand: `max` is the
-production setting the user selected, so this measures the configuration that
-would ship. Isolating the two would require a further 30 requests with the old
-prompt at `max`, which this entry does not authorize.
+Loading the API key required the main repository's `.env`, which sets
+`LLM_REASONING_EFFORT=high`, and `load_config` applies environment overrides
+*after* the YAML file (`config.py:469`), so the environment value won: the probe
+ran at **`high`**, the same effort as the section 82 baseline. Verified by running
+the probe's own dry run with and without that file loaded: it reports `high` with
+the file and `max` without it.
+
+The consequence is stronger than what was claimed. Baseline and post-change run
+share the prompt's only other variable, so **16/30 -> 0/30 is attributable to the
+prompt revision alone**, with effort held constant.
+
+The gap this leaves is the other one: the live evaluation runs at `max`
+(`evaluation.target_reasoning_effort`), which the probe did **not** measure. The
+shipping configuration's prompt behaviour is still unmeasured by this probe.
 
 ### Prompt provenance — the question "was the right prompt sent"
 
@@ -2117,5 +2124,104 @@ or whether the evaluation aggregate (0.6 x judge + 0.4 x deterministic) clears t
 does not authorize.
 
 Paid-run ledger: **30 requests** (this probe). One failed launch sent 0.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 86. Judge Schema Failures — `strict` REJECTED, RATIONALE BOUND EXCEEDED ON 5/30 FIRST ATTEMPTS
+
+Date: 2026-09-12. Candidate: `7460952` plus uncommitted working-tree changes on
+`codex/cross-agent-planner-fix-parity`. Probe:
+`output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/judge_probe.py`,
+34 requests total, user-authorized. Diagnosis only: **no fix is implemented or
+proposed as proven by this entry.**
+
+### Phase 1: every recorded judge failure, not a sample
+
+A scan of all local evaluation artifacts found 18 repetitions with a judge
+problem: `judge_schema_failure` 11 (2 live), `judge_output_limit` 6 (2 live),
+`no_evaluable_output` 1. Live field paths were `string_bounds` on `rationale`
+and `extra_forbidden` at `$`.
+
+`judge_output_limit` is **already resolved**: both live occurrences are at
+`750472b` (no judge budget) and `7f84378` (`judge_max_tokens: 8192`); `96fe8a9`
+raised the budget to 32768 and **no output-limit failure has occurred in the 11
+live repetitions since**. No prompt work is indicated for that class.
+
+`judge_schema_failure` is **current**: the most recent run (`035d3c5` r4)
+failed `string_bounds` on `rationale` and then `extra_forbidden`.
+
+### The prose prompt states no output contract
+
+`JudgeVerdict` requires `scores` and `rationale`, with
+`rationale: min_length=1, max_length=2000`, and forbids extra properties. The
+prose prompt mentions **none** of `rationale`, `json`, `example`, `field`,
+`character`, `object`, `keys`, or `2000`; its only hit for `score` concerns
+dimension scores. The contract exists only in the appended schema message
+(1,326 chars, no example instance), against a 1,393-char prose prompt.
+
+### Diagnostic A: `strict` is rejected by the transport
+
+`text.format` is sent with no `strict` flag, so `maxLength` and
+`additionalProperties` are advisory rather than enforced. Adding `strict: true`
+to an otherwise identical request returned **HTTP 400** on 3 of 3 attempts. A
+**control** — the same hand-built request with the flag omitted — was
+**ACCEPTED** and returned a schema-valid verdict, which attributes the 400 to
+`strict` itself rather than to the request shape.
+
+**This closes the transport lever.** The prompt is the only available lever for
+this failure class, exactly as the user's question anticipated. It is the same
+outcome as the earlier `/beta` strict-tools rejection (sections 78-79): this
+provider does not expose schema enforcement.
+
+### Diagnostic B: the bound violation is systematic, not marginal
+
+30 production judge requests at `reasoning_effort: max`:
+
+| Measure | Value |
+| --- | --- |
+| First attempts violating `maxLength=2000` | **5 / 30 (16.7%)**, `string_too_long` |
+| Rationale length, median | **1,735** (265 below the cap) |
+| Rationale length, min / max | 1,339 / 2,263 |
+| First attempts with extra top-level keys | **0 / 30** |
+| Keys emitted | `agent_specific`, `rationale`, `scores` every time |
+| Common dimensions scored | 6 every time |
+| Final outcomes | 30 `ok` — the repair flow rescued all 5 |
+
+The distribution sits against the bound rather than near the middle: the median
+leaves only 265 characters of headroom, so exceeding 2,000 is ordinary
+variation, not an outlier. The repair attempt recovered all five in this probe,
+which is why this input yielded no terminal `judge_schema_failure`; the live
+artifacts show that when the repair itself violates a constraint the judge does
+not run at all.
+
+`extra_forbidden` did not reproduce in 30 attempts, so it is rare compared with
+the bound violation and should not drive the revision.
+
+### Hypothesis, stated before any fix
+
+"The judge's `string_bounds` failures occur because the request relies on a
+schema constraint that the transport does not enforce and the prose never
+states. Stating the output contract in prose, including the 2000-character
+bound, will reduce the first-attempt violation rate below 5/30."
+
+This is **not yet tested**. The revision and its re-measurement are not
+authorized by this entry.
+
+### Input fidelity and its limits
+
+The judge input was reconstructed, not captured: the artifacts store no target
+output content, so the critique was rebuilt to the size the live evaluation
+produced (2,233-3,662 chars of JSON). The rubric, case, and prompt are the real
+frozen ones. A reconstructed input can shift the absolute rate, so the 16.7%
+figure characterizes this input; the live artifact rate of 2 schema failures in
+17 repetitions is the production reference point and is consistent with it.
+
+### Cost record
+
+34 requests authorized and 34 spent: 3 for diagnostic A, 1 for its control, 30
+for diagnostic B. A first attempt at diagnostic B sent **zero** requests — it
+failed locally because the probe never opened a session span, and `tracker.py:582`
+raises `RuntimeError` for a child span without one, before any HTTP call. The
+probe was corrected and re-run.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
