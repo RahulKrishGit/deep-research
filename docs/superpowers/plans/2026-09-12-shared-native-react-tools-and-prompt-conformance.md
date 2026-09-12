@@ -22,7 +22,7 @@
 - Never retain or expose provider reasoning, raw provider responses, prompts, tool arguments, secrets, or provider exception text in public errors, artifacts, logs, or review evidence. Offline tests use harmless sentinels.
 - Do not change `JudgeVerdict`, `JUDGE_SYSTEM_PROMPT`, `JUDGE_PROMPT_TEMPLATE`, Judge weights, score bands, or Judge routing. The pinned Judge prompt fingerprint must remain `74b9cddfbbee`.
 - Keep the Critic's tool-free review prompt, dynamic report fence, H1 envelope, score bands, examples, lenient `unsupported_claims` rule, score bands, and review reply format unchanged.
-- Do not add examples to other production-agent prompts. The Critic/Judge examples bracket their own score scales; copying them into extraction, planning, source scoring, verification, or synthesis would introduce task-specific anchors without supporting measurements.
+- Preserve the Critic/Judge complete weak/strong JSON examples and their score bands. Both examples must remain schema-valid; never show malformed JSON as a negative example. Preserve Source Evaluator's dimension-specific positive/negative prose anchors, but do not add a complete static JSON example whose invented URL would contradict the exact-dossier-URL rule. Do not add domain examples to planning, extraction, verification, or synthesis without a measurement that supports them.
 - No DeepSeek, OpenAI, Tavily, LangSmith, evaluation, live test, or other paid/network call is authorized by implementing Tasks 1-7. Task 8 stops for a separately stated request inventory and explicit authorization before each batch.
 - Preserve old artifacts. Every live run after the shared prompt and transport change uses a fresh output namespace and records the new commit, prompt fingerprint, and target ReAct transport.
 - Stage exact paths only. Every task ends with Ruff on touched Python, `git diff --check`, and an independently reviewable commit.
@@ -785,7 +785,17 @@ git commit -m "refactor(agents): share native ReAct tool selection"
 
 **Interfaces:**
 - Consumes: existing field-level instructions and provider-appended JSON schema.
-- Produces: `STRUCTURED_REPLY_FORMAT`, `PLANNER_PLAN_SYSTEM_PROMPT`, H1 request envelopes, and cross-agent prompt/transport congruence tests.
+- Produces: `STRUCTURED_REPLY_FORMAT`, `PLANNER_PLAN_SYSTEM_PROMPT`, H1 request envelopes, an explicit prompt-conformance matrix, and cross-agent prompt/transport congruence tests.
+
+The implementation must satisfy this matrix:
+
+| Operation class | Literal `JSON object` instruction | Request-owned H1 sections | Positive/negative cases | Score guidance |
+| --- | --- | --- | --- | --- |
+| Native ReAct turns | No; output selection is provider-native | Existing task structure | None | Not applicable |
+| Planner, Researcher, Fact Checker, Synthesizer tool-free calls | Exactly one final reply-format instruction | Yes | No invented domain examples; retain explicit empty/no-evidence behavior where valid | Not applicable |
+| Source Evaluator scoring | Exactly one final reply-format instruction | Yes | Dimension-specific strong/weak prose anchors; no static JSON object with a fake URL | One 0.0-1.0 direction, all three dimensions defined, current/superseded/undated recency cases explicit |
+| Critic review | Preserve current wording | Preserve current H1 plus computed report fence | Preserve two complete schema-valid weak/strong JSON examples | Preserve complete 1-10 bands without routing-threshold leakage |
+| Judge evaluation | Preserve current wording and fingerprint | Preserve current H1/H2 hierarchy | Preserve two complete schema-valid weak/strong JSON examples | Preserve complete 0.0-1.0 bands and explicit weights |
 
 - [ ] **Step 1: Write the failing Planner mismatch test**
 
@@ -838,6 +848,9 @@ For `plan_messages`, `extraction_messages`, `scoring_messages`,
 - keep the existing semantic response contract;
 - append `# Reply format\n{STRUCTURED_REPLY_FORMAT}` as the final section,
   matching their explicit prose reply contracts;
+- ensure this is the only prompt-owned output-shape sentence containing the
+  literal phrase `JSON object`; field semantics may say `return`, but must not
+  introduce a competing JSON convention;
 - keep evidence and findings inside the existing one-line/JSON renderers so
   embedded content cannot create a peer request heading. If a builder preserves
   raw multi-line Markdown, use the Critic's computed-fence helper rather than a
@@ -849,7 +862,41 @@ bound into agent schemas: measurements support those only for `JudgeVerdict`.
 Do not claim the heading/reply-format changes alone caused the earlier validity
 improvements; the six fresh canaries in Task 8 are the falsification test.
 
-- [ ] **Step 4: Add the cross-agent tool-free prompt inventory test**
+- [ ] **Step 4: Lock the scoring guidance and example scope**
+
+In `tests/test_agents/test_source_evaluator.py`, add
+`test_source_scoring_guidance_has_one_direction_and_anchor_for_every_dimension`.
+Before the existing dimension definitions in `SOURCE_SCORING_INSTRUCTION`, add
+this exact shared direction:
+
+```python
+"All three scores use one direction: 0.0 is weakest and 1.0 is strongest. "
+"Use intermediate values in proportion to the evidence in the dossier.\n"
+```
+
+In the `recency` definition, retain the exact neutral rule and add: `A clearly
+current version scores high; a demonstrably superseded source on a
+time-sensitive topic scores low.` Assert the rendered scoring request contains
+exactly one 0.0-to-1.0 direction, defines `authority`, `recency`, and `relevance`
+once each, retains both the strong and weak authority cases, retains the
+direct-versus-mention relevance cases, and retains `Use 0.5 when the excerpts
+carry no dating signal at all`. Assert it does not ask the model for
+`corroboration_score`, `overall_score`, or `low_confidence`, which remain locally
+computed.
+
+In the existing Critic and Judge prompt tests, parse every weak/strong example
+with `json.loads`, validate it with `CritiqueDraft` or `JudgeVerdict`, and assert
+the weak values fall inside the declared weak band and the strong values inside
+the declared strong band. Assert no parsed example contains an angle-bracket
+sentinel or a value rejected by its schema. Keep the Judge fingerprint at
+`74b9cddfbbee`; these are preservation tests, not Judge changes.
+
+For Planner, Researcher, Fact Checker, and Synthesizer, assert no production
+prompt labels a domain-content example as weak, strong, positive, or negative.
+Where the current contract permits an empty/no-evidence result, assert that
+behavior remains explicit instead of demonstrating invented content.
+
+- [ ] **Step 5: Add the cross-agent tool-free prompt inventory test**
 
 Build the real messages for each tool-free structured operation using existing
 fixtures. Check only the developer message against the finite registered tool
@@ -885,12 +932,13 @@ builders, not copied prompt strings. Include Planner plan, Researcher extraction
 Source Evaluator scoring, both Fact Checker operations, Synthesizer report, and
 Critic review.
 
-- [ ] **Step 5: Add heading and reply-format guards**
+- [ ] **Step 6: Add heading and reply-format guards**
 
 For every builder from Step 3, assert all request-owned heading lines start with
 exactly `# `, semantic fields remain named, the last section is `# Reply format`,
-and no output example was added. Retain existing Critic tests proving its dynamic
-fence cannot be closed by report content and its two score examples validate.
+the phrase `JSON object` appears exactly once, and no output example outside the
+matrix above was added. Retain existing Critic tests proving its dynamic fence
+cannot be closed by report content and its two score examples validate.
 
 Add a Judge control assertion:
 
@@ -901,7 +949,7 @@ assert judge_prompt_fingerprint(rubric_version=1) == "74b9cddfbbee"
 This test must pass before and after Task 5; a Judge fingerprint move is a stop
 condition, not a literal to update.
 
-- [ ] **Step 6: Run Task 5's green gate and commit**
+- [ ] **Step 7: Run Task 5's green gate and commit**
 
 Run:
 

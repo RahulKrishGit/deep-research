@@ -193,11 +193,27 @@ evidence supports.
 
 ### Apply only where the evidence supports it
 
-The weak/strong examples and full score bands stay on the Critic and Judge,
-because those calls choose a score on a continuous or ordinal scale. They are not
-copied into Planner, Researcher, Source Evaluator, Fact Checker, or Synthesizer:
-an invented domain example would anchor content and no measurement shows those
-calls need one.
+The complete weak/strong JSON examples and full score bands stay on the Critic
+and Judge, because those schemas have stable fields and those calls choose a
+holistic score on a continuous or ordinal scale. Both examples remain valid JSON;
+no production prompt demonstrates malformed output as a negative example.
+
+Source Evaluator is also a scoring call. Preserve its dimension-specific anchors
+for authoritative versus anonymous publishing and directly relevant versus
+merely mentioning the topic. Add one explicit score direction for all three
+dimensions and make recency's positive, negative, and neutral cases explicit:
+current material scores high, demonstrably superseded material on a
+time-sensitive topic scores low, and no dating signal remains exactly 0.5. Tests
+make that 0.0-1.0 direction and all three definitions non-contradictory. It does
+not receive a complete static JSON example because every returned URL must be
+copied from the current dossier; a made-up example URL would directly contradict
+that contract and could be copied into output.
+
+Complete output examples are not copied into Planner, Researcher, Fact Checker,
+or Synthesizer: those calls do not choose a score, an invented domain example
+would anchor content, and no measurement shows those calls need one. Their
+schema-valid empty/no-evidence behavior remains stated in their semantic
+contracts where the operation permits an empty result.
 
 The Judge prompt and `JudgeVerdict` remain byte-for-byte unchanged. Its prompt
 revision was not a clean universal success: naming fields created extra keys,
