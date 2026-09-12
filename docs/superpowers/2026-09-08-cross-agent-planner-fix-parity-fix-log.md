@@ -2627,3 +2627,85 @@ JSON. That distinguishes prose, markup, truncation and empty output without
 recording content. Request count to be stated and authorized before it runs.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 91. ReAct Tool-Convention Sentence — GATE FAILED 16/30; CATALOGUE VERSUS SCHEMA NOW CONFOUNDED
+
+Date: 2026-09-12. Candidate: `8997a8a`. Probe:
+`output/transport-probes/265e51af79c543eaaa8c9e90a07dc555/react_shape_probe.py`.
+Artifact: `react_shape_probe_30.jsonl` beside it. Cost: **30 requests**, no repair
+retry.
+
+### The predeclared gate failed
+
+The probe ran 30 first-attempt ReAct decision requests at the production
+configuration with a predeclared **0/30 DSML** gate.
+
+| Measure | Result | Gate |
+| --- | --- | --- |
+| DSML markup | **16 / 30 (53%)** | 0/30 — **FAILED** |
+| Valid JSON | 14 / 30 | — |
+| Schema validation | 16 invalid / 14 valid | — |
+| Finish reason | `stop` on 30 / 30 | — |
+| Response length | 95-1117 chars | — |
+
+So the explicit sentence added to `CRITIC_SYSTEM_PROMPT` in `8997a8a` —
+"This request does not expose API-native tools. Select a tool only by returning
+`action="use_tool"` with `tool_name` and `tool_input_json`; never emit tool-call
+markup." — **did not remove the failure**. By the review's predeclared rule, that
+falsifies the sentence as *sufficient* and makes option (ii) the next hypothesis.
+
+### The probe was corrected in the same step, so 57% -> 53% is not a before/after
+
+The earlier run used synthetic descriptors (`Synthetic web_search.`, empty
+argument schemas). This run used the real `WebSearchTool` and `QueryMemoryTool`
+metadata. Two things changed at once, so the drop from 17/30 to 16/30 **cannot be
+attributed to the sentence**: it is within noise either way. This run is a new
+baseline, not a controlled test of the sentence.
+
+The sentence is retained. It states something true about the request, it is
+localized to the Critic, and no measurement shows it causes harm — but it delivered
+no measurable benefit, and it moves the shared prompt fingerprint for all six
+agents (`bf86f19981a6 -> 2c0bd1210e21 -> b6b9b768a517`).
+
+The corrected probe also now writes a content-free JSONL artifact
+(`react_shape_probe_30.jsonl`: header, one line per sample, summary with the gate
+verdict) so the 16/30 outcome can be recounted from the workspace rather than
+trusted from the console.
+
+### A confound that has to be resolved before (ii) is actionable
+
+Option (ii) is "present the tool catalogue so it does not read as a native API tool
+list". That presumes the catalogue is the cause. The evidence for it is real but
+**confounded**:
+
+| Call | Tool catalogue in prompt | Decision schema | First-attempt DSML |
+| --- | --- | --- | --- |
+| Review request (section 85) | no (and names no tools) | `CritiqueDraft` | **0 / 30** |
+| ReAct decision (this entry) | yes | `ReActDecision` | **16 / 30** |
+
+Two things differ, not one: the catalogue **and** the schema. `ReActDecision`
+carries an `action` enum (`use_tool` | `finish`), a `tool_name` field and a
+`tool_input_json` string; `CritiqueDraft` has none of those. A schema that asks for
+tool fields may itself invite native tool markup, with the catalogue irrelevant.
+
+Transport, model, reasoning effort, token limit and the provider-appended schema
+mechanism are identical across the two calls, so those are excluded.
+
+### Proposed next step, and why it comes before implementing (ii)
+
+One more 30-request discriminating probe: the **same** ReAct request with the
+`## Tools` section removed and everything else unchanged — same schema, same
+system prompt, same budget, same descriptors available to the loop.
+
+- If DSML falls to 0/30, the catalogue is the cause and (ii) is well founded, with
+  a specific target: `render_tool_catalog`'s `- name: description Arguments:
+  {json}` shape, or the `## Tools` framing around it.
+- If DSML stays near 50%, the **schema** is implicated, (ii) would be the wrong
+  next change, and the hypothesis becomes the `ReActDecision` field set instead.
+
+Implementing (ii) blind costs the same 30 requests and cannot distinguish those
+outcomes. This probe is a refinement of the review's step 3, not a substitute for
+it: it is the measurement that makes (ii) actionable.
+
+Not authorized by this entry. No live response body, prompt text, secret, or
+reasoning content is recorded.
