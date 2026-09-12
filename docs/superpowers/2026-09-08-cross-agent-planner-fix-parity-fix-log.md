@@ -2534,3 +2534,96 @@ section 9 now lists these as accepted weaknesses, and both documents point at th
 commit range instead of a mutable tip.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 90. Decision-2 Canary — 2/3 FAILED, CAUSED BY A PRE-EXISTING `react_decision` FALLBACK, NOT BY THE CHANGE
+
+Date: 2026-09-12. Candidate: `fceb466` (Decision 2, section 89). Command:
+`agent critic --tier live`, three repetitions. Artifacts:
+`output/evaluations/live-critic-d2/critic/*/results.json`. Cost: **~20 model
+calls** (3 repetitions).
+
+### Result
+
+| Rep | Status | Gates | Deterministic | Judge | Aggregate | Fallback | ReAct stop |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | **FAILED** | 15/15 | 0.75 | 0.6825 | **0.7095** | **PRESENT** | **provider_error** |
+| 2 | REVIEW REQUIRED | 15/15 | 1.00 | 0.8225 | **0.8935** | **PRESENT** | **provider_error** |
+| 3 | **FAILED** | 15/15 | 0.75 | 0.5650 | **0.6390** | none | finished |
+
+Against section 88's batch (3 of 3 above the 0.75 threshold, no fallback, all
+`finished`), this is a clear deterioration: **1 of 3 passes**, and two runs carry
+a provider fallback. In all three the Critic again returned **score 5 with
+`should_continue = True`**, so the fixture did **not** move toward 7/end.
+
+### Cause: the ReAct decision call, not the changed contract
+
+The fallback diagnostics on repetitions 1 and 2 are:
+
+```
+operation = react_decision   kind = schema_output
+attempt 1: category=json_invalid, field_paths=['$']
+attempt 2: category=json_invalid, field_paths=['$']
+```
+
+Both attempts of the **ReAct decision** call returned text that was not JSON, so
+the spot-check phase ended in a typed fallback, which the judge is instructed to
+score as a fallback rather than as the review it could not produce. That is what
+drags those two aggregates below threshold.
+
+### The change is exonerated, and this was checked rather than assumed
+
+`CRITIQUE_INSTRUCTION` reaches the ReAct decision call **nowhere**:
+
+- It is used at exactly one site — `critique_messages` (`critic.py:431`), the
+  *review* request. Every other mention is an import or a comment.
+- Rendering the Critic's ReAct surface (system prompt plus
+  `_render_spot_check_guidance`) shows **neither** the new clause nor the
+  superseded strict wording.
+
+A tempting causal story — "the contract edit leaked into the ReAct prompt and broke
+it" — is therefore false, and the mechanism was disconfirmed before it was
+reported rather than after.
+
+### This failure mode is pre-existing and intermittent
+
+Scanning every recorded live Critic repetition by fallback operation:
+
+| Operation | Repetitions with a fallback |
+| --- | --- |
+| `critic_report_review` | 6 |
+| `react_decision` | 3 — `cccc139-r3`, and this batch's r1 and r2 |
+
+So `react_decision` had already occurred once in the 20 live Critic repetitions
+that preceded this batch (about 5%), and twice more here. Two observations in
+three runs is a small sample and does not establish a rate; it does establish that
+the mode exists independently of this change and can cost a run outright.
+
+This matters beyond bookkeeping: it is the **same failure family as section 82**
+— a structured call whose response is not JSON — but on the ReAct path rather than
+the review path, and so far undiagnosed. The recorded traces carry telemetry only
+(`configured_max_tokens`, `finish_reason_category`, `request_attempt`,
+`structured_attempt`, `usage`) and no text, so the response shape cannot be
+classified from what was retained.
+
+### Consequence for Decision 1
+
+Section 89's agreed sequence was: apply Decision 2, canary it, then decide. The
+precondition for Decision 1 holds — the fixture stayed at score 5 / `continue` in
+3 of 3 — but **two of those three runs were degraded by an unrelated provider
+fallback**, so this batch is a poor basis for a calibration conclusion and
+Decision 1 is **not** applied.
+
+The batch also does not cleanly measure Decision 2. Whatever the lenient definition
+did to the unsupported-claim count is confounded by the two fallbacks. Re-measuring
+after the ReAct failure is understood is the cheaper path.
+
+### Next step, not authorized here
+
+Diagnose the `react_decision` failure the way section 85 diagnosed the review
+call: a content-free shape probe that replays the ReAct decision request N times
+and records, per response, only a bounded structural signature — length, first and
+last characters, whether markup identifiers appear, whether the text parses as
+JSON. That distinguishes prose, markup, truncation and empty output without
+recording content. Request count to be stated and authorized before it runs.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
