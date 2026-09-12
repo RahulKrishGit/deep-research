@@ -2873,3 +2873,94 @@ not a departure from it: candidate 3 stays next in line if Arm B fails.
   being tool requests.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+## 94. Arm B — DSML 1/30 WITH TOOL INTENT PRESERVED; THE RESIDUAL MODE IS NOW FENCING
+
+Date: 2026-09-12. Candidate: `c1b2ef5`. Probe: `react_shape_probe.py` with
+`REACT_PROBE_ARM=arm_b`. Artifact: `react_shape_probe_30_arm_b.jsonl`. Cost:
+**30 requests**, no repair retry.
+
+### The arm matrix
+
+| Arm | System-prompt advertising | Catalogue placement | DSML | Fenced | Other invalid | Valid `use_tool` |
+| --- | --- | --- | --- | --- | --- | --- |
+| production | paragraph + convention sentence | standalone `## Tools` | 16 / 30 | 0 | 0 | not captured |
+| candidate 1 | paragraph + convention sentence | in the contract | 9 / 30 | 0 | 0 | not captured |
+| **arm_b** | **convention sentence only** | in the contract | **1 / 30** | **3** | 0 | **26 / 30** |
+| no_advertising | none | absent | 0 / 30 | 0 | 1 | 0 (no tools offered) |
+
+Arm B is exactly the cell the review specified: the candidate-1 user message
+**byte-identical**, the convention sentence retained, only the paragraph from "Use
+`web_search` to spot-check…" to "…enough to judge." removed, catalogue, schema,
+response contract and every provider setting unchanged. Verified before spending.
+
+### Statistics, computed independently
+
+Exact two-sided Fisher tests on the DSML counts:
+
+| Comparison | p |
+| --- | --- |
+| production 16/30 vs candidate 1 9/30 | **0.11537** |
+| candidate 1 9/30 vs arm_b 1/30 | **0.01218** |
+| production 16/30 vs arm_b 1/30 | **0.00002** |
+| arm_b 1/30 vs no_advertising 0/30 | **1.00000** |
+
+The first value reproduces the review's `≈0.115` exactly, which **confirms the
+review's correction and supersedes section 93's wording**: production -> candidate 1
+is directional only and does not establish that removing the standalone section
+contributes. The matrix does not prove both components contribute; what it shows is
+that Arm B — the paragraph removed, everything else held — is the arm that moves.
+
+The last value is the important one: **Arm B is statistically indistinguishable
+from the advertising-free control** (p = 1.0), while the control could not select a
+tool at all. Arm B reaches the control's DSML level *and stays functional*.
+
+### Gate verdict, stated precisely
+
+The predeclared gate is 0/30 DSML and Arm B returned **1/30**, so **the gate as
+written fails**. Two things belong beside that verdict rather than instead of it:
+1/30 and 0/30 are statistically indistinguishable by the same test (p = 1.0), and
+the single occurrence is 1 in 30 with a rule-of-three upper bound near 10%.
+
+If the gate is meant to be "indistinguishable from zero with tool intent intact",
+Arm B passes. If it is a literal zero, Arm B fails and candidate 3 is next as ruled.
+That is the review's call, not mine to assume.
+
+### The residual mode changed, and candidate 3 does not target it
+
+Arm B's four invalid responses are **3 fenced** and **1 DSML**:
+
+```
+run  5  first='`'  fence=True   markers=['web_search']                      len=787
+run  7  first='`'  fence=True   markers=['web_search']                      len=801
+run  8  first='<'  fence=False  markers=['DSML','invoke','parameter',...]   len=1218
+run 29  first='`'  fence=True   markers=['web_search']                      len=761
+```
+
+Fenced decisions (a ``` ```json ``` wrapper around an otherwise valid decision)
+appear in **no other arm**: production 0/30, candidate 1 0/30, control 0/30. So
+removing the advertising paragraph traded the dominant DSML mode for a smaller
+fencing mode, and fencing is now three quarters of Arm B's residual.
+
+Candidate 3 changes how catalogue *entries* are formatted. That targets DSML, which
+is now 1/30, and would not touch fencing. **The review's fallback rule assumed DSML
+would remain the dominant residual; it no longer is.** Worth re-ruling before
+spending 30 requests on candidate 3.
+
+### Viability is satisfied
+
+- **26 / 30 valid `use_tool`**, all `web_search`; **0 finish-only** — no degeneration
+  into control-like behaviour.
+- Response lengths 640-1218 chars, in the decision range, against the control's
+  3807-7957 full answers. The arm is making tool requests, not writing essays.
+
+### A measurement gap in my own earlier artifacts
+
+`intent` recording was added for this run, so `react_shape_probe_30.jsonl` and
+`react_shape_probe_30_candidate_1.jsonl` contain **no** `action`/`tool_name` data.
+Their `valid_use_tool` counts are therefore **absent, not zero**, and the table above
+marks them "not captured". No comparison of tool intent across arms is possible
+without re-running those 30-request arms, which is not proposed here unless the
+review wants it.
+
+No live response body, prompt text, secret, or reasoning content is recorded.
