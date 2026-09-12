@@ -200,7 +200,10 @@ CRITIQUE_INSTRUCTION = (
     "rationale: two to four sentences naming the concrete signals behind "
     "the score. Never restate the score alone.\n"
     "Do not decide whether research continues — this system computes that "
-    "from your score, your gaps, and the remaining budget."
+    "from your score, your gaps, and the remaining budget.\n"
+    "Reply with a single JSON object. Do not wrap it in Markdown code fences "
+    "and do not write any prose before or after it. The object must carry "
+    "exactly the fields described above."
 )
 
 

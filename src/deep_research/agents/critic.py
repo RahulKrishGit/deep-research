@@ -341,6 +341,14 @@ def critique_messages(
             f"{render_evidence(run, limit=CRITIC_EVIDENCE_CHARS)}"
         ),
         f"## Response contract\n{CRITIQUE_INSTRUCTION}",
+        (
+            "## Reply format\n"
+            "Return one JSON object with these five fields and no others:\n"
+            '{"score": <integer 1-10>, "gaps": [<string>, ...], '
+            '"unsupported_claims": [<string>, ...], '
+            '"recommended_queries": [<string>, ...], '
+            '"rationale": "<string>"}'
+        ),
     ]
     return [
         ChatMessage(role="developer", content=CRITIC_SYSTEM_PROMPT),

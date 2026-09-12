@@ -201,6 +201,65 @@ def test_the_critic_is_told_the_report_is_already_in_front_of_it() -> None:
     assert "do not call a tool only to fetch it" in CRITIC_SYSTEM_PROMPT
 
 
+def _review_body() -> str:
+    return critique_messages(
+        _task(),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[1].content
+
+
+def test_the_review_request_names_json_and_shows_its_shape() -> None:
+    """The request must say JSON, and show the object it wants.
+
+    Measured on the live-tested commit: the review prompt contained zero JSON
+    lines and never used the word JSON, while the judge prompt — which has never
+    recorded a ``json_invalid`` failure on the same model, transport, and effort
+    — contained 147 JSON lines. DeepSeek's JSON Output guide requires the word
+    "json" in the prompt and an example of the desired JSON format.
+
+    A 50-request baseline measured a 22% failure rate for this call, and all
+    failures were non-empty text that was not valid JSON, which is the mode this
+    contract targets.
+    """
+    body = _review_body()
+
+    assert "JSON" in body
+    assert "## Reply format" in body
+    for field in (
+        "score",
+        "gaps",
+        "unsupported_claims",
+        "recommended_queries",
+        "rationale",
+    ):
+        assert f'"{field}"' in body
+
+
+def test_the_reply_example_does_not_anchor_the_score() -> None:
+    """No concrete score may appear: an example number would bias scoring."""
+    body = _review_body()
+
+    for anchored in ('"score": 8', '"score": 7', '"score": 9', '"score": 1'):
+        assert anchored not in body
+    assert '"score": <integer 1-10>' in body
+
+
+def test_the_json_demand_preserves_the_scoring_contract() -> None:
+    """The JSON contract is additive; the scoring contract is unchanged."""
+    body = _review_body()
+
+    for requirement in (
+        "an integer from 1 to 10",
+        "list a gap only when closing it would materially change the",
+        "an empty list when the report is materially complete",
+        "Do not decide whether research continues",
+        "Never restate the score alone",
+    ):
+        assert requirement in body
+
+
 @pytest.mark.asyncio
 async def test_only_the_review_call_gets_the_operation_output_budget(
     tracker: Tracker,
