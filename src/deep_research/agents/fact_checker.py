@@ -34,6 +34,7 @@ from deep_research.agents.prompts import (
     AgentTask,
     render_finding_digest,
     render_source_quality,
+    render_structured_reply_format,
 )
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.researcher import merge_react_runs, render_evidence
@@ -85,6 +86,19 @@ class ClaimsDraft(ContractModel):
     """The provider-facing claim-extraction schema."""
 
     claims: list[ClaimDraft]
+
+
+# One example: the extraction contract above already states the empty-list
+# case, and an empty list is not the opposite end of a scale.
+_CLAIM_EXTRACTION_REPLY_EXAMPLES = (
+    (
+        "Example input: a finding from "
+        "https://evidence.example.test/report states that the measured "
+        "reduction was 12 percent.",
+        '{"claims":[{"text":"The example report measured a 12 percent '
+        'reduction.","source_urls":["https://evidence.example.test/report"]}]}',
+    ),
+)
 
 
 class ClaimTask(AgentTask):
@@ -161,13 +175,17 @@ def claim_extraction_messages(
     """Build the messages that request one structured claim draft."""
     findings = list(state.raw_findings)[:max_findings]
     sections = [
-        f"## Research question\n{state.original_question}",
-        f"## Retrieved findings\n{render_finding_digest(findings)}",
+        f"# Research question\n{state.original_question}",
+        f"# Retrieved findings\n{render_finding_digest(findings)}",
         (
-            "## Source quality\n"
+            "# Source quality\n"
             f"{render_source_quality(state.evaluated_sources)}"
         ),
-        f"## Response contract\n{CLAIM_EXTRACTION_INSTRUCTION}",
+        f"# Response contract\n{CLAIM_EXTRACTION_INSTRUCTION}",
+        (
+            "# Reply format\n"
+            f"{render_structured_reply_format(_CLAIM_EXTRACTION_REPLY_EXAMPLES)}"
+        ),
     ]
     return [
         ChatMessage(role="developer", content=CLAIM_EXTRACTION_SYSTEM_PROMPT),
@@ -262,6 +280,25 @@ class ClaimVerdictDraft(ContractModel):
     confidence: float
     evidence: list[str]
     contradictions: list[str]
+
+
+# Two examples, because the verdict set has opposite populated/empty shapes:
+# ``verified`` carries evidence, ``insufficient_evidence`` carries none. Both
+# are schema-valid; "negative" means weak evidence, never malformed JSON.
+_CLAIM_VERIFICATION_REPLY_EXAMPLES = (
+    (
+        "Verified example input: an independent study reports the same "
+        "measured reduction.",
+        '{"verdict":"verified","confidence":0.9,"evidence":["An independent '
+        'study reports the same measured reduction."],"contradictions":[]}',
+    ),
+    (
+        "Insufficient-evidence example input: no independent material was "
+        "retrieved.",
+        '{"verdict":"insufficient_evidence","confidence":0.0,"evidence":[],'
+        '"contradictions":[]}',
+    ),
+)
 
 
 def _search_urls(data: dict[str, object]) -> list[str]:
@@ -458,14 +495,18 @@ def claim_verification_messages(
     claimed = "\n".join(f"- {url}" for url in task.claim.source_urls)
     domains = ", ".join(independent) or "(none)"
     sections = [
-        f"## Claim\n{task.claim.text}",
-        f"## Sources that made the claim\n{claimed}",
-        f"## Independent domains retrieved\n{domains}",
+        f"# Claim\n{task.claim.text}",
+        f"# Sources that made the claim\n{claimed}",
+        f"# Independent domains retrieved\n{domains}",
         (
-            "## Retrieved evidence\n"
+            "# Retrieved evidence\n"
             f"{render_evidence(run, limit=evidence_chars)}"
         ),
-        f"## Response contract\n{CLAIM_VERIFICATION_INSTRUCTION}",
+        f"# Response contract\n{CLAIM_VERIFICATION_INSTRUCTION}",
+        (
+            "# Reply format\n"
+            f"{render_structured_reply_format(_CLAIM_VERIFICATION_REPLY_EXAMPLES)}"
+        ),
     ]
     return [
         ChatMessage(

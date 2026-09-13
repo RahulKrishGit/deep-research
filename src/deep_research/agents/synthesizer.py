@@ -32,6 +32,7 @@ from deep_research.agents.prompts import (
     render_claim_digest,
     render_finding_digest,
     render_source_quality,
+    render_structured_reply_format,
 )
 from deep_research.agents.report import (
     ReportSection,
@@ -103,6 +104,23 @@ class ReportDraft(ContractModel):
     executive_summary: str
     sections: list[ReportSectionDraft]
     uncertainty_notes: str
+
+
+# One example: the report contract above already states the empty
+# uncertainty-notes case, and there is no "empty report" case to show.
+_REPORT_REPLY_EXAMPLES = (
+    (
+        "Example input: a checked finding from "
+        "https://evidence.example.test/report supports a measured reduction "
+        "but supplies no evidence from other settings.",
+        '{"executive_summary":"The supplied evidence supports a measured '
+        'reduction, with uncertainty about transfer to other settings.",'
+        '"sections":[{"title":"Measured result","body":"The example study '
+        'reports the measured result and its stated limits.","source_urls":'
+        '["https://evidence.example.test/report"]}],"uncertainty_notes":'
+        '"Evidence from other settings was not supplied."}',
+    ),
+)
 
 
 class SynthesisTask(AgentTask):
@@ -336,22 +354,26 @@ def report_messages(
     claim_digest: int,
 ) -> list[ChatMessage]:
     """Build the messages that request one structured report draft."""
-    sections = [f"## Research question\n{task.instruction}"]
+    sections = [f"# Research question\n{task.instruction}"]
     if task.guidance.strip():
-        sections.append(f"## Context\n{task.guidance}")
+        sections.append(f"# Context\n{task.guidance}")
     sections.extend(
         [
             (
-                "## Verified and checked claims\n"
+                "# Verified and checked claims\n"
                 f"{render_claim_digest(list(task.claims)[:claim_digest])}"
             ),
             (
-                "## Retrieved findings\n"
+                "# Retrieved findings\n"
                 f"{render_finding_digest(list(task.findings)[:finding_digest])}"
             ),
-            f"## Source quality\n{render_source_quality(task.sources)}",
-            f"## Known limitations\n{render_limitations(task.limitations)}",
-            f"## Response contract\n{REPORT_INSTRUCTION}",
+            f"# Source quality\n{render_source_quality(task.sources)}",
+            f"# Known limitations\n{render_limitations(task.limitations)}",
+            f"# Response contract\n{REPORT_INSTRUCTION}",
+            (
+                "# Reply format\n"
+                f"{render_structured_reply_format(_REPORT_REPLY_EXAMPLES)}"
+            ),
         ]
     )
     return [

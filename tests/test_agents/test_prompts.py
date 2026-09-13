@@ -17,6 +17,8 @@ from deep_research.agents.prompts import (
     REPORT_INSTRUCTION,
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
+    STRUCTURED_EXAMPLE_NOTICE,
+    STRUCTURED_REPLY_FORMAT,
     SYNTHESIZER_SYSTEM_PROMPT,
     AgentTask,
     render_claim_digest,
@@ -25,6 +27,7 @@ from deep_research.agents.prompts import (
     render_scratchpad,
     render_source_dossier,
     render_source_quality,
+    render_structured_reply_format,
 )
 from deep_research.agents.sources import SourceGroup
 from deep_research.memory.entries import ScratchpadEntry
@@ -527,3 +530,63 @@ def test_unsupported_claims_are_defined_leniently_with_an_override() -> None:
     assert "statement unsupported, however it is cited" in prose
     # The superseded strict wording must be gone.
     assert "that no cited source or verified claim backs" not in prose
+
+
+# --- the shared structured reply format --------------------------------------
+
+def test_the_shared_reply_format_names_json_and_forbids_a_fence() -> None:
+    assert "JSON object" in STRUCTURED_REPLY_FORMAT
+    assert "no Markdown fence" in STRUCTURED_REPLY_FORMAT
+
+
+def test_render_structured_reply_format_normalizes_each_example() -> None:
+    rendered = render_structured_reply_format(
+        (
+            (
+                "Example input: an isolated case.",
+                '{ "b": 2,\n "a": 1 }',
+            ),
+        )
+    )
+
+    assert STRUCTURED_REPLY_FORMAT in rendered
+    assert STRUCTURED_EXAMPLE_NOTICE in rendered
+    assert "Example input: an isolated case.\nExample JSON output:\n" in rendered
+    # Compact, sorted, single-line, and never fenced.
+    assert '{"a":1,"b":2}' in rendered
+    assert "```" not in rendered
+
+
+def test_render_structured_reply_format_accepts_two_examples() -> None:
+    rendered = render_structured_reply_format(
+        (
+            ("Weak example input: a.", '{"score":1}'),
+            ("Strong example input: b.", '{"score":9}'),
+        )
+    )
+
+    assert rendered.count("Example JSON output:") == 2
+
+
+@pytest.mark.parametrize(
+    "examples",
+    [
+        pytest.param((), id="zero-examples"),
+        pytest.param(
+            (
+                ("One.", '{"a":1}'),
+                ("Two.", '{"a":2}'),
+                ("Three.", '{"a":3}'),
+            ),
+            id="three-examples",
+        ),
+        pytest.param((("Example input: x.", "{not json}"),), id="malformed-json"),
+        pytest.param((("Example input: x.", "[1, 2]"),), id="array-payload"),
+        pytest.param((("Example input: x.", '"scalar"'),), id="scalar-payload"),
+        pytest.param((("   ", '{"a":1}'),), id="blank-label"),
+        pytest.param((("Line one\nLine two", '{"a":1}'),), id="multi-line-label"),
+    ],
+)
+def test_render_structured_reply_format_fails_closed(examples) -> None:
+    with pytest.raises(ValueError):
+        render_structured_reply_format(examples)

@@ -16,7 +16,7 @@ import json
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
-from pydantic import Field, ValidationError
+from pydantic import Field, JsonValue, ValidationError
 
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
@@ -28,8 +28,10 @@ from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
     AgentTask,
     render_memory_guidance,
+    render_structured_reply_format,
 )
 from deep_research.agents.react import run_react_loop
+from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import (
     ReActDecision,
     ReActRun,
@@ -371,6 +373,91 @@ def render_evidence(run: ReActRun, *, limit: int) -> str:
     return "\n".join(lines) or "(no evidence retrieved)"
 
 
+def _payload_urls(tool_name: str, data: dict[str, JsonValue]) -> list[str]:
+    """The source URLs one successful payload actually carries.
+
+    Shapes are the real ones each tool returns: ``web_search[].results[].url``,
+    ``web_scraper.url``, ``document_reader.source``, and
+    ``query_memory[].matches[].source_url`` (optionally under ``metadata``).
+    A malformed entry contributes nothing rather than raising.
+    """
+    if tool_name == "web_search":
+        results = data.get("results")
+        if not isinstance(results, list):
+            return []
+        return [
+            entry["url"]
+            for entry in results
+            if isinstance(entry, dict) and isinstance(entry.get("url"), str)
+        ]
+    if tool_name == "web_scraper":
+        url = data.get("url")
+        return [url] if isinstance(url, str) else []
+    if tool_name == "document_reader":
+        source = data.get("source")
+        return [source] if isinstance(source, str) else []
+    if tool_name == "query_memory":
+        matches = data.get("matches")
+        if not isinstance(matches, list):
+            return []
+        urls: list[str] = []
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+            url = match.get("source_url")
+            if not isinstance(url, str):
+                metadata = match.get("metadata")
+                url = (
+                    metadata.get("source_url")
+                    if isinstance(metadata, dict)
+                    else None
+                )
+            if isinstance(url, str):
+                urls.append(url)
+        return urls
+    return []
+
+
+def retrieved_finding_urls(run: ReActRun) -> tuple[str, ...]:
+    """Every source URL this run actually retrieved, normalized and unique.
+
+    The provenance allow-list for extraction. Built only from successful,
+    non-empty evidence payloads: a failed call, an empty payload, a malformed
+    entry, and a write such as ``save_to_memory`` all contribute nothing, so a
+    URL the model invented or copied from a prompt example cannot enter
+    research state.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    for step in run.steps:
+        if not _has_evidence(step):
+            continue
+        result = _successful_result(step)
+        if result is None or not isinstance(result.data, dict):
+            continue
+        for url in _payload_urls(result.tool_name, result.data):
+            normalized = normalize_source_url(url)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            found.append(normalized)
+    return tuple(found)
+
+
+# One evidence-backed example. The response contract above still states the
+# empty-list case, which is valid and is not the opposite end of a scale.
+_FINDING_REPLY_EXAMPLES = (
+    (
+        "Example input: an example report at "
+        "https://evidence.example.test/report states that the measured "
+        "reduction was 12 percent.",
+        '{"findings":[{"content":"The example report measured a 12 percent '
+        'reduction.","source_url":"https://evidence.example.test/report",'
+        '"source_title":"Example report","confidence":0.8}]}',
+    ),
+)
+
+
 def extraction_messages(
     task: SubTopicTask,
     run: ReActRun,
@@ -382,14 +469,18 @@ def extraction_messages(
         f"- {criterion}" for criterion in task.sub_topic.success_criteria
     )
     sections = [
-        f"## Sub-topic\n{task.sub_topic.title}",
-        f"## Success criteria\n{criteria}",
-        f"## Retrieved evidence\n{render_evidence(run, limit=evidence_chars)}",
+        f"# Sub-topic\n{task.sub_topic.title}",
+        f"# Success criteria\n{criteria}",
+        f"# Retrieved evidence\n{render_evidence(run, limit=evidence_chars)}",
         (
-            "## Response contract\nReturn one finding per distinct, "
+            "# Response contract\nReturn one finding per distinct, "
             "source-backed claim. Use the exact source_url and source_title "
             "from the evidence above. Return an empty list when the evidence "
             "supports nothing."
+        ),
+        (
+            "# Reply format\n"
+            f"{render_structured_reply_format(_FINDING_REPLY_EXAMPLES)}"
         ),
     ]
     return [
@@ -403,15 +494,25 @@ def build_findings(
     *,
     sub_topic: SubTopic,
     extracted_at: str,
+    known_urls: Sequence[str],
 ) -> tuple[list[Finding], list[str]]:
     """Stamp drafts into ``Finding`` values, naming the ones that were dropped.
 
     Rejection reasons are generated here and never copied from provider
     output, so they are safe to record in ``ResearchError.details``.
+
+    ``known_urls`` is the provenance allow-list: the URLs this run actually
+    retrieved. A syntactically valid URL that was never retrieved — most
+    plausibly a copied prompt example — is dropped rather than entering
+    research state, which closes a gap the earlier shape-only check left open.
     """
     findings: list[Finding] = []
     rejected: list[str] = []
+    allowed = {normalize_source_url(url) for url in known_urls}
     for index, item in enumerate(draft.findings, start=1):
+        if normalize_source_url(item.source_url) not in allowed:
+            rejected.append(f"finding {index}: source url was not retrieved")
+            continue
         try:
             findings.append(
                 Finding(
@@ -751,6 +852,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             draft,
             sub_topic=task.sub_topic,
             extracted_at=self._clock().isoformat(),
+            known_urls=retrieved_finding_urls(run),
         )
         if not rejected:
             return findings, [], False

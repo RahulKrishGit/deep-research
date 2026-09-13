@@ -7,6 +7,7 @@ import pytest
 from deep_research.agents.source_evaluator import (
     AUTHORITY_WEIGHT,
     CORROBORATION_WEIGHT,
+    FALLBACK_REASONS,
     LOW_CONFIDENCE_THRESHOLD,
     RECENCY_WEIGHT,
     RELEVANCE_WEIGHT,
@@ -645,3 +646,51 @@ async def test_a_reputation_failure_is_visible_in_state_and_events(
     assert "source_evaluator_reputation_unavailable" in types
     completed = outcome.state_update["events"][-1]
     assert completed.metadata["reputation_failures"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_score_returned_for_an_example_url_is_ignored(
+    tracker: Tracker,
+) -> None:
+    """Copied example URLs must not become scores for real sources.
+
+    The reply-format examples use reserved ``.example.test`` URLs. A model that
+    echoes one back is scored against the real dossier URL list, so the real
+    group falls back to ``not_scored_by_model`` instead of being credited with
+    the example's numbers.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            SourceScoresDraft(
+                sources=[
+                    SourceScoreDraft(
+                        url="https://weak.example.test/post",
+                        authority_score=0.1,
+                        recency_score=0.5,
+                        relevance_score=0.2,
+                        rationale="Copied from the weak example.",
+                    ),
+                    SourceScoreDraft(
+                        url="https://strong.example.test/standard",
+                        authority_score=0.95,
+                        recency_score=0.9,
+                        relevance_score=0.95,
+                        rationale="Copied from the strong example.",
+                    ),
+                ]
+            )
+        ]
+    )
+    agent = _evaluator(tracker, completer)
+    state = _eval_state([_eval_finding("https://real.test/one", "Alpha")])
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [source.url for source in outcome.result.sources] == [
+        "https://real.test/one"
+    ]
+    real = outcome.result.sources[0]
+    assert real.low_confidence is True
+    assert real.rationale.startswith(FALLBACK_REASONS["not_scored_by_model"])

@@ -7,6 +7,10 @@ import json
 import pytest
 
 from deep_research.agents.critic import (
+    _CRITIQUE_HIGH_EXAMPLE_JSON,
+    _CRITIQUE_LOW_EXAMPLE_JSON,
+    _HIGH_EXAMPLE_SCORE,
+    _LOW_EXAMPLE_SCORE,
     ACCEPTANCE_SCORE,
     MAX_CRITIC_SCORE,
     MIN_CRITIC_SCORE,
@@ -203,6 +207,27 @@ async def test_the_spot_check_prompt_renders_the_report(
         "web_search",
         "query_memory",
     ]
+
+
+def test_the_critic_weak_and_strong_examples_are_valid_and_in_band() -> None:
+    """Preservation test for the Critic's already-specialized example pair.
+
+    Both examples must stay valid JSON that validates as ``CritiqueDraft``,
+    and each must sit inside the band its own label claims: 1-3 for the weak
+    example and 9-10 for the strong one. A malformed or out-of-band example
+    would teach the model the wrong scale.
+    """
+    weak = json.loads(_CRITIQUE_LOW_EXAMPLE_JSON)
+    strong = json.loads(_CRITIQUE_HIGH_EXAMPLE_JSON)
+
+    assert CritiqueDraft.model_validate(weak).score == _LOW_EXAMPLE_SCORE
+    assert CritiqueDraft.model_validate(strong).score == _HIGH_EXAMPLE_SCORE
+    assert 1 <= weak["score"] <= 3
+    assert 9 <= strong["score"] <= 10
+    # "Negative" is weak semantics, never malformed JSON: the weak example
+    # still carries populated lists.
+    assert weak["gaps"] and weak["unsupported_claims"]
+    assert strong["gaps"] is not None and strong["unsupported_claims"] == []
 
 
 def test_the_review_call_uses_a_prompt_that_names_no_tools() -> None:

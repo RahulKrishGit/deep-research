@@ -85,6 +85,28 @@ class ReactCall:
     max_tokens: int | None
 
 
+def native_turn_from_decision(decision: ReActDecision) -> NativeToolTurn:
+    """The provider-native turn a real provider would return for a decision.
+
+    Shared by every fake that scripts ReAct turns, so the conversion exists
+    once and both the agent and evaluation doubles answer with the same shape.
+    """
+    if decision.action == "use_tool":
+        return NativeToolTurn(
+            model="deepseek-v4-flash",
+            usage=TokenUsage(),
+            tool_call=NativeToolCall(
+                tool_name=decision.tool_name,
+                arguments_json=decision.tool_input_json,
+            ),
+        )
+    return NativeToolTurn(
+        model="deepseek-v4-flash",
+        usage=TokenUsage(),
+        final_answer=decision.final_answer,
+    )
+
+
 class ScriptedCompleter:
     """Serve queued responses instead of calling a provider.
 
@@ -131,20 +153,7 @@ class ScriptedCompleter:
         decision = self._decisions.pop(0)
         if isinstance(decision, BaseException):
             raise decision
-        if decision.action == "use_tool":
-            return NativeToolTurn(
-                model="deepseek-v4-flash",
-                usage=TokenUsage(),
-                tool_call=NativeToolCall(
-                    tool_name=decision.tool_name,
-                    arguments_json=decision.tool_input_json,
-                ),
-            )
-        return NativeToolTurn(
-            model="deepseek-v4-flash",
-            usage=TokenUsage(),
-            final_answer=decision.final_answer,
-        )
+        return native_turn_from_decision(decision)
 
     async def complete_structured(
         self,

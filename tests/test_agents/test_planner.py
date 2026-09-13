@@ -236,7 +236,7 @@ def test_plan_messages_carry_question_notes_and_requirements() -> None:
     assert "- web_search succeeded: 3 results" in body
     assert "- Enough." in body
     assert "between 3 and 7" in body
-    assert "## Repair" not in body
+    assert "# Repair" not in body
 
 
 def test_plan_messages_report_when_nothing_was_scoped() -> None:
@@ -252,7 +252,7 @@ def test_plan_messages_append_the_repair_section_only_when_given() -> None:
         repair="The previous plan was rejected.\n- problem one",
     )
 
-    assert "## Repair" in messages[1].content
+    assert "# Repair" in messages[1].content
     assert "- problem one" in messages[1].content
 
 
@@ -298,6 +298,31 @@ def _planner(
 def test_the_planner_declares_its_identity_and_tools() -> None:
     assert PlannerAgent.name == "planner"
     assert PlannerAgent.allowed_tools == ("query_memory", "web_search")
+
+
+def test_the_plan_request_is_tool_free_while_the_loop_prompt_is_tool_aware(
+    tracker: Tracker,
+) -> None:
+    """Transport and prompt must agree.
+
+    ``plan_messages`` builds the separate structured plan call, which sends no
+    tools. Reusing the ReAct system prompt there announced ``query_memory`` and
+    ``web_search`` to a request that could not accept them — the measured cause
+    of DeepSeek emitting tool markup into ordinary text. The loop prompt keeps
+    naming them, because that request really does carry the tools.
+    """
+    task = AgentTask(instruction="How much capacity can QEC reach?")
+    messages = plan_messages(
+        task, ReActRun(agent_name="planner", stop_reason="finished")
+    )
+
+    developer = messages[0].content
+    assert "query_memory" not in developer
+    assert "web_search" not in developer
+
+    loop_prompt = _planner(tracker, ScriptedCompleter()).system_prompt(task)
+    assert "query_memory" in loop_prompt
+    assert "web_search" in loop_prompt
 
 
 def test_build_task_carries_the_question_and_recalled_memory(
@@ -578,7 +603,7 @@ async def test_a_redundant_plan_is_repaired_once_and_then_accepted(
     assert outcome.result is not None
     assert outcome.result.repair_attempted is True
     repair_body = completer.calls[-1][2][1].content
-    assert "## Repair" in repair_body
+    assert "# Repair" in repair_body
     assert "repeat the same title" in repair_body
     assert "produce between 3 and 7" in repair_body
 

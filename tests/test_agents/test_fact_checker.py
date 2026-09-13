@@ -1052,3 +1052,28 @@ async def test_react_decision_output_limit_remains_a_conservative_fallback(
     assert completer.react_budgets == [
         AgentRuntimeConfig().react_decision_max_tokens
     ]
+
+
+def test_build_claim_drafts_drops_the_example_url() -> None:
+    """The claim-extraction example URL is not one of the collected findings."""
+    draft = ClaimsDraft(
+        claims=[
+            ClaimDraft(
+                text="Copied from the example.",
+                source_urls=["https://evidence.example.test/report"],
+            ),
+            ClaimDraft(
+                text="A real finding.",
+                source_urls=["https://real.test/one"],
+            ),
+        ]
+    )
+
+    claims, rejected = build_claim_drafts(
+        draft, known_urls=("https://real.test/one",)
+    )
+
+    assert [claim.text for claim in claims] == ["A real finding."]
+    assert rejected == [
+        "claim 1: no source url from the collected findings"
+    ]

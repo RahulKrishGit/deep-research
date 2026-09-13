@@ -33,6 +33,7 @@ from deep_research.agents.prompts import (
     SOURCE_SCORING_INSTRUCTION,
     AgentTask,
     render_source_dossier,
+    render_structured_reply_format,
 )
 from deep_research.agents.sources import (
     SourceGroup,
@@ -110,6 +111,29 @@ class SourceScoresDraft(ContractModel):
     """The provider-facing scoring schema for one evaluation pass."""
 
     sources: list[SourceScoreDraft]
+
+
+# Two examples, because scoring chooses a value on a continuous scale: the
+# weak and strong cases are the opposite ends of the same 0.0-1.0 direction,
+# and each is internally consistent with its own synthetic dossier.
+_SOURCE_SCORE_REPLY_EXAMPLES = (
+    (
+        "Weak example input: an anonymous, undated post at "
+        "https://weak.example.test/post only mentions the topic.",
+        '{"sources":[{"url":"https://weak.example.test/post",'
+        '"authority_score":0.1,"recency_score":0.5,"relevance_score":0.2,'
+        '"rationale":"The publisher is unidentified, there is no dating '
+        'signal, and the excerpt only mentions the topic."}]}',
+    ),
+    (
+        "Strong example input: a current primary standard at "
+        "https://strong.example.test/standard directly answers the topic.",
+        '{"sources":[{"url":"https://strong.example.test/standard",'
+        '"authority_score":0.95,"recency_score":0.9,"relevance_score":0.95,'
+        '"rationale":"A current standards body publication directly answers '
+        'the topic with primary material."}]}',
+    ),
+)
 
 
 class EvaluatedSources(ContractModel):
@@ -330,11 +354,15 @@ def scoring_messages(
         )
         for index, group in enumerate(task.groups, start=1)
     ]
-    sections = [f"## Research question\n{task.instruction}"]
+    sections = [f"# Research question\n{task.instruction}"]
     if task.guidance.strip():
-        sections.append(f"## Context\n{task.guidance}")
-    sections.append("## Sources\n" + "\n\n".join(dossiers))
-    sections.append(f"## Scoring contract\n{SOURCE_SCORING_INSTRUCTION}")
+        sections.append(f"# Context\n{task.guidance}")
+    sections.append("# Sources\n" + "\n\n".join(dossiers))
+    sections.append(f"# Scoring contract\n{SOURCE_SCORING_INSTRUCTION}")
+    sections.append(
+        "# Reply format\n"
+        f"{render_structured_reply_format(_SOURCE_SCORE_REPLY_EXAMPLES)}"
+    )
     return [
         ChatMessage(role="developer", content=SOURCE_EVALUATOR_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),

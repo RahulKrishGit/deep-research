@@ -354,15 +354,15 @@ def test_report_messages_carry_every_input_the_writer_needs() -> None:
 
     assert [message.role for message in messages] == ["developer", "user"]
     body = messages[1].content
-    assert "## Research question" in body
-    assert "## Context" in body
+    assert "# Research question" in body
+    assert "# Context" in body
     assert "Close the cost gap." in body
-    assert "## Verified and checked claims" in body
+    assert "# Verified and checked claims" in body
     assert "[verified 0.80]" in body
-    assert "## Retrieved findings" in body
-    assert "## Source quality" in body
-    assert "## Known limitations" in body
-    assert "## Response contract" in body
+    assert "# Retrieved findings" in body
+    assert "# Source quality" in body
+    assert "# Known limitations" in body
+    assert "# Response contract" in body
 
 
 def test_live_report_messages_expose_every_required_coverage_topic(
@@ -391,7 +391,7 @@ def test_live_report_messages_expose_every_required_coverage_topic(
 def test_report_messages_drop_the_context_section_without_guidance() -> None:
     body = report_messages(_task(), finding_digest=10, claim_digest=10)[1].content
 
-    assert "## Context" not in body
+    assert "# Context" not in body
 
 
 def _synthesizer(
@@ -486,7 +486,7 @@ async def test_a_run_writes_the_report_and_records_its_counts(
         outcome.result.markdown
     )
     assert outcome.state_update["report"] == outcome.result.markdown
-    assert "## Executive summary" in outcome.result.markdown
+    assert "# Executive summary" in outcome.result.markdown
     assert "Break-even was reached in 2025." in outcome.result.markdown
     assert "Vendor numbers remain unaudited." in outcome.result.markdown
     assert outcome.react.stop_reason == "finished"
@@ -712,3 +712,36 @@ def test_the_synthesizer_declares_its_two_writes(
     assert SynthesizerAgent.name == "synthesizer"
     assert SynthesizerAgent.allowed_tools == ("write_document", "save_to_memory")
     assert agent.output_schema is SynthesizedReport
+
+
+def test_build_report_sections_drops_the_example_url() -> None:
+    """The report example URL is not in the evidence, so it is dropped."""
+    draft = ReportDraft(
+        executive_summary="A summary.",
+        sections=[
+            ReportSectionDraft(
+                title="Copied example",
+                body="Body.",
+                source_urls=["https://evidence.example.test/report"],
+            ),
+            ReportSectionDraft(
+                title="Real evidence",
+                body="Body.",
+                source_urls=["https://real.test/one"],
+            ),
+        ],
+        uncertainty_notes="",
+    )
+
+    sections, rejected = build_report_sections(
+        draft, known_urls=("https://real.test/one",), max_sections=5
+    )
+
+    # The section survives; its un-evidenced citation does not.
+    assert [section.title for section in sections] == [
+        "Copied example",
+        "Real evidence",
+    ]
+    assert sections[0].source_urls == []
+    assert sections[1].source_urls == ["https://real.test/one"]
+    assert rejected

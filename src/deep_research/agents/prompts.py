@@ -7,6 +7,7 @@ on directly in tests.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 
 from pydantic import Field
@@ -34,6 +35,49 @@ NATIVE_REACT_RESPONSE_CONTRACT = (
     "needed, return the final answer directly."
 )
 
+# The one output-shape sentence every tool-free structured request carries, plus
+# the notice that keeps a synthetic example subordinate to the real request.
+STRUCTURED_REPLY_FORMAT = (
+    "Return exactly one JSON object matching the supplied response schema, "
+    "with no Markdown fence and no text before or after it."
+)
+
+STRUCTURED_EXAMPLE_NOTICE = (
+    "The compact examples below show format and field relationships only. "
+    "Each example input is separate from the real request. Do not copy its "
+    "facts, URLs, or wording into the real answer."
+)
+
+
+def render_structured_reply_format(
+    examples: Sequence[tuple[str, str]],
+) -> str:
+    """Render one or two compact, complete JSON-object examples.
+
+    Raises before any request is built, so a malformed or over-long example
+    table fails where it is defined rather than reaching a paid call.
+    """
+    if not 1 <= len(examples) <= 2:
+        raise ValueError("structured prompts require one or two examples")
+    rendered: list[str] = []
+    for label, payload in examples:
+        if not label.strip() or "\n" in label:
+            raise ValueError("example labels must be non-blank single lines")
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise ValueError("structured examples must be valid JSON") from error
+        if not isinstance(decoded, dict):
+            raise ValueError("structured examples must be JSON objects")
+        compact = json.dumps(
+            decoded, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        rendered.append(f"{label.strip()}\nExample JSON output:\n{compact}")
+    return (
+        f"{STRUCTURED_REPLY_FORMAT}\n{STRUCTURED_EXAMPLE_NOTICE}\n"
+        + "\n".join(rendered)
+    )
+
 SOURCE_EVALUATOR_SYSTEM_PROMPT = (
     "You are the source evaluator of a multi-agent research system. You "
     "judge how much each source behind the collected findings can be "
@@ -51,6 +95,8 @@ SOURCE_EVALUATOR_SYSTEM_PROMPT = (
 SOURCE_SCORING_INSTRUCTION = (
     "For each listed source return authority, recency, and relevance as "
     "numbers between 0 and 1, plus a one- or two-sentence rationale.\n"
+    "All three scores use one direction: 0.0 is weakest and 1.0 is strongest. "
+    "Use intermediate values in proportion to the evidence in the dossier.\n"
     "authority: how much the publisher's identity, expertise, and "
     "editorial process justify trust. Peer-reviewed venues, standards "
     "bodies, and primary institutional publications score high; anonymous "
@@ -58,7 +104,8 @@ SOURCE_SCORING_INSTRUCTION = (
     "recency: how current the source's own content is for this question, "
     "judged from the dates, versions, and events its excerpts mention — "
     "not from when this system retrieved it. Use 0.5 when the excerpts "
-    "carry no dating signal at all.\n"
+    "carry no dating signal at all. A clearly current version scores high; "
+    "a demonstrably superseded source on a time-sensitive topic scores low.\n"
     "relevance: how directly the excerpts answer the sub-topics the source "
     "was cited for, rather than merely mentioning them.\n"
     "Corroboration is computed for you and is not yours to return. Neither "

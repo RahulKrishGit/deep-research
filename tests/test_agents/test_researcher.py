@@ -24,6 +24,7 @@ from deep_research.agents.researcher import (
     render_evidence,
     render_session_guidance,
     render_sub_topic_guidance,
+    retrieved_finding_urls,
     select_sub_topics,
 )
 from deep_research.agents.steps import (
@@ -123,6 +124,27 @@ def _critique(**overrides: object) -> Critique:
     }
     payload.update(overrides)
     return Critique.model_validate(payload)
+
+
+# Realistic URL-bearing evidence: extraction now refuses a finding whose source
+# URL this run never retrieved, so a fixture that wants a finding to survive
+# must carry the URL the draft cites.
+QEC_EVIDENCE = {
+    "results": [
+        {
+            "url": "https://example.test/qec",
+            "title": "QEC 2025",
+            "content": "Logical error rates fell below break-even.",
+        }
+    ]
+}
+
+_FINDING_EXAMPLE_OUTPUT = (
+    "Example JSON output:\n"
+    '{"findings":[{"confidence":0.8,"content":"The example report measured a '
+    '12 percent reduction.","source_title":"Example report","source_url":'
+    '"https://evidence.example.test/report"}]}'
+)
 
 
 def _tool_step(
@@ -368,6 +390,110 @@ def test_evidence_reports_when_nothing_was_retrieved() -> None:
     assert render_evidence(run, limit=200) == "(no evidence retrieved)"
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "data", "expected"),
+    [
+        (
+            "web_search",
+            {"results": [{"url": "https://a.test/one"}]},
+            ("https://a.test/one",),
+        ),
+        ("web_scraper", {"url": "https://b.test/two", "text": "body"}, ("https://b.test/two",)),
+        (
+            "document_reader",
+            {"source": "https://c.test/three.pdf", "chunks": ["chunk"]},
+            ("https://c.test/three.pdf",),
+        ),
+        (
+            "query_memory",
+            {"matches": [{"source_url": "https://d.test/four"}]},
+            ("https://d.test/four",),
+        ),
+        (
+            "query_memory",
+            {"matches": [{"metadata": {"source_url": "https://e.test/five"}}]},
+            ("https://e.test/five",),
+        ),
+    ],
+)
+def test_retrieved_finding_urls_reads_every_evidence_bearing_tool(
+    tool_name: str, data: object, expected: tuple[str, ...]
+) -> None:
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, tool_name, data)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    assert retrieved_finding_urls(run) == expected
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "data", "success"),
+    [
+        # A failed call retrieved nothing, whatever its payload claims.
+        ("web_search", {"results": [{"url": "https://a.test/one"}]}, False),
+        # Empty payloads carry no evidence.
+        ("web_search", {"results": []}, True),
+        ("web_scraper", {"url": "https://b.test/two", "text": "   "}, True),
+        ("document_reader", {"source": "https://c.test/three.pdf", "chunks": []}, True),
+        ("query_memory", {"matches": []}, True),
+        # A write is never evidence.
+        ("save_to_memory", {"entry_id": "1", "url": "https://f.test/six"}, True),
+        # Malformed entries contribute nothing rather than raising.
+        ("web_search", {"results": ["not-a-dict", {"no_url": True}]}, True),
+        ("query_memory", {"matches": [{"metadata": "not-a-dict"}]}, True),
+        ("document_reader", {"source": 17, "chunks": ["chunk"]}, True),
+    ],
+)
+def test_retrieved_finding_urls_excludes_everything_that_is_not_evidence(
+    tool_name: str, data: object, success: bool
+) -> None:
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, tool_name, data, success=success)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    assert retrieved_finding_urls(run) == ()
+
+
+def test_retrieved_finding_urls_deduplicates_after_normalizing() -> None:
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[
+            _tool_step(1, "web_search", {"results": [{"url": "HTTPS://A.test/one"}]}),
+            _tool_step(
+                2,
+                "web_scraper",
+                {"url": "https://a.test/one/", "text": "body"},
+            ),
+        ],
+        iterations=2,
+        tool_calls=2,
+    )
+
+    assert retrieved_finding_urls(run) == ("https://a.test/one",)
+
+
+def test_the_example_url_is_not_retrieved_by_any_real_tool_shape() -> None:
+    """The prompt example's URL must never clear the allow-list on its own."""
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_search", QEC_EVIDENCE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    assert "https://evidence.example.test/report" not in retrieved_finding_urls(run)
+
+
 def test_evidence_is_clamped_to_the_configured_budget() -> None:
     run = ReActRun(
         agent_name="researcher",
@@ -400,9 +526,10 @@ def test_extraction_messages_carry_the_sub_topic_criteria_and_evidence() -> None
 
     assert messages[0].role == "developer"
     body = messages[1].content
-    assert "## Sub-topic\nAlpha" in body
+    assert "# Sub-topic\nAlpha" in body
     assert "- A named source about Alpha." in body
     assert '- [web_search] {"results": ["a"]}' in body
+    assert body.rstrip().endswith(_FINDING_EXAMPLE_OUTPUT)
 
 
 def test_drafts_are_stamped_with_the_sub_topic_and_extraction_time() -> None:
@@ -418,7 +545,10 @@ def test_drafts_are_stamped_with_the_sub_topic_and_extraction_time() -> None:
     )
 
     findings, rejected = build_findings(
-        draft, sub_topic=_sub_topic("Alpha"), extracted_at=EXTRACTED_AT
+        draft,
+        sub_topic=_sub_topic("Alpha"),
+        extracted_at=EXTRACTED_AT,
+        known_urls=("https://example.test/qec",),
     )
 
     assert rejected == []
@@ -446,11 +576,49 @@ def test_malformed_drafts_are_dropped_and_named_by_field() -> None:
     )
 
     findings, rejected = build_findings(
-        draft, sub_topic=_sub_topic("Alpha"), extracted_at=EXTRACTED_AT
+        draft,
+        sub_topic=_sub_topic("Alpha"),
+        extracted_at=EXTRACTED_AT,
+        known_urls=("https://example.test/qec",),
     )
 
     assert [finding.content for finding in findings] == ["Also fine."]
     assert rejected == ["finding 1: invalid confidence"]
+
+
+def test_a_finding_citing_an_unretrieved_url_is_dropped_and_named() -> None:
+    """Provenance, not syntax: the exact failure a copied prompt example causes.
+
+    ``build_findings`` previously checked only whether a URL was well formed,
+    so the synthetic URL from a reply-format example would have entered
+    research state as though it had been retrieved.
+    """
+    draft = SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content="Copied from the example.",
+                source_url="https://evidence.example.test/report",
+                source_title="Example report",
+                confidence=0.9,
+            ),
+            FindingDraft(
+                content="Actually retrieved.",
+                source_url="https://example.test/qec",
+                source_title="QEC 2025",
+                confidence=0.7,
+            ),
+        ]
+    )
+
+    findings, rejected = build_findings(
+        draft,
+        sub_topic=_sub_topic("Alpha"),
+        extracted_at=EXTRACTED_AT,
+        known_urls=("https://example.test/qec",),
+    )
+
+    assert [finding.content for finding in findings] == ["Actually retrieved."]
+    assert rejected == ["finding 1: source url was not retrieved"]
 
 
 def _clock() -> datetime:
@@ -578,7 +746,7 @@ async def test_extraction_stamps_findings_from_retrieved_evidence(
     run = ReActRun(
         agent_name="researcher",
         stop_reason="finished",
-        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        steps=[_tool_step(1, "web_search", QEC_EVIDENCE)],
         iterations=1,
         tool_calls=1,
     )
@@ -685,7 +853,7 @@ async def test_extraction_makes_no_provider_call_after_a_provider_failure(
     run = ReActRun(
         agent_name="researcher",
         stop_reason="provider_error",
-        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        steps=[_tool_step(1, "web_search", QEC_EVIDENCE)],
         iterations=1,
         tool_calls=1,
     )
@@ -722,7 +890,7 @@ async def test_malformed_extracted_findings_become_a_recoverable_error(
     run = ReActRun(
         agent_name="researcher",
         stop_reason="finished",
-        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        steps=[_tool_step(1, "web_search", QEC_EVIDENCE)],
         iterations=1,
         tool_calls=1,
     )
@@ -767,7 +935,7 @@ async def test_extraction_reports_a_provider_failure_without_raising(
     run = ReActRun(
         agent_name="researcher",
         stop_reason="finished",
-        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        steps=[_tool_step(1, "web_search", QEC_EVIDENCE)],
         iterations=1,
         tool_calls=1,
     )

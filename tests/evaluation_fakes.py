@@ -11,8 +11,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from deep_research.agents.steps import ReActDecision
-from deep_research.observability import TokenUsage
-from deep_research.providers import NativeToolCall, NativeToolTurn
+from tests.agent_fakes import native_turn_from_decision
 
 
 class FakeDataset:
@@ -323,17 +322,4 @@ class FakeStructuredProvider:
             raise AssertionError(
                 "a native ReAct turn must be scripted as a ReActDecision"
             )
-        if response.action == "use_tool":
-            return NativeToolTurn(
-                model="deepseek-v4-flash",
-                usage=TokenUsage(),
-                tool_call=NativeToolCall(
-                    tool_name=response.tool_name,
-                    arguments_json=response.tool_input_json,
-                ),
-            )
-        return NativeToolTurn(
-            model="deepseek-v4-flash",
-            usage=TokenUsage(),
-            final_answer=response.final_answer,
-        )
+        return native_turn_from_decision(response)

@@ -17,7 +17,11 @@ from pydantic import Field, ValidationError
 from deep_research.agents.base import AgentRun, BaseAgent
 from deep_research.agents.errors import PlanningError, planning_provider_error
 from deep_research.agents.events import agent_event
-from deep_research.agents.prompts import AgentTask, render_memory_guidance
+from deep_research.agents.prompts import (
+    AgentTask,
+    render_memory_guidance,
+    render_structured_reply_format,
+)
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.validation import _invalid_fields
 from deep_research.providers import ChatMessage, ProviderError
@@ -46,6 +50,16 @@ PLANNER_SYSTEM_PROMPT = (
     "Finish as soon as you understand the shape of the question."
 )
 
+# The plan request offers NO tools, so its prompt must not name any. It is a
+# separate call from the ReAct scoping loop above: that loop really does carry
+# the tools, and this one really does not.
+PLANNER_PLAN_SYSTEM_PROMPT = (
+    "You are the planner of a multi-agent research system. Turn the research "
+    "question, context, and completed scoping notes printed below into a final "
+    "research plan. Everything needed for this structured plan is already in "
+    "the request. Do not propose or describe another lookup."
+)
+
 PLAN_INSTRUCTION = (
     f"Produce a research plan of between {MIN_SUB_TOPICS} and "
     f"{MAX_SUB_TOPICS} distinct sub-topics that together answer the "
@@ -62,6 +76,36 @@ PLAN_INSTRUCTION = (
     "queries that the research question does not itself contain; write "
     "queries in lowercase except for words already in the question.\n"
     "Two sub-topics must never share a title."
+)
+
+# One example, because there is no valid "empty plan" case to show: the plan
+# requirements already state the 3-7 sub-topic bound, and an empty list would
+# be a different failure mode rather than the opposite end of a scale.
+_PLAN_REPLY_EXAMPLES = (
+    (
+        "Example input: compare bus and rail options for a city.",
+        '{"sub_topics":['
+        '{"title":"travel demand and coverage",'
+        '"rationale":"Establish which trips each option must serve.",'
+        '"search_queries":["city bus rail travel demand route coverage"],'
+        '"success_criteria":['
+        '"Measured demand and coverage estimates are available for both '
+        'options."],"priority":1},'
+        '{"title":"cost and delivery",'
+        '"rationale":"Compare the resources and time required to deliver each '
+        'option.",'
+        '"search_queries":["city bus rail capital operating cost delivery '
+        'time"],"success_criteria":['
+        '"Comparable cost and delivery estimates are available."],"priority":2},'
+        '{"title":"benefits and risks",'
+        '"rationale":"Identify the main outcomes and failure modes for each '
+        'option.",'
+        '"search_queries":["city bus rail benefits risks evidence"],'
+        '"success_criteria":['
+        '"Measured benefits and documented risks are available for both '
+        'options."],"priority":3}'
+        "]}",
+    ),
 )
 
 
@@ -178,15 +222,18 @@ def plan_messages(
     repair: str | None = None,
 ) -> list[ChatMessage]:
     """Build the messages that request one structured plan draft."""
-    sections = [f"## Research question\n{task.instruction}"]
+    sections = [f"# Research question\n{task.instruction}"]
     if task.guidance.strip():
-        sections.append(f"## Context\n{task.guidance}")
-    sections.append(f"## Scoping notes\n{_render_notes(run)}")
-    sections.append(f"## Plan requirements\n{PLAN_INSTRUCTION}")
+        sections.append(f"# Context\n{task.guidance}")
+    sections.append(f"# Scoping notes\n{_render_notes(run)}")
+    sections.append(f"# Plan requirements\n{PLAN_INSTRUCTION}")
     if repair is not None:
-        sections.append(f"## Repair\n{repair}")
+        sections.append(f"# Repair\n{repair}")
+    sections.append(
+        f"# Reply format\n{render_structured_reply_format(_PLAN_REPLY_EXAMPLES)}"
+    )
     return [
-        ChatMessage(role="developer", content=PLANNER_SYSTEM_PROMPT),
+        ChatMessage(role="developer", content=PLANNER_PLAN_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
 
