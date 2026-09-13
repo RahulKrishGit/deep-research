@@ -41,7 +41,8 @@ Use provider-native application tool calls for every model-directed ReAct turn,
 through one shared provider/agent boundary. The provider receives real tool
 definitions and returns exactly one of:
 
-1. one allow-listed native tool call with its JSON argument string; or
+1. one or more allow-listed native tool calls, each with its JSON argument
+   string; or
 2. one non-blank final answer.
 
 The existing `run_react_loop` remains the owner of iteration limits, tool
@@ -70,8 +71,9 @@ Add three immutable project-owned contracts in
   definition sent to a provider.
 - `NativeToolCall(tool_name, arguments_json)` carries one provider-selected
   application tool. It contains no provider object or call id.
-- `NativeToolTurn(model, usage, tool_call, final_answer)` requires exactly one of
-  `tool_call` and `final_answer`.
+- `NativeToolTurn(model, usage, tool_calls, final_answer)` requires `tool_calls`
+  to be non-empty or `final_answer` to be set, never both. `tool_calls` is a
+  tuple in provider order and every entry is validated on its own.
 
 Add a second provider capability alongside `StructuredCompleter`:
 
@@ -123,13 +125,14 @@ structured-output repair loop.
 
 The response is accepted only when exactly one choice has one of these shapes:
 
-- `finish_reason="tool_calls"`, exactly one function call, an allow-listed
-  function name, and a string argument payload; or
+- `finish_reason="tool_calls"`, one or more function calls, every function name
+  allow-listed, and every argument payload a string; or
 - `finish_reason="stop"`, no function calls, and non-blank text.
 
-Length becomes `ProviderOutputLimitError`. Multiple calls, an unknown tool,
-mixed stop/call shapes, empty final text, and every other finish reason become a
-safe `ProviderResponseError`. DSML text is never parsed or executed as a tool.
+Length becomes `ProviderOutputLimitError`. A `tool_calls` finish carrying zero
+calls, an unknown tool, a call beside a `stop` finish, empty final text, and
+every other finish reason become a safe `ProviderResponseError`. DSML text is
+never parsed or executed as a tool.
 
 The method has no structured repair. Existing transient HTTP retries remain and
 are recorded independently.
@@ -138,10 +141,10 @@ are recorded independently.
 
 `OpenAIChatProvider.complete_react` uses Responses with native function tools and
 `tool_choice="auto"`. It ignores reasoning output items, retains no hidden
-reasoning, and accepts exactly one function-call item or a non-blank
-`output_text`, never both. It applies the same tool allow-list and one-call
-contract as DeepSeek and maps incomplete output to the existing failure
-taxonomy.
+reasoning, and accepts one or more function-call items or a non-blank
+`output_text`, never both. It applies the same tool allow-list and the same
+per-call validation as DeepSeek and maps incomplete output to the existing
+failure taxonomy.
 
 OpenAI parity is required offline before the shared agent interface changes.
 Live OpenAI calls are outside this rollout because the configured production and
@@ -257,7 +260,12 @@ calls; tests will lock that invariant across all six.
 - Only names in the agent's `AgentToolset` can cross into the loop.
 - JSON argument decoding and finite-number/reserved-key checks remain in
   `parse_tool_input`.
-- Multiple native calls never become multiple tool executions.
+- Multiple native calls in one turn become multiple tool executions, executed in
+  provider order within that turn's single iteration. Widening the *number* of
+  executions never widens the *set* of executables: every call is validated on
+  its own against the allow-list and the non-blank-arguments rule, and the tool
+  budget still caps total executions per run. Calls left unexecuted because the
+  budget ran out are recorded with a count, never dropped silently.
 - Provider objects, raw responses, prompts, reasoning content, tool arguments,
   and secrets do not enter public exception messages or retained diagnostics.
 - Model, thinking mode, reasoning effort, temperature behavior, token budgets,

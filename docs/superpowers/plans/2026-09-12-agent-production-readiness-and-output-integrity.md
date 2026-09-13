@@ -4,7 +4,7 @@
 
 **Goal:** Make every agent fail closed at the provider boundary, prevent malformed JSON or tool markup from being accepted as a valid decision, retain the effective Critic/Judge prompt-conformance techniques across all structured operations, and establish evidence-backed production readiness through offline and separately authorized live gates.
 
-**Architecture:** Keep the shared provider-native ReAct transport and tool-free structured-output path, but harden them as separate contracts. Native ReAct accepts exactly one typed allow-listed tool call or legitimate final text and rejects mixed, unknown, legacy-JSON, fenced, or DSML shapes. Structured calls keep provider JSON Schema plus one bounded repair, while prompts carry the proven JSON keyword, unambiguous Markdown hierarchy, one reply contract, schema-valid examples, and non-contradictory scoring guidance. Content-free origin and attempt telemetry makes shape failures, SDK failures, and repaired JSON distinguishable before literal offline and live release gates are applied.
+**Architecture:** Keep the shared provider-native ReAct transport and tool-free structured-output path, but harden them as separate contracts. Native ReAct accepts one or more typed allow-listed tool calls or legitimate final text, and rejects unknown, legacy-JSON, fenced, or DSML shapes, a tool call beside a `stop` finish, and a `tool_calls` finish carrying zero calls. Structured calls keep provider JSON Schema plus one bounded repair, while prompts carry the proven JSON keyword, unambiguous Markdown hierarchy, one reply contract, schema-valid examples, and non-contradictory scoring guidance. Content-free origin and attempt telemetry makes shape failures, SDK failures, and repaired JSON distinguishable before literal offline and live release gates are applied.
 
 **Tech Stack:** Python 3.11+, Pydantic v2, OpenAI Python SDK 2+, DeepSeek Chat Completions and Responses-compatible structured output, OpenAI Responses, pytest/pytest-asyncio, Ruff, LangSmith evaluation harness.
 
@@ -20,7 +20,7 @@ This plan does not promise that a probabilistic provider will never emit malform
 
 1. malformed output never crosses the provider boundary as a validated structured result or executable tool decision;
 2. one schema-invalid structured attempt may be repaired once, but repair use is measured and repair exhaustion is a typed, content-free failure;
-3. DSML, Markdown-fenced decisions, legacy `ReActDecision` JSON, mixed text/tool envelopes, unknown output items, and malformed native calls are rejected and never executed;
+3. DSML, Markdown-fenced decisions, legacy `ReActDecision` JSON, a tool call beside a `stop` finish, unknown output items, and malformed native calls are rejected and never executed;
 4. all release canaries must show zero malformed accepted outputs, zero structured repairs, zero repair exhaustion, zero native-envelope rejection, and zero provider fallback;
 5. production readiness is granted per agent only after its own three-repetition canary passes. The system is ready only after all six agents pass.
 
@@ -32,7 +32,7 @@ This plan does not promise that a probabilistic provider will never emit malform
 - Keep `deepseek-v4-flash`, thinking enabled, configured reasoning efforts, temperature behavior, all `32768` output budgets, `max_iterations=5`, `tool_budget=10`, HTTP retry counts, the one structured repair, routing, cases, rubrics, weights, score bands, and the `0.75` live threshold unchanged.
 - Do not return to prompt-encoded ReAct tool selection. DeepSeek native ReAct remains Chat Completions with real function definitions and `tool_choice="auto"`; OpenAI remains Responses with real function tools and `tool_choice="auto"`.
 - Native ReAct never uses JSON Schema, `response_format`, or the structured-repair loop. Tool-free planning, extraction, scoring, verification, synthesis, Critic review, and Judge calls remain structured-output operations.
-- Never execute a tool call decoded from ordinary text, DSML, XML, Markdown, a code fence, or a legacy `ReActDecision` object. Only a typed native tool-call field naming one allow-listed tool can request execution.
+- Never execute a tool call decoded from ordinary text, DSML, XML, Markdown, a code fence, or a legacy `ReActDecision` object. Only a typed native tool-call field naming an allow-listed tool can request execution, and every call in a turn is validated on its own against the allow-list and the non-blank-arguments rule.
 - Never retain raw prompts, provider responses, reasoning, tool arguments, invalid JSON, exception text, or secrets in errors, traces, probe records, artifacts, or review documents. Tests use harmless sentinels and assert object reachability as well as string surfaces.
 - Preserve the current effective Critic and Judge prompt techniques: the literal `JSON object` instruction, one authoritative reply-format section, clean Markdown hierarchy, complete schema-valid weak/strong examples, the full score range, and non-contradictory weighting and band rules.
 - Every non-scoring structured operation carries exactly one compact valid example unless an opposite semantic case is needed. Scoring/classification operations may carry one weak/negative and one strong/positive example. No prompt may carry more than two. A negative example is a valid weak, contradicted, or insufficient-evidence result, never malformed JSON.
@@ -44,6 +44,31 @@ This plan does not promise that a probabilistic provider will never emit malform
 - The three live-tier ledger tests in `tests/test_evaluation/test_runner.py` and `tests/test_evaluation/test_targets.py` are offline tests: their fixtures inject inert credential strings, fake search clients, fake model providers, and fake embeddings. Real shell credentials are neither required nor evidence that these tests are valid. Never exclude these tests or load real credentials to make the offline gate pass.
 - Preserve every historical artifact. The two earlier native-shape batches remain diagnostic evidence only: batch 1 failed its literal gate, and batch 2 was an unplanned rerun with an ambiguous `ProviderResponseError`. Neither may be relabelled as the release gate.
 - Stage exact paths only. End each implementation task with focused tests, Ruff on touched Python, `git diff --check`, and an independently reviewable commit.
+
+## Amendment 1 — native ReAct accepts one or more tool calls (commit `3fae013`)
+
+**This amendment supersedes the "exactly one call" reading everywhere it appears**, including the Architecture paragraph, readiness definition 3, and the gate clauses in Task 8 Step 3 and Task 9 Step 3. The earlier plan `2026-09-12-shared-native-react-tools-and-prompt-conformance.md` states `0/30 unknown or multiple calls`; that clause is **no longer in force** and is retained only as a historical record of what that plan required.
+
+**Why.** Two separately authorized live runs of the Task 8 gate both FAILED shape integrity, and the second, instrumented run named the cause precisely:
+
+| run | accepted | shape failures | named cause |
+| --- | ---: | ---: | --- |
+| attempt 1 (`058a786`) | 22/30 | 8 | not recoverable — the instrument recorded no cause |
+| attempt 2 (`7057ce7`) | 26/30 | 4 | **all four `call_count_not_one`** |
+
+`call_count_not_one` was the pre-existing rule requiring exactly one native tool call per turn. DeepSeek returns two or more parallel calls in a single turn — a normal, well-formed part of the provider's tool-calling protocol, not malformed output — and the repository was discarding the **entire model turn** rather than executing what it asked for.
+
+**The distinction this plan had wrong.** "Unsupported by the contract" is not the same as "malformed". Nothing malformed was ever *accepted*; that guarantee held throughout. What failed was a gate clause demanding the provider never *produce* an unsupported shape, which this repository does not control. The plan conflated the two and then required 0/30 of it.
+
+**What now holds, replacing the one-call rule:**
+
+- A `tool_calls` finish carrying **zero** calls is still rejected. An unknown or unavailable tool, a malformed call, non-object arguments, and tool-protocol **text** passed off as an answer are all still rejected.
+- A tool call beside a `stop` finish is still rejected.
+- Every call in a turn is validated **on its own** against the allow-list and the non-blank-arguments rule, so widening the count did not widen what may be executed.
+- All calls of one turn execute **in order within that turn's single iteration**, each producing its own `ReActStep`; `tool_budget` still caps executions **per call**, so a turn can never exceed the run's total budget, and `max_iterations` still counts model turns.
+- If the budget is exhausted part-way through a turn, the calls not executed are **recorded explicitly** with a count (`unexecuted_calls`) rather than dropped silently.
+
+**Invalidations.** This is a production behaviour change on every native ReAct turn, so it invalidates the two failed shape batches as anything other than diagnosis, and it re-opens the Task 8 gate and every agent canary that depends on the shared boundary.
 
 ---
 
@@ -297,7 +322,7 @@ git commit -m "fix(providers): sever sdk exception traceback state"
 
 **Interfaces:**
 - Consumes: provider-native tool-call objects and ordinary response text.
-- Produces: exactly one valid `NativeToolCall` or legitimate final answer; tool-protocol text is a typed local-response failure and is never adapted into `ReActDecision(action="finish")`.
+- Produces: one or more valid `NativeToolCall`s or a legitimate final answer; tool-protocol text is a typed local-response failure and is never adapted into `ReActDecision(action="finish")`.
 
 - [ ] **Step 1: Write RED tests for every missed shape**
 
@@ -663,7 +688,7 @@ Do not spend before explicit authorization for this exact batch.
 Shape integrity requires:
 
 - 0/30 DSML, tool markup, fences, or legacy action JSON in ordinary text;
-- 0/30 mixed text/tool, unknown item, unknown tool, multiple call, malformed call, or non-object arguments;
+- 0/30 unknown output item, unavailable tool, a tool call beside a `stop` finish, a `tool_calls` finish carrying zero calls, malformed call, or non-object arguments;
 - every successful turn is one or more allow-listed native calls, or one legitimate non-blank final answer;
 - at least one native tool call;
 - exactly 30 SDK `create` calls and zero repair/tool execution calls.
@@ -728,7 +753,7 @@ Every agent requires all of:
 - Judge `status="scored"`, `structured_attempts == 1`, no diagnostics, and fingerprint `74b9cddfbbee`;
 - target `structured_calls.repaired_calls == 0` and `failed_attempts == 0`;
 - no `json_invalid`, `schema_output`, `react_decision`, provider, or output-limit fallback;
-- no DSML, fenced/legacy action envelope, mixed envelope, unknown output item/tool, multiple call, or malformed native call;
+- no DSML, fenced/legacy action envelope, a tool call beside a `stop` finish, unknown output item/tool, a zero-call tool envelope, or malformed native call;
 - exact reviewed target transport and target prompt fingerprint recorded;
 - no prohibited dependency call or secret/content leakage.
 
