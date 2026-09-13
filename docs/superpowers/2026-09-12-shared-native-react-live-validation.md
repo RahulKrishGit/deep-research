@@ -183,8 +183,14 @@ tool calls plus one non-blank DSML final answer returns
 ```
 
 The exploit passes the old instrument. v1 also ended its classifier with a catch-all mapping any
-unrecognised `ProviderResponseError` to `malformed_envelope`, which is why batch 1's runs 24 and 25
-could not be separated after the fact.
+unrecognised `ProviderResponseError` to `malformed_envelope`. That catch-all is a real weakness, but it
+is **not** why batch 1's runs 24 and 25 could not be separated after the fact: the actual reason is the
+v1 **record schema**, which kept only `outcome`, `finish`, `tool`, and `error_type` — no
+`failure_category` and no `failure_origin` — so there was nothing on the artifact to separate them by,
+whatever the classifier did. (Those two records read
+`{"run":24,"outcome":"provider_error","finish":"unknown","tool":null,"error_type":"ProviderResponseError"}`,
+and `provider_error` is not in the retained v1 classifier's closed vocabulary, so they were written by
+an earlier instrument. The conclusion is the same either way.) v2 records both fields per failure.
 
 ### What v2 changes
 
@@ -217,7 +223,8 @@ The 2511 is the 2474-test baseline plus this task's 37 new tests.
 
 The dry run proves request construction only: model `deepseek-v4-flash`, reasoning effort `max`,
 thinking `enabled`, `max_tokens` `32768`, `tool_choice` `auto`, no `response_format`, native function
-tools `["web_search","query_memory"]`, repository retry count `0`, SDK `max_retries` `0`, exactly one
+tools `["web_search","query_memory"]`, repository retry count `5` (the configured value, reported
+separately from the probe's own forced override of `0`), SDK `max_retries` `0`, exactly one
 SDK `create` call, zero tool executions, and zero LangSmith requests. It exercises no tool execution,
 no LangSmith transport, and no live provider, so it says nothing about execution behaviour; the
 offline agent-boundary tests are what prove that.
@@ -229,5 +236,34 @@ The checked-in instrument is `scripts/native_react_shape_probe.py` (SHA-256 `533
 
 Task 8's live release gate remains **unauthorized and not run**, and Task 9 is not started. A live
 batch must be separately stated and explicitly authorized, and it must run the checked-in v2 probe,
-not v1. Frozen-invariant verification and independent review are Task 7 Step 7 and were **not**
-performed in this section.
+not v1.
+
+### Task 7 Step 7 — invariant audit and independent review (performed after this section)
+
+Frozen-invariant verification **was** performed, and an independent review of `89a9089..be92b21` **was**
+commissioned. It returned **0 Critical and 1 Important**, with every claimed gate result, hash, byte
+count, fingerprint, and count above reproduced exactly, and 16 production mutations all caught.
+
+The Important finding was real and is fixed in `666ad37`: `JudgeFeedback.structured_attempts` was read
+as the maximum structured attempt over `output.session_id` on the evaluator's tracker, but that tracker
+is **not** dedicated — `cli.py` builds one `Tracker` and hands the same instance to both the target and
+the judge, and the judge opens its span on the *target's* session id. A target that used its one repair
+was therefore recorded as a Judge repair, which would have failed this plan's own per-agent acceptance
+rule ("Judge `structured_attempts == 1`") for a Judge that never repaired. The reading is now scoped to
+the metrics the judge call itself appends.
+
+Four minors were fixed in `08b64a3`, one of which uncovered a genuine latent defect: the probe's
+dry-run set placeholder credentials in `os.environ` without restoring them, and
+`test_the_dry_run_records_exactly_one_sdk_create` had been passing **only** because an earlier test
+leaked them — it failed in isolation. The suite no longer depends on test order.
+
+**Superseding counts** (the counts above are the state at `be92b21`, preserved as history): probe tests
+**41 passed**, focused selection **94 passed**, full offline suite **2516 passed, 1 deselected**, zero
+failures; `ruff` clean. The dry run now publishes `repository_retry_count` as the configured `5`
+alongside the probe's own `probe_retry_override` of `0`.
+
+Two residual risks are predeclared for the live gate. `native_text_violation` is content-blind: it
+rejects *any* final answer containing a fence anywhere, including a legitimately Markdown-formatted
+answer. And the DeepSeek mixed-envelope rule rejects even an innocuous `content` preamble beside
+`tool_calls`. Both are deliberate, plan-mandated fail-closed choices, so a miss in Task 8 must be read
+as a shape rejection and not as a transport regression.

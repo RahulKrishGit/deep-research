@@ -3254,14 +3254,24 @@ evidence source with a checked-in, unit-tested instrument:
 ### The defect v2 closes
 
 v1's gate tested a final answer only for non-blankness, so 29 valid calls plus one non-blank DSML
-final answer passed it. Driving v1's own `_gate` with that batch returns
-`{"requests":30,"tool_calls":29,"final_answers":1,"malformed":0,"shape_failures":0,"provider_failures":0,"failed_runs":[],"passed":true}`.
+final answer passed it. Driving v1's own `_gate` with that batch returns the full eleven-key verdict
+`{"requests":30,"tool_calls":29,"final_answers":1,"malformed":0,"shape_failures":0,"shape_failed_runs":[],"provider_failures":0,"provider_failed_runs":[],"provider_failure_kinds":[],"failed_runs":[],"passed":true}`
+(the earlier transcription here omitted `shape_failed_runs`, `provider_failed_runs`, and
+`provider_failure_kinds`; the transcription in the live-validation document is the complete one).
 v1's classifier also ended in a catch-all that mapped any unrecognised `ProviderResponseError` to
-`malformed_envelope`; that is why batch 1's runs 24 and 25 (Section 97) cannot be separated after the
-fact. v2 classifies a `ProviderResponseError` strictly by its required
-`(failure_category, failure_origin)` pair, classifies `output_limit` by its own explicit kind (its
-artifact projection legitimately carries no origin), and reports an unlisted pair as
-`instrument_error`, which fails the gate. There is no `malformed_envelope` outcome left to default to.
+`malformed_envelope`. That catch-all is a real weakness, but it is **not** why batch 1's runs 24 and
+25 (Section 97) cannot be separated after the fact. The actual reason is the v1 **record schema**: those
+records retain only `outcome`, `finish`, `tool`, and `error_type` —
+`{"run":24,"outcome":"provider_error","finish":"unknown","tool":null,"error_type":"ProviderResponseError"}`
+— with no `failure_category` and no `failure_origin` to separate them by, whatever the classifier did.
+(`provider_error` is not even in the retained v1 classifier's closed vocabulary
+`transport_error`/`http_error`/`output_limit`/`timeout`/`rate_limit`/`malformed_envelope`, so those two
+records were written by an earlier instrument whose outcome vocabulary differed; the point stands either
+way — the artifact does not carry the discriminating fields.) v2 records `failure_category` and
+`failure_origin` per failure, classifies a `ProviderResponseError` strictly by that required pair,
+classifies `output_limit` by its own explicit kind (its artifact projection legitimately carries no
+origin), and reports an unlisted pair as `instrument_error`, which fails the gate. There is no
+`malformed_envelope` outcome left to default to.
 
 ### Gate results
 
@@ -3275,7 +3285,8 @@ artifact projection legitimately carries no origin), and reports an unlisted pai
 - `python scripts/native_react_shape_probe.py --dry-run --requests 30` → exit 0, no problems.
   Inventory: 30 logical requests, 30-request SDK ceiling, `deepseek-v4-flash`, effort `max`, thinking
   `enabled`, `32768`, `tool_choice` `auto`, no `response_format`, native tools
-  `["web_search","query_memory"]`, repository retry count `0`, SDK `max_retries` `0`, exactly one SDK
+  `["web_search","query_memory"]`, repository retry count `5` (the configured value, published
+  separately from the probe's own forced override of `0`), SDK `max_retries` `0`, exactly one SDK
   `create` call, zero tool executions, zero LangSmith requests. The inventory states its own scope:
   request construction only. It exercises no tool execution, no LangSmith transport, and no live
   provider, so the offline agent-boundary tests remain what prove execution behaviour.
@@ -3301,8 +3312,39 @@ artifact projection legitimately carries no origin), and reports an unlisted pai
 - `finish_category` is derived from the typed turn — a `NativeToolTurn` carrying a call can only have
   come from a `tool_calls` finish and a final answer only from `stop` — and is read from the
   output-limit telemetry for that failure class.
-- Task 7 Step 7 (frozen-invariant verification and independent review) was **not** performed here; it
-  is the controller's commission. The dry run observed both `32768` budgets without touching them.
+- Task 7 Step 7 (frozen-invariant verification and independent review) was not performed by the agent
+  that wrote this section; it was the controller's commission and **has since been performed**. See
+  below. The dry run observed both `32768` budgets without touching them.
+
+### 99. Task 7 Step 7 — invariant audit and independent review
+
+The frozen-invariant audit was run directly and passed: `llm.max_tokens` `32768`,
+`agents.react_decision_max_tokens` `32768`, `evaluation.live_threshold` `0.75`, `max_iterations` `5`,
+`tool_budget` `10`, `judge_prompt_fingerprint(rubric_version=1)` `74b9cddfbbee`, and all six agent
+fingerprints unchanged (`875f1cd8996f`, `2d8f2688ec4d`, `e6bf22c74cfa`, `681669d2ee15`, `d0d036660207`,
+`c971e00c3773`).
+
+An independent review of `89a9089..be92b21` returned **0 Critical and 1 Important**. It reproduced every
+claimed gate result, hash, byte count, fingerprint, and test count in this section exactly, confirmed
+the v1 exploit end to end, and ran 16 production mutations with every one caught.
+
+**The Important finding (`666ad37`).** `JudgeFeedback.structured_attempts` took the maximum structured
+attempt over `output.session_id` on the evaluator's tracker. That tracker is not dedicated: `cli.py`
+builds one `Tracker` and gives the same instance to both the target and the judge, and the judge opens
+its span on the *target's* session id. A target that used its own one repair was therefore recorded as a
+Judge repair. Reproduced with the judge client answering on its first request while the ledger reported
+`structured_attempts == 2`. It would have failed this plan's per-agent acceptance rule for a Judge that
+never repaired, so it was fixed before any live work. The reading is now scoped to the metrics the
+judge call itself appends.
+
+**Four minors (`08b64a3`).** The probe's repository-retry check was vacuous and now publishes the real
+configured `5` beside its own override `0`; the nine adversarial batches now pin *how* each fails, not
+merely that it fails; four mojibake docstrings were repaired; and the dry run no longer leaks
+credentials into `os.environ`. That last fix exposed a genuine latent defect: `test_the_dry_run_records_exactly_one_sdk_create`
+had been passing only because an earlier test leaked credentials, and it failed when run in isolation.
+
+**Superseding counts**, preserved as history above: probe tests **41 passed**, focused **94 passed**,
+full offline suite **2516 passed, 1 deselected**, zero failures; `ruff` clean.
 
 Full record: `docs/superpowers/2026-09-12-shared-native-react-live-validation.md` (§Task 7) and
 `docs/superpowers/2026-09-12-shared-native-react-observation-report.md` (§8).

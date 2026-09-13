@@ -195,7 +195,9 @@ any unrecognised `ProviderResponseError` to `malformed_envelope`; v2 has no catc
 - `python scripts/native_react_shape_probe.py --dry-run --requests 30` → exit 0, no problems. The
   inventory reports 30 logical requests, a 30-request SDK ceiling, `deepseek-v4-flash`, effort `max`,
   thinking `enabled`, `32768`, `tool_choice` `auto`, no `response_format`, native tools
-  `["web_search","query_memory"]`, repository retry count `0`, SDK `max_retries` `0`, exactly one SDK
+  `["web_search","query_memory"]`, repository retry count `5` (the configured value, reported
+  separately from the probe's own forced override of `0`, so a future `config.yaml` change is visible),
+  SDK `max_retries` `0`, exactly one SDK
   `create`, zero tool executions, and zero LangSmith requests. It proves request construction only;
   the offline agent-boundary tests prove execution behaviour.
 - `pytest -q` → **2511 passed, 1 deselected**, zero failures. That is the 2474 baseline plus this
@@ -212,8 +214,27 @@ suite green with zero failures.
 
 No paid call was made, and no production behaviour changed — `src/` is untouched by this task. Task
 8's live gate and Task 9 remain unauthorized and not run. The two earlier batches above remain
-diagnostic evidence only. Frozen-invariant verification and independent review are Task 7 Step 7 and
-were **not** performed here.
+diagnostic evidence only.
+
+### Task 7 Step 7 — invariant audit and independent review (performed after this section)
+
+Frozen-invariant verification **was** performed, and an independent review of `89a9089..be92b21` **was**
+commissioned: **0 Critical, 1 Important**, with every gate result, hash, count, and fingerprint above
+reproduced exactly and 16 production mutations all caught.
+
+The Important finding was real, and it was found by the review rather than by this task's own tests:
+`JudgeFeedback.structured_attempts` read the maximum structured attempt over `output.session_id` on the
+evaluator's tracker, but that tracker is shared with the target — `cli.py` builds one `Tracker` for both
+— and the judge opens its span on the *target's* session id. A target repair was therefore recorded as a
+Judge repair. Fixed in `666ad37`; four minors fixed in `08b64a3`.
+
+One of those minors exposed a latent defect worth recording: the probe's dry run left placeholder
+credentials in `os.environ`, and `test_the_dry_run_records_exactly_one_sdk_create` had been passing only
+because an earlier test leaked them — it failed when run in isolation. The suite no longer depends on
+test order.
+
+**Superseding counts**, preserved as history above: probe tests **41 passed**, focused **94 passed**,
+full offline suite **2516 passed, 1 deselected**, zero failures; `ruff` clean.
 
 ### Records
 
