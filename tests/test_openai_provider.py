@@ -1068,12 +1068,56 @@ async def test_openai_native_react_asks_auto_and_parses_one_function_call() -> N
         {"role": "user", "content": "find capacity evidence"}
     ]
     assert "text_format" not in call
-    assert turn.tool_call == NativeToolCall(
-        tool_name="web_search",
-        arguments_json='{"query":"qec capacity"}',
+    assert turn.tool_calls == (
+        NativeToolCall(
+            tool_name="web_search",
+            arguments_json='{"query":"qec capacity"}',
+        ),
     )
     assert turn.final_answer is None
     assert isinstance(turn, NativeToolTurn)
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_accepts_two_function_calls_in_one_turn() -> None:
+    """The Responses twin of the DeepSeek multi-call acceptance.
+
+    The DeepSeek gate failed on turns that carried two native calls, and this
+    parser carried the identical ``len(calls) != 1`` rule, so both transports
+    had to widen together. Every ``function_call`` item is validated exactly as
+    the single one was, and the mixed-envelope rule — a call beside answer text
+    or a ``message`` item — is deliberately unchanged.
+    """
+    responses = RecordingResponses(
+        response(
+            text="",
+            status="completed",
+            output=[
+                native_function_call("web_search", '{"query":"qec capacity"}'),
+                native_function_call("web_search", '{"query":"qec error rates"}'),
+            ],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_calls == (
+        NativeToolCall(
+            tool_name="web_search",
+            arguments_json='{"query":"qec capacity"}',
+        ),
+        NativeToolCall(
+            tool_name="web_search",
+            arguments_json='{"query":"qec error rates"}',
+        ),
+    )
+    assert turn.final_answer is None
+    assert len(responses.create_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -1097,8 +1141,8 @@ async def test_openai_native_react_ignores_reasoning_items() -> None:
             [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
         )
 
-    assert turn.tool_call == NativeToolCall(
-        tool_name="web_search", arguments_json='{"query":"qec"}'
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
     )
     assert reasoning_marker not in repr(tracker.llm_inputs)
 
@@ -1116,7 +1160,7 @@ async def test_openai_native_react_returns_a_final_answer_without_a_tool() -> No
             [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
         )
 
-    assert turn.tool_call is None
+    assert turn.tool_calls == ()
     assert turn.final_answer == "The report is complete."
 
 
@@ -1139,7 +1183,7 @@ async def test_openai_native_react_accepts_reasoning_beside_a_final_answer() -> 
             [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
         )
 
-    assert turn.tool_call is None
+    assert turn.tool_calls == ()
     assert turn.final_answer == "The report is complete."
     assert reasoning_marker not in repr(tracker.llm_inputs)
 
@@ -1163,7 +1207,7 @@ async def test_openai_native_react_accepts_a_coherent_final_message_item() -> No
             [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
         )
 
-    assert turn.tool_call is None
+    assert turn.tool_calls == ()
     assert turn.final_answer == "The report is complete."
     # The item body is never read, retained, or traced.
     assert message_marker not in repr(tracker.llm_inputs)
@@ -1389,17 +1433,6 @@ OPENAI_SENTINEL = "OPENAI_NATIVE_SENTINEL_7D20"
 @pytest.mark.parametrize(
     "reply",
     [
-        pytest.param(
-            response(
-                text="",
-                status="completed",
-                output=[
-                    native_function_call("web_search", "{}"),
-                    native_function_call("web_search", "{}"),
-                ],
-            ),
-            id="two-function-calls",
-        ),
         pytest.param(
             response(
                 text="",
@@ -1765,8 +1798,8 @@ async def test_openai_native_react_retries_one_transient_error(
             [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
         )
 
-    assert turn.tool_call == NativeToolCall(
-        tool_name="web_search", arguments_json='{"query":"qec"}'
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
     )
     assert len(responses.create_calls) == 2
     assert slept == [1.0]

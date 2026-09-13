@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 
@@ -54,8 +55,25 @@ def _decider(decisions: Sequence[ReActDecision]):
 
     async def decide(
         iteration: int, steps: Sequence[ReActStep]
-    ) -> ReActDecision:
+    ) -> tuple[ReActDecision, ...]:
         assert iteration == len(steps) + 1
+        return (queue.pop(0),)
+
+    return decide
+
+
+def _batch_decider(turns: Sequence[Sequence[ReActDecision]]):
+    """Serve one whole model turn — a sequence of decisions — per call.
+
+    ``decide`` returns every decision the provider made in a single turn, so a
+    turn that carried several parallel tool calls is replayed as one turn.
+    """
+    queue = [tuple(turn) for turn in turns]
+
+    async def decide(
+        iteration: int, steps: Sequence[ReActStep]
+    ) -> tuple[ReActDecision, ...]:
+        del iteration, steps
         return queue.pop(0)
 
     return decide
@@ -64,7 +82,7 @@ def _decider(decisions: Sequence[ReActDecision]):
 def _raiser(error: BaseException):
     async def decide(
         iteration: int, steps: Sequence[ReActStep]
-    ) -> ReActDecision:
+    ) -> tuple[ReActDecision, ...]:
         raise error
 
     return decide
@@ -227,6 +245,14 @@ async def test_sufficiency_hook_stops_the_loop_early(tracker: Tracker) -> None:
 async def test_tool_budget_stops_the_loop_before_the_extra_call(
     tracker: Tracker,
 ) -> None:
+    """The budget is spent on the first call, so the second one never runs.
+
+    The record gained one entry when a native turn learned to carry several
+    calls: the call the budget refused and the calls behind it are now counted
+    explicitly, so a budget stop states how much of what the provider asked for
+    did not execute instead of dropping it silently. The loop itself still
+    stops on the same call it always did.
+    """
     async with agent_scope(tracker):
         run = await run_react_loop(
             agent_name="researcher",
@@ -246,10 +272,212 @@ async def test_tool_budget_stops_the_loop_before_the_extra_call(
     assert last.observation is not None
     assert last.observation.success is False
     assert last.observation.error_type == "agent_tool_budget_exhausted"
-    assert [error.error_type for error in run.errors] == [
-        "agent_tool_budget_exhausted"
-    ]
+    assert all(
+        error.error_type == "agent_tool_budget_exhausted" for error in run.errors
+    )
+    assert len(run.errors) == 2
     assert run.errors[0].recoverable is True
+    assert run.errors[0].details["tool"] == "echo"
+    # The refused call is the whole of this turn's unexecuted work: one call was
+    # requested, none of it ran, and the count says so.
+    assert run.errors[1].details["unexecuted_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_one_turn_with_two_calls_records_two_steps_in_one_iteration(
+    tracker: Tracker,
+) -> None:
+    """A parallel-call turn is one model turn, so it is one iteration.
+
+    ``max_iterations`` still counts model turns: the two calls the provider
+    made together produce two ``ReActStep`` records that share iteration 1, and
+    the whole turn stays inside the single ``react_iteration_span`` opened for
+    that turn.
+    """
+    captured = _capture_iteration_outputs(tracker)
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_batch_decider(
+                [
+                    (
+                        use_tool("Look up A.", "echo", '{"value": "a"}'),
+                        use_tool("Look up B.", "echo", '{"value": "b"}'),
+                    ),
+                    (finish("Enough.", "Both answers came back."),),
+                ]
+            ),
+            max_iterations=5,
+            tool_budget=10,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.iterations == 2
+    assert run.tool_calls == 2
+    assert len(run.steps) == 3
+    first, second, third = run.steps
+    assert first.iteration == 1
+    assert second.iteration == 1
+    assert third.iteration == 2
+    assert [first.tool_input, second.tool_input] == [
+        {"value": "a"},
+        {"value": "b"},
+    ]
+    assert [step.observation.success for step in (first, second)] == [True, True]
+    assert third.action == "finish"
+    # One model turn is one traced turn.
+    assert len(captured) == 2
+
+
+@pytest.mark.asyncio
+async def test_every_call_in_a_batch_keeps_its_own_outcome(tracker: Tracker) -> None:
+    """One bad call must not cancel the rest of the provider's batch.
+
+    An unavailable tool, undecodable arguments, and a failing tool each record
+    their own failed observation and ``agent_error``, and the loop continues to
+    the next call in the same turn. Only executed calls count against the
+    budget.
+    """
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo", "boom"),
+            decide=_batch_decider(
+                [
+                    (
+                        use_tool("Reach for a tool I do not have.", "web_search"),
+                        use_tool("Send bad arguments.", "echo", "{not json}"),
+                        use_tool("Try the flaky tool.", "boom"),
+                        use_tool("Now a good one.", "echo", '{"value": "ok"}'),
+                    ),
+                    (finish("Enough.", "Three of four failed."),),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=10,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.iterations == 2
+    assert run.tool_calls == 2
+    assert [step.iteration for step in run.steps] == [1, 1, 1, 1, 2]
+    assert [step.observation.error_type for step in run.steps[:4]] == [
+        "agent_unknown_tool",
+        "agent_invalid_tool_input",
+        "TimeoutError",
+        None,
+    ]
+    assert [step.observation.success for step in run.steps[:4]] == [
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert [error.error_type for error in run.errors] == [
+        "agent_unknown_tool",
+        "agent_invalid_tool_input",
+        "agent_tool_failed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_tool_budget_records_the_unexecuted_remainder_of_a_batch(
+    tracker: Tracker,
+) -> None:
+    """Nothing the provider asked for may vanish when the budget stops a batch.
+
+    With a budget of one, the first call of a two-call turn executes, the
+    second call records the budget-exhausted observation, and the calls that
+    were never reached are recorded as one step naming *how many* were dropped
+    — a count, never provider text.
+    """
+    sentinel = "TOOL_BUDGET_REMAINDER_SENTINEL_9F2B"
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_batch_decider(
+                [
+                    (
+                        use_tool("First.", "echo", '{"value": "a"}'),
+                        use_tool(
+                            "Second.",
+                            "echo",
+                            json.dumps({"value": sentinel}),
+                        ),
+                    ),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=1,
+        )
+
+    assert run.stop_reason == "tool_budget_exhausted"
+    assert run.tool_calls == 1
+    assert run.iterations == 1
+    assert len(run.steps) == 3
+    assert [step.iteration for step in run.steps] == [1, 1, 1]
+
+    executed, exhausted, remainder = run.steps
+    assert executed.observation.success is True
+    assert exhausted.observation.error_type == "agent_tool_budget_exhausted"
+    assert exhausted.observation.success is False
+
+    remainder_observation = remainder.observation
+    assert remainder_observation is not None
+    assert remainder_observation.success is False
+    assert remainder_observation.error_type == "agent_tool_budget_exhausted"
+    assert remainder_observation.summary == (
+        "1 further tool call(s) requested by the provider were not executed "
+        "because the tool budget of 1 calls is exhausted."
+    )
+    assert remainder.final_answer is None
+    assert remainder.tool_result is None
+
+    budget_errors = [
+        error
+        for error in run.errors
+        if "unexecuted_calls" in error.details
+    ]
+    assert len(budget_errors) == 1
+    assert budget_errors[0].error_type == "agent_tool_budget_exhausted"
+    assert budget_errors[0].details["unexecuted_calls"] == 1
+    assert isinstance(budget_errors[0].details["unexecuted_calls"], int)
+    assert sentinel not in repr(run.steps)
+    assert sentinel not in repr(run.errors)
+
+
+@pytest.mark.asyncio
+async def test_a_batch_that_exhausts_the_budget_exactly_records_no_remainder(
+    tracker: Tracker,
+) -> None:
+    """A batch the budget covers exactly has nothing left to report."""
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_batch_decider(
+                [
+                    (
+                        use_tool("First.", "echo", '{"value": "a"}'),
+                        use_tool("Second.", "echo", '{"value": "b"}'),
+                    ),
+                    (finish("Enough.", "Both calls ran."),),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=2,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.tool_calls == 2
+    assert len(run.steps) == 3
+    assert run.errors == []
 
 
 @pytest.mark.asyncio

@@ -336,31 +336,74 @@ def test_react_run_carries_a_non_empty_errors_list() -> None:
 
 
 def test_a_native_tool_call_becomes_an_internal_react_decision() -> None:
-    decision = react_decision_from_native_turn(
+    decisions = react_decision_from_native_turn(
         NativeToolTurn(
             model="deepseek-v4-flash",
             usage=TokenUsage(),
-            tool_call=NativeToolCall(
-                tool_name="web_search", arguments_json='{"query":"qec"}'
+            tool_calls=(
+                NativeToolCall(
+                    tool_name="web_search", arguments_json='{"query":"qec"}'
+                ),
             ),
         )
     )
-    assert decision == ReActDecision(
-        thought="Selected tool through provider-native calling.",
-        action="use_tool",
-        tool_name="web_search",
-        tool_input_json='{"query":"qec"}',
+    assert decisions == (
+        ReActDecision(
+            thought="Selected tool through provider-native calling.",
+            action="use_tool",
+            tool_name="web_search",
+            tool_input_json='{"query":"qec"}',
+        ),
+    )
+
+
+def test_two_native_calls_become_two_decisions_in_the_provider_order() -> None:
+    """One turn carrying several calls yields one decision per call, in order.
+
+    The provider is the parallel-call authority: it chose the order, so the
+    adapter must not sort, dedupe, or collapse the calls. Each decision keeps
+    the deterministic system ``thought``, never provider reasoning text.
+    """
+    decisions = react_decision_from_native_turn(
+        NativeToolTurn(
+            model="deepseek-v4-flash",
+            usage=TokenUsage(),
+            tool_calls=(
+                NativeToolCall(
+                    tool_name="web_search", arguments_json='{"query":"first"}'
+                ),
+                NativeToolCall(
+                    tool_name="query_memory", arguments_json='{"query":"second"}'
+                ),
+            ),
+        )
+    )
+    assert decisions == (
+        ReActDecision(
+            thought="Selected tool through provider-native calling.",
+            action="use_tool",
+            tool_name="web_search",
+            tool_input_json='{"query":"first"}',
+        ),
+        ReActDecision(
+            thought="Selected tool through provider-native calling.",
+            action="use_tool",
+            tool_name="query_memory",
+            tool_input_json='{"query":"second"}',
+        ),
     )
 
 
 def test_a_native_final_answer_becomes_an_internal_finish_decision() -> None:
-    decision = react_decision_from_native_turn(
+    decisions = react_decision_from_native_turn(
         NativeToolTurn(
             model="deepseek-v4-flash",
             usage=TokenUsage(),
             final_answer="The available evidence is sufficient.",
         )
     )
+    assert len(decisions) == 1
+    decision = decisions[0]
     assert decision.action == "finish"
     assert decision.thought == "Finished without another tool call."
     assert decision.tool_input_json == "{}"

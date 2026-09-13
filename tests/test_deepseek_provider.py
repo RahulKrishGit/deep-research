@@ -2975,12 +2975,60 @@ async def test_deepseek_native_react_asks_auto_and_parses_one_tool_call() -> Non
         }
     ]
     assert "response_format" not in call
-    assert turn.tool_call == NativeToolCall(
-        tool_name="web_search",
-        arguments_json='{"query":"qec capacity"}',
+    assert turn.tool_calls == (
+        NativeToolCall(
+            tool_name="web_search",
+            arguments_json='{"query":"qec capacity"}',
+        ),
     )
     assert turn.final_answer is None
     assert isinstance(turn, NativeToolTurn)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_accepts_two_tool_calls_in_one_turn() -> None:
+    """Two native calls in one turn are well formed, not a malformed envelope.
+
+    This parser used to require exactly one call per ``tool_calls`` finish and
+    discarded the whole turn otherwise. The second live release gate attempt
+    lost 4 of its 30 requests to that rule — its probe diagnosis named every
+    residual failure ``call_count_not_one`` — while parallel tool calls are a
+    normal part of the provider protocol. Every call is still validated exactly
+    as the single one was, so a second call cannot smuggle in a shape the first
+    call's validation would have refused.
+    """
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[
+                native_call("web_search", '{"query":"qec capacity"}'),
+                native_call("web_search", '{"query":"qec error rates"}'),
+            ],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "find capacity evidence"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="find capacity evidence")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    assert turn.tool_calls == (
+        NativeToolCall(
+            tool_name="web_search",
+            arguments_json='{"query":"qec capacity"}',
+        ),
+        NativeToolCall(
+            tool_name="web_search",
+            arguments_json='{"query":"qec error rates"}',
+        ),
+    )
+    assert turn.final_answer is None
+    assert len(completions.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -2996,7 +3044,7 @@ async def test_deepseek_native_react_returns_a_final_answer_without_a_tool() -> 
             [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
         )
 
-    assert turn.tool_call is None
+    assert turn.tool_calls == ()
     assert turn.final_answer == "The report is complete."
 
 
@@ -3025,17 +3073,6 @@ NATIVE_SENTINEL = "NATIVE_REACT_PROVIDER_SENTINEL_3B71"
                 tool_calls=[],
             ),
             id="tool-calls-with-zero-calls",
-        ),
-        pytest.param(
-            chat_response(
-                text=NATIVE_SENTINEL,
-                finish_reason="tool_calls",
-                tool_calls=[
-                    native_call("web_search", "{}"),
-                    native_call("web_search", "{}"),
-                ],
-            ),
-            id="tool-calls-with-two-calls",
         ),
         pytest.param(
             chat_response(
@@ -3432,9 +3469,10 @@ async def test_deepseek_native_react_retries_one_transient_error(
             [WEB_SEARCH_DEFINITION],
         )
 
-    assert turn.tool_call == NativeToolCall(
-        tool_name="web_search", arguments_json='{"query":"qec"}'
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
     )
+    assert turn.final_answer is None
     assert len(completions.calls) == 2
     assert slept == [1.0]
     # The attempt counter is the only consumer of request_attempt on this path.
@@ -3555,8 +3593,8 @@ async def test_deepseek_native_react_accepts_a_call_with_no_answer_text(
             [WEB_SEARCH_DEFINITION],
         )
 
-    assert turn.tool_call == NativeToolCall(
-        tool_name="web_search", arguments_json='{"query":"qec"}'
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
     )
     assert turn.final_answer is None
 
@@ -3594,8 +3632,8 @@ async def test_deepseek_native_react_accepts_a_call_beside_answer_text() -> None
 
     # The call is selected, and the accompanying prose is never parsed,
     # executed, or surfaced as the final answer.
-    assert turn.tool_call == NativeToolCall(
-        tool_name="web_search", arguments_json='{"query":"qec"}'
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
     )
     assert turn.final_answer is None
     assert len(completions.calls) == 1
@@ -3621,8 +3659,8 @@ async def test_the_deepseek_target_adapter_serves_native_react_turns() -> None:
             [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
         )
 
-    assert turn.tool_call == NativeToolCall(
-        tool_name="web_search", arguments_json='{"query":"qec"}'
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
     )
     assert "response_format" not in completions.calls[0]
     assert provider.last_model_returned == "deepseek-v4-flash"

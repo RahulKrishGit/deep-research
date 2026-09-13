@@ -501,15 +501,21 @@ def _native_outcome(
     *,
     allowed: set[str],
     finish_reason_category: FinishReasonCategory,
-) -> tuple[NativeToolCall | None, str | None, str | None]:
-    """Read exactly one native tool call or one non-blank final answer.
+) -> tuple[tuple[NativeToolCall, ...], str | None, str | None]:
+    """Read every native tool call, or one non-blank final answer.
 
-    Returns ``(tool_call, final_answer, rejection_reason)`` with exactly one of
-    the three set. Only the typed ``message.tool_calls`` field can select a
+    Returns ``(tool_calls, final_answer, rejection_reason)`` with exactly one of
+    the last two set. Only the typed ``message.tool_calls`` field can select a
     tool: text is inspected for tool markup, but only in order to *reject* it,
     so DSML, XML, Markdown fences, and JSON action envelopes in the message
     body can never request execution and can never pass as a final answer
     either.
+
+    A ``tool_calls`` finish carrying **one or more** calls is accepted, and
+    every call is validated exactly as a lone call is. Only *zero* calls on
+    that finish is malformed: it names a tool selection that does not exist.
+    Several calls in one turn are a normal part of the provider protocol, and
+    requiring exactly one discarded whole turns in live traffic.
 
     This function never raises. A rejection is returned instead, so the caller
     can clear its own provider-adjacent locals before that rejection becomes a
@@ -521,10 +527,10 @@ def _native_outcome(
     """
     choices = getattr(response, "choices", None)
     if not isinstance(choices, (list, tuple)) or len(choices) != 1:
-        return None, None, "DeepSeek response contained malformed choices"
+        return (), None, "DeepSeek response contained malformed choices"
     message = getattr(choices[0], "message", None)
     if message is None:
-        return None, None, "DeepSeek response contained no message"
+        return (), None, "DeepSeek response contained no message"
     raw_calls = getattr(message, "tool_calls", None)
     calls = raw_calls if isinstance(raw_calls, (list, tuple)) else ()
     # A container the provider did send, but not as a sequence, is a malformed
@@ -533,32 +539,38 @@ def _native_outcome(
         raw_calls, (list, tuple)
     )
     if malformed_calls:
-        return None, None, (
+        return (), None, (
             "DeepSeek native tool response carried a malformed tool_calls field"
         )
 
     if finish_reason_category == "tool_calls":
-        if len(calls) != 1:
-            return None, None, (
-                "DeepSeek native tool response must carry exactly one tool call"
+        if not calls:
+            return (), None, (
+                "DeepSeek native tool response must carry at least one tool call"
             )
-        call = calls[0]
-        if getattr(call, "type", None) != "function":
-            return None, None, (
-                "DeepSeek native tool response carried a non-function call"
+        selected: list[NativeToolCall] = []
+        for call in calls:
+            if getattr(call, "type", None) != "function":
+                return (), None, (
+                    "DeepSeek native tool response carried a non-function call"
+                )
+            function = getattr(call, "function", None)
+            name = (
+                getattr(function, "name", None) if function is not None else None
             )
-        function = getattr(call, "function", None)
-        name = getattr(function, "name", None) if function is not None else None
-        if not isinstance(name, str) or name not in allowed:
-            return None, None, (
-                "DeepSeek native tool response named an unavailable tool"
+            if not isinstance(name, str) or name not in allowed:
+                return (), None, (
+                    "DeepSeek native tool response named an unavailable tool"
+                )
+            arguments = getattr(function, "arguments", None)
+            if not isinstance(arguments, str) or not arguments.strip():
+                return (), None, (
+                    "DeepSeek native tool response carried malformed arguments"
+                )
+            selected.append(
+                NativeToolCall(tool_name=name, arguments_json=arguments)
             )
-        arguments = getattr(function, "arguments", None)
-        if not isinstance(arguments, str) or not arguments.strip():
-            return None, None, (
-                "DeepSeek native tool response carried malformed arguments"
-            )
-        # Non-blank ``content`` beside a typed call is deliberately *accepted*.
+        # Non-blank ``content`` beside typed calls is deliberately *accepted*.
         # The typed field is still the only thing that can select a tool, so
         # prose here cannot request execution, and rejecting it cost real
         # production turns: the first live release gate failed 8 of 30 requests
@@ -566,26 +578,26 @@ def _native_outcome(
         # pre-strictness batches. The mixed-envelope rejection is retained only
         # where the envelope is genuinely incoherent -- a call on a ``stop``
         # finish, below, or tool-protocol *text* passed off as the answer.
-        return NativeToolCall(tool_name=name, arguments_json=arguments), None, None
+        return tuple(selected), None, None
 
     if finish_reason_category != "stop":
-        return None, None, "DeepSeek response did not stop cleanly"
+        return (), None, "DeepSeek response did not stop cleanly"
     if calls:
-        return None, None, (
+        return (), None, (
             "DeepSeek native tool response mixed a final answer with a tool call"
         )
     content = getattr(message, "content", None)
     if not isinstance(content, str) or not content.strip():
-        return None, None, (
+        return (), None, (
             "DeepSeek native tool response carried no usable final answer"
         )
     violation = native_text_violation(content)
     if violation is not None:
-        return None, None, (
+        return (), None, (
             "DeepSeek native tool response carried tool protocol text as its "
             f"final answer ({violation})"
         )
-    return None, content.strip(), None
+    return (), content.strip(), None
 
 
 def _translate_deepseek_error(error: Exception) -> ProviderError:
@@ -1044,7 +1056,7 @@ class DeepSeekChatProvider:
                 max_delay=self._config.retry_max_delay,
             )
             telemetry: ProviderResponseTelemetry | None = None
-            tool_call: NativeToolCall | None = None
+            tool_calls: tuple[NativeToolCall, ...] = ()
             final_answer: str | None = None
             rejection: str | None = None
             failure: ProviderError | None = None
@@ -1065,7 +1077,7 @@ class DeepSeekChatProvider:
                 if telemetry.finish_reason_category == "length":
                     failure = ProviderOutputLimitError(telemetry)
                 else:
-                    tool_call, final_answer, rejection = _native_outcome(
+                    tool_calls, final_answer, rejection = _native_outcome(
                         response,
                         allowed=allowed,
                         finish_reason_category=telemetry.finish_reason_category,
@@ -1081,7 +1093,7 @@ class DeepSeekChatProvider:
                 return NativeToolTurn(
                     model=effective.model,
                     usage=telemetry.usage,
-                    tool_call=tool_call,
+                    tool_calls=tool_calls,
                     final_answer=final_answer,
                 )
 
@@ -1099,7 +1111,7 @@ class DeepSeekChatProvider:
             effective = None
             agent_name = None
             telemetry = None
-            tool_call = None
+            tool_calls = ()
             final_answer = None
             rejection = None
             raise failure

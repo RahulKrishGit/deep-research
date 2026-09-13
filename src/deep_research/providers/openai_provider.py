@@ -215,13 +215,13 @@ def _native_response_outcome(
     usage: TokenUsage,
     configured_max_tokens: int,
     request_attempt: int,
-) -> tuple[NativeToolCall | None, str | None, ProviderError | None]:
-    """Read exactly one Responses function call or one non-blank final answer.
+) -> tuple[tuple[NativeToolCall, ...], str | None, ProviderError | None]:
+    """Read every Responses function call, or one non-blank final answer.
 
-    Returns ``(tool_call, final_answer, failure)`` with at most one set. This
-    never raises, so the caller can clear its own provider-adjacent locals
-    before a rejection becomes a public error whose traceback would otherwise
-    retain the raw response.
+    Returns ``(tool_calls, final_answer, failure)`` with at most one of the last
+    two set. This never raises, so the caller can clear its own
+    provider-adjacent locals before a rejection becomes a public error whose
+    traceback would otherwise retain the raw response.
 
     Reasoning items are stepped over by type and never read, retained, or
     traced. Only a typed ``function_call`` item can select a tool, so tool
@@ -233,6 +233,11 @@ def _native_response_outcome(
     because silently dropping an item would answer a question this boundary
     cannot see -- a server-side tool execution would look exactly like a plain
     function call.
+
+    Several ``function_call`` items in one response are accepted, and each is
+    validated exactly as a lone call is. Requiring exactly one discarded whole
+    turns in live traffic; the DeepSeek transport carried the identical rule
+    and the same defect.
     """
     status = getattr(response, "status", None)
     if status == "incomplete":
@@ -242,7 +247,7 @@ def _native_response_outcome(
         )
         if reason == "max_output_tokens":
             return (
-                None,
+                (),
                 None,
                 ProviderOutputLimitError(
                     ProviderResponseTelemetry(
@@ -253,12 +258,12 @@ def _native_response_outcome(
                     )
                 ),
             )
-        return None, None, ProviderResponseError(
+        return (), None, ProviderResponseError(
             "OpenAI response did not complete",
             failure_origin="local_response",
         )
     if status != "completed":
-        return None, None, ProviderResponseError(
+        return (), None, ProviderResponseError(
             "OpenAI response did not complete",
             failure_origin="local_response",
         )
@@ -269,13 +274,13 @@ def _native_response_outcome(
     elif isinstance(output, (list, tuple)):
         items = output
     else:
-        return None, None, ProviderResponseError(
+        return (), None, ProviderResponseError(
             "OpenAI response contained malformed output",
             failure_origin="local_response",
         )
     for item in items:
         if getattr(item, "type", None) not in ALLOWED_OUTPUT_ITEM_TYPES:
-            return None, None, ProviderResponseError(
+            return (), None, ProviderResponseError(
                 "OpenAI response contained an unknown output item",
                 failure_origin="local_response",
             )
@@ -288,43 +293,42 @@ def _native_response_outcome(
         # A call beside an answer item is incoherent even when ``output_text``
         # is empty: one of the two would have to be silently discarded.
         if text or answers:
-            return None, None, ProviderResponseError(
+            return (), None, ProviderResponseError(
                 "OpenAI native tool response mixed a final answer with a tool call",
                 failure_origin="local_response",
             )
-        if len(calls) != 1:
-            return None, None, ProviderResponseError(
-                "OpenAI native tool response must carry exactly one tool call",
-                failure_origin="local_response",
+        selected: list[NativeToolCall] = []
+        for call in calls:
+            name = getattr(call, "name", None)
+            if not isinstance(name, str) or name not in allowed:
+                return (), None, ProviderResponseError(
+                    "OpenAI native tool response named an unavailable tool",
+                    failure_origin="local_response",
+                )
+            arguments = getattr(call, "arguments", None)
+            if not isinstance(arguments, str) or not arguments.strip():
+                return (), None, ProviderResponseError(
+                    "OpenAI native tool response carried malformed arguments",
+                    failure_origin="local_response",
+                )
+            selected.append(
+                NativeToolCall(tool_name=name, arguments_json=arguments)
             )
-        call = calls[0]
-        name = getattr(call, "name", None)
-        if not isinstance(name, str) or name not in allowed:
-            return None, None, ProviderResponseError(
-                "OpenAI native tool response named an unavailable tool",
-                failure_origin="local_response",
-            )
-        arguments = getattr(call, "arguments", None)
-        if not isinstance(arguments, str) or not arguments.strip():
-            return None, None, ProviderResponseError(
-                "OpenAI native tool response carried malformed arguments",
-                failure_origin="local_response",
-            )
-        return NativeToolCall(tool_name=name, arguments_json=arguments), None, None
+        return tuple(selected), None, None
 
     if not text:
-        return None, None, ProviderResponseError(
+        return (), None, ProviderResponseError(
             "OpenAI native tool response carried no usable final answer",
             failure_origin="local_response",
         )
     violation = native_text_violation(text)
     if violation is not None:
-        return None, None, ProviderResponseError(
+        return (), None, ProviderResponseError(
             "OpenAI native tool response carried tool protocol text as its "
             f"final answer ({violation})",
             failure_origin="local_response",
         )
-    return None, text, None
+    return (), text, None
 
 
 class _StructuredValidationFailure(RuntimeError):
@@ -606,7 +610,7 @@ class OpenAIChatProvider:
                 max_delay=self._config.retry_max_delay,
             )
             usage: TokenUsage | None = None
-            tool_call: NativeToolCall | None = None
+            tool_calls: tuple[NativeToolCall, ...] = ()
             final_answer: str | None = None
             failure: ProviderError | None = None
             try:
@@ -619,7 +623,7 @@ class OpenAIChatProvider:
                 failure = _fresh_provider_error(error)
             if failure is None:
                 _set_span_result(span, response, usage)
-                tool_call, final_answer, failure = _native_response_outcome(
+                tool_calls, final_answer, failure = _native_response_outcome(
                     response,
                     allowed=allowed,
                     usage=usage,
@@ -633,7 +637,7 @@ class OpenAIChatProvider:
                 return NativeToolTurn(
                     model=effective.model,
                     usage=usage,
-                    tool_call=tool_call,
+                    tool_calls=tool_calls,
                     final_answer=final_answer,
                 )
 
@@ -651,7 +655,7 @@ class OpenAIChatProvider:
             effective = None
             agent_name = None
             usage = TokenUsage()
-            tool_call = None
+            tool_calls = ()
             final_answer = None
             raise failure
 

@@ -39,9 +39,10 @@ A record retains exactly the enumerated fields in ``RECORD_FIELDS`` and nothing
 else. Prompt text, response text, reasoning, tool arguments, parsed payloads,
 invalid JSON, exception messages, provider object types, and secrets are never
 retained, printed, or written. A provider-chosen tool name is provider text, so
-only an allow-listed name is retained; anything else records ``None``. Character
-and token counts are measured from the object actually returned, never
-hard-coded.
+only the first call's allow-listed name is retained; anything else records
+``None``, and the number of calls in the turn is retained only as a bounded
+count. Character and token counts are measured from the object actually
+returned, never hard-coded.
 
 This script builds its request through the repository's own helpers
 (``cases_for``, ``EvaluationCase.fresh_state``, ``CriticAgent.build_task``,
@@ -177,16 +178,21 @@ VIOLATION_FLAGS: dict[str, str] = {
 # provider text, so naming which one fired is privacy-safe in a way that reading
 # an SDK exception's message is not -- and matching is by bounded prefix, so no
 # provider text can reach a record even if an SDK error shared a message.
+#
+# The single-call rules are gone from both parsers: a turn carrying one *or
+# more* native calls is accepted, and only a `tool_calls` finish with no call at
+# all is still malformed. The bounded literal that replaced them says *zero*,
+# because "not one" was the name the second live release gate could report
+# without being able to say which side of one the count fell on.
 _REJECTION_REASON_PREFIXES: tuple[tuple[str, str], ...] = (
     ("DeepSeek native tool response carried tool protocol text", "tool_protocol_text"),
     ("OpenAI native tool response carried tool protocol text", "tool_protocol_text"),
     ("DeepSeek native tool response mixed a final answer", "mixed_envelope"),
     ("OpenAI native tool response mixed a final answer", "mixed_envelope"),
-    ("DeepSeek native tool response must carry exactly one", "call_count_not_one"),
-    ("OpenAI native tool response must carry exactly one", "call_count_not_one"),
+    ("DeepSeek native tool response must carry at least one", "call_count_zero"),
     ("DeepSeek native tool response carried a non-function", "non_function_call"),
-    ("DeepSeek native tool response named an unavailable tool", "unavailable_tool"),
     ("OpenAI native tool response named an unavailable tool", "unavailable_tool"),
+    ("DeepSeek native tool response named an unavailable tool", "unavailable_tool"),
     (
         "DeepSeek native tool response carried malformed arguments",
         "malformed_arguments",
@@ -229,6 +235,7 @@ RECORD_FIELDS: tuple[str, ...] = (
     "run",
     "outcome",
     "finish_category",
+    "call_count",
     "tool_name",
     "arguments_are_object",
     "ordinary_text_present",
@@ -343,6 +350,7 @@ def _base_record(run: int) -> dict[str, Any]:
         "run": run,
         "outcome": None,
         "finish_category": None,
+        "call_count": 0,
         "tool_name": None,
         "arguments_are_object": None,
         "ordinary_text_present": False,
@@ -367,9 +375,18 @@ def build_turn_record(
 ) -> dict[str, Any]:
     """Describe one returned native turn, retaining none of its content.
 
-    A typed tool call naming a tool outside ``allowed`` is its own failure: the
-    allow-list is re-checked here rather than trusted, so a provider that
-    started offering an unavailable tool could not slip past this instrument.
+    A turn carries one *or more* calls, so the verdict is about the whole
+    batch. Only the **first** call's name can be retained, and only when the
+    allow-list admits it: the allow-list is re-checked here rather than trusted,
+    so a provider that started offering an unavailable tool could not slip past
+    this instrument. ``arguments_are_object`` is true only when *every* call is
+    allow-listed and *every* call's arguments decode to an object, so one bad
+    call in a batch cannot be averaged away by its well-formed siblings.
+
+    ``call_count`` is the measured number of calls. It exists because the
+    second live release gate could name the rule it failed on
+    (``call_count_not_one``) but not the count behind it, so a diagnosis could
+    not tell zero calls from several.
     """
     record = _base_record(run)
     usage = turn.usage
@@ -378,11 +395,17 @@ def build_turn_record(
         output_tokens=usage.output_tokens,
         total_tokens=usage.total_tokens,
     )
-    call = turn.tool_call
-    if call is not None:
-        name = call.tool_name
+    calls = turn.tool_calls
+    if calls:
+        name = calls[0].tool_name
         allow_listed = isinstance(name, str) and name in allowed
-        arguments_are_object = _arguments_are_object(call.arguments_json)
+        every_call_allow_listed = all(
+            isinstance(call.tool_name, str) and call.tool_name in allowed
+            for call in calls
+        )
+        arguments_are_object = every_call_allow_listed and all(
+            _arguments_are_object(call.arguments_json) for call in calls
+        )
         if not allow_listed:
             outcome = "unknown_tool"
         elif arguments_are_object:
@@ -392,6 +415,7 @@ def build_turn_record(
         record.update(
             outcome=outcome,
             finish_category="tool_calls",
+            call_count=len(calls),
             tool_name=name if allow_listed else None,
             arguments_are_object=arguments_are_object,
         )

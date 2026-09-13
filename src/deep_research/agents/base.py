@@ -234,12 +234,14 @@ class BaseAgent(ABC, Generic[ResultT]):
         task: AgentTask,
         *,
         iteration: int,
-    ) -> ReActDecision:
+    ) -> tuple[ReActDecision, ...]:
         """Ask the provider for one native ReAct turn, adapted to loop state.
 
         The sole bridge between the provider-native tool boundary and
         ``run_react_loop``. Every model-directed agent inherits this path, so
         no agent can reintroduce a prompt-encoded tool protocol of its own.
+        One turn may select several tools at once, so a tuple of decisions
+        comes back rather than a single one.
         """
         turn = await self._provider.complete_react(
             render_react_messages(
@@ -265,7 +267,7 @@ class BaseAgent(ABC, Generic[ResultT]):
         async def decide(
             iteration: int,
             steps: Sequence[ReActStep],
-        ) -> ReActDecision:
+        ) -> tuple[ReActDecision, ...]:
             del steps
             return await self._complete_react_decision(task, iteration=iteration)
 

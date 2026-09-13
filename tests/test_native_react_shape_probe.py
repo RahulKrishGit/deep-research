@@ -56,15 +56,20 @@ LEGACY_ACTION_FINAL = json.dumps(
     {"action": "web_search", "tool_input_json": '{"query":"qec"}'}
 )
 
-# The plan's field list, in the plan's order, plus ``rejection_reason``. The
-# probe may retain these fields and nothing else. ``rejection_reason`` is a
-# bounded literal naming *which* reviewed parser rejection fired: without it a
-# ``local_rejection`` verdict names no cause, which is exactly what the first
-# live release gate produced (8/30 shape failures, indistinguishable).
+# The plan's field list, in the plan's order, plus ``rejection_reason`` and
+# ``call_count``. The probe may retain these fields and nothing else.
+# ``rejection_reason`` is a bounded literal naming *which* reviewed parser
+# rejection fired: without it a ``local_rejection`` verdict names no cause,
+# which is exactly what the first live release gate produced (8/30 shape
+# failures, indistinguishable). ``call_count`` is the matching fix for the
+# second gate: it reported ``call_count_not_one`` but could not say whether the
+# turn carried zero calls or several, so the number of calls the provider
+# actually made is now recorded rather than inferred.
 ENUMERATED_FIELDS = (
     "run",
     "outcome",
     "finish_category",
+    "call_count",
     "tool_name",
     "arguments_are_object",
     "ordinary_text_present",
@@ -147,7 +152,23 @@ def _tool_turn(
     return NativeToolTurn(
         model=MODEL,
         usage=_usage(seed),
-        tool_call=NativeToolCall(tool_name=name, arguments_json=arguments),
+        tool_calls=(
+            NativeToolCall(tool_name=name, arguments_json=arguments),
+        ),
+    )
+
+
+def _multi_tool_turn(
+    calls: tuple[tuple[str, str], ...], *, seed: int = 1
+) -> NativeToolTurn:
+    """A turn carrying one or more parallel calls, in the provider's order."""
+    return NativeToolTurn(
+        model=MODEL,
+        usage=_usage(seed),
+        tool_calls=tuple(
+            NativeToolCall(tool_name=name, arguments_json=arguments)
+            for name, arguments in calls
+        ),
     )
 
 
@@ -459,6 +480,146 @@ def test_an_unavailable_tool_name_is_not_retained(probe: Any) -> None:
     )
     assert record["outcome"] == "unknown_tool"
     assert record["tool_name"] is None
+    assert SENTINEL not in json.dumps(record, sort_keys=True)
+
+
+def test_call_count_records_how_many_calls_the_provider_made(probe: Any) -> None:
+    """The number of calls is measured, never inferred from the verdict.
+
+    The second live release gate reported ``call_count_not_one`` for four runs
+    and could not say whether each turn carried zero calls or two or more,
+    because the rule's *name* was the only evidence the record kept. A bounded
+    integer closes that gap for good.
+    """
+    single = probe.build_turn_record(
+        run=1, turn=_tool_turn(seed=1), allowed=ALLOWED_TOOLS
+    )
+    double = probe.build_turn_record(
+        run=2,
+        turn=_multi_tool_turn(
+            (
+                ("web_search", '{"query":"a"}'),
+                ("query_memory", '{"query":"b"}'),
+            ),
+            seed=2,
+        ),
+        allowed=ALLOWED_TOOLS,
+    )
+    answer = probe.build_turn_record(
+        run=3, turn=_final_turn("plain prose answer"), allowed=ALLOWED_TOOLS
+    )
+    failure = probe.build_failure_record(
+        run=4, error=ProviderTimeoutError("timed out")
+    )
+    assert single["call_count"] == 1
+    assert single["outcome"] == "tool_call"
+    assert double["call_count"] == 2
+    assert double["outcome"] == "tool_call"
+    assert answer["call_count"] == 0
+    assert failure["call_count"] == 0
+    for record in (single, double, answer, failure):
+        assert isinstance(record["call_count"], int) and not isinstance(
+            record["call_count"], bool
+        )
+
+
+def test_a_multi_call_turn_keeps_only_the_first_allow_listed_name(
+    probe: Any,
+) -> None:
+    """One bounded name travels out, and it is the first call's."""
+    record = probe.build_turn_record(
+        run=1,
+        turn=_multi_tool_turn(
+            (
+                ("query_memory", '{"query":"a"}'),
+                ("web_search", '{"query":"b"}'),
+            )
+        ),
+        allowed=ALLOWED_TOOLS,
+    )
+    assert record["outcome"] == "tool_call"
+    assert record["tool_name"] == "query_memory"
+    assert record["call_count"] == 2
+    assert record["arguments_are_object"] is True
+
+
+def test_arguments_are_an_object_only_when_every_call_is_allow_listed_and_object(
+    probe: Any,
+) -> None:
+    """One bad call in a batch means the batch is not a clean accepted shape."""
+    every_call_clean = probe.build_turn_record(
+        run=1,
+        turn=_multi_tool_turn(
+            (
+                ("web_search", '{"query":"a"}'),
+                ("query_memory", '{"query":"b"}'),
+            )
+        ),
+        allowed=ALLOWED_TOOLS,
+    )
+    second_call_unknown = probe.build_turn_record(
+        run=2,
+        turn=_multi_tool_turn(
+            (
+                ("web_search", '{"query":"a"}'),
+                (SENTINEL, '{"query":"b"}'),
+            )
+        ),
+        allowed=ALLOWED_TOOLS,
+    )
+    second_call_not_an_object = probe.build_turn_record(
+        run=3,
+        turn=_multi_tool_turn(
+            (
+                ("web_search", '{"query":"a"}'),
+                ("web_search", '["not","an","object"]'),
+            )
+        ),
+        allowed=ALLOWED_TOOLS,
+    )
+    assert every_call_clean["arguments_are_object"] is True
+    assert second_call_unknown["arguments_are_object"] is False
+    assert second_call_unknown["outcome"] == "malformed_arguments"
+    assert second_call_unknown["outcome"] in probe.SHAPE_FAILURE_OUTCOMES
+    assert second_call_not_an_object["arguments_are_object"] is False
+    assert second_call_not_an_object["outcome"] == "malformed_arguments"
+    assert SENTINEL not in json.dumps(second_call_unknown, sort_keys=True)
+
+
+def test_a_first_call_outside_the_allow_list_is_an_unknown_tool(
+    probe: Any,
+) -> None:
+    """The first call decides the retained name, and a bad one is never kept."""
+    record = probe.build_turn_record(
+        run=1,
+        turn=_multi_tool_turn(
+            (
+                (SENTINEL, '{"query":"a"}'),
+                ("web_search", '{"query":"b"}'),
+            )
+        ),
+        allowed=ALLOWED_TOOLS,
+    )
+    assert record["outcome"] == "unknown_tool"
+    assert record["tool_name"] is None
+    assert record["call_count"] == 2
+    assert record["arguments_are_object"] is False
+    assert SENTINEL not in json.dumps(record, sort_keys=True)
+
+
+def test_multi_call_arguments_do_not_reach_a_record(probe: Any) -> None:
+    record = probe.build_turn_record(
+        run=1,
+        turn=_multi_tool_turn(
+            (
+                ("web_search", json.dumps({"query": SENTINEL})),
+                ("query_memory", json.dumps({"query": SENTINEL})),
+            )
+        ),
+        allowed=ALLOWED_TOOLS,
+    )
+    assert record["outcome"] == "tool_call"
+    assert record["call_count"] == 2
     assert SENTINEL not in json.dumps(record, sort_keys=True)
 
 

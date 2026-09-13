@@ -2,9 +2,10 @@
 
 ``ReActDecision`` is internal loop state, not a provider structured-output
 schema: the provider boundary returns a ``NativeToolTurn`` and
-``react_decision_from_native_turn`` adapts it here. Tool arguments still
-travel as ``tool_input_json`` — a JSON-encoded object — because that is the
-decoding contract ``parse_tool_input`` enforces.
+``react_decision_from_native_turn`` adapts it here. A native turn may carry
+several tool calls, so that adapter returns one decision per call. Tool
+arguments still travel as ``tool_input_json`` — a JSON-encoded object — because
+that is the decoding contract ``parse_tool_input`` enforces.
 """
 
 from __future__ import annotations
@@ -112,26 +113,40 @@ class ReActDecision(ContractModel):
         return self
 
 
-def react_decision_from_native_turn(turn: NativeToolTurn) -> ReActDecision:
-    """Adapt one provider-native turn into the loop's internal decision.
+def react_decision_from_native_turn(
+    turn: NativeToolTurn,
+) -> tuple[ReActDecision, ...]:
+    """Adapt one provider-native turn into the loop's internal decisions.
+
+    A turn is plural by contract: the provider may select several tools at once
+    and each call becomes its own ``use_tool`` decision, in the order the
+    provider gave them. Nothing is sorted, deduped, or dropped here — deciding
+    what to do with a batch belongs to ``run_react_loop``, which owns the tool
+    budget and can report what it did not execute. A final answer is the
+    degenerate one-decision case.
 
     ``thought`` is a short deterministic system summary, never provider
     reasoning: that keeps the step and scratchpad schemas intact without
     fabricating chain-of-thought, and it is the same text for every run of
     the same shape.
     """
-    if turn.tool_call is not None:
-        return ReActDecision(
-            thought="Selected tool through provider-native calling.",
-            action="use_tool",
-            tool_name=turn.tool_call.tool_name,
-            tool_input_json=turn.tool_call.arguments_json,
+    if turn.tool_calls:
+        return tuple(
+            ReActDecision(
+                thought="Selected tool through provider-native calling.",
+                action="use_tool",
+                tool_name=call.tool_name,
+                tool_input_json=call.arguments_json,
+            )
+            for call in turn.tool_calls
         )
-    return ReActDecision(
-        thought="Finished without another tool call.",
-        action="finish",
-        final_answer=turn.final_answer,
-        tool_input_json="{}",
+    return (
+        ReActDecision(
+            thought="Finished without another tool call.",
+            action="finish",
+            final_answer=turn.final_answer,
+            tool_input_json="{}",
+        ),
     )
 
 

@@ -39,33 +39,83 @@ def test_chat_message_accepts_provider_neutral_roles() -> None:
     assert ChatMessage(role="system", content="policy").role == "system"
 
 
-def test_a_native_tool_turn_carries_exactly_one_tool_call() -> None:
+def test_a_native_tool_turn_carries_a_tool_call() -> None:
     turn = NativeToolTurn(
         model="deepseek-v4-flash",
         usage=TokenUsage(input_tokens=3, output_tokens=2, total_tokens=5),
-        tool_call=NativeToolCall(
-            tool_name="web_search",
-            arguments_json='{"query":"qec capacity"}',
+        tool_calls=(
+            NativeToolCall(
+                tool_name="web_search",
+                arguments_json='{"query":"qec capacity"}',
+            ),
         ),
     )
     assert turn.final_answer is None
-    assert turn.tool_call.tool_name == "web_search"
+    assert turn.tool_calls[0].tool_name == "web_search"
+
+
+def test_a_native_tool_turn_accepts_two_tool_calls() -> None:
+    """Two or more calls in one turn are a normal part of the protocol.
+
+    This contract used to require exactly one call, and the second live release
+    gate attempt lost 4 of 30 turns to that rule: the provider returned two
+    native calls in a single turn and the whole turn was discarded. Parallel
+    tool calls are well formed, so the accepted shape is now one *or more*
+    calls, and a turn carrying several is a first-class result.
+    """
+    turn = NativeToolTurn(
+        model="deepseek-v4-flash",
+        usage=TokenUsage(),
+        tool_calls=(
+            NativeToolCall(tool_name="web_search", arguments_json='{"query":"a"}'),
+            NativeToolCall(
+                tool_name="query_memory", arguments_json='{"query":"b"}'
+            ),
+        ),
+    )
+    assert [call.tool_name for call in turn.tool_calls] == [
+        "web_search",
+        "query_memory",
+    ]
+    assert [call.arguments_json for call in turn.tool_calls] == [
+        '{"query":"a"}',
+        '{"query":"b"}',
+    ]
+    assert turn.final_answer is None
+
+
+def test_a_native_tool_turn_defaults_to_no_tool_calls() -> None:
+    turn = NativeToolTurn(
+        model="deepseek-v4-flash",
+        usage=TokenUsage(),
+        final_answer="The evidence is sufficient.",
+    )
+    assert turn.tool_calls == ()
+    assert turn.final_answer == "The evidence is sufficient."
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        {},
-        {
-            "tool_call": {
-                "tool_name": "web_search",
-                "arguments_json": "{}",
+        pytest.param({}, id="neither-outcome"),
+        pytest.param(
+            {
+                "tool_calls": (
+                    {"tool_name": "web_search", "arguments_json": "{}"},
+                ),
+                "final_answer": "done",
             },
-            "final_answer": "done",
-        },
+            id="both-outcomes",
+        ),
     ],
 )
 def test_a_native_tool_turn_rejects_zero_or_two_outcomes(payload) -> None:
+    """Exactly one of the two outcomes must be present, still.
+
+    Widening the call *count* does not widen this: a turn with calls and a
+    final answer would force the loop to discard one of them silently, and a
+    turn with neither carries no decision at all.
+    """
     with pytest.raises(ValueError, match="exactly one"):
         NativeToolTurn(
             model="deepseek-v4-flash",

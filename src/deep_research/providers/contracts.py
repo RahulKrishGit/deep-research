@@ -113,7 +113,13 @@ class NativeToolCall(ProviderContract):
 
 
 class NativeToolTurn(ProviderContract):
-    """One native ReAct turn: exactly one tool call or one final answer."""
+    """One native ReAct turn: one or more tool calls, or one final answer.
+
+    The provider protocol allows a single turn to select several tools at once.
+    That shape is accepted rather than rejected: it is well formed, and the
+    second live release gate lost 4 of its 30 requests to a parser that
+    required exactly one call per turn.
+    """
 
     model_config = ConfigDict(
         extra="forbid", str_strip_whitespace=True, frozen=True
@@ -121,14 +127,15 @@ class NativeToolTurn(ProviderContract):
 
     model: str = Field(min_length=1)
     usage: TokenUsage
-    tool_call: NativeToolCall | None = None
+    tool_calls: tuple[NativeToolCall, ...] = ()
     final_answer: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "NativeToolTurn":
-        if (self.tool_call is None) == (self.final_answer is None):
+        if bool(self.tool_calls) == (self.final_answer is not None):
             raise ValueError(
-                "native tool turns require exactly one tool call or final answer"
+                "native tool turns require exactly one of: one or more tool "
+                "calls, or a final answer"
             )
         return self
 

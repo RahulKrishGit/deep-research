@@ -95,9 +95,11 @@ def native_turn_from_decision(decision: ReActDecision) -> NativeToolTurn:
         return NativeToolTurn(
             model="deepseek-v4-flash",
             usage=TokenUsage(),
-            tool_call=NativeToolCall(
-                tool_name=decision.tool_name,
-                arguments_json=decision.tool_input_json,
+            tool_calls=(
+                NativeToolCall(
+                    tool_name=decision.tool_name,
+                    arguments_json=decision.tool_input_json,
+                ),
             ),
         )
     return NativeToolTurn(

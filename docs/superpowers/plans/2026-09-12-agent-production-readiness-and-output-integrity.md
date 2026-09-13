@@ -664,7 +664,7 @@ Shape integrity requires:
 
 - 0/30 DSML, tool markup, fences, or legacy action JSON in ordinary text;
 - 0/30 mixed text/tool, unknown item, unknown tool, multiple call, malformed call, or non-object arguments;
-- every successful turn is one allow-listed native call or legitimate non-blank final answer;
+- every successful turn is one or more allow-listed native calls, or one legitimate non-blank final answer;
 - at least one native tool call;
 - exactly 30 SDK `create` calls and zero repair/tool execution calls.
 
