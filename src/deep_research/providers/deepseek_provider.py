@@ -572,36 +572,42 @@ def _native_outcome(
     return None, content.strip(), None
 
 
-def _raise_deepseek_error(error: Exception) -> None:
+def _translate_deepseek_error(error: Exception) -> ProviderError:
     """Translate SDK operational failures to safe typed provider errors.
 
-    Any exception outside the handled SDK types falls through and is
-    re-raised unchanged; callers decide how to classify it. In
-    ``complete`` only the handled types can reach this helper, so the
-    fallthrough is defensive rather than reachable there.
+    Returns a fresh project error instead of raising it. Raising from inside
+    this frame would put the frame -- and therefore the SDK exception it holds
+    as a parameter local -- on the new error's traceback, where a caller could
+    still reach the SDK object through ``tb_frame.f_locals`` even after
+    ``with_retries`` has cleared ``__cause__`` and ``__context__``. Returning
+    keeps the SDK object confined to the caller's handler, whose locals the
+    interpreter clears when the handler exits.
     """
     sdk = _openai_errors()
     if isinstance(error, sdk.APITimeoutError):
-        raise ProviderTimeoutError("DeepSeek request timed out") from error
+        return ProviderTimeoutError("DeepSeek request timed out")
     if isinstance(error, sdk.RateLimitError):
-        raise ProviderRateLimitError("DeepSeek rate limit exceeded") from error
+        return ProviderRateLimitError("DeepSeek rate limit exceeded")
     if isinstance(error, sdk.APIConnectionError):
-        raise ProviderResponseError(
+        return ProviderResponseError(
             "DeepSeek connection failed",
             failure_origin="sdk",
             retryable=True,
             failure_category="transport",
-        ) from error
+        )
     if isinstance(error, sdk.APIStatusError):
         status = error.status_code
-        raise ProviderResponseError(
+        return ProviderResponseError(
             f"DeepSeek request failed with status {status}",
             failure_origin="sdk",
             retryable=status >= 500 or status in (408, 409),
             failure_category="http",
             http_status_code=status,
-        ) from error
-    raise error
+        )
+    # Unreachable while every call site catches exactly the four SDK types
+    # handled above. Fail loudly rather than invent a category for a type
+    # whose public semantics nobody has decided.
+    raise AssertionError("untranslated DeepSeek SDK error type")
 
 
 def _set_span_result(span: Any, telemetry: ProviderResponseTelemetry) -> None:
@@ -737,7 +743,7 @@ class DeepSeekChatProvider:
                         _sdk.APIConnectionError,
                         _sdk.APIStatusError,
                     ) as error:
-                        _raise_deepseek_error(error)
+                        raise _translate_deepseek_error(error)
                     except _sdk.OpenAIError as error:
                         raise ProviderResponseError(
                             "DeepSeek chat request failed",
@@ -815,7 +821,7 @@ class DeepSeekChatProvider:
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
                 ) as error:
-                    _raise_deepseek_error(error)
+                    raise _translate_deepseek_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
                         "DeepSeek structured output request failed",
@@ -1008,7 +1014,7 @@ class DeepSeekChatProvider:
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
                 ) as error:
-                    _raise_deepseek_error(error)
+                    raise _translate_deepseek_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
                         "DeepSeek native tool request failed",
@@ -1148,7 +1154,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
                 ) as error:
-                    _raise_deepseek_error(error)
+                    raise _translate_deepseek_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
                         "DeepSeek Responses request failed",

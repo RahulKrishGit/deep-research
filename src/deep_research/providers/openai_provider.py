@@ -147,29 +147,39 @@ def _set_span_result(span: Any, response: Any, usage: TokenUsage) -> None:
     )
 
 
-def _raise_provider_error(error: Exception) -> None:
+def _translate_provider_error(error: Exception) -> ProviderError:
+    """Translate SDK operational failures to safe typed provider errors.
+
+    Returns a fresh project error instead of raising it, so this frame never
+    lands on the new error's traceback holding the SDK exception as a
+    parameter local -- a disclosure path that survives ``with_retries``
+    clearing ``__cause__`` and ``__context__``.
+    """
     sdk = _openai_errors()
     if isinstance(error, sdk.APITimeoutError):
-        raise ProviderTimeoutError("OpenAI request timed out") from error
+        return ProviderTimeoutError("OpenAI request timed out")
     if isinstance(error, sdk.RateLimitError):
-        raise ProviderRateLimitError("OpenAI rate limit exceeded") from error
+        return ProviderRateLimitError("OpenAI rate limit exceeded")
     if isinstance(error, sdk.APIConnectionError):
-        raise ProviderResponseError(
+        return ProviderResponseError(
             "OpenAI connection failed",
             failure_origin="sdk",
             retryable=True,
             failure_category="transport",
-        ) from error
+        )
     if isinstance(error, sdk.APIStatusError):
         status = error.status_code
-        raise ProviderResponseError(
+        return ProviderResponseError(
             f"OpenAI request failed with status {status}",
             failure_origin="sdk",
             retryable=status >= 500 or status in (408, 409),
             failure_category="http",
             http_status_code=status,
-        ) from error
-    raise error
+        )
+    # Unreachable while every call site catches exactly the four SDK types
+    # handled above. Fail loudly rather than invent a category for a type
+    # whose public semantics nobody has decided.
+    raise AssertionError("untranslated OpenAI SDK error type")
 
 
 def _fresh_provider_error(error: ProviderResponseError) -> ProviderResponseError:
@@ -383,7 +393,7 @@ class OpenAIChatProvider:
                         _sdk.APIConnectionError,
                         _sdk.APIStatusError,
                     ) as error:
-                        _raise_provider_error(error)
+                        raise _translate_provider_error(error)
                     except _sdk.OpenAIError as error:
                         raise ProviderResponseError(
                             "OpenAI chat request failed",
@@ -450,7 +460,7 @@ class OpenAIChatProvider:
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
                 ) as error:
-                    _raise_provider_error(error)
+                    raise _translate_provider_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
                         "OpenAI structured output request failed",
@@ -549,7 +559,7 @@ class OpenAIChatProvider:
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
                 ) as error:
-                    _raise_provider_error(error)
+                    raise _translate_provider_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
                         "OpenAI native tool request failed",

@@ -45,10 +45,12 @@ def _drop_chained_provider_state(error: BaseException) -> None:
     only reliable point to break the link is a raise that happens outside any
     handler, which is where this runs.
 
-    This detaches the *chain*. It does not remove the SDK exception from the
-    translator's own frame, which still holds it as a parameter local: that
-    frame is part of a pre-existing surface shared with ``complete`` and
-    ``complete_structured`` and is out of this fix's scope.
+    This detaches the *chain*, and it is no longer the only measure in place.
+    The provider translators return their typed error instead of raising it, so
+    their frames never land on the new error's traceback still holding the SDK
+    exception as a parameter local; and the interpreter's implicit
+    ``del error`` clears the handler's own local as that handler exits. What is
+    left for this function is the ``__cause__``/``__context__`` link.
     """
     error.__cause__ = None
     error.__context__ = None

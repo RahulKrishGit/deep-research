@@ -156,6 +156,42 @@ def _provider_exception_surfaces(error: BaseException) -> list[str]:
     return surfaces
 
 
+def _exception_reaches(error: BaseException, target: object) -> bool:
+    """True when ``target`` is reachable from the error's public surface.
+
+    Walks the exception graph and the *provider* frames on those exceptions'
+    tracebacks -- never module globals, never the garbage collector, and never
+    caller frames. Callers are skipped deliberately: this test necessarily
+    holds the SDK object in its own local, and a caller's own reference is not
+    a disclosure by the provider. A True result is therefore a path the
+    provider itself opened.
+    """
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if current is target:
+            return True
+        pending.extend(
+            linked
+            for linked in (current.__cause__, current.__context__)
+            if isinstance(linked, BaseException)
+        )
+        traceback = current.__traceback__
+        while traceback is not None:
+            frame = traceback.tb_frame
+            filename = frame.f_code.co_filename.replace("\\", "/")
+            if "/src/deep_research/providers/" in filename and any(
+                value is target for value in frame.f_locals.values()
+            ):
+                return True
+            traceback = traceback.tb_next
+    return False
+
+
 def openai_config(**updates: object) -> LLMConfig:
     return LLMConfig.model_validate(
         {
@@ -1290,6 +1326,46 @@ def test_fresh_provider_error_copies_the_failure_origin() -> None:
     assert fresh.failure_category == original.failure_category
     assert fresh.retryable == original.retryable
     assert fresh.__traceback__ is None
+
+
+@pytest.mark.asyncio
+async def test_openai_public_error_never_reaches_the_sdk_exception(
+    monkeypatch,
+) -> None:
+    """The SDK object must be unreachable, not merely unchained."""
+    _recorded_sleeps(monkeypatch)
+    request_marker = "OPENAI_REQUEST_MARKER_6C13"
+    sdk_error = APIConnectionError(
+        request=httpx.Request(
+            "POST",
+            "https://api.openai.com/v1/responses",
+            content=request_marker,
+        )
+    )
+    responses = RecordingResponses(sdk_error, sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(retry_count=2),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert len(responses.create_calls) == 3
+    assert caught.value.failure_category == "transport"
+    assert caught.value.failure_origin == "sdk"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert not _exception_reaches(caught.value, sdk_error)
+    assert request_marker not in repr(
+        _provider_exception_surfaces(caught.value)
+    )
 
 
 @pytest.mark.asyncio
