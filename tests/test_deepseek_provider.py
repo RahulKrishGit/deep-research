@@ -2951,9 +2951,12 @@ async def test_deepseek_native_react_fails_closed_without_leaking(
     # One request only: a malformed native envelope is never repaired into a
     # second shape.
     assert len(completions.calls) == 1
-    surfaces = [str(caught.value), repr(_provider_exception_surfaces(caught.value))]
+    surfaces = _provider_exception_surfaces(caught.value)
     assert surfaces
-    assert all(NATIVE_SENTINEL not in surface for surface in surfaces)
+    assert all(
+        NATIVE_SENTINEL not in surface
+        for surface in [str(caught.value), *surfaces]
+    )
 
 
 @pytest.mark.asyncio
@@ -3043,6 +3046,67 @@ async def test_deepseek_native_react_retries_one_transient_error(
     )
     assert len(completions.calls) == 2
     assert slept == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_never_executes_tool_markup_in_text() -> None:
+    """Only the typed native field may request execution.
+
+    DeepSeek's own DSML markup, a fenced JSON action envelope, and a bare JSON
+    action object all arrive as ordinary message text here. Each must become
+    the final answer, never a tool call.
+    """
+    envelope = "\n".join(
+        [
+            '<|DSML|tool_calls><|DSML|invoke name="web_search">'
+            '{"query":"qec capacity"}</|DSML|invoke></|DSML|tool_calls>',
+            "```json",
+            '{"action": "use_tool", "tool_name": "web_search", '
+            '"tool_input_json": "{\\"query\\":\\"qec capacity\\"}"}',
+            "```",
+            '<tool_call>{"name": "web_search"}</tool_call>',
+        ]
+    )
+    completions = RecordingCompletions(
+        chat_response(text=envelope, finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_call is None
+    assert turn.final_answer == envelope
+
+
+@pytest.mark.asyncio
+async def test_the_deepseek_target_adapter_serves_native_react_turns() -> None:
+    """The production target adapter inherits the native tool turn unchanged."""
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_call == NativeToolCall(
+        tool_name="web_search", arguments_json='{"query":"qec"}'
+    )
+    assert "response_format" not in completions.calls[0]
+    assert provider.last_model_returned == "deepseek-v4-flash"
 
 
 @pytest.mark.asyncio

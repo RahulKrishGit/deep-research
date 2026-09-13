@@ -472,6 +472,10 @@ def _native_outcome(
     This function never raises. A rejection is returned instead, so the caller
     can clear its own provider-adjacent locals before that rejection becomes a
     public error whose traceback would otherwise retain the response text.
+
+    Arguments must be a non-blank string. That is stricter than "a string":
+    every tool in the registry requires at least one argument, so a blank
+    argument payload can never be a legitimate call.
     """
     choices = getattr(response, "choices", None)
     if not isinstance(choices, (list, tuple)) or len(choices) != 1:
