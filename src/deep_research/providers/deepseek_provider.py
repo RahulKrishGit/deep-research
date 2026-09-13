@@ -455,6 +455,21 @@ def _choice_text(
     return text
 
 
+def _fresh_provider_error(error: ProviderResponseError) -> ProviderResponseError:
+    """A copy of a typed rejection carrying no traceback and no chain.
+
+    Re-raising the caught object would keep its original traceback, whose
+    frames still reference the raw response. A new instance carries only the
+    static project-authored message.
+    """
+    return ProviderResponseError(
+        str(error),
+        retryable=error.retryable,
+        failure_category=error.failure_category,
+        http_status_code=error.http_status_code,
+    )
+
+
 def _native_outcome(
     response: Any,
     *,
@@ -483,10 +498,12 @@ def _native_outcome(
     message = getattr(choices[0], "message", None)
     if message is None:
         return None, None, "DeepSeek response contained no message"
-    tool_calls = getattr(message, "tool_calls", None)
+    raw_calls = getattr(message, "tool_calls", None)
+    # Normalized once, so a truthy non-sequence cannot reach ``len`` or a
+    # truth test and surface as a raw TypeError.
+    calls = raw_calls if isinstance(raw_calls, (list, tuple)) else ()
 
     if finish_reason_category == "tool_calls":
-        calls = tool_calls if isinstance(tool_calls, (list, tuple)) else ()
         if len(calls) != 1:
             return None, None, (
                 "DeepSeek native tool response must carry exactly one tool call"
@@ -511,7 +528,7 @@ def _native_outcome(
 
     if finish_reason_category != "stop":
         return None, None, "DeepSeek response did not stop cleanly"
-    if tool_calls:
+    if calls:
         return None, None, (
             "DeepSeek native tool response mixed a final answer with a tool call"
         )
@@ -967,25 +984,35 @@ class DeepSeekChatProvider:
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
             )
-            telemetry = _response_telemetry(
-                response,
-                configured_max_tokens=resolved_max_tokens,
-                request_attempt=request_attempt,
-            )
-            _set_span_result(span, telemetry)
+            telemetry: ProviderResponseTelemetry | None = None
             tool_call: NativeToolCall | None = None
             final_answer: str | None = None
+            rejection: str | None = None
             failure: ProviderError | None = None
-            if telemetry.finish_reason_category == "length":
-                failure = ProviderOutputLimitError(telemetry)
-            else:
-                tool_call, final_answer, rejection = _native_outcome(
+            try:
+                telemetry = _response_telemetry(
                     response,
-                    allowed=allowed,
-                    finish_reason_category=telemetry.finish_reason_category,
+                    configured_max_tokens=resolved_max_tokens,
+                    request_attempt=request_attempt,
                 )
-                if rejection is not None:
-                    failure = ProviderResponseError(rejection)
+            except ProviderResponseError as error:
+                # A malformed usage shape is rejected *before* the clearing
+                # block below, so the rejection has to be replaced with a
+                # traceback-free copy: re-raising the caught object would keep
+                # the frames that still hold the raw response.
+                failure = _fresh_provider_error(error)
+            if failure is None:
+                _set_span_result(span, telemetry)
+                if telemetry.finish_reason_category == "length":
+                    failure = ProviderOutputLimitError(telemetry)
+                else:
+                    tool_call, final_answer, rejection = _native_outcome(
+                        response,
+                        allowed=allowed,
+                        finish_reason_category=telemetry.finish_reason_category,
+                    )
+                    if rejection is not None:
+                        failure = ProviderResponseError(rejection)
             if failure is None:
                 self._last_model_returned = (
                     getattr(response, "model", None) or effective.model

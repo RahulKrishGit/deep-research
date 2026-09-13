@@ -2931,6 +2931,36 @@ NATIVE_SENTINEL = "NATIVE_REACT_PROVIDER_SENTINEL_3B71"
             chat_response(text=NATIVE_SENTINEL, finish_reason=NATIVE_SENTINEL),
             id="unknown-finish-reason",
         ),
+        pytest.param(
+            SimpleNamespace(
+                id="malformed-usage",
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(
+                            content=NATIVE_SENTINEL,
+                            reasoning_content=None,
+                            tool_calls=None,
+                        ),
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=NATIVE_SENTINEL,
+                    completion_tokens=NATIVE_SENTINEL,
+                    total_tokens=NATIVE_SENTINEL,
+                ),
+                marker=NATIVE_SENTINEL,
+            ),
+            id="malformed-usage",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=NATIVE_SENTINEL,
+            ),
+            id="non-sequence-tool-calls",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -3028,7 +3058,7 @@ async def test_deepseek_native_react_retries_one_transient_error(
             tool_calls=[native_call("web_search", '{"query":"qec"}')],
         ),
     )
-    tracker = local_tracker()
+    tracker = CapturingTracker()
     provider = DeepSeekChatProvider(
         deepseek_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
         tracker,
@@ -3046,6 +3076,8 @@ async def test_deepseek_native_react_retries_one_transient_error(
     )
     assert len(completions.calls) == 2
     assert slept == [1.0]
+    # The attempt counter is the only consumer of request_attempt on this path.
+    assert tracker.llm_outputs[-1]["request_attempt"] == 2
 
 
 @pytest.mark.asyncio
@@ -3137,3 +3169,34 @@ async def test_deepseek_native_react_span_records_counts_not_names() -> None:
     recorded = repr(tracker.llm_inputs)
     assert "web_search" not in recorded
     assert "qec capacity" not in recorded
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_exhausted_retries_chain_no_sdk_error(
+    monkeypatch,
+) -> None:
+    """A typed error must not carry the SDK exception, which holds
+    ``request`` (the prompt and tool definitions) and ``body``."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(
+        request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+    )
+    sdk_error.request_marker = NATIVE_SENTINEL
+    completions = RecordingCompletions(sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert NATIVE_SENTINEL not in repr(_provider_exception_surfaces(caught.value))

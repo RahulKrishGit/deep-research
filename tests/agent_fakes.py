@@ -163,12 +163,15 @@ class ScriptedCompleter:
         agent_name: str | None = None,
         max_tokens: int | None = None,
     ) -> Any:
+        # Recorded *before* the refusal on purpose: a guard test asserting
+        # that no call ever names ``ReActDecision`` can only carry weight if a
+        # refused attempt is visible in ``calls``.
+        self.calls.append((schema.__name__, agent_name, list(messages)))
+        self.budgets.append(max_tokens)
         if schema is ReActDecision:
             raise AssertionError(
                 "ReAct decisions must be requested through complete_react"
             )
-        self.calls.append((schema.__name__, agent_name, list(messages)))
-        self.budgets.append(max_tokens)
         if not self._outputs:
             raise AssertionError(f"no scripted response left for {schema.__name__}")
         response = self._outputs.pop(0)

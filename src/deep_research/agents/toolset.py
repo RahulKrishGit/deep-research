@@ -28,6 +28,12 @@ def _provider_type_schema(compact: JsonValue) -> dict[str, JsonValue]:
     if not isinstance(compact, str):
         raise AgentConfigurationError("tool input types must be compact strings")
     members = compact.split("|")
+    # A lone "null" would produce an unsatisfiable parameter: a nullable type
+    # must pair with a real one.
+    if members == ["null"]:
+        raise AgentConfigurationError(
+            "a compact tool input type must not be 'null' alone"
+        )
     schemas = [
         {"type": "null"} if member == "null" else _JSON_TYPES.get(member)
         for member in members

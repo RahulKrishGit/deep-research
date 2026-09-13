@@ -34,6 +34,14 @@ from deep_research.agents.source_evaluator import (
 from deep_research.agents.sources import SourceGroup
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import SynthesisTask, report_messages
+from deep_research.tools import (
+    DocumentReaderTool,
+    QueryMemoryTool,
+    SaveToMemoryTool,
+    WebScraperTool,
+    WebSearchTool,
+    WriteDocumentTool,
+)
 from deep_research.utils.types import (
     Claim,
     Finding,
@@ -42,14 +50,19 @@ from deep_research.utils.types import (
     SubTopic,
 )
 
-REGISTERED_TOOL_NAMES = {
-    "web_search",
-    "web_scraper",
-    "document_reader",
-    "query_memory",
-    "save_to_memory",
-    "write_document",
-}
+# Derived from the real tool classes, so a seventh registered tool is
+# covered by the inventory below without anyone remembering to edit this set.
+REGISTERED_TOOL_NAMES = frozenset(
+    tool_class.name
+    for tool_class in (
+        WebSearchTool,
+        WebScraperTool,
+        DocumentReaderTool,
+        QueryMemoryTool,
+        SaveToMemoryTool,
+        WriteDocumentTool,
+    )
+)
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
@@ -267,7 +280,7 @@ def test_every_tool_free_request_carries_at_most_two_bounded_examples(
         line = payload.splitlines()[0]
         assert line.startswith("{") and line.endswith("}")
         assert "```" not in payload
-    assert body.count("```") == 0 or "# Reply format" in body
+    assert '```' not in body
 
 
 # --- the example tables themselves -------------------------------------------
@@ -277,6 +290,12 @@ def _example_tables() -> tuple:
         _CRITIQUE_HIGH_EXAMPLE_JSON,
         _CRITIQUE_LOW_EXAMPLE_JSON,
         CritiqueDraft,
+    )
+    from deep_research.agents.critic import (
+        _HIGH_EXAMPLE_SCORE as HIGH_EXAMPLE_SCORE,
+    )
+    from deep_research.agents.critic import (
+        _LOW_EXAMPLE_SCORE as LOW_EXAMPLE_SCORE,
     )
     from deep_research.agents.fact_checker import (
         _CLAIM_EXTRACTION_REPLY_EXAMPLES,
@@ -304,10 +323,15 @@ def _example_tables() -> tuple:
         (_REPORT_REPLY_EXAMPLES, ReportDraft),
         (
             (
-                ("Weak report, score 3:", _CRITIQUE_LOW_EXAMPLE_JSON),
-                ("Strong report, score 9:", _CRITIQUE_HIGH_EXAMPLE_JSON),
-                # labels checked below; the Critic pair keeps its own wording
+            (
+                f"Weak report, score {LOW_EXAMPLE_SCORE}:",
+                _CRITIQUE_LOW_EXAMPLE_JSON,
             ),
+            (
+                f"Strong report, score {HIGH_EXAMPLE_SCORE}:",
+                _CRITIQUE_HIGH_EXAMPLE_JSON,
+            ),
+        ),
             CritiqueDraft,
         ),
     )

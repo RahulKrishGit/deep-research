@@ -166,12 +166,22 @@ def test_a_required_name_absent_from_the_schema_fails_at_descriptor_construction
         ToolDescriptor.from_tool(DriftedRequiredTool(tracker))
 
 
+def test_a_lone_null_compact_type_is_rejected(tracker: Tracker) -> None:
+    """A nullable type must pair with a real one, or the parameter is unusable."""
+
+    class NullOnlyTool(SearchTool):
+        name = "null_only"
+        input_schema = {"query": "null"}
+
+    with pytest.raises(AgentConfigurationError, match="null"):
+        ToolDescriptor.from_tool(NullOnlyTool(tracker))
+
+
 # The declaration half of the projection. `DriftedRequiredTool` above only
 # fails when a declared name is missing from the schema, so a wrong-but-present
 # list — for example `("query", "max_results")` — would pass every other test.
 # This table is what pins the six production declarations themselves.
-PRODUCTION_REQUIRED_ARGUMENTS = (
-    (WebSearchTool, ("query",)),
+PRODUCTION_REQUIRED_ARGUMENTS = (    (WebSearchTool, ("query",)),
     (WebScraperTool, ("url",)),
     (DocumentReaderTool, ("source",)),
     (SaveToMemoryTool, ("content",)),

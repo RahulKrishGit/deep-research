@@ -486,7 +486,7 @@ async def test_a_run_writes_the_report_and_records_its_counts(
         outcome.result.markdown
     )
     assert outcome.state_update["report"] == outcome.result.markdown
-    assert "# Executive summary" in outcome.result.markdown
+    assert "## Executive summary" in outcome.result.markdown
     assert "Break-even was reached in 2025." in outcome.result.markdown
     assert "Vendor numbers remain unaudited." in outcome.result.markdown
     assert outcome.react.stop_reason == "finished"

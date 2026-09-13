@@ -3054,7 +3054,7 @@ No live response body, prompt text, secret, or reasoning content is recorded.
 
 ---
 
-## Section 96: Shared native ReAct tools and prompt conformance — offline gate
+## Section 96: Shared native ReAct tools and prompt conformance â€” offline gate
 
 Plan: `docs/superpowers/plans/2026-09-12-shared-native-react-tools-and-prompt-conformance.md`
 Spec: `docs/superpowers/specs/2026-09-12-shared-native-react-tools-and-prompt-conformance-design.md`
@@ -3064,7 +3064,8 @@ validation) has not run and is not authorized by this record.**
 ### Commits and range
 
 - Task 1 base (pre-plan): `4757988bbae3c2004781a0d155a0bc5857699d5f`
-- Candidate head: `d37cf706ea7a3a032900fda15363019d970e5d90`
+- Validated tree (the code this record describes): `d37cf706ea7a3a032900fda15363019d970e5d90`
+- This record's own commit: `a41d6a7` (documentation only; no code differs between the two)
 - `git merge-base origin/codex/cross-agent-planner-fix-parity HEAD` = `0fed75954508bc79bb5c67ee76501c68fc602931`
 
 | Task | Commit | Subject |
@@ -3177,7 +3178,7 @@ No DeepSeek, OpenAI, Tavily, LangSmith, evaluation-harness, or live test call ra
 repository's own `addopts = "-m 'not live'"`. `tests/test_evaluation/test_suite.py` needs
 `DEEPSEEK_API_KEY` present in the process environment because `run_suite_evaluation` reads
 `dict(os.environ)`; the offline gate supplies the placeholder
-`sk-deepseek-offline-sentinel`, which is used only for provider construction — the suite injects a
+`sk-deepseek-offline-sentinel`, which is used only for provider construction â€” the suite injects a
 `FakeEvaluateRunner` with an empty example list, so nothing leaves the process.
 
 This record contains no prompts, provider responses, tool arguments, reasoning, or secret values.

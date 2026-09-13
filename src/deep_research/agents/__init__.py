@@ -456,7 +456,6 @@ __all__ = [
     "render_source_dossier",
     "render_source_quality",
     "render_sub_topic_guidance",
-
     "render_uncertain_claims",
     "render_verified_claims",
     "report_filename",

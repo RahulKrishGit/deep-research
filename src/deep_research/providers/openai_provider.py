@@ -167,6 +167,21 @@ def _raise_provider_error(error: Exception) -> None:
     raise error
 
 
+def _fresh_provider_error(error: ProviderResponseError) -> ProviderResponseError:
+    """A copy of a typed rejection carrying no traceback and no chain.
+
+    Re-raising the caught object would keep its original traceback, whose
+    frames still reference the raw response. A new instance carries only the
+    static project-authored message.
+    """
+    return ProviderResponseError(
+        str(error),
+        retryable=error.retryable,
+        failure_category=error.failure_category,
+        http_status_code=error.http_status_code,
+    )
+
+
 def _native_response_outcome(
     response: Any,
     *,
@@ -528,15 +543,27 @@ class OpenAIChatProvider:
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
             )
-            usage = _usage_from_response(response)
-            _set_span_result(span, response, usage)
-            tool_call, final_answer, failure = _native_response_outcome(
-                response,
-                allowed=allowed,
-                usage=usage,
-                configured_max_tokens=resolved_max_tokens,
-                request_attempt=request_attempt,
-            )
+            usage: TokenUsage | None = None
+            tool_call: NativeToolCall | None = None
+            final_answer: str | None = None
+            failure: ProviderError | None = None
+            try:
+                usage = _usage_from_response(response)
+            except ProviderResponseError as error:
+                # A malformed usage shape is rejected *before* the clearing
+                # block below, so the rejection has to be replaced with a
+                # traceback-free copy: re-raising the caught object would keep
+                # the frames that still hold the raw response.
+                failure = _fresh_provider_error(error)
+            if failure is None:
+                _set_span_result(span, response, usage)
+                tool_call, final_answer, failure = _native_response_outcome(
+                    response,
+                    allowed=allowed,
+                    usage=usage,
+                    configured_max_tokens=resolved_max_tokens,
+                    request_attempt=request_attempt,
+                )
             if failure is None:
                 self._last_model_returned = (
                     getattr(response, "model", None) or effective.model

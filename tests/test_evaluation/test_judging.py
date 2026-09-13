@@ -1244,3 +1244,39 @@ def test_the_examples_are_labelled_as_illustrative(critic_live_case) -> None:
 
     assert "placeholders" in _prose(body)
     assert "not a target to match" in _prose(body)
+
+
+@pytest.mark.asyncio
+async def test_the_judge_never_requests_a_native_tool_turn(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    """Judge isolation is by non-invocation, and that is now asserted.
+
+    ``DeepSeekJudgeProvider`` inherits ``complete_react`` from the target
+    adapter, so capability removal is not what keeps the judge out of the
+    native tool boundary — the judge is simply never asked to select a tool.
+    A provider that refuses a native turn outright proves that.
+    """
+
+    class ReactForbiddenProvider(FakeStructuredProvider):
+        async def complete_react(self, messages, tools, **kwargs):
+            raise AssertionError("the judge must never request a native tool turn")
+
+    verdict = JudgeVerdict(
+        scores=JudgeScores(**{n: 0.8 for n in COMMON_DIMENSION_WEIGHTS}),
+        agent_specific={"decomposition_quality": 0.9},
+        rationale="Distinct, prioritized subtopics with usable queries.",
+    )
+    provider = ReactForbiddenProvider(responses=[verdict])
+
+    feedback = await run_judge(
+        provider,
+        clean_target_output,
+        planner_case,
+        clean_gate_report,
+        runtime=runtime_config_for("planner"),
+        secrets=(),
+    )
+
+    assert feedback.status == "scored"
+    assert provider.react_calls == []

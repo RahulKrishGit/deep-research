@@ -1185,6 +1185,24 @@ OPENAI_SENTINEL = "OPENAI_NATIVE_SENTINEL_7D20"
             ),
             id="malformed-output-container",
         ),
+        pytest.param(
+            SimpleNamespace(
+                id="malformed-usage",
+                status="completed",
+                output=[],
+                incomplete_details=None,
+                output_text=OPENAI_SENTINEL,
+                output_parsed=None,
+                model=None,
+                usage=SimpleNamespace(
+                    input_tokens=OPENAI_SENTINEL,
+                    output_tokens=OPENAI_SENTINEL,
+                    total_tokens=OPENAI_SENTINEL,
+                ),
+                marker=OPENAI_SENTINEL,
+            ),
+            id="malformed-usage",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1333,3 +1351,33 @@ async def test_openai_native_react_span_records_counts_not_names() -> None:
     assert "qec capacity" not in recorded
 
 
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_exhausted_retries_chain_no_sdk_error(
+    monkeypatch,
+) -> None:
+    """A typed error must not carry the SDK exception, which holds
+    ``request`` (the prompt and tool definitions) and ``body``."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(
+        request=httpx.Request("POST", "https://api.openai.com")
+    )
+    responses = RecordingResponses(sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert OPENAI_SENTINEL not in repr(_provider_exception_surfaces(caught.value))
