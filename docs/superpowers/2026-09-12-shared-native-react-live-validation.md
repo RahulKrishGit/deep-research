@@ -325,3 +325,64 @@ retention set can distinguish these four, and 0 of 30 turns produced a final ans
 
 A separately authorized diagnostic measurement, under a new experiment name, is required before the
 gate can be re-attempted — as the plan's own rule requires.
+
+## Task 8 — attempt 2 after the mixed-envelope relaxation: **FAIL**, and now DIAGNOSED
+
+Authorized by the human as a single re-attempt, taken after relaxing Task 4's mixed-envelope rule
+(commit `6b2acef`). New probe SHA-256
+`5e5b546d7a6cc7a88c106608c8acfb7639a11119ca07f25340fda56844d09dac`. Output:
+`output/transport-probes/native-react-v2/native_react_shape_gate_30_attempt2.jsonl`. The attempt-1 batch
+is preserved unmodified beside it.
+
+```json
+{"agent":"critic","requests":30,"accepted":26,"tool_calls":26,"final_answers":0,"shape_failures":4,"shape_failed_runs":[9,16,20,27],"shape_failure_kinds":["local_rejection"],"instrument_errors":0,"provider_failures":0,"provider_failed_runs":[],"provider_failure_kinds":[],"failed_runs":[9,16,20,27],"expected_requests":30,"passed":false}
+```
+
+**Shape integrity: MISS** (4/30). **Operational availability: PASS** (zero provider failures).
+**Verdict: FAIL.**
+
+### The diagnosis, and why it was obtainable this time
+
+The probe now records a bounded, project-authored `rejection_reason`. That field was added at zero
+additional request cost specifically so a second failure would name its cause instead of repeating
+attempt 1's undiagnosable `local_rejection`. It did:
+
+| run | rejection_reason |
+| --- | --- |
+| 9, 16, 20, 27 | `call_count_not_one` |
+
+All four are the **pre-existing** rule `"DeepSeek native tool response must carry exactly one tool call"`
+— `len(calls) != 1` in `_native_outcome`. This is **not** the rule that was relaxed and **not** a Task 4
+change: the exactly-one-call contract predates this entire remediation and is stated in the plan's own
+spec ("accepts exactly one typed allow-listed tool call").
+
+**The relaxation was still correct and is kept.** It halved the failure rate (8/30 to 4/30), so the
+mixed-envelope rule was a genuine contributor to attempt 1's failure. But it was not the whole cause, and
+the residual cause is a different, older rule. Attempt 1's records show `rejection_reason: null` because
+that run predates the field — the field was not back-filled, so no value there is invented.
+
+### What this means, stated plainly
+
+The release gate requires **0/30** multiple-call shape failures. With `tool_choice="auto"` and two tools
+advertised, the model emits a turn this rule refuses at roughly 13-27% across the two attempts. Exact
+zero out of 30 is therefore not achievable against real provider behaviour, and the remaining work is a
+decision about the contract itself, not a bug fix:
+
+1. **Accept multiple calls** — execute them in order, or execute the first and record the rest as
+   explicitly unexecuted. This changes the documented one-call ReAct contract, so it is a design change,
+   not a patch. Silently dropping calls is explicitly forbidden by the plan.
+2. **Advertise one tool at a time** so a multi-call turn is impossible — changes what the Critic can do in
+   one turn and weakens the tool selection the planner and researcher depend on.
+3. **Constrain the provider** to exactly one call — not available: with thinking enabled DeepSeek answers
+   HTTP 400 to function-specific and `required` tool choice, which the provider already documents.
+4. **Record it as a measured limitation and relax the gate** — contradicts the plan's stated guarantee
+   that malformed output never crosses the boundary, since a multi-call turn is a shape this system
+   refuses rather than a malformed one.
+
+Not yet distinguished: whether `call_count_not_one` fired on **zero** calls or **two or more**. Given a
+`tool_calls` finish reason and a healthy transport, parallel calls (two or more) is the overwhelmingly
+likely case, but the record names the rule and not the count. One bounded `call_count` field would settle
+it on the next run; it was not added here because observing it requires another paid run.
+
+**No further paid request was made.** Both attempts are preserved, neither is relabelled, and the gate
+remains FAIL. Task 9 is still blocked with all 270 pre-authorized requests unspent.
