@@ -298,6 +298,14 @@ class ReActSummary(ContractModel):
     stop_reason: ReActStopReason
     max_iterations: int = Field(ge=1)
     tool_budget: int = Field(ge=0)
+    # The largest single loop's own totals, for agents that run one bounded
+    # loop per unit of work and merge them: ``iterations`` and ``tool_calls``
+    # above are whole-case sums, while these are what the per-loop runtime
+    # budget actually governs. Optional with ``None`` so artifacts written
+    # before they existed still validate; a reader that finds ``None`` falls
+    # back to the summed value rather than treating it as zero.
+    max_loop_iterations: int | None = Field(default=None, ge=0)
+    max_loop_tool_calls: int | None = Field(default=None, ge=0)
 
 
 class FallbackProviderDiagnostic(ContractModel):

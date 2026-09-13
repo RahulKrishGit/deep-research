@@ -273,6 +273,88 @@ def test_exceeding_the_tool_budget_fails_the_budget_gate(
     assert gate(results, "budgets_respected").passed is False
 
 
+def test_merged_loops_each_inside_their_budget_pass_the_gate(
+    planner_case, clean_target_output
+) -> None:
+    """A whole-case sum is not a per-loop budget.
+
+    The fact-checker runs one bounded loop per claim and merges them, summing
+    ``tool_calls`` and ``iterations``. Every loop respects its own budget, yet
+    the sum can exceed the per-loop ceiling the case declares -- which is
+    exactly what failed a live canary with ``tool_calls 11 exceed 10`` where
+    11 was two in-budget loops of 6 and 5. The gate must measure the per-loop
+    maximum, which is the bound the runtime actually enforces.
+    """
+    react = clean_target_output.react.model_copy(
+        update={
+            "tool_calls": 11,  # the merged sum, over the per-loop ceiling of 10
+            "iterations": 14,  # the merged sum, over the per-loop ceiling of 5
+            "max_loop_tool_calls": 6,  # no single loop exceeded 10
+            "max_loop_iterations": 4,  # no single loop exceeded 5
+        }
+    )
+    output = clean_target_output.model_copy(update={"react": react})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "budgets_respected").passed is True
+
+
+def test_a_single_loop_exceeding_its_own_budget_still_fails_the_gate(
+    planner_case, clean_target_output
+) -> None:
+    """The fix must not stop catching a real violation."""
+    react = clean_target_output.react.model_copy(
+        update={
+            "tool_calls": 12,
+            "max_loop_tool_calls": 12,
+            "max_loop_iterations": 3,
+        }
+    )
+    output = clean_target_output.model_copy(update={"react": react})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    result = gate(results, "budgets_respected")
+    assert result.passed is False
+    assert "12" in result.detail
+
+
+def test_a_single_loop_exceeding_its_iteration_budget_still_fails_the_gate(
+    planner_case, clean_target_output
+) -> None:
+    react = clean_target_output.react.model_copy(
+        update={
+            "iterations": 4,
+            "max_loop_iterations": 99,
+            "max_loop_tool_calls": 1,
+        }
+    )
+    output = clean_target_output.model_copy(update={"react": react})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "budgets_respected").passed is False
+
+
+def test_an_artifact_without_per_loop_maxima_still_gates_on_the_total(
+    planner_case, clean_target_output
+) -> None:
+    """Backward compatibility: older artifacts keep gating exactly as before."""
+    react = clean_target_output.react.model_copy(
+        update={
+            "tool_calls": 99,
+            "max_loop_tool_calls": None,
+            "max_loop_iterations": None,
+        }
+    )
+    output = clean_target_output.model_copy(update={"react": react})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "budgets_respected").passed is False
+
+
 def test_an_untyped_error_record_fails_the_typed_error_gate(
     planner_case, clean_target_output
 ) -> None:

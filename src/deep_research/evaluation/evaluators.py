@@ -183,6 +183,18 @@ def _gate_required_fields_present(
 def _gate_budgets_respected(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
+    """Check the budgets the runtime actually enforces, per loop.
+
+    ``tool_budget`` and ``max_iterations`` bound **one** ReAct loop, and an
+    agent that runs one bounded loop per unit of work merges them: the
+    fact-checker runs a loop per claim, so its ``tool_calls`` is a whole-case
+    sum that can legitimately exceed a per-loop ceiling (two in-budget loops of
+    6 and 5 sum to 11). This gate therefore compares the largest single loop's
+    own totals, which ``ReActSummary.max_loop_*`` carries, and falls back to
+    the summed totals for artifacts written before those fields existed. The
+    detail reports the value that decided the outcome, plus the whole-case
+    total when it differs, so a failure still names the number to diagnose.
+    """
     react = output.react
     if react is None:
         return GateResult(
@@ -192,28 +204,46 @@ def _gate_budgets_respected(
         )
     iterations = _field(react, "iterations")
     tool_calls = _field(react, "tool_calls")
+    # ``None`` means the artifact predates the per-loop fields, not zero.
+    per_loop_iterations = _field(react, "max_loop_iterations")
+    per_loop_tool_calls = _field(react, "max_loop_tool_calls")
+    measured_iterations = (
+        per_loop_iterations if isinstance(per_loop_iterations, int) else iterations
+    )
+    measured_tool_calls = (
+        per_loop_tool_calls if isinstance(per_loop_tool_calls, int) else tool_calls
+    )
     violations: list[str] = []
     if (
-        not isinstance(iterations, int)
-        or iterations > case.expectations.max_iterations
+        not isinstance(measured_iterations, int)
+        or measured_iterations > case.expectations.max_iterations
     ):
         violations.append(
-            f"iterations {iterations} exceed "
+            f"iterations {measured_iterations} exceed "
             f"{case.expectations.max_iterations}"
+            f"{_budget_total_note(iterations, measured_iterations)}"
         )
     if (
-        not isinstance(tool_calls, int)
-        or tool_calls > case.expectations.max_tool_calls
+        not isinstance(measured_tool_calls, int)
+        or measured_tool_calls > case.expectations.max_tool_calls
     ):
         violations.append(
-            f"tool_calls {tool_calls} exceed "
+            f"tool_calls {measured_tool_calls} exceed "
             f"{case.expectations.max_tool_calls}"
+            f"{_budget_total_note(tool_calls, measured_tool_calls)}"
         )
     return GateResult(
         gate_id="budgets_respected",
         passed=not violations,
         detail="; ".join(violations),
     )
+
+
+def _budget_total_note(total: object, measured: object) -> str:
+    """Name the whole-case total too, when it differs from the per-loop value."""
+    if not isinstance(total, int) or total == measured:
+        return ""
+    return f" (largest single loop; whole case total {total})"
 
 
 def _gate_errors_typed(output: TargetOutput, case: EvaluationCase) -> GateResult:

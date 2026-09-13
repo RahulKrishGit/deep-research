@@ -254,6 +254,14 @@ def merge_react_runs(
         stop_reason=stop_reason,
         iterations=sum(run.iterations for run in runs),
         tool_calls=sum(run.tool_calls for run in runs),
+        # The totals above are whole-case sums; these are the largest single
+        # loop's own totals. ``tool_budget`` is enforced per loop, so a budget
+        # gate must compare against the per-loop maximum. A merged sum can
+        # legitimately exceed the per-loop ceiling -- two in-budget loops of 6
+        # and 5 sum to 11 -- and comparing the sum would fail a case whose
+        # every loop respected its bound.
+        max_loop_iterations=max(run.max_loop_iterations for run in runs),
+        max_loop_tool_calls=max(run.max_loop_tool_calls for run in runs),
         final_answer=final_answer,
         errors=errors,
     )

@@ -69,9 +69,19 @@ CRITIC_PROMPT_FINGERPRINT = "c971e00c3773"
 # module: one sentence changed there moves every agent's value at once, so a
 # single-agent pin cannot say whether a change was intended. The matrix found no
 # gap, so these values are unchanged from before it was written.
+#
+# ``researcher`` was re-pinned from ``2d8f2688ec4d`` to ``51044a868e3f`` when
+# ``merge_react_runs`` gained the per-loop budget fields. That is a **false
+# positive of the fingerprint's design, not prompt drift**: the researcher's
+# prompt text is byte-identical, but ``agent_prompt_fingerprint`` hashes the
+# agent module's *full source*, so a behavioural fix to a function that happens
+# to live in ``researcher.py`` moves a value whose name implies a prompt change.
+# Only the researcher moved; the other five are untouched. Re-pinned
+# deliberately, with the researcher's live canary re-run, rather than silently
+# invalidated — and the design smell is recorded in the plan ledger.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "875f1cd8996f",
-    "researcher": "2d8f2688ec4d",
+    "researcher": "51044a868e3f",
     "source_evaluator": "e6bf22c74cfa",
     "fact_checker": "681669d2ee15",
     "synthesizer": "d0d036660207",

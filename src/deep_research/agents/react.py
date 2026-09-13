@@ -394,6 +394,9 @@ async def run_react_loop(
         stop_reason=stop_reason,
         iterations=iteration,
         tool_calls=tool_calls,
+        # One loop: its own totals are also its per-loop maximum.
+        max_loop_iterations=iteration,
+        max_loop_tool_calls=tool_calls,
         final_answer=steps[-1].final_answer if steps else None,
         errors=errors,
     )

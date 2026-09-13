@@ -174,13 +174,24 @@ class ReActStep(ContractModel):
 
 
 class ReActRun(ContractModel):
-    """The outcome of one bounded ReAct loop."""
+    """The outcome of one bounded ReAct loop.
+
+    ``iterations`` and ``tool_calls`` are the *totals* across every loop a
+    merged run folds together. ``max_loop_iterations`` and
+    ``max_loop_tool_calls`` are the largest single loop's own totals: an agent
+    that runs one bounded loop per unit of work (the fact-checker runs one per
+    claim) respects ``tool_budget`` per loop, so the per-loop maximum is the
+    value a budget gate must compare against. For a run from a single loop the
+    two pairs are equal.
+    """
 
     agent_name: str = Field(min_length=1)
     steps: list[ReActStep] = Field(default_factory=list)
     stop_reason: StopReason
     iterations: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
+    max_loop_iterations: int = Field(default=0, ge=0)
+    max_loop_tool_calls: int = Field(default=0, ge=0)
     final_answer: str | None = Field(default=None, min_length=1)
     errors: list[ResearchError] = Field(default_factory=list)
 

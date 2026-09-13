@@ -603,6 +603,8 @@ def _success_output(
             stop_reason=run.react.stop_reason,
             max_iterations=case.expectations.max_iterations,
             tool_budget=case.expectations.max_tool_calls,
+            max_loop_iterations=run.react.max_loop_iterations,
+            max_loop_tool_calls=run.react.max_loop_tool_calls,
         ),
         structured_calls=_structured_call_summary(tracker, session_id),
         dependencies=dependencies,
