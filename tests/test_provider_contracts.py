@@ -12,8 +12,10 @@ from deep_research.providers import (
     ProviderError,
     ProviderFailureOrigin,
     ProviderFailureSnapshot,
+    ProviderOutputLimitError,
     ProviderRateLimitError,
     ProviderResponseError,
+    ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
     provider_failure_snapshot,
@@ -155,3 +157,92 @@ def test_a_timeout_snapshot_has_no_failure_origin() -> None:
     )
     assert snapshot.kind == "provider_timeout"
     assert snapshot.failure_origin is None
+
+
+def test_redacting_a_local_response_error_keeps_its_typed_fields() -> None:
+    """Redaction replaces the message, never the locally derived failure data."""
+    error = ProviderResponseError(
+        "Provider response was malformed for key sk-live-secret",
+        failure_origin="local_response",
+        failure_category="response",
+    )
+
+    redacted = error.redacted_copy("Provider response was malformed: [REDACTED]")
+
+    assert type(redacted) is ProviderResponseError
+    assert redacted.failure_origin == "local_response"
+    assert redacted.retryable is False
+    assert redacted.failure_category == "response"
+    assert redacted.http_status_code is None
+    assert str(redacted) == "Provider response was malformed: [REDACTED]"
+
+
+def test_redacting_an_sdk_error_keeps_its_typed_fields() -> None:
+    """The sdk origin survives, so the remote error stays diagnosable."""
+    error = ProviderResponseError(
+        "Provider request failed for key sk-live-secret",
+        failure_origin="sdk",
+        retryable=True,
+        failure_category="http",
+        http_status_code=503,
+    )
+
+    redacted = error.redacted_copy("Provider request failed: [REDACTED]")
+
+    assert type(redacted) is ProviderResponseError
+    assert redacted.failure_origin == "sdk"
+    assert redacted.retryable is True
+    assert redacted.failure_category == "http"
+    assert redacted.http_status_code == 503
+    assert str(redacted) == "Provider request failed: [REDACTED]"
+
+
+def test_redacting_an_output_limit_error_keeps_its_type_and_telemetry() -> None:
+    """Its message is the safe constant, so the copy is not the base error."""
+    telemetry = ProviderResponseTelemetry(
+        finish_reason_category="length",
+        configured_max_tokens=512,
+        usage=TokenUsage(input_tokens=40, output_tokens=512),
+        request_attempt=2,
+        structured_attempt=1,
+    )
+    error = ProviderOutputLimitError(telemetry)
+
+    redacted = error.redacted_copy("caller supplied text is ignored here")
+
+    assert type(redacted) is ProviderOutputLimitError
+    assert isinstance(redacted, ProviderResponseError)
+    assert redacted.telemetry == telemetry
+    assert str(redacted) == ProviderOutputLimitError.SAFE_MESSAGE
+
+
+def test_a_redacted_copy_carries_no_provider_content() -> None:
+    error = ProviderResponseError(
+        "Provider request failed for key sk-live-abc123",
+        failure_origin="sdk",
+    )
+
+    redacted = error.redacted_copy("[REDACTED]")
+
+    assert "sk-live-abc123" not in str(redacted)
+    assert str(redacted) == "[REDACTED]"
+
+
+class _TelemetryOnlyError(ProviderError):
+    """A provider error whose constructor cannot rebuild it from a message."""
+
+    def __init__(self, *, telemetry: object) -> None:
+        super().__init__("provider failed")
+
+
+def test_an_unrebuildable_provider_error_falls_back_to_the_base_type() -> None:
+    """The base copy is fail-safe: redaction must never raise."""
+    error = _TelemetryOnlyError(telemetry=object())
+
+    with pytest.raises(TypeError):
+        type(error)("[REDACTED]")
+
+    redacted = error.redacted_copy("[REDACTED]")
+
+    assert type(redacted) is ProviderError
+    assert str(redacted) == "[REDACTED]"

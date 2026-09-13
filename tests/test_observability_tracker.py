@@ -21,7 +21,12 @@ from deep_research.observability.metrics import (
     TokenUsageMetric,
     ToolMetric,
 )
-from deep_research.observability.tracker import Tracker
+from deep_research.observability.tracker import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseError,
+    ProviderResponseTelemetry,
+)
 from deep_research.tools.base import ToolExecutionError
 from deep_research.utils.types import ResearchEvent
 
@@ -119,6 +124,69 @@ async def test_remote_tool_span_completion_preserves_structured_error_type() -> 
         and event.metadata["span_kind"] == "tool"
     )
     assert completed_tool_event.metadata["error_type"] == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_remote_span_exit_keeps_the_redacted_provider_error_type() -> None:
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=trace_factory,
+    )
+
+    with pytest.raises(ProviderResponseError):
+        async with tracker.session_span("session-1", "question"):
+            raise ProviderResponseError(
+                "Provider request failed for key secret-key",
+                failure_origin="sdk",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+            )
+
+    exc_type, exc_value, _ = trace_factory.managers[0].exit_calls[-1]
+    assert exc_type is ProviderResponseError
+    assert isinstance(exc_value, ProviderResponseError)
+    assert exc_value.failure_origin == "sdk"
+    assert exc_value.retryable is True
+    assert exc_value.http_status_code == 503
+    assert "secret-key" not in str(exc_value)
+    assert "[REDACTED]" in str(exc_value)
+
+
+@pytest.mark.asyncio
+async def test_remote_span_exit_keeps_the_redacted_output_limit_type() -> None:
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=trace_factory,
+    )
+    telemetry = ProviderResponseTelemetry(
+        finish_reason_category="length",
+        configured_max_tokens=512,
+        usage=TokenUsage(input_tokens=40, output_tokens=512),
+        request_attempt=1,
+    )
+
+    with pytest.raises(ProviderOutputLimitError):
+        async with tracker.session_span("session-1", "question"):
+            raise ProviderOutputLimitError(telemetry)
+
+    exc_type, exc_value, _ = trace_factory.managers[0].exit_calls[-1]
+    assert exc_type is ProviderOutputLimitError
+    assert isinstance(exc_value, ProviderOutputLimitError)
+    assert exc_value.telemetry == telemetry
+    assert str(exc_value) == ProviderOutputLimitError.SAFE_MESSAGE
 
 
 @pytest.mark.asyncio

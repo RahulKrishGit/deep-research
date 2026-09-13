@@ -891,6 +891,11 @@ class Tracker:
         if error is None:
             return None
         redacted = self._redact(str(error))
+        # Imported here because ``providers.contracts`` imports this package.
+        from deep_research.providers.contracts import ProviderError
+
+        if isinstance(error, ProviderError):
+            return error.redacted_copy(redacted)
         try:
             return type(error)(redacted)
         except Exception:

@@ -172,6 +172,13 @@ class StructuredValidationDiagnostic(ProviderContract):
 class ProviderError(RuntimeError):
     """Base caller-facing error for every chat provider boundary."""
 
+    def redacted_copy(self, message: str) -> "ProviderError":
+        """A same-typed copy whose message carries no provider content."""
+        try:
+            return type(self)(message)
+        except Exception:
+            return ProviderError(message)
+
 
 class ProviderConfigurationError(ProviderError):
     """The selected provider or effective model configuration is invalid."""
@@ -231,6 +238,16 @@ class ProviderResponseError(ProviderError):
         """Compatibility alias for the safe HTTP status value."""
         return self.http_status_code
 
+    def redacted_copy(self, message: str) -> "ProviderResponseError":
+        """Keep the typed failure fields while dropping provider content."""
+        return ProviderResponseError(
+            message,
+            failure_origin=self.failure_origin,
+            retryable=self.retryable,
+            failure_category=self.failure_category,
+            http_status_code=self.http_status_code,
+        )
+
 
 class ProviderOutputLimitError(ProviderResponseError):
     """A provider response reached its configured output limit."""
@@ -247,6 +264,10 @@ class ProviderOutputLimitError(ProviderResponseError):
             failure_origin="local_response",
         )
         self.telemetry = telemetry
+
+    def redacted_copy(self, message: str) -> "ProviderOutputLimitError":
+        """Its message is already provider-free, so only telemetry carries over."""
+        return ProviderOutputLimitError(self.telemetry)
 
 
 class StructuredOutputError(ProviderError):
