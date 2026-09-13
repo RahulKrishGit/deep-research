@@ -3321,6 +3321,36 @@ async def test_deepseek_every_entry_point_severs_the_sdk_exception(
 
 
 @pytest.mark.asyncio
+async def test_deepseek_judge_severs_the_sdk_exception(monkeypatch) -> None:
+    """The Judge carries its own Responses client, so it needs its own pin."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(
+        request=httpx.Request("POST", DEEPSEEK_BASE_URL, content="MARKER")
+    )
+    responses = RecordingResponses(sdk_error, sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(retry_count=2),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="judge input")],
+                JudgeVerdict,
+                agent_name="judge",
+            )
+
+    assert len(responses.calls) == 3
+    assert caught.value.failure_origin == "sdk"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert not _exception_reaches(caught.value, sdk_error)
+
+
+@pytest.mark.asyncio
 async def test_deepseek_native_react_maps_length_to_the_output_limit() -> None:
     completions = RecordingCompletions(
         chat_response(text=NATIVE_SENTINEL, finish_reason="length")
