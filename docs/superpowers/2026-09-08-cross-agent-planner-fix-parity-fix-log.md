@@ -3050,3 +3050,134 @@ handling (option (iii)), which changes the provider/loop contract and is outside
 the authorized scope.
 
 No live response body, prompt text, secret, or reasoning content is recorded.
+
+
+---
+
+## Section 96: Shared native ReAct tools and prompt conformance — offline gate
+
+Plan: `docs/superpowers/plans/2026-09-12-shared-native-react-tools-and-prompt-conformance.md`
+Spec: `docs/superpowers/specs/2026-09-12-shared-native-react-tools-and-prompt-conformance-design.md`
+Branch: `codex/cross-agent-planner-fix-parity`. Tasks 1-7 implemented and gated offline. **Task 8 (paid
+validation) has not run and is not authorized by this record.**
+
+### Commits and range
+
+- Task 1 base (pre-plan): `4757988bbae3c2004781a0d155a0bc5857699d5f`
+- Candidate head: `d37cf706ea7a3a032900fda15363019d970e5d90`
+- `git merge-base origin/codex/cross-agent-planner-fix-parity HEAD` = `0fed75954508bc79bb5c67ee76501c68fc602931`
+
+| Task | Commit | Subject |
+| --- | --- | --- |
+| 1 | `fd78110` | feat(tools): define provider-native tool contracts |
+| 1 fix | `78c6c06` | fix(evaluation): project required tool arguments through the proxy |
+| 2 | `124b250` | feat(deepseek): support native ReAct tool turns |
+| 2 polish | `6e22fb2` | test(deepseek): pin text-injection and target-adapter native turns |
+| 3 | `931856b` | feat(openai): support native ReAct tool turns |
+| 3 polish | `26bef90` | test(openai): harden native ReAct fail-closed coverage |
+| 4 | `97fc52e` | refactor(agents): share native ReAct tool selection |
+| 5 | `b576786` | fix(prompts): align structured calls with tool-free transport |
+| 6 | `d37cf70` | chore(evaluation): fingerprint native ReAct transport |
+
+### Production and test paths changed
+
+Production: `src/deep_research/providers/contracts.py`, `providers/__init__.py`,
+`providers/deepseek_provider.py`, `providers/openai_provider.py`, `agents/toolset.py`, `agents/base.py`,
+`agents/steps.py`, `agents/prompts.py`, `agents/__init__.py`, `agents/planner.py`, `agents/researcher.py`,
+`agents/source_evaluator.py`, `agents/fact_checker.py`, `agents/synthesizer.py`, `agents/critic.py`,
+`tools/base.py`, `tools/web_search.py`, `tools/web_scraper.py`, `tools/document_reader.py`,
+`tools/memory_tools.py`, `tools/write_document.py`, `runtime/assembly.py`, `evaluation/factory.py`,
+`evaluation/config.py`, `evaluation/dependencies.py`.
+
+Tests: `tests/agent_fakes.py`, `tests/evaluation_fakes.py`, `tests/test_imports.py`,
+`tests/test_provider_contracts.py`, `tests/test_agents/*` (12 files, including the new
+`test_native_react_boundary.py` and `test_tool_free_prompts.py`), `tests/test_runtime/test_assembly.py`,
+`tests/test_evaluation/test_factory.py`, `tests/test_evaluation/test_config.py`,
+`tests/test_evaluation/test_dependencies_controlled.py`, `tests/test_deepseek_provider.py`,
+`tests/test_openai_provider.py`.
+
+No dataset case, case version, rubric, weight, threshold, model, effort, budget, retry policy, or Judge
+semantic changed.
+
+### Offline results
+
+- Focused contracts/providers/agents/evaluation gate: **877 passed**, 4 failed (the four pre-existing
+  `test_deepseek_provider.py` Judge/structured-repair names below).
+- Full offline suite (`python -m pytest -q`): **7 failed, 2259 passed, 1 deselected** in 12.06s.
+- Baseline at the Task 1 base `4757988` with a clean tracked tree: **7 failed, 2117 passed, 1 deselected**.
+  The same seven names fail before and after; **no new failure**, and the pass count rose by 142.
+- The seven, all reproduced at the base and unrelated to this work:
+  `tests/test_deepseek_provider.py::test_deepseek_judge_responses_repair_succeeds_once`,
+  `::test_deepseek_judge_responses_repair_exhaustion_is_typed_and_safe`,
+  `::test_deepseek_structured_repair_guides_string_bounds[STRING_BOUNDS_PROVIDER_MARKER_...]`,
+  `::test_deepseek_structured_repair_preserves_prior_diagnostics`,
+  `tests/test_evaluation/test_runner.py::test_a_live_experiment_requests_one_repetition`,
+  `tests/test_evaluation/test_targets.py::test_the_ledger_records_real_services_for_a_live_run`,
+  `::test_a_live_researcher_records_only_source_url_fingerprints`.
+- `ruff check . --exclude tools,.deepseek-runs` ? **All checks passed**. The exclusion is required: the
+  preserved, intentionally-untracked `tools/probe_deepseek_tool_call.py` carries a pre-existing E501 that
+  predates this plan.
+- `git diff --check` ? clean.
+
+### Invariant checks
+
+- Production `complete_structured` never receives `ReActDecision`: the plan's
+  `complete_structured\([\s\S]{0,500}ReActDecision` search reports a false positive on `agents/base.py`
+  (the `complete_output` call and the neighbouring `_complete_react_decision` definition fall inside the
+  500-character window); a call-scoped regex over `src/deep_research/agents` returns **no** match. The
+  invariant is additionally enforced at runtime: `ScriptedCompleter.complete_structured` raises for
+  `ReActDecision`, and `tests/test_agents/test_native_react_boundary.py` runs all four tool-selecting
+  agents end to end through `agent.run`. Verified non-vacuous by temporarily restoring the old closure in
+  `researcher.py`: the two researcher guard cases fail with
+  `ReActDecision must be requested through complete_react`.
+- `render_tool_catalog`, `## Tools`, and `tool_input_json` no longer appear in `agents/prompts.py`.
+- Frozen invariants (`max_tokens == 32768`, `react_decision_max_tokens == 32768`,
+  `live_threshold == 0.75`, Judge prompt fingerprint `74b9cddfbbee`): **OK**.
+
+### Target prompt fingerprints (old -> new)
+
+Old values are the Task 1 base `4757988`, recomputed with the real
+`agent_prompt_fingerprint` (the reproduction is validated by reproducing the previously pinned Critic value
+`2c0bd1210e21` exactly). New values are at `d37cf70`.
+
+| Agent | Old | New |
+| --- | --- | --- |
+| planner | `1e74a8468cf1` | `875f1cd8996f` |
+| researcher | `32e2c37567ad` | `2d8f2688ec4d` |
+| source_evaluator | `472d7dac0205` | `e6bf22c74cfa` |
+| fact_checker | `5ddeb49c647d` | `681669d2ee15` |
+| synthesizer | `ba0d384c0f8f` | `d0d036660207` |
+| critic | `2c0bd1210e21` | `c971e00c3773` |
+
+All six moved, as the design predicted: the fingerprint hashes the shared `agents.prompts` module, so one
+shared prompt edit moves every agent. `CRITIC_PROMPT_FINGERPRINT` in `tests/test_evaluation/test_config.py`
+was re-pinned to `c971e00c3773` in `d37cf70`.
+
+Judge prompt fingerprint: **unchanged at `74b9cddfbbee`**. Any move would have been a stop condition.
+
+### Target ReAct transport identifiers
+
+- DeepSeek: `deepseek_chat_tools_auto_v1`
+- OpenAI: `openai_responses_tools_auto_v1`
+
+Both are recorded in `experiment_metadata` as `target_react_transport` and participate in
+`configuration_fingerprint` (proven by patching only the transport value and observing a changed
+fingerprint). Neither is added to `judge_configuration_fingerprint`.
+
+### What did not change
+
+Model, thinking mode, reasoning efforts, temperature behavior, every output budget, `max_iterations`,
+`tool_budget`, HTTP retry policy, structured repair count, routing, evaluation cases and versions,
+rubrics, Judge weights and score bands, Judge prompt and fingerprint, the Critic's tool-free review
+prompt and its weak/strong examples, and the `0.75` live threshold.
+
+### Network and paid commands
+
+No DeepSeek, OpenAI, Tavily, LangSmith, evaluation-harness, or live test call ran. `pytest` runs under the
+repository's own `addopts = "-m 'not live'"`. `tests/test_evaluation/test_suite.py` needs
+`DEEPSEEK_API_KEY` present in the process environment because `run_suite_evaluation` reads
+`dict(os.environ)`; the offline gate supplies the placeholder
+`sk-deepseek-offline-sentinel`, which is used only for provider construction — the suite injects a
+`FakeEvaluateRunner` with an empty example list, so nothing leaves the process.
+
+This record contains no prompts, provider responses, tool arguments, reasoning, or secret values.
