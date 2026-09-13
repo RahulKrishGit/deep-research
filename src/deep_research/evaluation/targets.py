@@ -42,10 +42,11 @@ from deep_research.evaluation.models import (
     EvidenceContext,
     FailureStage,
     ReActSummary,
+    StructuredCallSummary,
     TargetOutput,
     TrajectoryStep,
 )
-from deep_research.observability import ToolMetric, Tracker
+from deep_research.observability import TokenUsageMetric, ToolMetric, Tracker
 from deep_research.utils.config import ConfigSettings
 
 TRACE_TAG = "evaluation"
@@ -209,6 +210,41 @@ def _observed_real_services(
         if service and service in available_services and service not in observed:
             observed.append(service)
     return observed
+
+
+def _structured_call_summary(
+    tracker: Tracker, session_id: str
+) -> StructuredCallSummary:
+    """This repetition's structured-attempt counts, and nothing else.
+
+    Reads only the two bounded scalars the tracker copied out of a span's
+    already-safe inputs -- the operation literal and the provider's 1-or-2
+    attempt number -- so no prompt, response, argument, rationale, or
+    invalid JSON can reach the artifact through this summary. The metrics
+    are filtered to this repetition's own session id, so two concurrent
+    sessions sharing one tracker can never count each other's attempts.
+    """
+    calls = 0
+    repaired_calls = 0
+    failed_attempts = 0
+    for metric in tracker.metrics:
+        if (
+            not isinstance(metric, TokenUsageMetric)
+            or metric.session_id != session_id
+            or metric.operation != "structured_output"
+        ):
+            continue
+        if metric.structured_attempt == 1:
+            calls += 1
+        elif metric.structured_attempt == 2:
+            repaired_calls += 1
+        if not metric.success:
+            failed_attempts += 1
+    return StructuredCallSummary(
+        calls=calls,
+        repaired_calls=repaired_calls,
+        failed_attempts=failed_attempts,
+    )
 
 
 def _minimal_output(
@@ -568,6 +604,7 @@ def _success_output(
             max_iterations=case.expectations.max_iterations,
             tool_budget=case.expectations.max_tool_calls,
         ),
+        structured_calls=_structured_call_summary(tracker, session_id),
         dependencies=dependencies,
         evidence=EvidenceContext(
             sources=[

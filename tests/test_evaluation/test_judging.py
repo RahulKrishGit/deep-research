@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from deep_research.evaluation.judging import (
     JUDGE_RATIONALE_GUIDANCE_TARGET,
     JUDGE_SYSTEM_PROMPT,
     JudgeInput,
+    build_judge_evaluator,
     build_judge_input,
     judge_prompt_fingerprint,
     judge_quality,
@@ -43,7 +45,7 @@ from deep_research.providers import (
     StructuredValidationDiagnostic,
 )
 from deep_research.utils.config import LLMConfig
-from tests.evaluation_fakes import FakeStructuredProvider
+from tests.evaluation_fakes import FakeRun, FakeStructuredProvider
 
 # The judge prompt fingerprint after the response contract was added. Judge
 # scores recorded before this value are not comparable with scores after it.
@@ -901,7 +903,7 @@ def test_the_judge_prompt_states_the_response_contract(critic_live_case) -> None
     prose named none of ``rationale``, ``json``, ``example``, ``field``,
     ``character``, ``object``, or ``keys``. In 30 production attempts at max
     effort, 5 first attempts exceeded the bound, with a median rationale of 1,735
-    characters — 265 short of the cap. The constraint is unenforceable by the
+    characters â€” 265 short of the cap. The constraint is unenforceable by the
     transport: adding ``strict`` to the request returns HTTP 400.
     """
     body = _critic_live_judge_body(critic_live_case)
@@ -944,7 +946,7 @@ def test_the_request_uses_markdown_heading_levels_not_a_flat_list(
     The blocks are rendered as ``## <name>`` by ``_render_blocks``, sixteen of
     them. With a flat heading list a block named ``## rubric`` reads as a
     section of this instruction rather than as part of the material being
-    judged — the same collision the Critic request had with its report.
+    judged â€” the same collision the Critic request had with its report.
     """
     body = _critic_live_judge_body(critic_live_case)
     lines = body.splitlines()
@@ -1016,7 +1018,7 @@ def test_the_stated_limit_is_harder_than_the_enforced_one(critic_live_case) -> N
     The statement is the steering device: a credible hard limit is what keeps the
     model inside the range in most cases. Enforcement is local and wider, so the
     minority of runs which overshoot are still scored rather than becoming an
-    unscorable ``string_too_long`` failure — measured at 5 of 30 production
+    unscorable ``string_too_long`` failure â€” measured at 5 of 30 production
     attempts when the limit was declared at 2000.
 
     Neither number may be reconciled to the other. Softening the prose loses the
@@ -1259,7 +1261,7 @@ async def test_the_judge_never_requests_a_native_tool_turn(
 
     ``DeepSeekJudgeProvider`` inherits ``complete_react`` from the target
     adapter, so capability removal is not what keeps the judge out of the
-    native tool boundary — the judge is simply never asked to select a tool.
+    native tool boundary â€” the judge is simply never asked to select a tool.
     A provider that refuses a native turn outright proves that.
     """
 
@@ -1290,3 +1292,215 @@ async def test_the_judge_never_requests_a_native_tool_turn(
 
     assert feedback.status == "scored"
     assert provider.react_calls == []
+
+
+# --- The content-free structured-attempt ledger for the judge ----------------
+
+
+def _entry(payload: dict, key: str) -> dict:
+    return next(item for item in payload["results"] if item["key"] == key)
+
+
+def _judge_verdict(value: float = 0.8) -> JudgeVerdict:
+    return JudgeVerdict(
+        scores=JudgeScores(**{name: value for name in COMMON_DIMENSION_WEIGHTS}),
+        agent_specific={},
+        rationale="Grounded and concise.",
+    )
+
+
+def _judge_provider_on(
+    tracker, responses: _RecordingResponses
+) -> DeepSeekJudgeProvider:
+    """The real judge adapter over a fake client, on a chosen tracker."""
+    return DeepSeekJudgeProvider(
+        _deepseek_judge_config(),
+        tracker,
+        client=_FakeDeepSeekClient(responses),
+    )
+
+
+def _judge_evaluator(planner_case, runtime, tracker, provider, gates):
+    return build_judge_evaluator(
+        provider,
+        planner_case,
+        runtime=runtime,
+        secrets=(),
+        gate_lookup=lambda output: gates,
+        tracker=tracker,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_judge_reports_the_attempt_its_repair_needed(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    sentinel = "sentinel-judge-provider-payload"
+    responses = _RecordingResponses(
+        _responses_response(output_text=json.dumps({"scores": sentinel})),
+        _responses_response(output_text=_judge_verdict().model_dump_json()),
+    )
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    evaluator = _judge_evaluator(
+        planner_case,
+        runtime_config_for("planner"),
+        tracker,
+        _judge_provider_on(tracker, responses),
+        clean_gate_report,
+    )
+
+    payload = await evaluator(
+        FakeRun(outputs=clean_target_output.model_dump(mode="json")), None
+    )
+
+    assert _entry(payload, "judge_status")["value"] == "scored"
+    assert _entry(payload, "judge_quality")["metadata"]["structured_attempts"] == 2
+    assert len(responses.calls) == 2
+    assert sentinel not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_judge_that_still_fails_reports_both_attempts(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    sentinel = "sentinel-judge-provider-payload"
+    invalid = json.dumps({"scores": {"role_adherence": sentinel}})
+    responses = _RecordingResponses(
+        _responses_response(output_text=invalid),
+        _responses_response(output_text=invalid),
+    )
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    evaluator = _judge_evaluator(
+        planner_case,
+        runtime_config_for("planner"),
+        tracker,
+        _judge_provider_on(tracker, responses),
+        clean_gate_report,
+    )
+
+    payload = await evaluator(
+        FakeRun(outputs=clean_target_output.model_dump(mode="json")), None
+    )
+
+    status = _entry(payload, "judge_status")
+    assert status["value"] == "judge_not_run"
+    assert status["comment"] == "judge_schema_failure"
+    assert status["metadata"]["structured_attempts"] == 2
+    assert sentinel not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_a_judge_that_never_ran_reports_no_attempt(
+    planner_case, clean_target_output, runtime_config_for
+) -> None:
+    """No judge call means no attempt recorded, never a fabricated one."""
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    evaluator = _judge_evaluator(
+        planner_case,
+        runtime_config_for("planner"),
+        tracker,
+        _judge_provider_on(tracker, _RecordingResponses()),
+        None,
+    )
+    output = clean_target_output.model_copy(update={"result": None})
+    # A target attempt already sits in this session, so an implementation
+    # that reads the session without checking that the judge ran would
+    # report it here.
+    async with tracker.session_span(output.session_id, "target attempt"):
+        async with tracker.llm_span(
+            "deepseek-v4-flash",
+            {"operation": "structured_output", "attempt": 2},
+        ):
+            pass
+
+    payload = await evaluator(
+        FakeRun(outputs=output.model_dump(mode="json")), None
+    )
+
+    status = _entry(payload, "judge_status")
+    assert status["value"] == "judge_not_run"
+    assert "structured_attempts" not in status["metadata"]
+
+
+class _JudgeBarrier:
+    """Parks each concurrent judge request until all parties have arrived.
+
+    Two gathered evaluator calls would otherwise be free to run back to
+    back. Forcing a genuine interleaving proves the attempt ledger is read
+    from the session each row owns, not from whichever call finished last.
+    """
+
+    def __init__(self, parties: int = 2) -> None:
+        self._parties = parties
+        self._arrived = 0
+        self._release = asyncio.Event()
+        self._lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        async with self._lock:
+            self._arrived += 1
+            if self._arrived >= self._parties:
+                self._release.set()
+        await self._release.wait()
+
+
+class _BarrierResponses(_RecordingResponses):
+    def __init__(self, *outcomes: object, barrier: _JudgeBarrier) -> None:
+        super().__init__(*outcomes)
+        self._barrier = barrier
+
+    async def create(self, **kwargs: object) -> object:
+        await self._barrier.wait()
+        return await super().create(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_judge_rows_read_only_their_own_attempts(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    """One shared tracker, two live sessions, different attempt depths."""
+    barrier = _JudgeBarrier()
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    repairing = _judge_provider_on(
+        tracker,
+        _BarrierResponses(
+            _responses_response(output_text=json.dumps({"scores": "invalid"})),
+            _responses_response(output_text=_judge_verdict().model_dump_json()),
+            barrier=barrier,
+        ),
+    )
+    first_try = _judge_provider_on(
+        tracker,
+        _BarrierResponses(
+            _responses_response(output_text=_judge_verdict().model_dump_json()),
+            barrier=barrier,
+        ),
+    )
+    rows = [
+        clean_target_output.model_copy(update={"session_id": "evaluation-row-a"}),
+        clean_target_output.model_copy(update={"session_id": "evaluation-row-b"}),
+    ]
+    evaluators = [
+        _judge_evaluator(
+            planner_case,
+            runtime_config_for("planner"),
+            tracker,
+            provider,
+            clean_gate_report,
+        )
+        for provider in (repairing, first_try)
+    ]
+
+    payloads = await asyncio.gather(
+        *(
+            evaluator(FakeRun(outputs=row.model_dump(mode="json")), None)
+            for evaluator, row in zip(evaluators, rows)
+        )
+    )
+
+    attempts = [
+        _entry(payload, "judge_quality")["metadata"]["structured_attempts"]
+        for payload in payloads
+    ]
+    # A session-blind maximum would report an attempt of 2 for both rows.
+    assert attempts == [2, 1]

@@ -916,6 +916,19 @@ def _metadata_diagnostics(
     return tuple(projected)
 
 
+def _metadata_structured_attempts(metadata: Mapping[str, Any]) -> int | None:
+    """The structured-attempt depth a row recorded, or ``None``.
+
+    Only the provider's own 1-or-2 attempt number is accepted; a missing,
+    malformed, or out-of-range value becomes ``None`` rather than failing
+    the artifact reconstruction, and is never read as "no repair happened".
+    """
+    value = metadata.get("structured_attempts")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 1 <= value <= 2 else None
+
+
 def _judge_feedback_from_result(
     payload: Mapping[str, Any], *, runtime: EvaluationRuntimeConfig
 ) -> JudgeFeedback:
@@ -958,6 +971,7 @@ def _judge_feedback_from_result(
     )
     evaluator_trace_url = _metadata_url(metadata, "evaluator_trace_url")
     evaluator_source_url = _metadata_url(metadata, "evaluator_source_url")
+    structured_attempts = _metadata_structured_attempts(metadata)
 
     scored = status_entry is not None and status_entry.get("value") == "scored"
     if scored and quality_entry is not None:
@@ -984,6 +998,7 @@ def _judge_feedback_from_result(
             judge_quality=float(quality_entry["score"]),
             evaluator_trace_url=evaluator_trace_url,
             evaluator_source_url=evaluator_source_url,
+            structured_attempts=structured_attempts,
             **common,
         )
 
@@ -1000,6 +1015,7 @@ def _judge_feedback_from_result(
         diagnostics=_metadata_diagnostics(metadata),
         evaluator_trace_url=evaluator_trace_url,
         evaluator_source_url=evaluator_source_url,
+        structured_attempts=structured_attempts,
         **common,
     )
 

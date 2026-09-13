@@ -50,7 +50,7 @@ from deep_research.evaluation.models import (
     TargetOutput,
     fallback_provider_diagnostic,
 )
-from deep_research.observability import Tracker
+from deep_research.observability import TokenUsageMetric, Tracker
 from deep_research.providers import ChatMessage
 from deep_research.utils.types import ContractModel, JsonValue
 
@@ -618,12 +618,15 @@ def _build_scored_feedback(
     *,
     trace_url: str | None = None,
     source_url: str | None = None,
+    structured_attempts: int | None = None,
 ) -> JudgeFeedback:
     """The scored ``JudgeFeedback``, shared by both call paths.
 
     ``trace_url``/``source_url`` are only ever URLs the evaluator
     integration directly exposed; a missing value stays ``None`` and is
-    never derived from anything.
+    never derived from anything. ``structured_attempts`` is the same kind
+    of directly observed scalar: the attempt depth the judge's own tracker
+    recorded, or ``None`` when no call was made.
     """
     return JudgeFeedback(
         status="scored",
@@ -638,6 +641,7 @@ def _build_scored_feedback(
         judge_configuration_fingerprint=runtime.judge_configuration_fingerprint,
         evaluator_trace_url=trace_url,
         evaluator_source_url=source_url,
+        structured_attempts=structured_attempts,
     )
 
 
@@ -749,6 +753,32 @@ def judge_feedback_payload(feedback: JudgeFeedback) -> dict[str, JsonValue]:
         "judge_model": feedback.judge_model,
         "judge_configuration_fingerprint": feedback.judge_configuration_fingerprint,
     }
+
+
+def _max_structured_attempt(
+    tracker: Tracker | None, session_id: str
+) -> int | None:
+    """The deepest structured attempt this session's judge call reached.
+
+    Reads only the bounded operation literal and attempt number the tracker
+    copied out of an llm span's already-safe inputs, and only for the
+    session the row owns: ``1`` is a judge that succeeded on its first
+    request, ``2`` is a judge whose one schema repair was used. ``None``
+    means no structured attempt was recorded for this session at all --
+    including for a tracker-like object that records no metrics -- and is
+    never read as "no repair happened".
+    """
+    if tracker is None:
+        return None
+    attempts = [
+        metric.structured_attempt
+        for metric in getattr(tracker, "metrics", ())
+        if isinstance(metric, TokenUsageMetric)
+        and metric.session_id == session_id
+        and metric.operation == "structured_output"
+        and metric.structured_attempt is not None
+    ]
+    return max(attempts) if attempts else None
 
 
 def _run_tree_url(run_tree: object | None) -> str | None:
@@ -881,12 +911,20 @@ class JudgeEvaluator:
                 ):
                     verdict = await self._trace_judge(judge_input=judge_input)
         except SecretLeakError as error:
-            return self._not_run(str(error))
+            return self._not_run(
+                str(error),
+                structured_attempts=_max_structured_attempt(
+                    self._tracker, output.session_id
+                ),
+            )
         except Exception as error:
             return self._not_run(
                 _judge_not_run_reason(error),
                 diagnostics=_judge_diagnostics(error),
                 trace_url=_JUDGE_TRACE_URL.get(),
+                structured_attempts=_max_structured_attempt(
+                    self._tracker, output.session_id
+                ),
             )
 
         feedback = _build_scored_feedback(
@@ -894,6 +932,9 @@ class JudgeEvaluator:
             self._runtime,
             trace_url=_JUDGE_TRACE_URL.get(),
             source_url=self._evaluator_source_url,
+            structured_attempts=_max_structured_attempt(
+                self._tracker, output.session_id
+            ),
         )
         return self._scored(verdict, feedback)
 
@@ -903,6 +944,7 @@ class JudgeEvaluator:
         *,
         diagnostics: Sequence[EvaluatorDiagnostic] = (),
         trace_url: str | None = None,
+        structured_attempts: int | None = None,
     ) -> dict[str, JsonValue]:
         """The ``judge_not_run`` result: status only, no fabricated score.
 
@@ -919,6 +961,8 @@ class JudgeEvaluator:
             metadata["evaluator_trace_url"] = trace_url
         if self._evaluator_source_url is not None:
             metadata["evaluator_source_url"] = self._evaluator_source_url
+        if structured_attempts is not None:
+            metadata["structured_attempts"] = structured_attempts
         if diagnostics:
             metadata["judge_diagnostics"] = [
                 item.model_dump(mode="json") for item in diagnostics
@@ -951,6 +995,8 @@ class JudgeEvaluator:
             metadata["input_tokens"] = feedback.input_tokens
         if feedback.output_tokens is not None:
             metadata["output_tokens"] = feedback.output_tokens
+        if feedback.structured_attempts is not None:
+            metadata["structured_attempts"] = feedback.structured_attempts
 
         results: list[dict[str, JsonValue]] = [
             {

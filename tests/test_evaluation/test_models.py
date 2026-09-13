@@ -25,6 +25,7 @@ from deep_research.evaluation.models import (
     ReActSummary,
     RepetitionResult,
     RubricDimension,
+    StructuredCallSummary,
     SuiteResult,
     TargetOutput,
     UnknownAgentError,
@@ -617,3 +618,95 @@ def test_repetition_result_rejects_unknown_stop_reasons_and_unsafe_fallbacks() -
             operation="react_decision",
             raw_provider_output="must not persist",
         )
+
+
+# --- The content-free structured-repair ledger ---
+
+
+def _target_output_kwargs(**overrides: object) -> dict[str, object]:
+    return {
+        "case_id": "focused-decomposition",
+        "case_version": 1,
+        "agent_name": "planner",
+        "tier": "controlled",
+        "repetition": 1,
+        "session_id": "evaluation-planner-focused-decomposition-r1",
+        "experiment_name": "planner-controlled-20260816T101500Z-abc1234",
+        "completed": True,
+        "result": {"sub_topics": []},
+        "target_model_requested": "gpt-5.6-luna",
+        "target_reasoning_effort": "high",
+        **overrides,
+    }
+
+
+def _not_run_feedback(**overrides: object) -> JudgeFeedback:
+    return JudgeFeedback(
+        status="judge_not_run",
+        not_run_reason="no_evaluable_output",
+        prompt_id="individual-agent-judge",
+        rubric_version=1,
+        prompt_fingerprint="abc123abc123",
+        judge_model="gpt-5.6-luna",
+        judge_configuration_fingerprint="def456def456",
+        **overrides,
+    )
+
+
+def test_a_structured_call_summary_defaults_to_zero_counts() -> None:
+    assert StructuredCallSummary().model_dump() == {
+        "calls": 0,
+        "repaired_calls": 0,
+        "failed_attempts": 0,
+    }
+    assert StructuredCallSummary(
+        calls=2, repaired_calls=1, failed_attempts=2
+    ).model_dump() == {"calls": 2, "repaired_calls": 1, "failed_attempts": 2}
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [
+        {"calls": -1},
+        {"repaired_calls": -1},
+        {"failed_attempts": -1},
+        {"calls": 1, "repaired_calls": 2},
+        {"calls": 1, "repaired_calls": 1, "failed_attempts": 3},
+        {"repaired_calls": 1},
+    ],
+)
+def test_a_structured_call_summary_rejects_impossible_counts(
+    counts: dict[str, int],
+) -> None:
+    with pytest.raises(ValueError):
+        StructuredCallSummary(**counts)
+
+
+def test_an_artifact_from_before_the_repair_ledger_still_validates() -> None:
+    """A v1 artifact written without the summary keeps its defaults."""
+    output = TargetOutput.model_validate(_target_output_kwargs())
+
+    assert output.structured_calls == StructuredCallSummary()
+    assert output.model_dump(mode="json")["structured_calls"] == {
+        "calls": 0,
+        "repaired_calls": 0,
+        "failed_attempts": 0,
+    }
+
+
+def test_target_output_rejects_an_impossible_repair_ledger() -> None:
+    with pytest.raises(ValueError):
+        TargetOutput(
+            **_target_output_kwargs(
+                structured_calls={"calls": 1, "repaired_calls": 2}
+            )
+        )
+
+
+def test_judge_feedback_carries_an_optional_structured_attempt() -> None:
+    assert _not_run_feedback().structured_attempts is None
+    assert _not_run_feedback(structured_attempts=2).structured_attempts == 2
+
+    for attempt in (0, 3):
+        with pytest.raises(ValueError):
+            _not_run_feedback(structured_attempts=attempt)

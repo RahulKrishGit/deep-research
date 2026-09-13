@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from hashlib import sha256
 
 import pytest
 
 from deep_research.agents.errors import PlanningError
+from deep_research.agents.planner import ResearchPlanDraft, SubTopicDraft
+from deep_research.agents.steps import ReActDecision
 from deep_research.evaluation.dependencies import build_controlled_dependencies
-from deep_research.evaluation.models import TargetOutput
+from deep_research.evaluation.models import StructuredCallSummary, TargetOutput
 from deep_research.evaluation.targets import (
     TRACE_TAG,
     RepetitionCounter,
     _classify_failure,
-    build_target,  # noqa: F401 - imported to assert the module's public surface
+    build_target,
     correlation_metadata,
     trace_tags,
 )
@@ -21,6 +25,7 @@ from deep_research.observability import TokenUsage
 from deep_research.providers import (
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
+    StructuredOutputError,
 )
 from tests.evaluation_fakes import FakeStructuredProvider
 
@@ -354,3 +359,190 @@ async def test_the_output_records_both_model_identifiers(
 
     assert output.target_model_requested == "deepseek-v4-flash"
     assert output.target_model_returned == "deepseek-v4-flash-fake"
+
+
+# --- The content-free structured-repair ledger --------------------------------
+
+_LEDGER_SENTINEL = "sentinel-provider-payload"
+
+
+def _planner_script() -> list[object]:
+    """The script a real planner agent accepts: one finish, one valid plan.
+
+    The plan carries the three sub-topics the planner's own validation
+    requires, so exactly one structured call is made for it; a plan the
+    planner rejected would be re-requested and the ledger would count two
+    logical calls instead of one.
+    """
+    return [
+        ReActDecision(
+            thought="I have enough context to proceed.",
+            action="finish",
+            tool_input_json="{}",
+            final_answer="Scoping complete.",
+        ),
+        ResearchPlanDraft(
+            sub_topics=[
+                SubTopicDraft(
+                    title=title,
+                    rationale=f"Rationale for {title}.",
+                    search_queries=[f"query about {title}"],
+                    success_criteria=[f"evidence about {title}"],
+                    priority=index,
+                )
+                for index, title in enumerate(
+                    (
+                        "Solid-state electrolyte degradation",
+                        "Cathode interface resistance",
+                        "Mechanical stress and cracking",
+                    ),
+                    start=1,
+                )
+            ]
+        ),
+    ]
+
+
+class _LedgerProvider(FakeStructuredProvider):
+    """A fake provider that opens the spans the real adapter opens.
+
+    With ``repair`` set it performs the provider's own single structured
+    repair: attempt 1 fails with a payload-bearing error, attempt 2
+    succeeds. Both attempts are real tracker spans, so the ledger the
+    target summarizes is the one the production path would produce. The
+    sentinel rides both the span inputs and the failed attempt's error, so
+    any path that copied span content into the artifact would show it.
+    """
+
+    def __init__(self, tracker, responses, *, repair: bool = False) -> None:
+        super().__init__(responses=responses)
+        self._tracker = tracker
+        self._repair = repair
+
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None
+    ):
+        attempts = (1, 2) if self._repair else (1,)
+        for attempt in attempts:
+            try:
+                async with self._tracker.llm_span(
+                    "deepseek-v4-flash",
+                    {
+                        "operation": "structured_output",
+                        "attempt": attempt,
+                        "prompt": _LEDGER_SENTINEL,
+                    },
+                ):
+                    if self._repair and attempt == 1:
+                        raise StructuredOutputError(
+                            f"invalid JSON {_LEDGER_SENTINEL}"
+                        )
+                    return await super().complete_structured(
+                        messages,
+                        schema,
+                        agent_name=agent_name,
+                        max_tokens=max_tokens,
+                    )
+            except StructuredOutputError:
+                if attempt == len(attempts):
+                    raise
+        raise AssertionError("the ledger provider never returned")
+
+
+def _ledger_target(tracker, settings, runtime, tmp_path, *, repair: bool):
+    return build_target(
+        runtime,
+        settings,
+        tracker_factory=lambda: tracker,
+        dependency_factory=build_controlled_dependencies,
+        provider_factory=lambda: _LedgerProvider(
+            tracker, _planner_script(), repair=repair
+        ),
+        counter=RepetitionCounter(max_concurrency=1),
+        secrets=(),
+        root=tmp_path,
+    )
+
+
+def _planner_inputs(case) -> dict[str, object]:
+    return {
+        "case_id": case.case_id,
+        "case_version": case.version,
+        "agent": "planner",
+        "tier": "controlled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_structured_call_is_counted_without_its_content(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    target = _ledger_target(
+        tracker,
+        settings,
+        runtime_config_for("planner"),
+        tmp_path,
+        repair=True,
+    )
+
+    payload = await target(_planner_inputs(planner_case))
+    output = TargetOutput.model_validate(payload)
+
+    assert output.completed is True, output.failure
+    assert output.structured_calls == StructuredCallSummary(
+        calls=1, repaired_calls=1, failed_attempts=1
+    )
+    assert output.model_dump(mode="json")["structured_calls"] == {
+        "calls": 1,
+        "repaired_calls": 1,
+        "failed_attempts": 1,
+    }
+    serialized = json.dumps(payload)
+    assert _LEDGER_SENTINEL not in serialized
+
+
+@pytest.mark.asyncio
+async def test_a_first_try_structured_call_is_not_counted_as_repaired(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    target = _ledger_target(
+        tracker,
+        settings,
+        runtime_config_for("planner"),
+        tmp_path,
+        repair=False,
+    )
+
+    payload = await target(_planner_inputs(planner_case))
+    output = TargetOutput.model_validate(payload)
+
+    assert output.completed is True
+    assert output.structured_calls == StructuredCallSummary(
+        calls=1, repaired_calls=0, failed_attempts=0
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_repetitions_count_only_their_own_attempts(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    """Two live sessions on one tracker must not merge into one ledger."""
+    target = _ledger_target(
+        tracker,
+        settings,
+        runtime_config_for("planner"),
+        tmp_path,
+        repair=True,
+    )
+    inputs = _planner_inputs(planner_case)
+
+    first, second = await asyncio.gather(target(inputs), target(inputs))
+    outputs = [TargetOutput.model_validate(payload) for payload in (first, second)]
+
+    assert len({output.session_id for output in outputs}) == 2
+    for output in outputs:
+        assert output.completed is True
+        # A session-blind count would report two calls and two repairs here.
+        assert output.structured_calls == StructuredCallSummary(
+            calls=1, repaired_calls=1, failed_attempts=1
+        )

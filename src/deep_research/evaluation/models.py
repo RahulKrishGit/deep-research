@@ -196,6 +196,32 @@ class ToolCallSummary(ContractModel):
     failures: int = Field(ge=0)
 
 
+class StructuredCallSummary(ContractModel):
+    """Content-free counts of one repetition's structured model calls.
+
+    The ledger exists so an artifact can prove whether a schema repair
+    happened on a successful run. It is counts only: no operation text,
+    prompt, response, argument, rationale, or invalid JSON ever reaches it.
+    ``repaired_calls`` counts the provider's second attempt, so it can never
+    exceed the number of calls, and the number of failed attempts can never
+    exceed the total attempts those calls made.
+    """
+
+    calls: int = Field(default=0, ge=0)
+    repaired_calls: int = Field(default=0, ge=0)
+    failed_attempts: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "StructuredCallSummary":
+        if self.repaired_calls > self.calls:
+            raise ValueError("repaired_calls cannot exceed calls")
+        if self.failed_attempts > self.calls + self.repaired_calls:
+            raise ValueError(
+                "failed_attempts cannot exceed calls + repaired_calls"
+            )
+        return self
+
+
 ScenarioMissSummary: TypeAlias = Annotated[
     str, Field(min_length=1, max_length=_MAX_SCENARIO_MISS_LENGTH)
 ]
@@ -517,6 +543,11 @@ class TargetOutput(ContractModel):
     errors: list[dict[str, JsonValue]] = Field(default_factory=list)
     tracker_errors: list[dict[str, JsonValue]] = Field(default_factory=list)
     react: ReActSummary | None = None
+    # Additive field: older v1 artifacts validate with the zeroed default
+    # while new ones prove whether a structured call needed its one repair.
+    structured_calls: StructuredCallSummary = Field(
+        default_factory=StructuredCallSummary
+    )
     dependencies: DependencyLedger = Field(default_factory=DependencyLedger)
     evidence: EvidenceContext = Field(default_factory=EvidenceContext)
     trajectory: list[TrajectoryStep] = Field(default_factory=list)
@@ -671,6 +702,11 @@ class JudgeFeedback(ContractModel):
     latency_ms: float | None = Field(default=None, ge=0.0)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    # Additive field: the deepest structured attempt the judge's own
+    # dedicated tracker recorded for this row. ``None`` means the judge was
+    # never invoked, or that the row predates the field -- a missing value is
+    # never read as "no repair happened".
+    structured_attempts: int | None = Field(default=None, ge=1, le=2)
 
     @model_validator(mode="after")
     def validate_status(self) -> "JudgeFeedback":

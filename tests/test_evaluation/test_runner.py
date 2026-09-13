@@ -1606,3 +1606,38 @@ def test_judge_feedback_from_result_drops_malformed_diagnostics(
     assert feedback.diagnostics == (
         EvaluatorDiagnostic(kind="schema_output", attempt=1),
     )
+
+
+def test_judge_feedback_from_result_carries_the_structured_attempt(
+    runtime_config_for,
+) -> None:
+    """The evaluator's attempt ledger survives the artifact reconstruction."""
+    payload = _judge_not_run_payload(
+        reason="judge_schema_failure",
+        metadata={"structured_attempts": 2},
+    )
+
+    feedback = _judge_feedback_from_result(
+        payload, runtime=runtime_config_for("planner")
+    )
+
+    assert feedback.structured_attempts == 2
+
+
+@pytest.mark.parametrize(
+    "value", [None, 0, 3, "2", True, {"attempt": 2}, [2]]
+)
+def test_judge_feedback_from_result_drops_an_unusable_structured_attempt(
+    runtime_config_for, value: object
+) -> None:
+    """A malformed ledger value is dropped, never allowed to break the row."""
+    payload = _judge_not_run_payload(
+        reason="judge_schema_failure",
+        metadata={"structured_attempts": value},
+    )
+
+    feedback = _judge_feedback_from_result(
+        payload, runtime=runtime_config_for("planner")
+    )
+
+    assert feedback.structured_attempts is None
