@@ -214,7 +214,14 @@ def _native_response_outcome(
         )
 
     output = getattr(response, "output", None)
-    items = output if isinstance(output, (list, tuple)) else ()
+    if output is None:
+        items: Sequence[Any] = ()
+    elif isinstance(output, (list, tuple)):
+        items = output
+    else:
+        return None, None, ProviderResponseError(
+            "OpenAI response contained malformed output"
+        )
     calls = [item for item in items if getattr(item, "type", None) == "function_call"]
     output_text = getattr(response, "output_text", None)
     text = output_text.strip() if isinstance(output_text, str) else ""

@@ -1168,6 +1168,23 @@ OPENAI_SENTINEL = "OPENAI_NATIVE_SENTINEL_7D20"
             ),
             id="incomplete-for-another-reason",
         ),
+        pytest.param(
+            response(
+                text=OPENAI_SENTINEL,
+                status="incomplete",
+                output=[],
+                incomplete_reason="max_output_tokens",
+            ),
+            id="incomplete-at-the-output-limit",
+        ),
+        pytest.param(
+            response(
+                text=OPENAI_SENTINEL,
+                status="completed",
+                output=OPENAI_SENTINEL,
+            ),
+            id="malformed-output-container",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1186,9 +1203,32 @@ async def test_openai_native_react_fails_closed_without_leaking(
             )
 
     assert len(responses.create_calls) == 1
-    surfaces = [str(caught.value), repr(_provider_exception_surfaces(caught.value))]
+    surfaces = _provider_exception_surfaces(caught.value)
     assert surfaces
-    assert all(OPENAI_SENTINEL not in surface for surface in surfaces)
+    assert all(
+        OPENAI_SENTINEL not in surface
+        for surface in [str(caught.value), *surfaces]
+    )
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_failures_do_not_retain_the_prompt() -> None:
+    """The prompt is provider-adjacent state too, and must be cleared."""
+    prompt_marker = "OPENAI_PROMPT_MARKER_9E31"
+    responses = RecordingResponses(
+        response(text="   ", status="completed", output=[])
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", prompt_marker):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content=prompt_marker)],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert prompt_marker not in repr(_provider_exception_surfaces(caught.value))
 
 
 @pytest.mark.asyncio
