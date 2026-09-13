@@ -373,6 +373,31 @@ def test_source_fingerprint_validates_raw_candidates_before_normalizing() -> Non
     assert recorder.ledger().source_url_fingerprints_complete is True
 
 
+def test_fingerprinting_proxy_copies_the_wrapped_tool_metadata(tracker) -> None:
+    """The proxy is the tool the agent actually holds.
+
+    Dropping a copied attribute here would make the evaluation path advertise
+    different tool metadata than production does — and the required-argument
+    list is exactly what a provider-native tool call is validated against.
+    """
+    recorder = DependencyRecorder()
+
+    class SourceTool:
+        name = "web_search"
+        description = "source tool"
+        input_schema = {"query": "string"}
+        required_arguments = ("query",)
+        output_schema = {"results": "array"}
+
+    proxy = _FingerprintingTool(SourceTool(), tracker, recorder=recorder)
+
+    assert proxy.name == "web_search"
+    assert proxy.description == "source tool"
+    assert proxy.input_schema == {"query": "string"}
+    assert proxy.output_schema == {"results": "array"}
+    assert proxy.required_arguments == ("query",)
+
+
 @pytest.mark.asyncio
 async def test_fingerprinting_proxy_ignores_failed_source_results(tracker) -> None:
     recorder = DependencyRecorder()
@@ -381,6 +406,7 @@ async def test_fingerprinting_proxy_ignores_failed_source_results(tracker) -> No
         name = "web_search"
         description = "failed source tool"
         input_schema = {}
+        required_arguments = ()
         output_schema = {"results": "array"}
 
         async def execute(self, **kwargs):

@@ -10,6 +10,14 @@ from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.toolset import AgentToolset, ToolDescriptor
 from deep_research.observability import Tracker
 from deep_research.providers import ToolDefinition
+from deep_research.tools import (
+    DocumentReaderTool,
+    QueryMemoryTool,
+    SaveToMemoryTool,
+    WebScraperTool,
+    WebSearchTool,
+    WriteDocumentTool,
+)
 from deep_research.tools.base import BaseTool, ToolCallContext, ToolExecution
 from tests.agent_fakes import BoomTool, EchoTool
 
@@ -154,5 +162,31 @@ def test_an_unsupported_compact_type_fails_at_descriptor_construction(
 def test_a_required_name_absent_from_the_schema_fails_at_descriptor_construction(
     tracker: Tracker,
 ) -> None:
-    with pytest.raises(AgentConfigurationError, match="required"):
+    with pytest.raises(AgentConfigurationError, match="absent from"):
         ToolDescriptor.from_tool(DriftedRequiredTool(tracker))
+
+
+# The declaration half of the projection. `DriftedRequiredTool` above only
+# fails when a declared name is missing from the schema, so a wrong-but-present
+# list — for example `("query", "max_results")` — would pass every other test.
+# This table is what pins the six production declarations themselves.
+PRODUCTION_REQUIRED_ARGUMENTS = (
+    (WebSearchTool, ("query",)),
+    (WebScraperTool, ("url",)),
+    (DocumentReaderTool, ("source",)),
+    (SaveToMemoryTool, ("content",)),
+    (QueryMemoryTool, ("query",)),
+    (WriteDocumentTool, ("filename", "content")),
+)
+
+
+@pytest.mark.parametrize(
+    ("tool_class", "expected"),
+    PRODUCTION_REQUIRED_ARGUMENTS,
+)
+def test_every_production_tool_declares_exactly_its_required_arguments(
+    tool_class: type[BaseTool],
+    expected: tuple[str, ...],
+) -> None:
+    assert tool_class.required_arguments == expected
+    assert set(expected) <= set(tool_class.input_schema)

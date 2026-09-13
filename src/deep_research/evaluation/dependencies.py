@@ -841,6 +841,10 @@ class _FingerprintingTool(BaseTool):
         self.description = wrapped.description
         self.input_schema = dict(wrapped.input_schema)
         self.output_schema = dict(wrapped.output_schema)
+        # Copied like every other piece of metadata: the proxy is the tool the
+        # evaluation agent actually holds, so a dropped attribute here would
+        # quietly advertise an empty required list to the provider.
+        self.required_arguments = tuple(wrapped.required_arguments)
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         result = await self._wrapped.execute(**kwargs)
