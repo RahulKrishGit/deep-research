@@ -41,6 +41,7 @@ This plan does not promise that a probabilistic provider will never emit malform
 - `agent_prompt_fingerprint` hashes the shared `agents/prompts.py` module. Editing that shared module moves every agent's target prompt fingerprint and invalidates all six target canaries. Editing one agent's own prompt invalidates that agent's canary. Record every old/new fingerprint rather than treating the fingerprint as attributable to one constant.
 - A semantic evaluation-case change requires a case-version bump and invalidates that case's dataset identity and canary. This remediation does not change cases.
 - Tasks 1-7 are offline. No DeepSeek, OpenAI, Tavily, LangSmith, evaluation, or other paid/network call is authorized by this plan. Tasks 8 and 9 stop before each batch, state the exact request ceiling and services, and obtain explicit authorization for that batch.
+- The three live-tier ledger tests in `tests/test_evaluation/test_runner.py` and `tests/test_evaluation/test_targets.py` are offline tests: their fixtures inject inert credential strings, fake search clients, fake model providers, and fake embeddings. Real shell credentials are neither required nor evidence that these tests are valid. Never exclude these tests or load real credentials to make the offline gate pass.
 - Preserve every historical artifact. The two earlier native-shape batches remain diagnostic evidence only: batch 1 failed its literal gate, and batch 2 was an unplanned rerun with an ambiguous `ProviderResponseError`. Neither may be relabelled as the release gate.
 - Stage exact paths only. End each implementation task with focused tests, Ruff on touched Python, `git diff --check`, and an independently reviewable commit.
 
@@ -593,7 +594,20 @@ Classify `ProviderResponseError` only by its required category and origin. An un
 
 Expected: PASS and a content-free inventory showing 30 logical requests, a 30-request SDK ceiling, zero tools executed, and zero network requests during dry-run.
 
-- [ ] **Step 5: Run the complete offline release gate from a clean process**
+- [ ] **Step 5: Prove the three live-tier ledger tests in the exact gate interpreter**
+
+Use the same interpreter and `PYTHONPATH` that will run the full suite. Do not read or print credentials; these tests supply their own inert values and dependency doubles:
+
+```powershell
+& $readinessPython -c "import sys, deep_research; import deep_research.evaluation.dependencies as dependencies; print(sys.executable); print(deep_research.__file__); print(dependencies.__file__)"
+& $readinessPython -m pytest tests/test_evaluation/test_runner.py::test_a_live_experiment_requests_one_repetition tests/test_evaluation/test_targets.py::test_the_ledger_records_real_services_for_a_live_run tests/test_evaluation/test_targets.py::test_a_live_researcher_records_only_source_url_fingerprints -q
+```
+
+Required: all three pass, with both printed modules resolving beneath `$readinessRoot`. At plan commit `89a9089`, this exact focused command passes even when the calling shell has no `DEEPSEEK_API_KEY`, `TAVILY_API_KEY`, or `LANGSMITH_API_KEY`; therefore a failure is an interpreter/import/test-isolation mismatch, not proof that real credentials are needed.
+
+If any fails, stop and record the printed interpreter and module paths, `& $readinessPython -m pytest --version`, the complete traceback, and the exact command. Do not substitute `python`, exclude the tests, use real credentials, or proceed to the full gate until the mismatch is reproduced in the specified interpreter.
+
+- [ ] **Step 6: Run the complete offline release gate from a clean process**
 
 ```powershell
 $env:DEEPSEEK_API_KEY = 'sk-deepseek-offline-sentinel'
@@ -604,7 +618,7 @@ git diff --check
 
 Required: zero test failures. Do not use the observation report's old “seven standing failures” baseline; clean reproduction showed four stale tests and the three ledger tests pass.
 
-- [ ] **Step 6: Verify frozen behavior and request independent review**
+- [ ] **Step 7: Verify frozen behavior and request independent review**
 
 Verify budgets, routes, thresholds, case identities, Critic semantics, all target fingerprints, Judge fingerprint, output exclusion, and no production `complete_structured(..., ReActDecision, ...)` call. Use `superpowers:requesting-code-review` over the full remediation range. Any unresolved Critical or Important finding is NO-GO for live work.
 
@@ -783,6 +797,7 @@ Commit the final documentation with exact paths. Use `superpowers:finishing-a-de
 ### Evidence gaps closed
 
 - Four baseline failures are aligned to the current intentional Judge contract rather than called “pre-existing.”
+- The three live-tier ledger tests remain mandatory and are proven with self-contained doubles; shell credential presence cannot be used to pass, exclude, or explain them.
 - SDK failures and local response-shape failures receive distinct typed origins; no catch-all classifier can label an SDK failure malformed.
 - Exact SDK exception objects are removed from traceback-frame reachability, not merely hidden from `repr` and cause/context.
 - DeepSeek mixed content/tool responses and OpenAI unknown output items fail closed.
