@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
 
 from deep_research.evaluation.judging import (
     _BLOCK_ORDER,
+    _JUDGE_SCORE_BANDS,
     COMMON_DIMENSION_WEIGHTS,
     JUDGE_PROMPT_ID,
     JUDGE_RATIONALE_GUIDANCE_MAX,
@@ -994,6 +996,97 @@ def test_the_judge_prompt_gives_guidance_across_the_whole_scale(
     # The rule must be anchored on evidence, not on prose quality.
     assert "not from the run's overall polish" in prose
     assert "A confident claim with no support behind it" in prose
+
+
+def test_the_judge_bands_cover_the_whole_declared_range_without_overlap_or_gaps(
+    critic_live_case,
+) -> None:
+    """Step 3: [0.0, 1.0] with no hole and no score claimed twice.
+
+    Contiguity is asserted as exact adjacency of endpoints: one band closes where
+    the next opens, so every score in the declared range has exactly one band's
+    instruction and none is left unstated. The top band is worded as a
+    reservation, which is what keeps the best scores from becoming the default.
+    """
+    bands = _JUDGE_SCORE_BANDS
+    body = _critic_live_judge_body(critic_live_case)
+
+    assert bands[0][0] == 0.0
+    assert bands[-1][1] == 1.0
+    assert all(low < high for low, high, _ in bands)
+    for (_, previous_high, _), (low, _, _) in zip(bands, bands[1:]):
+        assert low == previous_high
+    assert "Reserve 1.0" in bands[-1][2]
+    for low, high, guidance in bands:
+        # Contradictory endpoint language: no band names a score it does not own.
+        for value in (float(item) for item in re.findall(r"\d+(?:\.\d+)?", guidance)):
+            assert low <= value <= high, (low, high, guidance)
+        # And the rendered prompt states each band's own row.
+        assert f"{low:.1f}-{high:.1f}: {guidance}" in body
+
+
+def test_every_example_score_sits_inside_its_band_and_brackets_the_threshold(
+    critic_live_case,
+    runtime_config_for,
+) -> None:
+    """Step 3: the labelled pair straddles the threshold the release gate uses.
+
+    Both examples must be complete, schema-valid verdicts whose scores fall in
+    the band their own label claims, and the pair must straddle the live
+    threshold: one profile below it and one clearly above.
+    """
+    weak, strong = _example_instances(_critic_live_judge_body(critic_live_case))
+    threshold = runtime_config_for("planner").live_threshold
+
+    def band_index(value: float) -> int:
+        for index, (low, high, _) in enumerate(_JUDGE_SCORE_BANDS):
+            if low <= value <= high:
+                return index
+        raise AssertionError(f"{value} falls outside every score band")
+
+    def scores_of(example: dict) -> list[float]:
+        return [*example["scores"].values(), *example["agent_specific"].values()]
+
+    weak_bands = {band_index(value) for value in scores_of(weak)}
+    strong_bands = {band_index(value) for value in scores_of(strong)}
+
+    assert max(weak_bands) < min(strong_bands)
+    assert max(scores_of(weak)) < threshold <= min(scores_of(strong))
+    for example in (weak, strong):
+        JudgeVerdict.model_validate(example)
+    # Labelled illustrative, never a target to copy.
+    prose = _prose(_critic_live_judge_body(critic_live_case))
+    assert "Weak run:" in _critic_live_judge_body(critic_live_case)
+    assert "Strong run:" in _critic_live_judge_body(critic_live_case)
+    assert "placeholders" in prose
+    assert "not a target to match" in prose
+
+
+def test_the_weighted_formula_matches_the_frozen_table_exactly(
+    critic_live_case,
+) -> None:
+    """Step 3: the stated formula is the weight table, term for term.
+
+    Which dimension carries which weight is a scoring decision, so the prompt
+    states it as arithmetic. Every common dimension must appear exactly once
+    with its frozen weight, and no agent-specific dimension may appear at all:
+    those are reported for diagnosis and never enter the final score.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+    section = body[
+        body.index("## How the final score is computed") : body.index(
+            "# How to read the run"
+        )
+    ]
+    terms = re.findall(r"(\d\.\d\d) x ([a-z_]+)", section)
+
+    assert len(terms) == len(COMMON_DIMENSION_WEIGHTS)
+    assert {name: float(weight) for weight, name in terms} == COMMON_DIMENSION_WEIGHTS
+    # Rendered in the frozen table's own order, so the arithmetic reads top down.
+    assert [name for _, name in terms] == list(COMMON_DIMENSION_WEIGHTS)
+    for dimension in critic_live_case.judge_rubric.agent_dimensions:
+        assert dimension.dimension_id not in section
+    assert "carry no weight at all" in _prose(section)
 
 
 def test_the_weighting_is_stated_as_explicit_arithmetic(critic_live_case) -> None:

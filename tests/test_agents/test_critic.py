@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
 from deep_research.agents.critic import (
     _CRITIQUE_HIGH_EXAMPLE_JSON,
     _CRITIQUE_LOW_EXAMPLE_JSON,
+    _CRITIQUE_SCORE_BANDS,
     _HIGH_EXAMPLE_SCORE,
     _LOW_EXAMPLE_SCORE,
     ACCEPTANCE_SCORE,
@@ -497,6 +499,93 @@ def test_each_example_demonstrates_the_band_it_is_labelled_with() -> None:
     assert high["unsupported_claims"] == []
     assert len(high["gaps"]) <= 1, "band 9-10 allows at most narrow gaps"
     assert len(low["gaps"]) > len(high["gaps"])
+
+
+def _collapsed(text: str) -> str:
+    """Whitespace runs collapsed: the prompt is wrapped, the meaning is not."""
+    return " ".join(text.split())
+
+
+def _critique_bands() -> tuple[tuple[int, int, str], ...]:
+    """Parse the rendered band table into ``(low, high, guidance)`` rows.
+
+    The table opens with one line saying how to choose a score, then one line per
+    band, so only the band lines are parsed.
+    """
+    bands: list[tuple[int, int, str]] = []
+    for line in _CRITIQUE_SCORE_BANDS.splitlines():
+        match = re.fullmatch(r"(\d+)-(\d+): (.+)", line)
+        if match is not None:
+            bands.append((int(match[1]), int(match[2]), match[3]))
+    assert bands, "the band table must state at least one band"
+    return tuple(bands)
+
+
+def test_the_score_bands_cover_the_declared_range_without_overlap_or_gaps() -> None:
+    """Step 3: every score the router can see has exactly one band.
+
+    Routing compares the score against ``ACCEPTANCE_SCORE``, so a range the band
+    table leaves unstated is a range the model has no instruction for. The
+    earlier prompt anchored only 1 and 10 and said nothing about the middle. The
+    top band is worded as a reservation, which is what keeps the best scores from
+    becoming the default.
+    """
+    bands = _critique_bands()
+
+    assert bands[0][0] == MIN_CRITIC_SCORE
+    assert bands[-1][1] == MAX_CRITIC_SCORE
+    covered = [score for low, high, _ in bands for score in range(low, high + 1)]
+    assert covered == list(range(MIN_CRITIC_SCORE, MAX_CRITIC_SCORE + 1))
+    # Contradictory endpoint language: the top band reserves its own range, and
+    # no band names a score that belongs to a different band.
+    assert "reserve" in bands[-1][2].lower()
+    for low, high, guidance in bands:
+        for value in (int(item) for item in re.findall(r"\d+", guidance)):
+            assert low <= value <= high, (low, high, guidance)
+
+
+def test_each_example_sits_inside_its_band_and_brackets_the_threshold() -> None:
+    """Step 3: the labelled pair straddles the score routing turns on.
+
+    Both examples must be schema-valid and semantically opposite — a weak report
+    and a strong one — and each must land inside the band its own label claims,
+    or the pair teaches a scale the band table contradicts.
+    """
+    bands = _critique_bands()
+    weak = CritiqueDraft.model_validate_json(_CRITIQUE_LOW_EXAMPLE_JSON)
+    strong = CritiqueDraft.model_validate_json(_CRITIQUE_HIGH_EXAMPLE_JSON)
+
+    assert weak.score == _LOW_EXAMPLE_SCORE
+    assert strong.score == _HIGH_EXAMPLE_SCORE
+    weak_band = next(band for band in bands if band[0] <= weak.score <= band[1])
+    strong_band = next(band for band in bands if band[0] <= strong.score <= band[1])
+    assert weak_band != strong_band
+    assert weak.score < ACCEPTANCE_SCORE < strong.score
+    # Opposite semantic cases, never one case at two values.
+    assert weak.unsupported_claims and strong.unsupported_claims == []
+    assert len(weak.gaps) > len(strong.gaps)
+    body = _review_body()
+    assert f"Weak report, score {weak.score}:" in body
+    assert f"Strong report, score {strong.score}:" in body
+
+
+def test_the_labelled_pair_is_introduced_as_a_scale_not_a_target() -> None:
+    """Step 3: the pair is an illustration of the scale, stated once.
+
+    Both examples are labelled by the case they show, and the contract presents
+    them as examples of the scale in use. There is exactly one reply contract,
+    so the pair cannot be read as a second, competing protocol.
+    """
+    body = _review_body()
+    contract = body[body.index("# Reply format") :]
+    prose = _collapsed(contract)
+
+    assert "Two complete examples" in prose
+    assert "one for a weak report and one for a strong one" in prose
+    assert "showing the scale in use" in prose
+    assert f"Weak report, score {_LOW_EXAMPLE_SCORE}:" in contract
+    assert f"Strong report, score {_HIGH_EXAMPLE_SCORE}:" in contract
+    assert contract.count("JSON object") == 1
 
 
 def test_the_score_guidance_does_not_leak_routing_policy() -> None:

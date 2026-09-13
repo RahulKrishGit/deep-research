@@ -28,6 +28,7 @@ from deep_research.evaluation.config import (
     target_llm_config,
 )
 from deep_research.evaluation.judging import judge_prompt_fingerprint
+from deep_research.evaluation.models import AGENT_NAMES
 from deep_research.utils.config import (
     AgentRuntimeConfig,
     ConfigSettings,
@@ -61,6 +62,26 @@ from deep_research.utils.config import (
 # agent's recorded ``target_prompt_fingerprint`` moved. Re-pinned deliberately,
 # in its own commit, rather than silently invalidated.
 CRITIC_PROMPT_FINGERPRINT = "c971e00c3773"
+
+# Every target agent's recorded ``target_prompt_fingerprint`` when the
+# cross-agent JSON conformance matrix was locked. All six are pinned together
+# because ``agent_prompt_fingerprint`` hashes the shared ``agents.prompts``
+# module: one sentence changed there moves every agent's value at once, so a
+# single-agent pin cannot say whether a change was intended. The matrix found no
+# gap, so these values are unchanged from before it was written.
+PINNED_TARGET_PROMPT_FINGERPRINTS = {
+    "planner": "875f1cd8996f",
+    "researcher": "2d8f2688ec4d",
+    "source_evaluator": "e6bf22c74cfa",
+    "fact_checker": "681669d2ee15",
+    "synthesizer": "d0d036660207",
+    "critic": "c971e00c3773",
+}
+
+# The judge half of the same contract. A Judge prompt change moves this value and
+# invalidates Judge evidence for every agent, so it is pinned next to the targets
+# rather than only inside the judge's own tests.
+PINNED_JUDGE_PROMPT_FINGERPRINT = "74b9cddfbbee"
 
 NOW = datetime(2026, 8, 16, 10, 15, 0, tzinfo=timezone.utc)
 GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
@@ -420,6 +441,33 @@ def test_the_critic_target_fingerprint_is_pinned_as_a_drift_alarm() -> None:
     """
     assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
     assert agent_prompt_fingerprint("critic") != "bf86f19981a6"
+
+
+def test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift() -> None:
+    """Step 5: all six agents' fingerprints, not only the Critic's.
+
+    The matrix is a conformance test, so the fingerprints are checked before any
+    prompt edit is accepted. Pinning all six means a change to the shared
+    ``agents.prompts`` module — which moves every value at once — is visible in
+    one assertion rather than one sixth of it.
+    """
+    assert set(AGENT_NAMES) == set(PINNED_TARGET_PROMPT_FINGERPRINTS)
+    assert {
+        name: agent_prompt_fingerprint(name) for name in AGENT_NAMES
+    } == PINNED_TARGET_PROMPT_FINGERPRINTS
+
+
+def test_the_judge_fingerprint_is_pinned_beside_the_six_target_pins() -> None:
+    """Step 5: both halves of the structured contract, pinned in one place.
+
+    The judge fingerprint is a distinct identity from every target's, because it
+    covers the judge system prompt, template, schema, weights, and rubric version
+    rather than an agent prompt module.
+    """
+    judge = judge_prompt_fingerprint(rubric_version=1)
+
+    assert judge == PINNED_JUDGE_PROMPT_FINGERPRINT
+    assert judge not in set(PINNED_TARGET_PROMPT_FINGERPRINTS.values())
 
 
 def test_the_target_fingerprint_covers_the_shared_prompt_module() -> None:
