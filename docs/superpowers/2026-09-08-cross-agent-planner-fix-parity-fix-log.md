@@ -3182,3 +3182,55 @@ repository's own `addopts = "-m 'not live'"`. `tests/test_evaluation/test_suite.
 `FakeEvaluateRunner` with an empty example list, so nothing leaves the process.
 
 This record contains no prompts, provider responses, tool arguments, reasoning, or secret values.
+
+
+---
+
+## Section 97: Shared native ReAct — 30-request shape gate (PAID) — **FAIL**
+
+Authorized batch: 30 sequential first-attempt DeepSeek Chat Completions calls against the reviewed
+probe (`output/transport-probes/native-react-v1/native_react_shape_probe.py`, SHA-256
+`bf10ca6ce8403e7c86cc7b8040e23bfcf3c25acb6338b30def8197f949922150`). `retry_count=0`, so one logical
+request is one HTTP request. No Judge, no LangSmith, no Tavily, no tool execution, no repair.
+
+- Reviewed head at execution: `c61709a`.
+- Verdict: `{"requests":30,"tool_calls":27,"final_answers":0,"malformed":3,"failed_runs":[11,24,25],"passed":false}`
+- Failing runs: 11 `ProviderTimeoutError`; 24 and 25 `ProviderResponseError`. The probe retains no
+  provider text by design, so the last two cannot be separated after the fact into malformed
+  envelope versus transport/HTTP failure.
+- The 27 successful turns were all real native calls (24 `web_search`, 3 `query_memory`) with
+  arguments decoding to JSON objects.
+
+Gate items passed: 0 DSML/markup-as-text, 0 fenced or JSON action envelopes, 0 unknown or multiple
+calls, 27 observed native calls, exactly 30 provider requests and 0 repairs. Gate items missed:
+provider failures (3/30) and therefore "every response is one allow-listed call or one non-blank
+final answer" (27/30).
+
+**The plan's rule is applied as written: any miss is FAIL.** The batch was not rerun, the result was
+not reinterpreted, and **no canary was run**. Task 8 Steps 4-7 remain unauthorized.
+
+Full record: `docs/superpowers/2026-09-12-shared-native-react-live-validation.md`.
+
+### Review rounds recorded
+
+- Tasks 1-3 review: **NO-GO** on a reproduced privacy blocker (the malformed-usage path raised
+  before the local-clearing block, leaving the raw response reachable from the public error's
+  `f_locals`), plus the `raise ... from error` SDK chain retaining `request`/`body`.
+- Tasks 4-7 review: **GO** with two conditions (commit and re-gate the in-flight fix round; repair
+  two cp1252 bytes in this log and a weakened `## Executive summary` assertion).
+- Fix round 1 (`aa0eebd`): `_fresh_provider_error` at both native call sites; `with_retries` now
+  detaches the SDK chain and raises outside the handler; lone-`"null"` compact type rejected;
+  non-sequence `tool_calls` normalized; record-before-refuse in the fake; the two inert assertions
+  made weighty; the two log bytes and the heading assertion repaired; a judge non-invocation test
+  added.
+- Scoped re-review of that fix round: **GO**, with new-breakage items. Fix round 2 (`c61709a`):
+  restored the fail-closed rejection for a present-but-non-sequence `tool_calls` on the `stop` path
+  (the normalization had turned a malformed envelope into an accepted final answer, contradicting
+  the plan's rejection rule), added the stop-path case, made the OpenAI chain sentinel assertion
+  non-vacuous, added the OpenAI `request_attempt` retry-then-limit case, narrowed two overstated
+  comments/docstrings, and made the judge guard record before refusing.
+
+Offline gates after fix round 2: full suite **7 failed, 2268 passed, 1 deselected** — the same seven
+pre-existing names that fail at base `4757988` (7/2117); `ruff check . --exclude tools,.deepseek-runs`
+clean; `git diff --check` clean; Judge prompt fingerprint `74b9cddfbbee` unchanged; Critic target
+fingerprint `c971e00c3773`.
