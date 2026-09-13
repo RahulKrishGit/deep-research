@@ -35,6 +35,11 @@ from deep_research.observability import (
     TokenUsageMetric,
     Tracker,
 )
+from deep_research.providers import (
+    NativeToolCall,
+    NativeToolTurn,
+    ToolDefinition,
+)
 from deep_research.providers.deepseek_provider import (
     DEEPSEEK_BASE_URL,
     ChatMessage,
@@ -95,6 +100,7 @@ def chat_response(
     prompt_tokens: object = 4,
     completion_tokens: object = 2,
     reasoning_content: str | None = None,
+    tool_calls: object = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id="deepseek-response",
@@ -102,7 +108,9 @@ def chat_response(
             SimpleNamespace(
                 finish_reason=finish_reason,
                 message=SimpleNamespace(
-                    content=text, reasoning_content=reasoning_content
+                    content=text,
+                    reasoning_content=reasoning_content,
+                    tool_calls=tool_calls,
                 ),
             )
         ],
@@ -118,6 +126,14 @@ def chat_response(
                 else None
             ),
         ),
+    )
+
+
+def native_call(name: str, arguments: str) -> SimpleNamespace:
+    """One DeepSeek function call, shaped as the SDK returns it."""
+    return SimpleNamespace(
+        type="function",
+        function=SimpleNamespace(name=name, arguments=arguments),
     )
 
 
@@ -2724,3 +2740,336 @@ async def test_an_empty_structured_response_is_its_own_category() -> None:
     assert [item.field_paths for item in diagnostics] == [("$",), ("$",)]
     # Exactly one repair: an empty body is an envelope failure, not a new attempt.
     assert len(responses.calls) == 2
+
+
+# --- native ReAct tool turns -------------------------------------------------
+
+WEB_SEARCH_DEFINITION = ToolDefinition(
+    name="web_search",
+    description="Search the web.",
+    parameters={
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+)
+
+
+def _native_provider(
+    tracker: Tracker, completions: RecordingCompletions
+) -> DeepSeekChatProvider:
+    return DeepSeekChatProvider(
+        deepseek_config(),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_asks_auto_and_parses_one_tool_call() -> None:
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec capacity"}')],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "find capacity evidence"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="find capacity evidence")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    call = completions.calls[0]
+    assert call["tool_choice"] == "auto"
+    assert call["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    assert "response_format" not in call
+    assert turn.tool_call == NativeToolCall(
+        tool_name="web_search",
+        arguments_json='{"query":"qec capacity"}',
+    )
+    assert turn.final_answer is None
+    assert isinstance(turn, NativeToolTurn)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_returns_a_final_answer_without_a_tool() -> None:
+    completions = RecordingCompletions(
+        chat_response(text="  The report is complete.  ", finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_call is None
+    assert turn.final_answer == "The report is complete."
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_rejects_empty_messages_and_tools() -> None:
+    provider = _native_provider(local_tracker(), RecordingCompletions())
+
+    with pytest.raises(ValueError, match="at least one item"):
+        await provider.complete_react([], [WEB_SEARCH_DEFINITION])
+    with pytest.raises(ValueError, match="at least one item"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")], []
+        )
+
+
+NATIVE_SENTINEL = "NATIVE_REACT_PROVIDER_SENTINEL_3B71"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=[],
+            ),
+            id="tool-calls-with-zero-calls",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    native_call("web_search", "{}"),
+                    native_call("web_search", "{}"),
+                ],
+            ),
+            id="tool-calls-with-two-calls",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    SimpleNamespace(
+                        type=NATIVE_SENTINEL,
+                        function=SimpleNamespace(
+                            name="web_search", arguments="{}"
+                        ),
+                    )
+                ],
+            ),
+            id="non-function-call-type",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=[native_call(NATIVE_SENTINEL, "{}")],
+            ),
+            id="unknown-function-name",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    SimpleNamespace(
+                        type="function",
+                        function=SimpleNamespace(
+                            name="web_search",
+                            arguments={"marker": NATIVE_SENTINEL},
+                        ),
+                    )
+                ],
+            ),
+            id="non-string-arguments",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="stop",
+                tool_calls=[native_call("web_search", "{}")],
+            ),
+            id="stop-with-a-tool-call",
+        ),
+        pytest.param(
+            chat_response(text="   ", finish_reason="stop"),
+            id="stop-with-blank-text",
+        ),
+        pytest.param(
+            chat_response(text=NATIVE_SENTINEL, finish_reason="content_filter"),
+            id="content-filter",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="insufficient_system_resource",
+            ),
+            id="insufficient-system-resource",
+        ),
+        pytest.param(
+            chat_response(text=NATIVE_SENTINEL, finish_reason=NATIVE_SENTINEL),
+            id="unknown-finish-reason",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_deepseek_native_react_fails_closed_without_leaking(
+    response: object,
+) -> None:
+    completions = RecordingCompletions(response)
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    # One request only: a malformed native envelope is never repaired into a
+    # second shape.
+    assert len(completions.calls) == 1
+    surfaces = [str(caught.value), repr(_provider_exception_surfaces(caught.value))]
+    assert surfaces
+    assert all(NATIVE_SENTINEL not in surface for surface in surfaces)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_maps_length_to_the_output_limit() -> None:
+    completions = RecordingCompletions(
+        chat_response(text=NATIVE_SENTINEL, finish_reason="length")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderOutputLimitError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert caught.value.telemetry.finish_reason_category == "length"
+    assert NATIVE_SENTINEL not in repr(_provider_exception_surfaces(caught.value))
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_sends_the_per_call_output_budget() -> None:
+    completions = RecordingCompletions(
+        chat_response(text="done", finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            max_tokens=1234,
+        )
+
+    assert completions.calls[0]["max_tokens"] == 1234
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_uses_the_global_budget_without_an_override() -> (
+    None
+):
+    completions = RecordingCompletions(
+        chat_response(text="done", finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+
+    assert completions.calls[0]["max_tokens"] == deepseek_config().max_tokens
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_retries_one_transient_error(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        ),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+
+    assert turn.tool_call == NativeToolCall(
+        tool_name="web_search", arguments_json='{"query":"qec"}'
+    )
+    assert len(completions.calls) == 2
+    assert slept == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_span_records_counts_not_names() -> None:
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec capacity"}')],
+        )
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    assert tracker.llm_inputs[0]["operation"] == "react_tool_turn"
+    assert tracker.llm_inputs[0]["tool_count"] == 1
+    assert tracker.llm_inputs[0]["message_count"] == 1
+    assert tracker.llm_inputs[0]["agent_name"] == "critic"
+    recorded = repr(tracker.llm_inputs)
+    assert "web_search" not in recorded
+    assert "qec capacity" not in recorded

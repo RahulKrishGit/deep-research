@@ -24,6 +24,8 @@ from deep_research.providers.contracts import (
     ChatMessage,
     ChatResult,
     FinishReasonCategory,
+    NativeToolCall,
+    NativeToolTurn,
     ProviderConfigurationError,
     ProviderError,
     ProviderOutputLimitError,
@@ -33,6 +35,7 @@ from deep_research.providers.contracts import (
     ProviderTimeoutError,
     StructuredOutputError,
     StructuredValidationDiagnostic,
+    ToolDefinition,
 )
 from deep_research.providers.retry import with_retries
 from deep_research.providers.validation import validation_category
@@ -452,6 +455,70 @@ def _choice_text(
     return text
 
 
+def _native_outcome(
+    response: Any,
+    *,
+    allowed: set[str],
+    finish_reason_category: FinishReasonCategory,
+) -> tuple[NativeToolCall | None, str | None, str | None]:
+    """Read exactly one native tool call or one non-blank final answer.
+
+    Returns ``(tool_call, final_answer, rejection_reason)`` with exactly one of
+    the three set. Only the typed ``message.tool_calls`` field can select a
+    tool: text is never inspected for tool markup, so DSML, XML, Markdown
+    fences, and JSON action envelopes in the message body cannot request
+    execution.
+
+    This function never raises. A rejection is returned instead, so the caller
+    can clear its own provider-adjacent locals before that rejection becomes a
+    public error whose traceback would otherwise retain the response text.
+    """
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, (list, tuple)) or len(choices) != 1:
+        return None, None, "DeepSeek response contained malformed choices"
+    message = getattr(choices[0], "message", None)
+    if message is None:
+        return None, None, "DeepSeek response contained no message"
+    tool_calls = getattr(message, "tool_calls", None)
+
+    if finish_reason_category == "tool_calls":
+        calls = tool_calls if isinstance(tool_calls, (list, tuple)) else ()
+        if len(calls) != 1:
+            return None, None, (
+                "DeepSeek native tool response must carry exactly one tool call"
+            )
+        call = calls[0]
+        if getattr(call, "type", None) != "function":
+            return None, None, (
+                "DeepSeek native tool response carried a non-function call"
+            )
+        function = getattr(call, "function", None)
+        name = getattr(function, "name", None) if function is not None else None
+        if not isinstance(name, str) or name not in allowed:
+            return None, None, (
+                "DeepSeek native tool response named an unavailable tool"
+            )
+        arguments = getattr(function, "arguments", None)
+        if not isinstance(arguments, str) or not arguments.strip():
+            return None, None, (
+                "DeepSeek native tool response carried malformed arguments"
+            )
+        return NativeToolCall(tool_name=name, arguments_json=arguments), None, None
+
+    if finish_reason_category != "stop":
+        return None, None, "DeepSeek response did not stop cleanly"
+    if tool_calls:
+        return None, None, (
+            "DeepSeek native tool response mixed a final answer with a tool call"
+        )
+    content = getattr(message, "content", None)
+    if not isinstance(content, str) or not content.strip():
+        return None, None, (
+            "DeepSeek native tool response carried no usable final answer"
+        )
+    return None, content.strip(), None
+
+
 def _raise_deepseek_error(error: Exception) -> None:
     """Translate SDK operational failures to safe typed provider errors.
 
@@ -817,6 +884,133 @@ class DeepSeekChatProvider:
         repair = ""
         repair_guidance = ""
         raise final_error
+
+    async def complete_react(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> NativeToolTurn:
+        """One native ReAct turn: a provider tool call or a final answer.
+
+        The request carries real function definitions with
+        ``tool_choice="auto"``. Function-specific and ``required`` tool choice
+        are never sent: with thinking enabled DeepSeek answers both with HTTP
+        400, so the model decides for itself whether to call a tool.
+
+        There is no ``response_format`` and no structured repair. The native
+        tool-call envelope is the contract, and a malformed one fails closed
+        rather than being retried into a possibly different shape.
+        """
+        if not messages:
+            raise ValueError("messages must contain at least one item")
+        if not tools:
+            raise ValueError("tools must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(
+            self._config.max_tokens, max_tokens
+        )
+        effective, request, metadata = self._request_options(agent_name)
+        request = {**request, "max_tokens": resolved_max_tokens}
+        payload = _translated_messages(messages)
+        allowed = {definition.name for definition in tools}
+        request_attempt = 0
+        async with self._tracker.llm_span(
+            effective.model,
+            {
+                **metadata,
+                "operation": "react_tool_turn",
+                "message_count": len(payload),
+                "tool_count": len(tools),
+            },
+        ) as span:
+            _sdk = _openai_errors()
+
+            async def _request() -> Any:
+                nonlocal request_attempt
+                request_attempt += 1
+                try:
+                    return await self._client.chat.completions.create(
+                        **{
+                            **request,
+                            "messages": payload,
+                            "tools": [
+                                {
+                                    "type": "function",
+                                    "function": definition.model_dump(mode="json"),
+                                }
+                                for definition in tools
+                            ],
+                            "tool_choice": "auto",
+                        }
+                    )
+                except (
+                    _sdk.APITimeoutError,
+                    _sdk.RateLimitError,
+                    _sdk.APIConnectionError,
+                    _sdk.APIStatusError,
+                ) as error:
+                    _raise_deepseek_error(error)
+                except _sdk.OpenAIError as error:
+                    raise ProviderResponseError(
+                        "DeepSeek native tool request failed"
+                    ) from error
+
+            response = await with_retries(
+                _request,
+                retry_count=self._config.retry_count,
+                initial_delay=self._config.retry_initial_delay,
+                max_delay=self._config.retry_max_delay,
+            )
+            telemetry = _response_telemetry(
+                response,
+                configured_max_tokens=resolved_max_tokens,
+                request_attempt=request_attempt,
+            )
+            _set_span_result(span, telemetry)
+            tool_call: NativeToolCall | None = None
+            final_answer: str | None = None
+            failure: ProviderError | None = None
+            if telemetry.finish_reason_category == "length":
+                failure = ProviderOutputLimitError(telemetry)
+            else:
+                tool_call, final_answer, rejection = _native_outcome(
+                    response,
+                    allowed=allowed,
+                    finish_reason_category=telemetry.finish_reason_category,
+                )
+                if rejection is not None:
+                    failure = ProviderResponseError(rejection)
+            if failure is None:
+                self._last_model_returned = (
+                    getattr(response, "model", None) or effective.model
+                )
+                return NativeToolTurn(
+                    model=effective.model,
+                    usage=telemetry.usage,
+                    tool_call=tool_call,
+                    final_answer=final_answer,
+                )
+
+            # Do not raise while holding provider-adjacent locals: the public
+            # error's traceback would otherwise retain the response text, the
+            # prompt, and the tool arguments. ``complete_structured`` clears its
+            # locals for the same reason.
+            response = None
+            payload = []
+            request = {}
+            metadata = {}
+            messages = ()
+            tools = ()
+            allowed = set()
+            effective = None
+            agent_name = None
+            telemetry = None
+            tool_call = None
+            final_answer = None
+            rejection = None
+            raise failure
 
 
 class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
