@@ -19,13 +19,19 @@ from deep_research.providers.capabilities import resolve_request_settings
 from deep_research.providers.contracts import (
     ChatMessage,
     ChatResult,
+    NativeToolCall,
+    NativeToolTurn,
     OpenAIProviderError,
     ProviderConfigurationError,
+    ProviderError,
+    ProviderOutputLimitError,
     ProviderRateLimitError,
     ProviderResponseError,
+    ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
     StructuredValidationDiagnostic,
+    ToolDefinition,
 )
 from deep_research.providers.retry import with_retries
 from deep_research.providers.validation import (
@@ -159,6 +165,87 @@ def _raise_provider_error(error: Exception) -> None:
             http_status_code=status,
         ) from error
     raise error
+
+
+def _native_response_outcome(
+    response: Any,
+    *,
+    allowed: set[str],
+    usage: TokenUsage,
+    configured_max_tokens: int,
+    request_attempt: int,
+) -> tuple[NativeToolCall | None, str | None, ProviderError | None]:
+    """Read exactly one Responses function call or one non-blank final answer.
+
+    Returns ``(tool_call, final_answer, failure)`` with at most one set. This
+    never raises, so the caller can clear its own provider-adjacent locals
+    before a rejection becomes a public error whose traceback would otherwise
+    retain the raw response.
+
+    Reasoning items are stepped over by type and never read, retained, or
+    traced. Only a typed ``function_call`` item can select a tool, so tool
+    markup in ordinary text cannot request execution.
+    """
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        incomplete = getattr(response, "incomplete_details", None)
+        reason = (
+            getattr(incomplete, "reason", None) if incomplete is not None else None
+        )
+        if reason == "max_output_tokens":
+            return (
+                None,
+                None,
+                ProviderOutputLimitError(
+                    ProviderResponseTelemetry(
+                        finish_reason_category="length",
+                        configured_max_tokens=configured_max_tokens,
+                        usage=usage,
+                        request_attempt=request_attempt,
+                    )
+                ),
+            )
+        return None, None, ProviderResponseError(
+            "OpenAI response did not complete"
+        )
+    if status != "completed":
+        return None, None, ProviderResponseError(
+            "OpenAI response did not complete"
+        )
+
+    output = getattr(response, "output", None)
+    items = output if isinstance(output, (list, tuple)) else ()
+    calls = [item for item in items if getattr(item, "type", None) == "function_call"]
+    output_text = getattr(response, "output_text", None)
+    text = output_text.strip() if isinstance(output_text, str) else ""
+
+    if calls:
+        if text:
+            return None, None, ProviderResponseError(
+                "OpenAI native tool response mixed a final answer with a tool call"
+            )
+        if len(calls) != 1:
+            return None, None, ProviderResponseError(
+                "OpenAI native tool response must carry exactly one tool call"
+            )
+        call = calls[0]
+        name = getattr(call, "name", None)
+        if not isinstance(name, str) or name not in allowed:
+            return None, None, ProviderResponseError(
+                "OpenAI native tool response named an unavailable tool"
+            )
+        arguments = getattr(call, "arguments", None)
+        if not isinstance(arguments, str) or not arguments.strip():
+            return None, None, ProviderResponseError(
+                "OpenAI native tool response carried malformed arguments"
+            )
+        return NativeToolCall(tool_name=name, arguments_json=arguments), None, None
+
+    if not text:
+        return None, None, ProviderResponseError(
+            "OpenAI native tool response carried no usable final answer"
+        )
+    return None, text, None
 
 
 class _StructuredValidationFailure(RuntimeError):
@@ -357,6 +444,120 @@ class OpenAIChatProvider:
                 ) from None
             self._last_model_returned = getattr(response, "model", None) or model
             return parsed
+
+    async def complete_react(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> NativeToolTurn:
+        """One native ReAct turn: a provider tool call or a final answer.
+
+        Offline parity with the DeepSeek boundary, on Responses' native
+        function-tool representation. Reasoning output items are ignored and
+        never retained; only a typed ``function_call`` item can select a tool.
+        There is no structured output and no repair here.
+        """
+        if not messages:
+            raise ValueError("messages must contain at least one item")
+        if not tools:
+            raise ValueError("tools must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(
+            self._config.max_tokens, max_tokens
+        )
+        effective, request, metadata = self._request_options(agent_name)
+        request = {**request, "max_output_tokens": resolved_max_tokens}
+        payload = [message.model_dump(mode="json") for message in messages]
+        allowed = {definition.name for definition in tools}
+        request_attempt = 0
+        async with self._tracker.llm_span(
+            effective.model,
+            {
+                **metadata,
+                "operation": "react_tool_turn",
+                "message_count": len(payload),
+                "tool_count": len(tools),
+            },
+        ) as span:
+            _sdk = _openai_errors()
+
+            async def _request() -> Any:
+                nonlocal request_attempt
+                request_attempt += 1
+                try:
+                    return await self._client.responses.create(
+                        **{
+                            **request,
+                            "input": payload,
+                            "tools": [
+                                {
+                                    "type": "function",
+                                    "name": definition.name,
+                                    "description": definition.description,
+                                    "parameters": definition.parameters,
+                                }
+                                for definition in tools
+                            ],
+                            "tool_choice": "auto",
+                        }
+                    )
+                except (
+                    _sdk.APITimeoutError,
+                    _sdk.RateLimitError,
+                    _sdk.APIConnectionError,
+                    _sdk.APIStatusError,
+                ) as error:
+                    _raise_provider_error(error)
+                except _sdk.OpenAIError as error:
+                    raise ProviderResponseError(
+                        "OpenAI native tool request failed"
+                    ) from error
+
+            response = await with_retries(
+                _request,
+                retry_count=self._config.retry_count,
+                initial_delay=self._config.retry_initial_delay,
+                max_delay=self._config.retry_max_delay,
+            )
+            usage = _usage_from_response(response)
+            _set_span_result(span, response, usage)
+            tool_call, final_answer, failure = _native_response_outcome(
+                response,
+                allowed=allowed,
+                usage=usage,
+                configured_max_tokens=resolved_max_tokens,
+                request_attempt=request_attempt,
+            )
+            if failure is None:
+                self._last_model_returned = (
+                    getattr(response, "model", None) or effective.model
+                )
+                return NativeToolTurn(
+                    model=effective.model,
+                    usage=usage,
+                    tool_call=tool_call,
+                    final_answer=final_answer,
+                )
+
+            # Do not raise while holding provider-adjacent locals: the public
+            # error's traceback would otherwise retain the raw response,
+            # including reasoning items. ``complete_structured`` clears its
+            # locals for the same reason.
+            response = None
+            payload = []
+            request = {}
+            metadata = {}
+            messages = ()
+            tools = ()
+            allowed = set()
+            effective = None
+            agent_name = None
+            usage = TokenUsage()
+            tool_call = None
+            final_answer = None
+            raise failure
 
     async def complete_structured(
         self,

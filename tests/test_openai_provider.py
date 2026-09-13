@@ -24,10 +24,16 @@ from deep_research.observability import (
     TokenUsageMetric,
     Tracker,
 )
+from deep_research.providers import (
+    NativeToolCall,
+    NativeToolTurn,
+    ToolDefinition,
+)
 from deep_research.providers.openai_provider import (
     ChatMessage,
     OpenAIChatProvider,
     ProviderConfigurationError,
+    ProviderOutputLimitError,
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
@@ -43,9 +49,19 @@ def response(
     model: str | None = None,
     input_tokens: int = 8,
     output_tokens: int = 3,
+    status: str = "completed",
+    output: object = None,
+    incomplete_reason: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id="resp-1",
+        status=status,
+        output=output,
+        incomplete_details=(
+            None
+            if incomplete_reason is None
+            else SimpleNamespace(reason=incomplete_reason)
+        ),
         output_text=text,
         output_parsed=parsed,
         model=model,
@@ -55,6 +71,20 @@ def response(
             total_tokens=input_tokens + output_tokens,
         ),
     )
+
+
+def native_function_call(name: str, arguments: str) -> SimpleNamespace:
+    """One Responses function-call item, shaped as the SDK returns it."""
+    return SimpleNamespace(
+        type="function_call",
+        name=name,
+        arguments=arguments,
+    )
+
+
+def reasoning_item(marker: str) -> SimpleNamespace:
+    """One opaque reasoning item, which must never be retained or traced."""
+    return SimpleNamespace(type="reasoning", summary=[], encrypted_content=marker)
 
 
 class RecordingResponses:
@@ -922,5 +952,344 @@ async def test_openai_complete_structured_raises_after_retries_exhausted(
 
     assert len(responses.parse_calls) == 3
     assert slept == [1.0, 2.0]
+
+
+# --- native ReAct tool turns (offline parity with DeepSeek) ------------------
+
+WEB_SEARCH_DEFINITION = ToolDefinition(
+    name="web_search",
+    description="Search the web.",
+    parameters={
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+)
+
+
+def _native_provider(
+    tracker: Tracker, responses: RecordingResponses
+) -> OpenAIChatProvider:
+    return OpenAIChatProvider(
+        openai_config(),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_asks_auto_and_parses_one_function_call() -> None:
+    responses = RecordingResponses(
+        response(
+            text="",
+            status="completed",
+            output=[
+                native_function_call("web_search", '{"query":"qec capacity"}')
+            ],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "find capacity evidence"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="find capacity evidence")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    call = responses.create_calls[0]
+    assert call["tools"] == [
+        {
+            "type": "function",
+            "name": "web_search",
+            "description": "Search the web.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        }
+    ]
+    assert call["tool_choice"] == "auto"
+    assert call["input"] == [
+        {"role": "user", "content": "find capacity evidence"}
+    ]
+    assert "text_format" not in call
+    assert turn.tool_call == NativeToolCall(
+        tool_name="web_search",
+        arguments_json='{"query":"qec capacity"}',
+    )
+    assert turn.final_answer is None
+    assert isinstance(turn, NativeToolTurn)
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_ignores_reasoning_items() -> None:
+    reasoning_marker = "OPENAI_REASONING_MARKER_51C4"
+    responses = RecordingResponses(
+        response(
+            text="",
+            status="completed",
+            output=[
+                reasoning_item(reasoning_marker),
+                native_function_call("web_search", '{"query":"qec"}'),
+            ],
+        )
+    )
+    tracker = CapturingTracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_call == NativeToolCall(
+        tool_name="web_search", arguments_json='{"query":"qec"}'
+    )
+    assert reasoning_marker not in repr(tracker.llm_inputs)
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_returns_a_final_answer_without_a_tool() -> None:
+    responses = RecordingResponses(
+        response(text="  The report is complete.  ", status="completed", output=[])
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_call is None
+    assert turn.final_answer == "The report is complete."
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_rejects_empty_messages_and_tools() -> None:
+    provider = _native_provider(local_tracker(), RecordingResponses())
+
+    with pytest.raises(ValueError, match="at least one item"):
+        await provider.complete_react([], [WEB_SEARCH_DEFINITION])
+    with pytest.raises(ValueError, match="at least one item"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")], []
+        )
+
+
+OPENAI_SENTINEL = "OPENAI_NATIVE_SENTINEL_7D20"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(
+            response(
+                text="",
+                status="completed",
+                output=[
+                    native_function_call("web_search", "{}"),
+                    native_function_call("web_search", "{}"),
+                ],
+            ),
+            id="two-function-calls",
+        ),
+        pytest.param(
+            response(
+                text="",
+                status="completed",
+                output=[native_function_call(OPENAI_SENTINEL, "{}")],
+            ),
+            id="unknown-function-name",
+        ),
+        pytest.param(
+            response(
+                text="",
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        name="web_search",
+                        arguments={"marker": OPENAI_SENTINEL},
+                    )
+                ],
+            ),
+            id="non-string-arguments",
+        ),
+        pytest.param(
+            response(
+                text="",
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        name=None,
+                        arguments="{}",
+                    )
+                ],
+            ),
+            id="malformed-call-fields",
+        ),
+        pytest.param(
+            response(
+                text=OPENAI_SENTINEL,
+                status="completed",
+                output=[native_function_call("web_search", "{}")],
+            ),
+            id="mixed-text-and-call",
+        ),
+        pytest.param(
+            response(text="   ", status="completed", output=[]),
+            id="blank-final-text",
+        ),
+        pytest.param(
+            response(text=OPENAI_SENTINEL, status="failed", output=[]),
+            id="failed-status",
+        ),
+        pytest.param(
+            response(text=OPENAI_SENTINEL, status="cancelled", output=[]),
+            id="cancelled-status",
+        ),
+        pytest.param(
+            response(text=OPENAI_SENTINEL, status="in_progress", output=[]),
+            id="in-progress-status",
+        ),
+        pytest.param(
+            response(
+                text=OPENAI_SENTINEL,
+                status="incomplete",
+                output=[],
+                incomplete_reason=OPENAI_SENTINEL,
+            ),
+            id="incomplete-for-another-reason",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_openai_native_react_fails_closed_without_leaking(
+    reply: object,
+) -> None:
+    responses = RecordingResponses(reply)
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert len(responses.create_calls) == 1
+    surfaces = [str(caught.value), repr(_provider_exception_surfaces(caught.value))]
+    assert surfaces
+    assert all(OPENAI_SENTINEL not in surface for surface in surfaces)
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_maps_the_output_limit() -> None:
+    responses = RecordingResponses(
+        response(
+            text="",
+            status="incomplete",
+            output=[],
+            incomplete_reason="max_output_tokens",
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderOutputLimitError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert caught.value.telemetry.finish_reason_category == "length"
+    assert caught.value.telemetry.configured_max_tokens == openai_config().max_tokens
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_sends_the_per_call_output_budget() -> None:
+    responses = RecordingResponses(
+        response(text="done", status="completed", output=[])
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            max_tokens=2048,
+        )
+
+    assert responses.create_calls[0]["max_output_tokens"] == 2048
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_retries_one_transient_error(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    responses = RecordingResponses(
+        APIConnectionError(request=httpx.Request("POST", "https://api.openai.com")),
+        response(
+            text="",
+            status="completed",
+            output=[native_function_call("web_search", '{"query":"qec"}')],
+        ),
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=16.0),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_call == NativeToolCall(
+        tool_name="web_search", arguments_json='{"query":"qec"}'
+    )
+    assert len(responses.create_calls) == 2
+    assert slept == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_span_records_counts_not_names() -> None:
+    responses = RecordingResponses(
+        response(
+            text="",
+            status="completed",
+            output=[native_function_call("web_search", '{"query":"qec capacity"}')],
+        )
+    )
+    tracker = CapturingTracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    assert tracker.llm_inputs[0]["operation"] == "react_tool_turn"
+    assert tracker.llm_inputs[0]["tool_count"] == 1
+    assert tracker.llm_inputs[0]["message_count"] == 1
+    assert tracker.llm_inputs[0]["agent_name"] == "critic"
+    recorded = repr(tracker.llm_inputs)
+    assert "web_search" not in recorded
+    assert "qec capacity" not in recorded
 
 
