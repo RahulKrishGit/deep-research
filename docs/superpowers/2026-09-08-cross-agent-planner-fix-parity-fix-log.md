@@ -3234,3 +3234,77 @@ Offline gates after fix round 2: full suite **7 failed, 2268 passed, 1 deselecte
 pre-existing names that fail at base `4757988` (7/2117); `ruff check . --exclude tools,.deepseek-runs`
 clean; `git diff --check` clean; Judge prompt fingerprint `74b9cddfbbee` unchanged; Critic target
 fingerprint `c971e00c3773`.
+
+---
+
+## Section 98: Task 7 — reviewed native ReAct shape probe v2 and the full offline release gate
+
+Dated 2026-09-12. Offline only: no DeepSeek, OpenAI, Tavily, LangSmith, evaluation, or other
+paid/network call was made. No production behaviour changed — `src/` is untouched by this section.
+
+Task 7 replaced the git-ignored v1 probe (`output/transport-probes/native-react-v1/native_react_shape_probe.py`,
+SHA-256 `d84742e5501d0fed2b95cb051e892f760a69b79d15f571d538aeb9710f59b653`) as the release-gate
+evidence source with a checked-in, unit-tested instrument:
+
+- `scripts/native_react_shape_probe.py` — SHA-256
+  `533252accf479af3e59d472160d116f2f4b66b0fdf7821e6c5c990efd7ae9e7f`, 36563 bytes.
+- `tests/test_native_react_shape_probe.py` — SHA-256
+  `27beb8a2599b188fc67bddb0bc2ab4c9b4fbc47596966429de73e3ad4a34c724`, 18705 bytes.
+
+### The defect v2 closes
+
+v1's gate tested a final answer only for non-blankness, so 29 valid calls plus one non-blank DSML
+final answer passed it. Driving v1's own `_gate` with that batch returns
+`{"requests":30,"tool_calls":29,"final_answers":1,"malformed":0,"shape_failures":0,"provider_failures":0,"failed_runs":[],"passed":true}`.
+v1's classifier also ended in a catch-all that mapped any unrecognised `ProviderResponseError` to
+`malformed_envelope`; that is why batch 1's runs 24 and 25 (Section 97) cannot be separated after the
+fact. v2 classifies a `ProviderResponseError` strictly by its required
+`(failure_category, failure_origin)` pair, classifies `output_limit` by its own explicit kind (its
+artifact projection legitimately carries no origin), and reports an unlisted pair as
+`instrument_error`, which fails the gate. There is no `malformed_envelope` outcome left to default to.
+
+### Gate results
+
+- RED first, before the probe existed: `37 errors`, each at the fixture assertion
+  `AssertionError: the reviewed v2 probe is missing at …\scripts\native_react_shape_probe.py`.
+- `pytest tests/test_native_react_shape_probe.py -q -p no:cacheprovider` → **37 passed**. The suite
+  covers all nine predeclared adversarial 30-record batches, the 29-valid-calls-plus-DSML exploit
+  (required to return `passed=false` with exactly one shape failure), agreement with the production
+  `native_text_violation` detector, sentinel-by-value privacy assertions on the serialized record,
+  the exact enumerated record schema, and the dry-run inventory.
+- `python scripts/native_react_shape_probe.py --dry-run --requests 30` → exit 0, no problems.
+  Inventory: 30 logical requests, 30-request SDK ceiling, `deepseek-v4-flash`, effort `max`, thinking
+  `enabled`, `32768`, `tool_choice` `auto`, no `response_format`, native tools
+  `["web_search","query_memory"]`, repository retry count `0`, SDK `max_retries` `0`, exactly one SDK
+  `create` call, zero tool executions, zero LangSmith requests. The inventory states its own scope:
+  request construction only. It exercises no tool execution, no LangSmith transport, and no live
+  provider, so the offline agent-boundary tests remain what prove execution behaviour.
+- `pytest -q -p no:cacheprovider` (full offline suite, `DEEPSEEK_API_KEY` set to the offline
+  sentinel) → **2511 passed, 1 deselected**, zero failures. The 2474 baseline plus this section's 37
+  new tests.
+- `ruff check . --exclude tools,.deepseek-runs` → `All checks passed!`.
+- `git diff --check` → clean.
+- The three live-tier ledger tests in `tests/test_evaluation/test_runner.py` and
+  `tests/test_evaluation/test_targets.py` → **3 passed** in the gate interpreter, with
+  `deep_research.__file__` and `dependencies.__file__` both resolving beneath the worktree. This
+  reproduces the controller's pre-verified result, so all three remain green.
+
+### Deviations and limits recorded
+
+- `sdk_max_retries` reads `max_retries` off a client built by the production `_build_client`, which is
+  a private import. No public accessor exposes it, and an injected recording client is a stub with no
+  SDK retry machinery, so production's own construction is the only honest place to verify it. The
+  module documents this, and the import fails loudly rather than skipping the check.
+- `run_dry_run` returns the inventory and the CLI prints it; `measure_one_request` is exposed so the
+  unit test can assert the recorded SDK call count directly.
+- `--requests` must be exactly 30, preserving v1's authorization guard.
+- `finish_category` is derived from the typed turn — a `NativeToolTurn` carrying a call can only have
+  come from a `tool_calls` finish and a final answer only from `stop` — and is read from the
+  output-limit telemetry for that failure class.
+- Task 7 Step 7 (frozen-invariant verification and independent review) was **not** performed here; it
+  is the controller's commission. The dry run observed both `32768` budgets without touching them.
+
+Full record: `docs/superpowers/2026-09-12-shared-native-react-live-validation.md` (§Task 7) and
+`docs/superpowers/2026-09-12-shared-native-react-observation-report.md` (§8).
+
+This record contains no prompts, provider responses, tool arguments, reasoning, or secret values.

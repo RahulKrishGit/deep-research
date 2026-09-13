@@ -167,3 +167,55 @@ Result: **not yet observed** at the time this report was written.
 - Ledger with every ruling: `.superpowers/sdd/2026-09-12-shared-native-react-tools-and-prompt-conformance/progress.md`
 - Probe (git-ignored, never staged): `output/transport-probes/native-react-v1/native_react_shape_probe.py`
 - Probe records: `…/native_react_shape_probe_30.jsonl` (batch 1), `…/native_react_shape_probe_batch2_30.jsonl` (batch 2)
+
+---
+
+## 8. Task 7 — reviewed probe v2 and the full offline release gate (2026-09-12)
+
+Appended after §7; §1–§7 are unchanged. Task 7 is offline: **no paid call was made**.
+
+Task 7 replaced the git-ignored v1 probe as the release-gate evidence source. The instrument is now
+`scripts/native_react_shape_probe.py` (SHA-256 `533252ac…`, 36563 bytes), unit-tested by
+`tests/test_native_react_shape_probe.py` (SHA-256 `27beb8a2…`, 18705 bytes). Three entries in §7
+change accordingly: the probe is no longer git-ignored, no longer lives under `output/`, and is no
+longer unreviewed.
+
+### The v1 defect, reproduced
+
+v1's gate inspected a final answer only for non-blankness, so 29 valid calls plus one non-blank DSML
+final answer passed it. Driving v1's own `_gate` with that batch returns `shape_failures: 0` and
+`passed: true`. That exploit is now a unit test in the v2 suite, and it is one of nine adversarial
+30-record batches the gate is required to fail. v1's classifier also ended in a catch-all that mapped
+any unrecognised `ProviderResponseError` to `malformed_envelope`; v2 has no catch-all, no
+`malformed_envelope` outcome, and classifies `output_limit` by its own explicit kind.
+
+### Offline gate results
+
+- `pytest tests/test_native_react_shape_probe.py -q` → **37 passed**.
+- `python scripts/native_react_shape_probe.py --dry-run --requests 30` → exit 0, no problems. The
+  inventory reports 30 logical requests, a 30-request SDK ceiling, `deepseek-v4-flash`, effort `max`,
+  thinking `enabled`, `32768`, `tool_choice` `auto`, no `response_format`, native tools
+  `["web_search","query_memory"]`, repository retry count `0`, SDK `max_retries` `0`, exactly one SDK
+  `create`, zero tool executions, and zero LangSmith requests. It proves request construction only;
+  the offline agent-boundary tests prove execution behaviour.
+- `pytest -q` → **2511 passed, 1 deselected**, zero failures. That is the 2474 baseline plus this
+  task's 37 new tests.
+- `ruff check . --exclude tools,.deepseek-runs` → `All checks passed!`; `git diff --check` clean.
+- The three live-tier ledger tests → **3 passed** in the gate interpreter, with
+  `deep_research.__file__` and `dependencies.__file__` both resolving beneath the worktree.
+
+This supersedes the "seven standing failures" baseline in §2, and is consistent with it: the same
+clean reproduction that turned up four stale tests and the three ledger tests now runs the whole
+suite green with zero failures.
+
+### What this does not authorize
+
+No paid call was made, and no production behaviour changed — `src/` is untouched by this task. Task
+8's live gate and Task 9 remain unauthorized and not run. The two earlier batches above remain
+diagnostic evidence only. Frozen-invariant verification and independent review are Task 7 Step 7 and
+were **not** performed here.
+
+### Records
+
+`docs/superpowers/2026-09-12-shared-native-react-live-validation.md` §Task 7;
+`docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md` §98.

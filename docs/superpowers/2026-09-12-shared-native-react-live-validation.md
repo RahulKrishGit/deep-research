@@ -162,3 +162,72 @@ Re-establishing the shape gate requires, at minimum:
   whether the gate itself needs restating — that is a plan change, not an implementation one, and it is
   the human partner's call, not mine;
 - a fresh, separately stated request inventory and explicit authorization.
+
+---
+
+## Task 7 — reviewed probe v2, offline only (2026-09-12)
+
+Appended section. Everything above is the earlier evidence and is unchanged. **No paid call was made
+here**: Task 7 is offline. The two batches above remain diagnostic evidence only and are not
+relabelled as the release gate.
+
+### Why a v2 instrument was required
+
+Review reproduced a gate defect in v1, and it is reproducible against the retained v1 file
+(`output/transport-probes/native-react-v1/native_react_shape_probe.py`, SHA-256 `d84742e5…`): v1's
+gate inspected a final answer only for *non-blankness*. Driving v1's own `_gate` with 29 accepted
+tool calls plus one non-blank DSML final answer returns
+
+```text
+{"requests":30,"tool_calls":29,"final_answers":1,"malformed":0,"shape_failures":0,"shape_failed_runs":[],"provider_failures":0,"provider_failed_runs":[],"provider_failure_kinds":[],"failed_runs":[],"passed":true}
+```
+
+The exploit passes the old instrument. v1 also ended its classifier with a catch-all mapping any
+unrecognised `ProviderResponseError` to `malformed_envelope`, which is why batch 1's runs 24 and 25
+could not be separated after the fact.
+
+### What v2 changes
+
+- Every returned final answer is classified with the provider's own detector
+  (`native_text_violation`), so `dsml_markup`, `tool_markup`, `markdown_fence`, and
+  `legacy_action_json` text can never pass as an answer. The record retains one bounded boolean per
+  prohibited shape instead of a character count.
+- A `ProviderResponseError` is classified strictly by its required
+  `(failure_category, failure_origin)` pair. There is no catch-all and no `malformed_envelope`
+  outcome left to default to: an unlisted pair is `instrument_error`, which fails the gate. An
+  output-limit failure is classified by its own explicit kind, because the artifact projection of
+  that failure legitimately carries no origin.
+- A typed call naming a tool outside the allow-list is re-checked by the probe rather than trusted,
+  and an unavailable tool name is never retained.
+- The record schema is exactly the enumerated field list. Provider-chosen tool names, tool
+  arguments, response text, and exception messages are not retained, asserted by sentinel value.
+
+### Offline gate results recorded in this section
+
+| Command | Result |
+| --- | --- |
+| `pytest tests/test_native_react_shape_probe.py -q` | **37 passed** |
+| `python scripts/native_react_shape_probe.py --dry-run --requests 30` | exit 0, one JSON inventory line |
+| `pytest -q` (full offline suite) | **2511 passed, 1 deselected**, zero failures |
+| `ruff check . --exclude tools,.deepseek-runs` | `All checks passed!` |
+| `git diff --check` | clean |
+| the three live-tier ledger tests | **3 passed** |
+
+The 2511 is the 2474-test baseline plus this task's 37 new tests.
+
+The dry run proves request construction only: model `deepseek-v4-flash`, reasoning effort `max`,
+thinking `enabled`, `max_tokens` `32768`, `tool_choice` `auto`, no `response_format`, native function
+tools `["web_search","query_memory"]`, repository retry count `0`, SDK `max_retries` `0`, exactly one
+SDK `create` call, zero tool executions, and zero LangSmith requests. It exercises no tool execution,
+no LangSmith transport, and no live provider, so it says nothing about execution behaviour; the
+offline agent-boundary tests are what prove that.
+
+The checked-in instrument is `scripts/native_react_shape_probe.py` (SHA-256 `533252ac…`) with
+`tests/test_native_react_shape_probe.py` (SHA-256 `27beb8a2…`).
+
+### Next step
+
+Task 8's live release gate remains **unauthorized and not run**, and Task 9 is not started. A live
+batch must be separately stated and explicitly authorized, and it must run the checked-in v2 probe,
+not v1. Frozen-invariant verification and independent review are Task 7 Step 7 and were **not**
+performed in this section.
