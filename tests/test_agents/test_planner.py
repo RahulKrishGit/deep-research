@@ -379,12 +379,11 @@ async def test_react_decision_requests_carry_the_react_decision_budget(
         await agent.run(_state())
 
     assert [call[0] for call in completer.calls] == [
-        "ReActDecision",
-        "ReActDecision",
         "ResearchPlanDraft",
     ]
     decision_budget = AgentRuntimeConfig().react_decision_max_tokens
-    assert completer.budgets == [decision_budget, decision_budget, 32768]
+    assert completer.react_budgets == [decision_budget, decision_budget]
+    assert completer.budgets == [32768]
 
 
 @pytest.mark.asyncio
@@ -413,7 +412,8 @@ async def test_only_final_plan_requests_use_the_planner_final_budget(
         await agent.run(_state())
 
     decision_budget = AgentRuntimeConfig().react_decision_max_tokens
-    assert completer.budgets == [decision_budget, decision_budget, 8192]
+    assert completer.react_budgets == [decision_budget, decision_budget]
+    assert completer.budgets == [8192]
 
 
 @pytest.mark.asyncio
@@ -450,7 +450,8 @@ async def test_repair_plan_requests_also_use_the_planner_final_budget(
     assert outcome.result is not None
     assert outcome.result.repair_attempted is True
     decision_budget = AgentRuntimeConfig().react_decision_max_tokens
-    assert completer.budgets == [decision_budget, 8192, 8192]
+    assert completer.react_budgets == [decision_budget]
+    assert completer.budgets == [8192, 8192]
 
 
 def _output_limit_error() -> ProviderOutputLimitError:
@@ -612,7 +613,8 @@ async def test_a_provider_failure_fails_the_session_without_a_plan_request(
         async with tracker.session_span("session-1", "q"):
             await agent.run(_state())
 
-    assert [call[0] for call in completer.calls] == ["ReActDecision"]
+    assert completer.calls == []
+    assert len(completer.react_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -631,9 +633,9 @@ async def test_a_provider_failure_during_the_initial_plan_draft_raises_planning_
 
     assert "timed out" not in str(failure.value)
     assert [call[0] for call in completer.calls] == [
-        "ReActDecision",
         "ResearchPlanDraft",
     ]
+    assert len(completer.react_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -655,10 +657,10 @@ async def test_a_provider_failure_during_the_repair_call_raises_planning_error(
 
     assert "timed out" not in str(failure.value)
     assert [call[0] for call in completer.calls] == [
-        "ReActDecision",
         "ResearchPlanDraft",
         "ResearchPlanDraft",
     ]
+    assert len(completer.react_calls) == 1
 
 
 @pytest.mark.asyncio

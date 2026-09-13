@@ -18,7 +18,7 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
-from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
+from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
     AgentConfigurationError,
     agent_error,
@@ -31,7 +31,6 @@ from deep_research.agents.prompts import (
     CRITIQUE_INSTRUCTION,
     AgentTask,
     render_claim_digest,
-    render_react_messages,
     render_source_quality,
 )
 from deep_research.agents.react import run_react_loop
@@ -546,7 +545,7 @@ class CriticAgent(BaseAgent[Critique]):
     def __init__(
         self,
         *,
-        provider: StructuredCompleter,
+        provider: AgentCompleter,
         tracker: Tracker,
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),
@@ -689,21 +688,7 @@ class CriticAgent(BaseAgent[Critique]):
             steps: Sequence[ReActStep],
         ) -> ReActDecision:
             del steps
-            return await self.provider.complete_structured(
-                render_react_messages(
-                    system_prompt=self.system_prompt(task),
-                    task=task,
-                    descriptors=toolset.descriptors(),
-                    scratchpad=self.scratchpad.recent(
-                        self.config.prompt_context_entries
-                    ),
-                    iteration=iteration,
-                    max_iterations=self.config.max_iterations,
-                ),
-                ReActDecision,
-                agent_name=self.name,
-                max_tokens=self.config.react_decision_max_tokens,
-            )
+            return await self._complete_react_decision(task, iteration=iteration)
 
         react = await run_react_loop(
             agent_name=self.name,

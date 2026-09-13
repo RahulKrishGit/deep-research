@@ -10,6 +10,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
 
+from deep_research.agents.steps import ReActDecision
+from deep_research.observability import TokenUsage
+from deep_research.providers import NativeToolCall, NativeToolTurn
+
 
 class FakeDataset:
     def __init__(self, name: str, dataset_id: str) -> None:
@@ -278,12 +282,19 @@ class FakeExampleRow:
 
 
 class FakeStructuredProvider:
-    """Serves queued structured responses; never touches the network."""
+    """Serves queued responses; never touches the network.
+
+    One queue for both capabilities, serviced in call order. A queued
+    ``ReActDecision`` served through ``complete_react`` is converted to the
+    provider-native turn a real provider would return for it, which is what
+    lets a target agent's scripted decisions stay expressed as decisions.
+    """
 
     def __init__(self, responses: Sequence[Any] = ()) -> None:
         self.responses = list(responses)
         self.calls: list[tuple[Any, Any, str | None]] = []
         self.budgets: list[int | None] = []
+        self.react_calls: list[tuple[Any, Any, str | None]] = []
         self.last_model_returned: str | None = "deepseek-v4-flash-fake"
 
     async def complete_structured(
@@ -297,3 +308,32 @@ class FakeStructuredProvider:
         if isinstance(response, Exception):
             raise response
         return response
+
+    async def complete_react(
+        self, messages, tools, *, agent_name=None, max_tokens=None
+    ):
+        self.react_calls.append((list(messages), tuple(tools), agent_name))
+        self.budgets.append(max_tokens)
+        if not self.responses:
+            raise AssertionError("no scripted native ReAct turn left")
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        if not isinstance(response, ReActDecision):
+            raise AssertionError(
+                "a native ReAct turn must be scripted as a ReActDecision"
+            )
+        if response.action == "use_tool":
+            return NativeToolTurn(
+                model="deepseek-v4-flash",
+                usage=TokenUsage(),
+                tool_call=NativeToolCall(
+                    tool_name=response.tool_name,
+                    arguments_json=response.tool_input_json,
+                ),
+            )
+        return NativeToolTurn(
+            model="deepseek-v4-flash",
+            usage=TokenUsage(),
+            final_answer=response.final_answer,
+        )

@@ -18,7 +18,7 @@ from collections.abc import Sequence
 
 from pydantic import Field, JsonValue
 
-from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
+from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
     AgentConfigurationError,
     agent_error,
@@ -513,7 +513,7 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
     def __init__(
         self,
         *,
-        provider: StructuredCompleter,
+        provider: AgentCompleter,
         tracker: Tracker,
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),

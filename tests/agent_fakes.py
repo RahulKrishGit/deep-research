@@ -7,13 +7,19 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel
 
 from deep_research.agents.steps import ReActDecision
-from deep_research.observability import Tracker
-from deep_research.providers import ChatMessage
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ChatMessage,
+    NativeToolCall,
+    NativeToolTurn,
+    ToolDefinition,
+)
 from deep_research.tools.base import (
     BaseTool,
     ToolCallContext,
@@ -69,12 +75,26 @@ class StrictEchoTool(BaseTool):
         return ToolExecution(data={"echo": value}, output_summary={"echoed": True})
 
 
-class ScriptedCompleter:
-    """Serve queued structured responses instead of calling OpenAI.
+@dataclass(frozen=True, slots=True)
+class ReactCall:
+    """One recorded native ReAct request."""
 
-    ``ReActDecision`` requests pop from ``decisions``; every other schema pops
-    from ``outputs``. A queued ``BaseException`` is raised instead of returned,
-    which is how provider failures are simulated.
+    agent_name: str | None
+    messages: list[ChatMessage]
+    tools: tuple[ToolDefinition, ...]
+    max_tokens: int | None
+
+
+class ScriptedCompleter:
+    """Serve queued responses instead of calling a provider.
+
+    ``complete_react`` pops one scripted ``ReActDecision`` and returns the
+    provider-native turn a real provider would return for it.
+    ``complete_structured`` serves every other schema from ``outputs`` and
+    refuses ``ReActDecision`` outright, so a production agent that went back to
+    the prompt-encoded tool protocol fails loudly here. A queued
+    ``BaseException`` is raised instead of returned, which is how provider
+    failures are simulated.
     """
 
     def __init__(
@@ -86,6 +106,45 @@ class ScriptedCompleter:
         self._outputs: list[Any] = list(outputs)
         self.calls: list[tuple[str, str | None, list[ChatMessage]]] = []
         self.budgets: list[int | None] = []
+        self.react_calls: list[ReactCall] = []
+        self.react_budgets: list[int | None] = []
+
+    async def complete_react(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> NativeToolTurn:
+        self.react_calls.append(
+            ReactCall(
+                agent_name=agent_name,
+                messages=list(messages),
+                tools=tuple(tools),
+                max_tokens=max_tokens,
+            )
+        )
+        self.react_budgets.append(max_tokens)
+        if not self._decisions:
+            raise AssertionError("no scripted decision left for a native ReAct turn")
+        decision = self._decisions.pop(0)
+        if isinstance(decision, BaseException):
+            raise decision
+        if decision.action == "use_tool":
+            return NativeToolTurn(
+                model="deepseek-v4-flash",
+                usage=TokenUsage(),
+                tool_call=NativeToolCall(
+                    tool_name=decision.tool_name,
+                    arguments_json=decision.tool_input_json,
+                ),
+            )
+        return NativeToolTurn(
+            model="deepseek-v4-flash",
+            usage=TokenUsage(),
+            final_answer=decision.final_answer,
+        )
 
     async def complete_structured(
         self,
@@ -95,12 +154,15 @@ class ScriptedCompleter:
         agent_name: str | None = None,
         max_tokens: int | None = None,
     ) -> Any:
+        if schema is ReActDecision:
+            raise AssertionError(
+                "ReAct decisions must be requested through complete_react"
+            )
         self.calls.append((schema.__name__, agent_name, list(messages)))
         self.budgets.append(max_tokens)
-        queue = self._decisions if schema is ReActDecision else self._outputs
-        if not queue:
+        if not self._outputs:
             raise AssertionError(f"no scripted response left for {schema.__name__}")
-        response = queue.pop(0)
+        response = self._outputs.pop(0)
         if isinstance(response, BaseException):
             raise response
         return response

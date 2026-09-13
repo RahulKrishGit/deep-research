@@ -1047,9 +1047,8 @@ async def test_react_decision_output_limit_remains_a_conservative_fallback(
 
     assert [schema for schema, _, _ in completer.calls] == [
         "ClaimsDraft",
-        "ReActDecision",
     ]
-    assert completer.budgets == [
-        None,
-        AgentRuntimeConfig().react_decision_max_tokens,
+    assert completer.budgets == [None]
+    assert completer.react_budgets == [
+        AgentRuntimeConfig().react_decision_max_tokens
     ]

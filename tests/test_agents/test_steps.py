@@ -12,8 +12,11 @@ from deep_research.agents.steps import (
     ReActRun,
     ReActStep,
     parse_tool_input,
+    react_decision_from_native_turn,
     summarize_text,
 )
+from deep_research.observability import TokenUsage
+from deep_research.providers import NativeToolCall, NativeToolTurn
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import ResearchError
 
@@ -330,3 +333,36 @@ def test_react_run_carries_a_non_empty_errors_list() -> None:
     assert len(run.errors) == 1
     assert run.errors[0].error_type == "TimeoutError"
     assert run.succeeded is False
+
+
+def test_a_native_tool_call_becomes_an_internal_react_decision() -> None:
+    decision = react_decision_from_native_turn(
+        NativeToolTurn(
+            model="deepseek-v4-flash",
+            usage=TokenUsage(),
+            tool_call=NativeToolCall(
+                tool_name="web_search", arguments_json='{"query":"qec"}'
+            ),
+        )
+    )
+    assert decision == ReActDecision(
+        thought="Selected tool through provider-native calling.",
+        action="use_tool",
+        tool_name="web_search",
+        tool_input_json='{"query":"qec"}',
+    )
+
+
+def test_a_native_final_answer_becomes_an_internal_finish_decision() -> None:
+    decision = react_decision_from_native_turn(
+        NativeToolTurn(
+            model="deepseek-v4-flash",
+            usage=TokenUsage(),
+            final_answer="The available evidence is sufficient.",
+        )
+    )
+    assert decision.action == "finish"
+    assert decision.thought == "Finished without another tool call."
+    assert decision.tool_input_json == "{}"
+    assert decision.final_answer == "The available evidence is sufficient."
+    assert decision.tool_name is None

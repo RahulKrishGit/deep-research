@@ -1,6 +1,11 @@
 """The shared agent base class and its bounded ReAct runtime."""
 
-from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
+from deep_research.agents.base import (
+    AgentCompleter,
+    AgentRun,
+    BaseAgent,
+    StructuredCompleter,
+)
 from deep_research.agents.critic import (
     ACCEPTANCE_SCORE,
     CRITIC_CLAIM_DIGEST,
@@ -95,7 +100,7 @@ from deep_research.agents.prompts import (
     CRITIC_SYSTEM_PROMPT,
     CRITIQUE_INSTRUCTION,
     FACT_CHECKER_SYSTEM_PROMPT,
-    REACT_RESPONSE_CONTRACT,
+    NATIVE_REACT_RESPONSE_CONTRACT,
     REPORT_INSTRUCTION,
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
@@ -108,7 +113,6 @@ from deep_research.agents.prompts import (
     render_scratchpad,
     render_source_dossier,
     render_source_quality,
-    render_tool_catalog,
 )
 from deep_research.agents.react import (
     DecideCallback,
@@ -210,6 +214,7 @@ from deep_research.agents.steps import (
     ReActStep,
     StopReason,
     parse_tool_input,
+    react_decision_from_native_turn,
     summarize_text,
 )
 from deep_research.agents.synthesizer import (
@@ -287,7 +292,7 @@ __all__ = [
     "PLANNER_NAME",
     "PLANNER_SYSTEM_PROMPT",
     "PLAN_INSTRUCTION",
-    "REACT_RESPONSE_CONTRACT",
+    "NATIVE_REACT_RESPONSE_CONTRACT",
     "RECENCY_WEIGHT",
     "RELEVANCE_WEIGHT",
     "REPUTATION_BLEND",
@@ -349,6 +354,7 @@ __all__ = [
     "SourceScoresDraft",
     "StepCallback",
     "StopReason",
+    "AgentCompleter",
     "StructuredCompleter",
     "SubTopicDraft",
     "SubTopicFindingsDraft",
@@ -441,7 +447,7 @@ __all__ = [
     "render_source_dossier",
     "render_source_quality",
     "render_sub_topic_guidance",
-    "render_tool_catalog",
+
     "render_uncertain_claims",
     "render_verified_claims",
     "report_filename",
@@ -453,6 +459,7 @@ __all__ = [
     "resolve_verdict",
     "retrieved_source_urls",
     "route_decision",
+    "react_decision_from_native_turn",
     "run_react_loop",
     "scoring_messages",
     "scoring_provider_error",

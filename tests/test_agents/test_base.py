@@ -143,17 +143,21 @@ async def test_run_renders_the_task_tools_and_scratchpad_into_the_prompt(
     async with tracker.session_span("session-1", "Why is the sky blue?"):
         await agent.run(_state())
 
-    first_schema, first_agent_name, first_messages = completer.calls[0]
-    assert first_schema == "ReActDecision"
-    assert first_agent_name == "summarizer"
-    assert first_messages[0].content == "You are a deterministic test agent."
-    assert "Why is the sky blue?" in first_messages[1].content
-    assert "- echo:" in first_messages[1].content
-    assert "(no notes yet)" in first_messages[1].content
-    assert "Iteration 1 of 3." in first_messages[1].content
+    first_call = completer.react_calls[0]
+    assert first_call.agent_name == "summarizer"
+    assert first_call.messages[0].content == "You are a deterministic test agent."
+    assert "Why is the sky blue?" in first_call.messages[1].content
+    assert "(no notes yet)" in first_call.messages[1].content
+    assert "Iteration 1 of 3." in first_call.messages[1].content
+    # The tool rides on the request, not in the text.
+    assert [definition.name for definition in first_call.tools] == ["echo"]
+    assert "- echo:" not in first_call.messages[1].content
+    assert "echo" not in first_call.messages[0].content
 
-    second_messages = completer.calls[1][2]
-    assert "- [thought] Check the echo." in second_messages[1].content
+    second_messages = completer.react_calls[1].messages
+    assert "- [thought] Selected tool through provider-native calling." in (
+        second_messages[1].content
+    )
     assert "- [observation] echo succeeded" in second_messages[1].content
     assert "Iteration 2 of 3." in second_messages[1].content
 
@@ -176,7 +180,7 @@ async def test_run_writes_a_thought_and_an_observation_per_iteration(
     kinds = [entry.kind for entry in agent.scratchpad.entries]
     contents = [entry.content for entry in agent.scratchpad.entries]
     assert kinds == ["thought", "observation", "thought", "decision"]
-    assert contents[0] == "Check the echo."
+    assert contents[0] == "Selected tool through provider-native calling."
     assert contents[1].startswith("echo succeeded")
     assert contents[3] == "Rayleigh."
     assert agent.scratchpad.entries[1].metadata == {
@@ -203,7 +207,7 @@ async def test_run_limits_the_rendered_scratchpad_window(tracker: Tracker) -> No
     async with tracker.session_span("session-1", "Why is the sky blue?"):
         await agent.run(_state())
 
-    body = completer.calls[2][2][1].content
+    body = completer.react_calls[2].messages[1].content
     notes = [line for line in body.splitlines() if line.startswith("- [")]
     assert len(notes) == 1
 

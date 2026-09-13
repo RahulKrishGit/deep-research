@@ -1,10 +1,10 @@
 """Typed ReAct step records and the pure helpers that build them.
 
-``ReActDecision`` doubles as the OpenAI structured-output schema for the
-think/choose-action turn, so every field must survive strict JSON schema
-conversion. That is why tool arguments travel as ``tool_input_json`` — a
-JSON-encoded object — rather than as an open ``dict``, which strict mode
-rejects.
+``ReActDecision`` is internal loop state, not a provider structured-output
+schema: the provider boundary returns a ``NativeToolTurn`` and
+``react_decision_from_native_turn`` adapts it here. Tool arguments still
+travel as ``tool_input_json`` — a JSON-encoded object — because that is the
+decoding contract ``parse_tool_input`` enforces.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import Literal, NoReturn, TypeAlias
 
 from pydantic import Field, JsonValue, model_validator
 
+from deep_research.providers import NativeToolTurn
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
     ContractModel,
@@ -88,7 +89,7 @@ def parse_tool_input(raw: str) -> dict[str, JsonValue]:
 
 
 class ReActDecision(ContractModel):
-    """One think/choose-action turn, as returned by the provider."""
+    """Internal loop state for one think/choose-action turn."""
 
     thought: str = Field(min_length=1)
     action: ReActActionType
@@ -109,6 +110,29 @@ class ReActDecision(ContractModel):
             if self.tool_name:
                 raise ValueError("finish decisions must not name a tool")
         return self
+
+
+def react_decision_from_native_turn(turn: NativeToolTurn) -> ReActDecision:
+    """Adapt one provider-native turn into the loop's internal decision.
+
+    ``thought`` is a short deterministic system summary, never provider
+    reasoning: that keeps the step and scratchpad schemas intact without
+    fabricating chain-of-thought, and it is the same text for every run of
+    the same shape.
+    """
+    if turn.tool_call is not None:
+        return ReActDecision(
+            thought="Selected tool through provider-native calling.",
+            action="use_tool",
+            tool_name=turn.tool_call.tool_name,
+            tool_input_json=turn.tool_call.arguments_json,
+        )
+    return ReActDecision(
+        thought="Finished without another tool call.",
+        action="finish",
+        final_answer=turn.final_answer,
+        tool_input_json="{}",
+    )
 
 
 class ReActObservation(ContractModel):

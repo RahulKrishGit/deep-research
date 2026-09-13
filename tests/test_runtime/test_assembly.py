@@ -181,7 +181,7 @@ async def test_the_memory_tools_are_wired_to_the_bridge(tracker) -> None:
 
 
 class RecordingProvider:
-    """A structured completer that is never called during assembly."""
+    """A full agent provider that is never called during assembly."""
 
     def __init__(self) -> None:
         self.calls: list[object] = []
@@ -191,6 +191,26 @@ class RecordingProvider:
     ):
         self.calls.append((messages, schema, agent_name))
         raise AssertionError("assembly must not call the provider")
+
+    async def complete_react(
+        self, messages, tools, *, agent_name=None, max_tokens=None
+    ):
+        self.calls.append((messages, tools, agent_name))
+        raise AssertionError("assembly must not call the provider")
+
+
+class StructuredOnlyProvider:
+    """A provider missing the native tool capability.
+
+    Construction must reject it: an agent that reached its first ReAct
+    iteration without ``complete_react`` would fail mid-loop, after the
+    session had already begun.
+    """
+
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None
+    ):
+        raise AssertionError("a rejected provider must never be called")
 
 
 def _recording_agent_class(real_class, *, kwarg: str, captured: list[object]):
@@ -290,6 +310,32 @@ def test_build_agents_reports_a_missing_tool_as_a_configuration_failure(
         )
 
     assert caught.value.reason == "agents_misconfigured"
+
+
+@pytest.mark.parametrize("agent_name", AGENT_NAMES)
+def test_a_provider_without_native_react_is_rejected_before_an_agent_runs(
+    agent_name,
+    tracker,
+) -> None:
+    """A structured-only provider must fail at construction, not mid-loop."""
+    settings = ConfigSettings()
+    with pytest.raises(AgentConfigurationError) as caught:
+        build_agent(
+            agent_name,
+            settings,
+            tracker=tracker,
+            provider=StructuredOnlyProvider(),
+            tools=build_tools(
+                settings,
+                tracker=tracker,
+                memory=build_bridge(),
+                search_client=FakeSearchClient(),
+            ),
+            session_id="session-1",
+            reputation=None,
+        )
+
+    assert "native ReAct" in str(caught.value)
 
 
 def test_build_agent_matches_production_build_agents_for_every_agent(

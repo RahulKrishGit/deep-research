@@ -1052,7 +1052,7 @@ async def test_the_researcher_prioritizes_the_gap_the_critic_named(
 
     started = outcome.state_update["events"][0]
     assert started.metadata["sub_topic"] == "Beta"
-    loop_body = completer.calls[0][2][1].content
+    loop_body = completer.react_calls[0].messages[1].content
     assert "- beta throughput 2025" in loop_body
     assert "Sub-topic: Beta" in loop_body
 
@@ -1348,5 +1348,5 @@ async def test_the_scratchpad_does_not_leak_between_sub_topics(
     async with tracker.session_span("session-1", "q"):
         await agent.run(state)
 
-    second_loop_body = completer.calls[1][2][1].content
+    second_loop_body = completer.react_calls[1].messages[1].content
     assert "(no notes yet)" in second_loop_body

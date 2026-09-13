@@ -196,9 +196,13 @@ async def test_the_spot_check_prompt_renders_the_report(
     async with tracker.session_span("session-1", "question"):
         await agent.run(state)
 
-    first_call = completer.calls[0]
-    assert first_call[0] == "ReActDecision"
-    assert "report-body-marker" in first_call[2][1].content
+    first_call = completer.react_calls[0]
+    assert first_call.agent_name == "critic"
+    assert "report-body-marker" in first_call.messages[1].content
+    assert [definition.name for definition in first_call.tools] == [
+        "web_search",
+        "query_memory",
+    ]
 
 
 def test_the_review_call_uses_a_prompt_that_names_no_tools() -> None:
@@ -540,9 +544,9 @@ async def test_only_the_review_call_gets_the_operation_output_budget(
     budgets = dict(
         zip((call[0] for call in completer.calls), completer.budgets, strict=True)
     )
-    assert budgets["ReActDecision"] == (
+    assert completer.react_budgets == [
         AgentRuntimeConfig().react_decision_max_tokens
-    )
+    ]
     assert budgets["CritiqueDraft"] == AgentRuntimeConfig().critic_review_max_tokens
 
 
@@ -852,9 +856,9 @@ async def test_first_spot_check_receives_planned_search_query_guidance(
         outcome = await agent.run(_critic_state())
 
     assert outcome.react.stop_reason == "finished"
-    first_call = completer.calls[0]
-    assert first_call[0] == "ReActDecision"
-    user_prompt = first_call[2][1].content
+    first_call = completer.react_calls[0]
+    assert first_call.agent_name == "critic"
+    user_prompt = first_call.messages[1].content
     assert "Alpha" in user_prompt
     assert "alpha 2025" in user_prompt
     assert "use an applicable planned search query verbatim" in user_prompt

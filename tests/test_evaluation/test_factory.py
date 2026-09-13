@@ -19,12 +19,30 @@ from tests.research_fakes import FakeSearchClient
 
 
 class RecordingProvider:
-    """A structured completer construction must never call."""
+    """A full agent provider construction must never call."""
 
     async def complete_structured(
         self, messages, schema, *, agent_name=None, max_tokens=None
     ):
         raise AssertionError("construction must not call the provider")
+
+    async def complete_react(
+        self, messages, tools, *, agent_name=None, max_tokens=None
+    ):
+        raise AssertionError("construction must not call the provider")
+
+
+class StructuredOnlyProvider:
+    """A provider missing the native ReAct capability.
+
+    The runtime-checkable ``AgentCompleter`` guard must reject it at
+    construction, before any paid request.
+    """
+
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None
+    ):
+        raise AssertionError("a rejected provider must never be called")
 
 
 def build_tool_registry(tracker, settings):
@@ -145,6 +163,24 @@ def test_the_source_evaluator_receives_the_reputation_source(
     )
 
     assert build.agent._reputation is memory
+
+
+def test_a_provider_without_native_react_is_rejected_by_the_factory(
+    tracker, settings, runtime_config_for
+) -> None:
+    with pytest.raises(AgentConstructionError) as caught:
+        build_evaluation_agent(
+            runtime_config_for("critic"),
+            settings,
+            tracker=tracker,
+            provider=StructuredOnlyProvider(),
+            tools=build_tool_registry(tracker, settings),
+            session_id="session-1",
+            reputation=None,
+        )
+
+    assert caught.value.reason == "agent_unbuildable"
+    assert "native ReAct" in str(caught.value)
 
 
 def test_session_ids_are_unique_per_case_and_repetition(

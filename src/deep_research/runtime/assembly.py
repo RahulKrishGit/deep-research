@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from deep_research.agents.base import StructuredCompleter
+from deep_research.agents.base import AgentCompleter
 from deep_research.agents.critic import CriticAgent
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.fact_checker import FactCheckerAgent
@@ -135,7 +135,7 @@ def build_agent(
     settings: ConfigSettings,
     *,
     tracker: Tracker,
-    provider: StructuredCompleter,
+    provider: AgentCompleter,
     tools: Sequence[BaseTool],
     session_id: str,
     reputation: ReputationSource | None,
@@ -172,7 +172,7 @@ def build_agents(
     settings: ConfigSettings,
     *,
     tracker: Tracker,
-    provider: StructuredCompleter,
+    provider: AgentCompleter,
     tools: Sequence[BaseTool],
     session_id: str,
     reputation: ReputationSource | None,
@@ -224,7 +224,7 @@ async def build_runtime(
     *,
     session_id: str,
     tracker: Tracker | None = None,
-    chat_provider: StructuredCompleter | None = None,
+    chat_provider: AgentCompleter | None = None,
     long_term: LongTermMemory | None = None,
     procedural: ProceduralMemory | None = None,
     tavily_api_key: str | None = None,

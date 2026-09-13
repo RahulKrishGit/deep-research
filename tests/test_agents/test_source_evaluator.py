@@ -583,6 +583,9 @@ async def test_a_full_run_writes_sources_events_and_span_outputs(
     requested_schemas = [call[0] for call in completer.calls]
     assert requested_schemas == ["SourceScoresDraft"]
     assert "ReActDecision" not in requested_schemas
+    # Control: this agent asks no model to select a tool, so it never crosses
+    # the native ReAct boundary at all.
+    assert completer.react_calls == []
 
     merged = merge_research_state(state, outcome.state_update)
     assert [source.url for source in merged.evaluated_sources] == [

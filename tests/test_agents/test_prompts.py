@@ -13,7 +13,7 @@ from deep_research.agents.prompts import (
     CRITIC_SYSTEM_PROMPT,
     CRITIQUE_INSTRUCTION,
     FACT_CHECKER_SYSTEM_PROMPT,
-    REACT_RESPONSE_CONTRACT,
+    NATIVE_REACT_RESPONSE_CONTRACT,
     REPORT_INSTRUCTION,
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
@@ -25,38 +25,16 @@ from deep_research.agents.prompts import (
     render_scratchpad,
     render_source_dossier,
     render_source_quality,
-    render_tool_catalog,
 )
 from deep_research.agents.sources import SourceGroup
-from deep_research.agents.toolset import ToolDescriptor
 from deep_research.memory.entries import ScratchpadEntry
 from deep_research.utils.types import Claim, Finding, ScoredSource
-
-
-def _descriptor(name: str = "echo") -> ToolDescriptor:
-    return ToolDescriptor(
-        name=name,
-        description=f"Call {name}.",
-        input_schema={"value": "string"},
-    )
 
 
 def _entry(content: str, kind: str = "thought") -> ScratchpadEntry:
     return ScratchpadEntry.model_validate(
         {"agent_name": "researcher", "kind": kind, "content": content}
     )
-
-
-def test_tool_catalog_lists_name_description_and_arguments() -> None:
-    catalog = render_tool_catalog([_descriptor("echo"), _descriptor("boom")])
-
-    assert '- echo: Call echo. Arguments: {"value": "string"}' in catalog
-    assert '- boom: Call boom. Arguments: {"value": "string"}' in catalog
-    assert catalog.index("echo") < catalog.index("boom")
-
-
-def test_tool_catalog_says_so_when_no_tool_is_allowed() -> None:
-    assert render_tool_catalog([]) == "(no tools available)"
 
 
 def test_scratchpad_renders_kind_prefixed_lines_oldest_first() -> None:
@@ -87,21 +65,32 @@ def test_scratchpad_collapses_multiline_entry_content_onto_one_line() -> None:
     assert "\n" not in rendered.split("] ", 1)[1]
 
 
-def test_response_contract_tells_the_model_to_leave_final_answer_empty_for_tools() -> (
-    None
-):
-    assert "leave final_answer empty" in REACT_RESPONSE_CONTRACT
+def test_the_native_contract_asks_for_provider_native_tool_calling() -> None:
+    assert "provider-native tool calling" in NATIVE_REACT_RESPONSE_CONTRACT
+    assert (
+        "never write or imitate a tool call in text, JSON, XML, DSML, or a "
+        "Markdown fence" in NATIVE_REACT_RESPONSE_CONTRACT
+    )
+    assert (
+        "return the final answer directly" in NATIVE_REACT_RESPONSE_CONTRACT
+    )
 
 
-def test_response_contract_gives_tool_input_json_guidance_for_finish() -> None:
-    assert 'tool_input_json when finishing' in REACT_RESPONSE_CONTRACT
+def test_the_native_contract_never_mentions_the_simulated_protocol() -> None:
+    for forbidden in (
+        "## Tools",
+        "tool_input_json",
+        "tool_name",
+        "ReActDecision",
+        "leave final_answer empty",
+    ):
+        assert forbidden not in NATIVE_REACT_RESPONSE_CONTRACT
 
 
 def test_react_messages_open_with_the_agent_system_prompt() -> None:
     messages = render_react_messages(
         system_prompt="You are a researcher.",
         task=AgentTask(instruction="Summarize QEC progress."),
-        descriptors=[_descriptor()],
         scratchpad=[],
         iteration=1,
         max_iterations=3,
@@ -113,14 +102,13 @@ def test_react_messages_open_with_the_agent_system_prompt() -> None:
     assert messages[1].role == "user"
 
 
-def test_react_messages_carry_task_tools_notes_and_the_iteration_budget() -> None:
+def test_react_messages_carry_task_notes_and_the_iteration_budget() -> None:
     messages = render_react_messages(
         system_prompt="You are a researcher.",
         task=AgentTask(
             instruction="Summarize QEC progress.",
             guidance="Prefer 2025 sources.",
         ),
-        descriptors=[_descriptor()],
         scratchpad=[_entry("Search for benchmarks.")],
         iteration=2,
         max_iterations=3,
@@ -129,17 +117,37 @@ def test_react_messages_carry_task_tools_notes_and_the_iteration_budget() -> Non
 
     assert "Summarize QEC progress." in body
     assert "Prefer 2025 sources." in body
-    assert "- echo: Call echo." in body
     assert "- [thought] Search for benchmarks." in body
     assert "Iteration 2 of 3." in body
-    assert "tool_input_json" in body
+    assert NATIVE_REACT_RESPONSE_CONTRACT in body
+
+
+def test_react_messages_advertise_no_tool_catalogue_and_no_action_envelope() -> None:
+    """The tools ride on the request itself, so the text must name none."""
+    messages = render_react_messages(
+        system_prompt="You are a researcher.",
+        task=AgentTask(instruction="Summarize QEC progress."),
+        scratchpad=[],
+        iteration=1,
+        max_iterations=3,
+    )
+    body = messages[1].content
+
+    for forbidden in (
+        "## Tools",
+        "tool_input_json",
+        "tool_name",
+        "ReActDecision",
+        "Arguments:",
+        "no tools available",
+    ):
+        assert forbidden not in body
 
 
 def test_react_messages_omit_the_guidance_section_when_it_is_blank() -> None:
     messages = render_react_messages(
         system_prompt="You are a researcher.",
         task=AgentTask(instruction="Summarize QEC progress."),
-        descriptors=[],
         scratchpad=[],
         iteration=1,
         max_iterations=1,
@@ -155,7 +163,6 @@ def test_react_messages_are_deterministic() -> None:
             for message in render_react_messages(
                 system_prompt="You are a researcher.",
                 task=AgentTask(instruction="Summarize QEC progress."),
-                descriptors=[_descriptor()],
                 scratchpad=[_entry("note")],
                 iteration=1,
                 max_iterations=3,
@@ -180,7 +187,6 @@ def test_react_messages_reject_an_impossible_iteration_budget(
         render_react_messages(
             system_prompt="You are a researcher.",
             task=AgentTask(instruction="Summarize QEC progress."),
-            descriptors=[],
             scratchpad=[],
             iteration=iteration,
             max_iterations=max_iterations,
@@ -194,7 +200,6 @@ def test_react_messages_render_the_full_body_verbatim() -> None:
             instruction="Summarize QEC progress.",
             guidance="Prefer 2025 sources.",
         ),
-        descriptors=[_descriptor()],
         scratchpad=[_entry("Search for benchmarks.")],
         iteration=2,
         max_iterations=3,
@@ -205,14 +210,12 @@ def test_react_messages_render_the_full_body_verbatim() -> None:
         "Summarize QEC progress.\n\n"
         "## Guidance\n"
         "Prefer 2025 sources.\n\n"
-        "## Tools\n"
-        '- echo: Call echo. Arguments: {"value": "string"}\n\n'
         "## Notes so far\n"
         "- [thought] Search for benchmarks.\n\n"
         "## Budget\n"
         "Iteration 2 of 3.\n\n"
-        "## Response contract\n"
-        f"{REACT_RESPONSE_CONTRACT}"
+        "## How to respond\n"
+        f"{NATIVE_REACT_RESPONSE_CONTRACT}"
     )
 
 
@@ -221,7 +224,6 @@ def test_react_messages_reject_a_blank_system_prompt() -> None:
         render_react_messages(
             system_prompt="   ",
             task=AgentTask(instruction="Summarize QEC progress."),
-            descriptors=[],
             scratchpad=[],
             iteration=1,
             max_iterations=1,
