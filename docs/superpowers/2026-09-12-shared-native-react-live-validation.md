@@ -267,3 +267,61 @@ rejects *any* final answer containing a fence anywhere, including a legitimately
 answer. And the DeepSeek mixed-envelope rule rejects even an innocuous `content` preamble beside
 `tool_calls`. Both are deliberate, plan-mandated fail-closed choices, so a miss in Task 8 must be read
 as a shape rejection and not as a transport regression.
+
+## Task 8 — native-shape release gate: **FAIL** (first authorized execution)
+
+Authorized batch: agent `critic`, 30 logical requests, SDK ceiling 30, effort `max`, `max_tokens` 32768,
+repository retries 0, SDK retries 0, 0 tool executions, 0 Judge requests, 0 LangSmith requests.
+Run at commit `dadccb9`, clean tree, probe SHA-256
+`4e889b8a34a4edf1aeccb6cbdaecc6621087affc2e8d5f04415d0536b7e36647`, `config.yaml` SHA-256
+`659db92ef90f4d58c601b67f394ed441224f5944f799e0b2b132fba60efac2dd`.
+Output: `output/transport-probes/native-react-v2/native_react_shape_gate_30.jsonl` (30 records, ignored).
+
+```json
+{"agent":"critic","requests":30,"accepted":22,"tool_calls":22,"final_answers":0,"shape_failures":8,"shape_failed_runs":[2,15,16,18,19,23,24,28],"shape_failure_kinds":["local_rejection"],"instrument_errors":0,"provider_failures":0,"provider_failed_runs":[],"provider_failure_kinds":[],"failed_runs":[2,15,16,18,19,23,24,28],"expected_requests":30,"passed":false}
+```
+
+**Shape integrity: MISS** — 8 of 30 requests were rejected by the repository's own response parser.
+**Operational availability: PASS** — 0 provider failures of any kind (no timeout, rate-limit,
+transport, HTTP, generic SDK, output-limit, or instrument failure). Exactly 30 requests were made and
+no retry path ran, so the authorized ceiling was respected.
+
+All 8 rejected records are identical in content-free terms: `outcome` `local_rejection`,
+`failure_category` `response`, `failure_origin` `local_response`, `retryable` `false`,
+`status_code` `null`. Because `failure_category="response"` with `failure_origin="local_response"`
+means the repository rejected a response it *received*, the provider transport was healthy — this is a
+shape disagreement, not an outage.
+
+**Per the plan, this gate is not rerun, the gate is not relaxed, and no canary starts.** Task 9 is
+blocked and none of its authorized requests were spent.
+
+### The verdict is not yet actionable, and that is itself a finding
+
+The instrument records `failure_category` and `failure_origin` but **not which parser rejection
+fired**, so eight identical-looking records cannot be attributed to a cause. `build_failure_record`
+never reads the exception message, because an *SDK* exception's message can carry provider text — a
+correct privacy decision. But the DeepSeek parser's rejection messages are **project-authored
+constants** (for example `"DeepSeek native tool response mixed a final answer with a tool call"`) and
+carry no provider text at all. Recording a bounded, project-authored rejection *category* would be
+privacy-safe and would make this verdict diagnosable.
+
+This matters because the plan's stated diagnosis method — "identify the owning operation and validation
+category from content-free telemetry" — is not satisfied by this instrument as built.
+
+### Candidate causes, ranked, with the ownership stated
+
+1. **Mixed envelope: a typed tool call beside non-blank `message.content`.** This rule was *added by
+   Task 4* (`ccd152a`), and the independent review predeclared it as a residual risk: it "rejects even
+   an innocuous `content` preamble beside `tool_calls`". Before Task 4 the `content` field was ignored
+   entirely on the tool-call path. **This is the only candidate that rejects a well-formed call.**
+2. **A prohibited-text final answer.** Also added by Task 4, via `native_text_violation`. Would require
+   the model to answer with DSML, tool markup, a fence, or a legacy action object.
+3. **Blank final answer on `stop`** — a pre-existing rule.
+4. **More than one tool call in one turn** — a pre-existing rule.
+
+Cause 1 is the prime suspect and it is a change this remediation introduced, so a production regression
+here is this plan's responsibility, not a pre-existing defect. It is not yet proven: no artifact in the
+retention set can distinguish these four, and 0 of 30 turns produced a final answer.
+
+A separately authorized diagnostic measurement, under a new experiment name, is required before the
+gate can be re-attempted — as the plan's own rule requires.

@@ -3346,6 +3346,50 @@ had been passing only because an earlier test leaked credentials, and it failed 
 **Superseding counts**, preserved as history above: probe tests **41 passed**, focused **94 passed**,
 full offline suite **2516 passed, 1 deselected**, zero failures; `ruff` clean.
 
+### 100. Task 8 native-shape release gate — FAIL (first authorized execution)
+
+Authorized batch: `critic`, 30 logical requests, SDK ceiling 30, effort `max`, `max_tokens` 32768,
+repository retries 0, SDK retries 0, 0 tool executions, 0 Judge requests, 0 LangSmith requests. Run at
+`dadccb9`, clean tree, probe SHA-256 `4e889b8a…`, `config.yaml` SHA-256 `659db92e…`.
+
+```json
+{"agent":"critic","requests":30,"accepted":22,"tool_calls":22,"final_answers":0,"shape_failures":8,"shape_failed_runs":[2,15,16,18,19,23,24,28],"shape_failure_kinds":["local_rejection"],"instrument_errors":0,"provider_failures":0,"provider_failed_runs":[],"provider_failure_kinds":[],"failed_runs":[2,15,16,18,19,23,24,28],"expected_requests":30,"passed":false}
+```
+
+**Shape integrity FAILED** (8/30 rejected by the repository's own parser). **Operational availability
+PASSED** (zero provider failures of any kind; exactly 30 requests, no retry path). Both are required, so
+the gate is a FAIL.
+
+Per the plan the gate is **not rerun**, not relaxed, and no canary starts. Task 9 is blocked and none of
+its authorized requests were spent.
+
+**One pre-flight failure preceded this run and cost nothing.** The very first `--execute` attempt died at
+`load_settings` — the first statement of `execute()` — with
+`Missing required environment variables in strict mode: TAVILY_API_KEY`, because the worktree has no
+`.env` of its own (`load_dotenv` resolves relative to `config.yaml`) and only `DEEPSEEK_API_KEY` had been
+exported. Zero provider requests were made. The retry exported a **sentinel** `TAVILY_API_KEY` rather than
+the real one, which makes the authorized "0 tool executions / 0 Tavily calls" structural: the probe's
+`_ForbiddenToolClient` raises on any tool call, and the real Tavily credential never entered the process.
+
+**The verdict is not actionable, and that is a defect in the instrument.** The probe records
+`failure_category` and `failure_origin` but not *which* parser rejection fired, so eight identical records
+cannot be attributed to a cause. `build_failure_record` deliberately never reads the exception message —
+correct for an *SDK* exception, whose message can carry provider text — but the DeepSeek parser's
+rejection messages are project-authored constants carrying no provider text. Recording a bounded,
+project-authored rejection category would be privacy-safe and would make this verdict diagnosable. As
+built, the plan's own diagnosis method ("identify the owning operation and validation category from
+content-free telemetry") cannot be applied.
+
+**Candidate causes, ranked, ownership stated:** (1) the mixed-envelope rule added by Task 4 (`ccd152a`) —
+a typed call beside non-blank `message.content`, which the independent review predeclared as a residual
+risk and which is the only candidate that rejects a *well-formed* call; (2) a prohibited-text final answer,
+also added by Task 4; (3) a blank final answer on `stop`, pre-existing; (4) more than one call in one turn,
+pre-existing. No artifact in the retention set can distinguish these four, and 0 of 30 turns produced a
+final answer. A separately authorized diagnostic measurement under a new experiment name is required
+before the gate can be re-attempted.
+
+Full record: `docs/superpowers/2026-09-12-shared-native-react-live-validation.md` (§Task 8).
+
 Full record: `docs/superpowers/2026-09-12-shared-native-react-live-validation.md` (§Task 7) and
 `docs/superpowers/2026-09-12-shared-native-react-observation-report.md` (§8).
 
