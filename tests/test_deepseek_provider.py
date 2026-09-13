@@ -3441,38 +3441,162 @@ async def test_deepseek_native_react_retries_one_transient_error(
     assert tracker.llm_outputs[-1]["request_attempt"] == 2
 
 
+PROHIBITED_TEXT_SENTINEL = "NATIVE_PROHIBITED_TEXT_SENTINEL_4D17"
+
+# Every template stays a valid instance of its own prohibited shape while
+# carrying the sentinel, so "the text is not reachable" is a real check rather
+# than one an escaping artefact of ``repr`` would satisfy for free.
+PROHIBITED_FINAL_TEXT: tuple[tuple[str, str], ...] = (
+    (
+        "dsml-markup",
+        '<|DSML|tool_calls><|DSML|invoke name="web_search">'
+        '{"query":"<S>"}</|DSML|invoke></|DSML|tool_calls>',
+    ),
+    (
+        "tool-call-tag",
+        '<tool_call>{"name": "web_search", "note": "<S>"}</tool_call>',
+    ),
+    (
+        "invoke-tag",
+        '<invoke name="web_search">{"query": "<S>"}</invoke>',
+    ),
+    (
+        "fenced-legacy-action",
+        "```json\n"
+        '{"action": "use_tool", "tool_name": "web_search", '
+        '"tool_input_json": "{}", "note": "<S>"}\n'
+        "```",
+    ),
+    (
+        "bare-legacy-action-object",
+        '{"action": "use_tool", "tool_name": "web_search", '
+        '"tool_input_json": "{}", "note": "<S>"}',
+    ),
+    ("bare-tool-name-object", '{"tool_name": "web_search", "note": "<S>"}'),
+    (
+        "bare-tool-input-object",
+        '{"tool_input_json": "{\\"query\\": \\"<S>\\"}"}',
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "template"),
+    PROHIBITED_FINAL_TEXT,
+    ids=[shape for shape, _ in PROHIBITED_FINAL_TEXT],
+)
 @pytest.mark.asyncio
-async def test_deepseek_native_react_never_executes_tool_markup_in_text() -> None:
+async def test_deepseek_native_react_rejects_tool_protocol_text(
+    shape: str,
+    template: str,
+) -> None:
     """Only the typed native field may request execution.
 
-    DeepSeek's own DSML markup, a fenced JSON action envelope, and a bare JSON
-    action object all arrive as ordinary message text here. Each must become
-    the final answer, never a tool call.
+    DeepSeek's own DSML markup, fenced or bare legacy action objects, and tool
+    markup all arrive as ordinary message text. None may cross the boundary as
+    a final answer: a ``finish`` carrying one would let a rejected tool
+    invocation decide the loop.
     """
-    envelope = "\n".join(
-        [
-            '<|DSML|tool_calls><|DSML|invoke name="web_search">'
-            '{"query":"qec capacity"}</|DSML|invoke></|DSML|tool_calls>',
-            "```json",
-            '{"action": "use_tool", "tool_name": "web_search", '
-            '"tool_input_json": "{\\"query\\":\\"qec capacity\\"}"}',
-            "```",
-            '<tool_call>{"name": "web_search"}</tool_call>',
-        ]
-    )
+    text = template.replace("<S>", PROHIBITED_TEXT_SENTINEL)
     completions = RecordingCompletions(
-        chat_response(text=envelope, finish_reason="stop")
+        chat_response(text=text, finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    error = caught.value
+    assert error.failure_category == "response"
+    assert error.failure_origin == "local_response"
+    assert error.retryable is False
+    assert error.http_status_code is None
+    # One request only: a malformed native envelope is never repaired.
+    assert len(completions.calls) == 1
+    surfaces = _provider_exception_surfaces(error)
+    assert surfaces
+    assert all(
+        PROHIBITED_TEXT_SENTINEL not in surface
+        for surface in [str(error), *surfaces]
+    )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(None, id="absent"),
+        pytest.param("", id="empty"),
+        pytest.param("   \n ", id="blank"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_deepseek_native_react_accepts_a_call_with_no_answer_text(
+    content: object,
+) -> None:
+    """Blank or absent content beside a typed call is the normal shape."""
+    completions = RecordingCompletions(
+        chat_response(
+            text=content,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        )
     )
     tracker = local_tracker()
     provider = _native_provider(tracker, completions)
 
     async with tracker.session_span("session-1", "review"):
         turn = await provider.complete_react(
-            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
         )
 
-    assert turn.tool_call is None
-    assert turn.final_answer == envelope
+    assert turn.tool_call == NativeToolCall(
+        tool_name="web_search", arguments_json='{"query":"qec"}'
+    )
+    assert turn.final_answer is None
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_rejects_a_call_beside_answer_text() -> None:
+    """A typed call and a non-blank answer in one envelope is not a decision.
+
+    Executing the call would silently discard the answer; finishing would
+    silently discard the call. Both are wrong, so the envelope is rejected.
+    """
+    answer = "Here is the answer, and also a tool call."
+    completions = RecordingCompletions(
+        chat_response(
+            text=answer,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    error = caught.value
+    assert error.failure_category == "response"
+    assert error.failure_origin == "local_response"
+    assert len(completions.calls) == 1
+    surfaces = _provider_exception_surfaces(error)
+    assert surfaces
+    assert all(
+        leaked not in surface
+        for surface in [str(error), *surfaces]
+        for leaked in (answer, '{"query":"qec"}')
+    )
 
 
 @pytest.mark.asyncio

@@ -87,6 +87,20 @@ def reasoning_item(marker: str) -> SimpleNamespace:
     return SimpleNamespace(type="reasoning", summary=[], encrypted_content=marker)
 
 
+def output_message_item(marker: str) -> SimpleNamespace:
+    """One assistant output-message item, whose body must never be read.
+
+    Only the item *type* is a legitimate concern of the native boundary; the
+    accepted final answer comes from ``response.output_text``.
+    """
+    return SimpleNamespace(
+        type="message",
+        role="assistant",
+        id="msg-1",
+        content=[SimpleNamespace(type="output_text", text=marker)],
+    )
+
+
 class RecordingResponses:
     def __init__(self, *results: object) -> None:
         self.results = list(results)
@@ -1104,6 +1118,257 @@ async def test_openai_native_react_returns_a_final_answer_without_a_tool() -> No
 
     assert turn.tool_call is None
     assert turn.final_answer == "The report is complete."
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_accepts_reasoning_beside_a_final_answer() -> None:
+    """Reasoning items are stepped over by type and never read."""
+    reasoning_marker = "OPENAI_REASONING_MARKER_5B77"
+    responses = RecordingResponses(
+        response(
+            text="The report is complete.",
+            status="completed",
+            output=[reasoning_item(reasoning_marker)],
+        )
+    )
+    tracker = CapturingTracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_call is None
+    assert turn.final_answer == "The report is complete."
+    assert reasoning_marker not in repr(tracker.llm_inputs)
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_accepts_a_coherent_final_message_item() -> None:
+    """A ``message`` item is the ordinary final-answer envelope."""
+    message_marker = "OPENAI_MESSAGE_MARKER_3C19"
+    responses = RecordingResponses(
+        response(
+            text="The report is complete.",
+            status="completed",
+            output=[output_message_item(message_marker)],
+        )
+    )
+    tracker = CapturingTracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_call is None
+    assert turn.final_answer == "The report is complete."
+    # The item body is never read, retained, or traced.
+    assert message_marker not in repr(tracker.llm_inputs)
+
+
+@pytest.mark.asyncio
+async def test_openai_native_react_rejects_a_message_item_beside_a_call() -> None:
+    """An answer item beside a typed call is an incoherent envelope."""
+    message_marker = "OPENAI_MESSAGE_MARKER_8AD4"
+    responses = RecordingResponses(
+        response(
+            text="",
+            status="completed",
+            output=[
+                output_message_item(message_marker),
+                native_function_call("web_search", '{"query":"qec"}'),
+            ],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    error = caught.value
+    assert error.failure_category == "response"
+    assert error.failure_origin == "local_response"
+    assert len(responses.create_calls) == 1
+    surfaces = _provider_exception_surfaces(error)
+    assert surfaces
+    assert all(
+        leaked not in surface
+        for surface in [str(error), *surfaces]
+        for leaked in (message_marker, '{"query":"qec"}')
+    )
+
+
+OPENAI_UNKNOWN_ITEM_TYPES: tuple[str, ...] = (
+    "web_search_call",
+    "file_search_call",
+    "computer_call",
+    "code_interpreter_call",
+    "function_call_output",
+    "image_generation_call",
+)
+
+
+@pytest.mark.parametrize("item_type", OPENAI_UNKNOWN_ITEM_TYPES)
+@pytest.mark.asyncio
+async def test_openai_native_react_rejects_an_unknown_item_beside_a_call(
+    item_type: str,
+) -> None:
+    """An unrecognised output item is rejected, never filtered away.
+
+    Silently dropping it would answer a question the boundary cannot see: a
+    server-side tool execution would look identical to a plain function call.
+    """
+    unknown_marker = "OPENAI_UNKNOWN_ITEM_MARKER_6E03"
+    responses = RecordingResponses(
+        response(
+            text="",
+            status="completed",
+            output=[
+                SimpleNamespace(type=item_type, id="item-1", body=unknown_marker),
+                native_function_call("web_search", '{"query":"qec"}'),
+            ],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    error = caught.value
+    assert error.failure_category == "response"
+    assert error.failure_origin == "local_response"
+    assert len(responses.create_calls) == 1
+    surfaces = _provider_exception_surfaces(error)
+    assert surfaces
+    assert all(
+        leaked not in surface
+        for surface in [str(error), *surfaces]
+        for leaked in (unknown_marker, item_type, '{"query":"qec"}')
+    )
+
+
+@pytest.mark.parametrize("item_type", OPENAI_UNKNOWN_ITEM_TYPES)
+@pytest.mark.asyncio
+async def test_openai_native_react_rejects_an_unknown_item_on_the_final_path(
+    item_type: str,
+) -> None:
+    """The same rejection holds when no function call is present."""
+    responses = RecordingResponses(
+        response(
+            text="The report is complete.",
+            status="completed",
+            output=[SimpleNamespace(type=item_type, id="item-1")],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    error = caught.value
+    assert error.failure_category == "response"
+    assert error.failure_origin == "local_response"
+    assert len(responses.create_calls) == 1
+
+
+PROHIBITED_TEXT_SENTINEL = "OPENAI_PROHIBITED_TEXT_SENTINEL_4D17"
+
+# Every template stays a valid instance of its own prohibited shape while
+# carrying the sentinel, so "the text is not reachable" is a real check rather
+# than one an escaping artefact of ``repr`` would satisfy for free.
+PROHIBITED_FINAL_TEXT: tuple[tuple[str, str], ...] = (
+    (
+        "dsml-markup",
+        '<|DSML|tool_calls><|DSML|invoke name="web_search">'
+        '{"query":"<S>"}</|DSML|invoke></|DSML|tool_calls>',
+    ),
+    (
+        "tool-call-tag",
+        '<tool_call>{"name": "web_search", "note": "<S>"}</tool_call>',
+    ),
+    (
+        "invoke-tag",
+        '<invoke name="web_search">{"query": "<S>"}</invoke>',
+    ),
+    (
+        "fenced-legacy-action",
+        "```json\n"
+        '{"action": "use_tool", "tool_name": "web_search", '
+        '"tool_input_json": "{}", "note": "<S>"}\n'
+        "```",
+    ),
+    (
+        "bare-legacy-action-object",
+        '{"action": "use_tool", "tool_name": "web_search", '
+        '"tool_input_json": "{}", "note": "<S>"}',
+    ),
+    ("bare-tool-name-object", '{"tool_name": "web_search", "note": "<S>"}'),
+    (
+        "bare-tool-input-object",
+        '{"tool_input_json": "{\\"query\\": \\"<S>\\"}"}',
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "template"),
+    PROHIBITED_FINAL_TEXT,
+    ids=[shape for shape, _ in PROHIBITED_FINAL_TEXT],
+)
+@pytest.mark.asyncio
+async def test_openai_native_react_rejects_tool_protocol_text(
+    shape: str,
+    template: str,
+) -> None:
+    """Tool markup in ``output_text`` is a typed local-response failure."""
+    text = template.replace("<S>", PROHIBITED_TEXT_SENTINEL)
+    responses = RecordingResponses(
+        response(
+            text=text,
+            status="completed",
+            output=[output_message_item(text)],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, responses)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    error = caught.value
+    assert error.failure_category == "response"
+    assert error.failure_origin == "local_response"
+    assert error.retryable is False
+    assert error.http_status_code is None
+    assert len(responses.create_calls) == 1
+    surfaces = _provider_exception_surfaces(error)
+    assert surfaces
+    assert all(
+        PROHIBITED_TEXT_SENTINEL not in surface
+        for surface in [str(error), *surfaces]
+    )
 
 
 @pytest.mark.asyncio

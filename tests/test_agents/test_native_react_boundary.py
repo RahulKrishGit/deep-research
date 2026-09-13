@@ -31,6 +31,7 @@ from deep_research.agents.researcher import (
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
+from deep_research.providers.deepseek_provider import DeepSeekChatProvider
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import Finding, ResearchState, SubTopic
@@ -40,6 +41,12 @@ from tests.research_fakes import (
     fact_checker_tools,
     planner_tools,
     research_tools,
+)
+from tests.test_deepseek_provider import (
+    FakeDeepSeekClient,
+    RecordingCompletions,
+    chat_response,
+    deepseek_config,
 )
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
@@ -246,3 +253,149 @@ async def test_a_native_tool_call_crosses_the_boundary_and_is_executed(
     tool_steps = [step for step in outcome.react.steps if step.tool_name is not None]
     assert [step.tool_name for step in tool_steps] == [tool_name]
     assert tool_steps[0].thought == "Selected tool through provider-native calling."
+
+
+# --- the malformed-text boundary, through the real provider parser -----------
+
+BOUNDARY_SENTINEL = "NATIVE_BOUNDARY_SENTINEL_5EA1"
+
+# Each template stays a valid instance of its own prohibited shape while
+# carrying the sentinel, so "no content crossed the boundary" is a real check.
+BOUNDARY_PROHIBITED_TEXT: tuple[tuple[str, str], ...] = (
+    (
+        "dsml-markup",
+        '<|DSML|tool_calls><|DSML|invoke name="web_search">'
+        '{"query":"<S>"}</|DSML|invoke></|DSML|tool_calls>',
+    ),
+    (
+        "tool-call-tag",
+        '<tool_call>{"name": "web_search", "note": "<S>"}</tool_call>',
+    ),
+    (
+        "invoke-tag",
+        '<invoke name="web_search">{"query": "<S>"}</invoke>',
+    ),
+    (
+        "fenced-legacy-action",
+        "```json\n"
+        '{"action": "use_tool", "tool_name": "web_search", '
+        '"tool_input_json": "{}", "note": "<S>"}\n'
+        "```",
+    ),
+    (
+        "bare-legacy-action-object",
+        '{"action": "use_tool", "tool_name": "web_search", '
+        '"tool_input_json": "{}", "note": "<S>"}',
+    ),
+    ("bare-tool-name-object", '{"tool_name": "web_search", "note": "<S>"}'),
+    (
+        "bare-tool-input-object",
+        '{"tool_input_json": "{\\"query\\": \\"<S>\\"}"}',
+    ),
+)
+
+
+def _researcher_over(
+    tracker: Tracker,
+    completions: RecordingCompletions,
+) -> ResearcherAgent:
+    """A real agent over the real native parser and a scripted provider body.
+
+    The parser is the production one on purpose: a fake that raised the typed
+    error itself would prove only that the loop handles an error it was handed,
+    not that malformed provider text ever becomes one.
+    """
+    return ResearcherAgent(
+        provider=DeepSeekChatProvider(
+            deepseek_config(),
+            tracker,
+            client=FakeDeepSeekClient(completions),
+        ),
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1",
+            agent_name=ResearcherAgent.name,
+            max_entries=20,
+        ),
+        tools=research_tools(tracker),
+        config=AgentRuntimeConfig(max_iterations=2, tool_budget=2),
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "template"),
+    BOUNDARY_PROHIBITED_TEXT,
+    ids=[shape for shape, _ in BOUNDARY_PROHIBITED_TEXT],
+)
+@pytest.mark.asyncio
+async def test_malformed_final_text_never_becomes_a_finish_decision(
+    shape: str,
+    template: str,
+    tracker: Tracker,
+) -> None:
+    """A prohibited final-text shape aborts the agent instead of finishing it.
+
+    The regression this guards: DSML markup, a fenced or bare legacy action
+    object, and tool markup were each accepted as a legitimate final answer, so
+    an agent reported a normal ``finish`` over a rejected tool invocation.
+    """
+    text = template.replace("<S>", BOUNDARY_SENTINEL)
+    completions = RecordingCompletions(
+        chat_response(text=text, finish_reason="stop")
+    )
+    state, _, _ = _researcher_case()
+    agent = _researcher_over(tracker, completions)
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    # No tool ran, no second turn was spent, and no repair was attempted.
+    assert completions.calls
+    assert len(completions.calls) == 1
+    assert outcome.react.tool_calls == 0
+    assert outcome.react.steps == []
+    assert outcome.react.final_answer is None
+    assert outcome.react.stop_reason == "provider_error"
+    assert all(step.action != "finish" for step in outcome.react.steps)
+    assert outcome.result is not None
+    assert outcome.result.findings == []
+
+    # The failure is the typed, content-free fallback, not a bare exception.
+    assert [error.error_type for error in outcome.errors] == [
+        "agent_provider_error"
+    ]
+    provider_error = outcome.errors[0]
+    assert provider_error.recoverable is False
+    assert provider_error.details["operation"] == "react_decision"
+    failure = provider_error.details["provider_failure"]
+    assert failure["kind"] == "provider_response"
+    assert failure["failure_origin"] == "local_response"
+    assert failure["exception_type"] == "ProviderResponseError"
+    assert BOUNDARY_SENTINEL not in repr(outcome.errors)
+    assert BOUNDARY_SENTINEL not in repr(outcome.state_update)
+
+
+@pytest.mark.asyncio
+async def test_legitimate_final_text_still_finishes_the_agent(
+    tracker: Tracker,
+) -> None:
+    """The positive control for the shape rejection above.
+
+    Without this, a boundary that rejected every final answer would satisfy
+    the malformed-text test.
+    """
+    answer = "Nothing to add. The supplied evidence already answers the question."
+    completions = RecordingCompletions(
+        chat_response(text=answer, finish_reason="stop")
+    )
+    state, _, _ = _researcher_case()
+    agent = _researcher_over(tracker, completions)
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert len(completions.calls) == 1
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.tool_calls == 0
+    assert outcome.react.final_answer == answer
+    assert outcome.react.steps[-1].action == "finish"

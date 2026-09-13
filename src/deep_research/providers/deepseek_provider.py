@@ -37,6 +37,7 @@ from deep_research.providers.contracts import (
     StructuredValidationDiagnostic,
     ToolDefinition,
 )
+from deep_research.providers.native_output import native_text_violation
 from deep_research.providers.retry import with_retries
 from deep_research.providers.validation import validation_category
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
@@ -505,9 +506,10 @@ def _native_outcome(
 
     Returns ``(tool_call, final_answer, rejection_reason)`` with exactly one of
     the three set. Only the typed ``message.tool_calls`` field can select a
-    tool: text is never inspected for tool markup, so DSML, XML, Markdown
-    fences, and JSON action envelopes in the message body cannot request
-    execution.
+    tool: text is inspected for tool markup, but only in order to *reject* it,
+    so DSML, XML, Markdown fences, and JSON action envelopes in the message
+    body can never request execution and can never pass as a final answer
+    either.
 
     This function never raises. A rejection is returned instead, so the caller
     can clear its own provider-adjacent locals before that rejection becomes a
@@ -556,6 +558,14 @@ def _native_outcome(
             return None, None, (
                 "DeepSeek native tool response carried malformed arguments"
             )
+        # A call and an answer in one envelope is not a decision: executing the
+        # call discards the answer, and finishing discards the call. Absent or
+        # blank content is the normal shape beside a typed call.
+        content = getattr(message, "content", None)
+        if content is not None and (not isinstance(content, str) or content.strip()):
+            return None, None, (
+                "DeepSeek native tool response mixed a final answer with a tool call"
+            )
         return NativeToolCall(tool_name=name, arguments_json=arguments), None, None
 
     if finish_reason_category != "stop":
@@ -568,6 +578,12 @@ def _native_outcome(
     if not isinstance(content, str) or not content.strip():
         return None, None, (
             "DeepSeek native tool response carried no usable final answer"
+        )
+    violation = native_text_violation(content)
+    if violation is not None:
+        return None, None, (
+            "DeepSeek native tool response carried tool protocol text as its "
+            f"final answer ({violation})"
         )
     return None, content.strip(), None
 

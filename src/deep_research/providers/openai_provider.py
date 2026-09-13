@@ -33,6 +33,7 @@ from deep_research.providers.contracts import (
     StructuredValidationDiagnostic,
     ToolDefinition,
 )
+from deep_research.providers.native_output import native_text_violation
 from deep_research.providers.retry import with_retries
 from deep_research.providers.validation import (
     validation_diagnostic,
@@ -198,6 +199,15 @@ def _fresh_provider_error(error: ProviderResponseError) -> ProviderResponseError
     )
 
 
+# The only Responses output item types this boundary understands. Reasoning is
+# stepped over, ``function_call`` may select a tool, and ``message`` is the
+# ordinary final-answer envelope. Anything else -- a server-side tool call, a
+# function-call result, an image, a file search -- is a shape whose execution
+# semantics this provider cannot see and must therefore refuse rather than
+# ignore.
+ALLOWED_OUTPUT_ITEM_TYPES = frozenset({"reasoning", "function_call", "message"})
+
+
 def _native_response_outcome(
     response: Any,
     *,
@@ -215,7 +225,14 @@ def _native_response_outcome(
 
     Reasoning items are stepped over by type and never read, retained, or
     traced. Only a typed ``function_call`` item can select a tool, so tool
-    markup in ordinary text cannot request execution.
+    markup in ordinary text cannot request execution -- and, because
+    ``output_text`` is shape-checked, it cannot pass as a final answer either.
+
+    Only three item types are understood: ``reasoning``, ``function_call``, and
+    ``message``. Every other type is rejected rather than filtered away,
+    because silently dropping an item would answer a question this boundary
+    cannot see -- a server-side tool execution would look exactly like a plain
+    function call.
     """
     status = getattr(response, "status", None)
     if status == "incomplete":
@@ -256,12 +273,21 @@ def _native_response_outcome(
             "OpenAI response contained malformed output",
             failure_origin="local_response",
         )
+    for item in items:
+        if getattr(item, "type", None) not in ALLOWED_OUTPUT_ITEM_TYPES:
+            return None, None, ProviderResponseError(
+                "OpenAI response contained an unknown output item",
+                failure_origin="local_response",
+            )
     calls = [item for item in items if getattr(item, "type", None) == "function_call"]
+    answers = [item for item in items if getattr(item, "type", None) == "message"]
     output_text = getattr(response, "output_text", None)
     text = output_text.strip() if isinstance(output_text, str) else ""
 
     if calls:
-        if text:
+        # A call beside an answer item is incoherent even when ``output_text``
+        # is empty: one of the two would have to be silently discarded.
+        if text or answers:
             return None, None, ProviderResponseError(
                 "OpenAI native tool response mixed a final answer with a tool call",
                 failure_origin="local_response",
@@ -289,6 +315,13 @@ def _native_response_outcome(
     if not text:
         return None, None, ProviderResponseError(
             "OpenAI native tool response carried no usable final answer",
+            failure_origin="local_response",
+        )
+    violation = native_text_violation(text)
+    if violation is not None:
+        return None, None, ProviderResponseError(
+            "OpenAI native tool response carried tool protocol text as its "
+            f"final answer ({violation})",
             failure_origin="local_response",
         )
     return None, text, None
