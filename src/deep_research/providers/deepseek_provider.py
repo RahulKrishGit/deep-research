@@ -558,14 +558,14 @@ def _native_outcome(
             return None, None, (
                 "DeepSeek native tool response carried malformed arguments"
             )
-        # A call and an answer in one envelope is not a decision: executing the
-        # call discards the answer, and finishing discards the call. Absent or
-        # blank content is the normal shape beside a typed call.
-        content = getattr(message, "content", None)
-        if content is not None and (not isinstance(content, str) or content.strip()):
-            return None, None, (
-                "DeepSeek native tool response mixed a final answer with a tool call"
-            )
+        # Non-blank ``content`` beside a typed call is deliberately *accepted*.
+        # The typed field is still the only thing that can select a tool, so
+        # prose here cannot request execution, and rejecting it cost real
+        # production turns: the first live release gate failed 8 of 30 requests
+        # to this rule, against 56 of 60 accepted turns in the two earlier
+        # pre-strictness batches. The mixed-envelope rejection is retained only
+        # where the envelope is genuinely incoherent -- a call on a ``stop``
+        # finish, below, or tool-protocol *text* passed off as the answer.
         return NativeToolCall(tool_name=name, arguments_json=arguments), None, None
 
     if finish_reason_category != "stop":

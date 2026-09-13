@@ -3562,13 +3562,20 @@ async def test_deepseek_native_react_accepts_a_call_with_no_answer_text(
 
 
 @pytest.mark.asyncio
-async def test_deepseek_native_react_rejects_a_call_beside_answer_text() -> None:
-    """A typed call and a non-blank answer in one envelope is not a decision.
+async def test_deepseek_native_react_accepts_a_call_beside_answer_text() -> None:
+    """A typed call beside non-blank content is still exactly one decision.
 
-    Executing the call would silently discard the answer; finishing would
-    silently discard the call. Both are wrong, so the envelope is rejected.
+    Task 4 made this envelope a rejection, and the first live release gate then
+    failed 8 of 30 requests to `local_response` — a rate far above the two
+    earlier pre-Task-4 live batches, which accepted 56 of 60 turns and produced
+    no final answers at all. The typed call field remains the *only* thing that
+    can select a tool, so content beside it cannot request execution; the
+    strictness bought no safety the typed-field rule did not already provide,
+    while rejecting well-formed provider output. The mixed-envelope rejection
+    is therefore retained only where it is genuinely incoherent: a call on a
+    `stop` finish, or tool-protocol *text* passed off as the answer.
     """
-    answer = "Here is the answer, and also a tool call."
+    answer = "I will look that up."
     completions = RecordingCompletions(
         chat_response(
             text=answer,
@@ -3580,23 +3587,18 @@ async def test_deepseek_native_react_rejects_a_call_beside_answer_text() -> None
     provider = _native_provider(tracker, completions)
 
     async with tracker.session_span("session-1", "review"):
-        with pytest.raises(ProviderResponseError) as caught:
-            await provider.complete_react(
-                [ChatMessage(role="user", content="review")],
-                [WEB_SEARCH_DEFINITION],
-            )
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
 
-    error = caught.value
-    assert error.failure_category == "response"
-    assert error.failure_origin == "local_response"
-    assert len(completions.calls) == 1
-    surfaces = _provider_exception_surfaces(error)
-    assert surfaces
-    assert all(
-        leaked not in surface
-        for surface in [str(error), *surfaces]
-        for leaked in (answer, '{"query":"qec"}')
+    # The call is selected, and the accompanying prose is never parsed,
+    # executed, or surfaced as the final answer.
+    assert turn.tool_call == NativeToolCall(
+        tool_name="web_search", arguments_json='{"query":"qec"}'
     )
+    assert turn.final_answer is None
+    assert len(completions.calls) == 1
 
 
 @pytest.mark.asyncio

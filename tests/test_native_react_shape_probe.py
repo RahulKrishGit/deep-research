@@ -56,8 +56,11 @@ LEGACY_ACTION_FINAL = json.dumps(
     {"action": "web_search", "tool_input_json": '{"query":"qec"}'}
 )
 
-# The plan's field list, in the plan's order. The probe may retain these fields
-# and nothing else.
+# The plan's field list, in the plan's order, plus ``rejection_reason``. The
+# probe may retain these fields and nothing else. ``rejection_reason`` is a
+# bounded literal naming *which* reviewed parser rejection fired: without it a
+# ``local_rejection`` verdict names no cause, which is exactly what the first
+# live release gate produced (8/30 shape failures, indistinguishable).
 ENUMERATED_FIELDS = (
     "run",
     "outcome",
@@ -72,12 +75,45 @@ ENUMERATED_FIELDS = (
     "legacy_action_json_present",
     "failure_category",
     "failure_origin",
+    "rejection_reason",
     "retryable",
     "status_code",
     "input_tokens",
     "output_tokens",
     "total_tokens",
 )
+
+
+def test_the_rejection_reason_is_a_bounded_literal_never_provider_text(
+    probe: Any,
+) -> None:
+    """Naming the rejection must not become a channel for provider text.
+
+    The table matches project-authored parser constants by prefix and returns a
+    bounded literal, so a message that is *not* one of ours can never be echoed.
+    """
+    sentinel = "PROBE_SENTINEL_MUST_NOT_BE_RETAINED_7C31"
+    foreign = ProviderResponseError(
+        f"DeepSeek native tool response carried {sentinel}",
+        failure_origin="local_response",
+    )
+    assert probe.rejection_reason(foreign) is None
+
+    known = ProviderResponseError(
+        "DeepSeek native tool response mixed a final answer with a tool call",
+        failure_origin="local_response",
+    )
+    reason = probe.rejection_reason(known)
+    assert reason == "mixed_envelope"
+    assert sentinel not in str(reason)
+
+    record = probe.build_failure_record(run=1, error=known)
+    assert set(record) == set(ENUMERATED_FIELDS)
+    assert record["rejection_reason"] == "mixed_envelope"
+    assert sentinel not in json.dumps(record)
+
+    # A non-project error type is never inspected at all.
+    assert probe.rejection_reason(RuntimeError(f"boom {sentinel}")) is None
 
 PROHIBITED_FINAL_ANSWERS = {
     "dsml": DSML_FINAL,

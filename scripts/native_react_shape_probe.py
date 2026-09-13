@@ -169,6 +169,60 @@ VIOLATION_FLAGS: dict[str, str] = {
     "legacy_action_json": "legacy_action_json_present",
 }
 
+# Which reviewed parser rejection fired, as a bounded literal.
+#
+# `local_rejection` alone is not actionable: eight rejections of that category
+# are indistinguishable from each other, so a failed gate names no cause. Every
+# prefix below is a *project-authored* constant from the provider parsers, not
+# provider text, so naming which one fired is privacy-safe in a way that reading
+# an SDK exception's message is not -- and matching is by bounded prefix, so no
+# provider text can reach a record even if an SDK error shared a message.
+_REJECTION_REASON_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("DeepSeek native tool response carried tool protocol text", "tool_protocol_text"),
+    ("OpenAI native tool response carried tool protocol text", "tool_protocol_text"),
+    ("DeepSeek native tool response mixed a final answer", "mixed_envelope"),
+    ("OpenAI native tool response mixed a final answer", "mixed_envelope"),
+    ("DeepSeek native tool response must carry exactly one", "call_count_not_one"),
+    ("OpenAI native tool response must carry exactly one", "call_count_not_one"),
+    ("DeepSeek native tool response carried a non-function", "non_function_call"),
+    ("DeepSeek native tool response named an unavailable tool", "unavailable_tool"),
+    ("OpenAI native tool response named an unavailable tool", "unavailable_tool"),
+    (
+        "DeepSeek native tool response carried malformed arguments",
+        "malformed_arguments",
+    ),
+    (
+        "OpenAI native tool response carried malformed arguments",
+        "malformed_arguments",
+    ),
+    ("DeepSeek native tool response carried a malformed", "malformed_envelope_field"),
+    ("OpenAI response contained malformed output", "malformed_envelope_field"),
+    ("DeepSeek native tool response carried no usable final", "no_usable_final_answer"),
+    ("OpenAI native tool response carried no usable final", "no_usable_final_answer"),
+    ("DeepSeek response did not stop cleanly", "did_not_stop_cleanly"),
+    ("OpenAI response did not complete", "did_not_complete"),
+    ("DeepSeek response contained malformed choices", "malformed_choices"),
+    ("DeepSeek response contained no message", "no_message"),
+    ("OpenAI response contained an unknown output item", "unknown_output_item"),
+)
+
+
+def rejection_reason(error: BaseException) -> str | None:
+    """Name which reviewed parser rejection fired, or ``None``.
+
+    Only a project-authored constant can match. The exception's message is
+    consulted, but the *return* is always a bounded literal from the table
+    above, so no provider text can become reachable from a record.
+    """
+    if not isinstance(error, ProviderResponseError):
+        return None
+    message = str(error)
+    for prefix, reason in _REJECTION_REASON_PREFIXES:
+        if message.startswith(prefix):
+            return reason
+    return None
+
+
 # The exact, complete record schema. Nothing outside this tuple is ever
 # retained for a call.
 RECORD_FIELDS: tuple[str, ...] = (
@@ -185,6 +239,7 @@ RECORD_FIELDS: tuple[str, ...] = (
     "legacy_action_json_present",
     "failure_category",
     "failure_origin",
+    "rejection_reason",
     "retryable",
     "status_code",
     "input_tokens",
@@ -298,6 +353,7 @@ def _base_record(run: int) -> dict[str, Any]:
         "legacy_action_json_present": False,
         "failure_category": None,
         "failure_origin": None,
+        "rejection_reason": None,
         "retryable": None,
         "status_code": None,
         "input_tokens": None,
@@ -388,6 +444,7 @@ def build_failure_record(*, run: int, error: BaseException) -> dict[str, Any]:
         outcome=classify_failure(error),
         failure_category=_failure_category(error),
         failure_origin=_failure_origin(error),
+        rejection_reason=rejection_reason(error),
         retryable=getattr(error, "retryable", None),
         status_code=getattr(error, "http_status_code", None),
     )
