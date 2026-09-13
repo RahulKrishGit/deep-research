@@ -1597,3 +1597,64 @@ async def test_concurrent_judge_rows_read_only_their_own_attempts(
     ]
     # A session-blind maximum would report an attempt of 2 for both rows.
     assert attempts == [2, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_target_repair_is_never_reported_as_a_judge_repair(
+    planner_case,
+    clean_target_output,
+    clean_gate_report,
+    runtime_config_for,
+) -> None:
+    """The judge and the target share one tracker *and* one session id.
+
+    The concurrency test above separates two *different* session ids, which is
+    necessary but not sufficient: ``cli.py`` builds a single ``Tracker`` and
+    hands the same instance to both ``build_target`` and the judge evaluator
+    (``tracker_factory=lambda: tracker``), and the judge then opens its span on
+    ``output.session_id`` -- the target repetition's own session. Filtering the
+    attempt ledger by session id alone therefore cannot separate the two, and a
+    target that used its one repair would be reported as a Judge repair, which
+    is precisely the condition the per-agent acceptance rule forbids. The
+    ledger must read the judge's own call, not the session it happens to share.
+    """
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    row = clean_target_output.model_copy(
+        update={"session_id": "evaluation-row-shared"}
+    )
+
+    # The target's own structured calls, opened exactly as the real provider
+    # opens them: a failed first attempt and the one repair that follows it,
+    # under the row's session id and on the tracker production shares with the
+    # judge evaluator.
+    async with tracker.session_span(row.session_id, "target attempt"):
+        async with tracker.llm_span(
+            "deepseek-v4-flash",
+            {"operation": "structured_output", "attempt": 1},
+        ):
+            pass
+        async with tracker.llm_span(
+            "deepseek-v4-flash",
+            {"operation": "structured_output", "attempt": 2},
+        ):
+            pass
+
+    responses = _RecordingResponses(
+        _responses_response(output_text=_judge_verdict().model_dump_json())
+    )
+    evaluator = _judge_evaluator(
+        planner_case,
+        runtime_config_for("planner"),
+        tracker,
+        _judge_provider_on(tracker, responses),
+        clean_gate_report,
+    )
+
+    payload = await evaluator(FakeRun(outputs=row.model_dump(mode="json")), None)
+
+    # The judge answered on its first request, so the judge never repaired and
+    # the target's repair must not be attributed to it.
+    assert len(responses.calls) == 1
+    assert (
+        _entry(payload, "judge_quality")["metadata"]["structured_attempts"] == 1
+    )

@@ -755,24 +755,45 @@ def judge_feedback_payload(feedback: JudgeFeedback) -> dict[str, JsonValue]:
     }
 
 
+def _structured_metric_count(tracker: Tracker | None) -> int:
+    """How many metrics the tracker has recorded so far.
+
+    A bookmark, not a measurement. ``Tracker.metrics`` is a snapshot of an
+    append-only list, so a count taken before the judge call indexes exactly
+    the records the judge call itself appends.
+    """
+    if tracker is None:
+        return 0
+    return len(getattr(tracker, "metrics", ()))
+
+
 def _max_structured_attempt(
-    tracker: Tracker | None, session_id: str
+    tracker: Tracker | None, session_id: str, *, since: int = 0
 ) -> int | None:
-    """The deepest structured attempt this session's judge call reached.
+    """The deepest structured attempt the judge's own call reached.
 
     Reads only the bounded operation literal and attempt number the tracker
-    copied out of an llm span's already-safe inputs, and only for the
-    session the row owns: ``1`` is a judge that succeeded on its first
-    request, ``2`` is a judge whose one schema repair was used. ``None``
-    means no structured attempt was recorded for this session at all --
-    including for a tracker-like object that records no metrics -- and is
-    never read as "no repair happened".
+    copied out of an llm span's already-safe inputs: ``1`` is a judge that
+    succeeded on its first request, ``2`` is a judge whose one schema repair
+    was used. ``None`` means the judge's call recorded no structured attempt --
+    including for a tracker-like object that records no metrics -- and is never
+    read as "no repair happened".
+
+    ``since`` is the metric count taken immediately before the awaited judge
+    call, and it is load-bearing rather than an optimization. The evaluator
+    does **not** get a tracker of its own in production: ``cli.py`` builds one
+    ``Tracker`` and hands the same instance to both the target and the judge,
+    and the judge opens its span on ``output.session_id`` -- the *target*
+    repetition's session. Filtering on the session id alone therefore cannot
+    separate a target's repair from the judge's, and would report a Judge
+    repair that never happened. Scoping to the records appended by the judge's
+    own call is what makes this ledger describe the judge.
     """
     if tracker is None:
         return None
     attempts = [
         metric.structured_attempt
-        for metric in getattr(tracker, "metrics", ())
+        for metric in tuple(getattr(tracker, "metrics", ()))[since:]
         if isinstance(metric, TokenUsageMetric)
         and metric.session_id == session_id
         and metric.operation == "structured_output"
@@ -894,6 +915,10 @@ class JudgeEvaluator:
             return self._not_run("no gate report recorded for this run")
         if not output.has_evaluable_output:
             return self._not_run("no_evaluable_output")
+        # Taken before anything in this block can raise, so both handlers below
+        # can always reference it, and before the judge call so it marks the
+        # first record the judge call itself appends.
+        metrics_before = _structured_metric_count(self._tracker)
         try:
             judge_input = build_judge_input(
                 output,
@@ -914,7 +939,7 @@ class JudgeEvaluator:
             return self._not_run(
                 str(error),
                 structured_attempts=_max_structured_attempt(
-                    self._tracker, output.session_id
+                    self._tracker, output.session_id, since=metrics_before
                 ),
             )
         except Exception as error:
@@ -923,7 +948,7 @@ class JudgeEvaluator:
                 diagnostics=_judge_diagnostics(error),
                 trace_url=_JUDGE_TRACE_URL.get(),
                 structured_attempts=_max_structured_attempt(
-                    self._tracker, output.session_id
+                    self._tracker, output.session_id, since=metrics_before
                 ),
             )
 
@@ -933,7 +958,7 @@ class JudgeEvaluator:
             trace_url=_JUDGE_TRACE_URL.get(),
             source_url=self._evaluator_source_url,
             structured_attempts=_max_structured_attempt(
-                self._tracker, output.session_id
+                self._tracker, output.session_id, since=metrics_before
             ),
         )
         return self._scored(verdict, feedback)

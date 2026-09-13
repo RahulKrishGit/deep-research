@@ -702,10 +702,12 @@ class JudgeFeedback(ContractModel):
     latency_ms: float | None = Field(default=None, ge=0.0)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
-    # Additive field: the deepest structured attempt the judge's own
-    # dedicated tracker recorded for this row. ``None`` means the judge was
-    # never invoked, or that the row predates the field -- a missing value is
-    # never read as "no repair happened".
+    # Additive field: the deepest structured attempt the judge's own call
+    # reached for this row. The evaluator shares its tracker -- and the row's
+    # session id -- with the target, so this is scoped to the metrics the judge
+    # call itself appended, never to the session as a whole. ``None`` means the
+    # judge was never invoked, or that the row predates the field -- a missing
+    # value is never read as "no repair happened".
     structured_attempts: int | None = Field(default=None, ge=1, le=2)
 
     @model_validator(mode="after")
