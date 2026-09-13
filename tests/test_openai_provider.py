@@ -1368,6 +1368,51 @@ async def test_openai_public_error_never_reaches_the_sdk_exception(
     )
 
 
+@pytest.mark.parametrize("path", ["plain", "structured"])
+@pytest.mark.asyncio
+async def test_openai_every_entry_point_severs_the_sdk_exception(
+    monkeypatch, path: str
+) -> None:
+    """Severing is a property of the translator, not of the native path."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(
+        request=httpx.Request(
+            "POST",
+            "https://api.openai.com/v1/responses",
+            content="MARKER",
+        )
+    )
+    responses = RecordingResponses(sdk_error, sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(retry_count=2),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    class _Answer(BaseModel):
+        answer: str = "yes"
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            if path == "plain":
+                await provider.complete(
+                    [ChatMessage(role="user", content="review")]
+                )
+            else:
+                await provider.complete_structured(
+                    [ChatMessage(role="user", content="review")],
+                    _Answer,
+                )
+
+    # ``complete_react`` asserts the exhausted-retry count; ``complete_structured``
+    # reaches the SDK through ``responses.parse``, which this fake does not count.
+    assert caught.value.failure_origin == "sdk"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert not _exception_reaches(caught.value, sdk_error)
+
+
 @pytest.mark.asyncio
 async def test_openai_native_react_failures_do_not_retain_the_prompt() -> None:
     """The prompt is provider-adjacent state too, and must be cleared."""

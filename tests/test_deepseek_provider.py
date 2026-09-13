@@ -3278,6 +3278,48 @@ async def test_deepseek_public_error_never_reaches_the_sdk_exception(
     )
 
 
+@pytest.mark.parametrize("path", ["plain", "structured"])
+@pytest.mark.asyncio
+async def test_deepseek_every_entry_point_severs_the_sdk_exception(
+    monkeypatch, path: str
+) -> None:
+    """Severing is a property of the translator, not of the native path.
+
+    The reachability test above drives ``complete_react``; this one proves the
+    other two entry points produce an error with the same unreachable SDK
+    object, so a future call site cannot quietly reintroduce the leak.
+    """
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(
+        request=httpx.Request("POST", DEEPSEEK_BASE_URL, content="MARKER")
+    )
+    completions = RecordingCompletions(sdk_error, sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            if path == "plain":
+                await provider.complete(
+                    [ChatMessage(role="user", content="review")]
+                )
+            else:
+                await provider.complete_structured(
+                    [ChatMessage(role="user", content="review")],
+                    TinyAnswer,
+                )
+
+    assert len(completions.calls) == 3
+    assert caught.value.failure_origin == "sdk"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert not _exception_reaches(caught.value, sdk_error)
+
+
 @pytest.mark.asyncio
 async def test_deepseek_native_react_maps_length_to_the_output_limit() -> None:
     completions = RecordingCompletions(
