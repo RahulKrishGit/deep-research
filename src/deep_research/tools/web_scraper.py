@@ -30,6 +30,7 @@ class WebScraperTool(BaseTool):
     name = "web_scraper"
     description = "Fetch an allowed static HTML page and extract visible text."
     input_schema = {"url": "string"}
+    required_arguments = ("url",)
     output_schema = {
         "url": "string",
         "title": "string",

@@ -4,11 +4,38 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from deep_research.agents.errors import AgentConfigurationError
+from deep_research.providers import ToolDefinition
 from deep_research.tools.base import BaseTool
 from deep_research.utils.types import ContractModel
+
+# The finite compact-type vocabulary ``BaseTool.input_schema`` speaks. Kept
+# exact rather than guessed at: a member outside this map is an assembly
+# mistake, and a wrong provider schema is worse than a loud failure.
+_JSON_TYPES: dict[str, dict[str, JsonValue]] = {
+    "string": {"type": "string"},
+    "integer": {"type": "integer"},
+    "number": {"type": "number"},
+    "boolean": {"type": "boolean"},
+    "object": {"type": "object"},
+    "array": {"type": "array"},
+}
+
+
+def _provider_type_schema(compact: JsonValue) -> dict[str, JsonValue]:
+    if not isinstance(compact, str):
+        raise AgentConfigurationError("tool input types must be compact strings")
+    members = compact.split("|")
+    schemas = [
+        {"type": "null"} if member == "null" else _JSON_TYPES.get(member)
+        for member in members
+    ]
+    if any(schema is None for schema in schemas):
+        raise AgentConfigurationError(f"unsupported compact tool input type: {compact}")
+    retained = [schema for schema in schemas if schema is not None]
+    return retained[0] if len(retained) == 1 else {"anyOf": retained}
 
 
 class ToolDescriptor(ContractModel):
@@ -17,6 +44,25 @@ class ToolDescriptor(ContractModel):
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
     input_schema: dict[str, JsonValue] = Field(default_factory=dict)
+    required_arguments: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_compact_schema(self) -> "ToolDescriptor":
+        """Fail at construction, before any provider request exists.
+
+        Both halves of this projection are checked here rather than lazily in
+        ``provider_definition``: an agent whose tool metadata cannot be
+        converted should never reach a provider call at all.
+        """
+        for name in self.required_arguments:
+            if name not in self.input_schema:
+                raise AgentConfigurationError(
+                    f"required tool argument {name!r} is absent from "
+                    f"{self.name} input_schema"
+                )
+        for compact in self.input_schema.values():
+            _provider_type_schema(compact)
+        return self
 
     @classmethod
     def from_tool(cls, tool: BaseTool) -> "ToolDescriptor":
@@ -24,6 +70,23 @@ class ToolDescriptor(ContractModel):
             name=tool.name,
             description=tool.description,
             input_schema=dict(tool.input_schema),
+            required_arguments=tuple(tool.required_arguments),
+        )
+
+    def provider_definition(self) -> ToolDefinition:
+        """This tool as a provider-native function definition."""
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters={
+                "type": "object",
+                "properties": {
+                    name: _provider_type_schema(compact)
+                    for name, compact in self.input_schema.items()
+                },
+                "required": list(self.required_arguments),
+                "additionalProperties": False,
+            },
         )
 
 
@@ -74,6 +137,12 @@ class AgentToolset:
 
     def descriptors(self) -> tuple[ToolDescriptor, ...]:
         return tuple(ToolDescriptor.from_tool(tool) for tool in self._tools.values())
+
+    def provider_definitions(self) -> tuple[ToolDefinition, ...]:
+        """Allowed tools as provider-native function definitions, in order."""
+        return tuple(
+            descriptor.provider_definition() for descriptor in self.descriptors()
+        )
 
     def __contains__(self, name: object) -> bool:
         return name in self._tools

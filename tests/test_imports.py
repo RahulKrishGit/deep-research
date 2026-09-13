@@ -120,6 +120,8 @@ def test_provider_public_api_imports() -> None:
         ChatResult,
         DeepSeekChatProvider,
         LocalEmbeddingProvider,
+        NativeToolCall,
+        NativeToolTurn,
         OpenAIChatProvider,
         OpenAIEmbeddingProvider,
         OpenAIProviderError,
@@ -129,6 +131,7 @@ def test_provider_public_api_imports() -> None:
         ProviderResponseError,
         ProviderTimeoutError,
         StructuredOutputError,
+        ToolDefinition,
         build_chat_provider,
         build_embedding_provider,
         capability_for,
@@ -157,6 +160,9 @@ def test_provider_public_api_imports() -> None:
     assert issubclass(ProviderResponseError, OpenAIProviderError)
     assert issubclass(ProviderTimeoutError, OpenAIProviderError)
     assert issubclass(StructuredOutputError, OpenAIProviderError)
+    assert ToolDefinition.__name__ == "ToolDefinition"
+    assert NativeToolCall.__name__ == "NativeToolCall"
+    assert NativeToolTurn.__name__ == "NativeToolTurn"
 
 
 def test_agent_runtime_contracts_import_from_package() -> None:

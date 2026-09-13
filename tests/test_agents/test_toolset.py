@@ -2,12 +2,45 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.toolset import AgentToolset, ToolDescriptor
 from deep_research.observability import Tracker
+from deep_research.providers import ToolDefinition
+from deep_research.tools.base import BaseTool, ToolCallContext, ToolExecution
 from tests.agent_fakes import BoomTool, EchoTool
+
+
+class SearchTool(BaseTool):
+    """A tool whose compact schema exercises the nullable union case."""
+
+    name = "search"
+    description = "Search one index."
+    input_schema = {"query": "string", "limit": "integer|null"}
+    required_arguments = ("query",)
+    output_schema = {"results": "array"}
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: Any
+    ) -> ToolExecution:
+        return ToolExecution(data=[], output_summary={"count": 0})
+
+
+class UnsupportedTypeTool(SearchTool):
+    """Declares a compact type outside the supported vocabulary."""
+
+    name = "unsupported"
+    input_schema = {"query": "text"}
+
+
+class DriftedRequiredTool(SearchTool):
+    """Declares a required name its own input schema does not carry."""
+
+    name = "drifted"
+    required_arguments = ("query", "missing")
 
 
 def test_descriptor_projects_tool_class_metadata(tracker: Tracker) -> None:
@@ -65,3 +98,61 @@ def test_an_agent_with_no_allowed_tools_is_valid(tracker: Tracker) -> None:
     assert toolset.names == ()
     assert toolset.descriptors() == ()
     assert len(toolset) == 0
+
+
+def test_provider_definitions_are_real_object_json_schemas(tracker: Tracker) -> None:
+    toolset = AgentToolset([SearchTool(tracker)], allowed=("search",))
+
+    assert toolset.provider_definitions() == (
+        ToolDefinition(
+            name="search",
+            description="Search one index.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {
+                        "anyOf": [{"type": "integer"}, {"type": "null"}]
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+
+def test_provider_definitions_keep_the_declared_tool_order(
+    tracker: Tracker,
+) -> None:
+    toolset = AgentToolset(
+        [EchoTool(tracker), SearchTool(tracker)],
+        allowed=["search", "echo"],
+    )
+
+    assert [definition.name for definition in toolset.provider_definitions()] == [
+        "search",
+        "echo",
+    ]
+
+
+def test_a_tool_with_no_required_arguments_declares_an_empty_required_list(
+    tracker: Tracker,
+) -> None:
+    toolset = AgentToolset([BoomTool(tracker)], allowed=["boom"])
+
+    assert toolset.provider_definitions()[0].parameters["required"] == []
+
+
+def test_an_unsupported_compact_type_fails_at_descriptor_construction(
+    tracker: Tracker,
+) -> None:
+    with pytest.raises(AgentConfigurationError, match="unsupported compact"):
+        ToolDescriptor.from_tool(UnsupportedTypeTool(tracker))
+
+
+def test_a_required_name_absent_from_the_schema_fails_at_descriptor_construction(
+    tracker: Tracker,
+) -> None:
+    with pytest.raises(AgentConfigurationError, match="required"):
+        ToolDescriptor.from_tool(DriftedRequiredTool(tracker))

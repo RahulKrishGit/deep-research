@@ -10,6 +10,8 @@ from deep_research.providers.contracts import (
     ChatMessage,
     ChatResult,
     FinishReasonCategory,
+    NativeToolCall,
+    NativeToolTurn,
     OpenAIProviderError,
     ProviderConfigurationError,
     ProviderError,
@@ -24,6 +26,7 @@ from deep_research.providers.contracts import (
     StructuredDiagnosticCategory,
     StructuredOutputError,
     StructuredValidationDiagnostic,
+    ToolDefinition,
     provider_failure_snapshot,
 )
 from deep_research.providers.deepseek_provider import (
@@ -70,6 +73,8 @@ __all__ = [
     "LOCAL_EMBEDDING_PROVIDER",
     "LocalEmbeddingProvider",
     "ModelCapability",
+    "NativeToolCall",
+    "NativeToolTurn",
     "OpenAIChatProvider",
     "OpenAIEmbeddingProvider",
     "OpenAIProviderError",
@@ -88,6 +93,7 @@ __all__ = [
     "ResolvedRequestSettings",
     "StructuredValidationDiagnostic",
     "StructuredOutputError",
+    "ToolDefinition",
     "build_chat_provider",
     "build_embedding_provider",
     "build_judge_provider",

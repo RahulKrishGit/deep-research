@@ -37,6 +37,7 @@ class WebSearchTool(BaseTool):
     description = "Search the web with Tavily and return ranked results."
     input_schema = {"query": "string", "max_results": "integer|null"}
     output_schema = {"results": "array"}
+    required_arguments = ("query",)
 
     def __init__(
         self,

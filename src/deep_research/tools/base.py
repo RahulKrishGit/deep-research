@@ -87,6 +87,10 @@ class BaseTool(ABC):
     description: ClassVar[str]
     input_schema: ClassVar[dict[str, JsonValue]]
     output_schema: ClassVar[dict[str, JsonValue]]
+    # Which of ``input_schema``'s keys a provider must supply. Empty by
+    # default so a no-argument tool needs no declaration; a name that is not
+    # in ``input_schema`` fails loudly at agent construction.
+    required_arguments: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, tracker: Tracker) -> None:
         self._tracker = tracker

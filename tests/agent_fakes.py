@@ -28,6 +28,7 @@ class EchoTool(BaseTool):
     name = "echo"
     description = "Echo one string back to the agent."
     input_schema = {"value": "string"}
+    required_arguments = ("value",)
     output_schema = {"echo": "string"}
 
     async def _execute(
@@ -59,6 +60,7 @@ class StrictEchoTool(BaseTool):
     name = "strict_echo"
     description = "Echo one required string argument."
     input_schema = {"value": "string"}
+    required_arguments = ("value",)
     output_schema = {"echo": "string"}
 
     async def _execute(

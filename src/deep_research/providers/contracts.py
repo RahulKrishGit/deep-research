@@ -5,7 +5,14 @@ from collections.abc import Sequence
 from itertools import islice
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 from deep_research.observability import TokenUsage
 
@@ -78,6 +85,50 @@ class ChatResult(ProviderContract):
     text: str = Field(min_length=1)
     model: str = Field(min_length=1)
     usage: TokenUsage
+
+
+class ToolDefinition(ProviderContract):
+    """One sanitized function definition as a provider receives it."""
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    parameters: dict[str, JsonValue]
+
+
+class NativeToolCall(ProviderContract):
+    """One provider-selected application tool, with no provider object or id."""
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    tool_name: str = Field(min_length=1)
+    arguments_json: str = Field(min_length=1)
+
+
+class NativeToolTurn(ProviderContract):
+    """One native ReAct turn: exactly one tool call or one final answer."""
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    model: str = Field(min_length=1)
+    usage: TokenUsage
+    tool_call: NativeToolCall | None = None
+    final_answer: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "NativeToolTurn":
+        if (self.tool_call is None) == (self.final_answer is None):
+            raise ValueError(
+                "native tool turns require exactly one tool call or final answer"
+            )
+        return self
 
 
 class ProviderResponseTelemetry(ProviderContract):

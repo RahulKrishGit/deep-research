@@ -37,6 +37,7 @@ class SaveToMemoryTool(BaseTool):
     name = "save_to_memory"
     description = "Save a research finding to long-term memory."
     input_schema = {"content": "string", "metadata": "object"}
+    required_arguments = ("content",)
     output_schema = {"entry_id": "string"}
 
     def __init__(self, tracker: Tracker, memory: LongTermMemory) -> None:
@@ -74,6 +75,7 @@ class QueryMemoryTool(BaseTool):
     name = "query_memory"
     description = "Query long-term memory for relevant research findings."
     input_schema = {"query": "string", "top_k": "integer", "filters": "object"}
+    required_arguments = ("query",)
     output_schema = {"matches": "array"}
 
     def __init__(self, tracker: Tracker, memory: LongTermMemory) -> None:
