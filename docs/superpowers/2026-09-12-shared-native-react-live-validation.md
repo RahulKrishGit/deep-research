@@ -444,3 +444,53 @@ requests, offline-reviewed and live-verified once. It does **not** establish per
 readiness — that is Task 9's six canaries — and it does not cover Task 10 Step 3's Critic D2/D1
 calibration canary, which remains separately unauthorized. The two residual fail-closed risks predeclared
 above did not materialize in this batch.
+
+## Production monitoring and stop conditions (Task 10 Step 2)
+
+Production readiness is not a one-off verdict. These are the content-free signals that keep it honest after
+the canaries stop running, and the conditions that suspend an agent's ready status.
+
+**Monitor only counters this plan already introduced. Nothing here requires retaining a response.**
+
+| signal | where it already exists | why it matters |
+| --- | --- | --- |
+| structured repair activation | `TargetOutput.structured_calls.repaired_calls`, `JudgeFeedback.structured_attempts` | a first-attempt repair is a *diagnostic*, not a release pass |
+| structured repair exhaustion | `schema_output` failure kind, `StructuredOutputError` after one repair | the model produced invalid JSON twice |
+| local native-response rejection | `failure_origin="local_response"`, probe `rejection_reason` | the repository refused a response it received |
+| SDK / transport / HTTP failures | `failure_origin="sdk"`, `failure_category` `transport` / `http` | operational availability, distinct from shape integrity |
+| output-limit failures | `ProviderOutputLimitError`, `output_limit` kind | the reply was truncated by the token budget |
+| target and Judge fallback | `TargetOutput.failure`, `fallback_provider_diagnostic`, `JudgeFeedback.status` | the structured path did not complete |
+| fingerprint drift | `target_prompt_fingerprint`, `judge.prompt_fingerprint`, `configuration_fingerprint` | the evidence no longer describes the code that produced it |
+
+**Stop conditions — any one of these suspends the affected agent's ready status pending diagnosis:**
+
+1. **Any accepted malformed output is a correctness incident**, not a metric blip. The entire guarantee is
+   that it cannot happen; one occurrence means the boundary is not holding.
+2. **Repair exhaustion** — a `schema_output` failure after the one permitted repair, on any operation.
+3. **Any native-envelope rejection** — a `local_rejection` in a release batch. One is a failure, exactly as
+   the release gate treats it.
+4. **Any fingerprint drift** without a recorded re-pin and a matching canary re-run.
+5. **A provider fallback** where a structured result was required.
+
+**Two rules about how the monitoring itself must behave.** The signal must never be the response that caused
+it: do not log, retain, or attach provider text, prompts, arguments or rationales to any of the above —
+every field named here is already a count, a bounded literal, a boolean or a fingerprint. And a zero over a
+small sample is **not** a zero long-run rate: these canaries are three repetitions per agent, so absence of
+failures bounds nothing beyond the sample, and that must be stated rather than implied.
+
+**Known residual risks the matrix must carry rather than bury:**
+
+- **The `string_bounds` repair guidance names a constraint the Judge wire schema does not declare.** The
+  guidance asks for "minLength, maxLength, and pattern" while `JudgeVerdict` declares only `minLength: 1`
+  for `rationale`, its 20,000-character backstop living in a `field_validator`. A judge reply repaired for
+  overshoot is told to satisfy an undeclared bound and given no number to aim for. It still fails closed;
+  the gap is diagnostic, not an integrity hole. Accepted, and unowned by any task.
+- **`agent_prompt_fingerprint` hashes an agent module's full source**, so a behavioural code change in an
+  agent module moves a value whose name implies a prompt change. It falsely moved `researcher` to
+  `51044a868e3f` when `merge_react_runs` gained the per-loop budget fields, with the researcher's prompt
+  text byte-identical. A fingerprint is therefore not by itself evidence that a prompt changed.
+- **The live cases routinely exhaust their budget**, so agents often stop on `max_iterations` or
+  `tool_budget_exhausted` rather than `finished`. Only `provider_error` is an error condition, so this is
+  not a gate failure — but it is a convergence signal worth watching.
+- **`structured_calls` is populated only on the success path**, so a failed repetition reports a zeroed
+  summary. A zeroed `structured_calls` on a *failed* run must never be read as "no repair occurred".
