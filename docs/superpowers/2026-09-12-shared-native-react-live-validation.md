@@ -386,3 +386,61 @@ it on the next run; it was not added here because observing it requires another 
 
 **No further paid request was made.** Both attempts are preserved, neither is relabelled, and the gate
 remains FAIL. Task 9 is still blocked with all 270 pre-authorized requests unspent.
+
+## Task 8 — attempt 3 after the multi-call amendment: **PASS**
+
+Authorized by the human ("after this amendment, you are authorized to run a live test to test the
+changes"), run once after the contract was widened in `3fae013` and the plan amended in `3a17420`.
+
+| item | value |
+| --- | --- |
+| commit | `3a17420b912a317d5034137d75cbf1cc3a5d1ac4` |
+| working tree | clean (only the two user-owned untracked directories) |
+| probe SHA-256 | `058f12edfc0016971f185e78c9baed2b55b21fb2eecf14c39fb1eef84d40fdf2` |
+| output | `output/transport-probes/native-react-v2/native_react_shape_gate_30_attempt3.jsonl` (ignored) |
+| batch | agent `critic`, 30 logical requests, SDK ceiling 30, effort `max`, `max_tokens` 32768, repository retries 0, SDK retries 0, 0 tool executions, 0 Judge requests, 0 LangSmith requests |
+
+```json
+{"agent":"critic","requests":30,"accepted":30,"tool_calls":30,"final_answers":0,"shape_failures":0,"shape_failed_runs":[],"shape_failure_kinds":[],"instrument_errors":0,"provider_failures":0,"provider_failed_runs":[],"provider_failure_kinds":[],"failed_runs":[],"expected_requests":30,"passed":true}
+```
+
+**Shape integrity: PASS.** **Operational availability: PASS.** Both are required, so the release gate is a
+**PASS**.
+
+### Recorded counts, content-free
+
+| measure | value |
+| --- | --- |
+| logical requests / SDK `create` calls | 30 / 30 (repository retries 0, SDK retries 0) |
+| accepted turns | 30, every one a native `tool_calls` finish |
+| shape failures, provider failures, instrument errors | 0, 0, 0 |
+| `call_count` distribution | **28 turns with 1 call, 2 turns with 2 calls** (runs 16 and 30) |
+| tool names | `web_search` 22, `query_memory` 8 |
+| `arguments_are_object` | true for all 30 |
+| DSML / tool markup / fence / legacy action JSON flags | all false for all 30 |
+| `failure_category`, `failure_origin`, `rejection_reason` | `null` for all 30 |
+| tool executions, Judge calls, LangSmith requests | 0, 0, 0 |
+
+### This batch is the amendment's proof, not just its beneficiary
+
+Two of the thirty turns — runs **16** and **30** — returned **two** native tool calls. Under the
+exactly-one-call contract those turns would have been discarded **entirely** and this batch would have
+FAILED with two shape failures, exactly as attempts 1 and 2 did. Both calls in each turn were
+allow-listed and carried object arguments, so nothing widened except the number of executions.
+
+The three attempts together, in one place:
+
+| attempt | contract | accepted | shape failures | verdict |
+| --- | --- | ---: | ---: | --- |
+| 1 (`058a786`) | exactly one call | 22/30 | 8 | FAIL |
+| 2 (`7057ce7`) | exactly one call, mixed-envelope relaxed | 26/30 | 4 | FAIL |
+| 3 (`3a17420`) | **one or more calls** | **30/30** | **0** | **PASS** |
+
+Attempt 3 is the attributable release verdict and the only one that may be cited as such. Attempts 1 and 2
+remain diagnosis and must never be relabelled.
+
+**Scope of this PASS, stated plainly:** it certifies the shared native-shape boundary for the Critic at 30
+requests, offline-reviewed and live-verified once. It does **not** establish per-agent production
+readiness — that is Task 9's six canaries — and it does not cover Task 10 Step 3's Critic D2/D1
+calibration canary, which remains separately unauthorized. The two residual fail-closed risks predeclared
+above did not materialize in this batch.

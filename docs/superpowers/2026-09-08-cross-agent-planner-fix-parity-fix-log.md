@@ -3390,6 +3390,43 @@ before the gate can be re-attempted.
 
 Full record: `docs/superpowers/2026-09-12-shared-native-react-live-validation.md` (§Task 8).
 
+### 101. Task 8 native-shape release gate — PASS on the amended contract
+
+Attempt 3, run once after widening the native ReAct contract to accept one or more tool calls
+(`3fae013`) and amending the plan and spec (`3a17420`). Commit
+`3a17420b912a317d5034137d75cbf1cc3a5d1ac4`, clean tree, probe SHA-256 `058f12ed…`, output
+`output/transport-probes/native-react-v2/native_react_shape_gate_30_attempt3.jsonl` (ignored).
+
+```json
+{"agent":"critic","requests":30,"accepted":30,"tool_calls":30,"final_answers":0,"shape_failures":0,"shape_failed_runs":[],"shape_failure_kinds":[],"instrument_errors":0,"provider_failures":0,"provider_failed_runs":[],"provider_failure_kinds":[],"failed_runs":[],"expected_requests":30,"passed":true}
+```
+
+**Both literal gates pass: shape integrity and operational availability.** 30 logical requests, 30 SDK
+`create` calls, 0 repository retries, 0 SDK retries, 0 tool executions, 0 Judge calls, 0 LangSmith
+requests. `call_count` distribution 28x1 and **2x2** (runs 16 and 30); tool names `web_search` 22 and
+`query_memory` 8; `arguments_are_object` true for all 30; all four prohibited-text flags false for all 30;
+`failure_category`, `failure_origin` and `rejection_reason` null for all 30.
+
+**The two multi-call turns are the point.** Under the exactly-one-call contract those two turns would have
+been discarded entirely and the batch would have failed with two shape failures — precisely as attempts 1
+and 2 did. The contract widening is what turned a repeatable FAIL into a PASS, and it was chosen only after
+the second failure's instrumented run named `call_count_not_one` as the cause of every residual failure.
+
+| attempt | contract | accepted | shape failures | verdict |
+| --- | --- | ---: | ---: | --- |
+| 1 (`058a786`) | exactly one call | 22/30 | 8 | FAIL |
+| 2 (`7057ce7`) | exactly one call, mixed envelope relaxed | 26/30 | 4 | FAIL |
+| 3 (`3a17420`) | one or more calls | **30/30** | **0** | **PASS** |
+
+Attempt 3 is the only attributable release verdict. Attempts 1 and 2 remain diagnosis and are never
+relabelled.
+
+**Scope:** this certifies the shared native-shape boundary for the Critic at 30 requests. It is not per-agent
+production readiness — that is Task 9 — and it does not cover Task 10 Step 3's separately authorized Critic
+calibration canary.
+
+Full record: `docs/superpowers/2026-09-12-shared-native-react-live-validation.md` (§Task 8 attempt 3).
+
 Full record: `docs/superpowers/2026-09-12-shared-native-react-live-validation.md` (§Task 7) and
 `docs/superpowers/2026-09-12-shared-native-react-observation-report.md` (§8).
 
