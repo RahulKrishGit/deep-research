@@ -22,6 +22,7 @@ from deep_research.evaluation.models import (
 )
 from deep_research.providers import (
     ProviderError,
+    ProviderFailureOrigin,
     ProviderOutputLimitError,
     ProviderRateLimitError,
     ProviderResponseError,
@@ -106,10 +107,12 @@ def _provider_details(
     error: BaseException,
     retryable: bool,
     status_code: int | None = None,
+    failure_origin: ProviderFailureOrigin | None = None,
 ) -> ProviderFailureDetails:
     return ProviderFailureDetails(
         kind=kind,  # type: ignore[arg-type]
         type=type(error).__name__,
+        failure_origin=failure_origin,
         retryable=retryable,
         status_code=status_code,
     )
@@ -172,6 +175,7 @@ def safe_failure_details(error: BaseException) -> EvaluationFailureDetails | Non
             error=candidate,
             retryable=candidate.retryable,
             status_code=candidate.http_status_code,
+            failure_origin=candidate.failure_origin,
         )
     if isinstance(candidate, ProviderError):
         return _provider_details(

@@ -79,20 +79,31 @@ def _schema_error() -> StructuredOutputError:
         ),
         (
             ProviderResponseError(
-                "transport", failure_category="transport", retryable=True
+                "transport",
+                failure_category="transport",
+                retryable=True,
+                failure_origin="sdk",
             ),
             "provider",
             "provider_transport",
         ),
         (
             ProviderResponseError(
-                "http", failure_category="http", http_status_code=503, retryable=True
+                "http",
+                failure_category="http",
+                http_status_code=503,
+                retryable=True,
+                failure_origin="sdk",
             ),
             "provider",
             "provider_http",
         ),
         (
-            ProviderResponseError("response", failure_category="response"),
+            ProviderResponseError(
+                "response",
+                failure_category="response",
+                failure_origin="local_response",
+            ),
             "provider",
             "provider_response",
         ),
@@ -139,7 +150,9 @@ def test_output_limit_cause_wins_over_outer_provider_response_wrapper() -> None:
     cause = _output_limit_error()
     try:
         raise ProviderResponseError(
-            "outer response wrapper", failure_category="response"
+            "outer response wrapper",
+            failure_category="response",
+            failure_origin="local_response",
         ) from cause
     except ProviderResponseError as error:
         taxonomy = _taxonomy_module()
@@ -156,6 +169,7 @@ def test_generic_output_limit_category_remains_provider_response() -> None:
     error = ProviderResponseError(
         "generic response without telemetry",
         failure_category="output_limit",
+        failure_origin="local_response",
     )
     taxonomy = _taxonomy_module()
 
@@ -173,10 +187,16 @@ def test_generic_output_limit_category_remains_provider_response() -> None:
         lambda: ProviderTimeoutError("timeout"),
         lambda: ProviderRateLimitError("rate limit"),
         lambda: ProviderResponseError(
-            "transport", failure_category="transport", retryable=True
+            "transport",
+            failure_category="transport",
+            retryable=True,
+            failure_origin="sdk",
         ),
         lambda: ProviderResponseError(
-            "http", failure_category="http", http_status_code=503
+            "http",
+            failure_category="http",
+            http_status_code=503,
+            failure_origin="sdk",
         ),
     ],
 )
@@ -188,9 +208,42 @@ def test_safe_provider_details_are_allow_listed(error_type) -> None:
     assert set(details.model_dump(mode="json")) == {
         "kind",
         "type",
+        "failure_origin",
         "retryable",
         "status_code",
     }
+
+
+def test_provider_failure_details_project_the_origin() -> None:
+    """The origin reaches the artifact while category and reason stay equal."""
+    sdk_error = ProviderResponseError(
+        "sdk rejected the request",
+        failure_category="response",
+        failure_origin="sdk",
+    )
+    local_error = ProviderResponseError(
+        "our own validation rejected the response",
+        failure_category="response",
+        failure_origin="local_response",
+    )
+    taxonomy = _taxonomy_module()
+
+    sdk_details = taxonomy.safe_failure_details(sdk_error)
+    local_details = taxonomy.safe_failure_details(local_error)
+
+    assert isinstance(sdk_details, models_module.ProviderFailureDetails)
+    assert isinstance(local_details, models_module.ProviderFailureDetails)
+    assert sdk_details.failure_origin == "sdk"
+    assert local_details.failure_origin == "local_response"
+    # Everything the evaluation reason is built from is deliberately identical;
+    # only the origin separates the two.
+    assert sdk_details.kind == local_details.kind == "provider_response"
+    assert sdk_details.retryable == local_details.retryable
+    assert sdk_details.status_code == local_details.status_code
+    assert taxonomy.classify_failure(
+        sdk_error
+    ) == taxonomy.classify_failure(local_error)
+    assert taxonomy.classify_failure(sdk_error).reason == "provider_response"
 
 
 def test_safe_failure_details_never_serialize_provider_text() -> None:

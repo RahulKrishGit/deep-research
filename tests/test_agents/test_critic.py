@@ -1052,6 +1052,7 @@ async def test_an_http_provider_failure_still_routes_and_stops(
                     retryable=True,
                     failure_category="http",
                     http_status_code=503,
+                    failure_origin="sdk",
                 )
             ]
         ),

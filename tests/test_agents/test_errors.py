@@ -105,7 +105,10 @@ def test_provider_failure_snapshot_projects_each_finite_kind() -> None:
         (ProviderRateLimitError("rate limit"), "provider_rate_limit"),
         (
             ProviderResponseError(
-                "transport", retryable=True, failure_category="transport"
+                "transport",
+                retryable=True,
+                failure_category="transport",
+                failure_origin="sdk",
             ),
             "provider_transport",
         ),
@@ -115,16 +118,25 @@ def test_provider_failure_snapshot_projects_each_finite_kind() -> None:
                 retryable=True,
                 failure_category="http",
                 http_status_code=503,
+                failure_origin="sdk",
             ),
             "provider_http",
         ),
         (
             ProviderResponseError(
-                "unauthorized", failure_category="http", http_status_code=401
+                "unauthorized",
+                failure_category="http",
+                http_status_code=401,
+                failure_origin="sdk",
             ),
             "provider_http",
         ),
-        (ProviderResponseError("response"), "provider_response"),
+        (
+            ProviderResponseError(
+                "response", failure_origin="local_response"
+            ),
+            "provider_response",
+        ),
         (ProviderError("failure"), "provider_failure"),
     )
 
@@ -177,6 +189,7 @@ def test_agent_provider_failure_details_returns_json_safe_snapshot() -> None:
         "provider_failure": {
             "kind": "provider_rate_limit",
             "exception_type": "ProviderRateLimitError",
+            "failure_origin": None,
             "retryable": True,
             "http_status_code": None,
             "configured_max_tokens": None,

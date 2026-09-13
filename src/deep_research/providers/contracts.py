@@ -28,6 +28,7 @@ FinishReasonCategory: TypeAlias = Literal[
 ProviderFailureCategory: TypeAlias = Literal[
     "output_limit", "transport", "http", "response"
 ]
+ProviderFailureOrigin: TypeAlias = Literal["sdk", "local_response"]
 ProviderFailureKind: TypeAlias = Literal[
     "output_limit",
     "schema_output",
@@ -54,6 +55,7 @@ _FIELD_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$|^[0-9]+$")
 _MAX_FIELD_PATHS = 16
 _MAX_FIELD_PATH_LENGTH = 128
 _MAX_STRUCTURED_DIAGNOSTICS = 2
+_PROVIDER_FAILURE_ORIGINS = frozenset({"sdk", "local_response"})
 
 
 def _normalize_field_path(value: object) -> str:
@@ -189,18 +191,29 @@ class ProviderResponseError(ProviderError):
     ``retryable`` marks transient failures (connection errors, 408/409/429,
     and 5xx statuses) that the repo-owned retry policy may retry;
     deterministic 4xx and content failures default to ``False``.
+
+    ``failure_origin`` separates the two situations that share
+    ``failure_category="response"`` and are otherwise indistinguishable after
+    the fact: the SDK itself rejected the request (``"sdk"``), or the SDK
+    returned a response our own validation refused (``"local_response"``).
+    It is required rather than defaulted because a caller that omits it would
+    silently record a guess, and the origin decides whether the remedy is a
+    retry/transport fix or a response-grammar fix.
     """
 
     def __init__(
         self,
         message: str,
         *,
+        failure_origin: ProviderFailureOrigin,
         retryable: bool = False,
         failure_category: ProviderFailureCategory = "response",
         http_status_code: int | None = None,
     ) -> None:
         if failure_category not in {"output_limit", "transport", "http", "response"}:
             raise ValueError("failure_category must be a known provider category")
+        if failure_origin not in _PROVIDER_FAILURE_ORIGINS:
+            raise ValueError("failure_origin must be a known provider origin")
         if http_status_code is not None and (
             isinstance(http_status_code, bool)
             or not isinstance(http_status_code, int)
@@ -210,6 +223,7 @@ class ProviderResponseError(ProviderError):
         super().__init__(message)
         self.retryable = retryable
         self.failure_category = failure_category
+        self.failure_origin = failure_origin
         self.http_status_code = http_status_code
 
     @property
@@ -230,6 +244,7 @@ class ProviderOutputLimitError(ProviderResponseError):
             self.SAFE_MESSAGE,
             retryable=False,
             failure_category="output_limit",
+            failure_origin="local_response",
         )
         self.telemetry = telemetry
 
@@ -266,6 +281,7 @@ class ProviderFailureSnapshot(ProviderContract):
 
     kind: ProviderFailureKind
     exception_type: str = Field(min_length=1, max_length=128)
+    failure_origin: ProviderFailureOrigin | None = None
     retryable: bool | None = None
     http_status_code: int | None = Field(default=None, ge=100, le=599)
     configured_max_tokens: PositiveInt | None = None
@@ -324,6 +340,7 @@ def provider_failure_snapshot(error: ProviderError) -> ProviderFailureSnapshot:
         return ProviderFailureSnapshot(
             kind=kind,
             exception_type=exception_type,
+            failure_origin=error.failure_origin,
             retryable=error.retryable,
             http_status_code=error.http_status_code,
         )

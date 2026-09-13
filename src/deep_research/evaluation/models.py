@@ -21,6 +21,7 @@ from deep_research.observability import TokenUsage
 from deep_research.providers.contracts import (
     FinishReasonCategory,
     ProviderFailureKind,
+    ProviderFailureOrigin,
     StructuredDiagnosticCategory,
 )
 from deep_research.utils.config import ReasoningEffort
@@ -460,10 +461,17 @@ ProviderFailureDetailKind: TypeAlias = Literal[
 
 
 class ProviderFailureDetails(ContractModel):
-    """Allow-listed type/retry/status facts for provider failures."""
+    """Allow-listed type/retry/status facts for provider failures.
+
+    ``failure_origin`` is optional with a ``None`` default so artifacts
+    written before the field existed still validate; a reader that needs the
+    origin must treat ``None`` as "recorded without it", never as either
+    origin.
+    """
 
     kind: ProviderFailureDetailKind
     type: str = Field(min_length=1, max_length=128)
+    failure_origin: ProviderFailureOrigin | None = None
     retryable: bool
     status_code: int | None = Field(default=None, ge=100, le=599)
 

@@ -675,7 +675,9 @@ async def test_judge_provider_failure_and_schema_reasons_are_distinct(
         (ProviderTimeoutError("judge timed out"), "judge_transport"),
         (
             ProviderResponseError(
-                "connection reset", failure_category="transport"
+                "connection reset",
+                failure_category="transport",
+                failure_origin="sdk",
             ),
             "judge_transport",
         ),
@@ -684,12 +686,15 @@ async def test_judge_provider_failure_and_schema_reasons_are_distinct(
                 "status 503",
                 failure_category="http",
                 http_status_code=503,
+                failure_origin="sdk",
             ),
             "judge_http",
         ),
         (
             ProviderResponseError(
-                "unusable response", failure_category="response"
+                "unusable response",
+                failure_category="response",
+                failure_origin="local_response",
             ),
             "judge_provider_failure",
         ),

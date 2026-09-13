@@ -338,6 +338,7 @@ def test_schema_and_provider_failure_details_retain_only_safe_fields() -> None:
     assert transport.model_dump(mode="json") == {
         "kind": "provider_transport",
         "type": "ProviderResponseError",
+        "failure_origin": None,
         "retryable": True,
         "status_code": None,
     }

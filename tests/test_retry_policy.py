@@ -68,7 +68,7 @@ async def test_with_retries_raises_final_error_after_exhaustion(monkeypatch) -> 
     slept = _recorded_sleeps(monkeypatch)
 
     async def operation() -> str:
-        raise ProviderResponseError("boom", retryable=True)
+        raise ProviderResponseError("boom", retryable=True, failure_origin="sdk")
 
     with pytest.raises(ProviderResponseError, match="boom"):
         await with_retries(operation, retry_count=3, initial_delay=1.0, max_delay=4.0)

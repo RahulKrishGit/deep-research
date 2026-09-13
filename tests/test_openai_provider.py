@@ -1230,6 +1230,69 @@ async def test_openai_native_react_fails_closed_without_leaking(
 
 
 @pytest.mark.asyncio
+async def test_openai_native_sdk_and_envelope_failures_are_distinguishable() -> None:
+    """The formerly ambiguous pair: one public category, two origins."""
+    tracker = local_tracker()
+    sdk_provider = _native_provider(
+        tracker, RecordingResponses(OpenAIError("sdk rejected the request"))
+    )
+    envelope_provider = _native_provider(
+        tracker,
+        RecordingResponses(
+            response(
+                text=OPENAI_SENTINEL,
+                status="completed",
+                output=OPENAI_SENTINEL,
+            )
+        ),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as sdk_caught:
+            await sdk_provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+        with pytest.raises(ProviderResponseError) as envelope_caught:
+            await envelope_provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    sdk_error = sdk_caught.value
+    envelope_error = envelope_caught.value
+
+    assert sdk_error.failure_category == "response"
+    assert sdk_error.failure_origin == "sdk"
+    assert envelope_error.failure_category == "response"
+    assert envelope_error.failure_origin == "local_response"
+
+    # Every other public field a consumer can read stays identical.
+    assert sdk_error.retryable is False
+    assert envelope_error.retryable is False
+    assert sdk_error.http_status_code is None
+    assert envelope_error.http_status_code is None
+    assert sdk_error.status_code is None
+    assert envelope_error.status_code is None
+
+
+def test_fresh_provider_error_copies_the_failure_origin() -> None:
+    """The traceback-free copy must not silently drop the origin."""
+    original = ProviderResponseError(
+        "OpenAI response contained malformed output",
+        failure_origin="local_response",
+    )
+
+    fresh = openai_provider_module._fresh_provider_error(original)
+
+    assert fresh is not original
+    assert fresh.failure_origin == "local_response"
+    assert fresh.failure_category == original.failure_category
+    assert fresh.retryable == original.retryable
+    assert fresh.__traceback__ is None
+
+
+@pytest.mark.asyncio
 async def test_openai_native_react_failures_do_not_retain_the_prompt() -> None:
     """The prompt is provider-adjacent state too, and must be cleared."""
     prompt_marker = "OPENAI_PROMPT_MARKER_9E31"

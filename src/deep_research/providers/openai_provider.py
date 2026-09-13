@@ -121,7 +121,10 @@ def _usage_from_response(response: Any) -> TokenUsage:
         or not isinstance(output_tokens, int)
         or output_tokens < 0
     ):
-        raise ProviderResponseError("OpenAI response contained malformed usage")
+        raise ProviderResponseError(
+     "OpenAI response contained malformed usage",
+     failure_origin="local_response",
+ )
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -153,6 +156,7 @@ def _raise_provider_error(error: Exception) -> None:
     if isinstance(error, sdk.APIConnectionError):
         raise ProviderResponseError(
             "OpenAI connection failed",
+            failure_origin="sdk",
             retryable=True,
             failure_category="transport",
         ) from error
@@ -160,6 +164,7 @@ def _raise_provider_error(error: Exception) -> None:
         status = error.status_code
         raise ProviderResponseError(
             f"OpenAI request failed with status {status}",
+            failure_origin="sdk",
             retryable=status >= 500 or status in (408, 409),
             failure_category="http",
             http_status_code=status,
@@ -176,6 +181,7 @@ def _fresh_provider_error(error: ProviderResponseError) -> ProviderResponseError
     """
     return ProviderResponseError(
         str(error),
+        failure_origin=error.failure_origin,
         retryable=error.retryable,
         failure_category=error.failure_category,
         http_status_code=error.http_status_code,
@@ -221,11 +227,13 @@ def _native_response_outcome(
                 ),
             )
         return None, None, ProviderResponseError(
-            "OpenAI response did not complete"
+            "OpenAI response did not complete",
+            failure_origin="local_response",
         )
     if status != "completed":
         return None, None, ProviderResponseError(
-            "OpenAI response did not complete"
+            "OpenAI response did not complete",
+            failure_origin="local_response",
         )
 
     output = getattr(response, "output", None)
@@ -235,7 +243,8 @@ def _native_response_outcome(
         items = output
     else:
         return None, None, ProviderResponseError(
-            "OpenAI response contained malformed output"
+            "OpenAI response contained malformed output",
+            failure_origin="local_response",
         )
     calls = [item for item in items if getattr(item, "type", None) == "function_call"]
     output_text = getattr(response, "output_text", None)
@@ -244,28 +253,33 @@ def _native_response_outcome(
     if calls:
         if text:
             return None, None, ProviderResponseError(
-                "OpenAI native tool response mixed a final answer with a tool call"
+                "OpenAI native tool response mixed a final answer with a tool call",
+                failure_origin="local_response",
             )
         if len(calls) != 1:
             return None, None, ProviderResponseError(
-                "OpenAI native tool response must carry exactly one tool call"
+                "OpenAI native tool response must carry exactly one tool call",
+                failure_origin="local_response",
             )
         call = calls[0]
         name = getattr(call, "name", None)
         if not isinstance(name, str) or name not in allowed:
             return None, None, ProviderResponseError(
-                "OpenAI native tool response named an unavailable tool"
+                "OpenAI native tool response named an unavailable tool",
+                failure_origin="local_response",
             )
         arguments = getattr(call, "arguments", None)
         if not isinstance(arguments, str) or not arguments.strip():
             return None, None, ProviderResponseError(
-                "OpenAI native tool response carried malformed arguments"
+                "OpenAI native tool response carried malformed arguments",
+                failure_origin="local_response",
             )
         return NativeToolCall(tool_name=name, arguments_json=arguments), None, None
 
     if not text:
         return None, None, ProviderResponseError(
-            "OpenAI native tool response carried no usable final answer"
+            "OpenAI native tool response carried no usable final answer",
+            failure_origin="local_response",
         )
     return None, text, None
 
@@ -372,7 +386,8 @@ class OpenAIChatProvider:
                         _raise_provider_error(error)
                     except _sdk.OpenAIError as error:
                         raise ProviderResponseError(
-                            "OpenAI chat request failed"
+                            "OpenAI chat request failed",
+                            failure_origin="sdk",
                         ) from error
 
                 response = await with_retries(
@@ -384,12 +399,14 @@ class OpenAIChatProvider:
                 output_text = getattr(response, "output_text", None)
                 if not isinstance(output_text, str):
                     raise ProviderResponseError(
-                        "OpenAI response did not contain text output"
+                        "OpenAI response did not contain text output",
+                        failure_origin="local_response",
                     )
                 text = output_text.strip()
                 if not text:
                     raise ProviderResponseError(
-                        "OpenAI response did not contain text output"
+                        "OpenAI response did not contain text output",
+                        failure_origin="local_response",
                     )
                 usage = _usage_from_response(response)
                 _set_span_result(span, response, usage)
@@ -436,7 +453,8 @@ class OpenAIChatProvider:
                     _raise_provider_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
-                        "OpenAI structured output request failed"
+                        "OpenAI structured output request failed",
+                        failure_origin="sdk",
                     ) from error
                 except ValidationError as error:
                     raise _StructuredValidationFailure(
@@ -534,7 +552,8 @@ class OpenAIChatProvider:
                     _raise_provider_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
-                        "OpenAI native tool request failed"
+                        "OpenAI native tool request failed",
+                        failure_origin="sdk",
                     ) from error
 
             response = await with_retries(

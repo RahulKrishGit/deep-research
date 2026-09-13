@@ -315,14 +315,20 @@ def _usage_from_response(response: Any) -> TokenUsage:
         or not isinstance(output_tokens, int)
         or output_tokens < 0
     ):
-        raise ProviderResponseError("DeepSeek response contained malformed usage")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed usage",
+     failure_origin="local_response",
+ )
     total_tokens = getattr(usage, "total_tokens", None)
     if total_tokens is not None and (
         isinstance(total_tokens, bool)
         or not isinstance(total_tokens, int)
         or total_tokens != input_tokens + output_tokens
     ):
-        raise ProviderResponseError("DeepSeek response contained malformed usage")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed usage",
+     failure_origin="local_response",
+ )
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -349,7 +355,10 @@ def _responses_usage_from_response(response: Any) -> TokenUsage:
         usage = None
         input_tokens = None
         output_tokens = None
-        raise ProviderResponseError("DeepSeek response contained malformed usage")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed usage",
+     failure_origin="local_response",
+ )
     total_tokens = getattr(usage, "total_tokens", None)
     if total_tokens is not None and (
         isinstance(total_tokens, bool)
@@ -361,7 +370,10 @@ def _responses_usage_from_response(response: Any) -> TokenUsage:
         input_tokens = None
         output_tokens = None
         total_tokens = None
-        raise ProviderResponseError("DeepSeek response contained malformed usage")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed usage",
+     failure_origin="local_response",
+ )
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -436,7 +448,10 @@ def _choice_text(
     """
     choices = getattr(response, "choices", None)
     if not isinstance(choices, (list, tuple)) or len(choices) != 1:
-        raise ProviderResponseError("DeepSeek response contained malformed choices")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed choices",
+     failure_origin="local_response",
+ )
     choice = choices[0]
     is_stop = (
         finish_reason_category == "stop"
@@ -444,14 +459,23 @@ def _choice_text(
         else getattr(choice, "finish_reason", None) == "stop"
     )
     if not is_stop:
-        raise ProviderResponseError("DeepSeek response did not stop cleanly")
+        raise ProviderResponseError(
+     "DeepSeek response did not stop cleanly",
+     failure_origin="local_response",
+ )
     message = getattr(choice, "message", None)
     content = getattr(message, "content", None) if message is not None else None
     if not isinstance(content, str):
-        raise ProviderResponseError("DeepSeek response contained malformed content")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed content",
+     failure_origin="local_response",
+ )
     text = content.strip()
     if not text and not allow_empty:
-        raise ProviderResponseError("DeepSeek response contained malformed content")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed content",
+     failure_origin="local_response",
+ )
     return text
 
 
@@ -464,6 +488,7 @@ def _fresh_provider_error(error: ProviderResponseError) -> ProviderResponseError
     """
     return ProviderResponseError(
         str(error),
+        failure_origin=error.failure_origin,
         retryable=error.retryable,
         failure_category=error.failure_category,
         http_status_code=error.http_status_code,
@@ -563,6 +588,7 @@ def _raise_deepseek_error(error: Exception) -> None:
     if isinstance(error, sdk.APIConnectionError):
         raise ProviderResponseError(
             "DeepSeek connection failed",
+            failure_origin="sdk",
             retryable=True,
             failure_category="transport",
         ) from error
@@ -570,6 +596,7 @@ def _raise_deepseek_error(error: Exception) -> None:
         status = error.status_code
         raise ProviderResponseError(
             f"DeepSeek request failed with status {status}",
+            failure_origin="sdk",
             retryable=status >= 500 or status in (408, 409),
             failure_category="http",
             http_status_code=status,
@@ -713,7 +740,8 @@ class DeepSeekChatProvider:
                         _raise_deepseek_error(error)
                     except _sdk.OpenAIError as error:
                         raise ProviderResponseError(
-                            "DeepSeek chat request failed"
+                            "DeepSeek chat request failed",
+                            failure_origin="sdk",
                         ) from error
 
                 response = await with_retries(
@@ -790,7 +818,8 @@ class DeepSeekChatProvider:
                     _raise_deepseek_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
-                        "DeepSeek structured output request failed"
+                        "DeepSeek structured output request failed",
+                        failure_origin="sdk",
                     ) from error
 
             response = await with_retries(
@@ -982,7 +1011,8 @@ class DeepSeekChatProvider:
                     _raise_deepseek_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
-                        "DeepSeek native tool request failed"
+                        "DeepSeek native tool request failed",
+                        failure_origin="sdk",
                     ) from error
 
             response = await with_retries(
@@ -1019,7 +1049,9 @@ class DeepSeekChatProvider:
                         finish_reason_category=telemetry.finish_reason_category,
                     )
                     if rejection is not None:
-                        failure = ProviderResponseError(rejection)
+                        failure = ProviderResponseError(
+            rejection, failure_origin="local_response"
+        )
             if failure is None:
                 self._last_model_returned = (
                     getattr(response, "model", None) or effective.model
@@ -1119,7 +1151,8 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                     _raise_deepseek_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
-                        "DeepSeek Responses request failed"
+                        "DeepSeek Responses request failed",
+                        failure_origin="sdk",
                     ) from error
 
             response = await with_retries(
@@ -1142,13 +1175,15 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
             if telemetry.finish_reason_category != "stop":
                 response = None
                 raise ProviderResponseError(
-                    "DeepSeek Responses request did not complete cleanly"
+                    "DeepSeek Responses request did not complete cleanly",
+                    failure_origin="local_response",
                 )
             text = getattr(response, "output_text", None)
             if not isinstance(text, str):
                 response = None
                 raise ProviderResponseError(
-                    "DeepSeek Responses output did not contain text"
+                    "DeepSeek Responses output did not contain text",
+                    failure_origin="local_response",
                 )
             if not text.strip():
                 # DeepSeek documents that JSON Output "may occasionally return
