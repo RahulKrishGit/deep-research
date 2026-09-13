@@ -2961,6 +2961,14 @@ NATIVE_SENTINEL = "NATIVE_REACT_PROVIDER_SENTINEL_3B71"
             ),
             id="non-sequence-tool-calls",
         ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="stop",
+                tool_calls=NATIVE_SENTINEL,
+            ),
+            id="non-sequence-tool-calls-on-stop",
+        ),
     ],
 )
 @pytest.mark.asyncio

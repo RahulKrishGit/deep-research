@@ -35,7 +35,7 @@ def _is_transient(error: BaseException) -> bool:
 
 
 def _drop_chained_provider_state(error: BaseException) -> None:
-    """Detach any SDK exception this typed error was translated from.
+    """Detach the SDK exception this typed error was chained to.
 
     The SDK's own exceptions retain ``request`` (the prompt and the tool
     definitions) and ``body`` (the decoded provider response). A typed error
@@ -44,6 +44,11 @@ def _drop_chained_provider_state(error: BaseException) -> None:
     the interpreter at raise time, so ``from None`` does not remove it. The
     only reliable point to break the link is a raise that happens outside any
     handler, which is where this runs.
+
+    This detaches the *chain*. It does not remove the SDK exception from the
+    translator's own frame, which still holds it as a parameter local: that
+    frame is part of a pre-existing surface shared with ``complete`` and
+    ``complete_structured`` and is out of this fix's scope.
     """
     error.__cause__ = None
     error.__context__ = None

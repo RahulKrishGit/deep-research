@@ -1324,6 +1324,39 @@ async def test_openai_native_react_retries_one_transient_error(
 
 
 @pytest.mark.asyncio
+async def test_openai_native_react_records_the_attempt_count_after_a_retry(
+    monkeypatch,
+) -> None:
+    """The retry counter is visible on the limit path and must be real."""
+    slept = _recorded_sleeps(monkeypatch)
+    responses = RecordingResponses(
+        APIConnectionError(request=httpx.Request("POST", "https://api.openai.com")),
+        response(
+            text="",
+            status="incomplete",
+            output=[],
+            incomplete_reason="max_output_tokens",
+        ),
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=16.0),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderOutputLimitError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert slept == [1.0]
+    assert caught.value.telemetry.request_attempt == 2
+
+
+@pytest.mark.asyncio
 async def test_openai_native_react_span_records_counts_not_names() -> None:
     responses = RecordingResponses(
         response(
@@ -1363,6 +1396,7 @@ async def test_openai_native_react_exhausted_retries_chain_no_sdk_error(
     sdk_error = APIConnectionError(
         request=httpx.Request("POST", "https://api.openai.com")
     )
+    sdk_error.request_marker = OPENAI_SENTINEL
     responses = RecordingResponses(sdk_error, sdk_error)
     tracker = local_tracker()
     provider = OpenAIChatProvider(

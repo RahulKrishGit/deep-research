@@ -499,9 +499,16 @@ def _native_outcome(
     if message is None:
         return None, None, "DeepSeek response contained no message"
     raw_calls = getattr(message, "tool_calls", None)
-    # Normalized once, so a truthy non-sequence cannot reach ``len`` or a
-    # truth test and surface as a raw TypeError.
     calls = raw_calls if isinstance(raw_calls, (list, tuple)) else ()
+    # A container the provider did send, but not as a sequence, is a malformed
+    # envelope: it must be rejected rather than read as "no call at all".
+    malformed_calls = raw_calls is not None and not isinstance(
+        raw_calls, (list, tuple)
+    )
+    if malformed_calls:
+        return None, None, (
+            "DeepSeek native tool response carried a malformed tool_calls field"
+        )
 
     if finish_reason_category == "tool_calls":
         if len(calls) != 1:

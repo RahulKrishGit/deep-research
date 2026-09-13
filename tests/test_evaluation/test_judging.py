@@ -1260,6 +1260,11 @@ async def test_the_judge_never_requests_a_native_tool_turn(
 
     class ReactForbiddenProvider(FakeStructuredProvider):
         async def complete_react(self, messages, tools, **kwargs):
+            # Recorded before refusing, so the ``react_calls == []`` assertion
+            # below can actually fail if the judge ever asks for a native turn.
+            self.react_calls.append(
+                (list(messages), tuple(tools), kwargs.get("agent_name"))
+            )
             raise AssertionError("the judge must never request a native tool turn")
 
     verdict = JudgeVerdict(

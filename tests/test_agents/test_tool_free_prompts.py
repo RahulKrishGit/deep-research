@@ -50,8 +50,9 @@ from deep_research.utils.types import (
     SubTopic,
 )
 
-# Derived from the real tool classes, so a seventh registered tool is
-# covered by the inventory below without anyone remembering to edit this set.
+# Read from the real tool classes' own ``name`` attributes, so a renamed
+# tool is caught. This is still an explicit list of the six production tools:
+# a newly registered seventh tool would have to be added here too.
 REGISTERED_TOOL_NAMES = frozenset(
     tool_class.name
     for tool_class in (
