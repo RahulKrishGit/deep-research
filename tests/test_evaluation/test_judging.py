@@ -905,7 +905,7 @@ def test_the_judge_prompt_states_the_response_contract(critic_live_case) -> None
     prose named none of ``rationale``, ``json``, ``example``, ``field``,
     ``character``, ``object``, or ``keys``. In 30 production attempts at max
     effort, 5 first attempts exceeded the bound, with a median rationale of 1,735
-    characters â€” 265 short of the cap. The constraint is unenforceable by the
+    characters — 265 short of the cap. The constraint is unenforceable by the
     transport: adding ``strict`` to the request returns HTTP 400.
     """
     body = _critic_live_judge_body(critic_live_case)
@@ -948,7 +948,7 @@ def test_the_request_uses_markdown_heading_levels_not_a_flat_list(
     The blocks are rendered as ``## <name>`` by ``_render_blocks``, sixteen of
     them. With a flat heading list a block named ``## rubric`` reads as a
     section of this instruction rather than as part of the material being
-    judged â€” the same collision the Critic request had with its report.
+    judged — the same collision the Critic request had with its report.
     """
     body = _critic_live_judge_body(critic_live_case)
     lines = body.splitlines()
@@ -1111,7 +1111,7 @@ def test_the_stated_limit_is_harder_than_the_enforced_one(critic_live_case) -> N
     The statement is the steering device: a credible hard limit is what keeps the
     model inside the range in most cases. Enforcement is local and wider, so the
     minority of runs which overshoot are still scored rather than becoming an
-    unscorable ``string_too_long`` failure â€” measured at 5 of 30 production
+    unscorable ``string_too_long`` failure — measured at 5 of 30 production
     attempts when the limit was declared at 2000.
 
     Neither number may be reconciled to the other. Softening the prose loses the
@@ -1354,7 +1354,7 @@ async def test_the_judge_never_requests_a_native_tool_turn(
 
     ``DeepSeekJudgeProvider`` inherits ``complete_react`` from the target
     adapter, so capability removal is not what keeps the judge out of the
-    native tool boundary â€” the judge is simply never asked to select a tool.
+    native tool boundary — the judge is simply never asked to select a tool.
     A provider that refuses a native turn outright proves that.
     """
 

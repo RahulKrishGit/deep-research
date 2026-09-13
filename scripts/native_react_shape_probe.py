@@ -54,9 +54,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -101,6 +103,13 @@ EXPECTED_TOOL_CHOICE = "auto"
 EXPECTED_NATIVE_TOOLS = ("web_search", "query_memory")
 
 AUTHORIZED_REQUESTS = 30
+
+# The retry policy the probe forces on its own copy of the LLM config so the
+# batch measures first attempts. It is a constant this script writes into its
+# own config, so it can never disagree with itself; the repository's configured
+# ``llm.retry_count`` is read separately and reported as
+# ``repository_retry_count``.
+PROBE_RETRY_COUNT = 0
 
 # The retired prompt-encoded ReAct markers. Their presence in an outgoing
 # request would mean the probe is testing the wrong transport.
@@ -578,15 +587,27 @@ class _UnusedStructuredProvider:
 # --------------------------------------------------------------------------
 
 
-def _offline_environment() -> None:
+@contextlib.contextmanager
+def _offline_environment() -> Iterator[None]:
     """Placeholders so ``load_settings`` validates during the dry run.
 
-    ``setdefault`` never overwrites a real value, and nothing here is printed.
-    The dry run injects a recording client and contacts nothing, so these are
-    never used as credentials. ``--execute`` does not call this.
+    A name that is already set is never overwritten, and nothing here is
+    printed. The dry run injects a recording client and contacts nothing, so
+    these are never used as credentials. ``--execute`` does not call this.
+    Exactly the names this call had to add are removed again on exit, so the
+    process environment is left as it was found and a dry run cannot make a
+    later test order-dependent.
     """
+    added: list[str] = []
     for name in ("DEEPSEEK_API_KEY", "TAVILY_API_KEY", "LANGSMITH_API_KEY"):
-        os.environ.setdefault(name, _OFFLINE_CLIENT_KEY)
+        if name not in os.environ:
+            os.environ[name] = _OFFLINE_CLIENT_KEY
+            added.append(name)
+    try:
+        yield
+    finally:
+        for name in added:
+            os.environ.pop(name, None)
 
 
 def _runtime(settings: Any) -> Any:
@@ -651,14 +672,27 @@ def build_first_request(settings: Any, tracker: Tracker, counter: list[str]) -> 
     return messages, definitions, agent.config
 
 
+def repository_retry_count(settings: Any) -> int:
+    """The repository's own ``llm.retry_count``, before the probe overrides it.
+
+    This is what the inventory reports as the repository's retry policy. It is
+    read from the loaded repository settings, not from the probe's overridden
+    copy, so a ``config.yaml`` edit moves the published number and the override
+    stays visible as its own field.
+    """
+    return int(settings.llm.retry_count)
+
+
 def provider_config(settings: Any) -> Any:
-    """The reviewed target LLM config with the repository retry count at zero.
+    """The reviewed target LLM config with the retry count forced to zero.
 
     The live probe measures first attempts, so the repository-owned retry policy
-    must not silently convert one logical request into several.
+    must not silently convert one logical request into several. The override is
+    the probe's own; the repository's configured value is reported separately by
+    ``repository_retry_count``.
     """
     return target_llm_config(_runtime(settings), settings.llm).model_copy(
-        update={"retry_count": 0}
+        update={"retry_count": PROBE_RETRY_COUNT}
     )
 
 
@@ -737,7 +771,12 @@ def check_wire_request(
 
 
 def check_agent_config(agent_config: Any, config: Any) -> list[str]:
-    """The frozen budgets this probe is authorized to measure."""
+    """The frozen budgets this probe is authorized to measure.
+
+    The retry assertion pins the probe's own override, not the repository's
+    configuration: it fails if the batch ever runs with repository retries
+    enabled. The repository's configured value is published alongside it.
+    """
     problems: list[str] = []
     if agent_config.react_decision_max_tokens != EXPECTED_MAX_TOKENS:
         problems.append(
@@ -745,8 +784,8 @@ def check_agent_config(agent_config: Any, config: Any) -> list[str]:
         )
     if config.max_tokens != EXPECTED_MAX_TOKENS:
         problems.append(f"llm.max_tokens is {config.max_tokens}")
-    if getattr(config, "retry_count", None) != 0:
-        problems.append(f"repository retry_count is {config.retry_count!r}")
+    if getattr(config, "retry_count", None) != PROBE_RETRY_COUNT:
+        problems.append(f"the probe's retry override is {config.retry_count!r}")
     return problems
 
 
@@ -759,6 +798,7 @@ class RequestMeasurement:
     definitions: tuple[Any, ...] = ()
     agent_config: Any = None
     config: Any = None
+    repository_retry_count: int = 0
     tracker_errors: int = 0
 
 
@@ -785,7 +825,10 @@ async def measure_one_request(
         settings, tracker, tool_calls
     )
     measurement = RequestMeasurement(
-        definitions=definitions, agent_config=agent_config, config=config
+        definitions=definitions,
+        agent_config=agent_config,
+        config=config,
+        repository_retry_count=repository_retry_count(settings),
     )
     measurement.problems.extend(check_agent_config(agent_config, config))
     if getattr(provider, "_config", None) is not config:
@@ -832,8 +875,17 @@ async def run_dry_run(requests: int) -> dict[str, Any]:
     This proves request construction only. It exercises no tool execution, no
     LangSmith transport, and no live provider, so it says nothing about
     execution behavior; the offline agent-boundary tests are what prove that.
+
+    The offline placeholders are installed for the duration of the call and the
+    ones this call added are removed again on exit, so a dry run leaves the
+    process environment exactly as it found it.
     """
-    _offline_environment()
+    with _offline_environment():
+        return await _dry_run_inventory(requests)
+
+
+async def _dry_run_inventory(requests: int) -> dict[str, Any]:
+    """The dry run's body, run with the offline placeholders installed."""
     creations: list[str] = []
     tool_calls: list[str] = []
     recorder = SdkCallRecorder()
@@ -882,7 +934,8 @@ async def run_dry_run(requests: int) -> dict[str, Any]:
         "native_tool_names": [
             entry.get("function", {}).get("name") for entry in call.get("tools", [])
         ],
-        "repository_retry_count": getattr(measurement.config, "retry_count", None),
+        "repository_retry_count": measurement.repository_retry_count,
+        "probe_retry_override": getattr(measurement.config, "retry_count", None),
         "sdk_retry_count": sdk_retries,
         "tool_executions": len(tool_calls),
         "langsmith_requests": len(creations),

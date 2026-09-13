@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,9 +35,11 @@ from deep_research.providers import (
     ProviderTimeoutError,
 )
 from deep_research.providers.native_output import native_text_violation
+from deep_research.utils.config import load_config
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PROBE_PATH = REPOSITORY_ROOT / "scripts" / "native_react_shape_probe.py"
+REPOSITORY_CONFIG_PATH = REPOSITORY_ROOT / "config.yaml"
 
 SENTINEL = "PROBE_SENTINEL_MUST_NOT_BE_RETAINED_7C31"
 
@@ -188,6 +191,42 @@ ADVERSARIAL_BATCH_NAMES = (
     "twenty_nine_calls_plus_output_limit",
 )
 
+# How each adversarial batch must fail: the category the probe has to attribute
+# the failure to, and the kind it has to name. Asserting only ``passed is False``
+# is not enough, because moving an outcome between ``SHAPE_FAILURE_OUTCOMES``
+# and ``PROVIDER_FAILURE_OUTCOMES`` leaves every batch failing while
+# misattributing a shape failure to operational availability -- the exact
+# distinction the Task 8 release verdict exists to report.
+ADVERSARIAL_BATCH_EXPECTATIONS: dict[str, tuple[str, str]] = {
+    "twenty_nine_calls_plus_dsml_final": ("shape", "tool_protocol_text"),
+    "twenty_nine_calls_plus_fenced_action_final": ("shape", "tool_protocol_text"),
+    "twenty_nine_calls_plus_legacy_action_json_final": (
+        "shape",
+        "tool_protocol_text",
+    ),
+    "twenty_nine_calls_plus_unknown_tool": ("shape", "unknown_tool"),
+    "twenty_nine_calls_plus_non_object_arguments": ("shape", "malformed_arguments"),
+    "twenty_nine_calls_plus_local_response_failure": ("shape", "local_rejection"),
+    "twenty_nine_calls_plus_sdk_response_failure": ("provider", "response_sdk"),
+    "twenty_nine_calls_plus_timeout": ("provider", "timeout"),
+    "twenty_nine_calls_plus_output_limit": ("provider", "output_limit"),
+}
+
+# The verdict keys each category is reported through, so a batch is pinned on
+# both halves of the split: the runs it may claim, and the runs it may not.
+FAILURE_CATEGORY_KEYS: dict[str, tuple[str, str, str]] = {
+    "shape": ("shape_failures", "shape_failed_runs", "shape_failure_kinds"),
+    "provider": (
+        "provider_failures",
+        "provider_failed_runs",
+        "provider_failure_kinds",
+    ),
+}
+
+
+def _opposite_category(category: str) -> str:
+    return "provider" if category == "shape" else "shape"
+
 
 def _adversarial_batch(probe: Any, batch: str) -> list[dict[str, Any]]:
     return [
@@ -196,12 +235,52 @@ def _adversarial_batch(probe: Any, batch: str) -> list[dict[str, Any]]:
     ]
 
 
+def test_every_adversarial_batch_pins_how_it_must_fail() -> None:
+    """A new batch cannot be added without saying how and why it fails."""
+    assert set(ADVERSARIAL_BATCH_EXPECTATIONS) == set(ADVERSARIAL_BATCH_NAMES)
+
+
+def test_each_pinned_kind_is_in_the_outcome_set_its_category_names(probe: Any) -> None:
+    """The pinned category and the probe's own outcome sets must agree.
+
+    This is the assertion the mutation experiment attacks directly: an outcome
+    moved from ``SHAPE_FAILURE_OUTCOMES`` to ``PROVIDER_FAILURE_OUTCOMES``
+    contradicts the category pinned for the batch that produces it.
+    """
+    for batch, (category, kind) in ADVERSARIAL_BATCH_EXPECTATIONS.items():
+        owning = (
+            probe.SHAPE_FAILURE_OUTCOMES
+            if category == "shape"
+            else probe.PROVIDER_FAILURE_OUTCOMES
+        )
+        other = (
+            probe.PROVIDER_FAILURE_OUTCOMES
+            if category == "shape"
+            else probe.SHAPE_FAILURE_OUTCOMES
+        )
+        assert kind in owning, f"{batch}: {kind} is not a {category} failure"
+        assert kind not in other, f"{batch}: {kind} is also in {other}"
+
+
 @pytest.mark.parametrize("batch", ADVERSARIAL_BATCH_NAMES)
 def test_the_gate_fails_every_adversarial_batch(probe: Any, batch: str) -> None:
     records = _adversarial_batch(probe, batch)
     assert len(records) == 30
     verdict = probe.evaluate_gate(records, 30)
     assert verdict["passed"] is False, f"{batch} passed the gate"
+    category, kind = ADVERSARIAL_BATCH_EXPECTATIONS[batch]
+    assert tuple(verdict[key] for key in FAILURE_CATEGORY_KEYS[category]) == (
+        1,
+        [30],
+        [kind],
+    ), f"{batch} was not reported as one {category} failure of {kind} at run 30"
+    opposite = _opposite_category(category)
+    assert tuple(verdict[key] for key in FAILURE_CATEGORY_KEYS[opposite]) == (
+        0,
+        [],
+        [],
+    ), f"{batch} was also reported as a {opposite} failure"
+    assert verdict["failed_runs"] == [30], f"{batch} failed the wrong run"
 
 
 def test_thirty_accepted_records_pass_the_gate(probe: Any) -> None:
@@ -460,6 +539,18 @@ def test_usage_totals_are_measured_not_hard_coded(probe: Any) -> None:
     assert first["input_tokens"] != second["input_tokens"]
 
 
+def _configured_retry_count() -> int:
+    """The retry policy ``config.yaml`` actually configures.
+
+    Read through the repository's own loader rather than restated as a
+    constant: the dry run's inventory reports the repository's configured value,
+    so this assertion has to move when the configuration moves, and it fails if
+    the probe ever publishes a constant -- or its own override -- under that
+    name.
+    """
+    return int(load_config(str(REPOSITORY_CONFIG_PATH)).llm.retry_count)
+
+
 def test_the_dry_run_inventory_proves_request_construction(probe: Any) -> None:
     inventory = asyncio.run(probe.run_dry_run(30))
     assert inventory["problems"] == []
@@ -473,7 +564,8 @@ def test_the_dry_run_inventory_proves_request_construction(probe: Any) -> None:
     assert inventory["tool_choice"] == "auto"
     assert inventory["response_format_present"] is False
     assert inventory["native_tool_names"] == ["web_search", "query_memory"]
-    assert inventory["repository_retry_count"] == 0
+    assert inventory["repository_retry_count"] == _configured_retry_count()
+    assert inventory["probe_retry_override"] == 0
     assert inventory["sdk_retry_count"] == 0
     assert inventory["sdk_create_calls"] == 1
     assert inventory["tool_executions"] == 0
@@ -481,8 +573,56 @@ def test_the_dry_run_inventory_proves_request_construction(probe: Any) -> None:
     assert inventory["proves"] == "request construction only"
 
 
-def test_the_dry_run_records_exactly_one_sdk_create(probe: Any) -> None:
-    """The call count comes from wrapping the injected client's create method."""
+def test_the_inventory_separates_the_configured_retry_count_from_the_override(
+    probe: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repository field tracks ``llm.retry_count`` when it is not zero.
+
+    ``LLM_RETRY_COUNT`` is the repository's own environment override, so this
+    forces the two values apart: the published repository value has to follow
+    the configuration while the probe's own override stays at zero. That is what
+    makes the published value an observation about the repository rather than an
+    echo of the constant the probe just wrote into its own copy.
+    """
+    monkeypatch.setenv("LLM_RETRY_COUNT", "9")
+    inventory = asyncio.run(probe.run_dry_run(30))
+    assert inventory["problems"] == []
+    assert inventory["repository_retry_count"] == 9
+    assert inventory["probe_retry_override"] == 0
+
+
+def test_the_dry_run_restores_the_process_environment(
+    probe: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Placeholder credentials must not outlive the dry run that installs them.
+
+    A leak makes every later credential-touching test pass for the wrong reason,
+    so the process environment is asserted to be exactly what it was before the
+    call: an absent name stays absent and a present one keeps its real value.
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-existing-real-key")
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    before = dict(os.environ)
+    inventory = asyncio.run(probe.run_dry_run(30))
+    assert inventory["passed"] is True
+    assert dict(os.environ) == before
+    assert "TAVILY_API_KEY" not in os.environ
+    assert "LANGSMITH_API_KEY" not in os.environ
+    assert os.environ["DEEPSEEK_API_KEY"] == "sk-existing-real-key"
+
+
+def test_the_dry_run_records_exactly_one_sdk_create(
+    probe: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The call count comes from wrapping the injected client's create method.
+
+    ``load_settings`` runs in strict mode, so this test names the credentials it
+    needs instead of inheriting whatever a previously run test happened to leave
+    in the process environment.
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-probe-offline-placeholder")
+    monkeypatch.setenv("TAVILY_API_KEY", "sk-probe-offline-placeholder")
     recorder = probe.SdkCallRecorder()
     client = probe.RecordingSDKClient(recorder)
     asyncio.run(
