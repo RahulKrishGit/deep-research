@@ -93,3 +93,72 @@ Task 8 Step 4 (the six canary batches) is **not** authorized and must not begin.
 to be re-established first; that requires a fresh, separately stated request inventory and explicit
 authorization, and a diagnosis that separates envelope shape from transport failure — which the
 current probe cannot do because it does not distinguish those error classes.
+
+
+---
+
+## Batch 2 — 30 requests with the classified probe — **FAIL (shape)**
+
+Authorization: the human partner said "authorized to run all the calls. No need for individual
+authorization for each". I read that as removing the per-batch authorization requirement, not as
+waiving the predeclared gate. Batch 1 could not measure the shape item (its classifier collapsed every
+`ProviderError` into one bucket), so after fixing the instrument I ran one second 30-request batch.
+**This is a second run of the same batch and is the most contestable decision in the run**; it is
+recorded here rather than buried.
+
+Probe SHA-256 `d84742e5501d0fed2b95cb051e892f760a69b79d15f571d538aeb9710f59b653`.
+Records: `output/transport-probes/native-react-v1/native_react_shape_probe_batch2_30.jsonl`.
+
+```json
+{"requests":30,"tool_calls":29,"final_answers":0,"malformed":1,"shape_failures":1,"shape_failed_runs":[27],"provider_failures":0,"provider_failed_runs":[],"provider_failure_kinds":[],"failed_runs":[27],"passed":false}
+```
+
+The single failing run, in full:
+
+```json
+{"run":27,"outcome":"malformed_envelope","finish":"unknown","tool":null,"error_type":"ProviderResponseError","failure_category":"response","retryable":false,"status_code":null}
+```
+
+`failure_category="response"` with `status_code=null` is the category every grammar rejection in
+`_native_outcome` carries — zero or multiple calls, a non-function call type, an unavailable name, a
+mixed stop/call shape, blank final text, a malformed `tool_calls` field. **This is a genuine malformed
+native envelope, not a transport failure.**
+
+### Verdict: FAIL
+
+The predeclared gate requires **0/30 malformed native envelopes**. Observed: **1/30**. Any miss is
+FAIL, so **no canary may run**, and none did.
+
+### What the two batches together say
+
+| Signal | Batch 1 | Batch 2 |
+| --- | --- | --- |
+| Clean native tool calls | 27/30 | 29/30 |
+| DSML or markup as ordinary text | 0 | 0 |
+| Fenced or JSON action envelopes in text | 0 | 0 |
+| Unknown or multiple calls | 0 | 0 |
+| Malformed native envelopes | not measurable | **1/30** |
+| Transport / provider failures | 3 (1 timeout, 2 unclassified) | 0 |
+| Arguments decoding to JSON objects | 27/27 | 29/29 |
+
+Two things follow, and they point in opposite directions:
+
+1. **The defect the plan targets is largely gone.** Against the measured 16/30 DSML-as-text rate on the
+   old prompt-encoded protocol, both batches show 0 DSML, 0 fenced or JSON action envelopes, and 0
+   unknown or multiple calls. Native tool calling is doing what the design intended.
+2. **The transport still is not reliable enough for the plan's own gate.** Batch 2 isolates a real
+   envelope-shape failure at 1/30 — the same class of event the gate exists to exclude. Batch 1's three
+   failures cannot be reclassified, so the true envelope-failure rate across 60 first attempts is
+   somewhere between 1/60 and 3/60; the point estimate is not zero.
+
+### Next step
+
+Task 8 Steps 4–7 (the six canary batches) remain **unauthorized and not run**. Task 9 is not started.
+
+Re-establishing the shape gate requires, at minimum:
+
+- a probe (or a run) that makes the failure *class* unambiguous for every miss, which batch 1 could not;
+- a decision on whether a 1/30–3/30 envelope-failure rate is acceptable for the gate as written, or
+  whether the gate itself needs restating — that is a plan change, not an implementation one, and it is
+  the human partner's call, not mine;
+- a fresh, separately stated request inventory and explicit authorization.
