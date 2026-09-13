@@ -9,6 +9,7 @@ import pytest
 
 from deep_research.evaluation import config as evaluation_config
 from deep_research.evaluation.config import (
+    _TARGET_REACT_TRANSPORT,
     GitMetadata,
     SecretLeakError,
     agent_prompt_fingerprint,
@@ -53,7 +54,13 @@ from deep_research.utils.config import (
 # ``git_commit``, so the change is explained by its diff. Attribution is genuinely
 # lost only when a fingerprint was recorded from a dirty tree whose exact source
 # snapshot was not kept.
-CRITIC_PROMPT_FINGERPRINT = "2c0bd1210e21"
+# Moved 2c0bd1210e21 -> c971e00c3773 by
+# docs/superpowers/plans/2026-09-12-shared-native-react-tools-and-prompt-conformance.md:
+# the shared native ReAct change removed the simulated tool catalogue from
+# ``agents.prompts`` and replaced the Critic's own ReAct closure, so every
+# agent's recorded ``target_prompt_fingerprint`` moved. Re-pinned deliberately,
+# in its own commit, rather than silently invalidated.
+CRITIC_PROMPT_FINGERPRINT = "c971e00c3773"
 
 NOW = datetime(2026, 8, 16, 10, 15, 0, tzinfo=timezone.utc)
 GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
@@ -332,6 +339,75 @@ def test_judge_prompt_fingerprint_is_unchanged_by_transport_provenance() -> None
     build(settings=ConfigSettings(llm=LLMConfig(provider="openai")))
 
     assert judge_prompt_fingerprint(rubric_version=1) == baseline
+
+
+def _target_transport(provider: str) -> str:
+    transport = getattr(evaluation_config, "target_react_transport", None)
+    assert callable(transport)
+    return transport(provider)
+
+
+def test_target_react_transport_is_provider_specific() -> None:
+    assert _target_transport("deepseek") == "deepseek_chat_tools_auto_v1"
+    assert _target_transport("openai") == "openai_responses_tools_auto_v1"
+
+
+@pytest.mark.parametrize(
+    ("provider", "transport"),
+    [
+        ("deepseek", "deepseek_chat_tools_auto_v1"),
+        ("openai", "openai_responses_tools_auto_v1"),
+    ],
+)
+def test_target_react_transport_is_recorded(
+    provider: str, transport: str
+) -> None:
+    settings = ConfigSettings(llm=LLMConfig(provider=provider))
+
+    metadata = experiment_metadata(build(settings=settings), settings)
+
+    assert metadata["target_react_transport"] == transport
+
+
+def test_changing_the_target_transport_refingerprints_the_configuration(
+    monkeypatch,
+) -> None:
+    """The new field must participate in the fingerprint, not just be recorded.
+
+    Changing providers alone does not prove that: the provider is already part
+    of the application settings, so the fingerprint would move anyway. Patching
+    only the transport value and rebuilding identical settings is what isolates
+    the field's own contribution.
+    """
+    baseline = build()
+    monkeypatch.setitem(
+        _TARGET_REACT_TRANSPORT, "deepseek", "patched_transport_v9"
+    )
+
+    patched = build()
+
+    assert _target_transport("deepseek") == "patched_transport_v9"
+    assert (
+        patched.configuration_fingerprint != baseline.configuration_fingerprint
+    )
+
+
+def test_changing_the_target_transport_never_touches_the_dataset_or_judge(
+    monkeypatch,
+) -> None:
+    baseline = build()
+    monkeypatch.setitem(
+        _TARGET_REACT_TRANSPORT, "deepseek", "patched_transport_v9"
+    )
+
+    patched = build()
+
+    assert patched.dataset_name == baseline.dataset_name
+    assert (
+        patched.judge_configuration_fingerprint
+        == baseline.judge_configuration_fingerprint
+    )
+    assert judge_prompt_fingerprint(rubric_version=1) == "74b9cddfbbee"
 
 
 def test_the_critic_target_fingerprint_is_pinned_as_a_drift_alarm() -> None:

@@ -61,9 +61,21 @@ _JUDGE_STRUCTURED_TRANSPORT = {
     "openai": "openai_responses_parse_v1",
 }
 
+# How the *target* agents select tools. Distinct from the judge's structured
+# transport above: the target ReAct turn now uses provider-native tool calls,
+# so an artifact recorded before this change is not comparable to one after it.
+_TARGET_REACT_TRANSPORT = {
+    "deepseek": "deepseek_chat_tools_auto_v1",
+    "openai": "openai_responses_tools_auto_v1",
+}
+
 
 def judge_structured_transport(provider: ProviderName) -> str:
     return _JUDGE_STRUCTURED_TRANSPORT[provider]
+
+
+def target_react_transport(provider: ProviderName) -> str:
+    return _TARGET_REACT_TRANSPORT[provider]
 
 
 def _validated_effort(value: str) -> ReasoningEffort:
@@ -304,6 +316,9 @@ def build_runtime_config(
             "application": settings.model_dump(mode="json"),
             "target_model": evaluation.target_model,
             "target_reasoning_effort": target_effort,
+            "target_react_transport": target_react_transport(
+                settings.llm.provider
+            ),
             "thinking_mode": "enabled",
             "dataset_version": evaluation.dataset_version,
             "rubric_version": evaluation.rubric_version,
@@ -479,6 +494,9 @@ def experiment_metadata(
         "git_dirty": runtime.git.dirty,
         "target_model": runtime.target_model,
         "target_reasoning_effort": runtime.target_reasoning_effort,
+        "target_react_transport": target_react_transport(
+            settings.llm.provider
+        ),
         "thinking_mode": runtime.thinking_mode,
         "target_model_configuration": target_llm_config(
             runtime, settings.llm
