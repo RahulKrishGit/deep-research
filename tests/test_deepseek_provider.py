@@ -28,7 +28,11 @@ from pydantic import (
 import deep_research.providers.contracts as contracts_module
 import deep_research.providers.deepseek_provider as deepseek_module
 from deep_research.agents.steps import ReActDecision
-from deep_research.evaluation.models import JudgeVerdict
+from deep_research.evaluation.judging import JUDGE_RATIONALE_GUIDANCE_MAX
+from deep_research.evaluation.models import (
+    JUDGE_RATIONALE_SCHEMA_MAX,
+    JudgeVerdict,
+)
 from deep_research.observability import (
     LangSmithRuntimeConfig,
     TokenUsage,
@@ -255,6 +259,20 @@ class StrictDiagnosticEnvelope(BaseModel):
     required: str
 
     model_config = ConfigDict(extra="forbid")
+
+
+class StrictBoundedRationale(BaseModel):
+    """A local strict schema, so repair mechanics stay off the Judge contract.
+
+    ``JudgeVerdict`` deliberately ignores added top-level properties and
+    accepts a rationale far longer than its prompt guidance, so it can no
+    longer express "this reply is invalid" for the generic repair tests.
+    This schema can: extras are fatal and the string bound is 20 characters.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rationale: str = Field(min_length=1, max_length=20)
 
 
 class RootDiagnosticPayload(RootModel[list[str]]):
@@ -507,9 +525,16 @@ async def test_deepseek_judge_responses_output_limit_is_typed() -> None:
 
 @pytest.mark.asyncio
 async def test_deepseek_judge_responses_repair_succeeds_once() -> None:
+    """The Judge tolerates *added* top-level properties, never an omitted one.
+
+    The first reply drops the required ``rationale`` (and carries an added
+    property purely as a leak marker), so it is genuinely invalid and the
+    one structured repair must actually run.
+    """
     extra_key = "undeclared_responses_property"
     marker = "RESPONSES_FIRST_OUTPUT_MARKER_93A7"
     first_payload = _judge_payload(rationale="valid judge rationale")
+    del first_payload["rationale"]
     first_payload[extra_key] = marker
     second_payload = _judge_payload(rationale="repaired judge rationale")
     responses = RecordingResponses(
@@ -536,22 +561,25 @@ async def test_deepseek_judge_responses_repair_succeeds_once() -> None:
         assert call["text"]["format"]["schema"] == JudgeVerdict.model_json_schema()
     repair_input = str(responses.calls[1]["input"])
     assert "previous JSON response failed JudgeVerdict validation" in repair_input
-    assert "category=extra_forbidden; field_paths=$" in repair_input
-    assert "only properties declared" in repair_input
+    assert "category=missing; field_paths=rationale" in repair_input
     assert extra_key not in repair_input
     assert marker not in repair_input
 
 
 @pytest.mark.asyncio
 async def test_deepseek_judge_responses_repair_exhaustion_is_typed_and_safe() -> None:
+    """A missing field then an over-backstop rationale exhausts the one repair."""
     extra_key = "undeclared_responses_property"
     first_marker = "RESPONSES_FIRST_OUTPUT_MARKER_1B42"
     second_marker = "RESPONSES_SECOND_OUTPUT_MARKER_7C18"
     first_payload = _judge_payload(rationale="valid judge rationale")
+    del first_payload["rationale"]
     first_payload[extra_key] = first_marker
     second_payload = _judge_payload(
-        rationale=second_marker + ("x" * (2001 - len(second_marker)))
+        rationale=second_marker
+        + "x" * (JUDGE_RATIONALE_SCHEMA_MAX + 1 - len(second_marker))
     )
+    assert len(second_payload["rationale"]) == JUDGE_RATIONALE_SCHEMA_MAX + 1
     responses = RecordingResponses(
         responses_response(output_text=json.dumps(first_payload)),
         responses_response(output_text=json.dumps(second_payload)),
@@ -577,11 +605,11 @@ async def test_deepseek_judge_responses_repair_exhaustion_is_typed_and_safe() ->
     assert [
         (item.category, item.field_paths) for item in caught.value.diagnostics
     ] == [
-        ("extra_forbidden", ("$",)),
+        ("missing", ("rationale",)),
         ("string_bounds", ("rationale",)),
     ]
     second_input = str(responses.calls[1]["input"])
-    assert "only properties declared" in second_input
+    assert "category=missing; field_paths=rationale" in second_input
     assert extra_key not in second_input
     assert first_marker not in second_input
     assert first_marker not in str(caught.value)
@@ -593,6 +621,115 @@ async def test_deepseek_judge_responses_repair_exhaustion_is_typed_and_safe() ->
     for call in responses.calls:
         assert call["text"]["format"]["type"] == "json_schema"
         assert call["text"]["format"]["schema"] == JudgeVerdict.model_json_schema()
+
+
+@pytest.mark.asyncio
+async def test_judge_ignores_one_top_level_note_without_repair() -> None:
+    """The Judge's deliberate tolerance: one added top-level note is dropped.
+
+    Measured cause of the tolerance: naming the reply's fields in the judge
+    prompt invited the model to append a note such as ``agent_specific_note``,
+    and repairing over it lost whole repetitions as unscorable
+    ``judge_schema_failure``. Addition is therefore dropped, not repaired --
+    with no second Responses call.
+    """
+    note_key = "agent_specific_note"
+    note = "JUDGE_NOTE_MARKER_5E21"
+    payload = _judge_payload(rationale="valid judge rationale")
+    payload[note_key] = note
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(payload)),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert len(responses.calls) == 1
+    assert result == JudgeVerdict.model_validate(
+        _judge_payload(rationale="valid judge rationale")
+    )
+    assert not hasattr(result, note_key)
+    assert note_key not in result.model_dump()
+    assert note not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_judge_accepts_rationale_above_guidance_below_backstop() -> None:
+    """2,001 characters exceed the prompt's guidance, not the schema bound.
+
+    The judge prompt asks for a rationale shorter than the schema enforces,
+    so a reply between the two numbers is accepted on the first call. A
+    future "fix" that tightened the schema to the guidance would spend a
+    repair on a reply the model was told was acceptable.
+    """
+    rationale = "x" * (JUDGE_RATIONALE_GUIDANCE_MAX + 1)
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps(_judge_payload(rationale=rationale))
+        ),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert len(responses.calls) == 1
+    assert result.rationale == rationale
+    assert JUDGE_RATIONALE_GUIDANCE_MAX < len(result.rationale)
+    assert len(result.rationale) < JUDGE_RATIONALE_SCHEMA_MAX
+
+
+@pytest.mark.asyncio
+async def test_judge_repairs_rationale_above_the_local_backstop() -> None:
+    """One character past the local backstop is a real violation: repair it.
+
+    ``JUDGE_RATIONALE_SCHEMA_MAX`` is the enforced bound, so a rationale one
+    character past it must spend exactly one repair carrying the
+    ``string_bounds`` diagnostic, and the repaired verdict must be the result.
+    """
+    oversized = "x" * (JUDGE_RATIONALE_SCHEMA_MAX + 1)
+    repaired = "repaired judge rationale"
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps(_judge_payload(rationale=oversized))
+        ),
+        responses_response(
+            output_text=json.dumps(_judge_payload(rationale=repaired))
+        ),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert len(responses.calls) == 2
+    assert result.rationale == repaired
+    repair_input = str(responses.calls[1]["input"])
+    assert "category=string_bounds; field_paths=rationale" in repair_input
+    assert "every string constraint" in repair_input
+    assert oversized not in repair_input
 
 
 @pytest.mark.asyncio
@@ -1901,10 +2038,7 @@ async def test_deepseek_structured_repairs_once_then_succeeds() -> None:
 async def test_deepseek_structured_repair_guides_root_extra_properties() -> None:
     extra_key = "undeclared_provider_property"
     marker = "ROOT_EXTRA_PROVIDER_MARKER_4C8A"
-    valid_payload = {
-        "nested": {"count": 2, "label": "ok"},
-        "required": "ok",
-    }
+    valid_payload = {"rationale": "ok"}
     invalid_payload = {**valid_payload, extra_key: marker}
     completions = RecordingCompletions(
         chat_response(text=json.dumps(invalid_payload)),
@@ -1918,10 +2052,10 @@ async def test_deepseek_structured_repair_guides_root_extra_properties() -> None
     async with tracker.session_span("session-1", "question"):
         result = await provider.complete_structured(
             [ChatMessage(role="user", content="question")],
-            StrictDiagnosticEnvelope,
+            StrictBoundedRationale,
         )
 
-    assert result.required == "ok"
+    assert result.rationale == "ok"
     assert len(completions.calls) == 2
     repair_message = str(completions.calls[1]["messages"][-1]["content"])
     assert "category=extra_forbidden; field_paths=$" in repair_message
@@ -1936,21 +2070,22 @@ async def test_deepseek_structured_repair_guides_root_extra_properties() -> None
 @pytest.mark.parametrize(
     ("invalid_rationale", "forbidden_repair_fragment"),
     [
-        ("", '"rationale": ""'),
-        (
-            "STRING_BOUNDS_PROVIDER_MARKER_"
-            + "x" * (2001 - len("STRING_BOUNDS_PROVIDER_MARKER_")),
-            "STRING_BOUNDS_PROVIDER_MARKER_"
-            + "x" * (2001 - len("STRING_BOUNDS_PROVIDER_MARKER_")),
+        pytest.param("", '"rationale": ""', id="empty"),
+        pytest.param(
+            "STRING_BOUNDS_PROVIDER_MARKER_" + "x" * 8,
+            "STRING_BOUNDS_PROVIDER_MARKER_" + "x" * 8,
+            id="too-long",
         ),
     ],
 )
 async def test_deepseek_structured_repair_guides_string_bounds(
     invalid_rationale: str, forbidden_repair_fragment: str
 ) -> None:
-    assert len(invalid_rationale) in {0, 2001}
-    valid_payload = _judge_payload(rationale="valid judge rationale")
-    invalid_payload = _judge_payload(rationale=invalid_rationale)
+    # Both values violate ``StrictBoundedRationale`` (min_length=1,
+    # max_length=20) without touching the Judge contract.
+    assert len(invalid_rationale) == 0 or len(invalid_rationale) > 20
+    valid_payload = {"rationale": "ok"}
+    invalid_payload = {"rationale": invalid_rationale}
     completions = RecordingCompletions(
         chat_response(text=json.dumps(invalid_payload)),
         chat_response(text=json.dumps(valid_payload)),
@@ -1962,10 +2097,11 @@ async def test_deepseek_structured_repair_guides_string_bounds(
 
     async with tracker.session_span("session-1", "question"):
         result = await provider.complete_structured(
-            [ChatMessage(role="user", content="question")], JudgeVerdict
+            [ChatMessage(role="user", content="question")],
+            StrictBoundedRationale,
         )
 
-    assert result.rationale == "valid judge rationale"
+    assert result.rationale == "ok"
     assert len(completions.calls) == 2
     repair_message = str(completions.calls[1]["messages"][-1]["content"])
     assert "category=string_bounds; field_paths=rationale" in repair_message
@@ -1980,9 +2116,8 @@ async def test_deepseek_structured_repair_guides_string_bounds(
 async def test_deepseek_structured_repair_preserves_prior_diagnostics() -> None:
     extra_key = "undeclared_provider_property"
     marker = "PRESERVED_EXTRA_PROVIDER_MARKER_2D91"
-    first_payload = _judge_payload(rationale="valid judge rationale")
-    first_payload[extra_key] = marker
-    second_payload = _judge_payload(rationale="")
+    first_payload = {"rationale": "ok", extra_key: marker}
+    second_payload = {"rationale": ""}
     completions = RecordingCompletions(
         chat_response(text=json.dumps(first_payload)),
         chat_response(text=json.dumps(second_payload)),
@@ -1995,7 +2130,8 @@ async def test_deepseek_structured_repair_preserves_prior_diagnostics() -> None:
     async with tracker.session_span("session-1", "question"):
         with pytest.raises(StructuredOutputError) as caught:
             await provider.complete_structured(
-                [ChatMessage(role="user", content="question")], JudgeVerdict
+                [ChatMessage(role="user", content="question")],
+                StrictBoundedRationale,
             )
 
     assert len(completions.calls) == 2
