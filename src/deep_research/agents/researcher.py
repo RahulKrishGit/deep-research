@@ -151,32 +151,70 @@ def _normalized(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
-def _ordered_sub_topics(state: ResearchState) -> list[SubTopic]:
-    """Order every sub-topic by Critic-flagged gaps first, then by priority.
-
-    A sub-topic counts as gap-flagged when its normalized title appears
-    inside the concatenated, normalized text of ``critique.gaps``. Ties
-    resolve by ``priority`` ascending (1 is most important), then by the
-    order the planner produced. Callers that need to know which sub-topics
-    a ``max_sub_topics`` cap left out (``ResearcherAgent.run``) use this
-    directly instead of ``select_sub_topics``, which only returns the
-    truncated head.
-    """
+def _critic_gap_text(state: ResearchState) -> str:
     critique = state.critique
-    gap_text = (
+    return (
         " ".join(_normalized(gap) for gap in critique.gaps)
         if critique is not None
         else ""
     )
 
+
+def _is_critic_gap_target(sub_topic: SubTopic, gap_text: str) -> bool:
+    title = _normalized(sub_topic.title)
+    return bool(title and title in gap_text)
+
+
+def _has_prior_finding(state: ResearchState, sub_topic: SubTopic) -> bool:
+    title = _normalized(sub_topic.title)
+    return any(
+        _normalized(finding.related_sub_topic) == title
+        for finding in state.raw_findings
+    )
+
+
+def _refinement_satisfied_sub_topics(state: ResearchState) -> list[SubTopic]:
+    """Return non-gap topics already satisfied by a prior raw finding."""
+    if state.critique is None:
+        return []
+    gap_text = _critic_gap_text(state)
+    return [
+        sub_topic
+        for sub_topic in state.sub_topics
+        if not _is_critic_gap_target(sub_topic, gap_text)
+        and _has_prior_finding(state, sub_topic)
+    ]
+
+
+def _ordered_sub_topics(state: ResearchState) -> list[SubTopic]:
+    """Order eligible sub-topics by Critic-flagged gaps, then priority.
+
+    A sub-topic counts as gap-flagged when its normalized title appears
+    inside the concatenated, normalized text of ``critique.gaps``. Ties
+    resolve by ``priority`` ascending (1 is most important), then by the
+    order the planner produced. On a refinement pass, non-gap topics with a
+    prior finding whose normalized related sub-topic matches their title are
+    omitted as interim-satisfied. Initial passes keep every planned topic.
+    Callers that need to know which sub-topics a ``max_sub_topics`` cap left
+    out (``ResearcherAgent.run``) use this directly instead of
+    ``select_sub_topics``, which only returns the truncated head.
+    """
+    gap_text = _critic_gap_text(state)
+
     def sort_key(item: tuple[int, SubTopic]) -> tuple[int, int, int]:
         index, sub_topic = item
-        title = _normalized(sub_topic.title)
-        flagged = 0 if title and title in gap_text else 1
+        flagged = 0 if _is_critic_gap_target(sub_topic, gap_text) else 1
         return (flagged, sub_topic.priority, index)
 
     ordered = sorted(enumerate(state.sub_topics), key=sort_key)
-    return [sub_topic for _, sub_topic in ordered]
+    if state.critique is None:
+        return [sub_topic for _, sub_topic in ordered]
+    return [
+        sub_topic
+        for _, sub_topic in ordered
+        if _is_critic_gap_target(sub_topic, gap_text)
+        or not _has_prior_finding(state, sub_topic)
+    ]
 
 
 def select_sub_topics(
@@ -184,10 +222,13 @@ def select_sub_topics(
     *,
     max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
 ) -> list[SubTopic]:
-    """Return the top ``max_sub_topics`` sub-topics, ordered by ``_ordered_sub_topics``.
+    """Return the top eligible sub-topics, ordered by ``_ordered_sub_topics``.
 
-    Sub-topics past the cap are truncated here with no record of their own —
-    ``ResearcherAgent.run`` is responsible for recording what this cap drops.
+    Initial passes include every planned sub-topic. Refinement passes omit
+    non-gap topics already covered by a prior finding. Sub-topics past the cap
+    are truncated here with no record of their own — ``ResearcherAgent.run``
+    is responsible for recording what this cap drops and what refinement
+    satisfaction omitted.
     """
     if max_sub_topics < 1:
         raise ValueError("max_sub_topics must be at least 1")
@@ -678,7 +719,8 @@ def research_completed_event(
 
     ``sub_topics_planned`` is every sub-topic the Planner produced;
     ``sub_topics_skipped`` is however many of those were never attempted —
-    dropped by the ``max_sub_topics`` cap, or left unstarted when a
+    dropped by the ``max_sub_topics`` cap, omitted because an interim
+    refinement-satisfaction rule passed, or left unstarted when a
     non-recoverable provider failure stopped the pass early. Together with
     ``sub_topics_researched`` this makes "was every planned sub-topic
     accounted for" answerable from the event stream alone, without cross-
@@ -729,12 +771,14 @@ def sub_topic_skipped_error(
 ) -> ResearchError:
     """Warn that a planned sub-topic was never attempted at all.
 
-    ``reason`` is one of two enumerated strings, never raw exception text:
+    ``reason`` is one of three enumerated strings, never raw exception text:
     ``"cap"`` when ``max_sub_topics`` truncated the planned list before this
     sub-topic's turn came up, or ``"provider_failure_stopped_processing"``
     when an earlier sub-topic's non-recoverable provider failure stopped
-    the pass before this sub-topic could run. Recoverable: the rest of the
-    report can still stand, just incomplete for this sub-topic.
+    the pass before this sub-topic could run, or ``"interim_satisfaction"``
+    when a non-gap topic already has a matching prior finding on a refinement
+    pass. Recoverable: the rest of the report can still stand, just incomplete
+    for this sub-topic.
 
     Every unattempted sub-topic gets one of these, whatever its priority:
     the record carries the sub-topic's ``coverage_id`` so the plans a pass
@@ -1017,6 +1061,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """Research each selected sub-topic in its own bounded loop."""
         base_task = self.build_task(state)
         ordered = _ordered_sub_topics(state)
+        satisfied = _refinement_satisfied_sub_topics(state)
         selected = ordered[: self._max_sub_topics]
         capped = ordered[self._max_sub_topics :]
         events: list[ResearchEvent] = []
@@ -1102,6 +1147,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # high-priority ones, so a thin low-priority topic is not noise.
         skipped_by_break = selected[stopped_at:] if stopped_at is not None else []
         unattempted: list[tuple[SubTopic, str]] = [
+            (sub_topic, "interim_satisfaction") for sub_topic in satisfied
+        ] + [
             (sub_topic, "cap") for sub_topic in capped
         ] + [
             (sub_topic, "provider_failure_stopped_processing")
@@ -1110,7 +1157,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         for sub_topic, reason in unattempted:
             errors.append(sub_topic_skipped_error(sub_topic, reason=reason))
 
-        if not selected:
+        if not selected and not state.sub_topics:
             errors.append(
                 agent_error(
                     agent_name=self.name,
@@ -1122,7 +1169,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             research_completed_event(
                 sub_topics_planned=len(state.sub_topics),
                 sub_topics_researched=len(runs),
-                sub_topics_skipped=len(capped) + len(skipped_by_break),
+                sub_topics_skipped=len(unattempted),
                 findings=len(findings),
             )
         )

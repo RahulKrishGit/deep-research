@@ -258,6 +258,41 @@ def test_selection_falls_back_to_priority_when_no_gap_matches() -> None:
     assert [sub_topic.title for sub_topic in selected] == ["Beta", "Alpha"]
 
 
+def test_refinement_selection_uses_one_slot_for_unsatisfied_topic() -> None:
+    state = _state(
+        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 3)],
+        raw_findings=[_finding(" alpha ", "https://example.test/alpha")],
+        critique=_critique(),
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=1)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Beta"]
+
+
+def test_refinement_gap_target_is_selected_even_when_prior_findings_exist() -> None:
+    state = _state(
+        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 3)],
+        raw_findings=[_finding("Alpha", "https://example.test/alpha")],
+        critique=_critique(gaps=["Alpha still has a critic gap."]),
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=1)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Alpha"]
+
+
+def test_initial_selection_keeps_topics_with_prior_findings() -> None:
+    state = _state(
+        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 3)],
+        raw_findings=[_finding("Alpha", "https://example.test/alpha")],
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=2)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Alpha", "Beta"]
+
+
 def test_high_priority_is_a_threshold_on_the_priority_value() -> None:
     assert is_high_priority(_sub_topic("Alpha", 1)) is True
     assert is_high_priority(_sub_topic("Beta", 2)) is True
@@ -1579,6 +1614,56 @@ async def test_the_researcher_prioritizes_the_gap_the_critic_named(
     loop_body = completer.react_calls[0].messages[1].content
     assert "- beta throughput 2025" in loop_body
     assert "Sub-topic: Beta" in loop_body
+
+
+@pytest.mark.asyncio
+async def test_refinement_skips_a_satisfied_non_gap_topic_with_an_honest_reason(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Research Beta.", "No new sources.")],
+        outputs=[],
+    )
+    agent = _researcher(tracker, completer, max_sub_topics=1)
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 3, coverage_id="topic-02"),
+        ],
+        raw_findings=[_finding("alpha", "https://example.test/alpha")],
+        critique=_critique(),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == ["Beta"]
+
+    skipped = [
+        error
+        for error in outcome.errors
+        if error.error_type == "researcher_sub_topic_skipped"
+    ]
+    assert len(skipped) == 1
+    assert skipped[0].details == {
+        "sub_topic": "Alpha",
+        "coverage_id": "topic-01",
+        "priority": 1,
+        "reason": "interim_satisfaction",
+    }
+    completed = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.research.completed"
+    )
+    assert completed.metadata["sub_topics_planned"] == 2
+    assert completed.metadata["sub_topics_researched"] == 1
+    assert completed.metadata["sub_topics_skipped"] == 1
 
 
 @pytest.mark.asyncio
