@@ -37,6 +37,7 @@ from deep_research.utils.types import (
 PLANNER_NAME = "planner"
 MIN_SUB_TOPICS = 3
 MAX_SUB_TOPICS = 7
+_COVERAGE_ID_WIDTH = 2
 
 PLANNER_SYSTEM_PROMPT = (
     "You are the planner of a multi-agent research system. Your job is to "
@@ -72,9 +73,29 @@ PLAN_INSTRUCTION = (
     "When the question concerns a technology or intervention, ensure the "
     "plan explicitly covers both benefits and risks (or harms) in the "
     "subtopic titles or search queries.\n"
-    "Do not introduce any capitalized word or four-digit year in titles or "
-    "queries that the research question does not itself contain; write "
-    "queries in lowercase except for words already in the question.\n"
+    # A lexical ban used to forbid any capitalized word or four-digit year
+    # the question did not contain. Search cannot reach a named regulation,
+    # standard, jurisdiction, agency, or current-year primary source without
+    # those tokens, so the ban made a whole class of evidence unfindable.
+    # Its replacement permits the tokens and forbids asserting them.
+    "Search queries may introduce organizations, standards, laws, acronyms, "
+    "jurisdictions, and years needed to find authoritative current "
+    "evidence.\n"
+    "Do not assert those terms as facts in the plan; use them only as "
+    "search targets.\n"
+    "For an unqualified broad question, state the assumed scope and create "
+    "distinct sub-topics for materially different mechanisms rather than "
+    "bundling them.\n"
+    "Each success criterion must name the evidence type, geography, and "
+    "measurement or decision needed to consider the sub-topic answered.\n"
+    "Aim the queries at primary sources — regulations, standards, filings, "
+    "and datasets that state the facts directly — and say which class of "
+    "source each query should reach.\n"
+    "State the as-of date and the geographic scope the plan assumes, and "
+    "write both into the queries or success criteria; the plan has no field "
+    "of its own for either.\n"
+    "Make every success criterion measurable, so a reader can tell from the "
+    "evidence it names whether the sub-topic was answered.\n"
     "Two sub-topics must never share a title."
 )
 
@@ -148,14 +169,44 @@ def _normalized_title(title: str) -> str:
     return " ".join(title.split()).casefold()
 
 
+def coverage_id_for(position: int) -> str:
+    """The id this planner stamps on its ``position``-th (1-based) sub-topic.
+
+    ``position`` counts through the plan in priority order, so ``topic-01``
+    is always the most important planned sub-topic. The id is local and
+    positional: no provider ever proposes one, and the same ordered plan
+    always produces the same ids — including on a plan that is repaired.
+    """
+    return f"topic-{position:0{_COVERAGE_ID_WIDTH}d}"
+
+
+def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
+    """Order ``sub_topics`` by priority and stamp ``topic-01``, ``topic-02``…
+
+    The plan instruction asks the model to list sub-topics in priority order
+    and the model does not always obey, so the ordering is established here
+    rather than trusted. ``sorted`` is stable, so sub-topics that share a
+    priority keep the order the model produced — the same tie-break
+    ``researcher._ordered_sub_topics`` applies downstream. Ids are stamped
+    after that ordering, never before it, so an id always names a plan
+    position rather than a draft position.
+    """
+    ordered = sorted(sub_topics, key=lambda sub_topic: sub_topic.priority)
+    return [
+        sub_topic.model_copy(update={"coverage_id": coverage_id_for(position)})
+        for position, sub_topic in enumerate(ordered, start=1)
+    ]
+
+
 def validate_plan_draft(
     draft: ResearchPlanDraft,
 ) -> tuple[list[SubTopic], list[str]]:
     """Convert a model plan into ``SubTopic`` values, listing every problem.
 
-    Returns the sub-topics that validated and a list of problem strings.
-    Problem text is generated here and never copied from provider output, so
-    it is safe to place in a repair prompt and in ``PlanningError.problems``.
+    Returns the sub-topics that validated — ordered by priority and carrying
+    their assigned ``coverage_id`` — and a list of problem strings. Problem
+    text is generated here and never copied from provider output, so it is
+    safe to place in a repair prompt and in ``PlanningError.problems``.
     """
     validated: list[tuple[int, SubTopic]] = []
     problems: list[str] = []
@@ -163,7 +214,20 @@ def validate_plan_draft(
     for index, item in enumerate(draft.sub_topics, start=1):
         try:
             validated.append(
-                (index, SubTopic.model_validate(item.model_dump()))
+                (
+                    index,
+                    SubTopic.model_validate(
+                        {
+                            **item.model_dump(),
+                            # A provisional id, so ``SubTopic``'s own rules —
+                            # including this field's — apply to every value
+                            # here. ``_assign_coverage_ids`` re-stamps all of
+                            # them in final order, so no caller ever observes
+                            # a draft-position id.
+                            "coverage_id": coverage_id_for(index),
+                        }
+                    ),
+                )
             )
         except ValidationError as error:
             problems.append(
@@ -191,7 +255,7 @@ def validate_plan_draft(
             f"{MIN_SUB_TOPICS} and {MAX_SUB_TOPICS}"
         )
 
-    return sub_topics, problems
+    return _assign_coverage_ids(sub_topics), problems
 
 
 def format_plan_problems(problems: Sequence[str]) -> str:

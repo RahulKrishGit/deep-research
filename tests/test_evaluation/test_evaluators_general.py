@@ -889,6 +889,7 @@ def _golden_result(case: EvaluationCase, urls: list[str]) -> dict:
         return {
             "sub_topics": [
                 {
+                    "coverage_id": "topic-01",
                     "title": "Golden sub-topic",
                     "rationale": "A plausible rationale for this case.",
                     "search_queries": ["golden query"],

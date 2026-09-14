@@ -71,6 +71,15 @@ class ContractModel(BaseModel):
 
 
 class SubTopic(ContractModel):
+    coverage_id: str = Field(min_length=1)
+    """The identity of one planned sub-topic, such as ``topic-01``.
+
+    Stamped locally by ``PlannerAgent`` once a plan validates, in priority
+    order — the provider-facing ``planner.ResearchPlanDraft`` carries no such
+    field, so no model ever proposes one. Later stages name the planned
+    sub-topic they answered, skipped, or never reached by this id.
+    """
+
     title: str = Field(min_length=1)
     rationale: str = Field(min_length=1)
     search_queries: list[str] = Field(min_length=1)

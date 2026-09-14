@@ -20,6 +20,7 @@ from deep_research.utils.types import (
 
 def sub_topic(title: str = "Adoption", priority: int = 1) -> SubTopic:
     return SubTopic(
+        coverage_id="topic-01",
         title=title,
         rationale=f"Research {title.lower()}.",
         search_queries=[f"{title.lower()} evidence"],

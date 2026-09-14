@@ -95,6 +95,7 @@ def _researcher_case() -> tuple[ResearchState, list, list]:
     state = _state(
         sub_topics=[
             SubTopic(
+                coverage_id="topic-01",
                 title="angle number 1",
                 rationale="Rationale for angle number 1.",
                 search_queries=["quantum computing angle 1"],

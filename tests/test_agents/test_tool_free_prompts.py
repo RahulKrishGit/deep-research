@@ -126,6 +126,7 @@ EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
 def _sub_topic(title: str = "Angle") -> SubTopic:
     return SubTopic(
+        coverage_id="topic-01",
         title=title,
         rationale=f"Rationale for {title}.",
         search_queries=[f"query for {title}"],

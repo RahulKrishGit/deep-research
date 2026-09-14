@@ -204,6 +204,7 @@ def test_case_state_is_deep_copied_per_repetition() -> None:
 
     first.sub_topics.append(
         SubTopic(
+            coverage_id="topic-01",
             title="t",
             rationale="r",
             search_queries=["q"],

@@ -67,6 +67,7 @@ class FakeAgent:
 
 def fake_sub_topic(title: str = "Error correction") -> SubTopic:
     return SubTopic(
+        coverage_id="topic-01",
         title=title,
         rationale="It is the bottleneck.",
         search_queries=["qec 2025"],

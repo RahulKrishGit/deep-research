@@ -97,8 +97,20 @@ CRITIC_PROMPT_FINGERPRINT = "04df8604c26a"
 # visible. ``source_evaluator`` and ``fact_checker`` moved a second time in the
 # same task, because each now merges its pass into the canonical snapshot
 # before writing state. The Judge pin did **not** move.
+#
+# ``planner`` alone was re-pinned ``f4b02ab2cfe2`` -> ``721f1ea5cec5`` by task 2
+# of the same plan. Only the planner moved, which is the correct blast radius
+# for that change: ``agents/prompts.py`` was untouched, so the five agents that
+# share it keep their values, and ``CRITIC_PROMPT_FINGERPRINT`` and the Judge
+# pin are unchanged too. The planner's own module source moved for two reasons,
+# both intended: ``PLAN_INSTRUCTION`` no longer forbids capitalized words and
+# four-digit years in queries (they are search targets now, not assertions) and
+# instead states scope, as-of date, source class, and measurable success; and
+# the module now sorts a validated plan by priority and stamps each sub-topic
+# with its local ``topic-NN`` coverage id. Re-pinned deliberately, in its own
+# commit, rather than silently invalidated — the same convention task 1 used.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "f4b02ab2cfe2",
+    "planner": "721f1ea5cec5",
     "researcher": "3ae03b691d83",
     "source_evaluator": "ec68fe4b9852",
     "fact_checker": "0f983da24ef5",

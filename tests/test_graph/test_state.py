@@ -54,6 +54,7 @@ def test_the_channel_round_trips_a_populated_state_as_plain_json() -> None:
     state = fake_research_state(
         sub_topics=[
             SubTopic(
+                coverage_id="topic-01",
                 title="Error correction",
                 rationale="It is the bottleneck.",
                 search_queries=["qec 2025"],

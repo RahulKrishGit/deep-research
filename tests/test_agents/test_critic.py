@@ -158,6 +158,7 @@ def test_spot_check_guidance_keeps_the_planned_queries_beside_the_report() -> No
         _live_report(),
         [
             SubTopic(
+                coverage_id="topic-01",
                 title="Alpha",
                 rationale="Alpha is load-bearing.",
                 search_queries=["alpha 2025"],
@@ -923,6 +924,7 @@ def _critic_state(**overrides: object) -> ResearchState:
         "original_question": "How mature is quantum error correction?",
         "sub_topics": [
             SubTopic(
+                coverage_id="topic-01",
                 title="Alpha",
                 rationale="Alpha is load-bearing.",
                 search_queries=["alpha 2025"],

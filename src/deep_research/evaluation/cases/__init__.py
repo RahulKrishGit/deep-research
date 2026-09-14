@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from pydantic import JsonValue
 
+from deep_research.agents.planner import coverage_id_for
 from deep_research.evaluation.models import (
     AGENT_NAMES,
     AgentName,
@@ -39,6 +40,13 @@ CASE_REGISTRY_VERSION = 1
 # dataset example never changes just because the clock moved.
 FIXED_TIMESTAMP = "2026-08-01T00:00:00+00:00"
 
+# ``SubTopic.coverage_id`` belongs to the Planner, which stamps ``topic-NN``
+# in priority order after validation — a case author must not invent one.
+# ``sub_topic`` therefore builds a curated sub-topic unstamped, and
+# ``evaluation_state`` stamps the real, position-based id for every state it
+# assembles, so this value never reaches a case.
+UNSTAMPED_COVERAGE_ID = "topic-unstamped"
+
 
 class CaseRegistryError(ValueError):
     """The local case registry is invalid; nothing may be executed."""
@@ -51,8 +59,10 @@ def sub_topic(
     queries: Sequence[str],
     criteria: Sequence[str],
     priority: int,
+    coverage_id: str = UNSTAMPED_COVERAGE_ID,
 ) -> SubTopic:
     return SubTopic(
+        coverage_id=coverage_id,
         title=title,
         rationale=rationale,
         search_queries=list(queries),
@@ -152,7 +162,13 @@ def evaluation_state(
     return ResearchState(
         session_id=f"evaluation-{case_id}",
         original_question=question,
-        sub_topics=list(sub_topics),
+        # A curated plain tuple of sub-topics with duplicate titles would
+        # collide in a coverage report, so the planner ids are stamped here,
+        # by position, exactly as ``PlannerAgent`` stamps the ids it plans.
+        sub_topics=[
+            item.model_copy(update={"coverage_id": coverage_id_for(position)})
+            for position, item in enumerate(sub_topics, start=1)
+        ],
         raw_findings=list(findings),
         evaluated_sources=list(sources),
         verified_claims=list(claims),

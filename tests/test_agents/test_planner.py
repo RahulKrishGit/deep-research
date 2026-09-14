@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,6 +11,7 @@ from deep_research.agents.errors import PlanningError
 from deep_research.agents.planner import (
     MAX_SUB_TOPICS,
     MIN_SUB_TOPICS,
+    PLAN_INSTRUCTION,
     PlannerAgent,
     ResearchPlan,
     ResearchPlanDraft,
@@ -31,6 +34,7 @@ from deep_research.utils.types import (
     Finding,
     MemorySnapshot,
     ResearchState,
+    SubTopic,
     merge_research_state,
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
@@ -211,6 +215,99 @@ def test_a_sub_topic_with_a_zero_priority_is_reported_by_field() -> None:
     )
 
 
+# Three distinct mechanisms, drafted out of priority order. Ordering is only
+# observable once a draft disagrees with it, which is exactly what the plan
+# instruction asks the model for and the model does not always produce.
+_SCRAMBLED_PLAN_TITLES = (
+    ("Market rules", 3),
+    ("Grid connection", 1),
+    ("Siting and safety", 2),
+)
+
+_ORDERED_PLAN_TITLES = ("Grid connection", "Siting and safety", "Market rules")
+
+
+def _scrambled_plan() -> ResearchPlanDraft:
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft(title, priority=priority)
+            for title, priority in _SCRAMBLED_PLAN_TITLES
+        ]
+    )
+
+
+def test_validated_sub_topics_are_priority_ordered_and_carry_stable_ids() -> None:
+    sub_topics, problems = validate_plan_draft(_scrambled_plan())
+
+    assert problems == []
+    assert [sub_topic.title for sub_topic in sub_topics] == list(
+        _ORDERED_PLAN_TITLES
+    )
+    assert [sub_topic.coverage_id for sub_topic in sub_topics] == [
+        "topic-01",
+        "topic-02",
+        "topic-03",
+    ]
+
+
+def test_equal_priorities_keep_the_models_order_and_the_same_ids() -> None:
+    draft = ResearchPlanDraft(
+        sub_topics=[
+            _draft(title, priority=1) for title in _ORDERED_PLAN_TITLES
+        ]
+    )
+
+    first, first_problems = validate_plan_draft(draft)
+    again, again_problems = validate_plan_draft(draft)
+
+    assert first_problems == again_problems == []
+    assert [sub_topic.title for sub_topic in first] == list(_ORDERED_PLAN_TITLES)
+    assert [sub_topic.coverage_id for sub_topic in first] == [
+        f"topic-{index:02d}" for index in (1, 2, 3)
+    ]
+    assert [sub_topic.coverage_id for sub_topic in again] == [
+        sub_topic.coverage_id for sub_topic in first
+    ]
+
+
+def test_a_repair_pass_produces_the_same_ids_for_the_same_ordered_titles() -> None:
+    """A repair keeps the ids a surviving title already had.
+
+    The first draft is rejected for carrying too many sub-topics, so the
+    repair returns the fewest, most important ones. Their ids are a pure
+    function of their position in priority order, so nothing is renumbered.
+    """
+    rejected = ResearchPlanDraft(
+        sub_topics=[
+            _draft(f"Mechanism {name}", priority=index)
+            for index, name in enumerate("ABCDEFGH", start=1)
+        ]
+    )
+    repaired = _plan("Mechanism A", "Mechanism B", "Mechanism C")
+
+    rejected_sub_topics, rejected_problems = validate_plan_draft(rejected)
+    repaired_sub_topics, repaired_problems = validate_plan_draft(repaired)
+
+    assert rejected_problems == [
+        "the plan has 8 valid sub-topics; produce between 3 and 7"
+    ]
+    assert repaired_problems == []
+    kept = {
+        sub_topic.title: sub_topic.coverage_id
+        for sub_topic in rejected_sub_topics
+        if sub_topic.title in {"Mechanism A", "Mechanism B", "Mechanism C"}
+    }
+    assert kept == {
+        sub_topic.title: sub_topic.coverage_id
+        for sub_topic in repaired_sub_topics
+    }
+    assert kept == {
+        "Mechanism A": "topic-01",
+        "Mechanism B": "topic-02",
+        "Mechanism C": "topic-03",
+    }
+
+
 def test_problems_render_as_one_corrective_instruction() -> None:
     rendered = format_plan_problems(["problem one", "problem two"])
 
@@ -323,6 +420,170 @@ def test_the_plan_request_is_tool_free_while_the_loop_prompt_is_tool_aware(
     loop_prompt = _planner(tracker, ScriptedCompleter()).system_prompt(task)
     assert "query_memory" in loop_prompt
     assert "web_search" in loop_prompt
+
+
+@pytest.mark.asyncio
+async def test_the_plan_reaching_state_carries_coverage_ids_in_priority_order(
+    tracker: Tracker,
+) -> None:
+    """The ids a later stage reads are the ones the planner stamped."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_scrambled_plan()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert [
+        (sub_topic.coverage_id, sub_topic.title)
+        for sub_topic in outcome.result.sub_topics
+    ] == [
+        ("topic-01", "Grid connection"),
+        ("topic-02", "Siting and safety"),
+        ("topic-03", "Market rules"),
+    ]
+    assert outcome.state_update["sub_topics"] == outcome.result.sub_topics
+
+
+def test_the_plan_request_never_asks_the_model_for_a_coverage_id() -> None:
+    """The id is stamped locally, so no provider request can propose one.
+
+    ``coverage_id`` lives on ``SubTopic``, which is never sent to a provider,
+    and not on the provider-facing ``ResearchPlanDraft``. This pins that
+    boundary in both directions: the rendered request, and the strict JSON
+    schema the request is constrained by.
+    """
+    messages = plan_messages(AgentTask(instruction="Question?"), _run())
+    rendered = " ".join(message.content for message in messages)
+
+    assert "coverage_id" not in rendered
+    assert "topic-01" not in rendered
+    assert "coverage_id" not in json.dumps(
+        ResearchPlanDraft.model_json_schema(), sort_keys=True
+    )
+
+
+def _plan_text(sub_topic: SubTopic) -> str:
+    """Everything about one planned sub-topic that a reader or search sees."""
+    return " ".join(
+        [
+            sub_topic.title,
+            *sub_topic.search_queries,
+            *sub_topic.success_criteria,
+        ]
+    ).casefold()
+
+
+# The recorded CLI run answered "What are the current constraints on
+# grid-scale battery storage deployment?" with a report whose plan could not
+# separate the constraint mechanisms. This fixture is a contract example of
+# what a plan must be able to carry — the production planner holds no
+# taxonomy of its own, so the five mechanisms live here and nowhere else.
+BATTERY_CONSTRAINT_MECHANISMS = (
+    "grid connection",
+    "supply chain",
+    "siting",
+    "market rules",
+    "project economics",
+)
+
+
+def _battery_storage_plan() -> ResearchPlanDraft:
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft(
+                "Grid connection and interconnection queue position",
+                priority=2,
+                search_queries=[
+                    "FERC interconnection queue storage wait times 2026"
+                ],
+                success_criteria=[
+                    "A filing or queue dataset gives measured United States "
+                    "interconnection wait times for storage in 2026."
+                ],
+            ),
+            _draft(
+                "Equipment supply chain and trade exposure",
+                priority=3,
+                search_queries=[
+                    "battery cell supply chain tariffs 2026 United States"
+                ],
+                success_criteria=[
+                    "A trade dataset or standards-body report measures "
+                    "United States cell and inverter lead times in 2026."
+                ],
+            ),
+            _draft(
+                "Siting, permitting, and fire safety rules",
+                priority=4,
+                search_queries=[
+                    "NFPA 855 UL 9540A local siting permit requirements 2026"
+                ],
+                success_criteria=[
+                    "A standard or permit record names the United States "
+                    "fire-safety thresholds a 2026 project must meet."
+                ],
+            ),
+            _draft(
+                "Wholesale market rules and storage compensation",
+                priority=5,
+                search_queries=[
+                    "FERC Order 841 storage market participation 2026"
+                ],
+                success_criteria=[
+                    "An ISO market filing documents the United States "
+                    "compensation a 2026 storage project can earn."
+                ],
+            ),
+            _draft(
+                "Project economics and financing",
+                priority=1,
+                search_queries=[
+                    "grid-scale battery storage levelized cost financing 2026"
+                ],
+                success_criteria=[
+                    "A lender or utility filing reports the measured United "
+                    "States cost and financing terms for 2026 projects."
+                ],
+            ),
+        ]
+    )
+
+
+def test_a_battery_storage_plan_separates_every_constraint_mechanism() -> None:
+    """Each mechanism gets its own planned sub-topic, not a bundled one."""
+    sub_topics, problems = validate_plan_draft(_battery_storage_plan())
+
+    assert problems == []
+    assert len(sub_topics) == len(BATTERY_CONSTRAINT_MECHANISMS) == 5
+    assert [sub_topic.coverage_id for sub_topic in sub_topics] == [
+        f"topic-{index:02d}" for index in range(1, 6)
+    ]
+
+    carriers = {
+        mechanism: [
+            sub_topic.coverage_id
+            for sub_topic in sub_topics
+            if mechanism in _plan_text(sub_topic)
+        ]
+        for mechanism in BATTERY_CONSTRAINT_MECHANISMS
+    }
+    for mechanism, coverage_ids in carriers.items():
+        assert len(coverage_ids) == 1, (mechanism, coverage_ids)
+    assert sorted(
+        coverage_id
+        for coverage_ids in carriers.values()
+        for coverage_id in coverage_ids
+    ) == [f"topic-{index:02d}" for index in range(1, 6)]
+
+    # The question is unqualified, so the plan states the scope it assumes:
+    # a jurisdiction and an as-of year, in the text the plan already carries.
+    plan_text = " ".join(_plan_text(sub_topic) for sub_topic in sub_topics)
+    assert "united states" in plan_text
+    assert "2026" in plan_text
 
 
 def test_build_task_carries_the_question_and_recalled_memory(
@@ -810,11 +1071,32 @@ def test_planner_regression_plan_instruction_requires_priority_order() -> None:
     assert "most important first" in rendered
 
 
+def test_planner_regression_plan_instruction_permits_real_search_terms() -> None:
+    """The plan instruction must permit the terms a real search needs.
+
+    The removed sentence forbade any capitalized word or four-digit year the
+    question did not itself contain, which blocked the identifiers, acronyms,
+    jurisdictions, and years a query needs to reach primary or current
+    evidence — exactly the planner defect the plan records for FERC, NFPA,
+    UL 9540A, FEOC, and current-year material.
+    """
+    assert "Do not introduce any capitalized word" not in PLAN_INSTRUCTION
+    for phrase in (
+        "primary sources",
+        "as-of date",
+        "geographic scope",
+        "measurable",
+    ):
+        assert phrase in PLAN_INSTRUCTION
+
+
 def test_planner_regression_plan_instruction_requires_balanced_wording() -> None:
     task = AgentTask(instruction="Some research question.")
     messages = plan_messages(task, _run())
     rendered = " ".join(message.content for message in messages)
     assert "benefits" in rendered
     assert "risks" in rendered
-    assert "capitalized word" in rendered
-    assert "lowercase" in rendered
+    # The lexical ban is gone, so what replaces it has to keep the terms it
+    # permits out of the plan's assertions.
+    assert "Do not assert those terms as facts" in rendered
+    assert "use them only as search targets" in rendered

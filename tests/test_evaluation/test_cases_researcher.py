@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from deep_research.evaluation.cases import cases_for
+from deep_research.evaluation.cases import all_cases, cases_for
 from deep_research.evaluation.dependencies import SCENARIOS
 
 CONTROLLED = (
@@ -146,6 +146,22 @@ def test_every_controlled_case_carries_populated_sub_topics() -> None:
         assert case.state.sub_topics, case.case_id
         priorities = [topic.priority for topic in case.state.sub_topics]
         assert priorities == sorted(priorities), case.case_id
+
+
+def test_every_case_state_plans_distinct_planner_coverage_ids() -> None:
+    """A coverage report keyed on ``coverage_id`` collapses duplicates.
+
+    Case states stand in for planner output, so they carry the ids the
+    Planner stamps: one per sub-topic, unique inside the state.
+    """
+    for case in all_cases():
+        coverage_ids = [
+            sub_topic.coverage_id for sub_topic in case.state.sub_topics
+        ]
+        assert len(coverage_ids) == len(set(coverage_ids)), case.case_id
+        assert all(
+            coverage_id.startswith("topic-") for coverage_id in coverage_ids
+        ), case.case_id
 
 
 def test_no_case_state_contains_a_url_outside_its_known_sources() -> None:

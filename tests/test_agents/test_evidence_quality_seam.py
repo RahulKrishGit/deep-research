@@ -56,6 +56,7 @@ def _state() -> ResearchState:
         original_question="How mature is quantum error correction?",
         sub_topics=[
             SubTopic(
+                coverage_id="topic-01",
                 title="Alpha",
                 rationale="Alpha is load-bearing.",
                 search_queries=["alpha 2025"],

@@ -47,6 +47,7 @@ def critique(**overrides: object) -> Critique:
 
 def test_domain_models_preserve_required_fields() -> None:
     topic = SubTopic(
+        coverage_id="topic-01",
         title="Adoption",
         rationale="Measure current adoption patterns.",
         search_queries=["enterprise AI adoption 2026"],

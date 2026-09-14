@@ -166,6 +166,7 @@ def clean_target_output(planner_case) -> TargetOutput:
         result={
             "sub_topics": [
                 {
+                    "coverage_id": "topic-01",
                     "title": "Solid-state electrolyte degradation",
                     "rationale": "Electrolyte stability dominates cycle life.",
                     "search_queries": [
@@ -175,6 +176,7 @@ def clean_target_output(planner_case) -> TargetOutput:
                     "priority": 1,
                 },
                 {
+                    "coverage_id": "topic-02",
                     "title": "Cathode interface resistance",
                     "rationale": "Interface resistance limits capacity retention.",
                     "search_queries": [
@@ -226,6 +228,7 @@ def leaking_target_output(planner_case) -> TargetOutput:
         result={
             "sub_topics": [
                 {
+                    "coverage_id": "topic-01",
                     "title": "Solid-state electrolyte degradation",
                     "rationale": (
                         "Electrolyte stability dominates cycle life. "
@@ -423,7 +426,12 @@ def experiment_result(repetition_result) -> ExperimentResult:
 
 
 class PlannerOutput(TargetOutput):
-    """A planner repetition with builder helpers for the agent gate tests."""
+    """A planner repetition with builder helpers for the agent gate tests.
+
+    Each rebuilt sub-topic carries the ``topic-NN`` id the Planner stamps for
+    its position, so a rebuilt repetition stays something the Planner's own
+    ``valid_subtopics`` gate accepts.
+    """
 
     def with_sub_topics(self, count: int) -> "PlannerOutput":
         return self.model_copy(
@@ -431,6 +439,7 @@ class PlannerOutput(TargetOutput):
                 "result": {
                     "sub_topics": [
                         {
+                            "coverage_id": f"topic-{index + 1:02d}",
                             "title": f"Sub-topic {index}",
                             "rationale": f"Rationale {index}",
                             "search_queries": [f"query {index}"],
@@ -449,6 +458,7 @@ class PlannerOutput(TargetOutput):
                 "result": {
                     "sub_topics": [
                         {
+                            "coverage_id": f"topic-{index + 1:02d}",
                             "title": title,
                             "rationale": f"Rationale {index}",
                             "search_queries": [f"query {index}"],
@@ -711,6 +721,7 @@ def planner_output(planner_case) -> PlannerOutput:
         result={
             "sub_topics": [
                 {
+                    "coverage_id": "topic-01",
                     "title": "Solid-state electrolyte degradation",
                     "rationale": "Electrolyte stability dominates cycle life.",
                     "search_queries": [
@@ -720,6 +731,7 @@ def planner_output(planner_case) -> PlannerOutput:
                     "priority": 1,
                 },
                 {
+                    "coverage_id": "topic-02",
                     "title": "Cathode interface resistance",
                     "rationale": "Interface resistance limits capacity retention.",
                     "search_queries": [
@@ -729,6 +741,7 @@ def planner_output(planner_case) -> PlannerOutput:
                     "priority": 2,
                 },
                 {
+                    "coverage_id": "topic-03",
                     "title": "Mechanical stress and cracking",
                     "rationale": "Stress from cycling drives crack formation.",
                     "search_queries": [
