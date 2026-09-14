@@ -411,7 +411,6 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
         "web_scraper",
         "document_reader",
         "query_memory",
-        "save_to_memory",
     }
     assert SourceEvaluatorAgent.name == "source_evaluator"
     assert SourceEvaluatorAgent.allowed_tools == ()

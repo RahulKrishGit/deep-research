@@ -353,6 +353,7 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
         ),
         ("AGENTS_MAX_ITERATIONS", ("agents", "max_iterations"), "9", 9),
         ("AGENTS_TOOL_BUDGET", ("agents", "tool_budget"), "3", 3),
+        ("AGENTS_MAX_SUB_TOPICS", ("agents", "max_sub_topics"), "5", 5),
         (
             "AGENTS_PROMPT_CONTEXT_ENTRIES",
             ("agents", "prompt_context_entries"),
@@ -624,10 +625,26 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
 
     assert settings.agents.max_iterations == 5
     assert settings.agents.tool_budget == 10
+    assert settings.agents.max_sub_topics == 7
     assert settings.agents.prompt_context_entries == 8
     assert settings.agents.observation_summary_chars == 200
     assert settings.agents.planner_final_max_tokens == 32768
     assert settings.agents.critic_review_max_tokens == 32768
+
+
+def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:
+    """The shipped YAML attempts the whole plan, not a truncated one.
+
+    ``agents.max_sub_topics`` is the production half of the Planner's own
+    seven-sub-topic ceiling; a smaller value here silently drops planned
+    sub-topics from every production run.
+    """
+    from deep_research.agents.planner import MAX_SUB_TOPICS
+
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["max_sub_topics"] == 7
+    assert raw["agents"]["max_sub_topics"] == MAX_SUB_TOPICS
 
 
 def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
@@ -692,6 +709,7 @@ def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
     [
         ("max_iterations", 0),
         ("tool_budget", -1),
+        ("max_sub_topics", 0),
         ("prompt_context_entries", -1),
         ("observation_summary_chars", 0),
         ("planner_final_max_tokens", 0),

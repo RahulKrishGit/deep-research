@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from pydantic import Field, JsonValue, ValidationError
 
@@ -25,6 +26,7 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.events import agent_event
+from deep_research.agents.identity import deduplicate_findings
 from deep_research.agents.prompts import (
     AgentTask,
     render_memory_guidance,
@@ -37,6 +39,7 @@ from deep_research.agents.steps import (
     ReActRun,
     ReActStep,
     StopReason,
+    read_evidence_urls,
     summarize_text,
 )
 from deep_research.agents.validation import _invalid_fields
@@ -57,7 +60,14 @@ from deep_research.utils.types import (
 
 RESEARCHER_NAME = "researcher"
 HIGH_PRIORITY_THRESHOLD = 2
-DEFAULT_MAX_SUB_TOPICS = 3
+# The Planner's own ceiling is seven sub-topics, so one research pass attempts
+# the whole plan by default rather than silently truncating it.
+DEFAULT_MAX_SUB_TOPICS = 7
+# Evidence kept per sub-topic, not coverage planned: a sub-topic may report at
+# most six distinct findings drawn from at most four distinct sources. These
+# are properties of the extraction contract, not deployment knobs.
+MAX_FINDINGS_PER_SUB_TOPIC = 6
+MAX_UNIQUE_SOURCES_PER_SUB_TOPIC = 4
 DEFAULT_EVIDENCE_CHARS = 4000
 
 Clock = Callable[[], datetime]
@@ -70,12 +80,18 @@ RESEARCHER_SYSTEM_PROMPT = (
     "You are the researcher of a multi-agent research system. You gather "
     "evidence for exactly one sub-topic at a time.\n"
     "Use web_search to find candidate sources, web_scraper to read a "
-    "promising page, document_reader for PDFs and data files, query_memory "
-    "to avoid repeating research a previous session already did, and "
-    "save_to_memory to keep a high-value finding for future sessions.\n"
-    "Every claim you report must come from a source you actually retrieved "
-    "in this loop. If a tool fails, try another query or another source "
-    "rather than giving up.\n"
+    "promising page, document_reader for PDFs and data files, and "
+    "query_memory to avoid repeating research a previous session already "
+    "did.\n"
+    "Prefer primary sources: laws and regulator orders, standards bodies, "
+    "official datasets, original research, and issuer filings. Use secondary "
+    "analysis to find or interpret primary material, not as the default "
+    "support for load-bearing numbers. Read a source before reporting a "
+    "finding from it. Record publication date and geographic applicability "
+    "when the source provides them.\n"
+    "A search result is a lead, never evidence: every claim you report must "
+    "come from a page or document you actually read in this loop. If a tool "
+    "fails, try another query or another source rather than giving up.\n"
     "Finish once the sub-topic's success criteria are met, or once no "
     "further source is worth retrieving."
 )
@@ -319,17 +335,6 @@ def render_sub_topic_guidance(
     return "\n".join(lines)
 
 
-# Read tools that can carry evidence, mapped to the payload key that holds
-# it. ``save_to_memory`` is deliberately absent: it is a write, never
-# evidence, and a successful call to it must never count as "retrieved".
-_EVIDENCE_PAYLOAD_KEYS: dict[str, str] = {
-    "web_search": "results",
-    "web_scraper": "text",
-    "document_reader": "chunks",
-    "query_memory": "matches",
-}
-
-
 def _successful_result(step: ReActStep) -> ToolResult | None:
     """The step's tool result, or ``None`` unless the call succeeded."""
     result = step.tool_result
@@ -338,117 +343,87 @@ def _successful_result(step: ReActStep) -> ToolResult | None:
     return result
 
 
-def _has_evidence(step: ReActStep) -> bool:
-    """True when a successful call actually returned a non-empty payload.
+def _payload_line(result: ToolResult, *, limit: int) -> str:
+    """One clamped transcript line for a successful tool payload."""
+    payload = json.dumps(result.data, default=str, ensure_ascii=False)
+    return f"- [{result.tool_name}] {summarize_text(payload, limit=limit)}"
 
-    A tool can return ``success=True`` with nothing usable inside it —
-    ``query_memory`` on a miss, ``web_search`` with no hits, an empty
-    scrape — and ``save_to_memory`` never carries evidence at all. Counting
-    any of those as "retrieved" would let the extraction call run against
-    an evidence section with nothing in it, which is exactly the
-    hallucination-pressure case the caller guards against.
+
+def _search_candidate_lines(data: JsonValue) -> list[str]:
+    """Candidate ``title: url`` lines from one ``web_search`` payload.
+
+    A hit the loop never opened stays visible to the extraction call as what
+    it is — a lead with a URL the model may cite only if it also read the page.
     """
-    result = _successful_result(step)
-    if result is None:
-        return False
-    key = _EVIDENCE_PAYLOAD_KEYS.get(result.tool_name)
-    if key is None:
-        return False
-    data = result.data
-    value = data.get(key) if isinstance(data, dict) else None
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, dict)):
-        return bool(value)
-    return False
+    results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(results, list):
+        return []
+    lines: list[str] = []
+    for entry in results:
+        if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
+            continue
+        title = entry.get("title")
+        label = (
+            summarize_text(title)
+            if isinstance(title, str) and title.strip()
+            else entry["url"]
+        )
+        lines.append(f"- {label}: {entry['url']}")
+    return lines
 
 
-def render_evidence(run: ReActRun, *, limit: int) -> str:
+def render_evidence(
+    run: ReActRun,
+    *,
+    limit: int,
+    discovery_payloads: bool = True,
+) -> str:
     """Render every successful tool payload, each clamped to ``limit`` chars.
 
     Written as an explicit loop rather than a comprehension: the payload
     dump has to be summarized before interpolation, and Python 3.11
     f-strings cannot hold a multi-line call expression.
+
+    ``discovery_payloads=False`` renders only what the loop READ: a payload
+    from a discovery-only tool such as ``web_search`` is replaced by its
+    candidate title/URL metadata, because a search hit the loop never opened
+    is a lead, not evidence. The ReAct transcript keeps the whole payload
+    either way, so discovery and debugging lose nothing.
     """
     lines: list[str] = []
+    candidates: list[str] = []
     for step in run.steps:
         result = _successful_result(step)
         if result is None:
             continue
-        payload = json.dumps(result.data, default=str, ensure_ascii=False)
-        summary = summarize_text(payload, limit=limit)
-        lines.append(f"- [{result.tool_name}] {summary}")
+        if discovery_payloads:
+            lines.append(_payload_line(result, limit=limit))
+            continue
+        if read_evidence_urls(step):
+            lines.append(_payload_line(result, limit=limit))
+        elif result.tool_name == "web_search":
+            candidates.extend(_search_candidate_lines(result.data))
+    if candidates:
+        lines.append("Candidate sources found by search, not read:")
+        lines.extend(candidates)
     return "\n".join(lines) or "(no evidence retrieved)"
 
 
-def _payload_urls(tool_name: str, data: dict[str, JsonValue]) -> list[str]:
-    """The source URLs one successful payload actually carries.
-
-    Shapes are the real ones each tool returns: ``web_search[].results[].url``,
-    ``web_scraper.url``, ``document_reader.source``, and
-    ``query_memory[].matches[].source_url`` (optionally under ``metadata``).
-    A malformed entry contributes nothing rather than raising.
-    """
-    if tool_name == "web_search":
-        results = data.get("results")
-        if not isinstance(results, list):
-            return []
-        return [
-            entry["url"]
-            for entry in results
-            if isinstance(entry, dict) and isinstance(entry.get("url"), str)
-        ]
-    if tool_name == "web_scraper":
-        url = data.get("url")
-        return [url] if isinstance(url, str) else []
-    if tool_name == "document_reader":
-        source = data.get("source")
-        return [source] if isinstance(source, str) else []
-    if tool_name == "query_memory":
-        matches = data.get("matches")
-        if not isinstance(matches, list):
-            return []
-        urls: list[str] = []
-        for match in matches:
-            if not isinstance(match, dict):
-                continue
-            url = match.get("source_url")
-            if not isinstance(url, str):
-                metadata = match.get("metadata")
-                url = (
-                    metadata.get("source_url")
-                    if isinstance(metadata, dict)
-                    else None
-                )
-            if isinstance(url, str):
-                urls.append(url)
-        return urls
-    return []
-
-
 def retrieved_finding_urls(run: ReActRun) -> tuple[str, ...]:
-    """Every source URL this run actually retrieved, normalized and unique.
+    """Every source URL this run actually READ, normalized and unique.
 
-    The provenance allow-list for extraction. Built only from successful,
-    non-empty evidence payloads: a failed call, an empty payload, a malformed
-    entry, and a write such as ``save_to_memory`` all contribute nothing, so a
-    URL the model invented or copied from a prompt example cannot enter
-    research state.
+    The provenance allow-list for extraction. A search result is a DISCOVERY
+    record and never appears here, so a finding may only be reported from a
+    page or document the loop opened; a failed call, an empty payload, a
+    malformed entry, and a write such as ``save_to_memory`` all contribute
+    nothing either. The classification itself lives in
+    ``steps.read_evidence_urls``, which this is the run-level fold of.
     """
     found: list[str] = []
-    seen: set[str] = set()
     for step in run.steps:
-        if not _has_evidence(step):
-            continue
-        result = _successful_result(step)
-        if result is None or not isinstance(result.data, dict):
-            continue
-        for url in _payload_urls(result.tool_name, result.data):
-            normalized = normalize_source_url(url)
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            found.append(normalized)
+        for url in read_evidence_urls(step):
+            if url not in found:
+                found.append(url)
     return tuple(found)
 
 
@@ -479,7 +454,10 @@ def extraction_messages(
     sections = [
         f"# Sub-topic\n{task.sub_topic.title}",
         f"# Success criteria\n{criteria}",
-        f"# Retrieved evidence\n{render_evidence(run, limit=evidence_chars)}",
+        (
+            "# Retrieved evidence\n"
+            f"{render_evidence(run, limit=evidence_chars, discovery_payloads=False)}"
+        ),
         (
             "# Response contract\nReturn one finding per distinct, "
             "source-backed claim. Use the exact source_url and source_title "
@@ -537,6 +515,76 @@ def build_findings(
     return findings, rejected
 
 
+class BoundedFindings(NamedTuple):
+    """What one sub-topic's extracted findings became after bounding."""
+
+    retained: list[Finding]
+    dropped_duplicate: int
+    dropped_cap: int
+    sources_retained: int
+
+
+def bound_sub_topic_findings(
+    findings: Sequence[Finding],
+    *,
+    max_findings: int = MAX_FINDINGS_PER_SUB_TOPIC,
+    max_sources: int = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC,
+) -> BoundedFindings:
+    """Fold restatements, then bound one sub-topic's kept evidence.
+
+    The cap bounds *useful evidence*, never planned coverage: every planned
+    sub-topic still gets its turn, and what a sub-topic could not keep is
+    reported rather than silently discarded.
+
+    Selection is by confidence, but not by confidence alone. Sources are
+    ranked by their strongest finding and then taken round-robin, so one
+    verbose publisher cannot fill the whole allowance and push an independent
+    second source out of the report. Within a source the strongest findings
+    go first, duplicates keep their highest confidence, and the retained list
+    comes back strongest-first.
+    """
+    if max_findings < 1 or max_sources < 1:
+        raise ValueError("max_findings and max_sources must be at least 1")
+
+    deduplicated = deduplicate_findings(findings)
+    groups: dict[str, list[Finding]] = {}
+    for finding in deduplicated:
+        groups.setdefault(
+            normalize_source_url(finding.source_url), []
+        ).append(finding)
+
+    by_source = sorted(
+        groups.values(),
+        key=lambda group: max(finding.confidence for finding in group),
+        reverse=True,
+    )[:max_sources]
+    for group in by_source:
+        group.sort(key=lambda finding: finding.confidence, reverse=True)
+
+    retained: list[Finding] = []
+    depth = 0
+    while len(retained) < max_findings and any(
+        len(group) > depth for group in by_source
+    ):
+        for group in by_source:
+            if depth >= len(group):
+                continue
+            retained.append(group[depth])
+            if len(retained) == max_findings:
+                break
+        depth += 1
+
+    retained.sort(key=lambda finding: finding.confidence, reverse=True)
+    return BoundedFindings(
+        retained=retained,
+        dropped_duplicate=len(findings) - len(deduplicated),
+        dropped_cap=len(deduplicated) - len(retained),
+        sources_retained=len(
+            {normalize_source_url(finding.source_url) for finding in retained}
+        ),
+    )
+
+
 def sub_topic_started_event(
     sub_topic: SubTopic,
     *,
@@ -590,8 +638,17 @@ def sub_topic_completed_event(
     *,
     index: int,
     findings: int,
+    dropped_duplicate: int,
+    dropped_cap: int,
+    sources_retained: int,
 ) -> ResearchEvent:
-    """Report one sub-topic's stop reason, counts, and finding total."""
+    """Report one sub-topic's stop reason, counts, and finding total.
+
+    ``findings`` is what entered research state; the three bounded-evidence
+    counts say what extraction produced that did not, and why — restatements
+    folded into an existing finding, and distinct findings or sources past the
+    per-sub-topic cap.
+    """
     return agent_event(
         agent_name=RESEARCHER_NAME,
         event_type="researcher.sub_topic.completed",
@@ -603,6 +660,9 @@ def sub_topic_completed_event(
             "iterations": run.iterations,
             "tool_calls": run.tool_calls,
             "findings": findings,
+            "findings_dropped_duplicate": dropped_duplicate,
+            "findings_dropped_cap": dropped_cap,
+            "sources_retained": sources_retained,
         },
     )
 
@@ -667,7 +727,7 @@ def sub_topic_skipped_error(
     *,
     reason: str,
 ) -> ResearchError:
-    """Warn that a high-priority sub-topic was never attempted at all.
+    """Warn that a planned sub-topic was never attempted at all.
 
     ``reason`` is one of two enumerated strings, never raw exception text:
     ``"cap"`` when ``max_sub_topics`` truncated the planned list before this
@@ -675,16 +735,21 @@ def sub_topic_skipped_error(
     when an earlier sub-topic's non-recoverable provider failure stopped
     the pass before this sub-topic could run. Recoverable: the rest of the
     report can still stand, just incomplete for this sub-topic.
+
+    Every unattempted sub-topic gets one of these, whatever its priority:
+    the record carries the sub-topic's ``coverage_id`` so the plans a pass
+    did not reach are named rather than inferred from a count.
     """
     return agent_error(
         agent_name=RESEARCHER_NAME,
         error_type="researcher_sub_topic_skipped",
         message=(
-            "A high-priority sub-topic was never researched; the report "
-            "will be incomplete for it."
+            "A planned sub-topic was never researched; the report will be "
+            "incomplete for it."
         ),
         details={
             "sub_topic": summarize_text(sub_topic.title),
+            "coverage_id": sub_topic.coverage_id,
             "priority": sub_topic.priority,
             "reason": reason,
         },
@@ -732,12 +797,15 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
     name = RESEARCHER_NAME
     description = "Gather source-backed findings for planned sub-topics."
+    # The four read/discovery tools, and nothing that writes: a finding kept
+    # in long-term memory before the pass is complete is a write nothing
+    # downstream has validated. `save_to_memory` belongs to the agents that
+    # finalize evidence, not to the one gathering it.
     allowed_tools = (
         "web_search",
         "web_scraper",
         "document_reader",
         "query_memory",
-        "save_to_memory",
     )
 
     def __init__(
@@ -832,8 +900,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """Turn one finished sub-topic loop into validated findings.
 
         Returns nothing — and makes no provider call — when the loop stopped
-        on a provider failure or retrieved no source, so the extraction step
-        can never invent one.
+        on a provider failure or READ no source, so the extraction step can
+        never invent one. "Read" is the shared read-bearing rule: a loop that
+        only searched, or only wrote to memory, has nothing to extract from.
 
         The third element, ``provider_failed``, is ``True`` only when the
         extraction call itself could not reach the model provider. The
@@ -841,7 +910,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         ``provider_error``: stop researching further sub-topics, but keep
         every finding already collected.
         """
-        retrieved = any(_has_evidence(step) for step in run.steps)
+        # One call, two consumers: the same tuple gates the provider call and
+        # becomes the provenance allow-list, so "did this loop read anything"
+        # and "which URLs may a finding cite" cannot disagree.
+        retrieved = retrieved_finding_urls(run)
         if not run.succeeded or not retrieved:
             return [], [], False
 
@@ -860,7 +932,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             draft,
             sub_topic=task.sub_topic,
             extracted_at=self._clock().isoformat(),
-            known_urls=retrieved_finding_urls(run),
+            known_urls=retrieved,
         )
         if not rejected:
             return findings, [], False
@@ -976,6 +1048,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     react = react.model_copy(
                         update={"stop_reason": "provider_error"}
                     )
+                bounded = bound_sub_topic_findings(sub_findings)
                 span.set_outputs(
                     {
                         "agent_name": self.name,
@@ -983,12 +1056,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         "stop_reason": react.stop_reason,
                         "iterations": react.iterations,
                         "tool_calls": react.tool_calls,
-                        "findings": len(sub_findings),
+                        "findings": len(bounded.retained),
                     }
                 )
 
             runs.append(react)
-            findings.extend(sub_findings)
+            findings.extend(bounded.retained)
             errors.extend(react.errors)
             errors.extend(extraction_errors)
             events.extend(tool_call_events(sub_topic, react))
@@ -997,7 +1070,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     sub_topic,
                     react,
                     index=index,
-                    findings=len(sub_findings),
+                    findings=len(bounded.retained),
+                    dropped_duplicate=bounded.dropped_duplicate,
+                    dropped_cap=bounded.dropped_cap,
+                    sources_retained=bounded.sources_retained,
                 )
             )
             if not react.succeeded:
@@ -1010,28 +1086,29 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # a coverage gap, and must never be reported as one.
                 stopped_at = index
                 break
-            if not sub_findings and is_high_priority(
+            if not bounded.retained and is_high_priority(
                 sub_topic, threshold=self._high_priority_threshold
             ):
                 errors.append(no_findings_error(sub_topic, react))
 
-        # Every high-priority sub-topic that was never attempted — either
-        # truncated by the max_sub_topics cap, or left unstarted when a
-        # provider failure stopped the pass early — gets a structured,
-        # recoverable record. Without this, state.errors and the event
-        # stream cannot be trusted as "every high-priority sub-topic was
-        # actually attempted": sub-topics could vanish with no trace.
+        # Every sub-topic that was never attempted — either truncated by the
+        # max_sub_topics cap, or left unstarted when a provider failure
+        # stopped the pass early — gets a structured, recoverable record
+        # carrying its coverage id, whatever its priority. Without this,
+        # state.errors and the event stream cannot be trusted as "every
+        # planned sub-topic was attempted or explicitly skipped": sub-topics
+        # could vanish with no trace. Only the warning for an *attempted*
+        # sub-topic that produced nothing stays restricted to the
+        # high-priority ones, so a thin low-priority topic is not noise.
         skipped_by_break = selected[stopped_at:] if stopped_at is not None else []
-        for sub_topic in capped:
-            if is_high_priority(sub_topic, threshold=self._high_priority_threshold):
-                errors.append(sub_topic_skipped_error(sub_topic, reason="cap"))
-        for sub_topic in skipped_by_break:
-            if is_high_priority(sub_topic, threshold=self._high_priority_threshold):
-                errors.append(
-                    sub_topic_skipped_error(
-                        sub_topic, reason="provider_failure_stopped_processing"
-                    )
-                )
+        unattempted: list[tuple[SubTopic, str]] = [
+            (sub_topic, "cap") for sub_topic in capped
+        ] + [
+            (sub_topic, "provider_failure_stopped_processing")
+            for sub_topic in skipped_by_break
+        ]
+        for sub_topic, reason in unattempted:
+            errors.append(sub_topic_skipped_error(sub_topic, reason=reason))
 
         if not selected:
             errors.append(

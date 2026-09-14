@@ -118,9 +118,17 @@ def _scratchpad(
 # shared kwargs; only the Source Evaluator consumes ``reputation``. Bodies
 # name the agent classes rather than capturing them, so a test that patches
 # a class on this module still sees its own class constructed.
+#
+# The Researcher is the one agent with a cap on how much of the plan one pass
+# attempts, and it reads that bound off the very ``AgentRuntimeConfig`` every
+# constructor already receives rather than through a second, Researcher-only
+# kwarg. Keeping it there means ``agents.max_sub_topics`` cannot reach five
+# agents and silently skip the sixth.
 _AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
     "planner": lambda reputation, **shared: PlannerAgent(**shared),
-    "researcher": lambda reputation, **shared: ResearcherAgent(**shared),
+    "researcher": lambda reputation, **shared: ResearcherAgent(
+        max_sub_topics=shared["config"].max_sub_topics, **shared
+    ),
     "source_evaluator": lambda reputation, **shared: SourceEvaluatorAgent(
         reputation=reputation, **shared
     ),

@@ -48,6 +48,13 @@ memory:
 agents:
   max_iterations: 5
   tool_budget: 10
+  # How many planned sub-topics one Researcher pass attempts
+  # (AGENTS_MAX_SUB_TOPICS overrides this). Seven is the Planner's own ceiling,
+  # so the default attempts the whole plan. A smaller cap silently drops the
+  # least important planned sub-topics; each dropped one is recorded as
+  # researcher_sub_topic_skipped with its coverage id, but the report is short
+  # for it regardless.
+  max_sub_topics: 7
   prompt_context_entries: 8
   observation_summary_chars: 200
   # Operation-specific output budget for the planner's final

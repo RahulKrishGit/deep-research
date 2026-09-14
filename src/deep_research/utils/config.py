@@ -185,12 +185,19 @@ class AgentRuntimeConfig(BaseModel):
     and was truncated, which silently degrades the spot-check phase instead of
     failing the run. A decision is not a small reply either — it must carry the
     agent's reasoning, one tool call, and that call's arguments.
+
+    ``max_sub_topics`` is how many planned sub-topics one Researcher pass
+    attempts. It defaults to the Planner's own ceiling of seven, so the
+    production default attempts the whole plan: a cap below the plan size
+    silently drops planned sub-topics, and the ones it drops are the least
+    important by priority, which is exactly where a thin report comes from.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
+    max_sub_topics: int = Field(default=7, ge=1)
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
     planner_final_max_tokens: int = Field(default=32768, ge=1)
@@ -339,6 +346,7 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "AGENTS_MAX_ITERATIONS": ("agents", "max_iterations"),
     "AGENTS_TOOL_BUDGET": ("agents", "tool_budget"),
+    "AGENTS_MAX_SUB_TOPICS": ("agents", "max_sub_topics"),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
     "AGENTS_PLANNER_FINAL_MAX_TOKENS": (

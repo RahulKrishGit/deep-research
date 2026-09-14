@@ -411,6 +411,105 @@ def test_build_agent_gives_the_source_evaluator_the_reputation_source(
     assert agent._reputation is memory
 
 
+def test_the_production_researcher_gets_only_read_and_discovery_tools(
+    tracker,
+) -> None:
+    """Four tools, and nothing that writes.
+
+    A finding is not evidence until the Source Evaluator and the Fact Checker
+    have judged it, so the agent that gathers one must not be able to keep it
+    in long-term memory first. ``build_tools`` still builds
+    ``save_to_memory`` for the agents that finalize evidence; this is about
+    what the Researcher's own toolset admits.
+    """
+    settings = ConfigSettings()
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    agent = build_agent(
+        "researcher",
+        settings,
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    assert agent.toolset.names == (
+        "web_search",
+        "web_scraper",
+        "document_reader",
+        "query_memory",
+    )
+    assert "save_to_memory" not in agent.toolset
+    assert "save_to_memory" in {tool.name for tool in tools}
+
+
+def test_the_production_researcher_receives_the_configured_sub_topic_cap(
+    tracker,
+) -> None:
+    """The configured bound must reach the agent, not just the settings object.
+
+    ``agents.max_sub_topics`` exists so a deployment can decide how much of a
+    plan one pass attempts; a value nothing passes to the Researcher is a
+    knob that silently does nothing.
+    """
+    settings = ConfigSettings.model_validate(
+        {"agents": {"max_sub_topics": 2}}
+    )
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    agent = build_agent(
+        "researcher",
+        settings,
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    assert agent._max_sub_topics == 2
+
+
+def test_an_agent_without_a_sub_topic_cap_is_not_given_one(tracker) -> None:
+    """The four sub-topic cap belongs to the Researcher alone."""
+    tools = build_tools(
+        ConfigSettings(),
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    for name in (
+        "planner",
+        "source_evaluator",
+        "fact_checker",
+        "synthesizer",
+        "critic",
+    ):
+        agent = build_agent(
+            name,
+            ConfigSettings(),
+            tracker=tracker,
+            provider=RecordingProvider(),
+            tools=tools,
+            session_id="session-1",
+            reputation=None,
+        )
+        assert not hasattr(agent, "_max_sub_topics"), name
+
+
 def test_build_agent_rejects_an_unknown_agent_name(tracker) -> None:
     with pytest.raises(AgentConfigurationError) as caught:
         build_agent(

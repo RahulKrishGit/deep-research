@@ -109,9 +109,24 @@ CRITIC_PROMPT_FINGERPRINT = "04df8604c26a"
 # the module now sorts a validated plan by priority and stamps each sub-topic
 # with its local ``topic-NN`` coverage id. Re-pinned deliberately, in its own
 # commit, rather than silently invalidated — the same convention task 1 used.
+# ``researcher`` alone was re-pinned ``3ae03b691d83`` -> ``d06b0630d1dd`` by
+# task 3 of the same plan. Only the researcher moved, which is again the
+# correct blast radius: ``agents/prompts.py`` was untouched, so the five agents
+# that share it keep their values, and ``CRITIC_PROMPT_FINGERPRINT`` and the
+# Judge pin are unchanged too. The researcher's own module source moved for
+# three reasons, all intended: ``RESEARCHER_SYSTEM_PROMPT`` now tells the agent
+# to prefer primary sources and to read a source before reporting a finding
+# from it (and no longer advertises ``save_to_memory``, which left its
+# toolset); ``retrieved_finding_urls`` no longer counts search results, and the
+# read-bearing rule it and the extraction gate share now lives in
+# ``steps.read_evidence_urls``; and the module gained the per-sub-topic
+# evidence bounds (``MAX_FINDINGS_PER_SUB_TOPIC``,
+# ``MAX_UNIQUE_SOURCES_PER_SUB_TOPIC``) the completion event reports.
+# Re-pinned deliberately, in its own commit, rather than silently invalidated —
+# the same convention tasks 1 and 2 used.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "721f1ea5cec5",
-    "researcher": "3ae03b691d83",
+    "researcher": "d06b0630d1dd",
     "source_evaluator": "ec68fe4b9852",
     "fact_checker": "0f983da24ef5",
     "synthesizer": "491e639a59cf",

@@ -15,6 +15,7 @@ from typing import Literal, NoReturn, TypeAlias
 
 from pydantic import Field, JsonValue, model_validator
 
+from deep_research.agents.sources import normalize_source_url
 from deep_research.providers import NativeToolTurn
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
@@ -199,3 +200,93 @@ class ReActRun(ContractModel):
     def succeeded(self) -> bool:
         """True unless the loop stopped on a non-recoverable provider failure."""
         return self.stop_reason != "provider_error"
+
+
+def _successful_payload(step: ReActStep) -> dict[str, JsonValue] | None:
+    """The step's payload mapping, or ``None`` unless the call succeeded.
+
+    A failed call retrieved nothing whatever its payload claims, and a payload
+    that is not a JSON object has no readable shape to inspect.
+    """
+    result = step.tool_result
+    if result is None or not result.success:
+        return None
+    data = result.data
+    return data if isinstance(data, dict) else None
+
+
+def _has_text(value: JsonValue) -> bool:
+    """True for a string carrying something other than whitespace."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _read_payload_urls(tool_name: str, data: dict[str, JsonValue]) -> list[str]:
+    """The URLs one payload's tool READ content from, in payload order.
+
+    Shapes are the real ones each tool returns, and a malformed entry
+    contributes nothing rather than raising.
+    """
+    if tool_name == "web_scraper":
+        url = data.get("url")
+        if _has_text(data.get("text")) and isinstance(url, str):
+            return [url]
+        return []
+    if tool_name == "document_reader":
+        source = data.get("source")
+        chunks = data.get("chunks")
+        if isinstance(source, str) and isinstance(chunks, list) and chunks:
+            return [source]
+        return []
+    if tool_name == "query_memory":
+        matches = data.get("matches")
+        if not isinstance(matches, list):
+            return []
+        urls: list[str] = []
+        for match in matches:
+            if not isinstance(match, dict) or not _has_text(match.get("content")):
+                continue
+            url = match.get("source_url")
+            if not isinstance(url, str):
+                metadata = match.get("metadata")
+                url = (
+                    metadata.get("source_url")
+                    if isinstance(metadata, dict)
+                    else None
+                )
+            if isinstance(url, str):
+                urls.append(url)
+        return urls
+    return []
+
+
+def read_evidence_urls(step: ReActStep) -> tuple[str, ...]:
+    """Source URLs this step actually READ content from, normalized and unique.
+
+    Empty for a failed call, a write, and for every DISCOVERY-ONLY tool.
+
+    The one home of the read-bearing rule, so the Researcher (which must not
+    report a finding from a page it never opened) and the agents that follow
+    it cannot disagree about what counts as evidence:
+
+    * ``web_scraper`` — only with a URL and non-blank ``text``;
+    * ``document_reader`` — only with a source URL and non-empty ``chunks``;
+    * ``query_memory`` — only for a match carrying non-blank ``content`` and
+      a ``source_url``, which may also sit under the match's ``metadata``;
+    * ``web_search`` — never: a result list is a set of candidates, and the
+      model has not read any of them;
+    * ``save_to_memory`` — never: a write is not evidence;
+    * anything else — never.
+
+    Order is the order the payloads gave, duplicates collapse after
+    normalization, and a URL that normalizes to nothing is dropped.
+    """
+    result = step.tool_result
+    data = _successful_payload(step)
+    if result is None or data is None:
+        return ()
+    urls: list[str] = []
+    for candidate in _read_payload_urls(result.tool_name, data):
+        normalized = normalize_source_url(candidate)
+        if normalized and normalized not in urls:
+            urls.append(normalized)
+    return tuple(urls)
