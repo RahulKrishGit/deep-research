@@ -24,9 +24,11 @@ from deep_research.graph.state import (
 from deep_research.utils.types import ResearchError, ResearchState
 from tests.graph_fakes import (
     FakeAgent,
+    fake_claim,
     fake_critique,
     fake_finding,
     fake_research_agents,
+    fake_scored_source,
 )
 
 
@@ -155,14 +157,39 @@ async def test_a_refinement_pass_advances_the_macro_iteration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_state_appends_accumulate_and_scalars_replace_across_passes(
-) -> None:
+async def test_state_replaces_canonical_snapshots_and_appends_the_rest() -> None:
+    """Evidence channels land the pass's snapshot; nothing piles up twice.
+
+    ``evaluated_sources`` and ``verified_claims`` replace, so the producers —
+    Source Evaluator and Fact Checker — emit their whole snapshot each pass.
+    The fakes below do the same: an append would leave three entries after
+    two passes, and a snapshot that dropped the earlier pass's evidence would
+    leave one.
+    """
+    first_source = fake_scored_source("https://example.org/a")
+    second_source = fake_scored_source("https://example.org/b")
+    first_claim = fake_claim("Break-even was reached in 2025.")
+    second_claim = fake_claim("Logical error rates fell in 2025.")
     agents = fake_research_agents(
         researcher=FakeAgent(
             "researcher",
             [
                 {"raw_findings": [fake_finding("first")]},
                 {"raw_findings": [fake_finding("second")]},
+            ],
+        ),
+        source_evaluator=FakeAgent(
+            "source_evaluator",
+            [
+                {"evaluated_sources": [first_source]},
+                {"evaluated_sources": [first_source, second_source]},
+            ],
+        ),
+        fact_checker=FakeAgent(
+            "fact_checker",
+            [
+                {"verified_claims": [first_claim]},
+                {"verified_claims": [first_claim, second_claim]},
             ],
         ),
         synthesizer=FakeAgent(
@@ -187,8 +214,14 @@ async def test_state_appends_accumulate_and_scalars_replace_across_passes(
     assert state.report == "# pass 2"
     assert state.critique is not None
     assert state.critique.score == 9
-    assert len(state.evaluated_sources) == 2
-    assert len(state.verified_claims) == 2
+    assert [source.url for source in state.evaluated_sources] == [
+        "https://example.org/a",
+        "https://example.org/b",
+    ]
+    assert [claim.text for claim in state.verified_claims] == [
+        "Break-even was reached in 2025.",
+        "Logical error rates fell in 2025.",
+    ]
 
 
 @pytest.mark.asyncio

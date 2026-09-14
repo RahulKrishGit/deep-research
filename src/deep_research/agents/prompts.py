@@ -27,12 +27,14 @@ from deep_research.utils.types import (
 # The request itself carries the tools as provider-native function
 # definitions, so this text must never advertise a catalogue or ask for an
 # action envelope. Asking for one in text is what produced DeepSeek's DSML
-# markup on 16 of 30 measured first attempts.
+# markup on 16 of 30 measured first attempts. Neither may it cap the model at
+# one call per turn: every function call in one response is executed, so "at
+# most one" only discards independent lookups the tools were given.
 NATIVE_REACT_RESPONSE_CONTRACT = (
-    "Call at most one tool supplied with this request when another lookup or "
-    "action is needed. Use provider-native tool calling; never write or imitate "
-    "a tool call in text, JSON, XML, DSML, or a Markdown fence. When no tool is "
-    "needed, return the final answer directly."
+    "Call one or more tools supplied with this request when independent "
+    "lookups or actions are needed. Use provider-native tool calling; never "
+    "write or imitate a tool call in text, JSON, XML, DSML, or a Markdown "
+    "fence. When no tool is needed, return the final answer directly."
 )
 
 # The one output-shape sentence every tool-free structured request carries, plus

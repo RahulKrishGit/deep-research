@@ -184,12 +184,16 @@ class ResearchStateUpdate(TypedDict, total=False):
     errors: list[ResearchError]
 
 
+# Fields whose update is a delta appended to what the state already holds.
+# ``evaluated_sources`` and ``verified_claims`` are deliberately absent: each
+# carries the complete canonical snapshot for the run so far, which its
+# producer — Source Evaluator or Fact Checker — merges from
+# ``deep_research.agents.identity`` before writing. Appending them instead
+# stored one more copy of every source and claim per research pass.
 _APPEND_STATE_FIELDS = frozenset(
     {
         "sub_topics",
         "raw_findings",
-        "evaluated_sources",
-        "verified_claims",
         "events",
         "errors",
     }

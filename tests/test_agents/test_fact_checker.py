@@ -756,6 +756,60 @@ def test_state_update_carries_verified_claims_and_errors(
     assert update["errors"] == []
 
 
+@pytest.mark.asyncio
+async def test_a_second_pass_carries_the_claims_of_the_first(
+    tracker: Tracker,
+) -> None:
+    """``verified_claims`` replaces, so the update is a whole snapshot.
+
+    An update carrying only this pass's claims would erase every earlier one
+    when the state merges it, so the producer merges into the snapshot it
+    found on the state it was handed.
+    """
+    earlier = Claim(
+        text="An earlier pass verified this.",
+        source_urls=["https://example.org/a"],
+        verdict="verified",
+        confidence=0.8,
+        evidence=["An independent source reported the same figure."],
+        contradictions=[],
+    )
+    completer = ScriptedCompleter(
+        decisions=list(_check_decisions()),
+        outputs=[
+            ClaimsDraft(claims=[_claim_draft()]),
+            _verdict_draft(verdict="verified"),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+    )
+    state = _check_state(
+        [_check_finding("https://example.org/a")],
+        [_scored("https://example.org/a")],
+    ).model_copy(update={"verified_claims": [earlier]})
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    expected = [
+        "An earlier pass verified this.",
+        "Logical error rates fell below break-even in 2025.",
+    ]
+    assert [
+        claim.text for claim in outcome.state_update["verified_claims"]
+    ] == expected
+    merged = merge_research_state(state, outcome.state_update)
+    assert [claim.text for claim in merged.verified_claims] == expected
+
+
 def _check_decisions() -> list[object]:
     return [
         use_tool(

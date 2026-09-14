@@ -79,6 +79,21 @@ def test_the_native_contract_asks_for_provider_native_tool_calling() -> None:
     )
 
 
+def test_the_native_contract_asks_for_one_or_more_tools() -> None:
+    """The transport accepts several calls per turn, so the text must too.
+
+    ``_native_response_outcome`` accepts every ``function_call`` item in one
+    response, so a contract capping the model at one call throws away
+    lookups the transport would have executed.
+    """
+    assert "one or more tools" in NATIVE_REACT_RESPONSE_CONTRACT
+    assert "at most one" not in NATIVE_REACT_RESPONSE_CONTRACT
+    assert (
+        "never write or imitate a tool call in text, JSON, XML, DSML, or a "
+        "Markdown fence" in NATIVE_REACT_RESPONSE_CONTRACT
+    )
+
+
 def test_the_native_contract_never_mentions_the_simulated_protocol() -> None:
     for forbidden in (
         "## Tools",

@@ -25,6 +25,7 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.events import agent_event
+from deep_research.agents.identity import merge_claim_snapshot
 from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
@@ -672,6 +673,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._max_claims = max_claims
         self._finding_digest = finding_digest
         self._evidence_chars = evidence_chars
+        # The canonical snapshot of the state this run was handed, captured by
+        # ``run`` so ``state_update`` can merge into it. Empty until a run
+        # starts, which keeps a directly-invoked ``state_update`` total.
+        self._prior_claims: list[Claim] = []
 
     @property
     def output_schema(self) -> type[VerifiedClaims]:
@@ -828,10 +833,19 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         result: VerifiedClaims | None,
         run: ReActRun,
     ) -> ResearchStateUpdate:
-        """Verified claims and errors only. ``run`` adds the events."""
+        """The complete claim snapshot and errors. ``run`` adds the events.
+
+        ``verified_claims`` replaces rather than appends, so this update
+        carries every claim verified so far — the ones found on the state
+        this run was handed, merged with the ones it just checked. A claim
+        the latest pass contradicted therefore replaces its own earlier
+        verified record instead of sitting beside it.
+        """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
-            update["verified_claims"] = list(result.claims)
+            update["verified_claims"] = merge_claim_snapshot(
+                self._prior_claims, result.claims
+            )
         return update
 
     async def _check_claim(self, task: ClaimTask) -> ReActRun:
@@ -870,6 +884,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
     async def run(self, state: ResearchState) -> AgentRun[VerifiedClaims]:
         """Extract claims, then verify each in its own bounded loop."""
         base_task = self.build_task(state)
+        self._prior_claims = list(state.verified_claims)
         events: list[ResearchEvent] = []
         errors: list[ResearchError] = []
         claims: list[Claim] = []

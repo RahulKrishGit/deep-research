@@ -28,6 +28,7 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.events import agent_event
+from deep_research.agents.identity import merge_source_snapshot
 from deep_research.agents.prompts import (
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
@@ -500,6 +501,10 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         self._reputation = reputation
         self._max_sources = max_sources
         self._excerpt_chars = excerpt_chars
+        # The canonical snapshot of the state this run was handed, captured by
+        # ``run`` so ``state_update`` can merge into it. Empty until a run
+        # starts, which keeps a directly-invoked ``state_update`` total.
+        self._prior_sources: list[ScoredSource] = []
 
     @property
     def output_schema(self) -> type[EvaluatedSources]:
@@ -672,10 +677,19 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         result: EvaluatedSources | None,
         run: ReActRun,
     ) -> ResearchStateUpdate:
-        """Scored sources and errors only. ``run`` adds the events."""
+        """The complete source snapshot and errors. ``run`` adds the events.
+
+        ``evaluated_sources`` replaces rather than appends, so this update
+        carries every source assessed so far — the ones found on the state
+        this run was handed, merged with the ones it just scored. Without
+        that merge the second pass would silently erase the first pass's
+        sources.
+        """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
-            update["evaluated_sources"] = list(result.sources)
+            update["evaluated_sources"] = merge_source_snapshot(
+                self._prior_sources, result.sources
+            )
         return update
 
     async def run(self, state: ResearchState) -> AgentRun[EvaluatedSources]:
@@ -688,6 +702,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         from any other agent.
         """
         task = self.build_task(state)
+        self._prior_sources = list(state.evaluated_sources)
         events: list[ResearchEvent] = [
             evaluation_started_event(
                 finding_count=len(state.raw_findings),

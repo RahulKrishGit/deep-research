@@ -29,10 +29,12 @@ from deep_research.utils.config import GraphConfig
 from deep_research.utils.types import MemorySnapshot, ResearchState
 from tests.graph_fakes import (
     FakeAgent,
+    fake_claim,
     fake_critique,
     fake_finding,
     fake_research_agents,
     fake_research_state,
+    fake_scored_source,
 )
 from tests.test_observability_tracker import RecordingTraceFactory
 
@@ -168,7 +170,29 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace() -> None
         client_factory=lambda **kwargs: object(),
         trace_factory=trace_factory,
     )
+    first_source = fake_scored_source("https://example.org/a")
+    second_source = fake_scored_source("https://example.org/b")
+    first_claim = fake_claim("Break-even was reached in 2025.")
+    second_claim = fake_claim("Logical error rates fell in 2025.")
     agents = fake_research_agents(
+        # ``evaluated_sources`` and ``verified_claims`` are canonical snapshots,
+        # so each pass emits the whole list. The trace must then report the two
+        # sources and two claims the second pass carried — not three, which is
+        # what appending pass 1 to pass 2 would produce.
+        source_evaluator=FakeAgent(
+            "source_evaluator",
+            [
+                {"evaluated_sources": [first_source]},
+                {"evaluated_sources": [first_source, second_source]},
+            ],
+        ),
+        fact_checker=FakeAgent(
+            "fact_checker",
+            [
+                {"verified_claims": [first_claim]},
+                {"verified_claims": [first_claim, second_claim]},
+            ],
+        ),
         critic=FakeAgent(
             "critic",
             [

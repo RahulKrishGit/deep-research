@@ -501,6 +501,50 @@ def test_state_update_carries_scored_sources_and_errors(
     assert update["errors"] == []
 
 
+@pytest.mark.asyncio
+async def test_a_second_pass_carries_the_sources_of_the_first(
+    tracker: Tracker,
+) -> None:
+    """``evaluated_sources`` replaces, so the update is a whole snapshot.
+
+    An update carrying only this pass's sources would erase every earlier one
+    when the state merges it, so the producer merges into the snapshot it
+    found on the state it was handed.
+    """
+    earlier = ScoredSource(
+        url="https://earlier.test/z",
+        title="Scored in an earlier pass",
+        authority_score=0.5,
+        recency_score=0.5,
+        relevance_score=0.5,
+        corroboration_score=0.0,
+        overall_score=0.45,
+        rationale="Scored before this pass began.",
+    )
+    agent = _evaluator(tracker, ScriptedCompleter(outputs=[_scoring_response()]))
+    state = _eval_state(
+        [
+            _eval_finding("https://example.org/a", "Alpha"),
+            _eval_finding("https://other.test/b", "Alpha"),
+        ],
+        evaluated_sources=[earlier],
+    )
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    expected = [
+        "https://earlier.test/z",
+        "https://example.org/a",
+        "https://other.test/b",
+    ]
+    assert [
+        source.url for source in outcome.state_update["evaluated_sources"]
+    ] == expected
+    merged = merge_research_state(state, outcome.state_update)
+    assert [source.url for source in merged.evaluated_sources] == expected
+
+
 def _scoring_response() -> SourceScoresDraft:
     return SourceScoresDraft(
         sources=[

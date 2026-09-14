@@ -61,7 +61,15 @@ from deep_research.utils.config import (
 # ``agents.prompts`` and replaced the Critic's own ReAct closure, so every
 # agent's recorded ``target_prompt_fingerprint`` moved. Re-pinned deliberately,
 # in its own commit, rather than silently invalidated.
-CRITIC_PROMPT_FINGERPRINT = "c971e00c3773"
+# Moved c971e00c3773 -> 04df8604c26a by task 1 of
+# docs/superpowers/plans/2026-09-14-cli-report-quality-and-agent-output-integrity.md:
+# ``NATIVE_REACT_RESPONSE_CONTRACT`` said "Call at most one tool", which the
+# transport contradicts — every ``function_call`` item in one response is
+# executed — so it now says "Call one or more tools ... when independent
+# lookups or actions are needed". Wording only: the sentence forbidding a
+# tool call written in text, JSON, XML, DSML, or a Markdown fence is
+# unchanged. Re-pinned deliberately rather than silently invalidated.
+CRITIC_PROMPT_FINGERPRINT = "04df8604c26a"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -79,13 +87,23 @@ CRITIC_PROMPT_FINGERPRINT = "c971e00c3773"
 # Only the researcher moved; the other five are untouched. Re-pinned
 # deliberately, with the researcher's live canary re-run, rather than silently
 # invalidated — and the design smell is recorded in the plan ledger.
+#
+# All six were re-pinned by task 1 of
+# docs/superpowers/plans/2026-09-14-cli-report-quality-and-agent-output-integrity.md,
+# when the shared ``NATIVE_REACT_RESPONSE_CONTRACT`` moved from "Call at most
+# one tool" to "Call one or more tools ... when independent lookups or actions
+# are needed". The shared module is hashed into every agent's value, so one
+# sentence moved all six at once — exactly the drift the pin exists to make
+# visible. ``source_evaluator`` and ``fact_checker`` moved a second time in the
+# same task, because each now merges its pass into the canonical snapshot
+# before writing state. The Judge pin did **not** move.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "875f1cd8996f",
-    "researcher": "51044a868e3f",
-    "source_evaluator": "e6bf22c74cfa",
-    "fact_checker": "681669d2ee15",
-    "synthesizer": "d0d036660207",
-    "critic": "c971e00c3773",
+    "planner": "f4b02ab2cfe2",
+    "researcher": "3ae03b691d83",
+    "source_evaluator": "ec68fe4b9852",
+    "fact_checker": "0f983da24ef5",
+    "synthesizer": "491e639a59cf",
+    "critic": "04df8604c26a",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

@@ -1,0 +1,309 @@
+"""Tests for canonical evidence identities and snapshot merges.
+
+Every helper here is a pure function of its inputs, so these tests need no
+provider, tracker, or scratchpad: a fingerprint is asserted directly and a
+merge is asserted on ordinary domain records.
+"""
+
+from __future__ import annotations
+
+from deep_research.agents.identity import (
+    claim_fingerprint,
+    deduplicate_findings,
+    finding_fingerprint,
+    merge_claim_snapshot,
+    merge_source_snapshot,
+)
+from deep_research.utils.types import Claim, Finding, ScoredSource
+
+EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
+
+
+def source(
+    *,
+    url: str = "https://example.test/a",
+    overall_score: float = 0.75,
+    low_confidence: bool = False,
+) -> ScoredSource:
+    return ScoredSource(
+        url=url,
+        title="Example source",
+        authority_score=0.8,
+        recency_score=0.7,
+        relevance_score=0.9,
+        corroboration_score=0.6,
+        overall_score=overall_score,
+        rationale="Relevant and independently corroborated.",
+        low_confidence=low_confidence,
+    )
+
+
+def claim(
+    text: str = "Queue capacity fell in 2024.",
+    *,
+    verdict: str = "verified",
+    confidence: float = 0.9,
+    contradictions: list[str] | None = None,
+) -> Claim:
+    return Claim.model_validate(
+        {
+            "text": text,
+            "source_urls": ["https://example.test/a"],
+            "verdict": verdict,
+            "confidence": confidence,
+            "evidence": ["The source quotes the annual figure."],
+            "contradictions": contradictions or [],
+        }
+    )
+
+
+def finding(
+    content: str = "Adoption rose.",
+    *,
+    source_url: str = "https://example.test/a",
+    related_sub_topic: str = "Adoption",
+    confidence: float = 0.8,
+    source_title: str = "Example source",
+) -> Finding:
+    return Finding(
+        content=content,
+        source_url=source_url,
+        source_title=source_title,
+        extracted_at=EXTRACTED_AT,
+        confidence=confidence,
+        related_sub_topic=related_sub_topic,
+    )
+
+
+# --- claim fingerprints ---------------------------------------------------
+
+
+def test_claim_fingerprint_collapses_formatting_but_preserves_facts() -> None:
+    assert claim_fingerprint("Queue capacity fell in 2024.") == claim_fingerprint(
+        "  queue capacity FELL in 2024  "
+    )
+    assert claim_fingerprint("Queue capacity fell in 2024.") != claim_fingerprint(
+        "Queue capacity fell in 2025."
+    )
+
+
+def test_claim_fingerprint_normalizes_unicode_and_punctuation() -> None:
+    assert claim_fingerprint("Rates fell 40% in 2024.") == claim_fingerprint(
+        "RATES fell 40% in 2024"
+    )
+    # NFKC: full-width digits and a non-breaking space are formatting only.
+    assert claim_fingerprint("Capacity fell in 2024.") == claim_fingerprint(
+        "Capacity fell in\u00a0\uff12\uff10\uff12\uff14."
+    )
+
+
+def test_claim_fingerprint_preserves_numbers_units_and_comparisons() -> None:
+    baseline = claim_fingerprint("The queue holds 400 ppm.")
+    for different in (
+        "The queue holds 401 ppm.",
+        "The queue holds 400 ppb.",
+        "The queue holds more than 400 ppm.",
+        "The queue holds less than 400 ppm.",
+        "The queue holds <400 ppm.",
+        "The queue holds >400 ppm.",
+    ):
+        assert claim_fingerprint(different) != baseline
+
+
+def test_claim_fingerprint_preserves_negation_and_geography() -> None:
+    assert claim_fingerprint("The queue did not grow.") != claim_fingerprint(
+        "The queue did grow."
+    )
+    assert claim_fingerprint("Adoption rose in India.") != claim_fingerprint(
+        "Adoption rose in China."
+    )
+
+
+def test_claim_fingerprint_is_a_deterministic_sha256_digest() -> None:
+    digest = claim_fingerprint("Queue capacity fell in 2024.")
+
+    assert digest == claim_fingerprint("Queue capacity fell in 2024.")
+    assert len(digest) == 64
+    assert set(digest) <= set("0123456789abcdef")
+
+
+# --- finding fingerprints -------------------------------------------------
+
+
+def test_finding_fingerprint_keys_on_the_canonical_url_and_normalized_text() -> None:
+    assert finding_fingerprint(
+        finding("Adoption rose.", source_url="https://EXAMPLE.test/a/")
+    ) == finding_fingerprint(
+        finding("  adoption   ROSE. ", source_url="https://example.test/a")
+    )
+
+
+def test_finding_fingerprint_separates_url_topic_and_content() -> None:
+    baseline = finding_fingerprint(finding("Adoption rose."))
+    variants = (
+        finding("Adoption rose.", source_url="https://example.test/b"),
+        finding("Adoption rose.", related_sub_topic="Regulation"),
+        finding("Adoption fell."),
+    )
+
+    for variant in variants:
+        assert finding_fingerprint(variant) != baseline
+
+
+# --- source snapshots -----------------------------------------------------
+
+
+def test_the_latest_assessment_wins_without_reordering_first_seen_sources() -> None:
+    first = source(url="https://EXAMPLE.test/a/", overall_score=0.4)
+    second = source(url="https://example.test/b", overall_score=0.6)
+    rescored = source(
+        url="https://example.test/a",
+        overall_score=0.91,
+        low_confidence=True,
+    )
+
+    merged = merge_source_snapshot([first, second], [rescored])
+
+    # Three assessments of two canonical URLs: the re-scored source collapses
+    # onto its first-seen position, carrying the newest assessment entire.
+    assert len(merged) == 2
+    assert [item.overall_score for item in merged] == [0.91, 0.6]
+    assert [item.url for item in merged] == [
+        "https://example.test/a",
+        "https://example.test/b",
+    ]
+    assert merged[0].low_confidence is True
+
+
+def test_merge_source_snapshot_is_empty_for_two_empty_snapshots() -> None:
+    assert merge_source_snapshot([], []) == []
+
+
+def test_merge_source_snapshot_keeps_earlier_sources_absent_from_the_new_pass() -> None:
+    kept = source(url="https://example.test/a")
+    added = source(url="https://example.test/b")
+
+    merged = merge_source_snapshot([kept], [added])
+
+    assert merged == [kept, added]
+
+
+def test_merge_source_snapshot_does_not_mutate_its_inputs() -> None:
+    previous = [source(url="https://example.test/a", overall_score=0.4)]
+    current = [source(url="https://example.test/a", overall_score=0.9)]
+
+    merge_source_snapshot(previous, current)
+
+    assert [item.overall_score for item in previous] == [0.4]
+    assert [item.overall_score for item in current] == [0.9]
+
+
+# --- claim snapshots ------------------------------------------------------
+
+
+def test_the_latest_claim_for_one_fingerprint_wins() -> None:
+    stale = claim(
+        "Queue capacity fell in 2024.",
+        verdict="insufficient_evidence",
+        confidence=0.2,
+    )
+    fresh = claim(
+        "  queue capacity FELL in 2024  ",
+        verdict="verified",
+        confidence=0.9,
+    )
+
+    merged = merge_claim_snapshot([stale], [fresh])
+
+    assert len(merged) == 1
+    assert merged[0].verdict == "verified"
+    assert merged[0].confidence == 0.9
+
+
+def test_a_contradicted_verdict_replaces_a_stale_verified_one() -> None:
+    verified = claim("Break-even was reached in 2025.", confidence=0.95)
+    contradicted = claim(
+        "Break-even was reached in 2025.",
+        verdict="contradicted",
+        confidence=0.4,
+        contradictions=["Two later reviews report a missed target."],
+    )
+
+    merged = merge_claim_snapshot([verified], [contradicted])
+
+    assert [item.verdict for item in merged] == ["contradicted"]
+    assert merged[0].contradictions == [
+        "Two later reviews report a missed target."
+    ]
+
+
+def test_merge_claim_snapshot_keeps_first_seen_order_and_earlier_claims() -> None:
+    first = claim("Queue capacity fell in 2024.")
+    second = claim("Break-even was reached in 2025.")
+    revised = claim("Queue capacity fell in 2024.", confidence=0.5)
+
+    merged = merge_claim_snapshot([first, second], [revised])
+
+    assert [item.text for item in merged] == [
+        "Queue capacity fell in 2024.",
+        "Break-even was reached in 2025.",
+    ]
+    assert merged[0].confidence == 0.5
+    assert merge_claim_snapshot([], []) == []
+
+
+def test_merge_claim_snapshot_does_not_mutate_its_inputs() -> None:
+    previous = [claim("Queue capacity fell in 2024.", confidence=0.9)]
+    current = [claim("Queue capacity fell in 2024.", confidence=0.3)]
+
+    merge_claim_snapshot(previous, current)
+
+    assert [item.confidence for item in previous] == [0.9]
+    assert [item.confidence for item in current] == [0.3]
+
+
+# --- finding de-duplication ----------------------------------------------
+
+
+def test_deduplicate_findings_keeps_the_higher_confidence_record() -> None:
+    weak = finding("Adoption rose.", confidence=0.4, source_title="First")
+    strong = finding(
+        "  adoption   ROSE. ",
+        confidence=0.9,
+        source_url="https://EXAMPLE.test/a/",
+        source_title="Second",
+    )
+
+    assert deduplicate_findings([weak, strong]) == [strong]
+
+
+def test_deduplicate_findings_keeps_the_earlier_record_on_a_tie() -> None:
+    first = finding("Adoption rose.", confidence=0.7, source_title="First")
+    second = finding("Adoption rose.", confidence=0.7, source_title="Second")
+
+    kept = deduplicate_findings([first, second])
+
+    assert [item.source_title for item in kept] == ["First"]
+
+
+def test_deduplicate_findings_separates_other_urls_topics_and_content() -> None:
+    kept = deduplicate_findings(
+        [
+            finding("Adoption rose."),
+            finding("Adoption rose.", source_url="https://example.test/b"),
+            finding("Adoption rose.", related_sub_topic="Regulation"),
+            finding("Adoption fell."),
+        ]
+    )
+
+    assert len(kept) == 4
+
+
+def test_deduplicate_findings_preserves_first_seen_order_of_survivors() -> None:
+    first = finding("Adoption rose.", confidence=0.8)
+    second = finding("Costs fell.", confidence=0.8)
+
+    kept = deduplicate_findings([first, second, finding("Adoption rose.")])
+
+    assert [item.content for item in kept] == ["Adoption rose.", "Costs fell."]
+    assert deduplicate_findings([]) == []
