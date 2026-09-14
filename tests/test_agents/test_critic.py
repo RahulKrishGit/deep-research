@@ -83,12 +83,14 @@ def _source(*, low_confidence: bool = False) -> ScoredSource:
 
 def _claim(*, verdict: str = "verified") -> Claim:
     return Claim(
+        claim_id="fixture-claim",
         text="Logical error rates fell below break-even in 2025.",
         source_urls=[CRITIC_SOURCE_URL],
         verdict=verdict,
         confidence=0.8,
         evidence=[],
         contradictions=[],
+        verification_evidence=[],
     )
 
 

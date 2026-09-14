@@ -453,6 +453,26 @@ def test_the_search_failure_case_lets_the_second_claim_succeed() -> None:
     }
 
 
+def test_every_successful_verification_hit_has_a_read_fixture() -> None:
+    """Search candidates must be readable before they can become evidence."""
+    for scenario_name in (
+        "fact-checker-mixed",
+        "fact-checker-dependent-domains",
+        "fact-checker-search-failure",
+    ):
+        script = SCENARIOS[scenario_name]
+        read_urls = {
+            normalize_source_url(page_url) for page_url in script.http_pages
+        }
+        for response in script.search_responses.values():
+            if not isinstance(response, dict):
+                continue
+            for result in response.get("results", []):
+                url = result.get("url") if isinstance(result, dict) else None
+                if isinstance(url, str):
+                    assert normalize_source_url(url) in read_urls
+
+
 def test_every_controlled_case_declares_its_scripted_urls() -> None:
     """known_source_urls must equal the normalized findings plus the
     normalized scripted result URLs: the Fact Checker normalizes every URL

@@ -52,12 +52,14 @@ def _claim(
     contradictions: list[str] | None = None,
 ) -> Claim:
     return Claim(
+        claim_id=f"fixture-{text.casefold().replace(' ', '-')}",
         text=text,
         source_urls=urls or ["https://example.org/a"],
         verdict=verdict,
         confidence=confidence,
         evidence=["An independent review states the same figure."],
         contradictions=contradictions or [],
+        verification_evidence=[],
     )
 
 

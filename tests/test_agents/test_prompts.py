@@ -507,12 +507,14 @@ def _digest_claim(
     urls: list[str] | None = None,
 ) -> Claim:
     return Claim(
+        claim_id=f"fixture-{text.casefold().replace(' ', '-')}",
         text=text,
         source_urls=urls or ["https://example.org/a"],
         verdict=verdict,
         confidence=confidence,
         evidence=[],
         contradictions=[],
+        verification_evidence=[],
     )
 
 

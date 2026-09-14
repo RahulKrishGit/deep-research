@@ -26,7 +26,11 @@ from deep_research.agents.fact_checker import (
     independent_domains,
 )
 from deep_research.agents.report import build_citation_index
-from deep_research.agents.sources import normalize_source_url, source_domain
+from deep_research.agents.sources import (
+    normalize_source_url,
+    publisher_identity,
+    source_domain,
+)
 from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.config import contains_secret
 from deep_research.evaluation.models import (
@@ -1141,12 +1145,66 @@ def _evidence_linked_passes(output: TargetOutput, case: EvaluationCase) -> bool:
             continue
         evidence = _field(entry, "evidence")
         source_urls = _field(entry, "source_urls")
-        if not isinstance(evidence, list) or not isinstance(source_urls, list):
+        passages = _field(entry, "verification_evidence")
+        if (
+            not isinstance(evidence, list)
+            or not isinstance(source_urls, list)
+            or not isinstance(passages, list)
+        ):
             return False
-        if not any(isinstance(item, str) and item.strip() for item in evidence):
+        contradictions = _field(entry, "contradictions")
+        if not isinstance(contradictions, list):
+            return False
+        if not any(
+            isinstance(item, str) and item.strip()
+            for item in (*evidence, *contradictions)
+        ):
             return False
         if not any(isinstance(item, str) and item.strip() for item in source_urls):
             return False
+        claim_source_urls = [
+            item for item in source_urls if isinstance(item, str) and item.strip()
+        ]
+        if not passages:
+            return False
+        if _field(entry, "verdict") == "verified" and not any(
+            _field(passage, "stance") == "supports" for passage in passages
+        ):
+            return False
+        if _field(entry, "verdict") == "contradicted" and not any(
+            _field(passage, "stance") == "contradicts" for passage in passages
+        ):
+            return False
+        for passage in passages:
+            source_url = _field(passage, "source_url")
+            source_title = _field(passage, "source_title")
+            locator = _field(passage, "locator")
+            excerpt = _field(passage, "excerpt")
+            stance = _field(passage, "stance")
+            if (
+                not isinstance(source_url, str)
+                or not source_url.strip()
+                or not isinstance(source_title, str)
+                or not source_title.strip()
+                or not isinstance(locator, str)
+                or not locator.strip()
+                or not isinstance(excerpt, str)
+                or not excerpt.strip()
+                or stance not in {"supports", "contradicts"}
+            ):
+                return False
+        if _field(entry, "verdict") in {"verified", "contradicted"}:
+            passage_urls = [
+                source_url
+                for passage in passages
+                for source_url in [_field(passage, "source_url")]
+                if isinstance(source_url, str)
+            ]
+            if not independent_domains(
+                passage_urls,
+                claimed_domains=claimed_domains_for(claim_source_urls),
+            ):
+                return False
     return True
 
 
@@ -1175,28 +1233,8 @@ def _independent_domains_passes(
     minimum = int(minimum)
     family = reference.get("dependent_domain_family")
     family = family if isinstance(family, str) else None
-    # What counts as retrieved evidence: the verification prompt only asks
-    # the model to "quote or closely paraphrase" the retrieved passages
-    # (``CLAIM_VERIFICATION_INSTRUCTION``), so URLs in the evidence strings
-    # are optional. Count every URL the repetition recorded instead, the
-    # way ``_no_invented_sources_passes`` does:
-    #   - URL-like strings in trajectory thoughts/observation summaries
-    #     (the verification loop's web_search results land there), and
-    #   - ``scripted_search_urls`` on the evidence context (controlled
-    #     runs).
-    # Deliberately NOT counted: ``EvidenceContext.sources/findings/claims``
-    # — those are the input evidence the agent was given, i.e. the claim's
-    # own source set, which must never double as corroboration.
-    recorded_urls: list[str] = []
-    for step in output.trajectory:
-        recorded_urls.extend(_url_like_strings(_field(step, "thought")))
-        recorded_urls.extend(
-            _url_like_strings(_field(step, "observation_summary"))
-        )
-    recorded_urls.extend(
-        url
-        for url in (_field(output.evidence, "scripted_search_urls") or ())
-        if isinstance(url, str)
+    family_identity = (
+        publisher_identity(f"https://{family}") if family else None
     )
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
@@ -1210,18 +1248,18 @@ def _independent_domains_passes(
             if isinstance(url, str)
         ]
         claimed = claimed_domains_for(source_urls)
-        evidence_urls = list(source_urls)
-        for string in _field(entry, "evidence") or []:
-            if isinstance(string, str):
-                evidence_urls.extend(
-                    url.rstrip(_URL_TRAILING_PUNCTUATION)
-                    for url in _URL_PATTERN.findall(string)
-                )
-        evidence_urls.extend(recorded_urls)
+        evidence_urls = [
+            url
+            for passage in (_field(entry, "verification_evidence") or [])
+            for url in [_field(passage, "source_url")]
+            if isinstance(url, str)
+        ]
         independent = independent_domains(
             evidence_urls, claimed_domains=claimed
         )
-        if _registrable_family_count(independent, family=family) < minimum:
+        if _registrable_family_count(
+            independent, family=family_identity
+        ) < minimum:
             return False
     return True
 

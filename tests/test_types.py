@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from deep_research.utils.types import (
     Claim,
     Critique,
+    EvidencePassage,
     Finding,
     MemorySnapshot,
     ResearchError,
@@ -76,12 +77,22 @@ def test_domain_models_preserve_required_fields() -> None:
         related_sub_topic="Adoption",
     )
     claim = Claim(
+        claim_id="claim-adoption",
         text="Adoption increased year over year.",
         source_urls=["https://example.com/a", "https://example.org/b"],
         verdict="verified",
         confidence=0.9,
         evidence=["Two independent surveys report an increase."],
         contradictions=["One regional survey reported flat adoption."],
+        verification_evidence=[
+            EvidencePassage(
+                source_url="https://independent.org/survey",
+                source_title="Independent survey",
+                locator="p. 3",
+                excerpt="Two independent surveys report an increase.",
+                stance="supports",
+            )
+        ],
     )
     memory = MemorySnapshot(
         similar_findings=[finding],

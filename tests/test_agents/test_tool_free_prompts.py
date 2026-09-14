@@ -160,12 +160,14 @@ def _scored_source(url: str = "https://real.test/one") -> ScoredSource:
 
 def _claim(url: str = "https://real.test/one") -> Claim:
     return Claim(
+        claim_id="fixture-claim",
         text="A measured result was reported.",
         source_urls=[url],
         verdict="verified",
         confidence=0.9,
         evidence=["An independent study reports the same result."],
         contradictions=[],
+        verification_evidence=[],
     )
 
 
@@ -750,8 +752,7 @@ def test_the_claim_verification_pair_is_schema_valid_and_opposite() -> None:
 
     assert verified.verdict == "verified"
     assert insufficient.verdict == "insufficient_evidence"
-    assert verified.evidence and verified.contradictions == []
-    assert insufficient.evidence == [] and insufficient.contradictions == []
+    assert verified.passages and insufficient.passages == []
     assert 0.0 <= insufficient.confidence < verified.confidence <= 1.0
 
 

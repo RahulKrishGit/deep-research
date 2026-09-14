@@ -63,12 +63,14 @@ def claim(
 ) -> Claim:
     return Claim.model_validate(
         {
+            "claim_id": claim_fingerprint(text),
             "text": text,
             "source_urls": ["https://example.test/a"],
             "verdict": verdict,
             "confidence": confidence,
             "evidence": ["The source quotes the annual figure."],
             "contradictions": contradictions or [],
+            "verification_evidence": [],
         }
     )
 

@@ -1436,6 +1436,26 @@ def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
                     "results": [],
                 },
             },
+            http_pages={
+                "https://nrc.gov/smr-licensing-framework": (
+                    "SMR designs undergo the same safety assessment and "
+                    "licensing requirements as large reactors."
+                ),
+                "https://ans.org/smr-safety-assessment": (
+                    "International safety standards apply equally to SMR "
+                    "designs."
+                ),
+                "https://nei.org/pevek-floating-plant": (
+                    "The Akademik Lomonosov floating plant has operated "
+                    "commercially at Pevek since 2020, powered by two "
+                    "small modular reactor units."
+                ),
+            },
+            scripted_search_urls=(
+                "https://nrc.gov/smr-licensing-framework",
+                "https://ans.org/smr-safety-assessment",
+                "https://nei.org/pevek-floating-plant",
+            ),
         ),
         "fact-checker-dependent-domains": ScenarioScript(
             search_responses={
@@ -1463,6 +1483,20 @@ def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
                     ]
                 },
             },
+            http_pages={
+                "https://news.example.com/outage-minutes-fall": (
+                    "A follow-up confirms outage minutes fell 40 percent "
+                    "after the 2025 grid upgrade."
+                ),
+                "https://syndication.news.example.com/outage-minutes-fall": (
+                    "The same 40 percent figure appears in syndicated "
+                    "outage statistics."
+                ),
+            },
+            scripted_search_urls=(
+                "https://news.example.com/outage-minutes-fall",
+                "https://syndication.news.example.com/outage-minutes-fall",
+            ),
         ),
         "fact-checker-search-failure": ScenarioScript(
             search_responses={
@@ -1495,6 +1529,20 @@ def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
                     ]
                 },
             },
+            http_pages={
+                "https://agu.org/ocean-heat-attribution": (
+                    "An AGU study attributes the post-2020 ocean heat "
+                    "acceleration primarily to greenhouse gas forcing."
+                ),
+                "https://gcos.wmo.int/ocean-heat-bulletin": (
+                    "The GCOS bulletin reports greenhouse gas forcing as "
+                    "the dominant driver of the recent ocean heat increase."
+                ),
+            },
+            scripted_search_urls=(
+                "https://agu.org/ocean-heat-attribution",
+                "https://gcos.wmo.int/ocean-heat-bulletin",
+            ),
         ),
     }
 

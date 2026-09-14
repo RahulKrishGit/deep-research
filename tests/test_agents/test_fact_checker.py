@@ -7,13 +7,17 @@ from typing import get_args
 import pytest
 
 from deep_research.agents.fact_checker import (
+    MAX_PASSAGE_EXCERPT_CHARS,
+    MAX_PASSAGE_LOCATOR_CHARS,
     VERDICT_VALUES,
     ClaimDraft,
     ClaimsDraft,
     ClaimTask,
     ClaimVerdictDraft,
+    EvidencePassageDraft,
     FactCheckerAgent,
     VerifiedClaims,
+    _finding_is_new,
     build_claim,
     build_claim_drafts,
     claim_checked_event,
@@ -27,8 +31,10 @@ from deep_research.agents.fact_checker import (
     normalize_verdict,
     resolve_verdict,
     retrieved_source_urls,
+    valid_verification_passages,
     verdict_counts,
 )
+from deep_research.agents.identity import merge_claim_snapshot
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import (
     ReActDecision,
@@ -48,6 +54,7 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
     ClaimVerdict,
+    EvidencePassage,
     Finding,
     MemorySnapshot,
     ResearchState,
@@ -179,6 +186,72 @@ def test_a_blank_claim_is_rejected() -> None:
     assert rejected == ["claim 1: blank claim text"]
 
 
+def test_claim_extraction_skips_old_snapshot_unless_evidence_or_critic_changes(
+) -> None:
+    claim = _claim_draft()
+    prior = insufficient_claim(claim, reason="no_independent_source")
+    draft = ClaimsDraft(claims=[claim])
+
+    claims, rejected = build_claim_drafts(
+        draft,
+        known_urls=claim.source_urls,
+        prior_claims=[prior],
+    )
+
+    assert claims == []
+    assert rejected == ["claim 1: already checked"]
+
+    changed, rejected = build_claim_drafts(
+        draft.model_copy(
+            update={
+                "claims": [
+                    claim.model_copy(
+                        update={
+                            "source_urls": [
+                                *claim.source_urls,
+                                "https://new.test/evidence",
+                            ]
+                        }
+                    )
+                ]
+            }
+        ),
+        known_urls=[*claim.source_urls, "https://new.test/evidence"],
+        prior_claims=[prior],
+        new_source_urls=["https://new.test/evidence"],
+    )
+    assert [item.text for item in changed] == [claim.text]
+    assert rejected == []
+
+    same_url_changed, rejected = build_claim_drafts(
+        draft,
+        known_urls=claim.source_urls,
+        prior_claims=[prior],
+        new_source_urls=claim.source_urls,
+    )
+    assert [item.text for item in same_url_changed] == [claim.text]
+    assert rejected == []
+
+    reverified, rejected = build_claim_drafts(
+        draft,
+        known_urls=claim.source_urls,
+        prior_claims=[prior],
+        critique_texts=[f"Re-verify this claim: {claim.text}"],
+    )
+    assert [item.text for item in reverified] == [claim.text]
+    assert rejected == []
+
+
+def test_a_new_publisher_restatement_is_new_evidence() -> None:
+    claim = _claim_draft()
+    prior = insufficient_claim(claim, reason="no_independent_source")
+    finding = _check_finding(
+        "https://independent.test/report", content=claim.text
+    )
+
+    assert _finding_is_new(finding, [prior]) is True
+
+
 def test_extraction_messages_show_findings_and_source_quality() -> None:
     state = _check_state(
         [_check_finding()],
@@ -249,12 +322,37 @@ def _verdict_draft(
     confidence: float = 0.9,
     evidence: list[str] | None = None,
     contradictions: list[str] | None = None,
+    passages: list[EvidencePassageDraft] | None = None,
 ) -> ClaimVerdictDraft:
+    if passages is None:
+        passages = [
+            EvidencePassageDraft(
+                source_url="https://third.test/x",
+                source_title="Independent review",
+                locator="p. 1",
+                excerpt=excerpt,
+                stance="supports",
+            )
+            for excerpt in (
+                evidence
+                if evidence is not None
+                else ["A third party agrees."]
+            )
+        ]
+        passages.extend(
+            EvidencePassageDraft(
+                source_url="https://third.test/x",
+                source_title="Independent regulator",
+                locator="p. 2",
+                excerpt=excerpt,
+                stance="contradicts",
+            )
+            for excerpt in (contradictions or [])
+        )
     return ClaimVerdictDraft(
         verdict=verdict,
         confidence=confidence,
-        evidence=evidence if evidence is not None else ["A third party agrees."],
-        contradictions=contradictions or [],
+        passages=passages,
     )
 
 
@@ -294,7 +392,14 @@ def test_retrieved_urls_are_pulled_from_every_evidence_carrying_tool() -> None:
             _tool_step(
                 4,
                 "query_memory",
-                {"matches": [{"metadata": {"source_url": "https://fifth.test/m"}}]},
+                {
+                    "matches": [
+                        {
+                            "content": "A remembered passage.",
+                            "metadata": {"source_url": "https://fifth.test/m"},
+                        }
+                    ]
+                },
             ),
         ],
         iterations=4,
@@ -306,6 +411,24 @@ def test_retrieved_urls_are_pulled_from_every_evidence_carrying_tool() -> None:
         "https://fourth.test/d.csv",
         "https://fifth.test/m",
     ]
+
+
+def test_search_only_results_are_candidates_not_retrieved_evidence() -> None:
+    run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                1,
+                "web_search",
+                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+            )
+        ],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    assert retrieved_source_urls(run) == []
 
 
 def test_empty_and_failed_tool_payloads_yield_no_urls() -> None:
@@ -353,18 +476,84 @@ def test_verdict_normalization_is_total(raw: str, expected: str) -> None:
 
 
 def test_a_claim_with_no_independent_source_is_insufficient() -> None:
-    verdict, confidence = resolve_verdict(_verdict_draft(), independent=[])
+    verdict, confidence = resolve_verdict(
+        _verdict_draft(passages=[]), independent=["third.test"]
+    )
 
     assert verdict == "insufficient_evidence"
     assert confidence == pytest.approx(0.0)
 
 
+def test_passages_require_read_urls_and_keep_bounded_independent_provenance() -> None:
+    long_locator = "locator " * 100
+    long_excerpt = "independent passage " * 100
+    draft = _verdict_draft(
+        passages=[
+            EvidencePassageDraft(
+                source_url="https://search-only.test/result",
+                source_title="Search candidate",
+                locator="result",
+                excerpt="Never read.",
+                stance="supports",
+            ),
+            EvidencePassageDraft(
+                source_url="https://example.org/claim-source",
+                source_title="Claim source",
+                locator="p. 1",
+                excerpt="Own source.",
+                stance="supports",
+            ),
+            EvidencePassageDraft(
+                source_url="https://evidence.example.test/report",
+                source_title="Copied example",
+                locator="p. 1",
+                excerpt="Prompt example.",
+                stance="supports",
+            ),
+            EvidencePassageDraft(
+                source_url="https://independent.test/report/",
+                source_title="Independent report",
+                locator=long_locator,
+                excerpt=long_excerpt,
+                stance="supports",
+            ),
+            EvidencePassageDraft(
+                source_url="https://WWW.independent.test/report",
+                source_title="Duplicate report",
+                locator=long_locator,
+                excerpt=long_excerpt,
+                stance="supports",
+            ),
+        ]
+    )
+
+    passages = valid_verification_passages(
+        draft,
+        retrieved_urls=[
+            "https://example.org/claim-source",
+            "https://evidence.example.test/report",
+            "https://independent.test/report",
+        ],
+        claimed_publishers=["example.org"],
+    )
+
+    assert len(passages) == 1
+    assert passages[0].source_url == "https://independent.test/report"
+    assert len(passages[0].locator) <= MAX_PASSAGE_LOCATOR_CHARS
+    assert len(passages[0].excerpt) <= MAX_PASSAGE_EXCERPT_CHARS
+
+
 def test_reported_contradictions_downgrade_a_verified_verdict() -> None:
+    draft = _verdict_draft(
+        verdict="verified", contradictions=["A regulator disputes it."]
+    )
     verdict, confidence = resolve_verdict(
-        _verdict_draft(
-            verdict="verified", contradictions=["A regulator disputes it."]
-        ),
+        draft,
         independent=["third.test"],
+        passages=[
+            EvidencePassage.model_validate(passage.model_dump())
+            for passage in draft.passages
+        ],
     )
 
     assert verdict == "contradicted"
@@ -373,14 +562,22 @@ def test_reported_contradictions_downgrade_a_verified_verdict() -> None:
 
 def test_confidence_is_clamped_and_zeroed_for_insufficient_evidence() -> None:
     verdict, confidence = resolve_verdict(
-        _verdict_draft(verdict="insufficient_evidence", confidence=0.8),
+        _verdict_draft(
+            verdict="insufficient_evidence", confidence=0.8, passages=[]
+        ),
         independent=["third.test"],
     )
     assert verdict == "insufficient_evidence"
     assert confidence == pytest.approx(0.0)
 
+    high_draft = _verdict_draft(confidence=4.0)
     _, high = resolve_verdict(
-        _verdict_draft(confidence=4.0), independent=["third.test"]
+        high_draft,
+        independent=["third.test"],
+        passages=[
+            EvidencePassage.model_validate(passage.model_dump())
+            for passage in high_draft.passages
+        ],
     )
     assert high == pytest.approx(1.0)
 
@@ -390,6 +587,7 @@ def test_a_built_claim_keeps_its_own_sources_and_the_models_evidence() -> None:
         _claim_draft(),
         _verdict_draft(evidence=["Third party agrees."]),
         independent=["third.test"],
+        retrieved_urls=["https://third.test/x"],
     )
 
     assert isinstance(claim, Claim)
@@ -397,6 +595,8 @@ def test_a_built_claim_keeps_its_own_sources_and_the_models_evidence() -> None:
     assert claim.verdict == "verified"
     assert claim.evidence == ["Third party agrees."]
     assert claim.contradictions == []
+    assert claim.claim_id
+    assert len(claim.verification_evidence) == 1
 
 
 def test_an_insufficient_claim_names_its_reason_and_invents_no_confidence() -> None:
@@ -421,8 +621,11 @@ def test_verification_messages_carry_the_claim_and_its_evidence() -> None:
         steps=[
             _tool_step(
                 1,
-                "web_search",
-                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+                "web_scraper",
+                {
+                    "url": "https://third.test/x",
+                    "text": "An independent review agrees.",
+                },
             )
         ],
         iterations=1,
@@ -448,7 +651,10 @@ def test_verification_messages_carry_the_claim_and_its_evidence() -> None:
 def test_verdict_counts_cover_every_verdict_value() -> None:
     claims = [
         build_claim(
-            _claim_draft(), _verdict_draft(), independent=["third.test"]
+            _claim_draft(),
+            _verdict_draft(),
+            independent=["third.test"],
+            retrieved_urls=["https://third.test/x"],
         ),
         insufficient_claim(_claim_draft(), reason="no_independent_source"),
     ]
@@ -599,8 +805,11 @@ async def test_a_loop_that_died_to_the_provider_is_insufficient(
         steps=[
             _tool_step(
                 1,
-                "web_search",
-                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+                "web_scraper",
+                {
+                    "url": "https://third.test/x",
+                    "text": "An independent review agrees.",
+                },
             )
         ],
         iterations=1,
@@ -656,8 +865,11 @@ async def test_independent_evidence_produces_a_model_verdict(
         steps=[
             _tool_step(
                 1,
-                "web_search",
-                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+                "web_scraper",
+                {
+                    "url": "https://third.test/x",
+                    "text": "An independent review agrees.",
+                },
             )
         ],
         iterations=1,
@@ -695,8 +907,11 @@ async def test_a_contradiction_survives_a_verified_model_answer(
         steps=[
             _tool_step(
                 1,
-                "web_search",
-                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+                "web_scraper",
+                {
+                    "url": "https://third.test/x",
+                    "text": "An independent review agrees.",
+                },
             )
         ],
         iterations=1,
@@ -727,8 +942,11 @@ async def test_a_verification_provider_failure_is_insufficient_not_invented(
         steps=[
             _tool_step(
                 1,
-                "web_search",
-                {"results": [{"title": "T", "url": "https://third.test/x"}]},
+                "web_scraper",
+                {
+                    "url": "https://third.test/x",
+                    "text": "An independent review agrees.",
+                },
             )
         ],
         iterations=1,
@@ -769,12 +987,22 @@ async def test_a_second_pass_carries_the_claims_of_the_first(
     found on the state it was handed.
     """
     earlier = Claim(
+        claim_id="earlier-claim",
         text="An earlier pass verified this.",
         source_urls=["https://example.org/a"],
         verdict="verified",
         confidence=0.8,
         evidence=["An independent source reported the same figure."],
         contradictions=[],
+        verification_evidence=[
+            EvidencePassage(
+                source_url="https://third.test/x",
+                source_title="Independent review",
+                locator="p. 1",
+                excerpt="An independent source reported the same figure.",
+                stance="supports",
+            )
+        ],
     )
     completer = ScriptedCompleter(
         decisions=list(_check_decisions()),
@@ -819,6 +1047,11 @@ def _check_decisions() -> list[object]:
             "web_search",
             '{"query": "break-even 2025"}',
         ),
+        use_tool(
+            "Read the independent source before judging the claim.",
+            "web_scraper",
+            '{"url": "https://third.test/x"}',
+        ),
         finish("I have independent material.", "Checked."),
     ]
 
@@ -846,14 +1079,73 @@ def test_the_per_claim_event_reports_tool_calls_and_the_verdict() -> None:
     assert event.metadata["contradictions"] == 0
 
 
+def test_claim_events_report_bounded_provenance_counts_without_excerpts() -> None:
+    claim = Claim(
+        claim_id="claim-1",
+        text="A measured result was reported.",
+        source_urls=["https://example.org/a"],
+        verdict="verified",
+        confidence=0.9,
+        evidence=["An independent study agrees."],
+        contradictions=[],
+        verification_evidence=[
+            EvidencePassage(
+                source_url="https://third.test/x",
+                source_title="Independent study",
+                locator="p. 4",
+                excerpt="An independent study agrees.",
+                stance="supports",
+            )
+        ],
+    )
+    event = claim_checked_event(
+        claim,
+        ReActRun(agent_name="fact_checker", stop_reason="finished"),
+        index=1,
+        independent_sources=1,
+        reason=None,
+    )
+
+    assert event.metadata["support_passages"] == 1
+    assert event.metadata["contradiction_passages"] == 0
+    assert event.metadata["unique_publishers"] == 1
+    assert "An independent study agrees." not in event.metadata.values()
+
+
+def test_four_pass_repeated_fact_keeps_one_claim_and_latest_verdict() -> None:
+    snapshot: list[Claim] = []
+    verified = build_claim(
+        _claim_draft(),
+        _verdict_draft(),
+        retrieved_urls=["https://third.test/x"],
+    )
+    for _ in range(3):
+        snapshot = merge_claim_snapshot(snapshot, [verified])
+
+    contradicted = build_claim(
+        _claim_draft(),
+        _verdict_draft(contradictions=["A regulator disputes the figure."]),
+        retrieved_urls=["https://third.test/x"],
+    )
+    snapshot = merge_claim_snapshot(snapshot, [contradicted])
+
+    assert len(snapshot) == 1
+    assert snapshot[0].claim_id == verified.claim_id
+    assert snapshot[0].verdict == "contradicted"
+
+
 def test_the_completed_event_reports_every_verdict_count() -> None:
     verified = build_claim(
-        _claim_draft(), _verdict_draft(), independent=["third.test"]
+        _claim_draft(),
+        _verdict_draft(),
+        independent=["third.test"],
+        retrieved_urls=["https://third.test/x"],
     )
     contradicted = build_claim(
         _claim_draft(),
         _verdict_draft(contradictions=["Disputed."]),
         independent=["third.test"],
+        retrieved_urls=["https://third.test/x", "https://fourth.test/x"],
     )
 
     event = fact_check_completed_event(

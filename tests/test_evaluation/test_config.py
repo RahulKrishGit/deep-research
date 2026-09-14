@@ -91,7 +91,7 @@ from deep_research.utils.config import (
 # evaluator ``cd5ea5f5579b`` -> ``21d4d79ca09a``, Fact Checker
 # ``5c7744ff65bc`` -> ``f9dd5826f66a``, Synthesizer ``366b69880972`` ->
 # ``6f5b7739f134``, and Critic ``243f6ebb1627`` -> ``5b0105f4dcc1``.
-CRITIC_PROMPT_FINGERPRINT = "5b0105f4dcc1"
+CRITIC_PROMPT_FINGERPRINT = "a15c36b0ed0e"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -145,13 +145,23 @@ CRITIC_PROMPT_FINGERPRINT = "5b0105f4dcc1"
 # findings while accounting for them explicitly. Re-pinned deliberately, in
 # its own commit, rather than silently invalidated — the same convention tasks
 # 1 and 2 used.
+# Task 5 then changed the shared Fact Checker prompt for read-before-verdict
+# and structured verification passages, legitimately moving all six shared
+# fingerprints: planner ``059a32ca8b85`` -> ``8a5f8a1499bf``, researcher
+# ``076337666605`` -> ``ebdfd3ae4c05``, source evaluator ``21d4d79ca09a`` ->
+# ``ffab1c9795e2``, Fact Checker ``f9dd5826f66a`` -> ``f73e42b1f8f0``,
+# Synthesizer ``6f5b7739f134`` -> ``affe67074133``, and Critic
+# ``5b0105f4dcc1`` -> ``a15c36b0ed0e``. The Fact Checker's own implementation
+# then changed while the contract migration was completed, moving only its
+# full-source fingerprint ``f73e42b1f8f0`` -> ``edd677f57ce8``. All moves are
+# intentional drift-alarm updates, not weakened assertions.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "059a32ca8b85",
-    "researcher": "076337666605",
-    "source_evaluator": "21d4d79ca09a",
-    "fact_checker": "f9dd5826f66a",
-    "synthesizer": "6f5b7739f134",
-    "critic": "5b0105f4dcc1",
+    "planner": "8a5f8a1499bf",
+    "researcher": "ebdfd3ae4c05",
+    "source_evaluator": "ffab1c9795e2",
+    "fact_checker": "edd677f57ce8",
+    "synthesizer": "affe67074133",
+    "critic": "a15c36b0ed0e",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

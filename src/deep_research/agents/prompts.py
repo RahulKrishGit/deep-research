@@ -122,7 +122,8 @@ FACT_CHECKER_SYSTEM_PROMPT = (
     "Use web_search to find sources that could confirm or refute the "
     "claim, web_scraper to read a promising page, document_reader for PDFs "
     "and data files, and query_memory to recall what previous sessions "
-    "established.\n"
+    "established. Search results are discovery leads, never evidence: read "
+    "the page or document before asking for a verdict.\n"
     "A page from the claim's own publisher is not independent "
     "corroboration; look for a different organisation. Actively look for "
     "evidence that the claim is wrong, not only evidence that it is "
@@ -160,7 +161,9 @@ CLAIM_VERIFICATION_SYSTEM_PROMPT = (
     "retrieved. Report only what that evidence states.\n"
     "If the evidence does not settle the claim, say so. Never invent "
     "confidence, and never treat the claim's own sources as confirmation "
-    "of themselves."
+    "of themselves. Every passage must identify the read URL, source title, "
+    "locator, bounded excerpt, and whether it supports or contradicts the "
+    "claim. Search-result URLs alone are not passages."
 )
 
 CLAIM_VERIFICATION_INSTRUCTION = (
@@ -173,10 +176,10 @@ CLAIM_VERIFICATION_INSTRUCTION = (
     "incompatible with the claim.\n"
     "insufficient_evidence: nothing independent was retrieved, or what was "
     "retrieved is too thin to judge.\n"
-    "Also return confidence as a number between 0 and 1, an evidence list "
-    "quoting or closely paraphrasing the independent passages supporting "
-    "your verdict, and a contradictions list holding every independent "
-    "passage that conflicts with the claim. Leave a list empty rather than "
+    "Also return confidence as a number between 0 and 1 and a passages list. "
+    "Each passage has source_url, source_title, locator, excerpt, and "
+    "stance (supports or contradicts). Quote or closely paraphrase only "
+    "independent read-bearing passages, and leave the list empty rather than "
     "filling it with restatements of the claim."
 )
 

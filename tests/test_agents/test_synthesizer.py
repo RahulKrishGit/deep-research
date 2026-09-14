@@ -99,12 +99,14 @@ def _claim(
     urls: list[str] | None = None,
 ) -> Claim:
     return Claim(
+        claim_id=f"fixture-{text.casefold().replace(' ', '-')}",
         text=text,
         source_urls=urls or [SOURCE_URL],
         verdict=verdict,
         confidence=confidence,
         evidence=[],
         contradictions=[],
+        verification_evidence=[],
     )
 
 

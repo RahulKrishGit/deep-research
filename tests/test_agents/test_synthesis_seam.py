@@ -19,6 +19,7 @@ from deep_research.agents.fact_checker import (
     ClaimDraft,
     ClaimsDraft,
     ClaimVerdictDraft,
+    EvidencePassageDraft,
     FactCheckerAgent,
 )
 from deep_research.agents.report import REPORT_SECTIONS
@@ -101,6 +102,11 @@ async def test_verified_claims_become_a_cited_report_the_critic_accepts(
                     "web_search",
                     '{"query": "qec break-even 2025"}',
                 ),
+                use_tool(
+                    "Read the independent review before judging the claim.",
+                    "web_scraper",
+                    f'{{"url": "{SEAM_INDEPENDENT_URL}"}}',
+                ),
                 finish("Enough retrieved.", "An independent review agrees."),
             ],
             outputs=[
@@ -118,8 +124,17 @@ async def test_verified_claims_become_a_cited_report_the_critic_accepts(
                 ClaimVerdictDraft(
                     verdict="verified",
                     confidence=0.9,
-                    evidence=["An independent review states the same figure."],
-                    contradictions=[],
+                    passages=[
+                        EvidencePassageDraft(
+                            source_url=SEAM_INDEPENDENT_URL,
+                            source_title="Independent review",
+                            locator="p. 1",
+                            excerpt=(
+                                "An independent review states the same figure."
+                            ),
+                            stance="supports",
+                        )
+                    ],
                 ),
             ],
         ),

@@ -14,11 +14,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from urllib.parse import urlsplit, urlunsplit
 
+import tldextract
 from pydantic import Field
 
 from deep_research.utils.types import ContractModel, Finding
 
 _DEFAULT_PORTS = {"http": "80", "https": "443"}
+# Never refresh public-suffix data at runtime. The bundled suffix snapshot is
+# deterministic and keeps publisher identity an offline operation.
+_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
 
 
 def normalize_source_url(url: str) -> str:
@@ -62,6 +66,32 @@ def source_domain(url: str) -> str:
     normalized = normalize_source_url(url)
     parts = urlsplit(normalized)
     return parts.hostname or normalized
+
+
+def publisher_identity(url: str) -> str:
+    """Return the registrable publisher identity for ``url``.
+
+    Subdomains from one organisation are one publisher for corroboration.
+    Malformed or opaque source strings remain deterministic fallback keys,
+    matching :func:`normalize_source_url`'s total contract.
+    """
+    normalized = normalize_source_url(url)
+    try:
+        host = urlsplit(normalized).hostname
+    except ValueError:
+        host = None
+    if host is None:
+        return normalized.casefold()
+    parts = _EXTRACT(host.casefold())
+    if not parts.domain or not parts.suffix:
+        # ``.test`` and other private/reserved hosts are not in the public
+        # suffix list. Keep their full host as the deterministic identity so
+        # independent test publishers do not collapse to the bare label.
+        return host.casefold()
+    identity = ".".join(
+        part for part in (parts.domain, parts.suffix) if part
+    )
+    return identity or host.casefold()
 
 
 class SourceGroup(ContractModel):

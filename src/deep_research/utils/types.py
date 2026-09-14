@@ -143,13 +143,25 @@ class ScoredSource(ContractModel):
         return self
 
 
+class EvidencePassage(ContractModel):
+    """One provenance-bearing passage used to judge a claim."""
+
+    source_url: str = Field(min_length=1)
+    source_title: str = Field(min_length=1)
+    locator: str = Field(min_length=1)
+    excerpt: str = Field(min_length=1)
+    stance: Literal["supports", "contradicts"]
+
+
 class Claim(ContractModel):
+    claim_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     source_urls: list[str] = Field(min_length=1)
     verdict: ClaimVerdict
     confidence: UnitScore
     evidence: list[str]
     contradictions: list[str]
+    verification_evidence: list[EvidencePassage]
 
 
 class Critique(ContractModel):

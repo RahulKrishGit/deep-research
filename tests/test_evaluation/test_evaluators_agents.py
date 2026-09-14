@@ -236,12 +236,11 @@ def test_the_fact_checker_gate_enforces_independent_domains(
 def test_two_genuinely_independent_domains_pass_the_gate(
     fact_checker_dependent_case, fact_checker_dependent_output
 ) -> None:
-    """Trajectory-recorded URLs count toward independence when the evidence
-    strings quote rather than paste URLs."""
-    output = fact_checker_dependent_output.with_trajectory_urls(
+    """Independent publisher identities must be present on passages."""
+    output = fact_checker_dependent_output.with_verification_passage_urls(
         [
-            "https://cern.example.int/outage-audit",
-            "https://eia.example.gov/outage-bulletin",
+            "https://cern.org/outage-audit",
+            "https://eia.gov/outage-bulletin",
         ]
     )
 
@@ -278,6 +277,44 @@ def test_the_fact_checker_gate_requires_evidence_on_a_verified_claim(
     assert gate(
         evaluate_agent_gates(output, fact_checker_case), "evidence_linked"
     ).passed is False
+
+
+def test_the_fact_checker_evidence_gate_rejects_a_claims_own_publisher(
+    fact_checker_case, fact_checker_output
+) -> None:
+    output = fact_checker_output.with_verification_passage_urls(
+        ["https://iaea.org/another-safety-page"]
+    )
+
+    assert gate(
+        evaluate_agent_gates(output, fact_checker_case), "evidence_linked"
+    ).passed is False
+
+
+def test_the_fact_checker_evidence_gate_accepts_contradiction_passages(
+    fact_checker_case, fact_checker_output
+) -> None:
+    result = dict(fact_checker_output.result or {})
+    claims = [dict(item) for item in (result.get("verified_claims") or [])]
+    claim = claims[0]
+    claim["verdict"] = "contradicted"
+    claim["evidence"] = []
+    claim["contradictions"] = ["An independent source disputes the result."]
+    claim["verification_evidence"] = [
+        {
+            **passage,
+            "stance": "contradicts",
+            "excerpt": "An independent source disputes the result.",
+        }
+        for passage in claim["verification_evidence"]
+    ]
+    output = fact_checker_output.model_copy(
+        update={"result": {**result, "verified_claims": claims}}
+    )
+
+    assert gate(
+        evaluate_agent_gates(output, fact_checker_case), "evidence_linked"
+    ).passed is True
 
 
 def test_insufficient_evidence_must_stay_low_confidence(

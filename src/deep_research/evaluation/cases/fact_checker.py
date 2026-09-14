@@ -50,10 +50,10 @@ _MIXED_RUBRIC = rubric(
     ),
     (
         "evidence_linkage",
-        "Judged claims carry the evidence strings and source URLs that "
-        "justify them.",
-        "Every judged claim names its evidence and the URLs it came from.",
-        "Claims are judged without naming any evidence or source.",
+        "Judged claims carry bounded passages tied to read source URLs.",
+        "Every judged claim names a structured passage and the URL it came "
+        "from.",
+        "Claims are judged without naming any read-bearing evidence.",
     ),
 )
 
@@ -344,7 +344,7 @@ _MIXED = build_case(
                 "evidence_linked",
                 0.25,
                 "Every non-`insufficient_evidence` claim carries at least "
-                "one evidence string and at least one `source_url`.",
+                "one bounded verification passage tied to a source URL.",
             ),
             (
                 "confidence_calibrated",
@@ -439,7 +439,7 @@ _DEPENDENT = build_case(
                 "evidence_linked",
                 0.25,
                 "Every non-`insufficient_evidence` claim carries at least "
-                "one evidence string and at least one `source_url`.",
+                "one bounded verification passage tied to a source URL.",
             ),
             (
                 "sources_known",
@@ -594,8 +594,8 @@ _LIVE = build_case(
     expectations=CaseExpectations(
         required_output_fields=["verified_claims"],
         # Live-run note for Task 18's evaluator: the Fact Checker verifies
-        # with live web_search (tavily) and query_memory reads; no HTTP
-        # page fetches are required, so "http" is not a live dependency.
+        # with live web_search (tavily), read-bearing page/document calls, or
+        # query_memory reads. Search hits alone are never evidence.
         # Sources_known is intentionally absent: a live run discovers
         # URLs the case cannot pre-declare.
         reference={
@@ -609,7 +609,7 @@ _LIVE = build_case(
                 "evidence_linked",
                 0.30,
                 "Every non-`insufficient_evidence` claim carries at least "
-                "one evidence string and at least one `source_url`.",
+                "one bounded verification passage tied to a source URL.",
             ),
             (
                 "independence_enforced",

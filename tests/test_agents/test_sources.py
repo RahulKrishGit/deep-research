@@ -8,6 +8,7 @@ import deep_research.agents.sources as sources
 from deep_research.agents.sources import (
     group_findings_by_url,
     normalize_source_url,
+    publisher_identity,
     source_domain,
 )
 from deep_research.utils.types import Finding
@@ -112,6 +113,18 @@ def test_normalize_source_url_never_raises_for_arbitrary_strings() -> None:
 def test_source_domain_strips_scheme_port_and_www() -> None:
     assert source_domain("https://www.Example.ORG:443/a") == "example.org"
     assert source_domain("opaque source") == "opaque source"
+
+
+def test_publisher_identity_uses_the_registrable_domain() -> None:
+    assert publisher_identity("https://news.example.co.uk/story") == (
+        "example.co.uk"
+    )
+    assert publisher_identity("https://docs.example.co.uk/reference") == (
+        "example.co.uk"
+    )
+    assert publisher_identity("https://example.co.uk/home") != (
+        publisher_identity("https://independent.org/report")
+    )
 
 
 def test_findings_group_by_normalized_url_in_first_seen_order() -> None:

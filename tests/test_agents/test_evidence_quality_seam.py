@@ -16,6 +16,7 @@ from deep_research.agents.fact_checker import (
     ClaimDraft,
     ClaimsDraft,
     ClaimVerdictDraft,
+    EvidencePassageDraft,
     FactCheckerAgent,
 )
 from deep_research.agents.researcher import (
@@ -155,6 +156,11 @@ async def test_findings_flow_through_scoring_into_verified_claims(
                     "web_search",
                     '{"query": "break-even 2025"}',
                 ),
+                use_tool(
+                    "Read the independent source before judging the claim.",
+                    "web_scraper",
+                    f'{{"url": "{INDEPENDENT_URL}"}}',
+                ),
                 finish("I have independent material.", "Checked."),
             ],
             outputs=[
@@ -169,8 +175,17 @@ async def test_findings_flow_through_scoring_into_verified_claims(
                 ClaimVerdictDraft(
                     verdict="verified",
                     confidence=0.85,
-                    evidence=["An unrelated review reports the same result."],
-                    contradictions=[],
+                    passages=[
+                        EvidencePassageDraft(
+                            source_url=INDEPENDENT_URL,
+                            source_title="Independent review",
+                            locator="p. 2",
+                            excerpt=(
+                                "An unrelated review reports the same result."
+                            ),
+                            stance="supports",
+                        )
+                    ],
                 ),
             ],
         ),

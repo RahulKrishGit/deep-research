@@ -574,10 +574,30 @@ class FactCheckerOutput(TargetOutput):
         ]
         return self.model_copy(update={"trajectory": trajectory})
 
+    def with_verification_passage_urls(
+        self, urls: Sequence[str]
+    ) -> "FactCheckerOutput":
+        result = dict(self.result or {})
+        claims = [dict(item) for item in (result.get("verified_claims") or [])]
+        claims[0]["verification_evidence"] = [
+            {
+                "source_url": url,
+                "source_title": "Independent review",
+                "locator": f"p. {index + 1}",
+                "excerpt": "An independent source reports the same result.",
+                "stance": "supports",
+            }
+            for index, url in enumerate(urls)
+        ]
+        return self.model_copy(
+            update={"result": {**result, "verified_claims": claims}}
+        )
+
     def with_empty_evidence(self) -> "FactCheckerOutput":
         result = dict(self.result or {})
         claims = [dict(item) for item in (result.get("verified_claims") or [])]
         claims[0]["evidence"] = []
+        claims[0]["verification_evidence"] = []
         return self.model_copy(
             update={"result": {**result, "verified_claims": claims}}
         )
@@ -946,6 +966,7 @@ def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
                         "Small modular reactor designs must satisfy the same "
                         "international safety standards as large reactors."
                     ),
+                    "claim_id": "fixture-smr-safety",
                     "source_urls": ["https://iaea.org/smr-safety-assessment"],
                     "verdict": "verified",
                     "confidence": 0.85,
@@ -956,6 +977,26 @@ def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
                         "(https://world-nuclear.org/smr-safety-standards).",
                     ],
                     "contradictions": [],
+                    "verification_evidence": [
+                        {
+                            "source_url": "https://syndication.news.example.com/c",
+                            "source_title": "Independent safety review",
+                            "locator": "p. 1",
+                            "excerpt": (
+                                "The IAEA framework covers SMR designs."
+                            ),
+                            "stance": "supports",
+                        },
+                        {
+                            "source_url": (
+                                "https://world-nuclear.org/smr-safety-standards"
+                            ),
+                            "source_title": "Independent safety review",
+                            "locator": "p. 2",
+                            "excerpt": "The NRC applies the same review.",
+                            "stance": "supports",
+                        },
+                    ],
                 }
             ]
         },
@@ -1005,6 +1046,7 @@ def fact_checker_dependent_output(
                         "The 2025 grid upgrade reduced outage minutes by "
                         "40 percent."
                     ),
+                    "claim_id": "fixture-outage-minutes",
                     "source_urls": [
                         "https://news.example.com/outage-coverage",
                         "https://news.example.com/outage-verification",
@@ -1023,6 +1065,27 @@ def fact_checker_dependent_output(
                         "40 percent figure.",
                     ],
                     "contradictions": [],
+                    "verification_evidence": [
+                        {
+                            "source_url": "https://news.example.com/outage-minutes-fall",
+                            "source_title": "News follow-up",
+                            "locator": "p. 1",
+                            "excerpt": (
+                                "A follow-up report confirms outage minutes fell."
+                            ),
+                            "stance": "supports",
+                        },
+                        {
+                            "source_url": (
+                                "https://syndication.news.example.com/"
+                                "outage-minutes-fall"
+                            ),
+                            "source_title": "Syndicated report",
+                            "locator": "p. 1",
+                            "excerpt": "The same figure is repeated.",
+                            "stance": "supports",
+                        },
+                    ],
                 }
             ]
         },

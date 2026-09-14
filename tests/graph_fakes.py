@@ -101,12 +101,14 @@ def fake_scored_source(url: str = SOURCE_URL) -> ScoredSource:
 
 def fake_claim(text: str = "Break-even was reached in 2025.") -> Claim:
     return Claim(
+        claim_id=f"fixture-{text.casefold().replace(' ', '-')}",
         text=text,
         source_urls=[SOURCE_URL],
         verdict="verified",
         confidence=0.8,
         evidence=["An independent review states the same figure."],
         contradictions=[],
+        verification_evidence=[],
     )
 
 

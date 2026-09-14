@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from pydantic import JsonValue
 
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.planner import coverage_id_for
 from deep_research.evaluation.models import (
     AGENT_NAMES,
@@ -27,6 +28,7 @@ from deep_research.evaluation.models import (
 from deep_research.utils.types import (
     Claim,
     Critique,
+    EvidencePassage,
     Finding,
     MemorySnapshot,
     ResearchState,
@@ -121,13 +123,42 @@ def claim(
     evidence: Sequence[str] = (),
     contradictions: Sequence[str] = (),
 ) -> Claim:
+    source_urls = list(urls)
+    passages: list[EvidencePassage] = []
+    support_texts = list(evidence)
+    contradiction_texts = list(contradictions)
+    if source_urls and verdict in {"verified", "unverified"} and not support_texts:
+        support_texts = ["Case fixture evidence."]
+    if source_urls:
+        for index, excerpt in enumerate(support_texts):
+            passages.append(
+                EvidencePassage(
+                    source_url=source_urls[index % len(source_urls)],
+                    source_title="Case fixture evidence",
+                    locator=f"support-{index + 1}",
+                    excerpt=excerpt,
+                    stance="supports",
+                )
+            )
+        for index, excerpt in enumerate(contradiction_texts):
+            passages.append(
+                EvidencePassage(
+                    source_url=source_urls[index % len(source_urls)],
+                    source_title="Case fixture evidence",
+                    locator=f"contradiction-{index + 1}",
+                    excerpt=excerpt,
+                    stance="contradicts",
+                )
+            )
     return Claim(
+        claim_id=claim_fingerprint(text),
         text=text,
-        source_urls=list(urls),
+        source_urls=source_urls,
         verdict=verdict,
         confidence=confidence,
-        evidence=list(evidence),
-        contradictions=list(contradictions),
+        evidence=support_texts,
+        contradictions=contradiction_texts,
+        verification_evidence=passages,
     )
 
 

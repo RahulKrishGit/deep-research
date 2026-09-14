@@ -54,12 +54,14 @@ def source(title: str = "Example source") -> ScoredSource:
 
 def claim(text: str = "Adoption increased.") -> Claim:
     return Claim(
+        claim_id=f"fixture-{text.casefold().replace(' ', '-')}",
         text=text,
         source_urls=["https://example.com/source"],
         verdict="verified",
         confidence=0.9,
         evidence=["The source reports a year-over-year increase."],
         contradictions=[],
+        verification_evidence=[],
     )
 
 

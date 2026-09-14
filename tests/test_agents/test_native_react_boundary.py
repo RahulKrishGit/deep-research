@@ -128,8 +128,7 @@ def _fact_checker_case() -> tuple[ResearchState, list, list]:
             ClaimVerdictDraft(
                 verdict="insufficient_evidence",
                 confidence=0.0,
-                evidence=[],
-                contradictions=[],
+                passages=[],
             ),
         ],
     )

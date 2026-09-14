@@ -17,6 +17,8 @@ true".
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
+from urllib.parse import urlsplit
 
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
@@ -25,7 +27,11 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.events import agent_event
-from deep_research.agents.identity import merge_claim_snapshot
+from deep_research.agents.identity import (
+    claim_fingerprint,
+    deduplicate_findings,
+    merge_claim_snapshot,
+)
 from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
@@ -39,11 +45,12 @@ from deep_research.agents.prompts import (
 )
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.researcher import merge_react_runs, render_evidence
-from deep_research.agents.sources import normalize_source_url, source_domain
+from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import (
     ReActDecision,
     ReActRun,
     ReActStep,
+    read_evidence_urls,
     summarize_text,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -55,6 +62,8 @@ from deep_research.utils.types import (
     Claim,
     ClaimVerdict,
     ContractModel,
+    EvidencePassage,
+    Finding,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -67,6 +76,8 @@ DEFAULT_FINDING_DIGEST = 40
 # Named distinctly from researcher.DEFAULT_EVIDENCE_CHARS: both are
 # re-exported from deep_research.agents, so the names must not collide.
 FACT_CHECK_EVIDENCE_CHARS = 4000
+MAX_PASSAGE_EXCERPT_CHARS = 1000
+MAX_PASSAGE_LOCATOR_CHARS = 200
 
 
 class ClaimDraft(ContractModel):
@@ -134,10 +145,137 @@ def known_source_urls(state: ResearchState) -> list[str]:
     return seen
 
 
+def _collapsed(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def _critique_texts(state: ResearchState) -> tuple[str, ...]:
+    critique = state.critique
+    if critique is None:
+        return ()
+    return tuple(
+        text
+        for text in (
+            *critique.gaps,
+            *critique.unsupported_claims,
+            *critique.recommended_queries,
+        )
+        if isinstance(text, str) and text.strip()
+    )
+
+
+def _critique_requests_reverification(
+    claim_text: str, critique_texts: Sequence[str]
+) -> bool:
+    """Recognize an explicit Critic request tied to this claim."""
+    claim = _collapsed(claim_text)
+    if not claim:
+        return False
+    markers = ("reverify", "re-verify", "re verify", "recheck", "re-check")
+    return any(
+        marker in _collapsed(text) and claim in _collapsed(text)
+        for text in critique_texts
+        for marker in markers
+    )
+
+
+def _finding_is_new(finding: Finding, prior_claims: Sequence[Claim]) -> bool:
+    """Treat new source URLs or changed finding text as new evidence."""
+    if not prior_claims:
+        return True
+    url = normalize_source_url(finding.source_url)
+    finding_text = _collapsed(finding.content)
+    for claim in prior_claims:
+        if url not in {normalize_source_url(item) for item in claim.source_urls}:
+            continue
+        prior_texts = {
+            _collapsed(claim.text),
+            *(_collapsed(item) for item in claim.evidence),
+            *(_collapsed(item) for item in claim.contradictions),
+            *(
+                _collapsed(passage.excerpt)
+                for passage in claim.verification_evidence
+            ),
+        }
+        if finding_text in prior_texts:
+            return False
+    return True
+
+
+def ordered_findings_for_extraction(
+    state: ResearchState,
+    *,
+    prior_claims: Sequence[Claim] = (),
+) -> list[Finding]:
+    """Return unique findings in coverage- and verification-aware order."""
+    findings = deduplicate_findings(state.raw_findings)
+    topic_ranks: dict[str, int] = {}
+    topic_ids: dict[str, str] = {}
+    for position, topic in enumerate(state.sub_topics):
+        key = _collapsed(topic.title)
+        topic_ranks.setdefault(key, position)
+        topic_ids.setdefault(key, topic.coverage_id)
+
+    source_risk = {
+        normalize_source_url(source.url)
+        for source in state.evaluated_sources
+        if source.low_confidence
+    }
+    prior_unsettled_sources = {
+        normalize_source_url(url)
+        for claim in prior_claims
+        if claim.verdict in {"unverified", "insufficient_evidence"}
+        for url in claim.source_urls
+    }
+    prior_claim_sources = {
+        normalize_source_url(url)
+        for claim in prior_claims
+        for url in claim.source_urls
+    }
+    topic_sources: dict[str, set[str]] = {}
+    for finding in findings:
+        key = _collapsed(finding.related_sub_topic)
+        topic_sources.setdefault(key, set()).add(
+            normalize_source_url(finding.source_url)
+        )
+    uncovered_topics = {
+        topic_ids.get(key, key)
+        for key, sources in topic_sources.items()
+        if not sources & prior_claim_sources
+    }
+    indexed = list(enumerate(findings))
+
+    def ordering(item: tuple[int, Finding]) -> tuple[int, int, int]:
+        index, finding = item
+        key = _collapsed(finding.related_sub_topic)
+        coverage_id = topic_ids.get(key, key)
+        topic_rank = topic_ranks.get(key, len(topic_ranks))
+        if coverage_id in uncovered_topics:
+            bucket = 0
+        elif _finding_is_new(finding, prior_claims):
+            bucket = 1
+        elif (
+            finding.confidence < 0.5
+            or normalize_source_url(finding.source_url) in source_risk
+            or normalize_source_url(finding.source_url)
+            in prior_unsettled_sources
+        ):
+            bucket = 2
+        else:
+            bucket = 3
+        return bucket, topic_rank, index
+
+    indexed.sort(key=ordering)
+    return [finding for _, finding in indexed]
+
+
 def build_claim_drafts(
     draft: ClaimsDraft,
     *,
     known_urls: Sequence[str],
+    prior_claims: Sequence[Claim] = (),
+    new_source_urls: Sequence[str] = (),
+    critique_texts: Sequence[str] = (),
 ) -> tuple[list[ClaimDraft], list[str]]:
     """Keep the claims whose sources exist, naming the ones dropped.
 
@@ -146,7 +284,12 @@ def build_claim_drafts(
     Rejection reasons are generated here and never copied from provider
     output, so they are safe to record in ``ResearchError.details``.
     """
-    allowed = set(known_urls)
+    allowed = {normalize_source_url(url) for url in known_urls}
+    new_urls = {normalize_source_url(url) for url in new_source_urls}
+    prior_by_id = {
+        claim_fingerprint(claim.text): claim for claim in prior_claims
+    }
+    seen_ids: set[str] = set()
     claims: list[ClaimDraft] = []
     rejected: list[str] = []
     for index, item in enumerate(draft.claims, start=1):
@@ -164,6 +307,19 @@ def build_claim_drafts(
                 f"claim {index}: no source url from the collected findings"
             )
             continue
+        fingerprint = claim_fingerprint(text)
+        previous = prior_by_id.get(fingerprint)
+        if previous is not None:
+            if not (
+                set(urls) & new_urls
+                or _critique_requests_reverification(text, critique_texts)
+            ):
+                rejected.append(f"claim {index}: already checked")
+                continue
+        if fingerprint in seen_ids:
+            rejected.append(f"claim {index}: duplicate claim")
+            continue
+        seen_ids.add(fingerprint)
         claims.append(ClaimDraft(text=text, source_urls=urls))
     return claims, rejected
 
@@ -172,11 +328,20 @@ def claim_extraction_messages(
     state: ResearchState,
     *,
     max_findings: int,
+    prior_claims: Sequence[Claim] = (),
 ) -> list[ChatMessage]:
     """Build the messages that request one structured claim draft."""
-    findings = list(state.raw_findings)[:max_findings]
+    findings = ordered_findings_for_extraction(
+        state, prior_claims=prior_claims
+    )[:max_findings]
+    coverage_lines = [
+        f"- {topic.coverage_id}: {topic.title}"
+        for topic in state.sub_topics
+    ]
+    coverage = "\n".join(coverage_lines) or "(no planned coverage topics)"
     sections = [
         f"# Research question\n{state.original_question}",
+        f"# Coverage order\n{coverage}",
         f"# Retrieved findings\n{render_finding_digest(findings)}",
         (
             "# Source quality\n"
@@ -258,15 +423,14 @@ INSUFFICIENT_REASONS = {
     "unrecognized_verdict": "The model returned no usable verdict.",
 }
 
-# Read tools that can carry evidence, mapped to the payload key holding the
-# source identifier. save_to_memory is absent by construction: this agent
-# never writes.
-_EVIDENCE_URL_KEYS = {
-    "web_search": "results",
-    "web_scraper": "url",
-    "document_reader": "source",
-    "query_memory": "matches",
-}
+class EvidencePassageDraft(ContractModel):
+    """One provider-reported passage before local provenance validation."""
+
+    source_url: str
+    source_title: str
+    locator: str
+    excerpt: str
+    stance: Literal["supports", "contradicts"]
 
 
 class ClaimVerdictDraft(ContractModel):
@@ -279,8 +443,7 @@ class ClaimVerdictDraft(ContractModel):
 
     verdict: str
     confidence: float
-    evidence: list[str]
-    contradictions: list[str]
+    passages: list[EvidencePassageDraft]
 
 
 # Two examples, because the verdict set has opposite populated/empty shapes:
@@ -290,46 +453,17 @@ _CLAIM_VERIFICATION_REPLY_EXAMPLES = (
     (
         "Verified example input: an independent study reports the same "
         "measured reduction.",
-        '{"verdict":"verified","confidence":0.9,"evidence":["An independent '
-        'study reports the same measured reduction."],"contradictions":[]}',
+        '{"verdict":"verified","confidence":0.9,"passages":[{"source_url":"https://third-party.example.test/report",'
+        '"source_title":"Independent study","locator":"p. 4",'
+        '"excerpt":"An independent study reports the same measured reduction.",'
+        '"stance":"supports"}]}',
     ),
     (
         "Insufficient-evidence example input: no independent material was "
         "retrieved.",
-        '{"verdict":"insufficient_evidence","confidence":0.0,"evidence":[],'
-        '"contradictions":[]}',
+        '{"verdict":"insufficient_evidence","confidence":0.0,"passages":[]}',
     ),
 )
-
-
-def _search_urls(data: dict[str, object]) -> list[str]:
-    results = data.get("results")
-    if not isinstance(results, list):
-        return []
-    urls: list[str] = []
-    for item in results:
-        if isinstance(item, dict) and isinstance(item.get("url"), str):
-            urls.append(str(item["url"]))
-    return urls
-
-
-def _memory_urls(data: dict[str, object]) -> list[str]:
-    matches = data.get("matches")
-    if not isinstance(matches, list):
-        return []
-    urls: list[str] = []
-    for match in matches:
-        if not isinstance(match, dict):
-            continue
-        candidate = match.get("source_url")
-        if not isinstance(candidate, str):
-            metadata = match.get("metadata")
-            candidate = (
-                metadata.get("source_url") if isinstance(metadata, dict) else None
-            )
-        if isinstance(candidate, str) and candidate.strip():
-            urls.append(candidate)
-    return urls
 
 
 def retrieved_source_urls(run: ReActRun) -> list[str]:
@@ -343,45 +477,17 @@ def retrieved_source_urls(run: ReActRun) -> list[str]:
     """
     found: list[str] = []
     for step in run.steps:
-        result = step.tool_result
-        if result is None or not result.success:
-            continue
-        data = result.data
-        if not isinstance(data, dict):
-            continue
-        if result.tool_name not in _EVIDENCE_URL_KEYS:
-            continue
-        if result.tool_name == "web_search":
-            candidates = _search_urls(data)
-        elif result.tool_name == "query_memory":
-            candidates = _memory_urls(data)
-        elif result.tool_name == "web_scraper":
-            url = data.get("url")
-            text = data.get("text")
-            candidates = (
-                [url]
-                if isinstance(url, str) and isinstance(text, str) and text.strip()
-                else []
-            )
-        else:
-            source = data.get("source")
-            candidates = (
-                [source]
-                if isinstance(source, str) and data.get("chunks")
-                else []
-            )
-        for candidate in candidates:
-            url = normalize_source_url(candidate)
-            if url and url not in found:
+        for url in read_evidence_urls(step):
+            if url not in found:
                 found.append(url)
     return found
 
 
 def claimed_domains_for(source_urls: Sequence[str]) -> list[str]:
-    """The distinct domains a claim's own sources live on."""
+    """The distinct publisher identities a claim's own sources live on."""
     domains: list[str] = []
     for url in source_urls:
-        domain = source_domain(url).casefold()
+        domain = publisher_identity(url).casefold()
         if domain not in domains:
             domains.append(domain)
     return domains
@@ -392,7 +498,7 @@ def independent_domains(
     *,
     claimed_domains: Sequence[str],
 ) -> list[str]:
-    """Distinct retrieved domains that are not the claim's own.
+    """Distinct retrieved publishers that are not the claim's own.
 
     A second page from the publisher that made the claim is not
     corroboration, which is the whole point of cross-referencing.
@@ -400,7 +506,7 @@ def independent_domains(
     claimed = {domain.casefold() for domain in claimed_domains}
     found: list[str] = []
     for url in urls:
-        domain = source_domain(url).casefold()
+        domain = publisher_identity(url).casefold()
         if domain in claimed or domain in found:
             continue
         found.append(domain)
@@ -424,44 +530,127 @@ def _clamp_confidence(value: float) -> float:
     return min(1.0, max(0.0, float(value)))
 
 
+def _is_copied_example_url(url: str) -> bool:
+    """Reject URLs copied from the compact provider examples."""
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if host is None:
+        return False
+    host = host.casefold()
+    return "example" in host.split(".")
+
+
+def _bounded_passage_text(value: str, *, limit: int) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    return summarize_text(value, limit=limit)
+
+
+def valid_verification_passages(
+    draft: ClaimVerdictDraft,
+    *,
+    retrieved_urls: Sequence[str],
+    claimed_publishers: Sequence[str],
+) -> list[EvidencePassage]:
+    """Keep only bounded passages backed by read-bearing independent URLs."""
+    retrieved = {normalize_source_url(url) for url in retrieved_urls}
+    claimed = {publisher.casefold() for publisher in claimed_publishers}
+    valid: list[EvidencePassage] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for passage in draft.passages:
+        url = normalize_source_url(passage.source_url)
+        if not url or url not in retrieved or _is_copied_example_url(url):
+            continue
+        publisher = publisher_identity(url).casefold()
+        if publisher in claimed:
+            continue
+        source_title = _bounded_passage_text(passage.source_title, limit=300)
+        locator = _bounded_passage_text(
+            passage.locator, limit=MAX_PASSAGE_LOCATOR_CHARS
+        )
+        excerpt = _bounded_passage_text(
+            passage.excerpt, limit=MAX_PASSAGE_EXCERPT_CHARS
+        )
+        if not source_title or not locator or not excerpt:
+            continue
+        key = (url, locator, excerpt, passage.stance)
+        if key in seen:
+            continue
+        seen.add(key)
+        valid.append(
+            EvidencePassage(
+                source_url=url,
+                source_title=source_title,
+                locator=locator,
+                excerpt=excerpt,
+                stance=passage.stance,
+            )
+        )
+    return valid
+
+
 def resolve_verdict(
     draft: ClaimVerdictDraft,
     *,
-    independent: Sequence[str],
+    independent: Sequence[str] = (),
+    passages: Sequence[EvidencePassage] = (),
 ) -> tuple[ClaimVerdict, float]:
-    """Decide the recorded verdict from the model's answer and the evidence.
-
-    Three local rules override the model, in this order:
-    nothing independent was retrieved -> ``insufficient_evidence``;
-    the model itself reported contradictions -> ``contradicted``, whatever
-    it called the verdict; ``insufficient_evidence`` carries no confidence.
-    """
-    if not independent:
+    """Resolve a verdict from validated, independent passages in strict order."""
+    del independent  # Publisher names alone must never satisfy this gate.
+    if not passages:
         return "insufficient_evidence", 0.0
     verdict = normalize_verdict(draft.verdict)
     confidence = _clamp_confidence(draft.confidence)
-    if draft.contradictions:
+    if any(passage.stance == "contradicts" for passage in passages):
         return "contradicted", confidence
-    if verdict == "insufficient_evidence":
-        return "insufficient_evidence", 0.0
-    return verdict, confidence
+    if any(passage.stance == "supports" for passage in passages):
+        if verdict == "verified":
+            return "verified", confidence
+        return "unverified", confidence
+    return "unverified", confidence
 
 
 def build_claim(
     claim: ClaimDraft,
     draft: ClaimVerdictDraft,
     *,
-    independent: Sequence[str],
+    independent: Sequence[str] = (),
+    retrieved_urls: Sequence[str] = (),
+    claimed_publishers: Sequence[str] | None = None,
 ) -> Claim:
     """Stamp one model verdict into a validated ``Claim`` record."""
-    verdict, confidence = resolve_verdict(draft, independent=independent)
+    claimed = list(
+        claimed_publishers
+        if claimed_publishers is not None
+        else claimed_domains_for(claim.source_urls)
+    )
+    passages = valid_verification_passages(
+        draft,
+        retrieved_urls=retrieved_urls,
+        claimed_publishers=claimed,
+    )
+    verdict, confidence = resolve_verdict(
+        draft, independent=independent, passages=passages
+    )
     return Claim(
+        claim_id=claim_fingerprint(claim.text),
         text=claim.text,
         source_urls=list(claim.source_urls),
         verdict=verdict,
         confidence=confidence,
-        evidence=list(draft.evidence),
-        contradictions=list(draft.contradictions),
+        evidence=[
+            passage.excerpt
+            for passage in passages
+            if passage.stance == "supports"
+        ],
+        contradictions=[
+            passage.excerpt
+            for passage in passages
+            if passage.stance == "contradicts"
+        ],
+        verification_evidence=passages,
     )
 
 
@@ -476,12 +665,14 @@ def insufficient_claim(claim: ClaimDraft, *, reason: str) -> Claim:
     if reason not in INSUFFICIENT_REASONS:
         raise ValueError(f"unknown insufficient-evidence reason: {reason}")
     return Claim(
+        claim_id=claim_fingerprint(claim.text),
         text=claim.text,
         source_urls=list(claim.source_urls),
         verdict="insufficient_evidence",
         confidence=0.0,
         evidence=[],
         contradictions=[],
+        verification_evidence=[],
     )
 
 
@@ -501,7 +692,7 @@ def claim_verification_messages(
         f"# Independent domains retrieved\n{domains}",
         (
             "# Retrieved evidence\n"
-            f"{render_evidence(run, limit=evidence_chars)}"
+            f"{render_evidence(run, limit=evidence_chars, discovery_payloads=False)}"
         ),
         f"# Response contract\n{CLAIM_VERIFICATION_INSTRUCTION}",
         (
@@ -583,6 +774,20 @@ def claim_checked_event(
     text. The claim itself is summarized, never pasted, for the same
     reason.
     """
+    support_passages = sum(
+        passage.stance == "supports"
+        for passage in claim.verification_evidence
+    )
+    contradiction_passages = sum(
+        passage.stance == "contradicts"
+        for passage in claim.verification_evidence
+    )
+    unique_publishers = len(
+        {
+            publisher_identity(passage.source_url).casefold()
+            for passage in claim.verification_evidence
+        }
+    )
     return agent_event(
         agent_name=FACT_CHECKER_NAME,
         event_type="fact_checker.claim.checked",
@@ -594,6 +799,9 @@ def claim_checked_event(
             "confidence": round(claim.confidence, 4),
             "contradictions": len(claim.contradictions),
             "independent_sources": independent_sources,
+            "support_passages": support_passages,
+            "contradiction_passages": contradiction_passages,
+            "unique_publishers": unique_publishers,
             "tool_calls": run.tool_calls,
             "iterations": run.iterations,
             "stop_reason": run.stop_reason,
@@ -614,6 +822,18 @@ def fact_check_completed_event(
     """
     counts = verdict_counts(claims)
     contradiction_count = sum(1 for claim in claims if claim.contradictions)
+    passages = [
+        passage
+        for claim in claims
+        for passage in claim.verification_evidence
+    ]
+    support_passages = sum(passage.stance == "supports" for passage in passages)
+    contradiction_passages = sum(
+        passage.stance == "contradicts" for passage in passages
+    )
+    unique_publishers = len(
+        {publisher_identity(passage.source_url).casefold() for passage in passages}
+    )
     return agent_event(
         agent_name=FACT_CHECKER_NAME,
         event_type="fact_checker.fact_check.completed",
@@ -622,6 +842,9 @@ def fact_check_completed_event(
             "claim_count": len(claims),
             **counts,
             "contradiction_count": contradiction_count,
+            "support_passages": support_passages,
+            "contradiction_passages": contradiction_passages,
+            "unique_publishers": unique_publishers,
             "tool_calls": tool_calls,
         },
     )
@@ -736,13 +959,42 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         Makes no provider call when there are no findings, so the
         extraction step can never invent a claim out of nothing.
         """
-        if not state.raw_findings:
+        findings = ordered_findings_for_extraction(
+            state, prior_claims=self._prior_claims
+        )
+        if not findings:
             return [], [no_findings_to_check_error()], False
+
+        critique_texts = _critique_texts(state)
+        new_evidence_urls = [
+            normalize_source_url(finding.source_url)
+            for finding in findings
+            if _finding_is_new(finding, self._prior_claims)
+        ]
+        has_reverification_request = any(
+            marker in _collapsed(text)
+            for text in critique_texts
+            for marker in (
+                "reverify",
+                "re-verify",
+                "re verify",
+                "recheck",
+                "re-check",
+            )
+        )
+        if (
+            self._prior_claims
+            and not new_evidence_urls
+            and not has_reverification_request
+        ):
+            return [], [], False
 
         try:
             response = await self.provider.complete_structured(
                 claim_extraction_messages(
-                    state, max_findings=self._finding_digest
+                    state,
+                    max_findings=self._finding_digest,
+                    prior_claims=self._prior_claims,
                 ),
                 ClaimsDraft,
                 agent_name=self.name,
@@ -751,7 +1003,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             return [], [claim_extraction_provider_error(error)], True
 
         claims, rejected = build_claim_drafts(
-            response, known_urls=known_source_urls(state)
+            response,
+            known_urls=known_source_urls(state),
+            prior_claims=self._prior_claims,
+            new_source_urls=new_evidence_urls,
+            critique_texts=critique_texts,
         )
         errors = [invalid_claim_error(rejected)] if rejected else []
         return claims[: self._max_claims], errors, False
@@ -774,8 +1030,9 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 "loop_failed"
             ), [], False
 
+        retrieved_urls = retrieved_source_urls(run)
         independent = independent_domains(
-            retrieved_source_urls(run), claimed_domains=task.claimed_domains
+            retrieved_urls, claimed_domains=task.claimed_domains
         )
         if not independent:
             return (
@@ -805,7 +1062,13 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             )
 
         return (
-            build_claim(task.claim, draft, independent=independent),
+            build_claim(
+                task.claim,
+                draft,
+                independent=independent,
+                retrieved_urls=retrieved_urls,
+                claimed_publishers=task.claimed_domains,
+            ),
             None,
             [],
             False,
@@ -964,10 +1227,13 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         merged = merge_react_runs(self.name, runs).model_copy(
             update={"errors": errors}
         )
+        canonical_claims = merge_claim_snapshot(self._prior_claims, claims)
         events.append(
-            fact_check_completed_event(claims, tool_calls=merged.tool_calls)
+            fact_check_completed_event(
+                canonical_claims, tool_calls=merged.tool_calls
+            )
         )
-        result = VerifiedClaims(claims=claims)
+        result = VerifiedClaims(claims=canonical_claims)
         return AgentRun(
             agent_name=self.name,
             result=result,
