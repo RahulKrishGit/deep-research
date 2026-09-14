@@ -620,12 +620,16 @@ def test_the_strong_case_report_is_a_round_five_hundred_words() -> None:
 def test_the_gappy_case_plans_three_subtopics_and_covers_one() -> None:
     case = _case("request-more-research")
 
+    # ``evaluation_state`` orders a case's sub-topics by priority and stamps
+    # ``topic-NN`` on that order, exactly as the Planner does, so the
+    # covered, highest-priority sub-topic is listed first even though the
+    # fixture writes its tuple starting with the two gap sub-topics.
     assert tuple(
         topic.title for topic in case.state.sub_topics
     ) == (
+        "Measured methane reductions from composting mandates",
         "Participation in municipal composting mandates",
         "Landfill methane measurement methodology",
-        "Measured methane reductions from composting mandates",
     )
     covered = {finding.related_sub_topic for finding in case.state.raw_findings}
     assert covered == {"Measured methane reductions from composting mandates"}
@@ -829,7 +833,13 @@ def test_the_gappy_scenario_key_is_the_participation_subtopics_query() -> None:
     """The scripted search key and the case's own subtopic query are the
     same literal, pinned on both sides so the two spellings cannot drift."""
     case = _case("request-more-research")
-    participation = case.state.sub_topics[0]
+    # Found by title, not by position: a case's sub-topics are ordered by
+    # priority, and this one is not the first of the three.
+    participation = next(
+        sub_topic
+        for sub_topic in case.state.sub_topics
+        if sub_topic.title == "Participation in municipal composting mandates"
+    )
 
     assert _GAPPY_SEARCH_KEY in participation.search_queries
     assert _GAPPY_SEARCH_KEY in SCENARIOS["critic-gappy-report"].search_responses

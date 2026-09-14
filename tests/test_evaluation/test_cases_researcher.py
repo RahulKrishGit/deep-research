@@ -148,20 +148,29 @@ def test_every_controlled_case_carries_populated_sub_topics() -> None:
         assert priorities == sorted(priorities), case.case_id
 
 
-def test_every_case_state_plans_distinct_planner_coverage_ids() -> None:
-    """A coverage report keyed on ``coverage_id`` collapses duplicates.
+def test_every_case_state_plans_priority_ordered_planner_coverage_ids() -> None:
+    """``topic-01`` names the most important planned sub-topic, always.
 
-    Case states stand in for planner output, so they carry the ids the
-    Planner stamps: one per sub-topic, unique inside the state.
+    A case state stands in for planner output: ``PlannerAgent`` orders a plan
+    by priority and stamps ``topic-NN`` on that order, so the id carries the
+    priority position, not the position the case author happened to write the
+    tuple in. Coverage from Task 3 onward is keyed on these ids, so an id
+    naming a lower-priority sub-topic than ``topic-01`` would silently
+    mis-report which planned topic was answered.
     """
     for case in all_cases():
-        coverage_ids = [
-            sub_topic.coverage_id for sub_topic in case.state.sub_topics
-        ]
+        sub_topics = case.state.sub_topics
+        coverage_ids = [sub_topic.coverage_id for sub_topic in sub_topics]
         assert len(coverage_ids) == len(set(coverage_ids)), case.case_id
         assert all(
             coverage_id.startswith("topic-") for coverage_id in coverage_ids
         ), case.case_id
+        assert coverage_ids == [
+            f"topic-{position:02d}"
+            for position in range(1, len(sub_topics) + 1)
+        ], case.case_id
+        priorities = [sub_topic.priority for sub_topic in sub_topics]
+        assert priorities == sorted(priorities), case.case_id
 
 
 def test_no_case_state_contains_a_url_outside_its_known_sources() -> None:

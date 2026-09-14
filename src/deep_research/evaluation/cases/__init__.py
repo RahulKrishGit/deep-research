@@ -164,10 +164,17 @@ def evaluation_state(
         original_question=question,
         # A curated plain tuple of sub-topics with duplicate titles would
         # collide in a coverage report, so the planner ids are stamped here,
-        # by position, exactly as ``PlannerAgent`` stamps the ids it plans.
+        # exactly as ``PlannerAgent`` stamps the ids it plans: ordered by
+        # priority first, ``topic-01`` on the most important sub-topic, so an
+        # id always carries a priority position rather than the position the
+        # case author happened to write. ``sorted`` is stable, so equal
+        # priorities keep the order the author supplied.
         sub_topics=[
             item.model_copy(update={"coverage_id": coverage_id_for(position)})
-            for position, item in enumerate(sub_topics, start=1)
+            for position, item in enumerate(
+                sorted(sub_topics, key=lambda sub_topic: sub_topic.priority),
+                start=1,
+            )
         ],
         raw_findings=list(findings),
         evaluated_sources=list(sources),
