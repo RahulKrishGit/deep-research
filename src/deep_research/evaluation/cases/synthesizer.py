@@ -257,7 +257,6 @@ _COMPLETE = build_case(
                 authority=0.95,
                 recency=0.90,
                 relevance=0.92,
-                corroboration=0.85,
                 overall=0.91,
                 rationale=(
                     "The scheme operator's own monitoring is the primary "
@@ -270,7 +269,6 @@ _COMPLETE = build_case(
                 authority=0.88,
                 recency=0.90,
                 relevance=0.88,
-                corroboration=0.78,
                 overall=0.88,
                 rationale=(
                     "City evaluation of its own tolling program; recent "
@@ -283,7 +281,6 @@ _COMPLETE = build_case(
                 authority=0.85,
                 recency=0.82,
                 relevance=0.88,
-                corroboration=0.82,
                 overall=0.86,
                 rationale=(
                     "Peer-reviewed cross-city review with strong "
@@ -296,7 +293,6 @@ _COMPLETE = build_case(
                 authority=0.90,
                 recency=0.80,
                 relevance=0.82,
-                corroboration=0.70,
                 overall=0.83,
                 rationale=(
                     "International policy research body; generalizes "
@@ -309,7 +305,6 @@ _COMPLETE = build_case(
                 authority=0.88,
                 recency=0.78,
                 relevance=0.80,
-                corroboration=0.65,
                 overall=0.79,
                 rationale=(
                     "Multilateral review of seven cities; broad but not "
@@ -322,7 +317,6 @@ _COMPLETE = build_case(
                 authority=0.50,
                 recency=0.70,
                 relevance=0.70,
-                corroboration=0.55,
                 overall=0.62,
                 rationale=(
                     "Trade research note on one pilot; no peer review, low "
@@ -660,7 +654,6 @@ _FAILURE = build_case(
                 authority=0.90,
                 recency=0.85,
                 relevance=0.90,
-                corroboration=0.80,
                 overall=0.88,
                 rationale=(
                     "National laboratory analysis with measured building "
@@ -673,7 +666,6 @@ _FAILURE = build_case(
                 authority=0.82,
                 recency=0.80,
                 relevance=0.85,
-                corroboration=0.75,
                 overall=0.82,
                 rationale=(
                     "Field studies from an efficiency research "
@@ -686,7 +678,6 @@ _FAILURE = build_case(
                 authority=0.85,
                 recency=0.83,
                 relevance=0.85,
-                corroboration=0.78,
                 overall=0.84,
                 rationale=(
                     "Peer-reviewed field study of the realization gap."
@@ -698,7 +689,6 @@ _FAILURE = build_case(
                 authority=0.45,
                 recency=0.70,
                 relevance=0.72,
-                corroboration=0.50,
                 overall=0.60,
                 rationale=(
                     "Case-study reviews without peer review; low "
@@ -880,7 +870,6 @@ _LIVE = build_case(
                 authority=0.90,
                 recency=0.88,
                 relevance=0.90,
-                corroboration=0.82,
                 overall=0.88,
                 rationale=(
                     "Federal program page with current cost guidance."
@@ -892,7 +881,6 @@ _LIVE = build_case(
                 authority=0.92,
                 recency=0.88,
                 relevance=0.92,
-                corroboration=0.84,
                 overall=0.90,
                 rationale=(
                     "National laboratory field studies of installed "
@@ -905,7 +893,6 @@ _LIVE = build_case(
                 authority=0.90,
                 recency=0.86,
                 relevance=0.88,
-                corroboration=0.78,
                 overall=0.86,
                 rationale=(
                     "International agency analysis of costs and policy."

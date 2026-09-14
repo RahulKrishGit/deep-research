@@ -47,7 +47,6 @@ def source(title: str = "Example source") -> ScoredSource:
         authority_score=0.8,
         recency_score=0.7,
         relevance_score=0.9,
-        corroboration_score=0.6,
         overall_score=0.75,
         rationale="Relevant and independently corroborated.",
     )

@@ -632,6 +632,15 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.critic_review_max_tokens == 32768
 
 
+def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
+    config_path: Path,
+) -> None:
+    settings = load_config(str(config_path))
+
+    assert settings.agents.source_evaluator.batch_size == 12
+    assert settings.agents.source_evaluator.max_total_sources == 36
+
+
 def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:
     """The shipped YAML attempts the whole plan, not a truncated one.
 

@@ -31,10 +31,26 @@ def source(
         authority_score=0.8,
         recency_score=0.7,
         relevance_score=0.9,
-        corroboration_score=0.6,
         overall_score=overall_score,
         rationale="Relevant and independently corroborated.",
         low_confidence=low_confidence,
+    )
+
+
+def unscored_source(
+    *,
+    url: str = "https://example.test/a",
+    status: str = "unscored_provider",
+) -> ScoredSource:
+    return ScoredSource(
+        url=url,
+        title="Example source",
+        authority_score=None,
+        recency_score=None,
+        relevance_score=None,
+        overall_score=None,
+        rationale="The source was not scored in this pass.",
+        evaluation_status=status,
     )
 
 
@@ -196,6 +212,24 @@ def test_merge_source_snapshot_does_not_mutate_its_inputs() -> None:
 
     assert [item.overall_score for item in previous] == [0.4]
     assert [item.overall_score for item in current] == [0.9]
+
+
+def test_provider_status_does_not_erase_a_prior_valid_score() -> None:
+    scored = source(overall_score=0.75)
+    failed = unscored_source()
+
+    merged = merge_source_snapshot([scored], [failed])
+
+    assert merged == [scored]
+
+
+def test_a_new_score_replaces_a_prior_unscored_record() -> None:
+    failed = unscored_source()
+    scored = source(overall_score=0.91)
+
+    merged = merge_source_snapshot([failed], [scored])
+
+    assert merged == [scored]
 
 
 # --- claim snapshots ------------------------------------------------------

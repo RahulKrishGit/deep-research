@@ -153,7 +153,6 @@ def _scored_source(url: str = "https://real.test/one") -> ScoredSource:
         authority_score=0.8,
         recency_score=0.8,
         relevance_score=0.8,
-        corroboration_score=0.5,
         overall_score=0.75,
         rationale="Signals recorded.",
     )

@@ -37,7 +37,6 @@ def _source(
         authority_score=0.8,
         recency_score=0.7,
         relevance_score=0.9,
-        corroboration_score=0.5,
         overall_score=overall,
         rationale=rationale,
         low_confidence=low_confidence,
@@ -131,9 +130,15 @@ def test_the_appendix_marks_low_confidence_sources_and_escapes_pipes() -> None:
         index,
     )
 
-    assert "| # | Source | Score | Confidence | Assessment |" in rendered
-    assert "| 1 | QEC 2025 (https://example.org/a) | 0.76 | normal |" in rendered
-    assert "| 2 | A \\| B (https://weak.test/b) | 0.08 | low |" in rendered
+    assert "| # | Source | Score | Status | Confidence | Assessment |" in rendered
+    assert (
+        "| 1 | QEC 2025 (https://example.org/a) | 0.76 | scored | normal |"
+        in rendered
+    )
+    assert (
+        "| 2 | A \\| B (https://weak.test/b) | 0.08 | scored | low |"
+        in rendered
+    )
     assert render_source_appendix([], index) == "(no sources were evaluated)"
 
 

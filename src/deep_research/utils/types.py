@@ -58,6 +58,12 @@ ClaimVerdict: TypeAlias = Literal[
     "contradicted",
     "insufficient_evidence",
 ]
+SourceEvaluationStatus: TypeAlias = Literal[
+    "scored",
+    "unscored_cap",
+    "unscored_provider",
+    "unscored_missing",
+]
 
 
 class ContractModel(BaseModel):
@@ -99,20 +105,42 @@ class Finding(ContractModel):
 class ScoredSource(ContractModel):
     url: str = Field(min_length=1)
     title: str = Field(min_length=1)
-    authority_score: UnitScore
-    recency_score: UnitScore
-    relevance_score: UnitScore
-    corroboration_score: UnitScore
-    overall_score: UnitScore
+    authority_score: UnitScore | None = None
+    recency_score: UnitScore | None = None
+    relevance_score: UnitScore | None = None
+    overall_score: UnitScore | None = None
     rationale: str = Field(min_length=1)
+    evaluation_status: SourceEvaluationStatus = "scored"
     low_confidence: bool = False
-    """True when this source must not be leaned on without corroboration.
+    """True when this source must not be leaned on without more evidence.
 
-    Set explicitly by ``SourceEvaluatorAgent`` — either because
-    ``overall_score`` fell under its threshold, or because the source could
-    not be scored by the model at all. Downstream agents read this flag
-    rather than re-deriving the evaluator's threshold.
+    Set explicitly by ``SourceEvaluatorAgent`` when a scored source falls
+    under its threshold. An unscored source uses ``evaluation_status`` to
+    explain why it has no quality judgement and never carries this flag.
     """
+
+    @model_validator(mode="after")
+    def validate_evaluation_status(self) -> ScoredSource:
+        scores = (
+            self.authority_score,
+            self.recency_score,
+            self.relevance_score,
+            self.overall_score,
+        )
+        if self.evaluation_status == "scored":
+            if any(score is None for score in scores):
+                raise ValueError(
+                    "scored sources require all quality scores"
+                )
+        elif any(score is not None for score in scores):
+            raise ValueError(
+                "unscored sources must not carry quality scores"
+            )
+        elif self.low_confidence:
+            raise ValueError(
+                "unscored sources must not carry low_confidence"
+            )
+        return self
 
 
 class Claim(ContractModel):

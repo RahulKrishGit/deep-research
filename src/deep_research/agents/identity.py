@@ -133,7 +133,19 @@ def merge_source_snapshot(
     """
     merged: dict[str, ScoredSource] = {}
     for source in (*previous, *current):
-        merged[normalize_source_url(source.url)] = source
+        url = normalize_source_url(source.url)
+        existing = merged.get(url)
+        # A provider failure, source cap, or missing model row is an
+        # operational status rather than a quality judgement. Preserve a
+        # previously valid score through those transient states; a new scored
+        # record still replaces any older unscored record.
+        if (
+            existing is not None
+            and existing.evaluation_status == "scored"
+            and source.evaluation_status != "scored"
+        ):
+            continue
+        merged[url] = source
     return list(merged.values())
 
 

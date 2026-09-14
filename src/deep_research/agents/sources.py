@@ -1,12 +1,12 @@
-"""Source identity, grouping, and corroboration — pure, offline helpers.
+"""Source identity and grouping — pure, offline helpers.
 
 ``Finding.source_url`` is whatever a model reported, so two findings can
 name the same page three different ways. Everything downstream keys on
 ``normalize_source_url``'s output instead, which is the canonical URL that
 lands in ``ScoredSource.url``.
 
-Nothing here performs I/O, reads a clock, or calls a provider, so grouping
-and corroboration are deterministic functions of ``state.raw_findings``.
+Nothing here performs I/O, reads a clock, or calls a provider, so grouping is
+deterministic from ``state.raw_findings``.
 """
 
 from __future__ import annotations
@@ -56,9 +56,8 @@ def normalize_source_url(url: str) -> str:
 def source_domain(url: str) -> str:
     """Return the registrable-ish host for ``url``, or the normalized input.
 
-    Not a public-suffix parse: ``a.example.co.uk`` and ``b.example.co.uk``
-    are treated as different domains. That is deliberately conservative —
-    it can only *under*-count corroboration, never invent it.
+    This is a lightweight host extraction used for lookup keys. Publisher
+    identity and claim-level independence are handled by the Fact Checker.
     """
     normalized = normalize_source_url(url)
     parts = urlsplit(normalized)
@@ -96,25 +95,3 @@ def group_findings_by_url(findings: Sequence[Finding]) -> list[SourceGroup]:
             group.sub_topics.append(finding.related_sub_topic)
         group.findings.append(finding)
     return list(grouped.values())
-
-
-def corroboration_score(
-    group: SourceGroup,
-    groups: Sequence[SourceGroup],
-) -> float:
-    """Fraction of ``group``'s sub-topics another domain also covered.
-
-    In ``[0.0, 1.0]`` by construction, and ``0.0`` for a group covering no
-    sub-topic at all. A second page on the same domain is not corroboration.
-    """
-    if not group.sub_topics:
-        return 0.0
-    covered = sum(
-        1
-        for sub_topic in group.sub_topics
-        if any(
-            other.domain != group.domain and sub_topic in other.sub_topics
-            for other in groups
-        )
-    )
-    return covered / len(group.sub_topics)

@@ -310,14 +310,12 @@ def test_source_dossier_renders_every_scoring_input() -> None:
         findings=[_prompt_finding()],
     )
 
-    rendered = render_source_dossier(
-        group, index=2, corroboration=0.5, reputation=0.9
-    )
+    rendered = render_source_dossier(group, index=2, reputation=0.9)
 
     assert "Source 2: https://example.org/a" in rendered
     assert "Title: QEC 2025" in rendered
     assert "Cited for: Alpha" in rendered
-    assert "Corroboration (computed): 0.50" in rendered
+    assert "Corroboration" not in rendered
     assert "Known reputation: 0.90" in rendered
     assert "Logical error rates fell below break-even." in rendered
 
@@ -327,9 +325,7 @@ def test_source_dossier_says_so_when_no_reputation_is_known() -> None:
         url="https://example.org/a", domain="example.org", title="A"
     )
 
-    rendered = render_source_dossier(
-        group, index=1, corroboration=0.0, reputation=None
-    )
+    rendered = render_source_dossier(group, index=1, reputation=None)
 
     assert "Known reputation: none on record" in rendered
     assert "(no findings)" in rendered
@@ -345,7 +341,7 @@ def test_source_dossier_clamps_long_finding_text() -> None:
     )
 
     rendered = render_source_dossier(
-        group, index=1, corroboration=0.0, reputation=None, excerpt_chars=50
+        group, index=1, reputation=None, excerpt_chars=50
     )
 
     assert "x" * 500 not in rendered
@@ -378,7 +374,6 @@ def test_source_quality_marks_low_confidence_sources() -> None:
                 authority_score=0.9,
                 recency_score=0.8,
                 relevance_score=0.9,
-                corroboration_score=1.0,
                 overall_score=0.9,
                 rationale="Strong.",
             ),
@@ -388,7 +383,6 @@ def test_source_quality_marks_low_confidence_sources() -> None:
                 authority_score=0.1,
                 recency_score=0.1,
                 relevance_score=0.1,
-                corroboration_score=0.0,
                 overall_score=0.08,
                 rationale="Weak.",
                 low_confidence=True,
@@ -396,17 +390,91 @@ def test_source_quality_marks_low_confidence_sources() -> None:
         ]
     )
 
-    assert "https://example.org/a: 0.90" in rendered
-    assert "https://weak.test/b: 0.08 (LOW CONFIDENCE)" in rendered
+    assert "https://example.org/a: score=0.90 status=scored" in rendered
+    assert (
+        "https://weak.test/b: score=0.08 status=scored low_confidence=true"
+        in rendered
+    )
 
 
 def test_source_quality_handles_an_empty_list() -> None:
     assert render_source_quality([]) == "(no sources scored)"
 
 
+def test_source_quality_renders_unscored_status_without_a_numeric_placeholder() -> None:
+    rendered = render_source_quality(
+        [
+            ScoredSource(
+                url="https://capped.test/source",
+                title="Capped",
+                authority_score=None,
+                recency_score=None,
+                relevance_score=None,
+                overall_score=None,
+                rationale="Past the source cap.",
+                evaluation_status="unscored_cap",
+            )
+        ]
+    )
+
+    assert rendered == "- https://capped.test/source: status=unscored_cap"
+    assert "0.20" not in rendered
+
+
+def test_source_quality_deduplicates_and_caps_by_relevance() -> None:
+    rendered = render_source_quality(
+        [
+            ScoredSource(
+                url="https://example.test/a",
+                title="A old",
+                authority_score=0.8,
+                recency_score=0.8,
+                relevance_score=0.2,
+                overall_score=0.3,
+                rationale="Old assessment.",
+            ),
+            ScoredSource(
+                url="https://EXAMPLE.test/a/",
+                title="A current",
+                authority_score=0.9,
+                recency_score=0.9,
+                relevance_score=0.95,
+                overall_score=0.92,
+                rationale="Current assessment.",
+            ),
+            ScoredSource(
+                url="https://other.test/b",
+                title="B",
+                authority_score=0.3,
+                recency_score=0.4,
+                relevance_score=0.1,
+                overall_score=0.2,
+                rationale="Low relevance.",
+            ),
+            ScoredSource(
+                url="https://capped.test/c",
+                title="C",
+                authority_score=None,
+                recency_score=None,
+                relevance_score=None,
+                overall_score=None,
+                rationale="Past the cap.",
+                evaluation_status="unscored_cap",
+            ),
+        ],
+        max_sources=2,
+    )
+
+    assert rendered.splitlines() == [
+        "- https://example.test/a: score=0.92 status=scored",
+        "- https://other.test/b: score=0.20 status=scored",
+    ]
+    assert rendered.count("https://example.test/a") == 1
+
+
 def test_new_prompt_constants_state_their_contracts() -> None:
     # The scoring call must never be asked for a combined score: this
-    # project computes overall_score from the four recorded dimensions.
+    # project computes overall_score from the three source dimensions.
     assert "overall" not in SOURCE_SCORING_INSTRUCTION
     assert "authority" in SOURCE_SCORING_INSTRUCTION
     assert "between 0 and 1" in SOURCE_SCORING_INSTRUCTION

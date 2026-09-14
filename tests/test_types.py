@@ -13,8 +13,22 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchEvent,
     ScoredSource,
+    SourceEvaluationStatus,
     SubTopic,
 )
+
+
+def unscored_source(*, status: SourceEvaluationStatus = "unscored_cap") -> ScoredSource:
+    return ScoredSource(
+        url="https://example.com/unscored",
+        title="Unscored source",
+        authority_score=None,
+        recency_score=None,
+        relevance_score=None,
+        overall_score=None,
+        rationale="This source was not scored.",
+        evaluation_status=status,
+    )
 
 
 def scored_source(**overrides: object) -> ScoredSource:
@@ -24,7 +38,6 @@ def scored_source(**overrides: object) -> ScoredSource:
         "authority_score": 0.8,
         "recency_score": 0.7,
         "relevance_score": 0.9,
-        "corroboration_score": 0.6,
         "overall_score": 0.75,
         "rationale": "Relevant and independently supported.",
     }
@@ -214,7 +227,6 @@ def test_scored_source_defaults_to_not_low_confidence() -> None:
         authority_score=0.8,
         recency_score=0.7,
         relevance_score=0.9,
-        corroboration_score=0.5,
         overall_score=0.76,
         rationale="Peer-reviewed and corroborated.",
     )
@@ -229,10 +241,19 @@ def test_scored_source_records_an_explicit_low_confidence_flag() -> None:
         authority_score=0.1,
         recency_score=0.0,
         relevance_score=0.2,
-        corroboration_score=0.0,
         overall_score=0.095,
         rationale="Anonymous blog with no corroboration.",
         low_confidence=True,
     )
 
     assert source.low_confidence is True
+
+
+def test_unscored_source_accepts_null_quality_scores_and_explicit_status() -> None:
+    source = unscored_source(status="unscored_cap")
+
+    assert source.overall_score is None
+    assert source.authority_score is None
+    assert source.recency_score is None
+    assert source.relevance_score is None
+    assert source.evaluation_status == "unscored_cap"

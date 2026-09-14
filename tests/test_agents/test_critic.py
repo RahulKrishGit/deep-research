@@ -75,7 +75,6 @@ def _source(*, low_confidence: bool = False) -> ScoredSource:
         authority_score=0.8,
         recency_score=0.7,
         relevance_score=0.9,
-        corroboration_score=0.5,
         overall_score=0.76,
         rationale="Peer-reviewed and corroborated.",
         low_confidence=low_confidence,

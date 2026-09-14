@@ -251,7 +251,6 @@ _MIXED = build_case(
                 authority=0.95,
                 recency=0.90,
                 relevance=0.95,
-                corroboration=0.85,
                 overall=0.91,
                 rationale=(
                     "IAEA is the international nuclear safety authority "
@@ -264,7 +263,6 @@ _MIXED = build_case(
                 authority=0.88,
                 recency=0.85,
                 relevance=0.90,
-                corroboration=0.80,
                 overall=0.86,
                 rationale=(
                     "Industry association with technical SMR reviews; "
@@ -277,7 +275,6 @@ _MIXED = build_case(
                 authority=0.50,
                 recency=0.65,
                 relevance=0.70,
-                corroboration=0.30,
                 overall=0.54,
                 rationale=(
                     "Policy brief without primary operational data; "
@@ -290,7 +287,6 @@ _MIXED = build_case(
                 authority=0.55,
                 recency=0.80,
                 relevance=0.75,
-                corroboration=0.60,
                 overall=0.68,
                 rationale=(
                     "Trade reporting with documented operational data on "
@@ -303,7 +299,6 @@ _MIXED = build_case(
                 authority=0.30,
                 recency=0.70,
                 relevance=0.60,
-                corroboration=0.20,
                 overall=0.45,
                 rationale=(
                     "Promotional material from the vendor itself; no "
@@ -317,7 +312,6 @@ _MIXED = build_case(
                 authority=0.35,
                 recency=0.75,
                 relevance=0.55,
-                corroboration=0.25,
                 overall=0.48,
                 rationale=(
                     "Industry newsletter repeating vendor claims; low "

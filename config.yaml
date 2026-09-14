@@ -46,6 +46,11 @@ memory:
     strategies_path: memory/strategies.json
 
 agents:
+  source_evaluator:
+    # Score new canonical URLs in bounded provider batches, while retaining a
+    # complete explicit record for every source beyond the run cap.
+    batch_size: 12
+    max_total_sources: 36
   max_iterations: 5
   tool_budget: 10
   # How many planned sub-topics one Researcher pass attempts

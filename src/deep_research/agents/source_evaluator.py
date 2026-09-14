@@ -4,14 +4,15 @@ Like the Planner and the Researcher, this module never sends a domain type
 to the provider. ``SourceScoreDraft`` mirrors the model-judged part of
 ``ScoredSource`` with plain field types so it survives strict JSON schema
 conversion, and this module stamps the parts the model must not be trusted
-to supply: the canonical URL, the computed corroboration score, the
-weighted overall score, and the low-confidence flag.
+to supply: the canonical URL, the weighted overall score, and the
+low-confidence flag.
 
 Score convention: every score is a ``UnitScore`` in ``[0.0, 1.0]``, higher
 is better, matching ``Finding.confidence`` and
 ``SourceReputation.reputation_score``. ``overall_score`` is a convex
-combination of the four recorded dimensions, so a ``ScoredSource`` record
-can always be re-checked against its own fields.
+combination of the three quality dimensions. Sources that were not evaluated
+carry ``None`` for every quality score and an explicit ``evaluation_status``
+instead of a fabricated floor.
 """
 
 from __future__ import annotations
@@ -38,7 +39,6 @@ from deep_research.agents.prompts import (
 )
 from deep_research.agents.sources import (
     SourceGroup,
-    corroboration_score,
     group_findings_by_url,
     normalize_source_url,
 )
@@ -61,21 +61,24 @@ from deep_research.utils.types import (
 SOURCE_EVALUATOR_NAME = "source_evaluator"
 
 # Weights form a convex combination: overall_score is in [0, 1] whenever
-# its four inputs are. Authority and relevance dominate because a source
+# its three inputs are. Authority and relevance dominate because a source
 # that is neither authoritative nor on-topic is not rescued by being new.
-AUTHORITY_WEIGHT = 0.35
+AUTHORITY_WEIGHT = 0.45
 RECENCY_WEIGHT = 0.15
-RELEVANCE_WEIGHT = 0.30
-CORROBORATION_WEIGHT = 0.20
+RELEVANCE_WEIGHT = 0.40
 
 # How much a reputation recalled from long-term memory moves the model's
 # authority judgement. Blended into authority rather than into the overall
-# score so that overall_score stays a pure function of the four recorded
+# score so that overall_score stays a pure function of the three recorded
 # dimensions.
 REPUTATION_BLEND = 0.4
 
 LOW_CONFIDENCE_THRESHOLD = 0.4
-DEFAULT_MAX_SOURCES = 12
+DEFAULT_BATCH_SIZE = 12
+DEFAULT_MAX_TOTAL_SOURCES = 36
+# Compatibility alias for callers that imported the old cap constant. The
+# old single-pass cap is now represented by ``max_total_sources``.
+DEFAULT_MAX_SOURCES = DEFAULT_MAX_TOTAL_SOURCES
 DEFAULT_EXCERPT_CHARS = 400
 _RATIONALE_CHARS = 400
 
@@ -83,10 +86,13 @@ _RATIONALE_CHARS = 400
 # model judgement. Never provider text: these strings reach prompts,
 # ResearchError.details, and user-facing rationales.
 FALLBACK_REASONS = {
+    "unscored_provider": "The scoring model could not be reached.",
+    "unscored_missing": "The scoring model returned no score for this source.",
+    "unscored_cap": "This source fell past this run's scoring cap.",
+    # Accept the pre-status names for callers that construct fallback records
+    # directly; all emitted records use the explicit status names above.
     "model_unavailable": "The scoring model could not be reached.",
-    "not_scored_by_model": (
-        "The scoring model returned no score for this source."
-    ),
+    "not_scored_by_model": "The scoring model returned no score for this source.",
     "over_source_cap": "This source fell past this run's scoring cap.",
 }
 
@@ -96,9 +102,9 @@ class SourceScoreDraft(ContractModel):
 
     Declares no ``Field`` constraints for the same reason as
     ``planner.SubTopicDraft``: it is converted to a strict OpenAI JSON
-    schema. ``corroboration_score``, ``overall_score``, and
-    ``low_confidence`` are deliberately absent — this project computes
-    those, not the model.
+    schema. ``overall_score``, ``evaluation_status``, and
+    ``low_confidence`` are deliberately absent — this project computes those,
+    not the model.
     """
 
     url: str
@@ -173,25 +179,22 @@ def overall_score(
     authority: float,
     recency: float,
     relevance: float,
-    corroboration: float,
 ) -> float:
-    """Combine the four recorded dimensions into one ``UnitScore``."""
+    """Combine the three source-quality dimensions into one ``UnitScore``."""
     return clamp_unit(
         AUTHORITY_WEIGHT * clamp_unit(authority)
         + RECENCY_WEIGHT * clamp_unit(recency)
         + RELEVANCE_WEIGHT * clamp_unit(relevance)
-        + CORROBORATION_WEIGHT * clamp_unit(corroboration)
     )
 
 
 def build_rationale(
     model_rationale: str,
     *,
-    corroboration: float,
     reputation: float | None,
     sub_topics: Sequence[str],
 ) -> str:
-    """Extend the model's rationale with the facts this project computed.
+    """Extend the model's rationale with facts this project computed.
 
     Always returns a non-blank string: ``ScoredSource.rationale`` requires
     one, and a model that returned a blank rationale must not be able to
@@ -202,9 +205,6 @@ def build_rationale(
     if text:
         parts.append(summarize_text(text, limit=_RATIONALE_CHARS))
     parts.append(f"Cited for: {', '.join(sub_topics) or 'no sub-topic'}.")
-    parts.append(
-        f"Corroboration {corroboration:.2f} across independent domains."
-    )
     if reputation is None:
         parts.append("No prior reputation on record.")
     else:
@@ -218,19 +218,16 @@ def build_scored_source(
     group: SourceGroup,
     draft: SourceScoreDraft,
     *,
-    corroboration: float,
     reputation: float | None,
 ) -> ScoredSource:
     """Stamp one model score into a validated ``ScoredSource`` record."""
     authority = blend_authority(draft.authority_score, reputation)
     recency = clamp_unit(draft.recency_score)
     relevance = clamp_unit(draft.relevance_score)
-    corroboration = clamp_unit(corroboration)
     overall = overall_score(
         authority=authority,
         recency=recency,
         relevance=relevance,
-        corroboration=corroboration,
     )
     return ScoredSource(
         url=group.url,
@@ -238,11 +235,10 @@ def build_scored_source(
         authority_score=authority,
         recency_score=recency,
         relevance_score=relevance,
-        corroboration_score=corroboration,
         overall_score=overall,
+        evaluation_status="scored",
         rationale=build_rationale(
             draft.rationale,
-            corroboration=corroboration,
             reputation=reputation,
             sub_topics=group.sub_topics,
         ),
@@ -253,63 +249,88 @@ def build_scored_source(
 def fallback_scored_source(
     group: SourceGroup,
     *,
-    corroboration: float,
-    reputation: float | None,
     reason: str,
 ) -> ScoredSource:
     """Record a source that could not be scored by the model.
 
-    The three model-judged dimensions floor at 0.0 rather than being
-    guessed at, corroboration is kept because it was computed locally, and
-    ``low_confidence`` is always ``True``. This is what makes "every source
-    used by findings gets a score or an explicit low-confidence flag" hold
-    even when the provider is down.
+    No quality number is inferred for an operationally unscored source. The
+    explicit status lets reports and metrics distinguish a cap, provider
+    failure, and missing model row from a genuinely low-quality judgement.
     """
     explanation = FALLBACK_REASONS.get(reason)
     if explanation is None:
         raise ValueError(f"unknown fallback reason: {reason}")
-    authority = blend_authority(0.0, reputation)
-    corroboration = clamp_unit(corroboration)
-    overall = overall_score(
-        authority=authority,
-        recency=0.0,
-        relevance=0.0,
-        corroboration=corroboration,
-    )
-    rationale = build_rationale(
-        explanation,
-        corroboration=corroboration,
-        reputation=reputation,
-        sub_topics=group.sub_topics,
+    status = {
+        "model_unavailable": "unscored_provider",
+        "not_scored_by_model": "unscored_missing",
+        "over_source_cap": "unscored_cap",
+    }.get(reason, reason)
+    if status not in {
+        "unscored_provider",
+        "unscored_missing",
+        "unscored_cap",
+    }:
+        raise ValueError(f"unknown fallback reason: {reason}")
+    rationale = " ".join(
+        (
+            explanation,
+            f"Cited for: {', '.join(group.sub_topics) or 'no sub-topic'}.",
+        )
     )
     return ScoredSource(
         url=group.url,
         title=group.title,
-        authority_score=authority,
-        recency_score=0.0,
-        relevance_score=0.0,
-        corroboration_score=corroboration,
-        overall_score=overall,
+        authority_score=None,
+        recency_score=None,
+        relevance_score=None,
+        overall_score=None,
         rationale=rationale,
-        low_confidence=True,
+        evaluation_status=status,
+        low_confidence=False,
     )
 
 
-def average_score(sources: Sequence[ScoredSource]) -> float:
-    """Mean ``overall_score``, rounded, and ``0.0`` for an empty run.
+def average_score(sources: Sequence[ScoredSource]) -> float | None:
+    """Mean scored ``overall_score``, or ``None`` when nothing was scored.
 
     Rounded and zero-guarded because this value lands in
     ``ResearchEvent.metadata``, which rejects non-finite JSON numbers.
     """
-    if not sources:
-        return 0.0
-    total = sum(source.overall_score for source in sources)
-    return round(total / len(sources), 4)
+    scores = [
+        source.overall_score
+        for source in sources
+        if source.evaluation_status == "scored"
+        and source.overall_score is not None
+    ]
+    if not scores:
+        return None
+    return round(sum(scores) / len(scores), 4)
 
 
 def low_confidence_count(sources: Sequence[ScoredSource]) -> int:
     """How many scored sources carry the explicit low-confidence flag."""
-    return sum(1 for source in sources if source.low_confidence)
+    return sum(
+        1
+        for source in sources
+        if source.evaluation_status == "scored" and source.low_confidence
+    )
+
+
+def evaluation_status_counts(
+    sources: Sequence[ScoredSource],
+) -> dict[str, int]:
+    """Return deterministic counts for each source evaluation status."""
+    counts = {
+        "scored_count": 0,
+        "unscored_cap_count": 0,
+        "unscored_provider_count": 0,
+        "unscored_missing_count": 0,
+    }
+    for source in sources:
+        key = f"{source.evaluation_status}_count"
+        if key in counts:
+            counts[key] += 1
+    return counts
 
 
 class ReputationSource(Protocol):
@@ -335,7 +356,6 @@ class SourceEvaluationTask(AgentTask):
     """
 
     groups: list[SourceGroup] = Field(default_factory=list)
-    corroborations: dict[str, float] = Field(default_factory=dict)
     reputations: dict[str, float] = Field(default_factory=dict)
 
 
@@ -349,7 +369,6 @@ def scoring_messages(
         render_source_dossier(
             group,
             index=index,
-            corroboration=task.corroborations.get(group.url, 0.0),
             reputation=task.reputations.get(group.url),
             excerpt_chars=excerpt_chars,
         )
@@ -392,15 +411,15 @@ def scoring_provider_error(error: Exception, *, sources: int) -> ResearchError:
     """Record that the scoring call could not reach the provider.
 
     Non-recoverable, mirroring ``researcher.extraction_provider_error``:
-    every source still gets a low-confidence fallback record, but no
-    model judgement exists for this pass.
+    every affected source still gets an explicit provider-status record, but
+    no model judgement exists for this pass.
     """
     return agent_error(
         agent_name=SOURCE_EVALUATOR_NAME,
         error_type="source_evaluator_scoring_provider_error",
         message=(
-            "The model provider failed while sources were scored; every "
-            "source was recorded as low confidence instead."
+            "The model provider failed while sources were scored; affected "
+            "sources were recorded as unscored instead."
         ),
         recoverable=False,
         details=agent_provider_failure_details(
@@ -441,12 +460,13 @@ def evaluation_completed_event(
     reputation_hits: int,
     reputation_failures: int,
 ) -> ResearchEvent:
-    """Report the counts the spec requires of this agent.
+    """Report quality and evaluation-status counts for this agent.
 
-    ``average_score`` is rounded and zero-guarded by ``average_score`` so
-    this metadata is always a finite JSON number, which
-    ``ResearchEvent.metadata`` requires.
+    ``average_score`` is rounded and returns ``None`` when no source was
+    scored, preserving the distinction between no judgement and a numeric
+    quality value.
     """
+    status_counts = evaluation_status_counts(sources)
     return agent_event(
         agent_name=SOURCE_EVALUATOR_NAME,
         event_type="source_evaluator.evaluation.completed",
@@ -455,6 +475,8 @@ def evaluation_completed_event(
             "source_count": len(sources),
             "average_score": average_score(sources),
             "low_confidence_count": low_confidence_count(sources),
+            "unique_source_count": len(sources),
+            **status_counts,
             "reputation_hits": reputation_hits,
             "reputation_failures": reputation_failures,
         },
@@ -464,8 +486,8 @@ def evaluation_completed_event(
 class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
     """Score every source behind ``state.raw_findings``.
 
-    Runs no ReAct loop: grouping and corroboration are deterministic, and
-    the reputation read is an exact-id memory lookup rather than a search.
+    Runs no ReAct loop: grouping is deterministic, and the reputation read is
+    an exact-id memory lookup rather than a search.
     ``run`` is overridden for the same reason ``ResearcherAgent`` overrides
     it — the shared single-loop ``BaseAgent.run`` cannot express this
     agent's shape.
@@ -484,22 +506,48 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         tools: Sequence[BaseTool] = (),
         config: AgentRuntimeConfig | None = None,
         reputation: ReputationSource | None = None,
-        max_sources: int = DEFAULT_MAX_SOURCES,
+        batch_size: int | None = None,
+        max_total_sources: int | None = None,
+        max_sources: int | None = None,
         excerpt_chars: int = DEFAULT_EXCERPT_CHARS,
     ) -> None:
+        runtime_config = config or AgentRuntimeConfig()
+        evaluator_config = runtime_config.source_evaluator
+        if max_sources is not None:
+            if (
+                max_total_sources is not None
+                and max_total_sources != max_sources
+            ):
+                raise ValueError(
+                    "max_sources and max_total_sources must agree"
+                )
+            max_total_sources = max_sources
+        resolved_batch_size = (
+            evaluator_config.batch_size
+            if batch_size is None
+            else batch_size
+        )
+        resolved_max_total_sources = (
+            evaluator_config.max_total_sources
+            if max_total_sources is None
+            else max_total_sources
+        )
         super().__init__(
             provider=provider,
             tracker=tracker,
             scratchpad=scratchpad,
             tools=tools,
-            config=config,
+            config=runtime_config,
         )
-        if max_sources < 1:
-            raise ValueError("max_sources must be at least 1")
+        if resolved_batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        if resolved_max_total_sources < 1:
+            raise ValueError("max_total_sources must be at least 1")
         if excerpt_chars < 1:
             raise ValueError("excerpt_chars must be at least 1")
         self._reputation = reputation
-        self._max_sources = max_sources
+        self._batch_size = resolved_batch_size
+        self._max_total_sources = resolved_max_total_sources
         self._excerpt_chars = excerpt_chars
         # The canonical snapshot of the state this run was handed, captured by
         # ``run`` so ``state_update`` can merge into it. Empty until a run
@@ -522,11 +570,8 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         return SOURCE_EVALUATOR_SYSTEM_PROMPT
 
     def build_task(self, state: ResearchState) -> SourceEvaluationTask:
-        """Group findings, compute corroboration, seed remembered scores."""
+        """Group findings once and seed remembered reputations."""
         groups = group_findings_by_url(state.raw_findings)
-        corroborations = {
-            group.url: corroboration_score(group, groups) for group in groups
-        }
         seeded = {
             normalize_source_url(url): float(score)
             for url, score in state.memory_context.known_source_reputations.items()
@@ -539,7 +584,6 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         return SourceEvaluationTask(
             instruction=state.original_question,
             groups=groups,
-            corroborations=corroborations,
             reputations=reputations,
         )
 
@@ -586,72 +630,95 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         self,
         task: SourceEvaluationTask,
     ) -> tuple[list[ScoredSource], list[ResearchError], bool]:
-        """Score every grouped source, in ``task.groups`` order.
+        """Score canonical sources in deterministic batches.
 
-        The third element, ``provider_failed``, is ``True`` only when the
-        scoring call itself could not reach the provider. Even then every
-        source gets a record: the acceptance criterion is "*every* source
-        used by findings", and a silent gap is worse than a flagged
-        low-confidence row.
+        Previously scored sources are reused, so refinement only spends
+        provider calls on new or unscored URLs. A provider failure stops the
+        current batch and marks that batch plus later unscored URLs with an
+        explicit status; successful earlier batches remain intact.
         """
         if not task.groups:
             return [], [], False
 
-        scored_groups = task.groups[: self._max_sources]
-        capped_groups = task.groups[self._max_sources :]
-        capped = {group.url for group in capped_groups}
-        request = task.model_copy(update={"groups": scored_groups})
+        prior = {
+            normalize_source_url(source.url): source
+            for source in self._prior_sources
+        }
+        capped = {
+            group.url
+            for group in task.groups[self._max_total_sources :]
+        }
+        groups_to_score: list[SourceGroup] = []
+        for position, group in enumerate(task.groups):
+            if position >= self._max_total_sources:
+                continue
+            previous = prior.get(group.url)
+            if previous is not None and previous.evaluation_status == "scored":
+                continue
+            groups_to_score.append(group)
 
-        drafts: dict[str, SourceScoreDraft] = {}
         errors: list[ResearchError] = []
         provider_failed = False
-        try:
-            response = await self.provider.complete_structured(
-                scoring_messages(request, excerpt_chars=self._excerpt_chars),
-                SourceScoresDraft,
-                agent_name=self.name,
-            )
-        except ProviderError as error:
-            provider_failed = True
-            errors.append(
-                scoring_provider_error(error, sources=len(scored_groups))
-            )
-        else:
+        assessed: dict[str, ScoredSource] = {}
+        for start in range(0, len(groups_to_score), self._batch_size):
+            batch = groups_to_score[start : start + self._batch_size]
+            request = task.model_copy(update={"groups": batch})
+            try:
+                response = await self.provider.complete_structured(
+                    scoring_messages(request, excerpt_chars=self._excerpt_chars),
+                    SourceScoresDraft,
+                    agent_name=self.name,
+                )
+            except ProviderError as error:
+                provider_failed = True
+                errors.append(scoring_provider_error(error, sources=len(batch)))
+                for remaining in groups_to_score[start:]:
+                    assessed[remaining.url] = fallback_scored_source(
+                        remaining,
+                        reason="unscored_provider",
+                    )
+                break
+
+            drafts: dict[str, SourceScoreDraft] = {}
+            allowed_urls = {group.url for group in batch}
             for draft in response.sources:
                 url = normalize_source_url(draft.url)
-                # First score for a URL wins; a model that repeats itself
-                # must not be able to overwrite its own earlier judgement.
-                drafts.setdefault(url, draft)
+                if url in allowed_urls:
+                    # Last model row wins within this response, matching the
+                    # canonical snapshot's latest-record-wins contract.
+                    drafts[url] = draft
+            for group in batch:
+                draft = drafts.get(group.url)
+                if draft is None:
+                    assessed[group.url] = fallback_scored_source(
+                        group,
+                        reason="unscored_missing",
+                    )
+                else:
+                    assessed[group.url] = build_scored_source(
+                        group,
+                        draft,
+                        reputation=task.reputations.get(group.url),
+                    )
 
         sources: list[ScoredSource] = []
         for group in task.groups:
-            corroboration = task.corroborations.get(group.url, 0.0)
-            reputation = task.reputations.get(group.url)
-            draft = drafts.get(group.url)
-            if draft is not None:
+            previous = prior.get(group.url)
+            if previous is not None and previous.evaluation_status == "scored":
+                sources.append(previous)
+            elif group.url in assessed:
+                sources.append(assessed[group.url])
+            elif group.url in capped:
                 sources.append(
-                    build_scored_source(
-                        group,
-                        draft,
-                        corroboration=corroboration,
-                        reputation=reputation,
-                    )
+                    fallback_scored_source(group, reason="unscored_cap")
                 )
-                continue
-            if group.url in capped:
-                reason = "over_source_cap"
-            elif provider_failed:
-                reason = "model_unavailable"
             else:
-                reason = "not_scored_by_model"
-            sources.append(
-                fallback_scored_source(
-                    group,
-                    corroboration=corroboration,
-                    reputation=reputation,
-                    reason=reason,
+                # This branch is reachable only for a malformed task with a
+                # duplicate canonical URL; preserve an explicit state rather
+                # than silently dropping the record.
+                sources.append(
+                    fallback_scored_source(group, reason="unscored_missing")
                 )
-            )
         return sources, errors, provider_failed
 
     async def finalize(
@@ -724,9 +791,10 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 int(error.details.get("failures", 0) or 0)
                 for error in lookup_errors
             )
+            snapshot = merge_source_snapshot(self._prior_sources, sources)
             events.append(
                 evaluation_completed_event(
-                    sources,
+                    snapshot,
                     reputation_hits=hits,
                     reputation_failures=failures,
                 )
@@ -734,9 +802,11 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             span.set_outputs(
                 {
                     "agent_name": self.name,
-                    "source_count": len(sources),
-                    "average_score": average_score(sources),
-                    "low_confidence_count": low_confidence_count(sources),
+                    "source_count": len(snapshot),
+                    "average_score": average_score(snapshot),
+                    "low_confidence_count": low_confidence_count(snapshot),
+                    "unique_source_count": len(snapshot),
+                    **evaluation_status_counts(snapshot),
                     "reputation_hits": hits,
                     "reputation_failures": failures,
                 }
@@ -747,7 +817,9 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             stop_reason="provider_error" if provider_failed else "finished",
             errors=errors,
         )
-        result = EvaluatedSources(sources=sources)
+        result = EvaluatedSources(
+            sources=merge_source_snapshot(self._prior_sources, sources)
+        )
         return AgentRun(
             agent_name=self.name,
             result=result,

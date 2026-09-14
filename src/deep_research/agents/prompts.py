@@ -12,7 +12,8 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
-from deep_research.agents.sources import SourceGroup
+from deep_research.agents.identity import merge_source_snapshot
+from deep_research.agents.sources import SourceGroup, normalize_source_url
 from deep_research.agents.steps import summarize_text
 from deep_research.memory.entries import ScratchpadEntry
 from deep_research.providers import ChatMessage
@@ -86,8 +87,7 @@ SOURCE_EVALUATOR_SYSTEM_PROMPT = (
     "trusted.\n"
     "You are shown one dossier per source: its URL, its title, the "
     "sub-topics it was cited for, an excerpt of every finding drawn from "
-    "it, a corroboration score this system already computed, and any "
-    "reputation previous sessions recorded for it.\n"
+    "it, and any reputation previous sessions recorded for it.\n"
     "Score only what the dossier supports. Do not assume a publisher you "
     "were not told about, and never invent a source that is not listed. "
     "Return one score object per listed source, using the exact url string "
@@ -110,8 +110,7 @@ SOURCE_SCORING_INSTRUCTION = (
     "a demonstrably superseded source on a time-sensitive topic scores low.\n"
     "relevance: how directly the excerpts answer the sub-topics the source "
     "was cited for, rather than merely mentioning them.\n"
-    "Corroboration is computed for you and is not yours to return. Neither "
-    "is the combined score.\n"
+    "The combined score is computed for you and is not yours to return.\n"
     "rationale: name the concrete signals you used. Never restate the "
     "numbers alone."
 )
@@ -360,7 +359,6 @@ def render_source_dossier(
     group: SourceGroup,
     *,
     index: int,
-    corroboration: float,
     reputation: float | None,
     excerpt_chars: int = 400,
 ) -> str:
@@ -375,7 +373,6 @@ def render_source_dossier(
         f"Title: {group.title}",
         f"Cited for: {', '.join(group.sub_topics) or 'no sub-topic'}",
         f"Findings drawn from it: {len(group.findings)}",
-        f"Corroboration (computed): {corroboration:.2f}",
     ]
     if reputation is None:
         lines.append("Known reputation: none on record")
@@ -405,12 +402,52 @@ def render_finding_digest(
     return "\n".join(lines) or "(no findings)"
 
 
-def render_source_quality(sources: Sequence[ScoredSource]) -> str:
-    """Render scored sources so weak ones are visible in a prompt."""
+def render_source_quality(
+    sources: Sequence[ScoredSource],
+    *,
+    max_sources: int = 36,
+) -> str:
+    """Render a bounded, canonical source-quality summary for prompts.
+
+    Historical snapshots may still be handed to a renderer by callers that
+    have not merged state yet. Canonicalize them here and retain the most
+    relevant scored rows first, so prompt size is controlled without printing
+    duplicate URLs or pretending an unscored source has a numeric quality.
+    """
+    if max_sources < 1:
+        raise ValueError("max_sources must be at least 1")
+    canonical = merge_source_snapshot([], sources)
+    ranked = sorted(
+        enumerate(canonical),
+        key=lambda item: (
+            item[1].evaluation_status != "scored",
+            -(
+                item[1].relevance_score
+                if item[1].relevance_score is not None
+                else -1.0
+            ),
+            -(
+                item[1].overall_score
+                if item[1].overall_score is not None
+                else -1.0
+            ),
+            item[0],
+        ),
+    )[:max_sources]
     lines: list[str] = []
-    for source in sources:
-        flag = " (LOW CONFIDENCE)" if source.low_confidence else ""
-        lines.append(f"- {source.url}: {source.overall_score:.2f}{flag}")
+    for _, source in ranked:
+        if source.overall_score is None:
+            lines.append(
+                f"- {normalize_source_url(source.url)}: "
+                f"status={source.evaluation_status}"
+            )
+            continue
+        flag = " low_confidence=true" if source.low_confidence else ""
+        lines.append(
+            f"- {normalize_source_url(source.url)}: "
+            f"score={source.overall_score:.2f} "
+            f"status={source.evaluation_status}{flag}"
+        )
     return "\n".join(lines) or "(no sources scored)"
 
 

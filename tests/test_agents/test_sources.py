@@ -1,12 +1,11 @@
-"""Tests for URL normalization, source grouping, and corroboration."""
+"""Tests for URL normalization and source grouping."""
 
 from __future__ import annotations
 
 import pytest
 
+import deep_research.agents.sources as sources
 from deep_research.agents.sources import (
-    SourceGroup,
-    corroboration_score,
     group_findings_by_url,
     normalize_source_url,
     source_domain,
@@ -150,35 +149,5 @@ def test_group_title_falls_back_to_the_url() -> None:
     assert groups[0].title == "https://example.org/a"
 
 
-def test_corroboration_is_the_fraction_of_sub_topics_other_domains_cover() -> None:
-    groups = group_findings_by_url(
-        [
-            _finding("https://example.org/a", sub_topic="Alpha"),
-            _finding("https://example.org/a", sub_topic="Beta"),
-            _finding("https://other.test/b", sub_topic="Alpha"),
-        ]
-    )
-
-    assert corroboration_score(groups[0], groups) == pytest.approx(0.5)
-    assert corroboration_score(groups[1], groups) == pytest.approx(1.0)
-
-
-def test_the_same_domain_never_corroborates_itself() -> None:
-    groups = group_findings_by_url(
-        [
-            _finding("https://example.org/a", sub_topic="Alpha"),
-            _finding("https://example.org/b", sub_topic="Alpha"),
-        ]
-    )
-
-    assert corroboration_score(groups[0], groups) == pytest.approx(0.0)
-
-
-def test_corroboration_of_a_group_with_no_sub_topics_is_zero() -> None:
-    empty = SourceGroup(
-        url="https://example.org/a",
-        domain="example.org",
-        title="A",
-    )
-
-    assert corroboration_score(empty, [empty]) == pytest.approx(0.0)
+def test_source_helpers_do_not_expose_false_corroboration_api() -> None:
+    assert not hasattr(sources, "corroboration_score")

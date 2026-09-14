@@ -69,7 +69,11 @@ from deep_research.utils.config import (
 # lookups or actions are needed". Wording only: the sentence forbidding a
 # tool call written in text, JSON, XML, DSML, or a Markdown fence is
 # unchanged. Re-pinned deliberately rather than silently invalidated.
-CRITIC_PROMPT_FINGERPRINT = "04df8604c26a"
+# Task 4 then removed the source evaluator's computed corroboration field and
+# changed source-quality rendering to carry explicit unscored statuses. That
+# shared ``agents.prompts`` edit moved all six target fingerprints again;
+# re-pinned deliberately so the drift alarm remains meaningful.
+CRITIC_PROMPT_FINGERPRINT = "92e10384399b"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -124,12 +128,12 @@ CRITIC_PROMPT_FINGERPRINT = "04df8604c26a"
 # its own commit, rather than silently invalidated — the same convention tasks
 # 1 and 2 used.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "721f1ea5cec5",
-    "researcher": "ae27fd51a1bb",
-    "source_evaluator": "ec68fe4b9852",
-    "fact_checker": "0f983da24ef5",
-    "synthesizer": "491e639a59cf",
-    "critic": "04df8604c26a",
+    "planner": "b5d310a541c7",
+    "researcher": "50c7713d2448",
+    "source_evaluator": "6452df9110e7",
+    "fact_checker": "6bb72f0c0f63",
+    "synthesizer": "31e7a9cff8aa",
+    "critic": "92e10384399b",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

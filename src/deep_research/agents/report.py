@@ -165,24 +165,36 @@ def render_source_appendix(
     sources: Sequence[ScoredSource],
     index: Sequence[Citation],
 ) -> str:
-    """Render one appendix row per scored source, weak ones visible."""
+    """Render one appendix row per source, including explicit statuses."""
     if not sources:
         return "(no sources were evaluated)"
     numbers = _lookup(index)
     lines = [
-        "| # | Source | Score | Confidence | Assessment |",
-        "| --- | --- | --- | --- | --- |",
+        "| # | Source | Score | Status | Confidence | Assessment |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for source in sources:
         number = numbers.get(normalize_source_url(source.url))
         marker = str(number) if number is not None else "-"
-        confidence = "low" if source.low_confidence else "normal"
+        score = (
+            f"{source.overall_score:.2f}"
+            if source.overall_score is not None
+            else "not scored"
+        )
+        confidence = (
+            "low"
+            if source.evaluation_status == "scored" and source.low_confidence
+            else "normal"
+            if source.evaluation_status == "scored"
+            else "not assessed"
+        )
         rationale = _cell(
             summarize_text(source.rationale, limit=_APPENDIX_RATIONALE_CHARS)
         )
         lines.append(
             f"| {marker} | {_cell(source.title)} ({source.url}) "
-            f"| {source.overall_score:.2f} | {confidence} | {rationale} |"
+            f"| {score} | {source.evaluation_status} | {confidence} "
+            f"| {rationale} |"
         )
     return "\n".join(lines)
 

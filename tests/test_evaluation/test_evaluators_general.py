@@ -918,9 +918,9 @@ def _golden_result(case: EvaluationCase, urls: list[str]) -> dict:
                     "authority_score": 0.8,
                     "recency_score": 0.8,
                     "relevance_score": 0.8,
-                    "corroboration_score": 0.8,
                     "overall_score": 0.8,
                     "rationale": "Plausible, well-corroborated source.",
+                    "evaluation_status": "scored",
                     "low_confidence": False,
                 }
                 for url in urls

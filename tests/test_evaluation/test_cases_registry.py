@@ -208,7 +208,6 @@ def test_the_fixture_builders_construct_a_complete_case() -> None:
         authority=0.9,
         recency=0.8,
         relevance=0.9,
-        corroboration=0.7,
         overall=0.85,
         rationale="strong domain fit",
     )

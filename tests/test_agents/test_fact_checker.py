@@ -94,7 +94,6 @@ def _scored(url: str, *, low: bool = False) -> ScoredSource:
         authority_score=0.2 if low else 0.9,
         recency_score=0.2 if low else 0.9,
         relevance_score=0.2 if low else 0.9,
-        corroboration_score=0.0 if low else 1.0,
         overall_score=0.16 if low else 0.9,
         rationale="Because.",
         low_confidence=low,
@@ -192,7 +191,10 @@ def test_extraction_messages_show_findings_and_source_quality() -> None:
     body = messages[1].content
     assert "How mature is quantum error correction?" in body
     assert "1. [Alpha] Logical error rates fell below break-even" in body
-    assert "https://example.org/a: 0.16 (LOW CONFIDENCE)" in body
+    assert (
+        "https://example.org/a: score=0.16 status=scored "
+        "low_confidence=true"
+    ) in body
     assert "Return an empty list" in body
 
 

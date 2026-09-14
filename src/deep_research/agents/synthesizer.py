@@ -171,7 +171,10 @@ def limitation_reasons(state: ResearchState) -> list[str]:
         reasons.append("max_iterations_reached")
     if not state.evaluated_sources:
         reasons.append("no_sources_evaluated")
-    elif any(source.low_confidence for source in state.evaluated_sources):
+    elif any(
+        source.evaluation_status == "scored" and source.low_confidence
+        for source in state.evaluated_sources
+    ):
         reasons.append("low_confidence_sources")
     if not any(claim.verdict == "verified" for claim in state.verified_claims):
         reasons.append("no_verified_claims")

@@ -344,7 +344,6 @@ _STRONG_CASE = build_case(
                 authority=0.95,
                 recency=0.88,
                 relevance=0.92,
-                corroboration=0.80,
                 overall=0.89,
             ),
             scored_source(
@@ -357,7 +356,6 @@ _STRONG_CASE = build_case(
                 authority=0.90,
                 recency=0.85,
                 relevance=0.90,
-                corroboration=0.78,
                 overall=0.86,
             ),
             scored_source(
@@ -371,7 +369,6 @@ _STRONG_CASE = build_case(
                 authority=0.88,
                 recency=0.82,
                 relevance=0.92,
-                corroboration=0.85,
                 overall=0.87,
             ),
             scored_source(
@@ -384,7 +381,6 @@ _STRONG_CASE = build_case(
                 authority=0.85,
                 recency=0.80,
                 relevance=0.88,
-                corroboration=0.75,
                 overall=0.82,
             ),
             scored_source(
@@ -394,7 +390,6 @@ _STRONG_CASE = build_case(
                 authority=0.72,
                 recency=0.86,
                 relevance=0.90,
-                corroboration=0.65,
                 overall=0.78,
             ),
         ),
@@ -568,7 +563,6 @@ _GAPPY_CASE = build_case(
                 authority=0.90,
                 recency=0.80,
                 relevance=0.85,
-                corroboration=0.70,
                 overall=0.81,
             ),
             scored_source(
@@ -581,7 +575,6 @@ _GAPPY_CASE = build_case(
                 authority=0.35,
                 recency=0.70,
                 relevance=0.65,
-                corroboration=0.25,
                 overall=0.49,
                 low_confidence=True,
             ),
@@ -742,7 +735,6 @@ _BUDGET_CASE = build_case(
                 authority=0.30,
                 recency=0.65,
                 relevance=0.70,
-                corroboration=0.20,
                 overall=0.46,
                 low_confidence=True,
             ),
@@ -939,7 +931,6 @@ _LIVE_CASE = build_case(
                 authority=0.85,
                 recency=0.90,
                 relevance=0.90,
-                corroboration=0.80,
                 overall=0.86,
             ),
             scored_source(
@@ -949,7 +940,6 @@ _LIVE_CASE = build_case(
                 authority=0.92,
                 recency=0.90,
                 relevance=0.88,
-                corroboration=0.82,
                 overall=0.88,
             ),
             scored_source(
@@ -959,7 +949,6 @@ _LIVE_CASE = build_case(
                 authority=0.90,
                 recency=0.85,
                 relevance=0.85,
-                corroboration=0.78,
                 overall=0.85,
             ),
         ),

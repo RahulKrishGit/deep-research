@@ -42,8 +42,8 @@ _COMPETING_RUBRIC = rubric(
     (
         "signal_balance",
         "No single signal decides a source's overall score.",
-        "Overall scores blend authority, recency, reputation, and "
-        "corroboration; rationales name more than one signal.",
+        "Overall scores blend authority, recency, relevance, and "
+        "reputation; rationales name more than one signal.",
         "One signal (recency or authority alone) visibly decided the "
         "outcome.",
     ),
@@ -174,7 +174,7 @@ _MIXED = build_case(
             (
                 "bounded_scores",
                 0.20,
-                "All six scores are finite and in `[0,1]`.",
+                "All four quality scores are finite and in `[0,1]`.",
             ),
             (
                 "low_confidence_flagged",
@@ -266,13 +266,13 @@ _COMPETING = build_case(
             (
                 "bounded_scores",
                 0.20,
-                "All six scores are finite and in `[0,1]`.",
+                "All four quality scores are finite and in `[0,1]`.",
             ),
             (
                 "rationale_mentions_multiple_signals",
                 0.15,
                 "At least one source's rationale mentions more than one of "
-                "authority, recency, reputation, or corroboration.",
+                "authority, recency, relevance, or reputation.",
             ),
         ),
     ),
@@ -287,9 +287,9 @@ _FAILURE = build_case(
     title="Keep scoring every source when reputation lookups fail",
     purpose=(
         "Score four sources while the reputation lookup fails for two of "
-        "their domains: every source still receives a bounded score, the "
-        "failure is recorded as recoverable, and no source carries a "
-        "reputation it never received."
+        "their domains: every source receives either a bounded score or an "
+        "explicit unscored status, the failure is recorded as recoverable, "
+        "and no source carries a reputation it never received."
     ),
     state=evaluation_state(
         case_id="reputation-provider-failure",
@@ -342,13 +342,14 @@ _FAILURE = build_case(
             (
                 "all_sources_still_scored",
                 0.35,
-                "One evaluation per canonical source despite the failures.",
+                "One scored or explicitly unscored record per canonical "
+                "source despite the failures.",
             ),
             (
                 "fallback_scores_bounded",
                 0.25,
-                "Every source scored without reputation data still carries "
-                "finite scores in `[0,1]`.",
+                "Sources with an explicit status carry no fabricated numeric "
+                "scores; scored sources remain finite in `[0,1]`.",
             ),
             (
                 "failure_recorded",
@@ -453,7 +454,7 @@ _LIVE = build_case(
             (
                 "bounded_scores",
                 0.20,
-                "All six scores are finite and in `[0,1]`.",
+                "All four quality scores are finite and in `[0,1]`.",
             ),
             (
                 "low_confidence_flagged",

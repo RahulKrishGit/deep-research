@@ -644,7 +644,7 @@ _SCORE_FIELDS: tuple[str, ...] = tuple(
 )
 
 _LIMITATION_PHRASES = ("limitation", "caveat", "what we could not")
-_SIGNAL_KEYWORDS = ("authority", "recency", "reputation", "corroboration")
+_SIGNAL_KEYWORDS = ("authority", "recency", "relevance", "reputation")
 _YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
 _CAPITALIZED_PATTERN = re.compile(r"\b[A-Z][A-Za-z]+\b")
 
@@ -1044,6 +1044,18 @@ def _bounded_scores_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     if not isinstance(evaluated, list):
         return False
     for entry in evaluated:
+        status = _field(entry, "evaluation_status") or "scored"
+        if status not in {
+            "scored",
+            "unscored_cap",
+            "unscored_provider",
+            "unscored_missing",
+        }:
+            return False
+        if status != "scored":
+            if any(_field(entry, name) is not None for name in _SCORE_FIELDS):
+                return False
+            continue
         for name in _SCORE_FIELDS:
             value = _field(entry, name)
             if (
@@ -1079,7 +1091,8 @@ def _low_confidence_flagged_passes(
     flagged = {
         normalize_source_url(_field(entry, "url"))
         for entry in evaluated
-        if _field(entry, "low_confidence") is True
+        if (_field(entry, "evaluation_status") or "scored") == "scored"
+        and _field(entry, "low_confidence") is True
     }
     return all(
         isinstance(url, str) and normalize_source_url(url) in flagged
@@ -1778,6 +1791,9 @@ def _score_ordering_passes(output: TargetOutput, case: EvaluationCase) -> bool:
         return False
     scores: dict[str, float] = {}
     for entry in evaluated:
+        status = _field(entry, "evaluation_status") or "scored"
+        if status != "scored":
+            continue
         url = _field(entry, "url")
         overall = _field(entry, "overall_score")
         if (
@@ -1806,12 +1822,14 @@ def _balanced_scoring_passes(output: TargetOutput, case: EvaluationCase) -> bool
         "authority_score",
         "recency_score",
         "relevance_score",
-        "corroboration_score",
     )
     evaluated = _artifact(output, "evaluated_sources")
     if not isinstance(evaluated, list):
         return False
     for entry in evaluated:
+        status = _field(entry, "evaluation_status") or "scored"
+        if status != "scored":
+            return False
         overall = _field(entry, "overall_score")
         if not isinstance(overall, (int, float)) or isinstance(overall, bool):
             return False
@@ -1829,6 +1847,9 @@ def _rationale_signals_passes(output: TargetOutput, case: EvaluationCase) -> boo
     if not isinstance(evaluated, list):
         return False
     for entry in evaluated:
+        status = _field(entry, "evaluation_status") or "scored"
+        if status != "scored":
+            continue
         rationale = _field(entry, "rationale")
         if not isinstance(rationale, str):
             continue
@@ -1854,6 +1875,18 @@ def _fallback_scores_bounded_passes(
     for entry in evaluated:
         url = _field(entry, "url")
         if not isinstance(url, str) or source_domain(url).casefold() not in failing:
+            continue
+        status = _field(entry, "evaluation_status") or "scored"
+        if status not in {
+            "scored",
+            "unscored_cap",
+            "unscored_provider",
+            "unscored_missing",
+        }:
+            return False
+        if status != "scored":
+            if any(_field(entry, name) is not None for name in _SCORE_FIELDS):
+                return False
             continue
         for name in _SCORE_FIELDS:
             value = _field(entry, name)

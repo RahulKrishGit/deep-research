@@ -155,6 +155,15 @@ class MemoryConfig(BaseModel):
     procedural: ProceduralMemoryConfig = ProceduralMemoryConfig()
 
 
+class SourceEvaluatorConfig(BaseModel):
+    """Bounds for source-evaluation provider requests and source coverage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    batch_size: int = Field(default=12, ge=1)
+    max_total_sources: int = Field(default=36, ge=1)
+
+
 class AgentRuntimeConfig(BaseModel):
     """Bounds every ReAct agent runs under.
 
@@ -195,6 +204,7 @@ class AgentRuntimeConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    source_evaluator: SourceEvaluatorConfig = SourceEvaluatorConfig()
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
     max_sub_topics: int = Field(default=7, ge=1)
@@ -347,6 +357,16 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_MAX_ITERATIONS": ("agents", "max_iterations"),
     "AGENTS_TOOL_BUDGET": ("agents", "tool_budget"),
     "AGENTS_MAX_SUB_TOPICS": ("agents", "max_sub_topics"),
+    "AGENTS_SOURCE_EVALUATOR_BATCH_SIZE": (
+        "agents",
+        "source_evaluator",
+        "batch_size",
+    ),
+    "AGENTS_SOURCE_EVALUATOR_MAX_TOTAL_SOURCES": (
+        "agents",
+        "source_evaluator",
+        "max_total_sources",
+    ),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
     "AGENTS_PLANNER_FINAL_MAX_TOKENS": (
