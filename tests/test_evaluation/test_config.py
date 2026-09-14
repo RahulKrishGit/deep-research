@@ -84,7 +84,14 @@ from deep_research.utils.config import (
 # ``6bb72f0c0f63`` -> ``5c7744ff65bc``, Synthesizer
 # ``31e7a9cff8aa`` -> ``366b69880972``, and Critic
 # ``92e10384399b`` -> ``243f6ebb1627``.
-CRITIC_PROMPT_FINGERPRINT = "243f6ebb1627"
+# Fix Round 2 then applied the same score/status distinction to the tool-aware
+# Critic prompt. This shared prompt-module source change legitimately moved all
+# six values again; the exact moves were planner ``68802a12d777`` ->
+# ``059a32ca8b85``, researcher ``69a0c396334f`` -> ``076337666605``, source
+# evaluator ``cd5ea5f5579b`` -> ``21d4d79ca09a``, Fact Checker
+# ``5c7744ff65bc`` -> ``f9dd5826f66a``, Synthesizer ``366b69880972`` ->
+# ``6f5b7739f134``, and Critic ``243f6ebb1627`` -> ``5b0105f4dcc1``.
+CRITIC_PROMPT_FINGERPRINT = "5b0105f4dcc1"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -139,12 +146,12 @@ CRITIC_PROMPT_FINGERPRINT = "243f6ebb1627"
 # its own commit, rather than silently invalidated — the same convention tasks
 # 1 and 2 used.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "68802a12d777",
-    "researcher": "69a0c396334f",
-    "source_evaluator": "cd5ea5f5579b",
-    "fact_checker": "5c7744ff65bc",
-    "synthesizer": "366b69880972",
-    "critic": "243f6ebb1627",
+    "planner": "059a32ca8b85",
+    "researcher": "076337666605",
+    "source_evaluator": "21d4d79ca09a",
+    "fact_checker": "f9dd5826f66a",
+    "synthesizer": "6f5b7739f134",
+    "critic": "5b0105f4dcc1",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

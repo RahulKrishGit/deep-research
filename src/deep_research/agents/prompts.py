@@ -223,8 +223,9 @@ CRITIC_SYSTEM_PROMPT = (
     "sessions established. Finish without calling a tool when the report "
     "and the evidence summary are enough to judge.\n"
     "Judge completeness against the research question, accuracy against the "
-    "claim verdicts, source diversity and strength against the source "
-    "scores, and whether uncertainty is disclosed rather than hidden.\n"
+    "claim verdicts, source diversity and strength against each source's "
+    "quality score when scored or explicit evaluation status otherwise, and "
+    "whether uncertainty is disclosed rather than hidden.\n"
     "Report what the evidence in front of you supports. Do not invent a gap "
     "to look thorough, and do not excuse a thin report to look agreeable."
 )

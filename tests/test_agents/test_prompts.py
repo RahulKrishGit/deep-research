@@ -487,6 +487,9 @@ def test_source_consumers_distinguish_quality_scores_from_statuses() -> None:
     assert "explicit evaluation status otherwise" in SYNTHESIZER_SYSTEM_PROMPT
     assert "quality score when scored" in CRITIC_REVIEW_SYSTEM_PROMPT
     assert "explicit evaluation status otherwise" in CRITIC_REVIEW_SYSTEM_PROMPT
+    assert "source scores" not in CRITIC_SYSTEM_PROMPT
+    assert "quality score when scored" in CRITIC_SYSTEM_PROMPT
+    assert "explicit evaluation status otherwise" in CRITIC_SYSTEM_PROMPT
     assert "independent" in FACT_CHECKER_SYSTEM_PROMPT
     assert "retrieved findings" in CLAIM_EXTRACTION_SYSTEM_PROMPT
     assert "empty list" in CLAIM_EXTRACTION_INSTRUCTION
