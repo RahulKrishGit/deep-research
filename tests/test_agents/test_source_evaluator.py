@@ -352,6 +352,96 @@ async def test_provider_failure_marks_only_the_failed_and_remaining_batches(
     assert all(source.overall_score is None for source in sources[2:])
 
 
+@pytest.mark.asyncio
+async def test_new_sources_are_not_capped_by_prior_scored_sources(
+    tracker: Tracker,
+) -> None:
+    findings = [
+        _eval_finding("https://source-0.test/page"),
+        _eval_finding("https://source-1.test/page"),
+        _eval_finding("https://source-2.test/page"),
+    ]
+    prior = [
+        build_scored_source(
+            _group(url=finding.source_url),
+            _draft(url=finding.source_url),
+            reputation=None,
+        )
+        for finding in findings[:2]
+    ]
+    completer = ScriptedCompleter(
+        outputs=[
+            SourceScoresDraft(
+                sources=[_draft(url="https://source-2.test/page")]
+            )
+        ]
+    )
+    agent = _evaluator(
+        tracker,
+        completer,
+        batch_size=2,
+        max_total_sources=2,
+    )
+    state = _eval_state(findings, evaluated_sources=prior)
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [source.url for source in outcome.result.sources] == [
+        finding.source_url for finding in findings
+    ]
+    assert outcome.result.sources[-1].evaluation_status == "scored"
+    assert outcome.result.sources[-1].overall_score is not None
+    assert len(completer.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_prior_unscored_cap_sources_are_eligible_on_a_later_pass(
+    tracker: Tracker,
+) -> None:
+    findings = [
+        _eval_finding("https://source-0.test/page"),
+        _eval_finding("https://source-1.test/page"),
+        _eval_finding("https://source-2.test/page"),
+    ]
+    prior = [
+        build_scored_source(
+            _group(url=finding.source_url),
+            _draft(url=finding.source_url),
+            reputation=None,
+        )
+        for finding in findings[:2]
+    ]
+    prior.append(
+        fallback_scored_source(
+            _group(url=findings[2].source_url), reason="unscored_cap"
+        )
+    )
+    completer = ScriptedCompleter(
+        outputs=[
+            SourceScoresDraft(
+                sources=[_draft(url="https://source-2.test/page")]
+            )
+        ]
+    )
+    agent = _evaluator(
+        tracker,
+        completer,
+        batch_size=2,
+        max_total_sources=2,
+    )
+    state = _eval_state(findings, evaluated_sources=prior)
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert outcome.result.sources[-1].evaluation_status == "scored"
+    assert outcome.result.sources[-1].overall_score is not None
+    assert len(completer.calls) == 1
+
+
 def test_observability_aggregates_summarize_scored_sources() -> None:
     strong = build_scored_source(
         _group(), _draft(), reputation=None

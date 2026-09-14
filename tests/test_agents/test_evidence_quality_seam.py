@@ -141,7 +141,8 @@ async def test_findings_flow_through_scoring_into_verified_claims(
         outcome = await evaluator.run(state)
     state = merge_research_state(state, outcome.state_update)
 
-    # Every source behind a finding is scored, keyed by its canonical URL.
+    # Every source behind a finding has a scored assessment or explicit status,
+    # keyed by its canonical URL.
     assert [source.url for source in state.evaluated_sources] == [SOURCE_URL]
     assert state.evaluated_sources[0].low_confidence is False
     assert 0.0 <= state.evaluated_sources[0].overall_score <= 1.0

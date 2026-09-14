@@ -176,7 +176,8 @@ class AgentRuntimeConfig(BaseModel):
 
     ``critic_review_max_tokens`` is the same kind of budget for the Critic's
     ``critique_report_review`` request. That call renders the whole report,
-    the claim digest, the source scores, and the spot-check evidence, then
+    the claim digest, the source quality signals (a score when available or
+    an explicit evaluation status), and the spot-check evidence, then
     asks for a score, three lists, and a rationale in one JSON object. At the
     global cap it returned non-JSON text on both the initial attempt and the
     single repair in three consecutive live canaries. ReAct decisions keep

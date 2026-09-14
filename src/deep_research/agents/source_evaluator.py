@@ -644,18 +644,19 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             normalize_source_url(source.url): source
             for source in self._prior_sources
         }
+        # The total cap applies to sources still needing an assessment. A
+        # prior scored snapshot is complete evidence and must not consume the
+        # current pass's budget; unscored records remain eligible for retry.
+        eligible_groups: list[SourceGroup] = []
+        for group in task.groups:
+            previous = prior.get(group.url)
+            if previous is None or previous.evaluation_status != "scored":
+                eligible_groups.append(group)
+        groups_to_score = eligible_groups[: self._max_total_sources]
         capped = {
             group.url
-            for group in task.groups[self._max_total_sources :]
+            for group in eligible_groups[self._max_total_sources :]
         }
-        groups_to_score: list[SourceGroup] = []
-        for position, group in enumerate(task.groups):
-            if position >= self._max_total_sources:
-                continue
-            previous = prior.get(group.url)
-            if previous is not None and previous.evaluation_status == "scored":
-                continue
-            groups_to_score.append(group)
 
         errors: list[ResearchError] = []
         provider_failed = False

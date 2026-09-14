@@ -479,6 +479,14 @@ def test_new_prompt_constants_state_their_contracts() -> None:
     assert "authority" in SOURCE_SCORING_INSTRUCTION
     assert "between 0 and 1" in SOURCE_SCORING_INSTRUCTION
     assert "exact url" in SOURCE_EVALUATOR_SYSTEM_PROMPT
+
+
+def test_source_consumers_distinguish_quality_scores_from_statuses() -> None:
+    assert "quality score of every source" not in SYNTHESIZER_SYSTEM_PROMPT
+    assert "quality score when scored" in SYNTHESIZER_SYSTEM_PROMPT
+    assert "explicit evaluation status otherwise" in SYNTHESIZER_SYSTEM_PROMPT
+    assert "quality score when scored" in CRITIC_REVIEW_SYSTEM_PROMPT
+    assert "explicit evaluation status otherwise" in CRITIC_REVIEW_SYSTEM_PROMPT
     assert "independent" in FACT_CHECKER_SYSTEM_PROMPT
     assert "retrieved findings" in CLAIM_EXTRACTION_SYSTEM_PROMPT
     assert "empty list" in CLAIM_EXTRACTION_INSTRUCTION

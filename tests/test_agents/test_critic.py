@@ -638,7 +638,7 @@ async def test_only_the_review_call_gets_the_operation_output_budget(
 ) -> None:
     """The report review is the one call that may exceed the global cap.
 
-    The Critic's review renders the report, claims, source scores, and
+    The Critic's review renders the report, claims, source quality signals, and
     spot-check evidence and then asks for a score plus three lists plus a
     rationale in one JSON object. At the global cap it returned non-JSON text
     on both the initial attempt and the single repair in three consecutive
