@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import JsonValue
 
-from deep_research.agents.identity import claim_fingerprint
+from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
     canonical_claims,
@@ -143,6 +143,8 @@ def _rendered_citation_resolution(
     report: str, composition: Any
 ) -> bool:
     """Validate rendered markers against the rendered cited-only reference list."""
+    if report.strip() != render_reader_report(composition).strip():
+        return False
     citations = reader_citations(composition)
     expected_numbers = {citation.number for citation in citations}
     marker_numbers = {
@@ -219,9 +221,6 @@ def _terminal_counts(state: ResearchState) -> tuple[int, int, int, int, int]:
     published = [
         event for event in state.events if event.event_type == "graph.report.published"
     ]
-    quality = [
-        event for event in state.events if event.event_type == "graph.quality.assessed"
-    ]
     memory = [
         event for event in state.events if event.event_type == "graph.memory.saved"
     ]
@@ -242,18 +241,26 @@ def _terminal_counts(state: ResearchState) -> tuple[int, int, int, int, int]:
         )
     # Return publication count and the event indexes needed for the timing
     # gate.  The latter are deliberately derived from typed events only.
-    quality_index = next(
-        (index for index, event in enumerate(state.events) if event in quality),
-        -1,
-    )
-    publication_index = next(
-        (index for index, event in enumerate(state.events) if event in published),
-        -1,
-    )
-    memory_index = next(
-        (index for index, event in enumerate(state.events) if event in memory),
-        -1,
-    )
+    quality_indexes = [
+        index
+        for index, event in enumerate(state.events)
+        if event.event_type == "graph.quality.assessed"
+    ]
+    publication_indexes = [
+        index
+        for index, event in enumerate(state.events)
+        if event.event_type == "graph.report.published"
+    ]
+    memory_indexes = [
+        index
+        for index, event in enumerate(state.events)
+        if event.event_type == "graph.memory.saved"
+    ]
+    # Publication must follow the final quality assessment, not merely the
+    # first assessment in a multi-pass run.
+    quality_index = max(quality_indexes, default=-1)
+    publication_index = min(publication_indexes, default=-1)
+    memory_index = min(memory_indexes, default=-1)
     if memory_writes and memory_index < 0:
         # Production folds the memory-write count into its one terminal
         # publication event; the publisher performs it after both documents
@@ -261,7 +268,7 @@ def _terminal_counts(state: ResearchState) -> tuple[int, int, int, int, int]:
         memory_index = publication_index
     timing_failure = int(
         quality_index < 0
-        or publication_index < quality_index
+        or publication_index <= quality_index
         or (memory_writes and memory_index < publication_index)
     )
     return (
@@ -271,6 +278,18 @@ def _terminal_counts(state: ResearchState) -> tuple[int, int, int, int, int]:
         memory_writes,
         timing_failure,
     )
+
+
+def _publication_operations_match(
+    dependencies: ScriptedDependencies | None, memory_writes: int
+) -> bool:
+    """Check the scripted publisher's exact terminal operation sequence."""
+    if dependencies is None:
+        return True
+    expected = ["reader_document", "evidence_document"] + [
+        "memory_claim"
+    ] * memory_writes
+    return dependencies.publication_operations == expected
 
 
 def _expected_cli_summary(
@@ -331,6 +350,12 @@ def deterministic_evaluation(
     sources = list(state.evaluated_sources or composition.sources)
     source_urls = _urls([source.url for source in sources])
     source_url_set = set(source_urls)
+    finding_fingerprints = [
+        finding_fingerprint(finding) for finding in state.raw_findings
+    ]
+    duplicate_finding_rows = len(finding_fingerprints) - len(
+        set(finding_fingerprints)
+    )
     claim_ids: set[str] = set()
     claim_fingerprints: set[str] = set()
     duplicate_claims = 0
@@ -486,6 +511,10 @@ def deterministic_evaluation(
     publication_events, report_writes, evidence_writes, memory_writes, timing = (
         _terminal_counts(state)
     )
+    publication_operations_match = _publication_operations_match(
+        dependencies if publication_events else None,
+        memory_writes,
+    )
     report = state.report or render_reader_report(composition)
     ledger = state.report_evidence or render_evidence_ledger(composition)
     report_words = len(report.split())
@@ -525,6 +554,8 @@ def deterministic_evaluation(
         integrity.append("duplicate_claims")
     if duplicate_source_rows:
         integrity.append("duplicate_source_rows")
+    if duplicate_finding_rows:
+        integrity.append("duplicate_finding_rows")
     if contradicted != disclosed:
         integrity.append("contradiction_disclosure")
     if planned_topics and coverage_ratio < 0.80:
@@ -562,6 +593,8 @@ def deterministic_evaluation(
         integrity.append("terminal_publication")
     if timing:
         integrity.append("publication_memory_timing")
+    if publication_events and not publication_operations_match:
+        integrity.append("publication_operation_order")
     if not cli_matches:
         integrity.append("cli_summary_mismatch")
     if not rendered_citations:
@@ -585,6 +618,7 @@ def deterministic_evaluation(
         citation_linkage_ratio=citation_linkage_ratio,
         duplicate_claims=duplicate_claims,
         duplicate_source_rows=duplicate_source_rows,
+        duplicate_finding_rows=duplicate_finding_rows,
         contradicted_claims=contradicted,
         disclosed_contradictions=disclosed,
         uncited_settled_points=uncited,
@@ -662,6 +696,7 @@ def build_judge_input(
         "citation_linkage_ratio": metrics.citation_linkage_ratio,
         "duplicate_claims": metrics.duplicate_claims,
         "duplicate_source_rows": metrics.duplicate_source_rows,
+        "duplicate_finding_rows": metrics.duplicate_finding_rows,
         "disclosed_contradictions": metrics.disclosed_contradictions,
         "uncited_settled_points": metrics.uncited_settled_points,
         "reader_report_words": metrics.reader_report_words,

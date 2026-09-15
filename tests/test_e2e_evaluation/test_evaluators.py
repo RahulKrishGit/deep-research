@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from deep_research.agents.report import render_reader_report
 from deep_research.e2e_evaluation.cases import (
     case_by_id,
     dependencies_for,
@@ -19,6 +20,7 @@ from deep_research.e2e_evaluation.evaluators import (
 )
 from deep_research.e2e_evaluation.models import WholeReportJudgeInput
 from deep_research.e2e_evaluation.runner import run_case
+from deep_research.utils.types import ResearchEvent
 
 
 def _accepted_fixture(case_id: str = "broad-constraints"):
@@ -31,6 +33,9 @@ def _accepted_fixture(case_id: str = "broad-constraints"):
     )
     state = result.repetitions[0].state
     dependencies = dependencies_for(case)
+    dependencies.publication_operations = list(
+        result.repetitions[0].publication_operations
+    )
     for source in state.evaluated_sources:
         dependencies.web_scraper(source.url)
     for claim in state.verified_claims:
@@ -178,6 +183,83 @@ def test_rendered_citation_marker_mismatch_is_a_hard_integrity_failure() -> None
     )
 
     assert "rendered_citation_resolution" in metrics.integrity_failures
+
+
+def test_rendered_citation_mapping_rejects_swapped_point_markers() -> None:
+    case, state, dependencies, _metrics = _accepted_fixture()
+    report = state.report or ""
+    assert "[1]" in report and "[2]" in report
+    swapped = (
+        report.replace("[1]", "[__one__]")
+        .replace("[2]", "[1]")
+        .replace("[__one__]", "[2]")
+    )
+    assert swapped != render_reader_report(state.composition)
+    metrics = deterministic_evaluation(
+        case,
+        state.model_copy(update={"report": swapped}),
+        passes=case.passes,
+        dependencies=dependencies,
+    )
+
+    assert "rendered_citation_resolution" in metrics.integrity_failures
+
+
+def test_publication_operations_are_reader_then_ledger_then_memory() -> None:
+    case, state, dependencies, metrics = _accepted_fixture()
+
+    assert dependencies.publication_operations[:2] == [
+        "reader_document",
+        "evidence_document",
+    ]
+    assert all(
+        operation == "memory_claim"
+        for operation in dependencies.publication_operations[2:]
+    )
+    assert len(dependencies.publication_operations) == 2 + metrics.memory_writes
+
+
+def test_reordered_publication_operations_are_a_hard_integrity_failure() -> None:
+    case, state, dependencies, _metrics = _accepted_fixture()
+    dependencies.publication_operations[:2] = [
+        "evidence_document",
+        "reader_document",
+    ]
+
+    metrics = deterministic_evaluation(
+        case,
+        state,
+        passes=case.passes,
+        dependencies=dependencies,
+    )
+
+    assert "publication_operation_order" in metrics.integrity_failures
+
+
+def test_publication_must_follow_the_last_quality_assessment() -> None:
+    case, state, dependencies, _metrics = _accepted_fixture()
+    quality_event = next(
+        event
+        for event in reversed(state.events)
+        if event.event_type == "graph.quality.assessed"
+    )
+    extra_quality = ResearchEvent(
+        event_type=quality_event.event_type,
+        source=quality_event.source,
+        message=quality_event.message,
+        timestamp=quality_event.timestamp,
+        metadata=dict(quality_event.metadata),
+    )
+    bad_state = state.model_copy(update={"events": [*state.events, extra_quality]})
+
+    metrics = deterministic_evaluation(
+        case,
+        bad_state,
+        passes=case.passes,
+        dependencies=dependencies,
+    )
+
+    assert "publication_memory_timing" in metrics.integrity_failures
 
 
 def test_attempt_accounting_uses_observed_attempt_events() -> None:

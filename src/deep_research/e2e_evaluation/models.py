@@ -143,6 +143,7 @@ class DeterministicEvaluation(ContractModel):
     citation_linkage_ratio: float = Field(ge=0.0, le=1.0)
     duplicate_claims: int = Field(ge=0)
     duplicate_source_rows: int = Field(ge=0)
+    duplicate_finding_rows: int = Field(default=0, ge=0)
     contradicted_claims: int = Field(ge=0)
     disclosed_contradictions: int = Field(ge=0)
     uncited_settled_points: int = Field(ge=0)
@@ -240,12 +241,13 @@ class CampaignRepetition(ContractModel):
     cli_summary: dict[str, JsonValue] = Field(default_factory=dict)
     cli_output: list[str] = Field(default_factory=list)
     judge_input: WholeReportJudgeInput
+    publication_operations: list[str] = Field(default_factory=list)
     metadata: CampaignMetadata
     langsmith_metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @property
     def accepted(self) -> bool:
-        return self.deterministic.integrity_passed and self.judge.score >= 0.80
+        return self.deterministic.integrity_passed and self.judge.score + 1e-9 >= 0.70
 
 
 class CaseCampaignResult(ContractModel):

@@ -146,6 +146,8 @@ def test_controlled_repetition_is_derived_from_graph_events_and_snapshots(
     ]
     assert [event.metadata["count"] for event in source_snapshots] == [6, 10]
     assert [event.metadata["count"] for event in claim_snapshots] == [3, 5]
+    assert len(state.raw_findings) == 5
+    assert len({finding.content for finding in state.raw_findings}) == 5
     assert len(state.evaluated_sources) == 10
     assert len(state.verified_claims) == 5
     assert result.repetitions[0].deterministic.new_evidence_in_refinement == 2
@@ -195,6 +197,100 @@ def test_snapshot_replacement_is_proven_by_agent_histories_and_final_state(
         and event.metadata.get("reason") == "quality_gate_failed"
         for event in run.state.events
     )
+
+
+def test_agent_inputs_prove_ordered_upstream_handoffs(tmp_path) -> None:
+    """Every real graph node consumes the preceding node's typed output."""
+    case = case_by_id("refinement-evidence-recovery")
+    dependencies = dependencies_for(case)
+    publisher = ScriptedGraphPublisher(dependencies, tmp_path)
+    agents = scripted_research_agents(case, dependencies, publisher)
+    graph = compile_research_graph(agents)
+    asyncio.run(
+        run_research_graph(
+            graph=graph,
+            tracker=Tracker(
+                LangSmithRuntimeConfig(
+                    tracing_enabled=False,
+                    project="controlled-handoff-test",
+                    api_key=None,
+                )
+            ),
+            session_id="controlled-handoff-order",
+            question=case.question,
+            max_iterations=2,
+        )
+    )
+
+    assert dependencies.agent_call_order[:6] == [
+        "planner",
+        "researcher",
+        "source_evaluator",
+        "fact_checker",
+        "synthesizer",
+        "critic",
+    ]
+    assert dependencies.agent_call_order[6:11] == [
+        "researcher",
+        "source_evaluator",
+        "fact_checker",
+        "synthesizer",
+        "critic",
+    ]
+    assert agents.researcher.input_states[0].sub_topics == case.sub_topics
+    assert (
+        agents.researcher.output_updates[0]["raw_findings"]
+        == agents.source_evaluator.input_states[0].raw_findings
+    )
+    assert (
+        agents.source_evaluator.output_updates[0]["evaluated_sources"]
+        == agents.fact_checker.input_states[0].evaluated_sources
+    )
+    assert (
+        agents.fact_checker.output_updates[0]["verified_claims"]
+        == agents.synthesizer.input_states[0].verified_claims
+    )
+    assert (
+        agents.synthesizer.output_updates[0]["composition"]
+        == agents.critic.input_states[0].composition
+    )
+    assert agents.critic.input_states[0].quality is not None
+
+
+def test_critic_targets_are_derived_from_uncovered_state_not_fixture_targets(
+    tmp_path,
+) -> None:
+    case = case_by_id("refinement-evidence-recovery")
+    case = case.model_copy(
+        update={
+            "passes": [
+                case.passes[0].model_copy(update={"critic_targets": []}),
+                case.passes[1],
+            ]
+        }
+    )
+    dependencies = dependencies_for(case)
+    publisher = ScriptedGraphPublisher(dependencies, tmp_path)
+    agents = scripted_research_agents(case, dependencies, publisher)
+    graph = compile_research_graph(agents)
+    asyncio.run(
+        run_research_graph(
+            graph=graph,
+            tracker=Tracker(
+                LangSmithRuntimeConfig(
+                    tracing_enabled=False,
+                    project="controlled-critic-target-test",
+                    api_key=None,
+                )
+            ),
+            session_id="controlled-critic-targets",
+            question=case.question,
+            max_iterations=2,
+        )
+    )
+
+    critique = agents.critic.output_updates[0]["critique"]
+    assert {gap.coverage_id for gap in critique.gaps} == {"topic-04", "topic-05"}
 
 
 def test_campaign_uses_production_cli_formatter(tmp_path) -> None:
@@ -295,6 +391,10 @@ def test_controlled_acceptance_boundaries_are_seven_score_aware(
 
     assert result.accepted is accepted
     assert result.mean_judge_score == pytest.approx(sum(scores) / 3)
+    assert all(
+        repetition.accepted is (score >= 0.70)
+        for repetition, score in zip(result.repetitions, scores, strict=True)
+    )
 
 
 def test_controlled_suite_has_three_cases_and_no_report_body_on_summary(

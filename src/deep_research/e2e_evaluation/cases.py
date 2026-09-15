@@ -10,7 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from typing import Any
 from pydantic import JsonValue
 
 from deep_research.agents.base import AgentRun
-from deep_research.agents.identity import claim_fingerprint
+from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
@@ -28,6 +29,7 @@ from deep_research.agents.report import (
     report_as_of,
     report_scope,
 )
+from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActRun, ReActStep
 from deep_research.e2e_evaluation.models import (
     CASE_REGISTRY_VERSION,
@@ -71,8 +73,13 @@ class ScriptedDependencies:
     case_id: str
     search_responses: dict[str, dict[str, JsonValue]] = field(default_factory=dict)
     page_responses: dict[str, dict[str, JsonValue]] = field(default_factory=dict)
+    source_rows_by_finding: dict[str, list[ScoredSource]] = field(
+        default_factory=dict
+    )
     calls: Counter[str] = field(default_factory=Counter)
     read_urls: list[str] = field(default_factory=list)
+    publication_operations: list[str] = field(default_factory=list)
+    agent_call_order: list[str] = field(default_factory=list)
     prohibited_calls: list[str] = field(default_factory=list)
     real_services_used: list[str] = field(default_factory=list)
 
@@ -90,6 +97,27 @@ class ScriptedDependencies:
 
     def _record(self, operation: str) -> None:
         self.calls[operation] += 1
+
+    def source_rows_for_findings(
+        self, findings: Sequence[Finding]
+    ) -> list[ScoredSource]:
+        """Resolve scored rows from the findings actually handed upstream."""
+        if not findings:
+            raise ControlledDependencyError("source evaluation requires findings")
+        rows: dict[str, ScoredSource] = {}
+        for finding in findings:
+            candidates = self.source_rows_by_finding.get(finding_fingerprint(finding))
+            if not candidates:
+                raise ControlledDependencyError(
+                    "no scripted source rows for the handed-off finding"
+                )
+            for source in candidates:
+                rows.setdefault(normalize_source_url(source.url), source)
+        return list(rows.values())
+
+    def record_publication(self, operation: str) -> None:
+        """Record only terminal publication operations, in observed order."""
+        self.publication_operations.append(operation)
 
     def web_search(self, query: str) -> dict[str, JsonValue]:
         self._record("web_search")
@@ -171,12 +199,14 @@ def _scripted_event(
     )
 
 
-def _snapshot_fingerprint(snapshot: SnapshotPass) -> str:
-    """Fingerprint a complete canonical snapshot without storing its payload."""
-    payload = {
-        "sources": sorted(source.url for source in snapshot.sources),
-        "claims": sorted(claim.claim_id for claim in snapshot.claims),
-    }
+def _snapshot_fingerprint(snapshot: SnapshotPass, *, kind: str) -> str:
+    """Fingerprint one complete canonical source or claim snapshot."""
+    if kind == "sources":
+        payload = {"sources": sorted(source.url for source in snapshot.sources)}
+    elif kind == "claims":
+        payload = {"claims": sorted(claim.claim_id for claim in snapshot.claims)}
+    else:
+        raise ValueError(f"unsupported snapshot fingerprint kind {kind!r}")
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -191,41 +221,80 @@ class ScriptedGraphAgent:
     dependencies: ScriptedDependencies
     calls: int = 0
     input_states: list[ResearchState] = field(default_factory=list)
+    output_updates: list[ResearchStateUpdate] = field(default_factory=list)
     output_snapshots: list[SnapshotPass] = field(default_factory=list)
 
     @property
     def name(self) -> str:
         return self.agent_name
 
-    def _snapshot(self, state: ResearchState) -> SnapshotPass:
+    def _fixture_snapshot(self, state: ResearchState) -> SnapshotPass:
         index = min(state.iteration, len(self.case.passes) - 1)
         return self.case.passes[index]
+
+    def _planned_topics(self, state: ResearchState) -> tuple[SubTopic, ...]:
+        """Validate and return the plan handed off by the Planner node."""
+        if not state.sub_topics:
+            raise ControlledDependencyError(
+                f"{self.agent_name} requires the Planner handoff"
+            )
+        expected = {topic.coverage_id for topic in self.case.sub_topics}
+        actual = {topic.coverage_id for topic in state.sub_topics}
+        if actual != expected:
+            raise ControlledDependencyError(
+                f"{self.agent_name} received a miswired research plan"
+            )
+        return tuple(state.sub_topics)
+
+    def _fixture_topic_by_id(self) -> dict[str, SubTopic]:
+        return {topic.coverage_id: topic for topic in self.case.sub_topics}
+
+    def _coverage_ids_for_findings(
+        self, findings: Sequence[Finding], topics: Sequence[SubTopic]
+    ) -> list[str]:
+        fixture_topics = self._fixture_topic_by_id()
+        return sorted(
+            topic.coverage_id
+            for topic in topics
+            if any(
+                finding.related_sub_topic
+                == fixture_topics[topic.coverage_id].title
+                for finding in findings
+            )
+        )
 
     def _run_record(self) -> ReActRun:
         return ReActRun(agent_name=self.agent_name, stop_reason="finished")
 
     async def run(self, state: ResearchState) -> AgentRun[Any]:
         self.calls += 1
+        self.dependencies.agent_call_order.append(self.agent_name)
         self.input_states.append(state.model_copy(deep=True))
-        snapshot = self._snapshot(state)
+        snapshot = self._fixture_snapshot(state)
         update: ResearchStateUpdate = {}
 
         if self.agent_name == "planner":
             update["sub_topics"] = list(self.case.sub_topics)
         elif self.agent_name == "researcher":
+            planned_topics = self._planned_topics(state)
+            fixture_topics = self._fixture_topic_by_id()
             if state.iteration == 0:
                 self.dependencies.query_memory(state.original_question)
             events: list[ResearchEvent] = []
-            findings_by_topic = {
-                finding.related_sub_topic for finding in snapshot.findings
+            findings_by_coverage = {
+                coverage_id: [
+                    finding
+                    for finding in snapshot.findings
+                    if finding.related_sub_topic == fixture_topics[coverage_id].title
+                ]
+                for coverage_id in fixture_topics
             }
-            for topic in self.case.sub_topics:
+            for topic in planned_topics:
                 self.dependencies.web_search(topic.search_queries[0])
-                has_finding = topic.title in findings_by_topic
-                if has_finding:
-                    for finding in snapshot.findings:
-                        if finding.related_sub_topic == topic.title:
-                            self.dependencies.web_scraper(finding.source_url)
+                topic_findings = findings_by_coverage.get(topic.coverage_id, [])
+                has_finding = bool(topic_findings)
+                for finding in topic_findings:
+                    self.dependencies.web_scraper(finding.source_url)
                 event_type = (
                     "agent.researcher.topic.attempted"
                     if has_finding
@@ -245,13 +314,35 @@ class ScriptedGraphAgent:
                         },
                     )
                 )
-            update["raw_findings"] = list(snapshot.findings)
+            existing_fingerprints = {
+                finding_fingerprint(finding) for finding in state.raw_findings
+            }
+            finding_deltas: list[Finding] = []
+            for finding in snapshot.findings:
+                fingerprint = finding_fingerprint(finding)
+                if fingerprint in existing_fingerprints:
+                    continue
+                existing_fingerprints.add(fingerprint)
+                finding_deltas.append(finding)
+            update["raw_findings"] = finding_deltas
             update["events"] = events
         elif self.agent_name == "source_evaluator":
-            for source in snapshot.sources:
+            planned_topics = self._planned_topics(state)
+            if not state.raw_findings:
+                raise ControlledDependencyError(
+                    "source_evaluator requires the Researcher handoff"
+                )
+            sources = self.dependencies.source_rows_for_findings(state.raw_findings)
+            for source in sources:
                 self.dependencies.web_scraper(source.url)
-            self.output_snapshots.append(snapshot.model_copy(deep=True))
-            update["evaluated_sources"] = list(snapshot.sources)
+            source_snapshot = SnapshotPass(
+                iteration=state.iteration,
+                findings=list(state.raw_findings),
+                sources=sources,
+                claims=list(state.verified_claims),
+            )
+            self.output_snapshots.append(source_snapshot.model_copy(deep=True))
+            update["evaluated_sources"] = list(sources)
             update["events"] = [
                 _scripted_event(
                     agent_name=self.agent_name,
@@ -260,24 +351,63 @@ class ScriptedGraphAgent:
                     metadata={
                         "snapshot_kind": "complete",
                         "iteration": state.iteration,
-                        "count": len(snapshot.sources),
-                        "snapshot_fingerprint": _snapshot_fingerprint(snapshot),
-                        "coverage_ids": sorted(
-                            {
-                                coverage_id
-                                for claim in snapshot.claims
-                                for coverage_id in claim.consumed_coverage_ids
-                            }
+                        "count": len(sources),
+                        "snapshot_fingerprint": _snapshot_fingerprint(
+                            source_snapshot, kind="sources"
+                        ),
+                        "coverage_ids": self._coverage_ids_for_findings(
+                            state.raw_findings, planned_topics
                         ),
                     },
                 )
             ]
         elif self.agent_name == "fact_checker":
-            for claim in snapshot.claims:
+            planned_topics = self._planned_topics(state)
+            if not state.evaluated_sources:
+                raise ControlledDependencyError(
+                    "fact_checker requires the Source Evaluator handoff"
+                )
+            if not state.raw_findings:
+                raise ControlledDependencyError(
+                    "fact_checker requires Researcher provenance"
+                )
+            evaluated_urls = {
+                normalize_source_url(source.url)
+                for source in state.evaluated_sources
+            }
+            finding_coverage_ids = set(
+                self._coverage_ids_for_findings(state.raw_findings, planned_topics)
+            )
+            claims = [
+                claim
+                for claim in snapshot.claims
+                if set(claim.consumed_coverage_ids).intersection(
+                    finding_coverage_ids
+                )
+                and all(
+                    normalize_source_url(url) in evaluated_urls
+                    for url in claim.source_urls
+                )
+                and all(
+                    normalize_source_url(passage.source_url) in evaluated_urls
+                    for passage in claim.verification_evidence
+                )
+            ]
+            if not claims:
+                raise ControlledDependencyError(
+                    "fact_checker found no claims with evaluated provenance"
+                )
+            for claim in claims:
                 for passage in claim.verification_evidence:
                     self.dependencies.web_scraper(passage.source_url)
-            self.output_snapshots.append(snapshot.model_copy(deep=True))
-            update["verified_claims"] = list(snapshot.claims)
+            claim_snapshot = SnapshotPass(
+                iteration=state.iteration,
+                findings=list(state.raw_findings),
+                sources=list(state.evaluated_sources),
+                claims=claims,
+            )
+            self.output_snapshots.append(claim_snapshot.model_copy(deep=True))
+            update["verified_claims"] = list(claims)
             update["events"] = [
                 _scripted_event(
                     agent_name=self.agent_name,
@@ -286,12 +416,14 @@ class ScriptedGraphAgent:
                     metadata={
                         "snapshot_kind": "complete",
                         "iteration": state.iteration,
-                        "count": len(snapshot.claims),
-                        "snapshot_fingerprint": _snapshot_fingerprint(snapshot),
+                        "count": len(claims),
+                        "snapshot_fingerprint": _snapshot_fingerprint(
+                            claim_snapshot, kind="claims"
+                        ),
                         "coverage_ids": sorted(
                             {
                                 coverage_id
-                                for claim in snapshot.claims
+                                for claim in claims
                                 for coverage_id in claim.consumed_coverage_ids
                             }
                         ),
@@ -299,12 +431,20 @@ class ScriptedGraphAgent:
                 )
             ]
         elif self.agent_name == "synthesizer":
-            observed = snapshot.model_copy(
-                update={
-                    "findings": list(state.raw_findings),
-                    "sources": list(state.evaluated_sources),
-                    "claims": list(state.verified_claims),
-                }
+            self._planned_topics(state)
+            if not state.raw_findings or not state.evaluated_sources:
+                raise ControlledDependencyError(
+                    "synthesizer requires Researcher and Source Evaluator output"
+                )
+            if not state.verified_claims:
+                raise ControlledDependencyError(
+                    "synthesizer requires the Fact Checker handoff"
+                )
+            observed = SnapshotPass(
+                iteration=state.iteration,
+                findings=list(state.raw_findings),
+                sources=list(state.evaluated_sources),
+                claims=list(state.verified_claims),
             )
             composition = _composition(case=self.case, snapshot=observed, state=state)
             update.update(
@@ -321,14 +461,28 @@ class ScriptedGraphAgent:
                 }
             )
         elif self.agent_name == "critic":
-            targets = list(snapshot.critic_targets)
+            planned_topics = self._planned_topics(state)
+            if state.composition is None or state.quality is None:
+                raise ControlledDependencyError(
+                    "critic requires the Synthesizer quality handoff"
+                )
+            covered = {
+                coverage_id
+                for claim in state.verified_claims
+                for coverage_id in claim.consumed_coverage_ids
+            }
+            unresolved = set(state.quality.unresolved_topic_ids)
+            targets = []
+            for topic in planned_topics:
+                if topic.coverage_id not in covered or topic.coverage_id in unresolved:
+                    targets.append(topic.coverage_id)
             gaps = [
                 CritiqueGap(
                     coverage_id=target,
                     problem="The scripted review needs a bounded evidence update.",
                     recommended_queries=[
                         topic.search_queries[0]
-                        for topic in self.case.sub_topics
+                        for topic in planned_topics
                         if topic.coverage_id == target
                     ]
                     or ["targeted evidence"],
@@ -360,6 +514,7 @@ class ScriptedGraphAgent:
         else:
             raise ValueError(f"unknown scripted graph agent {self.agent_name!r}")
 
+        self.output_updates.append(deepcopy(update))
         return AgentRun(
             agent_name=self.agent_name,
             result=None,
@@ -381,7 +536,15 @@ class ScriptedGraphPublisher:
         self, *, filename: str, content: str
     ) -> ToolResult:
         self.document_calls += 1
-        target_name = "report.md" if self.document_calls == 1 else "evidence-ledger.md"
+        if self.document_calls == 1:
+            target_name = "report.md"
+            self.dependencies.record_publication("reader_document")
+        elif self.document_calls == 2:
+            target_name = "evidence-ledger.md"
+            self.dependencies.record_publication("evidence_document")
+        else:
+            target_name = f"unexpected-document-{self.document_calls}.md"
+            self.dependencies.record_publication("unexpected_document")
         target = self.artifact_directory / target_name
         self.artifact_directory.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -397,6 +560,7 @@ class ScriptedGraphPublisher:
     async def publish_claim(
         self, *, content: str, metadata: Mapping[str, JsonValue]
     ) -> ToolResult:
+        self.dependencies.record_publication("memory_claim")
         self.dependencies.save_to_memory(
             {
                 "content_chars": len(content),
@@ -909,6 +1073,7 @@ def dependencies_for(case: ControlledCase) -> ScriptedDependencies:
         raise RuntimeError("live case dependencies require explicit authorization")
     searches: dict[str, dict[str, JsonValue]] = {}
     pages: dict[str, dict[str, JsonValue]] = {}
+    source_rows_by_finding: dict[str, list[ScoredSource]] = {}
     for topic in case.sub_topics:
         query = topic.search_queries[0]
         url = f"https://controlled.example/{case.case_id}/{topic.coverage_id}"
@@ -920,10 +1085,41 @@ def dependencies_for(case: ControlledCase) -> ScriptedDependencies:
                 source.url,
                 {"url": source.url, "text": "Scripted primary-source text."},
             )
+        for finding in snapshot.findings:
+            topic = next(
+                (
+                    topic
+                    for topic in case.sub_topics
+                    if topic.title == finding.related_sub_topic
+                ),
+                None,
+            )
+            source_urls = {normalize_source_url(finding.source_url)}
+            if topic is not None:
+                for claim in snapshot.claims:
+                    if topic.coverage_id not in claim.consumed_coverage_ids:
+                        continue
+                    source_urls.update(
+                        normalize_source_url(url) for url in claim.source_urls
+                    )
+                    source_urls.update(
+                        normalize_source_url(passage.source_url)
+                        for passage in claim.verification_evidence
+                    )
+            existing = source_rows_by_finding.setdefault(
+                finding_fingerprint(finding), []
+            )
+            seen_urls = {normalize_source_url(source.url) for source in existing}
+            for source in snapshot.sources:
+                normalized = normalize_source_url(source.url)
+                if normalized in source_urls and normalized not in seen_urls:
+                    existing.append(source)
+                    seen_urls.add(normalized)
     return ScriptedDependencies(
         case_id=case.case_id,
         search_responses=searches,
         page_responses=pages,
+        source_rows_by_finding=source_rows_by_finding,
     )
 
 

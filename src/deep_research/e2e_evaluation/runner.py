@@ -149,7 +149,6 @@ def _scripted_repetition(
         )
     )
     graph = compile_research_graph(agents)
-    observed_events: list[Any] = []
     graph_run = asyncio.run(
         run_research_graph(
             graph=graph,
@@ -157,7 +156,6 @@ def _scripted_repetition(
             session_id=f"controlled-{case.case_id}-r{repetition}",
             question=case.question,
             max_iterations=max(2, len(case.passes)),
-            event_handler=observed_events.append,
         )
     )
     state = graph_run.state
@@ -191,6 +189,7 @@ def _scripted_repetition(
         cli_summary=summary,
         cli_output=list(cli_output),
         judge_input=judge_input,
+        publication_operations=list(dependencies.publication_operations),
         metadata=CampaignMetadata.model_validate(metadata),
         langsmith_metadata=dict(metadata),
     )
