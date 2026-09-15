@@ -62,7 +62,7 @@ from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError
-from deep_research.tools.base import BaseTool
+from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
@@ -224,12 +224,18 @@ class SynthesizedReport(ContractModel):
     authoritative; ``path`` and ``evidence_path`` name the files the terminal
     finalizer publishes, so ``path`` stays ``None`` until publication exists
     and synthesis itself writes nothing at all.
+
+    ``composition`` is the typed input both artifacts were rendered from. It
+    travels into state so the graph's quality pass judges the exact points
+    and canonical evidence this pass composed, rather than re-deriving them
+    from Markdown.
     """
 
     markdown: str = ""
     path: str | None = None
     evidence_markdown: str = ""
     evidence_path: str | None = None
+    composition: ReportComposition | None = None
     section_count: int = Field(default=0, ge=0)
     citation_count: int = Field(default=0, ge=0)
     unique_source_count: int = Field(default=0, ge=0)
@@ -793,6 +799,7 @@ def compose_report(
         evidence_path=evidence_report_filename(
             session_id=task.session_id, iteration=task.iteration
         ),
+        composition=composition,
         section_count=len(composition.sections),
         citation_count=len(reader_citations(composition)),
         unique_source_count=len(composition.sources),
@@ -1117,16 +1124,59 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
         """Both artifacts and their counts. ``run`` adds the progress events.
 
         No artifact is written and no memory entry is saved: the terminal
-        finalizer publishes, and it is the only writer.
+        finalizer publishes, and it is the only writer. ``composition``
+        travels with them so the graph can judge the exact points this pass
+        composed.
         """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
             update["report"] = result.markdown
             update["report_evidence"] = result.evidence_markdown
             update["evidence_path"] = result.evidence_path
+            update["composition"] = result.composition
             update["unique_source_count"] = result.unique_source_count
             update["unique_claim_count"] = result.unique_claim_count
         return update
+
+    def _require_tool(self, name: str) -> BaseTool:
+        """The declared tool the terminal writer needs, or a loud failure.
+
+        ``allowed_tools`` is validated at construction, so a missing tool here
+        means the agent was assembled around this method's back.
+        """
+        tool = self.toolset.get(name)
+        if tool is None:
+            raise AgentConfigurationError(f"{name} was not injected")
+        return tool
+
+    async def publish_document(
+        self,
+        *,
+        filename: str,
+        content: str,
+    ) -> ToolResult:
+        """Write one composed artifact through ``write_document``.
+
+        Called only by the terminal finalizer. Returns the tool's own result,
+        including a failure: a write that did not happen is an outcome the
+        finalizer records, not an exception it has to catch.
+        """
+        tool = self._require_tool("write_document")
+        return await tool.execute(filename=filename, content=content)
+
+    async def publish_claim(
+        self,
+        *,
+        content: str,
+        metadata: Mapping[str, JsonValue],
+    ) -> ToolResult:
+        """Save one verified claim through ``save_to_memory``.
+
+        Called only by the terminal finalizer, and only for a report whose
+        terminal quality status is ``accepted``.
+        """
+        tool = self._require_tool("save_to_memory")
+        return await tool.execute(content=content, metadata=dict(metadata))
 
     async def run(self, state: ResearchState) -> AgentRun[SynthesizedReport]:
         """Draft and compose both artifacts, recording every count.

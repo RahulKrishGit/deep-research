@@ -858,7 +858,7 @@ class CriticAgent(BaseAgent[Critique]):
             sub_topics=[sub_topic.title for sub_topic in state.sub_topics],
             coverage_ids=[sub_topic.coverage_id for sub_topic in state.sub_topics],
             error_count=len(errors),
-            quality=getattr(state, "quality", None),
+            quality=state.quality,
             report_sections=_split_reader_report(state.report or ""),
             errors=errors,
             error_groups=_group_errors_by_agent_stage(errors),

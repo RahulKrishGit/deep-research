@@ -261,6 +261,108 @@ class ResearchError(ContractModel):
     details: dict[str, _FiniteJsonValue] = Field(default_factory=dict)
 
 
+# The quality status one composed report carries, and when it carries it.
+# ``NOT_GATED`` is the honest value for a report the terminal gates have not
+# judged yet: the reader report must always declare a status, and a blank
+# would say nothing at all. The status is derived from the same routing
+# decision the reader report's own gates produced — see
+# ``graph.state.graph_quality_status``.
+QUALITY_STATUS_NOT_GATED = "not yet quality-gated"
+QUALITY_STATUS_ACCEPTED = "accepted"
+QUALITY_STATUS_PARTIAL = "partial"
+
+
+class Citation(ContractModel):
+    """One numbered source reference."""
+
+    number: int = Field(ge=1)
+    url: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+
+
+class ReportPoint(ContractModel):
+    """One settled statement, with the claims and sources it rests on.
+
+    ``claim_ids`` and ``source_urls`` are already validated against the
+    checked-claim registry by the time a point reaches a renderer; rendering
+    never validates.
+    """
+
+    text: str = Field(min_length=1)
+    claim_ids: list[str] = Field(default_factory=list)
+    source_urls: list[str] = Field(default_factory=list)
+
+
+class ReportConstraint(ReportPoint):
+    """One ranked constraint, plus the two decision columns it prints.
+
+    A constraint row is a claim-linked point like any other; the deployment
+    mechanism and the geography are part of the same claim-backed row, and a
+    row whose evidence does not state them says ``not stated``.
+    """
+
+    deployment_mechanism: str = ""
+    geography: str = ""
+
+
+class ReportSection(ContractModel):
+    """One validated theme of the findings, as claim-linked points."""
+
+    title: str = Field(min_length=1)
+    points: list[ReportPoint] = Field(default_factory=list)
+
+
+class ReportComposition(ContractModel):
+    """Everything one synthesis pass composed, and the evidence it renders.
+
+    Built once per pass by the Synthesizer and handed to both renderers, so
+    the two artifacts can never disagree about the same pass. ``claims`` and
+    ``sources`` are canonicalized on construction, which is what makes "one
+    row per canonical record" a property of the type rather than of the
+    caller.
+
+    It lives here, beside the rest of the research state, because
+    ``ResearchState`` carries the exact composition the terminal quality pass
+    judged. The canonicalization helpers are imported inside the validator
+    rather than at module scope: ``agents.identity`` imports this module, so
+    a module-level import would be a cycle, and a validator only ever runs
+    once every module is loaded.
+    """
+
+    question: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    iteration: int = Field(default=0, ge=0)
+    max_iterations: int = Field(default=0, ge=0)
+    as_of: str = ""
+    """The newest timestamp the recorded evidence carries; see report_as_of."""
+    scope: str = ""
+    """The scope this report assumes; see report_scope."""
+    quality_status: str = QUALITY_STATUS_NOT_GATED
+    sub_topics: list[SubTopic] = Field(default_factory=list)
+    claims: list[Claim] = Field(default_factory=list)
+    sources: list[ScoredSource] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    errors: list[ResearchError] = Field(default_factory=list)
+    summary: list[ReportPoint] = Field(default_factory=list)
+    constraints: list[ReportConstraint] = Field(default_factory=list)
+    sections: list[ReportSection] = Field(default_factory=list)
+    uncertainty_notes: list[str] = Field(default_factory=list)
+    rejected: list[str] = Field(default_factory=list)
+    """Drafted content this pass refused, as project-generated reasons."""
+
+    @model_validator(mode="after")
+    def canonicalize_evidence(self) -> ReportComposition:
+        from deep_research.agents.identity import (  # noqa: PLC0415
+            merge_claim_snapshot,
+            merge_source_snapshot,
+        )
+
+        self.sources = merge_source_snapshot([], self.sources)
+        self.claims = merge_claim_snapshot([], self.claims)
+        return self
+
+
 class ResearchState(ContractModel):
     session_id: str = Field(min_length=1)
     original_question: str = Field(min_length=1)
@@ -270,6 +372,13 @@ class ResearchState(ContractModel):
     verified_claims: list[Claim] = Field(default_factory=list)
     report: str | None = None
     """The reader report Markdown composed for the latest pass."""
+    report_path: str | None = None
+    """The file the reader report was published under, or ``None``.
+
+    Written only by the terminal finalizer, from the write that actually
+    succeeded. ``None`` means the Markdown in ``report`` was never published —
+    a caller must never fall back to an earlier pass's file.
+    """
     report_evidence: str | None = None
     """The evidence ledger Markdown composed for the same pass as ``report``.
 
@@ -278,10 +387,23 @@ class ResearchState(ContractModel):
     exists.
     """
     evidence_path: str | None = None
-    """The name the evidence ledger will be published under.
+    """The file the evidence ledger was published under, or ``None``.
 
-    Composed with the artifacts so the path never has to be re-derived, and
-    ``None`` until a pass has composed a ledger. Nothing writes it here.
+    Written only by the terminal finalizer, from the write that actually
+    succeeded; ``None`` until a ledger has been published.
+    """
+    composition: ReportComposition | None = None
+    """The typed composition ``report`` and ``report_evidence`` render.
+
+    Carried in state so the quality pass judges the exact points and the
+    exact canonical evidence one pass composed, rather than re-deriving them
+    from Markdown.
+    """
+    quality: ReportQualitySnapshot | None = None
+    """The deterministic quality snapshot for ``composition``.
+
+    ``None`` until a synthesis pass has composed artifacts to judge. The
+    terminal route and the terminal quality status are both read from it.
     """
     unique_source_count: int = Field(default=0, ge=0)
     """Canonical reviewed sources behind ``report`` — one per source URL."""
@@ -309,8 +431,11 @@ class ResearchStateUpdate(TypedDict, total=False):
     evaluated_sources: list[ScoredSource]
     verified_claims: list[Claim]
     report: str | None
+    report_path: str | None
     report_evidence: str | None
     evidence_path: str | None
+    composition: ReportComposition | None
+    quality: ReportQualitySnapshot | None
     unique_source_count: int
     unique_claim_count: int
     critique: Critique | None

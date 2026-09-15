@@ -8,12 +8,15 @@ wiring and the rules are testable without compiling anything.
 Graph shape:
 
     START -> planner -> researcher -> source_evaluator -> fact_checker
-          -> synthesizer -> critic -> {refine -> researcher | END}
+          -> synthesizer -> critic -> {refine -> researcher
+                                     | finalize_report -> END}
 
 ``refine`` is the hop that carries the macro-iteration increment. It exists
 because a LangGraph conditional edge chooses a destination but cannot write
 state, and the increment has to happen somewhere both the graph and a test
-can see.
+can see. ``finalize_report`` is the run's only writer: it publishes the two
+composed artifacts once, at the terminal node, and is the reason the graph
+has three destinations after the Critic rather than two.
 """
 
 from __future__ import annotations
@@ -31,21 +34,26 @@ from deep_research.graph.events import (
     session_started_event,
 )
 from deep_research.graph.nodes import (
+    ReportPublisher,
     ResearchAgent,
     agent_node,
     critic_node,
+    finalize_report_node,
     refine_node,
     route_after_critic,
+    synthesizer_node,
 )
 from deep_research.graph.state import (
     CRITIC_NODE,
     DEFAULT_MAX_ITERATIONS,
     FACT_CHECKER_NODE,
+    FINALIZE_NODE,
     NODE_NAMES,
     PLANNER_NODE,
     REFINE_NODE,
     RESEARCHER_NODE,
     ROUTE_END,
+    ROUTE_FINALIZE,
     ROUTE_REFINE,
     SOURCE_EVALUATOR_NODE,
     SYNTHESIZER_NODE,
@@ -65,20 +73,26 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 
-# The five agent nodes that run before the Critic, in order. The Critic and
-# the refinement hop are named separately because they are wired by
-# different calls: one conditional edge, one plain edge back. Derived from
-# ``NODE_NAMES`` so the execution order lives in exactly one place.
+# The five agent nodes that run before the Critic, in order. The Critic, the
+# refinement hop, and the terminal finalizer are named separately because they
+# are wired by different calls: one conditional edge, one plain edge back, and
+# one plain edge to END. Derived from ``NODE_NAMES`` so the execution order
+# lives in exactly one place.
 AGENT_NODE_ORDER = NODE_NAMES[:5]
 
 
 @dataclass(frozen=True)
 class ResearchAgents:
-    """The six agents one research graph runs.
+    """The six agents one research graph runs, plus its one writer.
 
     A dataclass rather than a mapping so ``build_research_graph`` has a
     typed six-field signature: forgetting the Fact Checker is a
     ``TypeError`` at construction, not a ``KeyError`` deep inside assembly.
+
+    ``publisher`` is the graph's terminal writer. Left ``None``, the
+    Synthesizer is asked instead (see ``terminal_publisher``); a graph whose
+    Synthesizer cannot write records that nothing was published rather than
+    dropping the artifacts silently.
     """
 
     planner: ResearchAgent
@@ -87,6 +101,24 @@ class ResearchAgents:
     fact_checker: ResearchAgent
     synthesizer: ResearchAgent
     critic: ResearchAgent
+    publisher: ReportPublisher | None = None
+
+
+def terminal_publisher(agents: ResearchAgents) -> ReportPublisher | None:
+    """The one writer of the terminal artifacts, or ``None`` when unwired.
+
+    The explicit slot wins. Otherwise the Synthesizer is asked: that agent
+    declares the ``write_document`` and ``save_to_memory`` tools and provides
+    the publishing methods, so a production graph publishes without a second
+    wiring step. A double that implements only ``run`` is not a publisher, and
+    the finalizer then records that nothing was written.
+    """
+    if agents.publisher is not None:
+        return agents.publisher
+    synthesizer = agents.synthesizer
+    if isinstance(synthesizer, ReportPublisher):
+        return synthesizer
+    return None
 
 
 def build_research_graph(agents: ResearchAgents) -> StateGraph:
@@ -104,12 +136,12 @@ def build_research_graph(agents: ResearchAgents) -> StateGraph:
         FACT_CHECKER_NODE,
         agent_node(agents.fact_checker, node_name=FACT_CHECKER_NODE),
     )
-    builder.add_node(
-        SYNTHESIZER_NODE,
-        agent_node(agents.synthesizer, node_name=SYNTHESIZER_NODE),
-    )
+    builder.add_node(SYNTHESIZER_NODE, synthesizer_node(agents.synthesizer))
     builder.add_node(CRITIC_NODE, critic_node(agents.critic, node_name=CRITIC_NODE))
     builder.add_node(REFINE_NODE, refine_node)
+    builder.add_node(
+        FINALIZE_NODE, finalize_report_node(terminal_publisher(agents))
+    )
 
     builder.add_edge(START, PLANNER_NODE)
     for source, destination in zip(
@@ -119,9 +151,14 @@ def build_research_graph(agents: ResearchAgents) -> StateGraph:
     builder.add_conditional_edges(
         CRITIC_NODE,
         route_after_critic,
-        {ROUTE_REFINE: REFINE_NODE, ROUTE_END: END},
+        {
+            ROUTE_REFINE: REFINE_NODE,
+            ROUTE_FINALIZE: FINALIZE_NODE,
+            ROUTE_END: END,
+        },
     )
     builder.add_edge(REFINE_NODE, RESEARCHER_NODE)
+    builder.add_edge(FINALIZE_NODE, END)
     return builder
 
 

@@ -14,6 +14,7 @@ from deep_research.graph.orchestrator import (
 from deep_research.graph.state import (
     CRITIC_NODE,
     DEFAULT_MAX_ITERATIONS,
+    FINALIZE_NODE,
     NODE_NAMES,
     REFINE_NODE,
     graph_status,
@@ -21,14 +22,21 @@ from deep_research.graph.state import (
     is_halted,
     load_state,
 )
-from deep_research.utils.types import ResearchError, ResearchState
+from deep_research.utils.types import (
+    QUALITY_STATUS_ACCEPTED,
+    ResearchError,
+    ResearchState,
+)
 from tests.graph_fakes import (
     FakeAgent,
+    FakePublisher,
     fake_claim,
     fake_critique,
     fake_finding,
     fake_research_agents,
     fake_scored_source,
+    fake_sub_topic,
+    fake_synthesis_update,
 )
 
 
@@ -71,7 +79,12 @@ def test_the_agent_node_order_matches_the_designed_sequence() -> None:
     )
     # Order matters, not just membership: the graph's real edges read
     # ``AGENT_NODE_ORDER``, so it must be exactly the head of ``NODE_NAMES``.
-    assert NODE_NAMES == (*AGENT_NODE_ORDER, CRITIC_NODE, REFINE_NODE)
+    assert NODE_NAMES == (
+        *AGENT_NODE_ORDER,
+        CRITIC_NODE,
+        REFINE_NODE,
+        FINALIZE_NODE,
+    )
 
 
 @pytest.mark.asyncio
@@ -80,7 +93,11 @@ async def test_the_happy_path_runs_every_agent_once_in_order() -> None:
 
     state = await _run(agents)
 
-    assert _nodes_visited(state) == [*AGENT_NODE_ORDER, CRITIC_NODE]
+    assert _nodes_visited(state) == [
+        *AGENT_NODE_ORDER,
+        CRITIC_NODE,
+        FINALIZE_NODE,
+    ]
     assert state.report == "# Research report: pass 1"
     assert state.iteration == 0
     assert _route_reasons(state) == ["critique_satisfied"]
@@ -121,6 +138,7 @@ async def test_the_critic_can_send_the_graph_back_to_the_researcher() -> None:
         "fact_checker",
         "synthesizer",
         CRITIC_NODE,
+        FINALIZE_NODE,
     ]
     assert len(agents.planner.calls) == 1
     assert len(agents.researcher.calls) == 2
@@ -351,3 +369,187 @@ def test_the_session_config_pins_the_thread_and_the_superstep_bound() -> None:
 def test_a_checkpointer_is_built_only_when_it_is_asked_for() -> None:
     assert build_checkpointer(enabled=False) is None
     assert build_checkpointer(enabled=True) is not None
+
+
+# --- the terminal publication -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_observed_report_shape_publishes_once_after_three_refinements(
+) -> None:
+    """Step 8: the exact regression for the observed report.
+
+    Four synthesis passes each rediscover the same two claims and the same two
+    sources. Under the old append contract the state would hold eight records
+    and the report would print every pair twice; under the canonical-snapshot
+    contract the two are rediscovered, not re-added, so the gates see no
+    duplicate at all. Publication happens once, at the terminal node: two
+    documents and one memory entry for the whole run, never once per pass.
+
+    Both channels emit their *complete* canonical snapshot on every pass. A
+    one-record delta per pass would model the append contract this fixture
+    exists to disprove.
+    """
+    first_source = fake_scored_source("https://example.org/a")
+    second_source = fake_scored_source("https://example.org/b")
+    remembered = fake_claim(
+        "Break-even was reached in 2025.", url="https://example.org/a"
+    )
+    unproven = fake_claim(
+        "Costs fell tenfold.",
+        url="https://example.org/b",
+        verdict="insufficient_evidence",
+    )
+    publisher = FakePublisher()
+    agents = fake_research_agents(
+        planner=FakeAgent(
+            "planner",
+            [
+                {
+                    "sub_topics": [
+                        fake_sub_topic("Error correction", coverage_id="topic-01"),
+                        fake_sub_topic("Cost", coverage_id="topic-02", priority=2),
+                    ]
+                }
+            ],
+        ),
+        researcher=FakeAgent(
+            "researcher",
+            [{"raw_findings": [fake_finding(), fake_finding("Costs fell.")]}],
+        ),
+        source_evaluator=FakeAgent(
+            "source_evaluator",
+            [{"evaluated_sources": [first_source, second_source]}],
+        ),
+        fact_checker=FakeAgent(
+            "fact_checker",
+            [{"verified_claims": [remembered, unproven]}],
+        ),
+        synthesizer=FakeAgent(
+            "synthesizer", [], update_factory=fake_synthesis_update
+        ),
+        critic=FakeAgent(
+            "critic",
+            [
+                {"critique": fake_critique(should_continue=True, score=4)},
+                {"critique": fake_critique(should_continue=True, score=4)},
+                {"critique": fake_critique(should_continue=True, score=4)},
+                {"critique": fake_critique(should_continue=False, score=9)},
+            ],
+        ),
+        publisher=publisher,
+    )
+
+    final = await _run(agents, max_iterations=4)
+
+    assert final.iteration == 3
+    assert len(agents.researcher.calls) == 4
+    assert len(final.evaluated_sources) == 2
+    assert len(final.verified_claims) == 2
+    assert final.quality is not None
+    assert final.quality.duplicate_source_rows == 0
+    assert final.quality.duplicate_claims == 0
+    assert final.quality.hard_failures == []
+    assert publisher.memory_writes == 1
+    assert publisher.report_writes == 2  # reader + evidence, terminal only
+    assert final.report_path == "report-session-1-3.md"
+    assert final.evidence_path == "report-session-1-3-evidence.md"
+    assert graph_status(final) == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_gate_failure_sends_a_critic_approved_report_back() -> None:
+    """Step 2 end to end: the deterministic gate outranks the model's score."""
+    agents = fake_research_agents(
+        source_evaluator=FakeAgent(
+            "source_evaluator",
+            [
+                # The same canonical URL twice: a duplicate source row, which
+                # is a hard failure however good the report looks.
+                {
+                    "evaluated_sources": [
+                        fake_scored_source("https://example.org/a"),
+                        fake_scored_source("https://example.org/a"),
+                    ]
+                }
+            ],
+        ),
+        synthesizer=FakeAgent(
+            "synthesizer", [], update_factory=fake_synthesis_update
+        ),
+        critic=FakeAgent(
+            "critic",
+            [{"critique": fake_critique(should_continue=False, score=9)}],
+        ),
+    )
+
+    state = await _run(agents, max_iterations=2)
+
+    # The critic never asked for a pass; the gate forced every refinement, and
+    # the run ended partial rather than accepted.
+    reasons = _route_reasons(state)
+    assert reasons[0] == "quality_gate_failed"
+    assert reasons[-1] == "max_iterations_reached"
+    assert "critique_satisfied" not in reasons
+    assert state.iteration == 2
+    assert state.quality is not None
+    assert "duplicate_source_rows" in state.quality.hard_failures
+    published = [
+        event
+        for event in state.events
+        if event.event_type == "graph.report.published"
+    ]
+    assert len(published) == 1
+    assert published[0].metadata["quality_status"] != QUALITY_STATUS_ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_run_publishes_both_artifacts_and_one_memory_entry(
+) -> None:
+    publisher = FakePublisher()
+    agents = fake_research_agents(
+        synthesizer=FakeAgent(
+            "synthesizer", [], update_factory=fake_synthesis_update
+        ),
+        publisher=publisher,
+    )
+
+    state = await _run(agents)
+
+    published = [
+        event
+        for event in state.events
+        if event.event_type == "graph.report.published"
+    ]
+    assert len(published) == 1
+    assert published[0].metadata["quality_status"] == QUALITY_STATUS_ACCEPTED
+    assert published[0].metadata["report_path"] == "report-session-1-0.md"
+    assert published[0].metadata["document_writes"] == 2
+    assert publisher.memory_writes == 1
+    assert "**Quality status:** accepted" in (state.report or "")
+
+
+@pytest.mark.asyncio
+async def test_a_halted_run_publishes_nothing() -> None:
+    """A failed run ends at END, so the finalizer never runs."""
+    publisher = FakePublisher()
+    agents = fake_research_agents(
+        fact_checker=FakeAgent(
+            "fact_checker", [AgentConfigurationError("bad scratchpad")]
+        ),
+        publisher=publisher,
+    )
+
+    state = await _run(agents)
+
+    assert state.errors
+    assert _nodes_visited(state) == [
+        "planner",
+        "researcher",
+        "source_evaluator",
+        "fact_checker",
+    ]
+    assert publisher.documents == []
+    assert publisher.claims == []
+    assert state.report_path is None
+    assert state.evidence_path is None

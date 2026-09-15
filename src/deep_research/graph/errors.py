@@ -40,7 +40,18 @@ GRAPH_ERROR_REASONS = {
         "The graph attempted a refinement pass with no budget left, so the "
         "research run stopped."
     ),
+    "graph_publication_unavailable": (
+        "No report publisher was configured, so the composed artifacts were "
+        "not written to disk."
+    ),
+    "graph_publication_failed": (
+        "The report publisher could not complete one of the terminal writes."
+    ),
 }
+
+# The terminal writes that fail independently of one another. Enumerated so a
+# reader — or a CLI — can tell which artifact is missing its file.
+PUBLICATION_ARTIFACTS = ("reader", "evidence", "memory")
 
 
 class GraphError(Exception):
@@ -137,4 +148,40 @@ def invalid_route_error(
         error_type="graph_invalid_route",
         node=node,
         details={"iteration": iteration, "max_iterations": max_iterations},
+    )
+
+
+def publication_unavailable_error(*, node: str) -> ResearchError:
+    """Record that the composed artifacts had no writer configured.
+
+    Recoverable on purpose: the Markdown in state is authoritative and
+    complete, so the run is not a failure — it simply published nothing.
+    """
+    return graph_error(error_type="graph_publication_unavailable", node=node)
+
+
+def publication_write_error(
+    *,
+    node: str,
+    artifact: str,
+    tool: str,
+    failure_type: str,
+) -> ResearchError:
+    """Record that one terminal write did not complete.
+
+    ``artifact`` is one of ``PUBLICATION_ARTIFACTS`` and ``tool`` is the tool
+    asked to write it; ``failure_type`` is a tool error class name. All three
+    are enumerated or project-generated — never provider text, never a
+    filesystem message, and never the content that failed to write.
+    """
+    if artifact not in PUBLICATION_ARTIFACTS:
+        raise ValueError(f"unknown publication artifact: {artifact}")
+    return graph_error(
+        error_type="graph_publication_failed",
+        node=node,
+        details={
+            "artifact": artifact,
+            "tool": tool,
+            "failure_type": failure_type,
+        },
     )

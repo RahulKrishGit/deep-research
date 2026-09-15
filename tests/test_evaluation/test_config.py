@@ -104,7 +104,7 @@ from deep_research.utils.config import (
 # of hashing a module's full source. (The synthesizer's value covers the
 # final source of that module in this commit, including the blank-cell
 # normalization its constraint rows use.) The Judge pin did **not** move.
-CRITIC_PROMPT_FINGERPRINT = "b46dfef67238"
+CRITIC_PROMPT_FINGERPRINT = "141c47557a29"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -221,14 +221,22 @@ CRITIC_PROMPT_FINGERPRINT = "b46dfef67238"
 # delta-oriented refinement moved the researcher's own value once more,
 # ``533350d78959`` -> ``96907685a382``, because a gap's own recommended
 # queries are now rendered ahead of the planner's for the sub-topic that gap
-# targets; no prompt string moved for that second step.
+# targets; no prompt string moved for that second step. Task 7's terminal
+# finalizer then moved the Synthesizer's own value again,
+# ``de9b44079616`` -> ``bf2b62331950``, because that agent — which already
+# declares the ``write_document`` and ``save_to_memory`` tools — now also
+# exposes the publishing methods the finalizer writes through. No prompt was
+# edited in either step, so the other five values are unchanged. The Critic's
+# own value then moved once more, ``b46dfef67238`` -> ``141c47557a29``, when
+# its prompt packet stopped reading the quality snapshot through a defensive
+# ``getattr`` and named the state field that now exists.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "028150f7e4a5",
     "researcher": "96907685a382",
     "source_evaluator": "6e127ffba9d4",
     "fact_checker": "926a1d968c68",
-    "synthesizer": "de9b44079616",
-    "critic": "b46dfef67238",
+    "synthesizer": "bf2b62331950",
+    "critic": "141c47557a29",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

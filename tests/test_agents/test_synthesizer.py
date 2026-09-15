@@ -23,8 +23,11 @@ from deep_research.agents.report import (
     QUALITY_STATUS_NOT_GATED,
     REPORT_SECTIONS,
     REPORT_SUMMARY_FALLBACK,
+    ReportComposition,
     ReportPoint,
     ReportSection,
+    render_evidence_ledger,
+    render_reader_report,
 )
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import (
@@ -1029,6 +1032,20 @@ async def test_a_run_composes_both_artifacts_and_writes_nothing(
     assert outcome.state_update["evidence_path"] == "report-session-1-0-evidence.md"
     assert outcome.state_update["unique_source_count"] == 1
     assert outcome.state_update["unique_claim_count"] == 1
+    # The typed composition the artifacts render travels with them, so the
+    # graph's quality pass judges the exact points this pass composed.
+    composition = outcome.state_update["composition"]
+    assert isinstance(composition, ReportComposition)
+    assert composition is outcome.result.composition
+    # Both artifacts are exactly this composition rendered. ``ContractModel``
+    # strips surrounding whitespace from every string field, so the report
+    # record holds the render without its trailing newline.
+    assert render_reader_report(composition).strip() == outcome.result.markdown
+    assert (
+        render_evidence_ledger(composition).strip()
+        == outcome.result.evidence_markdown
+    )
+    assert composition.quality_status == QUALITY_STATUS_NOT_GATED
     # No tool ran, no file exists, no memory entry was saved.
     assert outcome.react.tool_calls == 0
     assert completer.react_calls == []
@@ -1095,6 +1112,75 @@ async def test_an_invented_section_url_is_refused_and_recorded(
     ]
     assert outcome.errors[0].recoverable is True
     assert outcome.errors[0].details["rejected"]
+
+
+# --- the agent owns the terminal write tools ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_synthesizer_can_act_as_the_terminal_publisher(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """The agent that declares the write tools is the writer the graph uses.
+
+    Synthesis itself still calls neither tool: ``run`` publishes nothing. The
+    two methods below are what the terminal finalizer reaches the filesystem
+    and memory through, which is why the agent satisfies the graph's
+    ``ReportPublisher`` protocol without the graph importing agent internals.
+    """
+    memory = FakeMemory()
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft()]),
+        synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        written = await agent.publish_document(
+            filename="report-session-1-0.md", content="# Reader report"
+        )
+        saved = await agent.publish_claim(
+            content="Break-even was reached in 2025.",
+            metadata={"entry_type": "finding", "session_id": "session-1"},
+        )
+
+    assert written.success is True
+    assert written.data == {
+        "path": "report-session-1-0.md",
+        "bytes_written": len(b"# Reader report"),
+    }
+    assert (tmp_path / "report-session-1-0.md").read_text(
+        encoding="utf-8"
+    ) == "# Reader report"
+    assert saved.success is True
+    assert memory.saved == [
+        (
+            "Break-even was reached in 2025.",
+            {"entry_type": "finding", "session_id": "session-1"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_publish_returns_the_tools_own_failure(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """A failed write is a result, never an exception: the finalizer records it."""
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[_draft()]),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        written = await agent.publish_document(
+            filename="../escape.md", content="# Reader report"
+        )
+
+    assert written.success is False
+    assert written.error is not None
+    assert written.error.type == "ValidationError"
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio

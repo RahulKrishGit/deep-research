@@ -538,7 +538,12 @@ def test_graph_submodule_public_names_all_reach_all() -> None:
 
 
 def test_the_graph_nodes_cover_the_designed_sequence() -> None:
-    from deep_research.graph import AGENT_NODE_ORDER, CRITIC_NODE, NODE_NAMES
+    from deep_research.graph import (
+        AGENT_NODE_ORDER,
+        CRITIC_NODE,
+        FINALIZE_NODE,
+        NODE_NAMES,
+    )
 
     assert AGENT_NODE_ORDER == (
         "planner",
@@ -548,7 +553,8 @@ def test_the_graph_nodes_cover_the_designed_sequence() -> None:
         "synthesizer",
     )
     assert CRITIC_NODE == "critic"
-    assert NODE_NAMES[-1] == "refine"
+    assert NODE_NAMES[-2] == "refine"
+    assert NODE_NAMES[-1] == FINALIZE_NODE == "finalize_report"
 
 
 def test_runtime_contracts_import_from_package() -> None:

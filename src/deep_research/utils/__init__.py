@@ -1,7 +1,11 @@
 """Shared utilities and typed research contracts."""
 
 from deep_research.utils.types import (
+    QUALITY_STATUS_ACCEPTED,
+    QUALITY_STATUS_NOT_GATED,
+    QUALITY_STATUS_PARTIAL,
     AwareISOString,
+    Citation,
     Claim,
     ClaimVerdict,
     CriticScore,
@@ -9,7 +13,11 @@ from deep_research.utils.types import (
     CritiqueGap,
     Finding,
     MemorySnapshot,
+    ReportComposition,
+    ReportConstraint,
+    ReportPoint,
     ReportQualitySnapshot,
+    ReportSection,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -23,7 +31,11 @@ from deep_research.utils.types import (
 )
 
 __all__ = [
+    "QUALITY_STATUS_ACCEPTED",
+    "QUALITY_STATUS_NOT_GATED",
+    "QUALITY_STATUS_PARTIAL",
     "AwareISOString",
+    "Citation",
     "Claim",
     "ClaimVerdict",
     "CriticScore",
@@ -31,11 +43,15 @@ __all__ = [
     "CritiqueGap",
     "Finding",
     "MemorySnapshot",
+    "ReportComposition",
+    "ReportConstraint",
+    "ReportPoint",
+    "ReportQualitySnapshot",
+    "ReportSection",
     "ResearchError",
     "ResearchEvent",
     "ResearchState",
     "ResearchStateUpdate",
-    "ReportQualitySnapshot",
     "ScoredSource",
     "SourceEvaluationStatus",
     "SubTopic",

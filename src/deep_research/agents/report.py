@@ -31,8 +31,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
-from pydantic import Field, model_validator
-
 from deep_research.agents.identity import (
     finding_fingerprint,
     merge_claim_snapshot,
@@ -41,14 +39,48 @@ from deep_research.agents.identity import (
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import summarize_text
 from deep_research.utils.types import (
+    QUALITY_STATUS_ACCEPTED,
+    QUALITY_STATUS_NOT_GATED,
+    QUALITY_STATUS_PARTIAL,
+    Citation,
     Claim,
-    ContractModel,
     Finding,
-    ResearchError,
+    ReportComposition,
+    ReportConstraint,
+    ReportPoint,
+    ReportSection,
     ResearchEvent,
     ScoredSource,
     SubTopic,
 )
+
+__all__ = [
+    "EVIDENCE_SECTIONS",
+    "EVIDENCE_TITLE_PREFIX",
+    "LIMITATION_REASONS",
+    "QUALITY_STATUS_ACCEPTED",
+    "QUALITY_STATUS_NOT_GATED",
+    "QUALITY_STATUS_PARTIAL",
+    "REPORT_SECTIONS",
+    "REPORT_SUMMARY_FALLBACK",
+    "REPORT_TITLE_PREFIX",
+    "Citation",
+    "ReportComposition",
+    "ReportConstraint",
+    "ReportPoint",
+    "ReportSection",
+    "build_citation_index",
+    "canonical_claims",
+    "canonical_sources",
+    "citation_markers",
+    "reader_citations",
+    "render_citations",
+    "render_evidence_ledger",
+    "render_limitations",
+    "render_reader_report",
+    "report_as_of",
+    "report_scope",
+]
 
 REPORT_TITLE_PREFIX = "# Research report: "
 EVIDENCE_TITLE_PREFIX = "# Evidence ledger: "
@@ -79,9 +111,10 @@ EVIDENCE_SECTIONS = (
 )
 
 # The quality status a composed report carries before the terminal quality
-# gates judge it. The reader report must always declare a status, so the
-# honest pre-gate value is a named constant rather than a blank.
-QUALITY_STATUS_NOT_GATED = "not yet quality-gated"
+# gates judge it now lives with the composition itself, in
+# ``utils.types.QUALITY_STATUS_NOT_GATED``, because ``ResearchState`` carries
+# the composition the gates judged. It is re-exported here for the renderers
+# and every existing caller.
 
 REPORT_SUMMARY_FALLBACK = (
     "No executive summary was written for this pass. The claims, sources, "
@@ -146,83 +179,10 @@ _BLOCK_SEPARATOR = " · "
 _CELL_SEPARATOR_JOIN = ", "
 
 
-class Citation(ContractModel):
-    """One numbered source reference."""
-
-    number: int = Field(ge=1)
-    url: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-
-
-class ReportPoint(ContractModel):
-    """One settled statement, with the claims and sources it rests on.
-
-    ``claim_ids`` and ``source_urls`` are already validated against the
-    checked-claim registry by the time a point reaches a renderer; rendering
-    never validates.
-    """
-
-    text: str = Field(min_length=1)
-    claim_ids: list[str] = Field(default_factory=list)
-    source_urls: list[str] = Field(default_factory=list)
-
-
-class ReportConstraint(ReportPoint):
-    """One ranked constraint, plus the two decision columns it prints.
-
-    A constraint row is a claim-linked point like any other; the deployment
-    mechanism and the geography are part of the same claim-backed row, and a
-    row whose evidence does not state them says ``not stated``.
-    """
-
-    deployment_mechanism: str = ""
-    geography: str = ""
-
-
-class ReportSection(ContractModel):
-    """One validated theme of the findings, as claim-linked points."""
-
-    title: str = Field(min_length=1)
-    points: list[ReportPoint] = Field(default_factory=list)
-
-
-class ReportComposition(ContractModel):
-    """Everything one synthesis pass composed, and the evidence it renders.
-
-    Built once per pass by the Synthesizer and handed to both renderers, so
-    the two artifacts can never disagree about the same pass. ``claims`` and
-    ``sources`` are canonicalized on construction (see the module docstring),
-    which is what makes "one row per canonical record" a property of the type
-    rather than of the caller.
-    """
-
-    question: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
-    iteration: int = Field(default=0, ge=0)
-    max_iterations: int = Field(default=0, ge=0)
-    as_of: str = ""
-    """The newest timestamp the recorded evidence carries; see report_as_of."""
-    scope: str = ""
-    """The scope this report assumes; see report_scope."""
-    quality_status: str = QUALITY_STATUS_NOT_GATED
-    sub_topics: list[SubTopic] = Field(default_factory=list)
-    claims: list[Claim] = Field(default_factory=list)
-    sources: list[ScoredSource] = Field(default_factory=list)
-    findings: list[Finding] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
-    errors: list[ResearchError] = Field(default_factory=list)
-    summary: list[ReportPoint] = Field(default_factory=list)
-    constraints: list[ReportConstraint] = Field(default_factory=list)
-    sections: list[ReportSection] = Field(default_factory=list)
-    uncertainty_notes: list[str] = Field(default_factory=list)
-    rejected: list[str] = Field(default_factory=list)
-    """Drafted content this pass refused, as project-generated reasons."""
-
-    @model_validator(mode="after")
-    def canonicalize_evidence(self) -> ReportComposition:
-        self.sources = merge_source_snapshot([], self.sources)
-        self.claims = merge_claim_snapshot([], self.claims)
-        return self
+# ``Citation``, ``ReportPoint``, ``ReportConstraint``, ``ReportSection`` and
+# ``ReportComposition`` are re-exported from ``utils.types`` above: they are
+# state records — ``ResearchState`` carries the composition the quality pass
+# judged — and this module is the pure renderer over them.
 
 
 def canonical_sources(sources: Sequence[ScoredSource]) -> list[ScoredSource]:
