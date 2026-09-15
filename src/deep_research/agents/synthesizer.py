@@ -392,6 +392,12 @@ def bounded_claim_packet(
         registry,
         key=lambda item: (order.get(item[1].claim_id, len(order)), item[0]),
     )
+    minimum = len(render_report_claim_packet([], omitted=len(ranked)))
+    if budget_chars < minimum:
+        raise ValueError(
+            "budget_chars must allow the empty claim-packet fallback "
+            f"({minimum} chars)"
+        )
     maximum = min(limit, len(ranked))
     # Select the largest ranked prefix whose *actual prompt representation*
     # fits.  This includes labels, verdict syntax, rendered text truncation,
@@ -403,9 +409,7 @@ def bounded_claim_packet(
         if len(rendered) <= budget_chars:
             return packet, omitted
 
-    # A positive budget may be smaller than the fixed omission notice.  The
-    # empty packet is still fail-closed; normal production budgets are large
-    # enough to carry the notice and are checked by the loop above.
+    # The minimum fallback check above makes this defensive return unreachable.
     return [], len(ranked)
 
 
@@ -420,6 +424,12 @@ def bounded_finding_digest(
         raise ValueError("limit must be at least 1")
     if budget_chars < 1:
         raise ValueError("budget_chars must be at least 1")
+    minimum = len(render_finding_digest([]))
+    if budget_chars < minimum:
+        raise ValueError(
+            "budget_chars must allow the empty finding-digest fallback "
+            f"({minimum} chars)"
+        )
     candidates = list(findings)[:limit]
     for size in range(len(candidates), -1, -1):
         rendered = render_finding_digest(candidates[:size])

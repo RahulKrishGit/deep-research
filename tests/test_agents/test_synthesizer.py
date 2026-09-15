@@ -16,6 +16,7 @@ from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import (
     AgentTask,
+    render_finding_digest,
     render_report_claim_packet,
 )
 from deep_research.agents.report import (
@@ -37,6 +38,7 @@ from deep_research.agents.synthesizer import (
     SynthesizedReport,
     SynthesizerAgent,
     bounded_claim_packet,
+    bounded_finding_digest,
     build_report_composition,
     claim_label,
     claim_registry,
@@ -392,6 +394,21 @@ def test_the_packet_honours_a_character_budget() -> None:
     assert len(render_report_claim_packet(packet, omitted=omitted)) <= 100
 
 
+def test_the_packet_rejects_a_budget_below_its_empty_fallback() -> None:
+    with pytest.raises(ValueError, match="budget_chars"):
+        bounded_claim_packet([], limit=1, budget_chars=1)
+
+
+def test_the_packet_accepts_the_omission_fallback_boundary() -> None:
+    packet, omitted = bounded_claim_packet(
+        claim_registry([_claim()]), limit=1, budget_chars=89
+    )
+
+    assert packet == []
+    assert omitted == 1
+    assert len(render_report_claim_packet(packet, omitted=omitted)) == 89
+
+
 def test_the_prompt_omitted_claim_is_not_a_validation_allow_list() -> None:
     task = _task(
         claims=[
@@ -440,6 +457,19 @@ def test_open_questions_use_a_deterministic_rendered_character_bound() -> None:
 
     assert len(open_questions) <= SYNTHESIS_OPEN_QUESTIONS_CHARS
     assert open_questions.startswith("1. [Alpha] ")
+
+
+def test_open_questions_reject_a_budget_below_the_empty_fallback() -> None:
+    with pytest.raises(ValueError, match="budget_chars"):
+        bounded_finding_digest([], limit=1, budget_chars=1)
+
+
+def test_open_questions_accept_the_empty_fallback_boundary() -> None:
+    digest = bounded_finding_digest([], limit=1, budget_chars=13)
+
+    assert digest == "(no findings)"
+    assert len(digest) == 13
+    assert len(render_finding_digest([])) == 13
 
 
 def test_the_packet_bounds_reject_a_zero() -> None:
