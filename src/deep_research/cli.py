@@ -4,6 +4,20 @@ Stdlib ``argparse`` and ``print``: the design's Non-Goals rule out a rich
 terminal dependency, and nothing here needs one. Everything this module
 does is parse arguments, call ``run_research``, render what came back, and
 choose an exit code.
+
+Two surfaces, deliberately different. Progress streams *while* the graph
+runs — via the ``event_handler`` ``run_research_sync`` already accepts — and
+the final summary never reprints a streamed record. Everything the summary
+prints is read from typed state or a typed event: the quality block is the
+``ReportQualitySnapshot`` the terminal gates judged and the verdict
+``graph.state.graph_quality_status`` derived, and the artifact paths are the
+finalizer's own publication record. No report prose is parsed anywhere here.
+
+Exit codes (also documented in ``--help``): 0 a finished run — a partial
+report included, unless ``--require-quality`` was passed — 1 a configuration
+failure, 2 a usage error, 3 a graph failure, 4 a report the terminal quality
+gates did not accept while ``--require-quality`` was set, and 130 an
+interrupt.
 """
 
 from __future__ import annotations
@@ -24,11 +38,26 @@ from deep_research.runtime.errors import (
     configuration_error,
 )
 from deep_research.runtime.outcome import ResearchOutcome
+from deep_research.utils.types import (
+    ReportQualitySnapshot,
+    ResearchError,
+    ResearchEvent,
+)
 
 PROGRAM_NAME = "python -m deep_research"
 
 _DESCRIPTION = (
     "Run a multi-agent deep research session and write a Markdown report."
+)
+
+_EXIT_CODE_HELP = (
+    "exit codes:\n"
+    "  0  the run finished; a partial report is still a successful run\n"
+    "  1  configuration error\n"
+    "  2  usage error\n"
+    "  3  the graph failed\n"
+    "  4  --require-quality was set and the report was not accepted\n"
+    "  130  interrupted\n"
 )
 
 
@@ -43,6 +72,7 @@ class CliOptions:
     output_format: str | None
     config: str
     verbose: bool
+    require_quality: bool
 
 
 def _positive_int(value: str) -> int:
@@ -63,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PROGRAM_NAME,
         description=_DESCRIPTION,
         epilog=(
+            f"{_EXIT_CODE_HELP}"
+            "\n"
             "examples:\n"
             f'  {PROGRAM_NAME} "What are the security implications of '
             'quantum computing?"\n'
@@ -115,7 +147,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="print tool calls, token totals, and the full progress log",
+        help=(
+            "print tool calls, token totals, each agent's completion "
+            "records, and the typed error messages behind the warnings"
+        ),
+    )
+    parser.add_argument(
+        "--require-quality",
+        action="store_true",
+        help=(
+            "exit 4 unless the terminal quality gates accepted the report "
+            "(by default a partial report still exits 0)"
+        ),
     )
     return parser
 
@@ -155,6 +198,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
         output_format=namespace.output_format,
         config=namespace.config,
         verbose=bool(namespace.verbose),
+        require_quality=bool(namespace.require_quality),
     )
 
 
@@ -173,6 +217,17 @@ PROGRESS_EVENT_TYPES = (
 # the verbose log: there are two per span and they would bury everything.
 SPAN_EVENT_PREFIX = "observability.span."
 
+# Every agent (and the graph itself) names its terminal record this way.
+COMPLETION_EVENT_SUFFIX = ".completed"
+
+# The two records ``--verbose`` adds that are not completions: the placeholder
+# a halted run emits where a node's completion would go, and the single
+# enumerated provider-failure event an agent can emit.
+VERBOSE_EVENT_TYPES = (
+    "graph.node.skipped",
+    "agent.provider_failure",
+)
+
 # What a non-failing but non-ideal ending means, in one sentence.
 STATUS_NOTES = {
     "max_iterations": (
@@ -190,40 +245,172 @@ STATUS_NOTES = {
 }
 
 
-def render_progress(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
-    """Render the recorded event log as a progress summary.
+def is_streamed_event(event_type: str, *, verbose: bool) -> bool:
+    """True when one event type belongs in the live progress stream.
 
-    A summary rather than a live stream: ``run_research_graph`` invokes the
-    graph to completion and returns one result, so the events exist only
-    once the run is over. Live streaming belongs to the API's SSE endpoint.
+    Type-gated on purpose. Verbose adds agent completion records and the
+    enumerated failure records above, and *only* those: a report body, provider
+    text, or evidence excerpt is never streamed, because none of them is an
+    event and no other event type is ever rendered.
     """
-    lines = ["Progress log:"]
-    for event in outcome.state.events:
-        if event.event_type.startswith(SPAN_EVENT_PREFIX):
-            continue
-        if not verbose and event.event_type not in PROGRESS_EVENT_TYPES:
-            continue
-        iteration = event.metadata.get("iteration", 0)
-        lines.append(f"  [{iteration}] {event.message}")
+    if event_type.startswith(SPAN_EVENT_PREFIX):
+        return False
+    if event_type in PROGRESS_EVENT_TYPES:
+        return True
+    if not verbose:
+        return False
+    return (
+        event_type.endswith(COMPLETION_EVENT_SUFFIX)
+        or event_type in VERBOSE_EVENT_TYPES
+    )
+
+
+def render_progress(event: ResearchEvent, *, verbose: bool) -> str | None:
+    """The one line ``event`` streams, or ``None`` when the stream skips it.
+
+    Called the moment the graph records the event, so a run that takes minutes
+    shows progress while it runs. The final summary is a different surface and
+    never reprints these records; every event therefore appears exactly once.
+    """
+    if not is_streamed_event(event.event_type, verbose=verbose):
+        return None
+    iteration = event.metadata.get("iteration", 0)
+    return f"  [{iteration}] {event.message}"
+
+
+class ProgressStream:
+    """Print every allowed progress event as ``run_research`` produces it.
+
+    The callable ``run_research_sync`` expects as ``event_handler``: it holds
+    no state of its own, so the same instance serves the whole run and the
+    graph's own de-duplication (each event is delivered once, in order) is the
+    only thing deciding what is printed.
+    """
+
+    def __init__(self, stream: TextIO, *, verbose: bool) -> None:
+        self._stream = stream
+        self._verbose = verbose
+
+    def __call__(self, event: ResearchEvent) -> None:
+        line = render_progress(event, verbose=self._verbose)
+        if line is not None:
+            print(line, file=self._stream)
+
+
+def _errors_by_source(
+    errors: Sequence[ResearchError],
+) -> dict[str, list[ResearchError]]:
+    """Group typed errors by the agent or tool that recorded them."""
+    groups: dict[str, list[ResearchError]] = {}
+    for error in errors:
+        groups.setdefault(error.source, []).append(error)
+    return groups
+
+
+def _named_coverage_ids(errors: Sequence[ResearchError]) -> list[str]:
+    """The planned coverage topics a group's records name, in first-seen order.
+
+    Read from the typed ``coverage_id`` detail a producer stamps on the record
+    (``agents.researcher`` stamps it on every unattempted sub-topic), never
+    inferred from a message.
+    """
+    coverage_ids: list[str] = []
+    for error in errors:
+        candidate = error.details.get("coverage_id")
+        if (
+            isinstance(candidate, str)
+            and candidate.strip()
+            and candidate not in coverage_ids
+        ):
+            coverage_ids.append(candidate)
+    return coverage_ids
+
+
+def _warning_line(error: ResearchError) -> str:
+    """One recorded error as its enumerated type and its recorded reason.
+
+    Both are project-owned: ``agents.errors`` and ``graph.errors`` build every
+    record from an enumeration, and neither ever records ``str(exception)`` or
+    provider text, so these lines are safe to print.
+    """
+    return f"warning: [{error.error_type}] {error.message}"
+
+
+def render_warnings(
+    outcome: ResearchOutcome, *, verbose: bool = False
+) -> list[str]:
+    """Render recoverable errors grouped by the agent that recorded them.
+
+    Plain output is one line per affected source with its error count and the
+    coverage topics its records name, so a reader can see *who* contributed
+    nothing and *which* planned topic lost out without reading a log. The
+    messages themselves are verbose detail: they are enumerated and safe, but
+    they are not what makes the run actionable.
+    """
+    if not outcome.errors:
+        return []
+    lines = ["Warnings:"]
+    for source, errors in _errors_by_source(outcome.errors).items():
+        coverage = _named_coverage_ids(errors)
+        count = f"{len(errors)} error" + ("" if len(errors) == 1 else "s")
+        detail = f" (coverage {', '.join(coverage)})" if coverage else ""
+        lines.append(f"  {source}: {count}{detail}")
+        if verbose:
+            lines.extend(f"    {_warning_line(error)}" for error in errors)
     return lines
 
 
-def render_warnings(outcome: ResearchOutcome) -> list[str]:
-    """Render recoverable research errors as warnings.
+def _scored_cited_sources(quality: ReportQualitySnapshot) -> int:
+    """How many of the cited sources carry a numeric score.
 
-    These are also disclosed inside the report itself:
-    ``agents.synthesizer.limitation_reasons`` records ``errors_recorded``
-    whenever state carries any error, and the report's Limitations section
-    renders it.
+    ``scored_cited_source_ratio`` is the snapshot's own field and is defined
+    as ``scored / cited``, so multiplying recovers the exact count the quality
+    pass measured. Nothing is recomputed from the report.
     """
-    return [
-        f"warning: [{error.error_type}] {error.message}"
-        for error in outcome.errors
-    ]
+    return round(quality.scored_cited_source_ratio * quality.cited_sources)
+
+
+def _quality_lines(outcome: ResearchOutcome) -> list[str]:
+    """The terminal verdict, and the typed metrics it rests on.
+
+    A fragment is printed only when the state carries it: no model review
+    means no critic score, and a run no quality pass judged prints its verdict
+    alone rather than a row of invented zeroes.
+    """
+    parts: list[str] = []
+    critique = outcome.state.critique
+    if critique is not None:
+        parts.append(f"critic {critique.score}/10")
+    quality = outcome.quality
+    if quality is not None:
+        parts.append(
+            f"{quality.covered_topics}/{quality.planned_topics} topics "
+            f"covered, {quality.coverage_ratio:.0%}"
+        )
+    detail = f" ({'; '.join(parts)})" if parts else ""
+    lines = [f"Quality: {outcome.quality_status}{detail}"]
+    if quality is None:
+        return lines
+    lines.append(
+        f"Evidence: {quality.cited_sources} cited sources; "
+        f"{_scored_cited_sources(quality)} scored; "
+        f"{quality.verified_claims} verified, "
+        f"{quality.contradicted_claims} contradicted"
+    )
+    lines.append(
+        f"Integrity: {quality.duplicate_claims} duplicate claims; "
+        f"{quality.duplicate_source_rows} duplicate source rows; "
+        f"{quality.uncited_settled_points} uncited settled points"
+    )
+    if quality.unresolved_topic_ids:
+        lines.append(
+            f"Open coverage: {', '.join(quality.unresolved_topic_ids)}"
+        )
+    return lines
 
 
 def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
-    """Render the run's identity, outcome, artifacts, and (verbose) costs."""
+    """Render the run's identity, quality verdict, artifacts, and costs."""
     lines = [
         f"Session ID: {outcome.session_id}",
         f"Status: {outcome.status}",
@@ -232,6 +419,8 @@ def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
     if note is not None:
         lines.append(note)
 
+    lines.extend(_quality_lines(outcome))
+
     if outcome.report_path is None:
         lines.append(
             "Report: not written to disk; the report text is in the session "
@@ -239,6 +428,14 @@ def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
         )
     else:
         lines.append(f"Report: {outcome.report_path}")
+
+    if outcome.evidence_path is None:
+        lines.append(
+            "Evidence ledger: not written to disk; the ledger text is in the "
+            "session state only."
+        )
+    else:
+        lines.append(f"Evidence ledger: {outcome.evidence_path}")
 
     if outcome.trace_url is not None:
         lines.append(f"Trace: {outcome.trace_url}")
@@ -272,6 +469,7 @@ EXIT_OK = 0
 EXIT_CONFIGURATION_ERROR = 1
 # 2 is argparse's usage error and is never returned from here.
 EXIT_GRAPH_FAILED = 3
+EXIT_QUALITY_UNACCEPTED = 4
 EXIT_INTERRUPTED = 130
 
 INTERACTIVE_PROMPT = "Research question: "
@@ -279,6 +477,11 @@ INTERACTIVE_PROMPT = "Research question: "
 _STARTING_NOTICE = (
     "Preparing the research run. A full session runs the six agents and "
     "can take several minutes."
+)
+
+_QUALITY_UNACCEPTED_NOTICE = (
+    "error: the report was not accepted by the terminal quality gates; "
+    "--require-quality was set, so this run exits 4."
 )
 
 
@@ -335,10 +538,16 @@ def main(
 ) -> int:
     """Run one command and return its exit code.
 
-    Exit codes: 0 the run produced a report, 1 a configuration failure,
-    2 a usage error (raised by argparse), 3 the graph failed, 130 the user
-    interrupted. Any other exception propagates: an unhandled exception is
-    a defect, not a research outcome.
+    Progress streams through the handler passed to ``runner`` while the run
+    happens; the summary printed afterwards reports the outcome and never
+    reprints a streamed record.
+
+    Exit codes: 0 the run finished — a partial report is still 0 unless
+    ``--require-quality`` was passed; 1 a configuration failure; 2 a usage
+    error (raised by argparse); 3 the graph failed; 4 ``--require-quality``
+    was set and the terminal quality status was not ``accepted``; 130 the user
+    interrupted. Any other exception propagates: an unhandled exception is a
+    defect, not a research outcome.
     """
     out = stream if stream is not None else sys.stdout
     options = parse_arguments(argv)
@@ -346,6 +555,8 @@ def main(
     def emit(lines: Sequence[str]) -> None:
         for line in lines:
             print(line, file=out)
+
+    progress = ProgressStream(out, verbose=options.verbose)
 
     try:
         question = resolve_question(options, prompt=prompt)
@@ -356,6 +567,7 @@ def main(
             config_path=options.config,
             max_iterations=options.max_iterations,
             output_format=options.output_format,
+            event_handler=progress,
         )
     except ResearchConfigurationError as error:
         print(f"error: {error}", file=out)
@@ -365,7 +577,11 @@ def main(
         print("The research run was cancelled.", file=out)
         return EXIT_INTERRUPTED
 
-    emit(render_progress(outcome, verbose=options.verbose))
-    emit(render_warnings(outcome))
+    emit(render_warnings(outcome, verbose=options.verbose))
     emit(render_summary(outcome, verbose=options.verbose))
-    return EXIT_GRAPH_FAILED if outcome.failed else EXIT_OK
+    if outcome.failed:
+        return EXIT_GRAPH_FAILED
+    if options.require_quality and not outcome.accepted:
+        emit([_QUALITY_UNACCEPTED_NOTICE])
+        return EXIT_QUALITY_UNACCEPTED
+    return EXIT_OK

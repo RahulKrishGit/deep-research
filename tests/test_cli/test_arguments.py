@@ -21,6 +21,7 @@ def test_a_bare_question_is_the_whole_command() -> None:
         output_format=None,
         config=DEFAULT_CONFIG_PATH,
         verbose=False,
+        require_quality=False,
     )
 
 
@@ -35,6 +36,7 @@ def test_every_documented_option_parses() -> None:
             "--config",
             "custom.yaml",
             "--verbose",
+            "--require-quality",
         ]
     )
 
@@ -43,6 +45,7 @@ def test_every_documented_option_parses() -> None:
     assert options.output_format == "markdown"
     assert options.config == "custom.yaml"
     assert options.verbose is True
+    assert options.require_quality is True
 
 
 def test_interactive_takes_no_question() -> None:
@@ -105,5 +108,6 @@ def test_the_help_text_names_every_documented_option(capsys) -> None:
         "--output-format",
         "--config",
         "--verbose",
+        "--require-quality",
     ):
         assert flag in help_text
