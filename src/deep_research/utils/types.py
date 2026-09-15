@@ -227,6 +227,24 @@ class ResearchState(ContractModel):
     evaluated_sources: list[ScoredSource] = Field(default_factory=list)
     verified_claims: list[Claim] = Field(default_factory=list)
     report: str | None = None
+    """The reader report Markdown composed for the latest pass."""
+    report_evidence: str | None = None
+    """The evidence ledger Markdown composed for the same pass as ``report``.
+
+    Composed, never published: the terminal publication step is the only
+    writer. Both strings are authoritative in state whether or not any file
+    exists.
+    """
+    evidence_path: str | None = None
+    """The name the evidence ledger will be published under.
+
+    Composed with the artifacts so the path never has to be re-derived, and
+    ``None`` until a pass has composed a ledger. Nothing writes it here.
+    """
+    unique_source_count: int = Field(default=0, ge=0)
+    """Canonical reviewed sources behind ``report`` — one per source URL."""
+    unique_claim_count: int = Field(default=0, ge=0)
+    """Canonical checked claims behind ``report`` — one per claim identity."""
     critique: Critique | None = None
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=3, ge=1)
@@ -249,6 +267,10 @@ class ResearchStateUpdate(TypedDict, total=False):
     evaluated_sources: list[ScoredSource]
     verified_claims: list[Claim]
     report: str | None
+    report_evidence: str | None
+    evidence_path: str | None
+    unique_source_count: int
+    unique_claim_count: int
     critique: Critique | None
     max_iterations: int
     memory_context: MemorySnapshot

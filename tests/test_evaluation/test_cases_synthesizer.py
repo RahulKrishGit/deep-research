@@ -5,7 +5,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from deep_research.agents.report import build_citation_index
+from deep_research.agents.report import (
+    REPORT_TITLE_PREFIX,
+    build_citation_index,
+)
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
@@ -465,25 +468,31 @@ def _live_findings_text(
     return "\n\n".join(blocks)
 
 
-def _live_report(case, findings: str, *, source_appendix: str | None = None) -> str:
+def _live_report(case, findings: str, *, references: str | None = None) -> str:
+    """The reader report's shape: references hold only the cited sources."""
     citation_index = build_citation_index(
         case.state.evaluated_sources, case.state.verified_claims
     )
-    citations = "\n".join(
+    cited = "\n".join(
         f"{citation.number}. {citation.title} — {citation.url}"
         for citation in citation_index
     )
-    appendix = source_appendix or citations
+    listed = references or cited
     return (
+        f"{REPORT_TITLE_PREFIX}What does recent evidence say about heat-pump "
+        "retrofit costs in temperate climates?\n\n"
+        "**As of:** 2026-08-01T12:00:00+00:00\n\n"
+        "**Scope:** 3 planned sub-topics.\n\n"
+        "**Quality status:** not yet quality-gated\n\n"
         "## Executive summary\n\n"
         "The evidence describes current heat-pump retrofit economics.\n\n"
+        "## Constraint ranking\n\n"
+        "(no constraint was ranked for this pass)\n\n"
         f"## Findings\n\n{findings}\n\n"
-        "## Verified claims\n\n(no claim reached a verified verdict)\n\n"
         "## Uncertainty and conflicting evidence\n\n"
-        "The evidence base remains limited.\n\n"
-        "## Limitations\n\nThe evidence base is limited.\n\n"
-        f"## Citations\n\n{citations}\n\n"
-        f"## Source appendix\n\n{appendix}"
+        "The evidence base remains limited. Limitations: it is thin.\n\n"
+        "## Methodology\n\n- Locally generated run summary.\n\n"
+        f"## References\n\n{listed}"
     )
 
 
@@ -520,12 +529,13 @@ def test_coverage_rejects_report_missing_one_topics_narrative_evidence() -> None
     assert _coverage_score(case, report) == 0.0
 
 
-def test_coverage_rejects_exact_titles_in_a_citation_only_appendix() -> None:
+def test_coverage_rejects_exact_titles_in_a_reference_list() -> None:
     case = _case("synthesizer-live-report")
-    appendix = "\n".join(
-        f"- {topic.title}" for topic in case.state.sub_topics
+    listed = "\n".join(
+        f"{index}. {topic.title}"
+        for index, topic in enumerate(case.state.sub_topics, start=1)
     )
-    report = _live_report(case, "(no findings were reported)", source_appendix=appendix)
+    report = _live_report(case, "(no findings were reported)", references=listed)
 
     assert _coverage_score(case, report) == 0.0
 
@@ -547,9 +557,12 @@ def test_coverage_accepts_explicit_titles_in_findings() -> None:
         + _live_findings_text(case, exact_titles=True),
         lambda case: "### Findings\n\n"
         + _live_findings_text(case, exact_titles=True)
-        + "\n\n## Verified claims\n\n(no claims)",
+        + "\n\n## Uncertainty and conflicting evidence\n\n(no claims)",
         lambda case: _live_report(case, _live_findings_text(case, exact_titles=True))
-        .replace("## Verified claims", "## Verified Claims"),
+        .replace(
+            "## Uncertainty and conflicting evidence",
+            "## Uncertainty And Conflicting Evidence",
+        ),
     ),
 )
 def test_coverage_fails_closed_for_missing_or_malformed_findings_boundaries(

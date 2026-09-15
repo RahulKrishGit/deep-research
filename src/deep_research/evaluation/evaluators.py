@@ -716,20 +716,52 @@ def _normalized_text(value: object) -> str:
 
 
 def _findings_section(report: str) -> str | None:
-    """Return only the narrative between the report's Findings boundaries."""
+    """Return only the narrative between the report's Findings boundaries.
+
+    The reader report opens its narrative at ``## Findings`` and closes it at
+    ``## Uncertainty and conflicting evidence``: the verified-claim registry
+    that used to sit between them now belongs to the evidence ledger, so a
+    report that still carried one would fail this boundary closed.
+    """
     findings_matches = list(
         re.finditer(r"(?m)^## Findings[ \t]*\r?$", report)
     )
-    verified_matches = list(
-        re.finditer(r"(?m)^## Verified claims[ \t]*\r?$", report)
+    boundary_matches = list(
+        re.finditer(
+            r"(?m)^## Uncertainty and conflicting evidence[ \t]*\r?$",
+            report,
+        )
     )
-    if len(findings_matches) != 1 or len(verified_matches) != 1:
+    if len(findings_matches) != 1 or len(boundary_matches) != 1:
         return None
     findings_heading = findings_matches[0]
-    verified_heading = verified_matches[0]
-    if findings_heading.end() > verified_heading.start():
+    boundary_heading = boundary_matches[0]
+    if findings_heading.end() > boundary_heading.start():
         return None
-    return report[findings_heading.end() : verified_heading.start()]
+    return report[findings_heading.end() : boundary_heading.start()]
+
+
+_READER_REFERENCE_PATTERN = re.compile(
+    r"(?m)^(\d+)\.\s+.*?\s+—\s+(\S+)\s*$"
+)
+
+
+def _reader_reference_urls(report: str) -> dict[int, str]:
+    """Number to URL, read from the reader report's own reference list.
+
+    The reader report numbers only the sources its own points cite, in
+    first-use order, so its markers are resolved through the list it printed
+    rather than through a second, wider index computed from state. A marker
+    with no matching reference line therefore resolves to nothing and the
+    citation gate fails closed, which is the direction an integrity gate must
+    fail in.
+    """
+    references: dict[int, str] = {}
+    for match in _READER_REFERENCE_PATTERN.finditer(report):
+        normalized = _normalized(match.group(2))
+        if normalized:
+            references[int(match.group(1))] = normalized
+    return references
 
 
 def _reference_int(case: EvaluationCase, key: str, default: int) -> int:
@@ -2146,20 +2178,24 @@ def _coverage_passes(output: TargetOutput, case: EvaluationCase) -> bool:
         return False
     if not citation_index:
         return False
-
-    citation_urls = {
-        citation.number: _normalized(citation.url)
+    declared_urls = {
+        _normalized(citation.url)
         for citation in citation_index
-        if isinstance(citation.number, int)
-        and isinstance(citation.url, str)
-        and _normalized(citation.url)
+        if isinstance(citation.url, str) and _normalized(citation.url)
     }
+
+    # The reader report's own reference list is the authority for its
+    # markers; the case's declared evidence is the whitelist those
+    # references must resolve inside. Both directions fail closed.
+    citation_urls = _reader_reference_urls(_report_body(output))
     citation_numbers = {
         int(number) for number in _CITATION_MARKER_PATTERN.findall(findings)
     }
     if not citation_numbers or not citation_numbers <= citation_urls.keys():
         return False
     cited_urls = {citation_urls[number] for number in citation_numbers}
+    if not cited_urls <= declared_urls:
+        return False
 
     source_topics: dict[str, set[str]] = {}
     for finding in raw_findings:

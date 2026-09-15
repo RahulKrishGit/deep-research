@@ -1,4 +1,10 @@
-"""Tests for the Synthesizer's contracts, limitations, and composition."""
+"""Tests for the Synthesizer's contract, composition, and refusal rules.
+
+The Synthesizer returns claim-linked points and composes two Markdown
+artifacts. It writes neither of them: publication and long-term memory belong
+to the terminal finalizer, so every test here also pins that a run touches no
+tool, no file, and no memory entry.
+"""
 
 from __future__ import annotations
 
@@ -9,21 +15,33 @@ import pytest
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import AgentTask
-from deep_research.agents.report import REPORT_SECTIONS, ReportSection
+from deep_research.agents.report import (
+    QUALITY_STATUS_NOT_GATED,
+    REPORT_SECTIONS,
+    REPORT_SUMMARY_FALLBACK,
+    ReportPoint,
+    ReportSection,
+)
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import (
     DEFAULT_MEMORY_CONFIDENCE,
-    REPORT_SUMMARY_FALLBACK,
+    ConstraintDraft,
     ReportDraft,
+    ReportPointDraft,
     ReportSectionDraft,
     SynthesisTask,
     SynthesizedReport,
     SynthesizerAgent,
-    build_report_sections,
+    bounded_claim_packet,
+    build_report_composition,
+    claim_label,
+    claim_registry,
     compose_report,
+    evidence_report_filename,
     high_confidence_claims,
     limitation_reasons,
     memory_payload,
+    ordered_claims_for_report,
     render_revision_guidance,
     report_filename,
     report_messages,
@@ -44,12 +62,14 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchState,
     ScoredSource,
+    SubTopic,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.research_fakes import FakeMemory, synthesizer_tools
 
 SYNTH_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 SOURCE_URL = "https://example.org/a"
+OTHER_URL = "https://other.test/b"
 
 
 def _output_limit_error() -> ProviderOutputLimitError:
@@ -98,6 +118,7 @@ def _claim(
     verdict: str = "verified",
     confidence: float = 0.8,
     urls: list[str] | None = None,
+    coverage_ids: list[str] | None = None,
 ) -> Claim:
     return Claim(
         claim_id=claim_fingerprint(text),
@@ -108,6 +129,18 @@ def _claim(
         evidence=[],
         contradictions=[],
         verification_evidence=[],
+        consumed_coverage_ids=coverage_ids or [],
+    )
+
+
+def _sub_topic(title: str = "Alpha") -> SubTopic:
+    return SubTopic(
+        coverage_id="topic-01",
+        title=title,
+        rationale="The first thing to establish.",
+        search_queries=["alpha evidence"],
+        success_criteria=["a measured alpha result"],
+        priority=1,
     )
 
 
@@ -115,6 +148,7 @@ def _state(**overrides: object) -> ResearchState:
     payload: dict[str, object] = {
         "session_id": "session-1",
         "original_question": "How mature is quantum error correction?",
+        "sub_topics": [_sub_topic()],
         "raw_findings": [_finding()],
         "evaluated_sources": [_source()],
         "verified_claims": [_claim()],
@@ -128,13 +162,87 @@ def _task(**overrides: object) -> SynthesisTask:
         "instruction": "How mature is quantum error correction?",
         "session_id": "session-1",
         "iteration": 0,
+        "max_iterations": 3,
+        "as_of": SYNTH_EXTRACTED_AT,
+        "scope": "1 planned sub-topic.",
         "claims": [_claim()],
         "sources": [_source()],
         "findings": [_finding()],
         "limitations": [],
+        "errors": [],
     }
     payload.update(overrides)
     return SynthesisTask.model_validate(payload)
+
+
+def _point_draft(
+    text: str = "Break-even was reached.",
+    *,
+    claim_ids: list[str] | None = None,
+    source_urls: list[str] | None = None,
+) -> ReportPointDraft:
+    return ReportPointDraft(
+        text=text,
+        claim_ids=claim_ids if claim_ids is not None else ["C001"],
+        source_urls=source_urls if source_urls is not None else [SOURCE_URL],
+    )
+
+
+def _draft(
+    *,
+    summary: str = "Break-even was reached in 2025.",
+    urls: list[str] | None = None,
+    notes: list[str] | None = None,
+) -> ReportDraft:
+    cited = urls if urls is not None else [SOURCE_URL]
+    return ReportDraft(
+        executive_summary=[_point_draft(summary, source_urls=cited)],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for driving inside the measured zone.",
+                deployment_mechanism="area licence with camera enforcement",
+                geography="not stated",
+                claim_ids=["C001"],
+                source_urls=cited,
+            )
+        ],
+        sections=[
+            ReportSectionDraft(
+                title="Error correction",
+                points=[
+                    _point_draft(
+                        "Break-even was reached.", source_urls=cited
+                    )
+                ],
+            )
+        ],
+        uncertainty_notes=(
+            ["Vendor numbers remain unaudited."] if notes is None else notes
+        ),
+    )
+
+
+def _synthesizer(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    tools: list[BaseTool],
+    **overrides: object,
+) -> SynthesizerAgent:
+    return SynthesizerAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1",
+            agent_name="synthesizer",
+            max_entries=20,
+        ),
+        tools=tools,
+        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
+        **overrides,
+    )
+
+
+# --- limitations and filenames -------------------------------------------------
 
 
 def test_a_clean_pass_records_no_limitations() -> None:
@@ -192,73 +300,88 @@ def test_report_filename_rejects_a_negative_iteration() -> None:
         report_filename(session_id="session-1", iteration=-1)
 
 
-def test_sections_keep_only_source_urls_that_reached_the_evidence() -> None:
-    sections, rejected = build_report_sections(
-        ReportDraft(
-            executive_summary="Break-even was reached.",
-            sections=[
-                ReportSectionDraft(
-                    title="  Error correction  ",
-                    body="Break-even was reached.\n\nScaling is open.",
-                    source_urls=[
-                        "https://WWW.example.org/a/",
-                        "https://invented.test/x",
-                        SOURCE_URL,
-                    ],
-                )
-            ],
-            uncertainty_notes="",
-        ),
-        known_urls=[SOURCE_URL],
-        max_sections=4,
+def test_the_evidence_filename_derives_from_the_reader_report() -> None:
+    assert (
+        evidence_report_filename(session_id="Session_42", iteration=2)
+        == "report-session-42-2-evidence.md"
+    )
+    with pytest.raises(ValueError, match="iteration"):
+        evidence_report_filename(session_id="session-1", iteration=-1)
+
+
+# --- the checked-claim packet -------------------------------------------------
+
+
+def test_claims_are_labelled_by_their_canonical_position() -> None:
+    claims = [
+        _claim(),
+        _claim(text="Cost fell tenfold.", urls=[OTHER_URL]),
+    ]
+
+    registry = claim_registry(claims)
+
+    assert [label for label, _ in registry] == ["C001", "C002"]
+    assert [claim.claim_id for _, claim in registry] == [
+        claims[0].claim_id,
+        claims[1].claim_id,
+    ]
+    with pytest.raises(ValueError, match="positions"):
+        claim_label(0)
+
+
+def test_claims_are_ranked_by_coverage_then_verdict_then_confidence() -> None:
+    covered = _claim(text="Covered.", coverage_ids=["topic-01", "topic-02"])
+    verified = _claim(text="Verified.")
+    weak = _claim(text="Weak.", confidence=0.1)
+    contradicted = _claim(
+        text="Contradicted.", verdict="contradicted", confidence=0.9
     )
 
-    assert [section.title for section in sections] == ["Error correction"]
-    assert sections[0].source_urls == [SOURCE_URL]
-    assert "\n\n" in sections[0].body
-    assert rejected == ["section 1: 1 source url(s) not in evidence"]
+    # Coverage first, then verdict, then confidence: a weakly verified claim
+    # is still settled evidence, so it outranks a contradicted one.
+    assert [claim.text for claim in ordered_claims_for_report(
+        [weak, verified, contradicted, covered]
+    )] == ["Covered.", "Verified.", "Weak.", "Contradicted."]
 
 
-def test_a_blank_section_is_dropped_and_named() -> None:
-    sections, rejected = build_report_sections(
-        ReportDraft(
-            executive_summary="",
-            sections=[ReportSectionDraft(title="  ", body="Text.", source_urls=[])],
-            uncertainty_notes="",
-        ),
-        known_urls=[SOURCE_URL],
-        max_sections=4,
+def test_a_claim_repeated_in_state_is_ranked_once() -> None:
+    claim = _claim()
+    ranked = ordered_claims_for_report([claim, claim, _claim(text="Other.")])
+
+    assert [entry.text for entry in ranked] == [claim.text, "Other."]
+
+
+def test_the_packet_keeps_the_ranked_head_and_counts_the_omission() -> None:
+    claims = [
+        _claim(text="First.", coverage_ids=["topic-01"]),
+        _claim(text="Second."),
+        _claim(text="Third."),
+    ]
+
+    packet, omitted = bounded_claim_packet(
+        claim_registry(claims), limit=2, budget_chars=10_000
     )
 
-    assert sections == []
-    assert rejected == ["section 1: blank title or body"]
+    assert [claim.text for _, claim in packet] == ["First.", "Second."]
+    assert omitted == 1
 
 
-def test_sections_past_the_cap_are_dropped_and_named() -> None:
-    draft = ReportDraft(
-        executive_summary="",
-        sections=[
-            ReportSectionDraft(title=f"S{index}", body="Text.", source_urls=[])
-            for index in range(3)
-        ],
-        uncertainty_notes="",
+def test_the_packet_honours_a_character_budget() -> None:
+    claims = [_claim(text="x" * 400), _claim(text="y" * 400)]
+
+    packet, omitted = bounded_claim_packet(
+        claim_registry(claims), limit=10, budget_chars=100
     )
 
-    sections, rejected = build_report_sections(
-        draft, known_urls=[SOURCE_URL], max_sections=2
-    )
-
-    assert [section.title for section in sections] == ["S0", "S1"]
-    assert rejected == ["section 3: past the section cap"]
+    assert len(packet) == 1
+    assert omitted == 1
 
 
-def test_build_report_sections_rejects_a_zero_cap() -> None:
-    with pytest.raises(ValueError, match="max_sections"):
-        build_report_sections(
-            ReportDraft(executive_summary="", sections=[], uncertainty_notes=""),
-            known_urls=[],
-            max_sections=0,
-        )
+def test_the_packet_bounds_reject_a_zero() -> None:
+    with pytest.raises(ValueError, match="limit"):
+        bounded_claim_packet(claim_registry([_claim()]), limit=0, budget_chars=10)
+    with pytest.raises(ValueError, match="budget_chars"):
+        bounded_claim_packet(claim_registry([_claim()]), limit=1, budget_chars=0)
 
 
 def test_only_confident_verified_claims_are_kept_for_memory() -> None:
@@ -272,6 +395,7 @@ def test_only_confident_verified_claims_are_kept_for_memory() -> None:
 
     assert [claim.confidence for claim in kept] == [0.9]
     assert kept[0].verdict == "verified"
+    assert high_confidence_claims(claims, limit=0) == []
 
 
 def test_a_memory_payload_carries_the_claim_and_its_attribution() -> None:
@@ -306,45 +430,342 @@ def test_revision_guidance_repeats_the_critic_feedback() -> None:
     assert render_revision_guidance(_state()) == ""
 
 
-def test_a_composed_report_carries_its_counts_and_every_section() -> None:
-    report = compose_report(
+# --- claim-linked validation --------------------------------------------------
+
+
+def test_a_settled_point_needs_a_known_checked_claim() -> None:
+    composition, rejected = build_report_composition(
         _task(),
-        summary="Break-even was reached.",
+        ReportDraft(
+            executive_summary=[_point_draft(claim_ids=["C999"])],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary == []
+    assert rejected == ["executive summary point 1: no known checked claim"]
+
+
+def test_a_point_citing_a_url_its_claims_do_not_carry_is_refused() -> None:
+    composition, rejected = build_report_composition(
+        _task(),
+        ReportDraft(
+            executive_summary=[_point_draft(source_urls=["https://invented.test/x"])],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary == []
+    assert rejected == [
+        "executive summary point 1: 1 source url(s) not on those claims"
+    ]
+
+
+def test_an_unknown_label_is_counted_and_never_silently_accepted() -> None:
+    composition, rejected = build_report_composition(
+        _task(),
+        ReportDraft(
+            executive_summary=[_point_draft(claim_ids=["c001", "C404"])],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    # The known claim still carries the point; the invented label is named.
+    assert composition.summary[0].claim_ids == [_claim().claim_id]
+    assert rejected == [
+        "executive summary point 1: 1 claim id(s) outside the registry"
+    ]
+
+
+def test_a_point_without_a_source_url_is_refused() -> None:
+    composition, rejected = build_report_composition(
+        _task(),
+        ReportDraft(
+            executive_summary=[_point_draft(source_urls=[])],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary == []
+    assert rejected == [
+        "executive summary point 1: no source url for a settled statement"
+    ]
+
+
+def test_a_blank_point_is_refused_without_quoting_the_model() -> None:
+    composition, rejected = build_report_composition(
+        _task(),
+        ReportDraft(
+            executive_summary=[_point_draft("   ")],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary == []
+    assert rejected == ["executive summary point 1: blank statement"]
+
+
+def test_a_repeated_point_is_refused() -> None:
+    point = _point_draft()
+    composition, rejected = build_report_composition(
+        _task(),
+        ReportDraft(
+            executive_summary=[point, point],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert len(composition.summary) == 1
+    assert rejected == [
+        "executive summary point 2: repeats an earlier point"
+    ]
+
+
+def test_the_registry_holds_what_the_point_cited_and_nothing_else() -> None:
+    composition, rejected = build_report_composition(
+        _task(),
+        _draft(),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == []
+    assert composition.summary[0].claim_ids == [_claim().claim_id]
+    assert composition.summary[0].source_urls == [SOURCE_URL]
+    assert composition.constraints[0].claim_ids == [_claim().claim_id]
+    assert composition.constraints[0].deployment_mechanism == (
+        "area licence with camera enforcement"
+    )
+
+
+def test_a_section_past_the_cap_is_refused_and_named() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
         sections=[
-            ReportSection(
-                title="Error correction",
-                body="Break-even was reached.",
+            ReportSectionDraft(
+                title=f"S{index}", points=[_point_draft(f"Point {index}.")]
+            )
+            for index in range(3)
+        ],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _task(), draft, max_sections=1, limitations=[]
+    )
+
+    assert [section.title for section in composition.sections] == ["S0"]
+    assert rejected == ["2 section(s) past the section cap"]
+
+
+def test_a_blank_section_title_is_refused_and_named() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[ReportSectionDraft(title="   ", points=[_point_draft()])],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.sections == []
+    assert rejected == ["section 1: blank title"]
+
+
+def test_a_section_whose_points_all_fail_is_refused() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[
+            ReportSectionDraft(
+                title="Unsupported", points=[_point_draft(claim_ids=["C999"])]
+            )
+        ],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.sections == []
+    assert rejected == [
+        "section 1 point 1: no known checked claim",
+        "section 1: no printable point",
+    ]
+
+
+def test_a_constraint_is_validated_like_any_other_point() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Unsupported constraint.",
+                deployment_mechanism="not stated",
+                geography="not stated",
+                claim_ids=["C999"],
                 source_urls=[SOURCE_URL],
             )
         ],
-        uncertainty_notes="Vendor numbers remain unaudited.",
-        limitations=["errors_recorded"],
+        sections=[],
+        uncertainty_notes=[],
     )
 
+    composition, rejected = build_report_composition(
+        _task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.constraints == []
+    assert rejected == ["constraint 1: no known checked claim"]
+
+
+def test_a_blank_constraint_cell_renders_as_not_stated() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Supported constraint.",
+                deployment_mechanism="   ",
+                geography="",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert rejected == []
+    assert composition.constraints[0].deployment_mechanism == ""
+    assert composition.constraints[0].geography == ""
+
+
+def test_uncertainty_notes_may_carry_source_free_text() -> None:
+    composition, rejected = build_report_composition(
+        _task(),
+        ReportDraft(
+            executive_summary=[],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=["  Vendor numbers remain unaudited.  ", "   "],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == []
+    assert composition.uncertainty_notes == ["Vendor numbers remain unaudited."]
+
+
+def test_build_report_composition_rejects_a_zero_cap() -> None:
+    with pytest.raises(ValueError, match="max_sections"):
+        build_report_composition(
+            _task(), None, max_sections=0, limitations=[]
+        )
+
+
+# --- composition --------------------------------------------------------------
+
+
+def test_a_composed_report_carries_both_artifacts_and_its_counts() -> None:
+    report, errors = compose_report(
+        _task(), draft=_draft(), limitations=["errors_recorded"]
+    )
+
+    assert errors == []
     for heading in REPORT_SECTIONS:
         assert heading in report.markdown
     assert report.section_count == 1
     assert report.citation_count == 1
-    assert report.source_count == 1
+    assert report.unique_source_count == 1
+    assert report.unique_claim_count == 1
     assert report.path is None
-    assert report.saved_findings == 0
+    assert report.evidence_path == "report-session-1-0-evidence.md"
+    assert report.evidence_markdown.startswith("# Evidence ledger: ")
+    assert SYNTH_EXTRACTED_AT in report.markdown
+    assert "Vendor numbers remain unaudited." in report.markdown
+    assert "saved_findings" not in SynthesizedReport.model_fields
 
 
-def test_a_report_composed_without_a_model_still_cites_its_claims() -> None:
-    report = compose_report(
+def test_a_refused_point_is_named_in_the_ledger_and_recorded() -> None:
+    report, errors = compose_report(
         _task(),
-        summary=REPORT_SUMMARY_FALLBACK,
-        sections=[],
-        uncertainty_notes="",
-        limitations=["report_generation_failed"],
+        draft=_draft(urls=["https://invented.test/x"]),
+        limitations=[],
     )
 
-    assert REPORT_SUMMARY_FALLBACK in report.markdown
-    assert "(no findings were reported)" in report.markdown
-    assert "[1] (confidence 0.80)" in report.markdown
-    assert "The model provider failed while this report was written" in (
-        report.markdown
+    assert "https://invented.test/x" not in report.markdown
+    assert "executive summary point 1: 1 source url(s) not on those claims" in (
+        report.evidence_markdown
     )
+    assert [error.error_type for error in errors] == [
+        "synthesizer_invalid_draft"
+    ]
+    assert errors[0].recoverable is True
+
+
+def test_a_report_composed_without_a_model_still_declares_itself() -> None:
+    report, errors = compose_report(_task(), draft=None, limitations=[])
+
+    assert errors == []
+    assert REPORT_SUMMARY_FALLBACK in report.markdown
+    assert "(no finding passed validation for this pass)" in report.markdown
+    assert f"**Quality status:** {QUALITY_STATUS_NOT_GATED}" in report.markdown
+    # The ledger still carries the checked-claim registry.
+    assert "Logical error rates fell below break-even in 2025." in (
+        report.evidence_markdown
+    )
+
+
+def test_an_unscored_source_is_reported_as_unscored_in_the_ledger() -> None:
+    unscored = ScoredSource(
+        url=OTHER_URL,
+        title="Unscored study",
+        rationale="The provider was unavailable, so this source carries no score.",
+        evaluation_status="unscored_provider",
+    )
+    report, _ = compose_report(
+        _task(sources=[_source(), unscored]),
+        draft=_draft(),
+        limitations=[],
+    )
+
+    assert "unscored_provider" in report.evidence_markdown
+    assert "not scored" not in report.markdown
+
+
+# --- the request the writer receives ------------------------------------------
 
 
 def test_report_messages_carry_every_input_the_writer_needs() -> None:
@@ -359,12 +780,30 @@ def test_report_messages_carry_every_input_the_writer_needs() -> None:
     assert "# Research question" in body
     assert "# Context" in body
     assert "Close the cost gap." in body
-    assert "# Verified and checked claims" in body
-    assert "[verified 0.80]" in body
-    assert "# Retrieved findings" in body
+    assert "# As of and scope" in body
+    assert SYNTH_EXTRACTED_AT in body
+    assert "# Checked claims to cite" in body
+    assert "C001 [verified 0.80]" in body
+    assert "# Retrieved findings (open questions only)" in body
     assert "# Source quality" in body
     assert "# Known limitations" in body
     assert "# Response contract" in body
+    assert body.count("JSON object") == 1
+
+
+def test_report_messages_state_how_many_claims_were_omitted() -> None:
+    task = _task(
+        claims=[
+            _claim(),
+            _claim(text="Cost fell tenfold.", urls=[OTHER_URL]),
+        ]
+    )
+
+    body = report_messages(task, finding_digest=10, claim_digest=1)[1].content
+
+    assert "C001" in body
+    assert "C002" not in body
+    assert "1 further checked claim(s) were omitted" in body
 
 
 def test_live_report_messages_expose_every_required_coverage_topic(
@@ -396,45 +835,6 @@ def test_report_messages_drop_the_context_section_without_guidance() -> None:
     assert "# Context" not in body
 
 
-def _synthesizer(
-    tracker: Tracker,
-    completer: ScriptedCompleter,
-    tools: list[BaseTool],
-    **overrides: object,
-) -> SynthesizerAgent:
-    return SynthesizerAgent(
-        provider=completer,
-        tracker=tracker,
-        scratchpad=ScratchpadMemory(
-            session_id="session-1",
-            agent_name="synthesizer",
-            max_entries=20,
-        ),
-        tools=tools,
-        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
-        **overrides,
-    )
-
-
-def _draft(
-    *,
-    summary: str = "Break-even was reached in 2025.",
-    urls: list[str] | None = None,
-    notes: str = "Vendor numbers remain unaudited.",
-) -> ReportDraft:
-    return ReportDraft(
-        executive_summary=summary,
-        sections=[
-            ReportSectionDraft(
-                title="Error correction",
-                body="Break-even was reached.",
-                source_urls=urls if urls is not None else [SOURCE_URL],
-            )
-        ],
-        uncertainty_notes=notes,
-    )
-
-
 def test_build_task_carries_the_evidence_limitations_and_revision_notes(
     tracker: Tracker, tmp_path: Path
 ) -> None:
@@ -460,15 +860,23 @@ def test_build_task_carries_the_evidence_limitations_and_revision_notes(
     assert task.instruction == state.original_question
     assert task.session_id == "session-1"
     assert task.iteration == 0
+    assert task.max_iterations == state.max_iterations
+    assert task.as_of == SYNTH_EXTRACTED_AT
+    assert "topic-01 Alpha" in task.scope
+    assert [topic.coverage_id for topic in task.sub_topics] == ["topic-01"]
     assert [claim.text for claim in task.claims] == [
         "Logical error rates fell below break-even in 2025."
     ]
     assert task.limitations == ["low_confidence_sources"]
+    assert task.errors == []
     assert "No cost data." in task.guidance
 
 
+# --- the run writes nothing ---------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_a_run_writes_the_report_and_records_its_counts(
+async def test_a_run_composes_both_artifacts_and_writes_nothing(
     tracker: Tracker, tmp_path: Path
 ) -> None:
     memory = FakeMemory()
@@ -483,27 +891,27 @@ async def test_a_run_writes_the_report_and_records_its_counts(
         outcome = await agent.run(_state())
 
     assert outcome.result is not None
-    assert outcome.result.path == "report-session-1-0.md"
-    assert (tmp_path / "report-session-1-0.md").read_text(encoding="utf-8") == (
-        outcome.result.markdown
-    )
+    # Composition, not publication.
+    assert outcome.result.path is None
     assert outcome.state_update["report"] == outcome.result.markdown
+    assert outcome.state_update["report_evidence"] == (
+        outcome.result.evidence_markdown
+    )
+    assert outcome.state_update["evidence_path"] == "report-session-1-0-evidence.md"
+    assert outcome.state_update["unique_source_count"] == 1
+    assert outcome.state_update["unique_claim_count"] == 1
+    # No tool ran, no file exists, no memory entry was saved.
+    assert outcome.react.tool_calls == 0
+    assert completer.react_calls == []
+    assert memory.saved == []
+    assert list(tmp_path.iterdir()) == []
+    assert "output_path" not in outcome.state_update
     assert "## Executive summary" in outcome.result.markdown
     assert "Break-even was reached in 2025." in outcome.result.markdown
     assert "Vendor numbers remain unaudited." in outcome.result.markdown
     assert outcome.react.stop_reason == "finished"
     assert outcome.errors == []
-    requested_schemas = [call[0] for call in completer.calls]
-    assert requested_schemas == ["ReportDraft"]
-    assert "ReActDecision" not in requested_schemas
-    # Control: the report call is tool-free and the writes are deterministic,
-    # so this agent never crosses the native ReAct boundary.
-    assert completer.react_calls == []
-    # One high-confidence verified claim was kept for future sessions.
-    assert [content for content, _ in memory.saved] == [
-        "Logical error rates fell below break-even in 2025."
-    ]
-    assert outcome.result.saved_findings == 1
+    assert [call[0] for call in completer.calls] == ["ReportDraft"]
 
 
 @pytest.mark.asyncio
@@ -527,14 +935,19 @@ async def test_a_run_emits_the_counts_the_spec_requires(
     completed = events[-1].metadata
     assert completed["section_count"] == 1
     assert completed["citation_count"] == 1
-    assert completed["source_appendix_count"] == 1
-    assert completed["output_path"] == "report-session-1-0.md"
-    assert completed["saved_findings"] == 1
+    assert completed["unique_source_count"] == 1
+    assert completed["unique_claim_count"] == 1
+    assert completed["evidence_path"] == "report-session-1-0-evidence.md"
+    assert completed["report_chars"] == len(outcome.result.markdown)
+    assert completed["evidence_chars"] == len(outcome.result.evidence_markdown)
+    # A completion event may never advertise an artifact that does not exist.
+    assert "output_path" not in completed
+    assert "saved_findings" not in completed
     assert completed["limitations"] == []
 
 
 @pytest.mark.asyncio
-async def test_an_invented_section_url_is_dropped_and_recorded(
+async def test_an_invented_section_url_is_refused_and_recorded(
     tracker: Tracker, tmp_path: Path
 ) -> None:
     agent = _synthesizer(
@@ -548,11 +961,11 @@ async def test_an_invented_section_url_is_dropped_and_recorded(
 
     assert outcome.result is not None
     assert "https://invented.test/x" not in outcome.result.markdown
-    assert "Sources: none cited" in outcome.result.markdown
     assert [error.error_type for error in outcome.errors] == [
-        "synthesizer_invalid_section"
+        "synthesizer_invalid_draft"
     ]
     assert outcome.errors[0].recoverable is True
+    assert outcome.errors[0].details["rejected"]
 
 
 @pytest.mark.asyncio
@@ -570,7 +983,6 @@ async def test_a_provider_failure_still_produces_a_cited_report(
 
     assert outcome.result is not None
     assert REPORT_SUMMARY_FALLBACK in outcome.result.markdown
-    assert "[1] (confidence 0.80)" in outcome.result.markdown
     assert "The model provider failed while this report was written" in (
         outcome.result.markdown
     )
@@ -583,7 +995,11 @@ async def test_a_provider_failure_still_produces_a_cited_report(
     assert provider["kind"] == "output_limit"
     assert provider["configured_max_tokens"] == 4096
     assert provider["request_attempt"] == 1
-    assert (tmp_path / "report-session-1-0.md").is_file()
+    # The ledger is still composed from the recorded evidence.
+    assert "Logical error rates fell below break-even in 2025." in (
+        outcome.result.evidence_markdown
+    )
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -601,88 +1017,11 @@ async def test_no_evidence_skips_the_provider_and_says_so(
 
     assert completer.calls == []
     assert outcome.result is not None
-    assert "(no claim reached a verified verdict)" in outcome.result.markdown
+    assert REPORT_SUMMARY_FALLBACK in outcome.result.markdown
     assert "no_evidence" in {
         error.error_type.removeprefix("synthesizer_") for error in outcome.errors
     }
     assert "No source behind these findings was scored" in outcome.result.markdown
-
-
-@pytest.mark.asyncio
-async def test_a_failed_write_keeps_the_report_in_state(
-    tracker: Tracker, tmp_path: Path
-) -> None:
-    # A directory where the report file must go makes the real tool fail.
-    (tmp_path / "report-session-1-0.md").mkdir()
-    agent = _synthesizer(
-        tracker,
-        ScriptedCompleter(outputs=[_draft()]),
-        synthesizer_tools(tracker, output_root=tmp_path),
-    )
-
-    async with tracker.session_span("session-1", "question"):
-        outcome = await agent.run(_state())
-
-    assert outcome.result is not None
-    assert outcome.result.path is None
-    assert outcome.state_update["report"] == outcome.result.markdown
-    assert [error.error_type for error in outcome.errors] == [
-        "synthesizer_report_not_written"
-    ]
-    assert outcome.errors[0].details["reason"] == "tool_failed"
-
-
-@pytest.mark.asyncio
-async def test_a_failed_memory_write_never_blocks_the_report(
-    tracker: Tracker, tmp_path: Path
-) -> None:
-    memory = FakeMemory(error=RuntimeError("memory down"))
-    agent = _synthesizer(
-        tracker,
-        ScriptedCompleter(outputs=[_draft()]),
-        synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
-    )
-
-    async with tracker.session_span("session-1", "question"):
-        outcome = await agent.run(_state())
-
-    assert outcome.result is not None
-    assert outcome.result.path == "report-session-1-0.md"
-    assert outcome.result.saved_findings == 0
-    error = next(
-        error
-        for error in outcome.errors
-        if error.error_type == "synthesizer_memory_save_failed"
-    )
-    assert error.recoverable is True
-    assert error.details == {"failures": 1, "attempted": 1}
-
-
-@pytest.mark.asyncio
-async def test_only_capped_high_confidence_claims_reach_memory(
-    tracker: Tracker, tmp_path: Path
-) -> None:
-    memory = FakeMemory()
-    agent = _synthesizer(
-        tracker,
-        ScriptedCompleter(outputs=[_draft()]),
-        synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
-        max_memory_findings=1,
-    )
-    state = _state(
-        verified_claims=[
-            _claim(text="First.", confidence=0.9),
-            _claim(text="Second.", confidence=0.9),
-            _claim(text="Weak.", confidence=0.2),
-        ]
-    )
-
-    async with tracker.session_span("session-1", "question"):
-        outcome = await agent.run(state)
-
-    assert [content for content, _ in memory.saved] == ["First."]
-    assert outcome.result is not None
-    assert outcome.result.saved_findings == 1
 
 
 @pytest.mark.asyncio
@@ -702,9 +1041,15 @@ async def test_finalize_requires_a_synthesis_task(
         )
 
 
-def test_the_synthesizer_declares_its_two_writes(
+def test_the_synthesizer_declares_the_publication_tools_only(
     tracker: Tracker, tmp_path: Path
 ) -> None:
+    """The two persistence tools stay declared for the terminal finalizer.
+
+    This agent's own run calls neither; the declaration is what keeps the
+    graph, the assembly, and the live evaluation dependency list honest about
+    which services this agent may reach.
+    """
     agent = _synthesizer(
         tracker,
         ScriptedCompleter(),
@@ -716,34 +1061,19 @@ def test_the_synthesizer_declares_its_two_writes(
     assert agent.output_schema is SynthesizedReport
 
 
-def test_build_report_sections_drops_the_example_url() -> None:
-    """The report example URL is not in the evidence, so it is dropped."""
-    draft = ReportDraft(
-        executive_summary="A summary.",
-        sections=[
-            ReportSectionDraft(
-                title="Copied example",
-                body="Body.",
-                source_urls=["https://evidence.example.test/report"],
-            ),
-            ReportSectionDraft(
-                title="Real evidence",
-                body="Body.",
-                source_urls=["https://real.test/one"],
-            ),
+def test_the_composed_reader_report_uses_point_level_citations() -> None:
+    report, _ = compose_report(_task(), draft=_draft(), limitations=[])
+    section = ReportSection(
+        title="Error correction",
+        points=[
+            ReportPoint(
+                text="Break-even was reached.",
+                claim_ids=[_claim().claim_id],
+                source_urls=[SOURCE_URL],
+            )
         ],
-        uncertainty_notes="",
     )
 
-    sections, rejected = build_report_sections(
-        draft, known_urls=("https://real.test/one",), max_sections=5
-    )
-
-    # The section survives; its un-evidenced citation does not.
-    assert [section.title for section in sections] == [
-        "Copied example",
-        "Real evidence",
-    ]
-    assert sections[0].source_urls == []
-    assert sections[1].source_urls == ["https://real.test/one"]
-    assert rejected
+    assert section.points[0].claim_ids == [_claim().claim_id]
+    assert "- Break-even was reached. [1]" in report.markdown
+    assert "Sources: [" not in report.markdown

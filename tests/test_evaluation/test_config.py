@@ -91,7 +91,20 @@ from deep_research.utils.config import (
 # evaluator ``cd5ea5f5579b`` -> ``21d4d79ca09a``, Fact Checker
 # ``5c7744ff65bc`` -> ``f9dd5826f66a``, Synthesizer ``366b69880972`` ->
 # ``6f5b7739f134``, and Critic ``243f6ebb1627`` -> ``5b0105f4dcc1``.
-CRITIC_PROMPT_FINGERPRINT = "a15c36b0ed0e"
+# Task 6 then replaced section-level report prose with claim-linked points and
+# added the checked-claim packet to the shared prompt module, so all six
+# shared fingerprints moved together again: planner ``8a5f8a1499bf`` ->
+# ``aa648f82af71``, researcher ``ebdfd3ae4c05`` -> ``6d5fd0f85dc3``, source
+# evaluator ``ffab1c9795e2`` -> ``ddd8f9e5785a``, Fact Checker
+# ``d5c99dbd9a35`` -> ``3ccaa7aa4fc1``, Synthesizer ``affe67074133`` ->
+# ``6b9c616afad9``, and Critic ``a15c36b0ed0e`` -> ``5bb5ef748a84``. The
+# synthesizer moved for a second reason as well — its own module now
+# validates points against the canonical claim registry and composes two
+# artifacts instead of writing one — which is the documented false positive
+# of hashing a module's full source. (The synthesizer's value covers the
+# final source of that module in this commit, including the blank-cell
+# normalization its constraint rows use.) The Judge pin did **not** move.
+CRITIC_PROMPT_FINGERPRINT = "5bb5ef748a84"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -167,13 +180,27 @@ CRITIC_PROMPT_FINGERPRINT = "a15c36b0ed0e"
 # untouched, so the other five target pins and the Judge pin are unchanged —
 # exactly the blast radius this change should have, and the reason the pin is
 # checked as a matrix rather than per file.
+#
+# Task 6 changed ``SYNTHESIZER_SYSTEM_PROMPT``, ``REPORT_INSTRUCTION`` and the
+# checked-claim packet renderer in the shared ``agents/prompts.py``, and
+# rewrote ``agents/synthesizer.py`` (claim-linked point validation against the
+# canonical registry, refusal reasons, two composed artifacts, no writes).
+# Because the shared module is hashed into every agent's value, all six moved
+# together — planner ``8a5f8a1499bf`` -> ``aa648f82af71``, researcher
+# ``ebdfd3ae4c05`` -> ``6d5fd0f85dc3``, source evaluator ``ffab1c9795e2`` ->
+# ``ddd8f9e5785a``, Fact Checker ``d5c99dbd9a35`` -> ``3ccaa7aa4fc1``,
+# Synthesizer ``affe67074133`` -> ``6b9c616afad9``, Critic
+# ``a15c36b0ed0e`` -> ``5bb5ef748a84``. The synthesizer's move has both
+# causes (shared prompt text *and* its own module). ``CRITIC_PROMPT_FINGERPRINT``
+# moved with the critic entry, and ``PINNED_JUDGE_PROMPT_FINGERPRINT`` did
+# not move: the Judge prompt module was untouched.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "8a5f8a1499bf",
-    "researcher": "ebdfd3ae4c05",
-    "source_evaluator": "ffab1c9795e2",
-    "fact_checker": "d5c99dbd9a35",
-    "synthesizer": "affe67074133",
-    "critic": "a15c36b0ed0e",
+    "planner": "aa648f82af71",
+    "researcher": "6d5fd0f85dc3",
+    "source_evaluator": "ddd8f9e5785a",
+    "fact_checker": "3ccaa7aa4fc1",
+    "synthesizer": "6b9c616afad9",
+    "critic": "5bb5ef748a84",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

@@ -172,12 +172,20 @@ def _production_target_output(
             {
                 "markdown": "",
                 "path": None,
+                "evidence_markdown": "",
+                "evidence_path": "report-session-1-0-evidence.md",
                 "section_count": 0,
                 "citation_count": 0,
-                "source_count": 0,
-                "saved_findings": 0,
+                "unique_source_count": 0,
+                "unique_claim_count": 0,
             },
-            {"report": ""},
+            {
+                "report": "",
+                "report_evidence": "",
+                "evidence_path": "report-session-1-0-evidence.md",
+                "unique_source_count": 0,
+                "unique_claim_count": 0,
+            },
             "report",
         ),
         (

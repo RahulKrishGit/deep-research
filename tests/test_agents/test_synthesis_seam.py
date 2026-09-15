@@ -1,10 +1,10 @@
 """End-to-end seam: checked evidence becomes a report, then a critique.
 
 Every other Synthesizer and Critic test builds state by hand, so nothing
-exercises the real seam: that ``FactCheckerAgent`` writes claims whose URLs
-the Synthesizer can cite, that the report it writes is what the Critic
-reviews, and that the Critic's routing recommendation lands in the same
-state a graph would read. This test runs all three agents in sequence,
+exercises the real seam: that ``FactCheckerAgent`` writes claims whose labels
+and URLs the Synthesizer can cite, that the report it composes is what the
+Critic reviews, and that the Critic's routing recommendation lands in the
+same state a graph would read. This test runs all three agents in sequence,
 merging state the way the orchestrator will.
 """
 
@@ -24,7 +24,9 @@ from deep_research.agents.fact_checker import (
 )
 from deep_research.agents.report import REPORT_SECTIONS
 from deep_research.agents.synthesizer import (
+    ConstraintDraft,
     ReportDraft,
+    ReportPointDraft,
     ReportSectionDraft,
     SynthesizerAgent,
 )
@@ -152,15 +154,37 @@ async def test_verified_claims_become_a_cited_report_the_critic_accepts(
         provider=ScriptedCompleter(
             outputs=[
                 ReportDraft(
-                    executive_summary="Break-even was reached in 2025.",
-                    sections=[
-                        ReportSectionDraft(
-                            title="Error correction",
-                            body="Break-even was reached.",
+                    executive_summary=[
+                        ReportPointDraft(
+                            text="Break-even was reached in 2025.",
+                            claim_ids=["C001"],
                             source_urls=[SEAM_SOURCE_URL],
                         )
                     ],
-                    uncertainty_notes="Vendor numbers remain unaudited.",
+                    ranked_constraints=[
+                        ConstraintDraft(
+                            constraint="Hold the logical error rate below "
+                            "break-even.",
+                            deployment_mechanism="error-corrected logical "
+                            "qubits",
+                            geography="not stated",
+                            claim_ids=["C001"],
+                            source_urls=[SEAM_SOURCE_URL],
+                        )
+                    ],
+                    sections=[
+                        ReportSectionDraft(
+                            title="Error correction",
+                            points=[
+                                ReportPointDraft(
+                                    text="Break-even was reached.",
+                                    claim_ids=["C001"],
+                                    source_urls=[SEAM_SOURCE_URL],
+                                )
+                            ],
+                        )
+                    ],
+                    uncertainty_notes=["Vendor numbers remain unaudited."],
                 )
             ]
         ),
@@ -202,13 +226,17 @@ async def test_verified_claims_become_a_cited_report_the_critic_accepts(
     for heading in REPORT_SECTIONS:
         assert heading in state.report
     # The claim the Fact Checker verified is cited against the source the
-    # Researcher actually retrieved.
-    assert "[1] (confidence 0.90)" in state.report
+    # Researcher actually retrieved, inline in the point that rests on it.
+    assert "- Break-even was reached. [1]" in state.report
     assert f"1. QEC 2025 — {SEAM_SOURCE_URL}" in state.report
-    assert (tmp_path / "report-session-1-0.md").is_file()
-    assert [content for content, _ in memory.saved] == [
-        "Logical error rates fell below break-even in 2025."
-    ]
+    # Both artifacts are composed into state; synthesis publishes neither and
+    # keeps nothing in long-term memory.
+    assert state.report_evidence is not None
+    assert state.evidence_path == "report-session-1-0-evidence.md"
+    assert state.unique_source_count == 1
+    assert state.unique_claim_count == 1
+    assert list(tmp_path.iterdir()) == []
+    assert memory.saved == []
 
     assert state.critique is not None
     assert state.critique.should_continue is False
@@ -230,9 +258,10 @@ async def test_a_weak_pass_reports_its_limits_and_asks_for_another_cycle(
         provider=ScriptedCompleter(
             outputs=[
                 ReportDraft(
-                    executive_summary="Little is settled.",
+                    executive_summary=[],
+                    ranked_constraints=[],
                     sections=[],
-                    uncertainty_notes="",
+                    uncertainty_notes=[],
                 )
             ]
         ),

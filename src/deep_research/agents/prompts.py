@@ -187,35 +187,50 @@ SYNTHESIZER_SYSTEM_PROMPT = (
     "You are the synthesizer of a multi-agent research system. You write "
     "the prose of the final report from evidence this system already "
     "collected and checked.\n"
-    "You are shown the research question, every claim with its verification "
-    "verdict, the retrieved findings, each source's quality score when scored "
-    "or explicit evaluation status otherwise, "
-    "and the limitations this pass already knows about.\n"
-    "Report only what that evidence states. Never invent a source, a "
-    "number, or a claim that is not in front of you, and never present a "
+    "You are shown the research question, every checked claim with its "
+    "verdict, the labels that address those claims, the retrieved findings, "
+    "each source's quality score when scored or explicit evaluation status "
+    "otherwise, and the limitations this pass already knows about.\n"
+    "Every statement you return is a point: one short statement carrying the "
+    "labels of the checked claims it rests on and the source urls those "
+    "claims carry. A point with no checked claim, or one citing a url those "
+    "claims do not carry, is refused and never reaches the report.\n"
+    "Report only what that evidence states. Never invent a source, a number, "
+    "a claim, or a label that is not in front of you, and never present a "
     "claim that was not verified as though it were settled.\n"
-    "The report's headings, citation numbering, claim lists, limitations, "
-    "and source appendix are assembled by this system. Write the prose; do "
-    "not write the skeleton."
+    "The report's headings, citation numbering, reference list, uncertainty "
+    "grouping, limitations, and evidence ledger are assembled by this "
+    "system. Write the prose; do not write the skeleton."
 )
 
 REPORT_INSTRUCTION = (
-    "Return an executive summary, a list of narrative sections, and "
-    "uncertainty notes.\n"
-    "executive_summary: three to six sentences answering the research "
-    "question directly, naming what is settled and what is not. Do not open "
-    "with a heading.\n"
-    "sections: one per theme worth its own heading, ordered as a reader "
-    "should meet them. Each carries a short title, a body of plain "
-    "paragraphs, and the source urls that body rests on, copied exactly "
-    "from the evidence above. Do not write Markdown headings, citation "
-    "markers, or a source list inside a body — the citation line is added "
-    "for you from the urls you attach.\n"
+    "Return an executive summary, a ranked constraint list, findings "
+    "sections, and uncertainty notes. Every statement you return is a point "
+    "with exactly three fields: text, claim_ids, and source_urls.\n"
+    "executive_summary: three to six points answering the research question "
+    "directly, naming what is settled and what is not. Do not open with a "
+    "heading.\n"
+    "ranked_constraints: the constraints a decision-maker must respect, most "
+    "consequential first, as objects with constraint, "
+    "deployment_mechanism, geography, claim_ids, and source_urls. State a "
+    "mechanism or a geography only when the checked claims state it; write "
+    "'not stated' otherwise. Never guess a jurisdiction.\n"
+    "sections: one object per theme worth its own heading, ordered as a "
+    "reader should meet them, each with a short title and a points list.\n"
     "uncertainty_notes: what a reader should distrust and why — thin "
     "sourcing, conflicting evidence, questions the research did not reach. "
-    "Return an empty string when there is nothing to add.\n"
-    "A url you attach that is not in the evidence above is dropped, and the "
-    "section loses that citation. Copy urls exactly."
+    "This is the one place source-free text belongs. Return an empty list "
+    "when there is nothing to add.\n"
+    "claim_ids: copy the labels exactly as printed in the checked-claims "
+    "packet (such as C001). A label that is not in that packet is refused.\n"
+    "source_urls: copy urls exactly from the claims you cite. A url that is "
+    "not on one of those claims is refused, and the point is lost.\n"
+    "One point carries one statement. If a sentence makes three separate "
+    "factual assertions, return three points — or one point only if all "
+    "three share exactly the same claims and sources.\n"
+    "Do not write Markdown headings, citation markers, or a source list "
+    "inside any text field: the markers and the reference list are added for "
+    "you from the urls you attach."
 )
 
 CRITIC_SYSTEM_PROMPT = (
@@ -470,5 +485,39 @@ def render_claim_digest(
         lines.append(
             f"{position}. [{claim.verdict} {claim.confidence:.2f}] {text} "
             f"({urls})"
+        )
+    return "\n".join(lines) or "(no claims were checked)"
+
+
+def render_report_claim_packet(
+    packet: Sequence[tuple[str, Claim]],
+    *,
+    omitted: int = 0,
+    limit: int = 240,
+) -> str:
+    """Render the labelled checked-claim packet a report draft cites.
+
+    Each line is addressable: the model returns the label, and the validator
+    resolves it against the same registry, so a claim can never be cited by a
+    string that does not name a checked claim. Claims the packet's budget left
+    out are counted here rather than silently missing, so the model knows the
+    packet is partial.
+    """
+    if omitted < 0:
+        raise ValueError("omitted must not be negative")
+    lines: list[str] = []
+    for label, claim in packet:
+        text = summarize_text(claim.text, limit=limit)
+        urls = ", ".join(claim.source_urls)
+        coverage = ", ".join(claim.consumed_coverage_ids)
+        suffix = f" coverage={coverage}" if coverage else ""
+        lines.append(
+            f"{label} [{claim.verdict} {claim.confidence:.2f}] {text} "
+            f"({urls}){suffix}"
+        )
+    if omitted:
+        lines.append(
+            f"({omitted} further checked claim(s) were omitted for length; "
+            "they cannot be cited by this draft.)"
         )
     return "\n".join(lines) or "(no claims were checked)"
