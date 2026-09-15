@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
@@ -507,7 +508,7 @@ def _digest_claim(
     urls: list[str] | None = None,
 ) -> Claim:
     return Claim(
-        claim_id=f"fixture-{text.casefold().replace(' ', '-')}",
+        claim_id=claim_fingerprint(text),
         text=text,
         source_urls=urls or ["https://example.org/a"],
         verdict=verdict,

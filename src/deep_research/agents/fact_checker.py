@@ -16,7 +16,7 @@ true".
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -30,6 +30,7 @@ from deep_research.agents.events import agent_event
 from deep_research.agents.identity import (
     claim_fingerprint,
     deduplicate_findings,
+    finding_fingerprint,
     merge_claim_snapshot,
 )
 from deep_research.agents.prompts import (
@@ -59,6 +60,8 @@ from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    MAX_CONSUMED_COVERAGE_IDS,
+    MAX_CONSUMED_FINDING_FINGERPRINTS,
     Claim,
     ClaimVerdict,
     ContractModel,
@@ -118,11 +121,15 @@ class ClaimTask(AgentTask):
 
     Carrying the claim on the task is what lets ``finalize(task, run)``
     know which claim it is finalizing without the agent holding mutable
-    state across await points.
+    state across await points. The two provenance fields carry what this
+    claim's extraction pass attributed to it, so the verified ``Claim``
+    records the evidence it consumed.
     """
 
     claim: ClaimDraft
     claimed_domains: list[str] = []
+    consumed_finding_fingerprints: list[str] = []
+    consumed_coverage_ids: list[str] = []
 
 
 class VerifiedClaims(ContractModel):
@@ -180,26 +187,95 @@ def _critique_requests_reverification(
 
 
 def _finding_is_new(finding: Finding, prior_claims: Sequence[Claim]) -> bool:
-    """Treat new source URLs or changed finding text as new evidence."""
-    if not prior_claims:
-        return True
-    url = normalize_source_url(finding.source_url)
-    finding_text = _collapsed(finding.content)
-    for claim in prior_claims:
-        if url not in {normalize_source_url(item) for item in claim.source_urls}:
-            continue
-        prior_texts = {
-            _collapsed(claim.text),
-            *(_collapsed(item) for item in claim.evidence),
-            *(_collapsed(item) for item in claim.contradictions),
-            *(
-                _collapsed(passage.excerpt)
-                for passage in claim.verification_evidence
-            ),
-        }
-        if finding_text in prior_texts:
-            return False
-    return True
+    """True unless a prior claim recorded consuming this exact finding.
+
+    Persisted provenance is the only authority. Claim extraction is
+    explicitly allowed to rewrite and merge findings into self-contained
+    claims, so comparing a raw finding's prose with a claim's text, evidence,
+    contradictions, or verification excerpts could never tell an unchanged
+    origin finding from one that arrived with changed content. A prior claim
+    carrying no recorded provenance — a fixture, or a snapshot written
+    before provenance existed — proves nothing and therefore suppresses
+    nothing: the failure direction is extra work, never skipped evidence.
+    """
+    return (
+        finding_fingerprint(finding)
+        not in _recorded_finding_fingerprints(prior_claims)
+    )
+
+
+def _recorded_finding_fingerprints(prior_claims: Sequence[Claim]) -> set[str]:
+    """Every origin-finding identity the prior snapshot recorded consuming."""
+    return {
+        fingerprint
+        for claim in prior_claims
+        for fingerprint in claim.consumed_finding_fingerprints
+    }
+
+
+def _recorded_coverage_ids(prior_claims: Sequence[Claim]) -> set[str]:
+    """Every planned coverage id the prior snapshot recorded consuming."""
+    return {
+        coverage_id
+        for claim in prior_claims
+        for coverage_id in claim.consumed_coverage_ids
+    }
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    """Keep first-seen order, so provenance is a deterministic function."""
+    if value and value not in values:
+        values.append(value)
+
+
+def consumed_provenance(
+    draft: ClaimDraft,
+    *,
+    findings: Sequence[Finding],
+    coverage_ids: Mapping[str, str],
+) -> tuple[list[str], list[str]]:
+    """The origin findings and coverage ids one extracted claim consumed.
+
+    Attribution is per consumed FINDING, never per cited URL, because a URL
+    alone cannot tell two findings apart: when several candidates in this
+    pass carry the same URL, the single highest-priority candidate in the
+    pass's extraction order consumes it and the rest stay unconsumed. That is
+    what keeps an untouched second coverage topic sharing one source URL
+    reported as uncovered instead of being covered by URL overlap.
+
+    ``coverage_ids`` maps a collapsed sub-topic title to the coverage id the
+    Planner stamped for it. A finding whose title matches no planned topic
+    contributes its fingerprint but no coverage id, so it can never mark an
+    unrelated topic covered.
+
+    Both lists are bounded, and an identity that does not fit is treated as
+    not consumed — extra work, never skipped evidence.
+    """
+    cited = {normalize_source_url(url) for url in draft.source_urls}
+    attributed: dict[str, Finding] = {}
+    for finding in findings:
+        url = normalize_source_url(finding.source_url)
+        if url in cited and url not in attributed:
+            attributed[url] = finding
+    fingerprints: list[str] = []
+    consumed_coverage: list[str] = []
+    for finding in attributed.values():
+        _append_unique(fingerprints, finding_fingerprint(finding))
+        coverage_id = coverage_ids.get(_collapsed(finding.related_sub_topic))
+        if coverage_id:
+            _append_unique(consumed_coverage, coverage_id)
+    return (
+        fingerprints[:MAX_CONSUMED_FINDING_FINGERPRINTS],
+        consumed_coverage[:MAX_CONSUMED_COVERAGE_IDS],
+    )
+
+
+def coverage_ids_by_title(state: ResearchState) -> dict[str, str]:
+    """Map each planned sub-topic's collapsed title to its coverage id."""
+    coverage_ids: dict[str, str] = {}
+    for topic in state.sub_topics:
+        coverage_ids.setdefault(_collapsed(topic.title), topic.coverage_id)
+    return coverage_ids
 
 
 def ordered_findings_for_extraction(
@@ -227,30 +303,22 @@ def ordered_findings_for_extraction(
         if claim.verdict in {"unverified", "insufficient_evidence"}
         for url in claim.source_urls
     }
-    prior_claim_sources = {
-        normalize_source_url(url)
-        for claim in prior_claims
-        for url in claim.source_urls
-    }
-    topic_sources: dict[str, set[str]] = {}
-    for finding in findings:
-        key = _collapsed(finding.related_sub_topic)
-        topic_sources.setdefault(key, set()).add(
-            normalize_source_url(finding.source_url)
-        )
-    uncovered_topics = {
-        topic_ids.get(key, key)
-        for key, sources in topic_sources.items()
-        if not sources & prior_claim_sources
+    # A topic is covered iff a prior claim RECORDED consuming its coverage id.
+    # URL overlap is deliberately not coverage: two planned topics can share
+    # one source URL, and checking one of them must not silently cover the
+    # other and strip it of its priority.
+    covered_keys = {
+        key
+        for key, coverage_id in topic_ids.items()
+        if coverage_id in _recorded_coverage_ids(prior_claims)
     }
     indexed = list(enumerate(findings))
 
     def ordering(item: tuple[int, Finding]) -> tuple[int, int, int]:
         index, finding = item
         key = _collapsed(finding.related_sub_topic)
-        coverage_id = topic_ids.get(key, key)
         topic_rank = topic_ranks.get(key, len(topic_ranks))
-        if coverage_id in uncovered_topics:
+        if key not in covered_keys:
             bucket = 0
         elif _finding_is_new(finding, prior_claims):
             bucket = 1
@@ -283,6 +351,14 @@ def build_claim_drafts(
     which is exactly the failure this project refuses to pass downstream.
     Rejection reasons are generated here and never copied from provider
     output, so they are safe to record in ``ResearchError.details``.
+
+    ``new_source_urls`` is the caller's provenance-derived answer to "which
+    URLs carry a finding no prior claim recorded consuming"
+    (``extract_claims`` computes it with ``_finding_is_new``). A claim whose
+    fingerprint is already in the snapshot is therefore dropped as already
+    checked unless one of its own sources carries such new evidence, or the
+    Critic explicitly asked for re-verification — the Critic's free-text
+    override stays separate from provenance-based idempotence.
     """
     allowed = {normalize_source_url(url) for url in known_urls}
     new_urls = {normalize_source_url(url) for url in new_source_urls}
@@ -619,6 +695,8 @@ def build_claim(
     independent: Sequence[str] = (),
     retrieved_urls: Sequence[str] = (),
     claimed_publishers: Sequence[str] | None = None,
+    consumed_finding_fingerprints: Sequence[str] = (),
+    consumed_coverage_ids: Sequence[str] = (),
 ) -> Claim:
     """Stamp one model verdict into a validated ``Claim`` record."""
     claimed = list(
@@ -651,16 +729,28 @@ def build_claim(
             if passage.stance == "contradicts"
         ],
         verification_evidence=passages,
+        consumed_finding_fingerprints=list(consumed_finding_fingerprints),
+        consumed_coverage_ids=list(consumed_coverage_ids),
     )
 
 
-def insufficient_claim(claim: ClaimDraft, *, reason: str) -> Claim:
+def insufficient_claim(
+    claim: ClaimDraft,
+    *,
+    reason: str,
+    consumed_finding_fingerprints: Sequence[str] = (),
+    consumed_coverage_ids: Sequence[str] = (),
+) -> Claim:
     """Record a claim that could not be judged, with no invented confidence.
 
     ``reason`` is one of ``INSUFFICIENT_REASONS``; it travels in the
     claim's event metadata rather than on the record, because ``Claim``
     has no field for it and this project does not widen a shared contract
     for one agent's bookkeeping.
+
+    An insufficient claim still records what it consumed: the finding was
+    read and judged, and re-reading it next pass would spend budget on
+    evidence the snapshot already accounts for.
     """
     if reason not in INSUFFICIENT_REASONS:
         raise ValueError(f"unknown insufficient-evidence reason: {reason}")
@@ -673,7 +763,54 @@ def insufficient_claim(claim: ClaimDraft, *, reason: str) -> Claim:
         evidence=[],
         contradictions=[],
         verification_evidence=[],
+        consumed_finding_fingerprints=list(consumed_finding_fingerprints),
+        consumed_coverage_ids=list(consumed_coverage_ids),
     )
+
+
+def union_claim_provenance(
+    previous: Sequence[Claim],
+    current: Sequence[Claim],
+) -> list[Claim]:
+    """Give every re-checked claim everything its earlier record consumed.
+
+    ``merge_claim_snapshot`` replaces a claim's WHOLE record with the latest
+    verdict, so a re-verification that consumed only the newly arrived
+    finding would otherwise forget the findings the earlier record consumed —
+    and those would look new again on the pass after. The union is computed
+    here, before the merge, which keeps ``merge_claim_snapshot`` the pure
+    identity function it is. First-seen order is preserved and the bound is
+    applied last, so an identity that does not fit costs extra work rather
+    than silently suppressing evidence.
+    """
+    by_fingerprint = {
+        claim_fingerprint(claim.text): claim for claim in previous
+    }
+    merged: list[Claim] = []
+    for claim in current:
+        before = by_fingerprint.get(claim_fingerprint(claim.text))
+        if before is None:
+            merged.append(claim)
+            continue
+        fingerprints = list(before.consumed_finding_fingerprints)
+        for fingerprint in claim.consumed_finding_fingerprints:
+            _append_unique(fingerprints, fingerprint)
+        coverage_ids = list(before.consumed_coverage_ids)
+        for coverage_id in claim.consumed_coverage_ids:
+            _append_unique(coverage_ids, coverage_id)
+        merged.append(
+            claim.model_copy(
+                update={
+                    "consumed_finding_fingerprints": fingerprints[
+                        :MAX_CONSUMED_FINDING_FINGERPRINTS
+                    ],
+                    "consumed_coverage_ids": coverage_ids[
+                        :MAX_CONSUMED_COVERAGE_IDS
+                    ],
+                }
+            )
+        )
+    return merged
 
 
 def claim_verification_messages(
@@ -900,6 +1037,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # ``run`` so ``state_update`` can merge into it. Empty until a run
         # starts, which keeps a directly-invoked ``state_update`` total.
         self._prior_claims: list[Claim] = []
+        # What the last extraction pass attributed to each accepted draft,
+        # keyed by claim fingerprint. ``claim_task`` reads it so a verified
+        # claim records the evidence it consumed; it is per-run state and is
+        # rewritten on every extraction.
+        self._pending_provenance: dict[str, tuple[list[str], list[str]]] = {}
 
     @property
     def output_schema(self) -> type[VerifiedClaims]:
@@ -922,8 +1064,16 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         return AgentTask(instruction=state.original_question)
 
     def claim_task(self, base: AgentTask, claim: ClaimDraft) -> ClaimTask:
-        """Narrow the run-level task down to one claim's loop."""
+        """Narrow the run-level task down to one claim's loop.
+
+        The provenance this claim's extraction pass attributed to it travels
+        on the task, so the verdict it produces records the evidence it
+        consumed without the agent consulting mutable state mid-loop.
+        """
         claimed = claimed_domains_for(claim.source_urls)
+        fingerprints, coverage_ids = self._pending_provenance.get(
+            claim_fingerprint(claim.text), ([], [])
+        )
         sources = "\n".join(f"- {url}" for url in claim.source_urls)
         guidance = "\n".join(
             [
@@ -948,6 +1098,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             guidance="\n\n".join(sections),
             claim=claim,
             claimed_domains=claimed,
+            consumed_finding_fingerprints=fingerprints,
+            consumed_coverage_ids=coverage_ids,
         )
 
     async def extract_claims(
@@ -957,7 +1109,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         """Turn the finished research pass into checkable claim drafts.
 
         Makes no provider call when there are no findings, so the
-        extraction step can never invent a claim out of nothing.
+        extraction step can never invent a claim out of nothing — and none
+        when every candidate finding's identity is already recorded as
+        consumed by a prior claim, so stable evidence cannot keep buying
+        extraction and verification passes. This also records, per accepted
+        draft, which findings and coverage topics it consumed.
         """
         findings = ordered_findings_for_extraction(
             state, prior_claims=self._prior_claims
@@ -966,6 +1122,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             return [], [no_findings_to_check_error()], False
 
         critique_texts = _critique_texts(state)
+        # Provenance decides "new evidence": a finding is new iff no prior
+        # claim recorded consuming its identity.
         new_evidence_urls = [
             normalize_source_url(finding.source_url)
             for finding in findings
@@ -987,6 +1145,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             and not new_evidence_urls
             and not has_reverification_request
         ):
+            self._pending_provenance = {}
             return [], [], False
 
         try:
@@ -1000,6 +1159,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 agent_name=self.name,
             )
         except ProviderError as error:
+            self._pending_provenance = {}
             return [], [claim_extraction_provider_error(error)], True
 
         claims, rejected = build_claim_drafts(
@@ -1010,7 +1170,15 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             critique_texts=critique_texts,
         )
         errors = [invalid_claim_error(rejected)] if rejected else []
-        return claims[: self._max_claims], errors, False
+        accepted = claims[: self._max_claims]
+        coverage_ids = coverage_ids_by_title(state)
+        self._pending_provenance = {
+            claim_fingerprint(item.text): consumed_provenance(
+                item, findings=findings, coverage_ids=coverage_ids
+            )
+            for item in accepted
+        }
+        return accepted, errors, False
 
     async def verify_claim(
         self,
@@ -1026,7 +1194,14 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         invented over an empty evidence section.
         """
         if not run.succeeded:
-            return insufficient_claim(task.claim, reason="loop_failed"), (
+            return insufficient_claim(
+                task.claim,
+                reason="loop_failed",
+                consumed_finding_fingerprints=(
+                    task.consumed_finding_fingerprints
+                ),
+                consumed_coverage_ids=task.consumed_coverage_ids,
+            ), (
                 "loop_failed"
             ), [], False
 
@@ -1036,7 +1211,14 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         )
         if not independent:
             return (
-                insufficient_claim(task.claim, reason="no_independent_source"),
+                insufficient_claim(
+                    task.claim,
+                    reason="no_independent_source",
+                    consumed_finding_fingerprints=(
+                        task.consumed_finding_fingerprints
+                    ),
+                    consumed_coverage_ids=task.consumed_coverage_ids,
+                ),
                 "no_independent_source",
                 [],
                 False,
@@ -1055,7 +1237,14 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             )
         except ProviderError as error:
             return (
-                insufficient_claim(task.claim, reason="provider_unavailable"),
+                insufficient_claim(
+                    task.claim,
+                    reason="provider_unavailable",
+                    consumed_finding_fingerprints=(
+                        task.consumed_finding_fingerprints
+                    ),
+                    consumed_coverage_ids=task.consumed_coverage_ids,
+                ),
                 "provider_unavailable",
                 [claim_verification_provider_error(error)],
                 True,
@@ -1068,6 +1257,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 independent=independent,
                 retrieved_urls=retrieved_urls,
                 claimed_publishers=task.claimed_domains,
+                consumed_finding_fingerprints=(
+                    task.consumed_finding_fingerprints
+                ),
+                consumed_coverage_ids=task.consumed_coverage_ids,
             ),
             None,
             [],
@@ -1102,12 +1295,14 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         carries every claim verified so far — the ones found on the state
         this run was handed, merged with the ones it just checked. A claim
         the latest pass contradicted therefore replaces its own earlier
-        verified record instead of sitting beside it.
+        verified record instead of sitting beside it, and it keeps the
+        provenance the earlier record consumed.
         """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
             update["verified_claims"] = merge_claim_snapshot(
-                self._prior_claims, result.claims
+                self._prior_claims,
+                union_claim_provenance(self._prior_claims, result.claims),
             )
         return update
 
@@ -1148,6 +1343,9 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         """Extract claims, then verify each in its own bounded loop."""
         base_task = self.build_task(state)
         self._prior_claims = list(state.verified_claims)
+        # Provenance belongs to the extraction pass about to run; anything
+        # left from an earlier run on this instance must not leak into it.
+        self._pending_provenance = {}
         events: list[ResearchEvent] = []
         errors: list[ResearchError] = []
         claims: list[Claim] = []
@@ -1227,7 +1425,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         merged = merge_react_runs(self.name, runs).model_copy(
             update={"errors": errors}
         )
-        canonical_claims = merge_claim_snapshot(self._prior_claims, claims)
+        canonical_claims = merge_claim_snapshot(
+            self._prior_claims,
+            union_claim_provenance(self._prior_claims, claims),
+        )
         events.append(
             fact_check_completed_event(
                 canonical_claims, tool_calls=merged.tool_calls

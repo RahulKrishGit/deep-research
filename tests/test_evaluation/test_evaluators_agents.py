@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from deep_research.agents.critic import fallback_critique
+from deep_research.agents.steps import ReActObservation, ReActStep
 from deep_research.evaluation.cases import all_cases
+from deep_research.evaluation.dependencies import (
+    bounded_url_fingerprints,
+    read_url_fingerprints,
+)
 from deep_research.evaluation.evaluators import (
     AGENT_GATE_IDS,
     METRIC_FUNCTIONS,
@@ -12,6 +17,7 @@ from deep_research.evaluation.evaluators import (
     evaluate_target,
 )
 from deep_research.evaluation.models import AGENT_NAMES
+from deep_research.tools.base import ToolResult
 
 
 def gate(results, gate_id):
@@ -328,6 +334,169 @@ def test_insufficient_evidence_must_stay_low_confidence(
         evaluate_agent_gates(output, fact_checker_case),
         "conservative_insufficiency",
     ).passed is False
+
+
+# --- Fact Checker: read-bearing passage provenance -------------------------
+#
+# Task 5 review, Important 2: the evidence checks validated passage fields and
+# publisher independence but never bound a passage URL to the run's
+# read-bearing tool results, so a search-only or invented URL could still pass
+# the quality gates. These tests drive the REAL classifier over typed steps —
+# the same one ``targets._success_output`` records the artifact with — and
+# require the gate to agree.
+
+SEARCH_RESULT_URL = "https://third.test/x"
+DOCUMENT_URL = "https://fourth.test/d.csv"
+MEMORY_URL = "https://fifth.test/m"
+
+
+def _typed_step(
+    iteration: int, tool_name: str, data: dict[str, object]
+) -> ReActStep:
+    return ReActStep(
+        iteration=iteration,
+        thought=f"Call {tool_name}.",
+        action="use_tool",
+        tool_name=tool_name,
+        observation=ReActObservation(
+            tool_name=tool_name, success=True, summary=f"{tool_name} ran"
+        ),
+        tool_result=ToolResult(
+            tool_name=tool_name, success=True, data=data, latency_ms=1.0
+        ),
+    )
+
+
+SEARCH_STEP = _typed_step(
+    1,
+    "web_search",
+    {"results": [{"title": "T", "url": SEARCH_RESULT_URL}]},
+)
+SCRAPE_STEP = _typed_step(
+    2, "web_scraper", {"url": SEARCH_RESULT_URL, "text": "Body."}
+)
+DOCUMENT_STEP = _typed_step(
+    3, "document_reader", {"source": DOCUMENT_URL, "chunks": ["a"]}
+)
+MEMORY_STEP = _typed_step(
+    4,
+    "query_memory",
+    {"matches": [{"content": "A remembered passage.", "source_url": MEMORY_URL}]},
+)
+
+
+def _evidence_gate(output, case):
+    return gate(evaluate_agent_gates(output, case), "evidence_linked")
+
+
+def test_the_read_provenance_classifier_excludes_search_only_hits() -> None:
+    """A search result list is discovery: it proves no read."""
+    fingerprints, complete = read_url_fingerprints([SEARCH_STEP])
+
+    assert (fingerprints, complete) == ([], True)
+
+
+def test_the_read_provenance_classifier_keeps_every_read_bearing_tool() -> None:
+    fingerprints, complete = read_url_fingerprints(
+        [SEARCH_STEP, SCRAPE_STEP, DOCUMENT_STEP, MEMORY_STEP]
+    )
+    recorded, _ = bounded_url_fingerprints(
+        [SEARCH_RESULT_URL, DOCUMENT_URL, MEMORY_URL]
+    )
+
+    assert complete is True
+    assert set(fingerprints) == set(recorded)
+
+
+def test_a_search_only_passage_url_fails_the_evidence_gate(
+    fact_checker_case, fact_checker_output
+) -> None:
+    """Passages built from a search hit alone: the searched URL was never
+    read, so the classifier records no identity for it."""
+    output = fact_checker_output.with_verification_passage_urls(
+        [SEARCH_RESULT_URL]
+    ).with_read_steps([SEARCH_STEP])
+
+    assert output.dependencies.read_url_fingerprints == []
+    assert _evidence_gate(output, fact_checker_case).passed is False
+
+
+def test_a_scraped_passage_url_passes_the_evidence_gate(
+    fact_checker_case, fact_checker_output
+) -> None:
+    output = fact_checker_output.with_verification_passage_urls(
+        [SEARCH_RESULT_URL]
+    ).with_read_steps([SEARCH_STEP, SCRAPE_STEP])
+
+    assert read_url_fingerprints([SEARCH_STEP, SCRAPE_STEP])[0] == list(
+        output.dependencies.read_url_fingerprints
+    )
+    assert _evidence_gate(output, fact_checker_case).passed is True
+
+
+def test_a_document_read_passage_url_passes_the_evidence_gate(
+    fact_checker_case, fact_checker_output
+) -> None:
+    output = fact_checker_output.with_verification_passage_urls(
+        [DOCUMENT_URL]
+    ).with_read_steps([DOCUMENT_STEP])
+
+    assert _evidence_gate(output, fact_checker_case).passed is True
+
+
+def test_a_memory_read_passage_url_passes_the_evidence_gate(
+    fact_checker_case, fact_checker_output
+) -> None:
+    """A provenance-bearing ``query_memory`` match is a read, and counts."""
+    output = fact_checker_output.with_verification_passage_urls(
+        [MEMORY_URL]
+    ).with_read_steps([MEMORY_STEP])
+
+    assert read_url_fingerprints([MEMORY_STEP])[0] == list(
+        output.dependencies.read_url_fingerprints
+    )
+    assert _evidence_gate(output, fact_checker_case).passed is True
+
+
+def test_an_artifact_that_cannot_prove_its_reads_fails_the_evidence_gate(
+    fact_checker_case, fact_checker_output
+) -> None:
+    """Fail closed: an empty provenance field proves nothing."""
+    output = fact_checker_output.with_verification_passage_urls(
+        [SEARCH_RESULT_URL]
+    ).with_read_urls([])
+
+    assert output.dependencies.read_url_fingerprints == []
+    assert _evidence_gate(output, fact_checker_case).passed is False
+
+
+def test_an_incomplete_read_provenance_ledger_fails_the_evidence_gate(
+    fact_checker_case, fact_checker_output
+) -> None:
+    """A truncated identity list may be missing exactly the passage's URL."""
+    output = fact_checker_output.with_verification_passage_urls(
+        [SEARCH_RESULT_URL]
+    ).with_read_urls([SEARCH_RESULT_URL], complete=False)
+
+    assert output.dependencies.read_url_fingerprints_complete is False
+    assert _evidence_gate(output, fact_checker_case).passed is False
+
+
+def test_a_passage_at_an_unread_independent_domain_fails_the_evidence_gate(
+    fact_checker_case, fact_checker_output
+) -> None:
+    """The old fixture's exact defect: a CERN URL absent from the run.
+
+    Publisher independence is not provenance: an invented independent domain
+    used to satisfy the evidence gate outright.
+    """
+    output = (
+        fact_checker_output.with_verification_passage_urls(
+            ["https://cern.org/outage-audit"]
+        ).with_read_steps([SEARCH_STEP, SCRAPE_STEP])
+    )
+
+    assert _evidence_gate(output, fact_checker_case).passed is False
 
 
 # --- Synthesizer -----------------------------------------------------------

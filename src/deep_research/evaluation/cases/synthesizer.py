@@ -339,6 +339,7 @@ _COMPLETE = build_case(
                     "OECD research reports travel-time savings of 10 to 30 "
                     "percent in priced cities",
                 ],
+                verification_urls=[_SDIRECT_URL],
             ),
             claim(
                 "New York City's congestion pricing reduced average "
@@ -352,6 +353,7 @@ _COMPLETE = build_case(
                     "Peer-reviewed review reports persistent effects in "
                     "Stockholm and Singapore",
                 ],
+                verification_urls=[_OECD_URL],
             ),
             claim(
                 "Comprehensive congestion pricing is associated with "
@@ -365,6 +367,7 @@ _COMPLETE = build_case(
                     "World Bank review documents reduced in-vehicle times "
                     "in seven cities",
                 ],
+                verification_urls=[_SDIRECT_URL],
             ),
             claim(
                 "A mid-sized U.S. city's congestion pricing pilot "
@@ -376,6 +379,7 @@ _COMPLETE = build_case(
                     "The pilot's corridor times fell while network-wide "
                     "times were little changed",
                 ],
+                verification_urls=[_SDIRECT_URL],
             ),
         ),
     ),
@@ -511,6 +515,11 @@ _CONFLICT = build_case(
                     "Brookings attributes most vacancy movement to hybrid "
                     "schedules, not explicit mandates",
                 ],
+                verification_urls=[
+                    _TRACKER_URL,
+                    _BLOOMBERG_URL,
+                    _BROOKINGS_URL,
+                ],
             ),
             claim(
                 "Remote-work mandates are the primary driver of downtown "
@@ -528,6 +537,7 @@ _CONFLICT = build_case(
                     "Commercial Edge tracker: no significant trend "
                     "difference after 2023",
                 ],
+                verification_urls=[_TRACKER_URL, _BROOKINGS_URL],
             ),
             claim(
                 "Hybrid work policies will keep commercial vacancy "
@@ -710,6 +720,7 @@ _FAILURE = build_case(
                     "ACEEE: deep packages delivered larger average "
                     "savings",
                 ],
+                verification_urls=[_RETROFIT_REVIEW_URL],
             ),
             claim(
                 "Realized savings from deep retrofits are often below "
@@ -721,6 +732,7 @@ _FAILURE = build_case(
                     "ScienceDirect field study: realized savings below "
                     "modeled values, gap largest for deep packages",
                 ],
+                verification_urls=[_ACEEE_URL],
             ),
             claim(
                 "Occupant behavior can narrow the realized-savings gap "
@@ -732,6 +744,7 @@ _FAILURE = build_case(
                     "Case-study reviews: shallow retrofits matched deep "
                     "savings when occupant behavior was favorable",
                 ],
+                verification_urls=[_LBNL_URL],
             ),
         ),
     ),
@@ -913,6 +926,7 @@ _LIVE = build_case(
                     "NREL: median installed costs of $8,000 to $12,000 for "
                     "ducted systems",
                 ],
+                verification_urls=[_IEA_URL],
             ),
             claim(
                 "Policy incentives shorten heat-pump retrofit payback "
@@ -926,6 +940,7 @@ _LIVE = build_case(
                     "NREL: payback periods under ten years in most "
                     "markets",
                 ],
+                verification_urls=[_DOE_URL],
             ),
         ),
     ),

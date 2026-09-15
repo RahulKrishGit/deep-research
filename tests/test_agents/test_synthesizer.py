@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.report import REPORT_SECTIONS, ReportSection
 from deep_research.agents.steps import ReActRun
@@ -99,7 +100,7 @@ def _claim(
     urls: list[str] | None = None,
 ) -> Claim:
     return Claim(
-        claim_id=f"fixture-{text.casefold().replace(' ', '-')}",
+        claim_id=claim_fingerprint(text),
         text=text,
         source_urls=urls or [SOURCE_URL],
         verdict=verdict,

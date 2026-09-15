@@ -6,6 +6,7 @@ from typing import get_args
 
 import pytest
 
+from deep_research.agents.base import AgentRun
 from deep_research.agents.fact_checker import (
     MAX_PASSAGE_EXCERPT_CHARS,
     MAX_PASSAGE_LOCATOR_CHARS,
@@ -24,17 +25,23 @@ from deep_research.agents.fact_checker import (
     claim_extraction_messages,
     claim_verification_messages,
     claimed_domains_for,
+    consumed_provenance,
     fact_check_completed_event,
     independent_domains,
     insufficient_claim,
     known_source_urls,
     normalize_verdict,
+    ordered_findings_for_extraction,
     resolve_verdict,
     retrieved_source_urls,
+    union_claim_provenance,
     valid_verification_passages,
     verdict_counts,
 )
-from deep_research.agents.identity import merge_claim_snapshot
+from deep_research.agents.identity import (
+    claim_fingerprint,
+    finding_fingerprint,
+)
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import (
     ReActDecision,
@@ -54,11 +61,13 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
     ClaimVerdict,
+    Critique,
     EvidencePassage,
     Finding,
     MemorySnapshot,
     ResearchState,
     ScoredSource,
+    SubTopic,
     merge_research_state,
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
@@ -595,7 +604,9 @@ def test_a_built_claim_keeps_its_own_sources_and_the_models_evidence() -> None:
     assert claim.verdict == "verified"
     assert claim.evidence == ["Third party agrees."]
     assert claim.contradictions == []
-    assert claim.claim_id
+    # Minor 1: the emitted identity is the canonical fingerprint of the text,
+    # not a label — that is the value later passes merge on.
+    assert claim.claim_id == claim_fingerprint(claim.text)
     assert len(claim.verification_evidence) == 1
 
 
@@ -607,6 +618,7 @@ def test_an_insufficient_claim_names_its_reason_and_invents_no_confidence() -> N
     assert claim.evidence == []
     assert claim.contradictions == []
     assert claim.source_urls == ["https://example.org/a"]
+    assert claim.claim_id == claim_fingerprint(claim.text)
 
 
 def test_an_insufficient_claim_rejects_an_unenumerated_reason() -> None:
@@ -987,7 +999,7 @@ async def test_a_second_pass_carries_the_claims_of_the_first(
     found on the state it was handed.
     """
     earlier = Claim(
-        claim_id="earlier-claim",
+        claim_id=claim_fingerprint("An earlier pass verified this."),
         text="An earlier pass verified this.",
         source_urls=["https://example.org/a"],
         verdict="verified",
@@ -1081,7 +1093,7 @@ def test_the_per_claim_event_reports_tool_calls_and_the_verdict() -> None:
 
 def test_claim_events_report_bounded_provenance_counts_without_excerpts() -> None:
     claim = Claim(
-        claim_id="claim-1",
+        claim_id=claim_fingerprint("A measured result was reported."),
         text="A measured result was reported.",
         source_urls=["https://example.org/a"],
         verdict="verified",
@@ -1112,26 +1124,417 @@ def test_claim_events_report_bounded_provenance_counts_without_excerpts() -> Non
     assert "An independent study agrees." not in event.metadata.values()
 
 
-def test_four_pass_repeated_fact_keeps_one_claim_and_latest_verdict() -> None:
-    snapshot: list[Claim] = []
-    verified = build_claim(
+# --- Provenance-driven idempotence: real multiple passes -------------------
+#
+# The regression below runs the REAL agent over several states in sequence —
+# one ``agent.run`` per research pass, each with its own extraction and
+# verification provider calls — instead of hand-merging ``Claim`` objects.
+# That is the only shape that can expose the reviewed defect: the extraction
+# prompt is allowed to rewrite a finding into a self-contained claim, so the
+# raw finding and the extracted claim here are deliberate paraphrases that
+# share no normalized text.
+
+ALPHA = "Alpha"
+BETA = "Beta"
+SHARED_URL = "https://example.org/a"
+INDEPENDENT_URL = "https://third.test/x"
+FINDING_A_CONTENT = (
+    "The measured logical error rate dropped below the break-even "
+    "threshold during 2025."
+)
+CHANGED_FINDING_A_CONTENT = (
+    "A re-measurement found the logical error rate climbing above the "
+    "break-even threshold late in 2025."
+)
+FINDING_B_CONTENT = (
+    "A separate throughput benchmark recorded a 30 percent rise in queue "
+    "capacity in 2025."
+)
+CLAIM_A_TEXT = "Logical error rates fell below break-even in 2025."
+CLAIM_B_TEXT = "Queue throughput rose 30 percent in 2025."
+
+
+def _topic(title: str, *, priority: int) -> SubTopic:
+    return SubTopic(
+        coverage_id=f"topic-{priority:02d}",
+        title=title,
+        rationale=f"Measure what happened in {title}.",
+        search_queries=[f"{title} 2025 measurements"],
+        success_criteria=[f"Two independent estimates for {title}."],
+        priority=priority,
+    )
+
+
+def _alpha_finding(content: str = FINDING_A_CONTENT) -> Finding:
+    return _check_finding(SHARED_URL, content=content, sub_topic=ALPHA)
+
+
+def _beta_finding() -> Finding:
+    return _check_finding(SHARED_URL, content=FINDING_B_CONTENT, sub_topic=BETA)
+
+
+def _coverage_state(
+    findings: list[Finding],
+    *,
+    critique: Critique | None = None,
+) -> ResearchState:
+    """One planned two-topic pass with both topics sharing one source URL.
+
+    Both findings live at ``SHARED_URL`` on purpose: URL overlap must never
+    stand in for coverage, so a claim extracted for Alpha must leave Beta
+    uncovered even though the two findings carry the same URL.
+    """
+    return ResearchState(
+        session_id="session-1",
+        original_question="How mature is quantum error correction?",
+        sub_topics=[_topic(ALPHA, priority=1), _topic(BETA, priority=2)],
+        raw_findings=list(findings),
+        evaluated_sources=[_scored(SHARED_URL)],
+        critique=critique,
+        memory_context=MemorySnapshot(),
+    )
+
+
+def _verification_decisions() -> list[object]:
+    """One verification loop for one claim: search, read it, then judge."""
+    return [
+        use_tool(
+            "Look for an independent source.",
+            "web_search",
+            '{"query": "break-even 2025"}',
+        ),
+        use_tool(
+            "Read the independent source before judging the claim.",
+            "web_scraper",
+            f'{{"url": "{INDEPENDENT_URL}"}}',
+        ),
+        finish("I have independent material.", "Checked."),
+    ]
+
+
+async def _research_pass(
+    agent: FactCheckerAgent,
+    tracker: Tracker,
+    state: ResearchState,
+) -> AgentRun[VerifiedClaims]:
+    """One full pass over one state, exactly as the graph would run it."""
+    async with tracker.session_span(state.session_id, state.original_question):
+        return await agent.run(state)
+
+
+def _snapshot(outcome: AgentRun[VerifiedClaims]) -> list[Claim]:
+    return list(outcome.state_update["verified_claims"])
+
+
+def _structured_names(completer: ScriptedCompleter, since: int) -> list[str]:
+    return [name for name, _, _ in completer.calls[since:]]
+
+
+def _checker_for_passes(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    searches: int,
+) -> FactCheckerAgent:
+    return _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [
+                    search_response(url=INDEPENDENT_URL)
+                    for _ in range(searches)
+                ]
+            ),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_unchanged_evidence_makes_every_later_pass_free(
+    tracker: Tracker,
+) -> None:
+    """(a) A repeated fact must not re-buy extraction or verification.
+
+    Four real passes over the same unchanged evidence: the first extracts
+    and verifies, and passes two through four must issue ZERO provider
+    calls of either kind while the canonical snapshot stays exactly one
+    claim.
+    """
+    completer = ScriptedCompleter(
+        decisions=list(_verification_decisions()),
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=CLAIM_A_TEXT, source_urls=[SHARED_URL])
+                ]
+            ),
+            _verdict_draft(verdict="verified"),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=1)
+    state = _coverage_state([_alpha_finding()])
+
+    first = await _research_pass(agent, tracker, state)
+    first_snapshot = _snapshot(first)
+    assert [claim.verdict for claim in first_snapshot] == ["verified"]
+    assert _structured_names(completer, 0) == [
+        "ClaimsDraft",
+        "ClaimVerdictDraft",
+    ]
+    assert first_snapshot[0].consumed_finding_fingerprints == [
+        finding_fingerprint(_alpha_finding())
+    ]
+    assert first_snapshot[0].consumed_coverage_ids == ["topic-01"]
+
+    after_first = len(completer.calls)
+    react_after_first = len(completer.react_calls)
+    carried = merge_research_state(state, first.state_update)
+    for _ in range(3):
+        outcome = await _research_pass(agent, tracker, carried)
+
+        assert _structured_names(completer, after_first) == []
+        assert completer.react_calls[react_after_first:] == []
+        snapshot = _snapshot(outcome)
+        assert len(snapshot) == 1
+        assert snapshot[0].claim_id == first_snapshot[0].claim_id
+        assert snapshot[0].verdict == "verified"
+        carried = merge_research_state(carried, outcome.state_update)
+
+
+@pytest.mark.asyncio
+async def test_a_changed_finding_at_the_same_url_reopens_the_claim(
+    tracker: Tracker,
+) -> None:
+    """(b) New content behind a known URL is new evidence, and the earlier
+    record's provenance survives the replacement (R1's union)."""
+    completer = ScriptedCompleter(
+        decisions=[
+            *_verification_decisions(),
+            *_verification_decisions(),
+        ],
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=CLAIM_A_TEXT, source_urls=[SHARED_URL])
+                ]
+            ),
+            _verdict_draft(verdict="verified"),
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=CLAIM_A_TEXT, source_urls=[SHARED_URL])
+                ]
+            ),
+            _verdict_draft(
+                verdict="verified",
+                evidence=["A second independent review confirms the figure."],
+            ),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=2)
+    state = _coverage_state([_alpha_finding()])
+
+    first = await _research_pass(agent, tracker, state)
+    after_first = len(completer.calls)
+    carried = merge_research_state(state, first.state_update)
+    changed = carried.model_copy(
+        update={"raw_findings": [_alpha_finding(CHANGED_FINDING_A_CONTENT)]}
+    )
+
+    second = await _research_pass(agent, tracker, changed)
+
+    assert _structured_names(completer, after_first) == [
+        "ClaimsDraft",
+        "ClaimVerdictDraft",
+    ]
+    snapshot = _snapshot(second)
+    assert len(snapshot) == 1
+    assert snapshot[0].claim_id == first.state_update["verified_claims"][
+        0
+    ].claim_id
+    assert snapshot[0].evidence == [
+        "A second independent review confirms the figure."
+    ]
+    assert snapshot[0].consumed_finding_fingerprints == [
+        finding_fingerprint(_alpha_finding()),
+        finding_fingerprint(_alpha_finding(CHANGED_FINDING_A_CONTENT)),
+    ]
+    assert snapshot[0].consumed_coverage_ids == ["topic-01"]
+
+
+@pytest.mark.asyncio
+async def test_an_untouched_coverage_id_sharing_the_url_stays_uncovered(
+    tracker: Tracker,
+) -> None:
+    """(c) One shared URL must not cover two planned topics.
+
+    Alpha's claim cites the URL both findings carry. Beta's coverage id was
+    never consumed, so Beta's finding stays uncovered and must sort first in
+    the next pass's extraction order — the old URL-overlap rule marked it
+    covered and left Alpha's finding in front.
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            *_verification_decisions(),
+            *_verification_decisions(),
+        ],
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=CLAIM_A_TEXT, source_urls=[SHARED_URL])
+                ]
+            ),
+            _verdict_draft(verdict="verified"),
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=CLAIM_B_TEXT, source_urls=[SHARED_URL])
+                ]
+            ),
+            _verdict_draft(verdict="verified"),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=2)
+    state = _coverage_state([_alpha_finding(), _beta_finding()])
+
+    first = await _research_pass(agent, tracker, state)
+    covered = _snapshot(first)[0]
+    assert covered.consumed_coverage_ids == ["topic-01"]
+    assert covered.consumed_finding_fingerprints == [
+        finding_fingerprint(_alpha_finding())
+    ]
+
+    after_first = len(completer.calls)
+    carried = merge_research_state(state, first.state_update)
+    ordered = ordered_findings_for_extraction(
+        carried, prior_claims=_snapshot(first)
+    )
+
+    assert ordered[0].content == FINDING_B_CONTENT
+
+    second = await _research_pass(agent, tracker, carried)
+
+    assert _structured_names(completer, after_first) == [
+        "ClaimsDraft",
+        "ClaimVerdictDraft",
+    ]
+    snapshot = _snapshot(second)
+    assert [claim.text for claim in snapshot] == [CLAIM_A_TEXT, CLAIM_B_TEXT]
+    extracted_beta = snapshot[1]
+    assert extracted_beta.consumed_finding_fingerprints == [
+        finding_fingerprint(_beta_finding())
+    ]
+    assert extracted_beta.consumed_coverage_ids == ["topic-02"]
+    assert {
+        coverage_id
+        for claim in snapshot
+        for coverage_id in claim.consumed_coverage_ids
+    } == {"topic-01", "topic-02"}
+
+
+@pytest.mark.asyncio
+async def test_a_critic_reverification_replaces_the_claim_without_duplicating(
+    tracker: Tracker,
+) -> None:
+    """(d) The Critic's explicit override still re-opens a claim whose
+    evidence is unchanged, and the replacement keeps one record."""
+    completer = ScriptedCompleter(
+        decisions=[
+            *_verification_decisions(),
+            *_verification_decisions(),
+        ],
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=CLAIM_A_TEXT, source_urls=[SHARED_URL])
+                ]
+            ),
+            _verdict_draft(verdict="verified"),
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=CLAIM_A_TEXT, source_urls=[SHARED_URL])
+                ]
+            ),
+            _verdict_draft(
+                verdict="verified",
+                contradictions=["A regulator disputes the figure."],
+            ),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=2)
+    state = _coverage_state([_alpha_finding()])
+
+    first = await _research_pass(agent, tracker, state)
+    first_claim = _snapshot(first)[0]
+    after_first = len(completer.calls)
+    carried = merge_research_state(state, first.state_update).model_copy(
+        update={
+            "critique": Critique(
+                score=4,
+                gaps=["The break-even claim needs a second look."],
+                unsupported_claims=[],
+                recommended_queries=[f"Re-verify this claim: {CLAIM_A_TEXT}"],
+                should_continue=True,
+                rationale="One claim is load-bearing.",
+            )
+        }
+    )
+
+    second = await _research_pass(agent, tracker, carried)
+
+    assert _structured_names(completer, after_first) == [
+        "ClaimsDraft",
+        "ClaimVerdictDraft",
+    ]
+    snapshot = _snapshot(second)
+    assert len(snapshot) == 1
+    assert snapshot[0].claim_id == first_claim.claim_id
+    assert snapshot[0].verdict == "contradicted"
+    assert snapshot[0].contradictions == ["A regulator disputes the figure."]
+    assert snapshot[0].consumed_finding_fingerprints == (
+        first_claim.consumed_finding_fingerprints
+    )
+    assert snapshot[0].consumed_coverage_ids == ["topic-01"]
+
+
+def test_consumed_provenance_attributes_one_shared_url_to_one_finding() -> None:
+    """The R4 narrowing: per consumed finding, first in extraction order."""
+    draft = ClaimDraft(text=CLAIM_A_TEXT, source_urls=[SHARED_URL])
+    coverage_ids = {ALPHA.casefold(): "topic-01", BETA.casefold(): "topic-02"}
+
+    fingerprints, coverage = consumed_provenance(
+        draft,
+        findings=[_beta_finding(), _alpha_finding()],
+        coverage_ids=coverage_ids,
+    )
+
+    assert fingerprints == [finding_fingerprint(_beta_finding())]
+    assert coverage == ["topic-02"]
+
+
+def test_union_claim_provenance_never_loses_what_the_earlier_pass_consumed(
+) -> None:
+    """A re-checked claim keeps both passes' provenance, in order."""
+    earlier = build_claim(
         _claim_draft(),
         _verdict_draft(),
-        retrieved_urls=["https://third.test/x"],
+        retrieved_urls=[INDEPENDENT_URL],
+        consumed_finding_fingerprints=["first"],
+        consumed_coverage_ids=["topic-01"],
     )
-    for _ in range(3):
-        snapshot = merge_claim_snapshot(snapshot, [verified])
-
-    contradicted = build_claim(
+    rechecked = build_claim(
         _claim_draft(),
-        _verdict_draft(contradictions=["A regulator disputes the figure."]),
-        retrieved_urls=["https://third.test/x"],
+        _verdict_draft(),
+        retrieved_urls=[INDEPENDENT_URL],
+        consumed_finding_fingerprints=["second"],
+        consumed_coverage_ids=["topic-02"],
     )
-    snapshot = merge_claim_snapshot(snapshot, [contradicted])
 
-    assert len(snapshot) == 1
-    assert snapshot[0].claim_id == verified.claim_id
-    assert snapshot[0].verdict == "contradicted"
+    merged = union_claim_provenance([earlier], [rechecked])
+
+    assert merged[0].consumed_finding_fingerprints == ["first", "second"]
+    assert merged[0].consumed_coverage_ids == ["topic-01", "topic-02"]
+    assert merged[0].verdict == rechecked.verdict
 
 
 def test_the_completed_event_reports_every_verdict_count() -> None:

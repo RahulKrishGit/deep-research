@@ -3,6 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.utils.types import (
     Claim,
     Critique,
@@ -54,7 +55,7 @@ def source(title: str = "Example source") -> ScoredSource:
 
 def claim(text: str = "Adoption increased.") -> Claim:
     return Claim(
-        claim_id=f"fixture-{text.casefold().replace(' ', '-')}",
+        claim_id=claim_fingerprint(text),
         text=text,
         source_urls=["https://example.com/source"],
         verdict="verified",

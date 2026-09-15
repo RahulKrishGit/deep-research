@@ -11,7 +11,10 @@ import pytest
 from deep_research.agents.errors import PlanningError
 from deep_research.agents.planner import ResearchPlanDraft, SubTopicDraft
 from deep_research.agents.steps import ReActDecision
-from deep_research.evaluation.dependencies import build_controlled_dependencies
+from deep_research.evaluation.dependencies import (
+    bounded_url_fingerprints,
+    build_controlled_dependencies,
+)
 from deep_research.evaluation.models import StructuredCallSummary, TargetOutput
 from deep_research.evaluation.targets import (
     TRACE_TAG,
@@ -344,6 +347,61 @@ async def test_live_researcher_artifact_marks_complete_source_provenance(
         .dependencies.source_url_fingerprints_complete
         is True
     )
+
+
+@pytest.mark.asyncio
+async def test_the_artifact_separates_discovery_from_read_provenance(
+    runtime_config_for, live_case_for, live_target_harness
+) -> None:
+    """Task 5, R5/R6: the artifact proves a READ, not a search.
+
+    This scripted live run only ever searches, so its discovery ledger holds
+    the URL's identity while its read ledger — the one a verification-passage
+    gate may trust — is empty AND explicitly complete. That is exactly why
+    ``source_url_fingerprints`` cannot serve as read-bearing proof: it records
+    ``web_search`` result URLs too.
+    """
+    case = live_case_for("researcher")
+    target = live_target_harness(
+        case, runtime_config_for("researcher", tier="live")
+    )
+
+    output = TargetOutput.model_validate(
+        await target(
+            {
+                "case_id": case.case_id,
+                "case_version": case.version,
+                "agent": "researcher",
+                "tier": "live",
+            }
+        )
+    )
+
+    expected = sha256(
+        "https://example.com/sodium-ion-energy-density".encode("utf-8")
+    ).hexdigest()
+    assert output.dependencies.source_url_fingerprints == [expected]
+    assert output.dependencies.read_url_fingerprints == []
+    assert output.dependencies.read_url_fingerprints_complete is True
+
+
+def test_read_provenance_is_bounded_and_reports_itself_incomplete() -> None:
+    """An identity that does not fit is dropped, never silently implied."""
+    urls = [f"https://example.test/page-{index}" for index in range(5)]
+
+    bounded, complete = bounded_url_fingerprints(urls, limit=3)
+    exact, exact_complete = bounded_url_fingerprints(urls, limit=5)
+
+    assert complete is False
+    assert len(bounded) == 3
+    assert (len(exact), exact_complete) == (5, True)
+
+
+def test_read_provenance_skips_urls_that_cannot_carry_an_identity() -> None:
+    """A non-HTTP or malformed URL contributes nothing rather than a hash."""
+    assert bounded_url_fingerprints(
+        ["not-a-url", "file:///tmp/x", "https://example.test/page"]
+    )[0] == [sha256("https://example.test/page".encode("utf-8")).hexdigest()]
 
 
 @pytest.mark.asyncio

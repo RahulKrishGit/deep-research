@@ -23,7 +23,11 @@ from deep_research.evaluation.config import (
     contains_secret,
     redact_secrets,
 )
-from deep_research.evaluation.dependencies import SCENARIOS, DependencyBundle
+from deep_research.evaluation.dependencies import (
+    SCENARIOS,
+    DependencyBundle,
+    read_url_fingerprints,
+)
 from deep_research.evaluation.factory import (
     AgentConstructionError,
     build_evaluation_agent,
@@ -561,8 +565,18 @@ def _success_output(
     observed_services = _observed_real_services(
         tracker, bundle.available_services
     )
+    # Read-bearing provenance comes from the SAME typed steps production
+    # classifies, through the one read-bearing classifier, so a verification
+    # gate can prove a passage URL was read rather than discovered. It is
+    # recorded for both tiers and every agent, and it is deliberately not
+    # reconstructed from the truncated observation prose below.
+    read_fingerprints, read_complete = read_url_fingerprints(run.react.steps)
     dependencies = ledger.model_copy(
-        update={"real_services_used": observed_services}
+        update={
+            "real_services_used": observed_services,
+            "read_url_fingerprints": read_fingerprints,
+            "read_url_fingerprints_complete": read_complete,
+        }
     )
 
     trajectory = [

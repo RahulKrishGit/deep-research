@@ -233,8 +233,15 @@ def test_every_controlled_case_populates_raw_findings() -> None:
 
 
 def test_the_live_case_declares_the_dependencies_it_needs() -> None:
-    """The live case verifies with live web search and memory recall; it
-    does not require HTTP page fetches (search snippets suffice)."""
+    """The live case searches and recalls memory; it declares no HTTP
+    dependency because search is discovery only.
+
+    Task 5 review, Minor 2: search is discovery-only and a search hit is
+    never verdict evidence — verdict passages must come from read-bearing
+    scraper, document, or memory reads. Whether a particular live repetition
+    is *required* to make an HTTP fetch is a separate question about this
+    case's declared dependencies, not a statement that snippets suffice.
+    """
     live = cases_for("fact_checker", "live")[0]
 
     assert live.expectations.required_live_dependencies == ["tavily", "memory"]

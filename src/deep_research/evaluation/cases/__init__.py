@@ -12,8 +12,12 @@ from collections.abc import Sequence
 
 from pydantic import JsonValue
 
+from deep_research.agents.fact_checker import (
+    claimed_domains_for,
+)
 from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.planner import coverage_id_for
+from deep_research.agents.sources import publisher_identity
 from deep_research.evaluation.models import (
     AGENT_NAMES,
     AgentName,
@@ -114,6 +118,14 @@ def scored_source(
     )
 
 
+# Verdicts that assert independent evidence. An ``insufficient_evidence``
+# claim carries no passage at all — that is what makes it insufficient — so
+# only these three require independent verification sources.
+EVIDENCE_BEARING_VERDICTS = frozenset(
+    {"verified", "unverified", "contradicted"}
+)
+
+
 def claim(
     text: str,
     *,
@@ -122,34 +134,71 @@ def claim(
     confidence: float,
     evidence: Sequence[str] = (),
     contradictions: Sequence[str] = (),
+    verification_urls: Sequence[str] = (),
 ) -> Claim:
+    """One curated claim fixture.
+
+    ``urls`` are the ORIGIN sources that made the claim, exactly as
+    ``Claim.source_urls`` means in production. ``verification_urls`` are the
+    independent sources whose passages judged it, and they are required for
+    every evidence-bearing verdict: Task 5 review found this builder cycling
+    origin URLs into ``EvidencePassage.source_url``, which produced verified
+    snapshots production could not legitimately emit. Origin URLs are never
+    cycled into a passage here, and a non-independent verification URL is
+    rejected outright rather than left for a downstream gate to notice.
+
+    Passages are built by cycling ``verification_urls`` over the given
+    ``evidence`` (``supports``) and ``contradictions`` (``contradicts``)
+    excerpts, so the excerpts and the URLs that carry them are supplied
+    together.
+    """
     source_urls = list(urls)
-    passages: list[EvidencePassage] = []
+    verification = list(verification_urls)
+    if verdict in EVIDENCE_BEARING_VERDICTS:
+        if not verification:
+            raise CaseRegistryError(
+                f"a {verdict!r} claim fixture must supply explicit "
+                "verification_urls; its origin source_urls are not "
+                "independent verification"
+            )
+        claimed = {
+            publisher.casefold() for publisher in claimed_domains_for(source_urls)
+        }
+        shared = [
+            url
+            for url in verification
+            if publisher_identity(url).casefold() in claimed
+        ]
+        if shared:
+            raise CaseRegistryError(
+                "a claim's verification passage cites one of its own "
+                f"publishers: {', '.join(shared)}"
+            )
     support_texts = list(evidence)
     contradiction_texts = list(contradictions)
-    if source_urls and verdict in {"verified", "unverified"} and not support_texts:
+    if verdict in {"verified", "unverified"} and not support_texts:
         support_texts = ["Case fixture evidence."]
-    if source_urls:
-        for index, excerpt in enumerate(support_texts):
-            passages.append(
-                EvidencePassage(
-                    source_url=source_urls[index % len(source_urls)],
-                    source_title="Case fixture evidence",
-                    locator=f"support-{index + 1}",
-                    excerpt=excerpt,
-                    stance="supports",
-                )
+    passages: list[EvidencePassage] = []
+    for index, excerpt in enumerate(support_texts):
+        passages.append(
+            EvidencePassage(
+                source_url=verification[index % len(verification)],
+                source_title="Case fixture evidence",
+                locator=f"support-{index + 1}",
+                excerpt=excerpt,
+                stance="supports",
             )
-        for index, excerpt in enumerate(contradiction_texts):
-            passages.append(
-                EvidencePassage(
-                    source_url=source_urls[index % len(source_urls)],
-                    source_title="Case fixture evidence",
-                    locator=f"contradiction-{index + 1}",
-                    excerpt=excerpt,
-                    stance="contradicts",
-                )
+        )
+    for index, excerpt in enumerate(contradiction_texts):
+        passages.append(
+            EvidencePassage(
+                source_url=verification[index % len(verification)],
+                source_title="Case fixture evidence",
+                locator=f"contradiction-{index + 1}",
+                excerpt=excerpt,
+                stance="contradicts",
             )
+        )
     return Claim(
         claim_id=claim_fingerprint(text),
         text=text,

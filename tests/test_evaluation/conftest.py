@@ -11,9 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.planner import ResearchPlanDraft, SubTopicDraft
 from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
-from deep_research.agents.steps import ReActDecision
+from deep_research.agents.steps import ReActDecision, ReActStep
 from deep_research.evaluation.cases import (
     all_cases as _all_cases,
 )
@@ -27,8 +28,10 @@ from deep_research.evaluation.config import (
 )
 from deep_research.evaluation.datasets import example_payload
 from deep_research.evaluation.dependencies import (
+    bounded_url_fingerprints,
     build_controlled_dependencies,
     build_live_dependencies,
+    read_url_fingerprints,
 )
 from deep_research.evaluation.models import (
     CaseResult,
@@ -425,6 +428,43 @@ def experiment_result(repetition_result) -> ExperimentResult:
 # --- Task 18: per-agent output builders for the agent-specific gate tests ---
 
 
+def _read_trajectory(urls: list[str]) -> list[TrajectoryStep]:
+    """Trajectory steps of a run that READ each URL, not merely found it."""
+    return [
+        TrajectoryStep(
+            iteration=index,
+            thought="",
+            tool_name="web_scraper",
+            succeeded=True,
+            observation_summary=f"Read {url}.",
+        )
+        for index, url in enumerate(urls)
+    ]
+
+
+def _ledger_with_reads(
+    ledger: DependencyLedger,
+    fingerprints: list[str],
+    *,
+    complete: bool,
+) -> DependencyLedger:
+    """Return ``ledger`` plus the bounded read identities of a run."""
+    return ledger.model_copy(
+        update={
+            "read_url_fingerprints": list(fingerprints),
+            "read_url_fingerprints_complete": complete,
+        }
+    )
+
+
+def _read_ledger(urls: Sequence[str]) -> DependencyLedger:
+    """A ledger proving the run READ exactly ``urls``."""
+    fingerprints, complete = bounded_url_fingerprints(urls)
+    return _ledger_with_reads(
+        DependencyLedger(), fingerprints, complete=complete
+    )
+
+
 class PlannerOutput(TargetOutput):
     """A planner repetition with builder helpers for the agent gate tests.
 
@@ -539,7 +579,14 @@ class SourceEvaluatorOutput(TargetOutput):
 
 
 class FactCheckerOutput(TargetOutput):
-    """A fact-checker repetition with builder helpers."""
+    """A fact-checker repetition with builder helpers.
+
+    Every helper that adds verification passages also records the read
+    provenance those passages need. Task 5 review: a fixture that moved the
+    claim alone could assert passages at URLs the run never read — or that no
+    run could have read — which is exactly what the read-provenance gate
+    exists to refuse.
+    """
 
     def with_verified_claim_sources(
         self, urls: Sequence[str]
@@ -559,20 +606,46 @@ class FactCheckerOutput(TargetOutput):
             update={"result": {**result, "verified_claims": claims}}
         )
 
-    def with_trajectory_urls(self, urls: Sequence[str]) -> "FactCheckerOutput":
-        """Record one web_search step per URL, the shape a verification
-        loop's tool calls take in the repetition's trajectory."""
-        trajectory = [
-            TrajectoryStep(
-                iteration=index,
-                thought="",
-                tool_name="web_search",
-                succeeded=True,
-                observation_summary=f"Retrieved {url}.",
-            )
-            for index, url in enumerate(urls)
-        ]
-        return self.model_copy(update={"trajectory": trajectory})
+    def with_read_urls(
+        self, urls: Sequence[str], *, complete: bool = True
+    ) -> "FactCheckerOutput":
+        """Declare exactly which URLs this repetition READ.
+
+        ``complete=False`` models an artifact that lost read identities, which
+        the gate must treat as unable to prove anything.
+        """
+        fingerprints, derived_complete = bounded_url_fingerprints(urls)
+        return self.model_copy(
+            update={
+                "dependencies": _ledger_with_reads(
+                    self.dependencies,
+                    fingerprints,
+                    complete=complete and derived_complete,
+                )
+            }
+        )
+
+    def with_read_trajectory(self, urls: Sequence[str]) -> "FactCheckerOutput":
+        """Record one web_scraper step per URL: reads, not discovery."""
+        return self.model_copy(
+            update={"trajectory": _read_trajectory(list(urls))}
+        )
+
+    def with_read_steps(self, steps: Sequence[ReActStep]) -> "FactCheckerOutput":
+        """Derive read provenance from typed steps, exactly as the target does.
+
+        Uses the production ``read_url_fingerprints`` classifier, so a fixture
+        can prove — rather than assert — that a search-only step set yields no
+        read identity at all.
+        """
+        fingerprints, complete = read_url_fingerprints(steps)
+        return self.model_copy(
+            update={
+                "dependencies": _ledger_with_reads(
+                    self.dependencies, fingerprints, complete=complete
+                )
+            }
+        )
 
     def with_verification_passage_urls(
         self, urls: Sequence[str]
@@ -591,7 +664,7 @@ class FactCheckerOutput(TargetOutput):
         ]
         return self.model_copy(
             update={"result": {**result, "verified_claims": claims}}
-        )
+        ).with_read_urls(urls).with_read_trajectory(urls)
 
     def with_empty_evidence(self) -> "FactCheckerOutput":
         result = dict(self.result or {})
@@ -966,7 +1039,10 @@ def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
                         "Small modular reactor designs must satisfy the same "
                         "international safety standards as large reactors."
                     ),
-                    "claim_id": "fixture-smr-safety",
+                    "claim_id": claim_fingerprint(
+                        "Small modular reactor designs must satisfy the same "
+                        "international safety standards as large reactors."
+                    ),
                     "source_urls": ["https://iaea.org/smr-safety-assessment"],
                     "verdict": "verified",
                     "confidence": 0.85,
@@ -1010,9 +1086,19 @@ def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
             max_iterations=fact_checker_case.expectations.max_iterations,
             tool_budget=fact_checker_case.expectations.max_tool_calls,
         ),
-        dependencies=DependencyLedger(),
+        dependencies=_read_ledger(
+            [
+                "https://syndication.news.example.com/c",
+                "https://world-nuclear.org/smr-safety-standards",
+            ]
+        ),
         evidence=EvidenceContext(),
-        trajectory=[],
+        trajectory=_read_trajectory(
+            [
+                "https://syndication.news.example.com/c",
+                "https://world-nuclear.org/smr-safety-standards",
+            ]
+        ),
         target_model_requested="gpt-5.6-luna",
         target_model_returned="gpt-5.6-luna",
         target_reasoning_effort="low",
@@ -1046,7 +1132,10 @@ def fact_checker_dependent_output(
                         "The 2025 grid upgrade reduced outage minutes by "
                         "40 percent."
                     ),
-                    "claim_id": "fixture-outage-minutes",
+                    "claim_id": claim_fingerprint(
+                        "The 2025 grid upgrade reduced outage minutes by "
+                        "40 percent."
+                    ),
                     "source_urls": [
                         "https://news.example.com/outage-coverage",
                         "https://news.example.com/outage-verification",
@@ -1099,30 +1188,19 @@ def fact_checker_dependent_output(
             max_iterations=fact_checker_dependent_case.expectations.max_iterations,
             tool_budget=fact_checker_dependent_case.expectations.max_tool_calls,
         ),
-        dependencies=DependencyLedger(),
+        dependencies=_read_ledger(
+            [
+                "https://news.example.com/outage-minutes-fall",
+                "https://syndication.news.example.com/outage-minutes-fall",
+            ]
+        ),
         evidence=EvidenceContext(),
-        trajectory=[
-            TrajectoryStep(
-                iteration=0,
-                thought="",
-                tool_name="web_search",
-                succeeded=True,
-                observation_summary=(
-                    "Retrieved https://news.example.com/outage-minutes-fall "
-                    "which confirms the 40 percent figure."
-                ),
-            ),
-            TrajectoryStep(
-                iteration=1,
-                thought="",
-                tool_name="web_search",
-                succeeded=True,
-                observation_summary=(
-                    "Retrieved https://syndication.news.example.com/"
-                    "outage-minutes-fall, the same 40 percent figure."
-                ),
-            ),
-        ],
+        trajectory=_read_trajectory(
+            [
+                "https://news.example.com/outage-minutes-fall",
+                "https://syndication.news.example.com/outage-minutes-fall",
+            ]
+        ),
         target_model_requested="gpt-5.6-luna",
         target_model_returned="gpt-5.6-luna",
         target_reasoning_effort="low",

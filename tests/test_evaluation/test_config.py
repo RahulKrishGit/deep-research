@@ -155,11 +155,23 @@ CRITIC_PROMPT_FINGERPRINT = "a15c36b0ed0e"
 # then changed while the contract migration was completed, moving only its
 # full-source fingerprint ``f73e42b1f8f0`` -> ``edd677f57ce8``. All moves are
 # intentional drift-alarm updates, not weakened assertions.
+#
+# Task 5's fix round then changed the Fact Checker's own module source again,
+# moving ``edd677f57ce8`` -> ``d5c99dbd9a35``. NO prompt string moved: the
+# round persists consumed claim provenance (bounded origin-finding and
+# coverage identities on ``Claim``), deletes the lossy ``_finding_is_new``
+# text heuristic in favour of that provenance, and takes coverage from
+# recorded coverage ids instead of URL overlap. Because
+# ``agent_prompt_fingerprint`` hashes the agent's own module source, any
+# behavioural edit there moves its value; the shared ``agents/prompts.py`` was
+# untouched, so the other five target pins and the Judge pin are unchanged —
+# exactly the blast radius this change should have, and the reason the pin is
+# checked as a matrix rather than per file.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "8a5f8a1499bf",
     "researcher": "ebdfd3ae4c05",
     "source_evaluator": "ffab1c9795e2",
-    "fact_checker": "edd677f57ce8",
+    "fact_checker": "d5c99dbd9a35",
     "synthesizer": "affe67074133",
     "critic": "a15c36b0ed0e",
 }

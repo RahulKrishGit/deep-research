@@ -299,6 +299,7 @@ _STRONG_CASE = build_case(
                 urls=(_EPA_CANOPY_URL, _NOAA_CANOPY_URL),
                 verdict="verified",
                 confidence=0.90,
+                verification_urls=(_CANOPY_REVIEW_URL,),
             ),
             claim(
                 "Peer-reviewed field measurements find urban tree canopy "
@@ -307,6 +308,7 @@ _STRONG_CASE = build_case(
                 urls=(_CANOPY_REVIEW_URL, _USFS_CANOPY_URL),
                 verdict="verified",
                 confidence=0.85,
+                verification_urls=(_EPA_CANOPY_URL,),
             ),
             claim(
                 "The cooling effect of tree canopy grows with canopy "
@@ -314,6 +316,7 @@ _STRONG_CASE = build_case(
                 urls=(_USFS_CANOPY_URL, _CANOPY_REVIEW_URL),
                 verdict="verified",
                 confidence=0.82,
+                verification_urls=(_NOAA_CANOPY_URL,),
             ),
             claim(
                 "Neighborhoods with more than 30 percent canopy cover "
@@ -322,6 +325,7 @@ _STRONG_CASE = build_case(
                 urls=(_PHOENIX_CANOPY_URL,),
                 verdict="verified",
                 confidence=0.80,
+                verification_urls=(_CANOPY_REVIEW_URL,),
             ),
             claim(
                 "Urban tree canopy reduced summer surface temperatures "
@@ -330,6 +334,7 @@ _STRONG_CASE = build_case(
                 urls=(_PHOENIX_CANOPY_URL,),
                 verdict="unverified",
                 confidence=0.55,
+                verification_urls=(_USFS_CANOPY_URL,),
             ),
         ),
         sources=(
@@ -553,6 +558,7 @@ _GAPPY_CASE = build_case(
                 urls=(_COMPOST_BLOG_URL,),
                 verdict="unverified",
                 confidence=0.55,
+                verification_urls=(_LMOP_URL,),
             ),
         ),
         sources=(
@@ -913,6 +919,7 @@ _LIVE_CASE = build_case(
                 urls=(_GCCA_URL, _IEA_CE_URL),
                 verdict="verified",
                 confidence=0.85,
+                verification_urls=(_NATURE_CE_URL,),
             ),
             claim(
                 "Low-carbon cements meet compressive strength standards "
@@ -921,6 +928,7 @@ _LIVE_CASE = build_case(
                 urls=(_NATURE_CE_URL, _GCCA_URL),
                 verdict="verified",
                 confidence=0.80,
+                verification_urls=(_IEA_CE_URL,),
             ),
         ),
         sources=(

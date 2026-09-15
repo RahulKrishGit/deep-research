@@ -36,6 +36,9 @@ _MAX_ARTIFACT_PROHIBITED_CALL_COUNT = 10_000
 _MAX_SCENARIO_MISSES = 16
 _MAX_SCENARIO_MISS_LENGTH = 256
 _MAX_SOURCE_URL_FINGERPRINTS = 128
+# Read-bearing identities are bounded separately and more tightly than
+# discovery identities: a run reads far fewer pages than it searches.
+_MAX_READ_URL_FINGERPRINTS = 64
 # Declared with the other module bounds, not beside EvaluatorDiagnostic:
 # FallbackProviderDiagnostic (defined above EvaluatorDiagnostic) reads it at
 # class-construction time, so a later definition is a NameError at import.
@@ -258,6 +261,19 @@ class DependencyLedger(ContractModel):
     # not fit in the bounded fingerprint list. The default keeps old v1
     # artifacts backward compatible: an absent field means complete.
     source_url_fingerprints_complete: bool = True
+    # Identities of the URLs this repetition actually READ content from,
+    # derived from the typed ReAct steps through the one read-bearing
+    # classifier (``agents.steps.read_evidence_urls``). Unlike
+    # ``source_url_fingerprints``, which also records discovery-only
+    # ``web_search`` result URLs, this is the only field a verification-passage
+    # provenance gate may trust — so it fails CLOSED, the opposite polarity to
+    # the permissive-additive source field above: the flag defaults to False
+    # and every consumer must read anything but ``True`` as "this artifact
+    # cannot prove that a passage was read".
+    read_url_fingerprints: list[SourceURLFingerprint] = Field(
+        default_factory=list, max_length=_MAX_READ_URL_FINGERPRINTS
+    )
+    read_url_fingerprints_complete: bool = False
     real_services_used: list[str] = Field(default_factory=list)
     memory_writes: int = Field(default=0, ge=0)
     memory_reads: int = Field(default=0, ge=0)

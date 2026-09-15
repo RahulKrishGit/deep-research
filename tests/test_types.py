@@ -5,7 +5,10 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.utils.types import (
+    MAX_CONSUMED_COVERAGE_IDS,
+    MAX_CONSUMED_FINDING_FINGERPRINTS,
     Claim,
     Critique,
     EvidencePassage,
@@ -77,7 +80,7 @@ def test_domain_models_preserve_required_fields() -> None:
         related_sub_topic="Adoption",
     )
     claim = Claim(
-        claim_id="claim-adoption",
+        claim_id=claim_fingerprint("Adoption increased year over year."),
         text="Adoption increased year over year.",
         source_urls=["https://example.com/a", "https://example.org/b"],
         verdict="verified",
@@ -104,6 +107,77 @@ def test_domain_models_preserve_required_fields() -> None:
     assert finding.source_url == "not-validated-at-this-boundary"
     assert claim.contradictions == ["One regional survey reported flat adoption."]
     assert memory.similar_findings == [finding]
+
+
+def test_a_claim_identity_is_the_canonical_fingerprint_of_its_text() -> None:
+    """Task 5, Minor 1: a ``Claim`` fixture must not invent an id.
+
+    ``merge_claim_snapshot`` recomputes the fingerprint from ``text``, so an
+    arbitrary id passes every merge test while guarding nothing about the
+    public identity field. Fixtures therefore derive it, and this asserts the
+    contract they derive it against.
+    """
+    text = "Adoption increased year over year."
+    fixture = Claim(
+        claim_id=claim_fingerprint(text),
+        text=text,
+        source_urls=["https://example.com/a"],
+        verdict="verified",
+        confidence=0.9,
+        evidence=["An independent survey reports an increase."],
+        contradictions=[],
+        verification_evidence=[
+            EvidencePassage(
+                source_url="https://independent.org/survey",
+                source_title="Independent survey",
+                locator="p. 3",
+                excerpt="An independent survey reports an increase.",
+                stance="supports",
+            )
+        ],
+    )
+
+    assert fixture.claim_id == claim_fingerprint(fixture.text)
+    # Provenance is additive: a fixture that carries none claims none, which
+    # suppresses nothing and therefore costs extra work rather than skipping
+    # evidence.
+    assert fixture.consumed_finding_fingerprints == []
+    assert fixture.consumed_coverage_ids == []
+
+
+def test_claim_provenance_is_bounded() -> None:
+    """Both provenance lists are bounded, so a claim cannot grow forever."""
+    with pytest.raises(ValidationError):
+        Claim(
+            claim_id="fingerprint",
+            text="A claim.",
+            source_urls=["https://example.com/a"],
+            verdict="insufficient_evidence",
+            confidence=0.0,
+            evidence=[],
+            contradictions=[],
+            verification_evidence=[],
+            consumed_finding_fingerprints=[
+                f"fingerprint-{index}"
+                for index in range(MAX_CONSUMED_FINDING_FINGERPRINTS + 1)
+            ],
+        )
+
+    with pytest.raises(ValidationError):
+        Claim(
+            claim_id="fingerprint",
+            text="A claim.",
+            source_urls=["https://example.com/a"],
+            verdict="insufficient_evidence",
+            confidence=0.0,
+            evidence=[],
+            contradictions=[],
+            verification_evidence=[],
+            consumed_coverage_ids=[
+                f"topic-{index}"
+                for index in range(MAX_CONSUMED_COVERAGE_IDS + 1)
+            ],
+        )
 
 
 @pytest.mark.parametrize("value", [-0.01, 1.01])

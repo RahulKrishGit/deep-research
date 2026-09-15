@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.fact_checker import claimed_domains_for
+from deep_research.agents.identity import claim_fingerprint
+from deep_research.agents.sources import publisher_identity
 from deep_research.evaluation.cases import (
     CASE_REGISTRY_VERSION,
     FIXED_TIMESTAMP,
@@ -182,6 +185,89 @@ def test_the_registry_version_is_recorded() -> None:
     assert CASE_REGISTRY_VERSION >= 1
 
 
+# --- Claim snapshot invariants across the whole registry -------------------
+#
+# Task 5 review, Important 3 / R7: a controlled case seeds ``verified_claims``
+# that downstream evaluations treat as a legitimate production snapshot. Every
+# claim in the registry must therefore be one the production Fact Checker
+# could itself have emitted: canonical identity, a verdict compatible with its
+# passage stances, and passages on publishers independent of the claim's own.
+
+
+def _registry_claims():
+    for case in all_cases():
+        for item in case.state.verified_claims:
+            yield case, item
+
+
+def test_every_registry_claim_id_is_its_canonical_fingerprint() -> None:
+    """``merge_claim_snapshot`` recomputes the fingerprint from text, so an
+    arbitrary fixture id would pass unnoticed and guard nothing."""
+    wrong = [
+        (case.case_id, item.claim_id)
+        for case, item in _registry_claims()
+        if item.claim_id != claim_fingerprint(item.text)
+    ]
+
+    assert wrong == []
+
+
+def test_every_registry_claim_verdict_matches_its_passage_stances() -> None:
+    """Exactly the verdicts ``fact_checker.resolve_verdict`` can produce."""
+    for case, item in _registry_claims():
+        stances = {passage.stance for passage in item.verification_evidence}
+        where = f"{case.case_id}: {item.text[:40]!r}"
+        if item.verdict == "insufficient_evidence":
+            assert not item.verification_evidence, where
+        elif item.verdict == "verified":
+            assert "supports" in stances and "contradicts" not in stances, where
+        elif item.verdict == "unverified":
+            assert "supports" in stances and "contradicts" not in stances, where
+        else:
+            assert item.verdict == "contradicted", where
+            assert "contradicts" in stances, where
+
+
+def test_every_registry_verification_passage_is_independent() -> None:
+    """A passage on the claim's own publisher is not verification."""
+    for case, item in _registry_claims():
+        claimed = {
+            domain.casefold() for domain in claimed_domains_for(item.source_urls)
+        }
+        passage_publishers = {
+            publisher_identity(passage.source_url).casefold()
+            for passage in item.verification_evidence
+        }
+        assert not passage_publishers & claimed, (
+            f"{case.case_id}: {item.text[:40]!r} verifies itself on "
+            f"{sorted(passage_publishers & claimed)}"
+        )
+
+
+def test_the_claim_builder_requires_independent_verification_passages() -> None:
+    """The builder fails loudly rather than seeding a self-verified claim."""
+    with pytest.raises(CaseRegistryError) as caught:
+        claim(
+            "A claim.",
+            urls=["https://example.com/a"],
+            verdict="verified",
+            confidence=0.9,
+        )
+
+    assert "verification_urls" in str(caught.value)
+
+    with pytest.raises(CaseRegistryError) as caught:
+        claim(
+            "A claim.",
+            urls=["https://news.example.com/a"],
+            verdict="unverified",
+            confidence=0.5,
+            verification_urls=["https://docs.example.com/b"],
+        )
+
+    assert "own publishers" in str(caught.value)
+
+
 # The shared fixture builders are the API every case file (Tasks 10-15)
 # imports, and the validation rules are this task's deliverable, so both
 # get exercised here on synthetic catalogs rather than waiting for the
@@ -217,6 +303,7 @@ def test_the_fixture_builders_construct_a_complete_case() -> None:
         verdict="verified",
         confidence=0.9,
         evidence=["source text"],
+        verification_urls=["https://independent.org/review"],
     )
     state = evaluation_state(
         case_id="focused-decomposition",

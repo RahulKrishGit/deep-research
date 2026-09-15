@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from deep_research.agents.base import AgentRun
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.steps import ReActRun
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.utils.types import (
@@ -101,7 +102,9 @@ def fake_scored_source(url: str = SOURCE_URL) -> ScoredSource:
 
 def fake_claim(text: str = "Break-even was reached in 2025.") -> Claim:
     return Claim(
-        claim_id=f"fixture-{text.casefold().replace(' ', '-')}",
+        # Minor 1: the canonical identity, never an invented label — a
+        # non-canonical id would still pass because the merge recomputes it.
+        claim_id=claim_fingerprint(text),
         text=text,
         source_urls=[SOURCE_URL],
         verdict="verified",

@@ -1136,10 +1136,42 @@ def _gate_valid_verdicts(
     return _agent_result("valid_verdicts", True)
 
 
+def _read_url_identities(output: TargetOutput) -> set[str] | None:
+    """Identities of the URLs this repetition proved it READ, or ``None``.
+
+    ``None`` means the artifact cannot prove any read at all, and the
+    read-provenance gate must then fail closed: the field is absent, the
+    completeness flag is anything but ``True``, or the payload is not a list
+    of strings. This is the opposite polarity to
+    ``_researcher_live_provenance_incomplete``, whose absent-means-complete
+    default is permissive-additive — acceptable for discovery provenance,
+    wrong for a guarantee that a passage was actually read.
+    """
+    fingerprints = _field(output.dependencies, "read_url_fingerprints")
+    complete = _field(output.dependencies, "read_url_fingerprints_complete")
+    if not isinstance(fingerprints, (list, tuple)) or complete is not True:
+        return None
+    return {value for value in fingerprints if isinstance(value, str)}
+
+
+def _passage_url_is_read(source_url: str, identities: set[str]) -> bool:
+    """True when ``source_url``'s canonical identity is a recorded read.
+
+    The identity is computed exactly as the recorder computes it, from
+    ``normalize_source_url``, so two spellings of one page compare equal and a
+    URL that was never read — or could never carry an identity — does not.
+    """
+    return (
+        sha256(_normalized(source_url).encode("utf-8")).hexdigest()
+        in identities
+    )
+
+
 def _evidence_linked_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
         return False
+    read_identities: set[str] | None = None
     for entry in claims:
         if _field(entry, "verdict") == "insufficient_evidence":
             continue
@@ -1167,6 +1199,10 @@ def _evidence_linked_passes(output: TargetOutput, case: EvaluationCase) -> bool:
         ]
         if not passages:
             return False
+        if read_identities is None:
+            read_identities = _read_url_identities(output)
+            if read_identities is None:
+                return False
         if _field(entry, "verdict") == "verified" and not any(
             _field(passage, "stance") == "supports" for passage in passages
         ):
@@ -1193,6 +1229,12 @@ def _evidence_linked_passes(output: TargetOutput, case: EvaluationCase) -> bool:
                 or stance not in {"supports", "contradicts"}
             ):
                 return False
+            # A passage may only cite a URL this repetition actually read.
+            # ``citations_known`` is no substitute: it also admits URLs that
+            # merely appear anywhere in live trajectory text, including
+            # discovery-only search observations.
+            if not _passage_url_is_read(source_url, read_identities):
+                return False
         if _field(entry, "verdict") in {"verified", "contradicted"}:
             passage_urls = [
                 source_url
@@ -1215,7 +1257,14 @@ def _gate_evidence_linked(
     return _agent_result(
         "evidence_linked",
         passed,
-        "" if passed else "a non-insufficient claim lacks evidence or sources",
+        (
+            ""
+            if passed
+            else (
+                "a non-insufficient claim lacks evidence or sources, or a "
+                "verification passage cites a URL the run never read"
+            )
+        ),
     )
 
 

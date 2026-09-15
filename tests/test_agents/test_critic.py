@@ -29,6 +29,7 @@ from deep_research.agents.critic import (
     route_decision,
 )
 from deep_research.agents.errors import AgentConfigurationError
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import (
     CRITIC_REVIEW_SYSTEM_PROMPT,
     AgentTask,
@@ -83,7 +84,9 @@ def _source(*, low_confidence: bool = False) -> ScoredSource:
 
 def _claim(*, verdict: str = "verified") -> Claim:
     return Claim(
-        claim_id="fixture-claim",
+        claim_id=claim_fingerprint(
+            "Logical error rates fell below break-even in 2025."
+        ),
         text="Logical error rates fell below break-even in 2025.",
         source_urls=[CRITIC_SOURCE_URL],
         verdict=verdict,

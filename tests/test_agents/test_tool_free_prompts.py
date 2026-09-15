@@ -45,6 +45,7 @@ from deep_research.agents.fact_checker import (
     claim_extraction_messages,
     claim_verification_messages,
 )
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.planner import (
     _PLAN_REPLY_EXAMPLES,
     ResearchPlanDraft,
@@ -160,7 +161,7 @@ def _scored_source(url: str = "https://real.test/one") -> ScoredSource:
 
 def _claim(url: str = "https://real.test/one") -> Claim:
     return Claim(
-        claim_id="fixture-claim",
+        claim_id=claim_fingerprint("A measured result was reported."),
         text="A measured result was reported.",
         source_urls=[url],
         verdict="verified",

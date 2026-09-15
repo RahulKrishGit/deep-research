@@ -43,6 +43,7 @@ from deep_research.agents.source_evaluator import (
     SourceEvaluatorAgent,
 )
 from deep_research.agents.sources import normalize_source_url, source_domain
+from deep_research.agents.steps import ReActStep, read_evidence_urls
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.evaluation.config import EvaluationRuntimeConfig
 from deep_research.evaluation.factory import evaluation_session_id
@@ -87,6 +88,11 @@ _ENTRY_FIELD_KEYS = frozenset(
 
 _EMBEDDING_DIMENSION = 8
 _MAX_SOURCE_URL_FINGERPRINTS = 128
+# Bounded read-bearing provenance (Task 5). Smaller than the source-URL bound
+# because a run reads far fewer pages than it searches, and because exceeding
+# it makes the artifact report itself incomplete — which the read-provenance
+# gate treats as "cannot prove the read".
+_MAX_READ_URL_FINGERPRINTS = 64
 
 # Additive controlled-harness contract marker. Existing v1 case identities
 # and artifacts stay unchanged; new controlled outputs identify this repaired
@@ -115,6 +121,59 @@ def _is_valid_http_source_url(value: str) -> bool:
     except (UnicodeError, ValueError):
         return False
     return True
+
+
+def source_url_fingerprint(url: str) -> str | None:
+    """The canonical, content-free identity of one URL, or ``None``.
+
+    ``None`` means this URL cannot carry an identity at all: it is not an
+    absolute HTTP(S) URL, or its normalized form is unparseable. Callers
+    skip those rather than inventing an identity for them.
+    """
+    if not isinstance(url, str) or not _is_valid_http_source_url(url):
+        return None
+    try:
+        normalized = normalize_source_url(url)
+    except (UnicodeError, ValueError):
+        return None
+    return sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def bounded_url_fingerprints(
+    urls: Sequence[str],
+    *,
+    limit: int = _MAX_READ_URL_FINGERPRINTS,
+) -> tuple[list[str], bool]:
+    """Bounded, content-free identities of ``urls``, plus completeness.
+
+    ``complete`` is ``False`` as soon as a valid identity does not fit. That
+    is the fail-closed direction: a consumer must treat an incomplete set as
+    unable to prove anything about the identities it does not hold.
+    """
+    fingerprints: list[str] = []
+    for url in urls:
+        fingerprint = source_url_fingerprint(url)
+        if fingerprint is None or fingerprint in fingerprints:
+            continue
+        if len(fingerprints) >= limit:
+            return fingerprints, False
+        fingerprints.append(fingerprint)
+    return fingerprints, True
+
+
+def read_url_fingerprints(
+    steps: Sequence[ReActStep],
+) -> tuple[list[str], bool]:
+    """Identities of the URLs a run actually READ, from its typed steps.
+
+    Uses ``agents.steps.read_evidence_urls`` — the one authoritative
+    read-bearing classifier — rather than re-deriving the rule or parsing
+    truncated ``observation_summary`` prose. A discovery-only ``web_search``
+    result list therefore contributes nothing: a search hit is a candidate,
+    and a verification passage may never rest on one.
+    """
+    urls = [url for step in steps for url in read_evidence_urls(step)]
+    return bounded_url_fingerprints(urls)
 
 
 class ProhibitedDependencyError(RuntimeError):
@@ -279,16 +338,8 @@ class DependencyRecorder:
     def record_source_url_fingerprints(self, urls: Sequence[str]) -> None:
         """Record bounded, normalized URL identities without retaining URLs."""
         for url in urls:
-            if not isinstance(url, str):
-                continue
-            if not _is_valid_http_source_url(url):
-                continue
-            try:
-                normalized = normalize_source_url(url)
-            except (UnicodeError, ValueError):
-                continue
-            fingerprint = sha256(normalized.encode("utf-8")).hexdigest()
-            if fingerprint in self._source_url_fingerprints:
+            fingerprint = source_url_fingerprint(url)
+            if fingerprint is None or fingerprint in self._source_url_fingerprints:
                 continue
             if len(self._source_url_fingerprints) >= _MAX_SOURCE_URL_FINGERPRINTS:
                 self._source_url_fingerprints_complete = False

@@ -153,6 +153,16 @@ class EvidencePassage(ContractModel):
     stance: Literal["supports", "contradicts"]
 
 
+# Task 5 provenance bounds. ``consumed_finding_fingerprints`` and
+# ``consumed_coverage_ids`` record what one claim already consumed so a later
+# pass can tell unchanged evidence from new evidence. They are bounded so a
+# claim record cannot grow without limit; the truncation polarity is
+# deliberate: an identity that did not fit is treated as not consumed, which
+# costs extra work and can never silently skip evidence.
+MAX_CONSUMED_FINDING_FINGERPRINTS = 64
+MAX_CONSUMED_COVERAGE_IDS = 32
+
+
 class Claim(ContractModel):
     claim_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
@@ -162,6 +172,19 @@ class Claim(ContractModel):
     evidence: list[str]
     contradictions: list[str]
     verification_evidence: list[EvidencePassage]
+    # The origin findings and planned coverage topics this claim already
+    # consumed, as stable identities. Both default to empty, which suppresses
+    # nothing: a claim carrying no recorded provenance (a fixture, or a
+    # snapshot written before provenance existed) makes every finding look new
+    # so the next pass re-checks rather than skips.
+    consumed_finding_fingerprints: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_CONSUMED_FINDING_FINGERPRINTS,
+    )
+    consumed_coverage_ids: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_CONSUMED_COVERAGE_IDS,
+    )
 
 
 class Critique(ContractModel):
