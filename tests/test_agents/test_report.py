@@ -17,7 +17,7 @@ import re
 
 import pytest
 
-from deep_research.agents.identity import claim_fingerprint
+from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.report import (
     EVIDENCE_SECTIONS,
     EVIDENCE_TITLE_PREFIX,
@@ -106,6 +106,7 @@ def _claim(
     contradictions: list[str] | None = None,
     passages: list[EvidencePassage] | None = None,
     coverage_ids: list[str] | None = None,
+    finding_fingerprints: list[str] | None = None,
 ) -> Claim:
     return Claim(
         claim_id=claim_fingerprint(text),
@@ -116,6 +117,7 @@ def _claim(
         evidence=["An independent review states the same figure."],
         contradictions=contradictions or [],
         verification_evidence=passages or [],
+        consumed_finding_fingerprints=finding_fingerprints or [],
         consumed_coverage_ids=coverage_ids or [],
     )
 
@@ -832,6 +834,41 @@ def test_the_ledger_records_the_coverage_a_claim_consumed() -> None:
     )
 
     assert "topic-01, topic-02" in ledger
+
+
+def test_same_url_findings_only_hide_the_consumed_finding() -> None:
+    consumed = Finding(
+        content="The consumed finding is checked.",
+        source_url=SOURCE_URL,
+        source_title="QEC 2025",
+        extracted_at=EXTRACTED_AT,
+        confidence=0.8,
+        related_sub_topic="Alpha",
+    )
+    untouched = Finding(
+        content="The untouched finding remains an open question.",
+        source_url=SOURCE_URL,
+        source_title="QEC 2025",
+        extracted_at=EXTRACTED_AT,
+        confidence=0.7,
+        related_sub_topic="Alpha",
+    )
+    ledger = render_evidence_ledger(
+        _composition(
+            claims=[
+                _claim(
+                    finding_fingerprints=[finding_fingerprint(consumed)]
+                )
+            ],
+            findings=[consumed, untouched],
+        )
+    )
+
+    open_questions = _section_body(
+        ledger, "## Unchecked findings and open questions"
+    )
+    assert "The consumed finding is checked." not in open_questions
+    assert "The untouched finding remains an open question." in open_questions
 
 
 def test_an_empty_ledger_still_carries_every_block() -> None:

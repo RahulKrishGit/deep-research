@@ -34,6 +34,7 @@ from datetime import datetime
 from pydantic import Field, model_validator
 
 from deep_research.agents.identity import (
+    finding_fingerprint,
     merge_claim_snapshot,
     merge_source_snapshot,
 )
@@ -819,14 +820,14 @@ def _rejected_content(composition: ReportComposition) -> str:
 
 def _unchecked_findings(composition: ReportComposition) -> str:
     consumed = {
-        normalize_source_url(url)
+        fingerprint
         for claim in composition.claims
-        for url in claim.source_urls
+        for fingerprint in claim.consumed_finding_fingerprints
     }
     unchecked = [
         finding
         for finding in composition.findings
-        if normalize_source_url(finding.source_url) not in consumed
+        if finding_fingerprint(finding) not in consumed
     ]
     if not unchecked:
         return "(every retrieved finding supports a checked claim)"
