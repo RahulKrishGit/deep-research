@@ -14,6 +14,7 @@ from collections.abc import Mapping
 
 from pydantic import JsonValue
 
+from deep_research.agents.errors import PlanningError
 from deep_research.graph.state import GRAPH_SOURCE, HALTING_ERROR_TYPES
 from deep_research.utils.types import ResearchError
 
@@ -111,9 +112,16 @@ def agent_configuration_error(error: Exception, *, node: str) -> ResearchError:
     return _from_exception("graph_agent_configuration_error", error, node=node)
 
 
-def planning_failed_error(error: Exception, *, node: str) -> ResearchError:
+def planning_failed_error(error: PlanningError, *, node: str) -> ResearchError:
     """Record that the planner could not produce a plan."""
-    return _from_exception("graph_planning_failed", error, node=node)
+    return graph_error(
+        error_type="graph_planning_failed",
+        node=node,
+        details={
+            "exception_type": type(error).__name__,
+            "problems": list(error.problems),
+        },
+    )
 
 
 def provider_configuration_error(

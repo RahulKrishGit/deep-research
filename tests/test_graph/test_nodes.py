@@ -8,6 +8,7 @@ import pytest
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.synthesizer import SynthesizerAgent
+from deep_research.graph.errors import GRAPH_ERROR_REASONS
 from deep_research.graph.nodes import (
     agent_node,
     critic_node,
@@ -137,7 +138,6 @@ async def test_a_non_recoverable_agent_error_still_does_not_halt_the_graph(
 @pytest.mark.parametrize(
     ("raised", "expected_type"),
     [
-        (PlanningError("no plan"), "graph_planning_failed"),
         (
             AgentConfigurationError("bad scratchpad"),
             "graph_agent_configuration_error",
@@ -160,6 +160,34 @@ async def test_a_configuration_failure_halts_the_run_with_state_intact(
     assert state.errors[0].details == {"exception_type": type(raised).__name__}
     assert is_halted(state)
     assert state.original_question == "How mature is quantum error correction?"
+
+
+@pytest.mark.asyncio
+async def test_planning_failure_preserves_safe_problems_without_hostile_text() -> None:
+    hostile_exception_text = "hostile exception text from provider response"
+    hostile_provider_sentinel = "hostile-provider-sentinel"
+    raised = PlanningError(
+        hostile_exception_text,
+        problems=("the plan contains no sub-topics",),
+        operation=hostile_provider_sentinel,
+    )
+    agent = FakeAgent("planner", [raised])
+
+    state = load_state(await agent_node(agent)(dump_state(fake_research_state())))
+
+    recorded = state.errors[0]
+    assert recorded.error_type == "graph_planning_failed"
+    assert recorded.message == GRAPH_ERROR_REASONS["graph_planning_failed"]
+    assert recorded.details == {
+        "exception_type": "PlanningError",
+        "problems": ["the plan contains no sub-topics"],
+    }
+    assert isinstance(recorded.details["problems"], list)
+    assert hostile_exception_text not in recorded.message
+    assert hostile_provider_sentinel not in recorded.message
+    assert hostile_exception_text not in str(recorded.details)
+    assert hostile_provider_sentinel not in str(recorded.details)
+    assert is_halted(state)
 
 
 @pytest.mark.asyncio
