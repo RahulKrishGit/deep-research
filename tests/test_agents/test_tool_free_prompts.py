@@ -262,7 +262,16 @@ def _critique_messages() -> list:
             max_iterations=3,
             claims=[_claim()],
             sources=[_scored_source()],
-            sub_topics=["Angle"],
+            sub_topics=[
+                SubTopic(
+                    coverage_id="topic-01",
+                    title="Angle",
+                    rationale="Angle is load-bearing.",
+                    search_queries=["angle 2025"],
+                    success_criteria=["A named source about Angle."],
+                    priority=1,
+                )
+            ],
         ),
         _finished_run("critic"),
         report_chars=6000,

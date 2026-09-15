@@ -32,6 +32,7 @@ from deep_research.agents.synthesizer import (
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
+from deep_research.runtime.outcome import evidence_path_from_state
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Finding,
@@ -232,7 +233,12 @@ async def test_verified_claims_become_a_cited_report_the_critic_accepts(
     # Both artifacts are composed into state; synthesis publishes neither and
     # keeps nothing in long-term memory.
     assert state.report_evidence is not None
-    assert state.evidence_path == "report-session-1-0-evidence.md"
+    # A composed ledger name is not a write. ``state.evidence_path`` stays
+    # ``None`` until the terminal finalizer records the write that succeeded,
+    # so a run halted after this node cannot advertise an ``Evidence ledger:``
+    # line for a file that was never created.
+    assert state.evidence_path is None
+    assert evidence_path_from_state(state) is None
     assert state.unique_source_count == 1
     assert state.unique_claim_count == 1
     assert list(tmp_path.iterdir()) == []

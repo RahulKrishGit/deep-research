@@ -140,12 +140,13 @@ def claim(
 
     ``urls`` are the ORIGIN sources that made the claim, exactly as
     ``Claim.source_urls`` means in production. ``verification_urls`` are the
-    independent sources whose passages judged it, and they are required for
-    every evidence-bearing verdict: Task 5 review found this builder cycling
-    origin URLs into ``EvidencePassage.source_url``, which produced verified
-    snapshots production could not legitimately emit. Origin URLs are never
-    cycled into a passage here, and a non-independent verification URL is
-    rejected outright rather than left for a downstream gate to notice.
+    independent sources whose passages judged it, and they are required by
+    every claim that builds a passage — not only by every evidence-bearing
+    verdict: Task 5 review found this builder cycling origin URLs into
+    ``EvidencePassage.source_url``, which produced verified snapshots
+    production could not legitimately emit. Origin URLs are never cycled into
+    a passage here, and a non-independent verification URL is rejected
+    outright rather than left for a downstream gate to notice.
 
     Passages are built by cycling ``verification_urls`` over the given
     ``evidence`` (``supports``) and ``contradictions`` (``contradicts``)
@@ -154,13 +155,24 @@ def claim(
     """
     source_urls = list(urls)
     verification = list(verification_urls)
+    support_texts = list(evidence)
+    contradiction_texts = list(contradictions)
+    if verdict in {"verified", "unverified"} and not support_texts:
+        support_texts = ["Case fixture evidence."]
+    # The guard belongs to building a passage, not to the verdict's class:
+    # both loops below cycle ``verification_urls`` with ``index % len(...)``,
+    # so a claim of ANY verdict that carries an excerpt and no verification URL
+    # raises ``ZeroDivisionError`` at import time. That is a collection error,
+    # so the verdict and passage invariants that would have caught the
+    # malformed fixture never get to run, and a typo'd verdict is the
+    # realistic trigger.
+    if (support_texts or contradiction_texts) and not verification:
+        raise CaseRegistryError(
+            f"a {verdict!r} claim fixture must supply explicit "
+            "verification_urls; its origin source_urls are not "
+            "independent verification"
+        )
     if verdict in EVIDENCE_BEARING_VERDICTS:
-        if not verification:
-            raise CaseRegistryError(
-                f"a {verdict!r} claim fixture must supply explicit "
-                "verification_urls; its origin source_urls are not "
-                "independent verification"
-            )
         claimed = {
             publisher.casefold() for publisher in claimed_domains_for(source_urls)
         }
@@ -174,10 +186,6 @@ def claim(
                 "a claim's verification passage cites one of its own "
                 f"publishers: {', '.join(shared)}"
             )
-    support_texts = list(evidence)
-    contradiction_texts = list(contradictions)
-    if verdict in {"verified", "unverified"} and not support_texts:
-        support_texts = ["Case fixture evidence."]
     passages: list[EvidencePassage] = []
     for index, excerpt in enumerate(support_texts):
         passages.append(

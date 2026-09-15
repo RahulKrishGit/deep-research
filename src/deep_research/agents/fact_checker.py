@@ -748,9 +748,14 @@ def insufficient_claim(
     has no field for it and this project does not widen a shared contract
     for one agent's bookkeeping.
 
-    An insufficient claim still records what it consumed: the finding was
-    read and judged, and re-reading it next pass would spend budget on
-    evidence the snapshot already accounts for.
+    Whether the two ``consumed_*`` lists are supplied is the caller's
+    decision, and it is a decision about whether this finding was *judged*:
+    a verdict that was read and found unsupported records what it consumed,
+    while a provider failure that reached no verdict at all records nothing.
+    Recording provenance for an unjudged finding would make it look already
+    accounted for and suppress its re-extraction for the rest of the run —
+    the one polarity this agent's "extra work, never skipped evidence" rule
+    must not invert on a transient outage.
     """
     if reason not in INSUFFICIENT_REASONS:
         raise ValueError(f"unknown insufficient-evidence reason: {reason}")
@@ -1120,6 +1125,14 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         )
         if not findings:
             return [], [no_findings_to_check_error()], False
+        # The model is shown only the first ``_finding_digest`` candidates, so
+        # attribution may only consider that same slice. Attributing against
+        # the full list lets a claim citing a URL whose finding sits past the
+        # cut record that finding's coverage id as consumed — over-counting
+        # coverage on evidence the model never saw, not merely costing extra
+        # work. ``claim_extraction_messages`` below applies the same bound to
+        # the same ordered list.
+        visible_findings = findings[: self._finding_digest]
 
         critique_texts = _critique_texts(state)
         # Provenance decides "new evidence": a finding is new iff no prior
@@ -1174,7 +1187,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         coverage_ids = coverage_ids_by_title(state)
         self._pending_provenance = {
             claim_fingerprint(item.text): consumed_provenance(
-                item, findings=findings, coverage_ids=coverage_ids
+                item, findings=visible_findings, coverage_ids=coverage_ids
             )
             for item in accepted
         }
@@ -1194,13 +1207,14 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         invented over an empty evidence section.
         """
         if not run.succeeded:
+            # No model ever looked at this finding: the loop died before the
+            # verdict was requested. Recording provenance here would make
+            # ``_finding_is_new`` call it consumed and let a transient outage
+            # suppress its re-extraction for the rest of the run, so the two
+            # lists are deliberately left empty.
             return insufficient_claim(
                 task.claim,
                 reason="loop_failed",
-                consumed_finding_fingerprints=(
-                    task.consumed_finding_fingerprints
-                ),
-                consumed_coverage_ids=task.consumed_coverage_ids,
             ), (
                 "loop_failed"
             ), [], False
@@ -1236,14 +1250,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 agent_name=self.name,
             )
         except ProviderError as error:
+            # Same reasoning as ``loop_failed``: the verdict was never read,
+            # so nothing was judged and nothing may look consumed.
             return (
                 insufficient_claim(
                     task.claim,
                     reason="provider_unavailable",
-                    consumed_finding_fingerprints=(
-                        task.consumed_finding_fingerprints
-                    ),
-                    consumed_coverage_ids=task.consumed_coverage_ids,
                 ),
                 "provider_unavailable",
                 [claim_verification_provider_error(error)],

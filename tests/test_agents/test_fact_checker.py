@@ -8,6 +8,7 @@ import pytest
 
 from deep_research.agents.base import AgentRun
 from deep_research.agents.fact_checker import (
+    DEFAULT_FINDING_DIGEST,
     MAX_PASSAGE_EXCERPT_CHARS,
     MAX_PASSAGE_LOCATOR_CHARS,
     VERDICT_VALUES,
@@ -1006,6 +1007,179 @@ async def test_a_verification_provider_failure_is_insufficient_not_invented(
     assert provider_failed is True
     assert errors[0].error_type == "fact_checker_verification_provider_error"
     assert errors[0].recoverable is False
+
+
+@pytest.mark.asyncio
+async def test_attribution_never_consumes_a_post_digest_finding(
+    tracker: Tracker,
+) -> None:
+    """Past the digest cut, an unseen finding must not look consumed.
+
+    ``claim_extraction_messages`` shows the model only the first
+    ``finding_digest`` candidate findings, but the prompt's coverage order
+    still lists every planned topic. A claim citing a URL whose finding sits
+    past that cut is attributed nothing: the model never saw the finding, so
+    it cannot have consumed it, and counting its coverage id would report a
+    topic as covered on evidence no one read. The correct failure direction is
+    the branch's own — extra work, never skipped evidence.
+    """
+    topics = [
+        SubTopic(
+            coverage_id=f"topic-{index:02d}",
+            title=f"Alpha {index}",
+            rationale="Load-bearing.",
+            search_queries=[f"alpha {index} evidence"],
+            success_criteria=["A named source."],
+            priority=index,
+        )
+        for index in range(1, 42)
+    ]
+    findings = [
+        _check_finding(
+            f"https://example.org/{index}",
+            content=f"Fact number {index}.",
+            sub_topic=topic.title,
+        )
+        for index, topic in enumerate(topics, start=1)
+    ]
+    post_digest_url = findings[-1].source_url
+    post_digest_coverage = topics[-1].coverage_id
+    state = ResearchState(
+        session_id="session-1",
+        original_question="How mature is quantum error correction?",
+        sub_topics=topics,
+        raw_findings=findings,
+        evaluated_sources=[_scored(finding.source_url) for finding in findings],
+        memory_context=MemorySnapshot(),
+    )
+    assert len(findings) > DEFAULT_FINDING_DIGEST
+    assert post_digest_url not in claim_extraction_messages(
+        state, max_findings=DEFAULT_FINDING_DIGEST
+    )[1].content
+
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(
+                        text="The post-digest finding states a fact.",
+                        source_urls=[post_digest_url],
+                    )
+                ]
+            )
+        ]
+    )
+    agent = _checker(tracker, completer)
+
+    claims, _, _ = await agent.extract_claims(state)
+    task = agent.claim_task(AgentTask(instruction="Check claims."), claims[0])
+
+    assert [claim.text for claim in claims] == [
+        "The post-digest finding states a fact."
+    ]
+    assert task.consumed_finding_fingerprints == []
+    assert task.consumed_coverage_ids == []
+    assert post_digest_coverage not in task.consumed_coverage_ids
+
+
+def _provenance_task() -> ClaimTask:
+    return ClaimTask(
+        instruction='Verify this claim against independent sources.',
+        claim=_claim_draft(),
+        claimed_domains=["example.org"],
+        consumed_finding_fingerprints=[finding_fingerprint(_check_finding())],
+        consumed_coverage_ids=["topic-01"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_records_no_consumed_provenance(
+    tracker: Tracker,
+) -> None:
+    """An unjudged claim must not make its finding look already consumed.
+
+    ``consumed_finding_fingerprints`` is the only thing ``_finding_is_new``
+    consults and ``extract_claims`` returns early once no finding is new, so
+    recording provenance on a claim no model ever judged makes a transient
+    provider blip suppress that finding for the rest of the run. The recorded
+    rationale ("the finding was read and judged") is true for
+    ``no_independent_source`` and false for both failure reasons.
+    """
+    finding = _check_finding()
+    independent_run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                1,
+                "web_scraper",
+                {
+                    "url": "https://third.test/x",
+                    "text": "An independent review agrees.",
+                },
+            )
+        ],
+        iterations=1,
+        tool_calls=1,
+    )
+    failed_loop_run = independent_run.model_copy(
+        update={"stop_reason": "provider_error"}
+    )
+
+    failed_loop, reason, _, _ = await _checker(
+        tracker, ScriptedCompleter()
+    ).verify_claim(_provenance_task(), failed_loop_run)
+    outage, outage_reason, _, _ = await _checker(
+        tracker, ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    ).verify_claim(_provenance_task(), independent_run)
+
+    assert reason == "loop_failed"
+    assert outage_reason == "provider_unavailable"
+    for claim in (failed_loop, outage):
+        assert claim.verdict == "insufficient_evidence"
+        assert claim.consumed_finding_fingerprints == []
+        assert claim.consumed_coverage_ids == []
+        assert _finding_is_new(finding, [claim]) is True
+
+
+@pytest.mark.asyncio
+async def test_a_judged_insufficient_claim_still_records_its_provenance(
+    tracker: Tracker,
+) -> None:
+    """The positive control for the failure-reason fix.
+
+    ``no_independent_source`` is a judgement about this finding: the model was
+    never called because nothing independent of the claim's own publisher was
+    retrieved, and re-reading the same finding next pass would buy nothing.
+    Its provenance must survive, or the fix would have traded a suppressed
+    re-extraction for an unbounded one.
+    """
+    finding = _check_finding()
+    claim, reason, _, _ = await _checker(
+        tracker, ScriptedCompleter()
+    ).verify_claim(
+        _provenance_task(),
+        ReActRun(
+            agent_name="fact_checker",
+            stop_reason="finished",
+            steps=[
+                _tool_step(
+                    1,
+                    "web_scraper",
+                    {"url": "https://example.org/other", "text": "Same publisher."},
+                )
+            ],
+            iterations=1,
+            tool_calls=1,
+        ),
+    )
+
+    assert reason == "no_independent_source"
+    assert claim.consumed_finding_fingerprints == [
+        finding_fingerprint(finding)
+    ]
+    assert claim.consumed_coverage_ids == ["topic-01"]
+    assert _finding_is_new(finding, [claim]) is False
 
 
 def test_state_update_carries_verified_claims_and_errors(

@@ -285,6 +285,14 @@ class ProgressStream:
     no state of its own, so the same instance serves the whole run and the
     graph's own de-duplication (each event is delivered once, in order) is the
     only thing deciding what is printed.
+
+    Every line is flushed as it is written. ``main`` hands this the real
+    ``sys.stdout``, which is line-buffered only on a TTY: redirected to a file
+    or a pipe it buffers 8 KiB, and a whole run emits far less than that, so
+    without the flush "live" progress would appear only at process exit —
+    exactly the non-interactive case where the user has no other signal the
+    run is alive. The summary is written last and flushed at exit, so it does
+    not need one here.
     """
 
     def __init__(self, stream: TextIO, *, verbose: bool) -> None:
@@ -294,7 +302,7 @@ class ProgressStream:
     def __call__(self, event: ResearchEvent) -> None:
         line = render_progress(event, verbose=self._verbose)
         if line is not None:
-            print(line, file=self._stream)
+            print(line, file=self._stream, flush=True)
 
 
 def _errors_by_source(

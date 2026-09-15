@@ -119,6 +119,18 @@ def _draft(
     )
 
 
+def _alpha() -> SubTopic:
+    """The one planned sub-topic every Critic request test renders."""
+    return SubTopic(
+        coverage_id="topic-01",
+        title="Alpha",
+        rationale="Alpha is load-bearing.",
+        search_queries=["alpha 2025"],
+        success_criteria=["A named source about Alpha."],
+        priority=1,
+    )
+
+
 def _task(**overrides: object) -> CritiqueTask:
     payload: dict[str, object] = {
         "instruction": "How mature is quantum error correction?",
@@ -127,7 +139,7 @@ def _task(**overrides: object) -> CritiqueTask:
         "max_iterations": 3,
         "claims": [_claim()],
         "sources": [_source()],
-        "sub_topics": ["Alpha"],
+        "sub_topics": [_alpha()],
         "error_count": 2,
     }
     payload.update(overrides)
@@ -165,21 +177,16 @@ def test_spot_check_guidance_carries_the_report_under_review() -> None:
 def test_spot_check_guidance_keeps_the_planned_queries_beside_the_report() -> None:
     guidance = _render_spot_check_guidance(
         _live_report(),
-        [
-            SubTopic(
-                coverage_id="topic-01",
-                title="Alpha",
-                rationale="Alpha is load-bearing.",
-                search_queries=["alpha 2025"],
-                success_criteria=["A named source about Alpha."],
-                priority=1,
-            )
-        ],
+        [_alpha()],
         report_chars=6000,
     )
 
     assert _LIVE_REPORT_PROBE in guidance
-    assert "- Alpha" in guidance
+    # The spot-check prompt is the second place a planned sub-topic is shown,
+    # so it must carry the same ``coverage_id: title`` line the review request
+    # does: a model that finds the id here and not there has been told two
+    # different things about the same plan.
+    assert "- topic-01: Alpha" in guidance
     assert "  - alpha 2025" in guidance
 
 
@@ -1013,7 +1020,13 @@ def test_critique_messages_carry_the_report_and_every_quality_signal() -> None:
     assert "# Report under review" in body
     assert "# Research report:" in body
     assert "# Sub-topics planned" in body
-    assert "- Alpha" in body
+    # ``CRITIQUE_INSTRUCTION`` tells the model to copy a ``coverage_id``
+    # "exactly from a planned sub-topic" and never to infer one from a title.
+    # The id therefore has to appear in this rendered request next to its
+    # title, or the response contract points at a list of titles and every
+    # gap it targets is nulled by ``normalize_gaps``. The exact line pins both
+    # values and their order, so it subsumes the older title-only assertion.
+    assert "- topic-01: Alpha" in body
     assert "# Claim verdicts" in body
     assert "[verified 0.80]" in body
     assert "# Source quality" in body
@@ -1167,7 +1180,9 @@ def test_build_task_carries_the_report_budget_and_quality_signals(
     assert task.report == state.report
     assert task.iteration == 2
     assert task.max_iterations == 3
-    assert task.sub_topics == ["Alpha"]
+    assert [(topic.coverage_id, topic.title) for topic in task.sub_topics] == [
+        ("topic-01", "Alpha")
+    ]
     assert len(task.claims) == 1
     assert len(task.sources) == 1
     assert task.error_count == 0

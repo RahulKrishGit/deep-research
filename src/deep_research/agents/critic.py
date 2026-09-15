@@ -356,6 +356,14 @@ class CritiqueTask(AgentTask):
     Carrying the report and the iteration bounds on the task is what lets
     ``finalize(task, run)`` route without the agent holding mutable state
     across await points — the same reason ``ClaimTask`` exists.
+
+    ``sub_topics`` holds the planner's own ``SubTopic`` objects rather than
+    parallel title and coverage-id lists. ``CRITIQUE_INSTRUCTION`` requires the
+    model to copy a ``coverage_id`` *exactly from a planned sub-topic* and
+    forbids inferring one from a title, so the two values have to travel
+    together out of one ordered sequence: a second list can drift out of step
+    with the first, and a title-only rendering leaves the contract pointing at
+    data the request never carried.
     """
 
     report: str = ""
@@ -363,13 +371,22 @@ class CritiqueTask(AgentTask):
     max_iterations: int = Field(default=1, ge=1)
     claims: list[Claim] = []
     sources: list[ScoredSource] = []
-    sub_topics: list[str] = []
-    coverage_ids: list[str] = []
+    sub_topics: list[SubTopic] = []
     error_count: int = Field(default=0, ge=0)
     quality: ReportQualitySnapshot | None = None
     report_sections: dict[str, str] = {}
     errors: list[ResearchError] = []
     error_groups: dict[str, list[ResearchError]] = {}
+
+
+def _render_planned_sub_topic(sub_topic: SubTopic) -> str:
+    """One planned sub-topic as ``- <coverage_id>: <title>``.
+
+    The single place either request builds that line. The id comes first so a
+    model copying ``coverage_id`` has one unambiguous token per topic, and the
+    title stays beside it so the gap it writes can be recognised by a reader.
+    """
+    return f"- {sub_topic.coverage_id}: {sub_topic.title}"
 
 
 def _render_spot_check_guidance(
@@ -395,7 +412,7 @@ def _render_spot_check_guidance(
     )
     lines.append("Planned sub-topics and search queries:")
     for sub_topic in sub_topics:
-        lines.append(f"- {sub_topic.title}")
+        lines.append(_render_planned_sub_topic(sub_topic))
         lines.extend(f"  - {query}" for query in sub_topic.search_queries)
     return "\n".join(lines)
 
@@ -667,7 +684,10 @@ def critique_messages(
 ) -> list[ChatMessage]:
     """Build the messages that request one structured review."""
     sub_topics = (
-        "\n".join(f"- {title}" for title in task.sub_topics)
+        "\n".join(
+            _render_planned_sub_topic(sub_topic)
+            for sub_topic in task.sub_topics
+        )
         or "(none planned)"
     )
     canonical_claims = merge_claim_snapshot([], task.claims)
@@ -882,8 +902,7 @@ class CriticAgent(BaseAgent[Critique]):
             max_iterations=state.max_iterations,
             claims=claims,
             sources=sources,
-            sub_topics=[sub_topic.title for sub_topic in state.sub_topics],
-            coverage_ids=[sub_topic.coverage_id for sub_topic in state.sub_topics],
+            sub_topics=list(state.sub_topics),
             error_count=len(errors),
             quality=state.quality,
             report_sections=_split_reader_report(state.report or ""),
@@ -934,7 +953,9 @@ class CriticAgent(BaseAgent[Critique]):
             draft,
             iteration=task.iteration,
             max_iterations=task.max_iterations,
-            known_coverage_ids=set(task.coverage_ids),
+            known_coverage_ids={
+                sub_topic.coverage_id for sub_topic in task.sub_topics
+            },
         )
         return critique, reason, [], False
 

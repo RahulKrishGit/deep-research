@@ -104,7 +104,45 @@ from deep_research.utils.config import (
 # of hashing a module's full source. (The synthesizer's value covers the
 # final source of that module in this commit, including the blank-cell
 # normalization its constraint rows use.) The Judge pin did **not** move.
-CRITIC_PROMPT_FINGERPRINT = "e8bb04d10046"
+# Fix wave A-1 then moved the Critic's own value a final time — ``e8bb04d10046``
+# -> ``1d2833ae6bdf`` — for the load-bearing defect of the whole plan: the
+# "# Sub-topics planned" block rendered titles only, so the response contract's
+# "Copy coverage_id exactly from a planned sub-topic" had nothing to copy,
+# ``normalize_gaps`` nulled every invented id, and targeted refinement had never
+# fired. ``CritiqueTask`` now carries the planner's own ``SubTopic`` objects
+# instead of parallel title and coverage-id lists, and both the review request
+# and ``_render_spot_check_guidance`` render ``- <coverage_id>: <title>`` from
+# that one sequence. Only the Critic's value moved: ``agents/prompts.py`` was
+# untouched, so the other five target pins and the Judge pin are unchanged.
+# Fix wave A-4 then moved the Fact Checker's own value, ``926a1d968c68`` ->
+# ``5080d1810c7e``, together with A-6 below. A-4 stopped recording
+# ``consumed_finding_fingerprints``/``consumed_coverage_ids`` on the two
+# reasons where no model ever judged the finding (``provider_unavailable``,
+# ``loop_failed``), because a recorded fingerprint is what makes
+# ``_finding_is_new`` answer ``False`` and ``extract_claims`` return early —
+# so a transient provider blip permanently suppressed re-extraction of that
+# finding. A-6 then attributed consumption against the digest-truncated
+# candidate list (``visible_findings``) instead of the full ordered list: the
+# model is shown only the first ``finding_digest`` findings, so a claim citing
+# a URL whose finding sits past the cut was recording that finding's coverage
+# id as consumed on evidence nobody read. Rationale recorded here rather than
+# under one item because both edits are in the same module and the pin moved
+# once.
+# Fix wave A-2 moved the Synthesizer's own value, ``bf2b62331950`` ->
+# ``b6cca2eaabd7``: ``state_update`` no longer stamps ``state.evidence_path``
+# from the composed ledger name. That name is a future filename, not a write,
+# and ``ResearchState.evidence_path`` means "the ledger the terminal finalizer
+# published"; the stamp made ``evidence_path_from_state`` fall back to it and
+# ``cli.render_summary`` advertise an ``Evidence ledger:`` line for a file
+# that does not exist on any run halting after the synthesizer node.
+# The remaining blast radius of this wave is ``planner`` 028150f7e4a5,
+# ``researcher`` 96907685a382, ``source_evaluator`` 6e127ffba9d4 and the Judge
+# pin 74b9cddfbbee, all verified unchanged after every P1 edit because
+# ``agents/prompts.py`` was not edited. Three of the six moved rather than the
+# Critic alone: A-1 is the only edit whose module is ``agents/critic.py``, and
+# the review's assumption that it was the wave's sole module-source edit does
+# not hold for A-2/A-4/A-6.
+CRITIC_PROMPT_FINGERPRINT = "1d2833ae6bdf"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -238,9 +276,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "028150f7e4a5",
     "researcher": "96907685a382",
     "source_evaluator": "6e127ffba9d4",
-    "fact_checker": "926a1d968c68",
-    "synthesizer": "bf2b62331950",
-    "critic": "e8bb04d10046",
+    "fact_checker": "5080d1810c7e",
+    "synthesizer": "b6cca2eaabd7",
+    "critic": "1d2833ae6bdf",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

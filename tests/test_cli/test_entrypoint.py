@@ -16,6 +16,7 @@ from deep_research.cli import (
     ProgressStream,
     build_parser,
     main,
+    render_progress,
 )
 from deep_research.graph.events import (
     node_completed_event,
@@ -201,6 +202,68 @@ def test_progress_streams_while_the_run_happens_and_is_never_reprinted() -> None
         "Session ID: session-1"
     )
     assert "Progress log:" not in printed
+
+
+def test_every_streamed_progress_line_is_flushed_immediately() -> None:
+    """Step 6: "live" progress must survive a redirected, block-buffered stream.
+
+    ``main`` hands ``ProgressStream`` ``sys.stdout``, which is line-buffered
+    only on a TTY. Redirected to a file or a pipe it is block-buffered at
+    8 KiB, and a whole run emits far less than that, so without an explicit
+    flush every "live" line appears at process exit — exactly the
+    non-interactive case (``> run.log``, ``| tee``) where the user has no
+    other signal the run is alive. The existing tests cannot see this because
+    they inject an unbuffered ``io.StringIO``.
+    """
+    events = [
+        session_started_event(
+            session_id="session-1", max_iterations=2, checkpointing=False
+        ),
+        node_started_event("planner", iteration=0),
+        session_completed_event(
+            status="completed", iteration=0, error_count=0, has_report=True
+        ),
+    ]
+    runner = StreamingRunner(events)
+    stream = FlushCountingStream()
+    assert len(events) == 3
+
+    code = main([QUESTION], runner=runner, stream=stream)
+
+    assert code == EXIT_OK
+    assert stream.flushes >= len(events)
+    for event in events:
+        line = render_progress(event, verbose=False)
+        assert line is not None
+        assert line in stream.flushed_lines
+
+
+class FlushCountingStream(io.StringIO):
+    """A ``StringIO`` that counts flushes and records which lines they covered.
+
+    ``flushed_lines`` holds only the lines written *before* a ``flush`` call,
+    so the assertion cannot be satisfied by one flush at the end of the run:
+    each streamed record has to have been flushed by the time the run moves on.
+    Lines the summary writes without a flush stay out of the list.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushes = 0
+        self.flushed_lines: list[str] = []
+        self._pending: list[str] = []
+
+    def write(self, value: str) -> int:
+        written = super().write(value)
+        if value.strip():
+            self._pending.append(value.rstrip("\n"))
+        return written
+
+    def flush(self) -> None:
+        self.flushes += 1
+        self.flushed_lines.extend(self._pending)
+        self._pending.clear()
+        super().flush()
 
 
 def test_verbose_streams_agent_completions_live() -> None:

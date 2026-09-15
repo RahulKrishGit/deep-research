@@ -268,6 +268,40 @@ def test_the_claim_builder_requires_independent_verification_passages() -> None:
     assert "own publishers" in str(caught.value)
 
 
+def test_any_claim_that_builds_passages_requires_verification_urls() -> None:
+    """The emptiness guard is a property of building passages, not a verdict.
+
+    The passage loops cycle ``verification_urls`` with ``index % len(...)``,
+    so a claim of any verdict that carries an excerpt and no verification URL
+    raises ``ZeroDivisionError`` at *import* time rather than
+    ``CaseRegistryError``. That failure is a collection error, so the
+    verdict/passage invariants in this file — which are exactly what would
+    have caught the malformed fixture — never run. A typo'd verdict is the
+    realistic trigger; a clear error is what has to come out.
+    """
+    with pytest.raises(CaseRegistryError) as caught:
+        claim(
+            "A claim.",
+            urls=["https://example.com/a"],
+            verdict="insufficient_evidence",
+            confidence=0.0,
+            evidence=["An independent review found no support."],
+        )
+
+    assert "verification_urls" in str(caught.value)
+
+    with pytest.raises(CaseRegistryError) as caught:
+        claim(
+            "A claim.",
+            urls=["https://example.com/a"],
+            verdict="not_a_verdict",
+            confidence=0.0,
+            contradictions=["An independent review disputes this."],
+        )
+
+    assert "verification_urls" in str(caught.value)
+
+
 # The shared fixture builders are the API every case file (Tasks 10-15)
 # imports, and the validation rules are this task's deliverable, so both
 # get exercised here on synthetic catalogs rather than waiting for the

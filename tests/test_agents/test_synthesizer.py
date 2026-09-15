@@ -1029,7 +1029,10 @@ async def test_a_run_composes_both_artifacts_and_writes_nothing(
     assert outcome.state_update["report_evidence"] == (
         outcome.result.evidence_markdown
     )
-    assert outcome.state_update["evidence_path"] == "report-session-1-0-evidence.md"
+    assert outcome.result.evidence_path == "report-session-1-0-evidence.md"
+    # A composed future filename is not a publication record: the terminal
+    # finalizer is the sole writer of ``state.evidence_path``.
+    assert "evidence_path" not in outcome.state_update
     assert outcome.state_update["unique_source_count"] == 1
     assert outcome.state_update["unique_claim_count"] == 1
     # The typed composition the artifacts render travels with them, so the

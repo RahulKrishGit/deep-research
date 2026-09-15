@@ -223,7 +223,9 @@ class SynthesizedReport(ContractModel):
     through ``complete_output``. ``markdown`` and ``evidence_markdown`` are
     authoritative; ``path`` and ``evidence_path`` name the files the terminal
     finalizer publishes, so ``path`` stays ``None`` until publication exists
-    and synthesis itself writes nothing at all.
+    and synthesis itself writes nothing at all. ``evidence_path`` here is the
+    name the finalizer *will* publish the ledger under; it is not the state
+    field of the same name, which only the finalizer writes.
 
     ``composition`` is the typed input both artifacts were rendered from. It
     travels into state so the graph's quality pass judges the exact points
@@ -1127,12 +1129,20 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
         finalizer publishes, and it is the only writer. ``composition``
         travels with them so the graph can judge the exact points this pass
         composed.
+
+        ``state.evidence_path`` is deliberately not stamped. The name this
+        pass composed is a *future* filename, not a write, and
+        ``ResearchState.evidence_path`` means "the ledger the terminal
+        finalizer actually published". Stamping it here made
+        ``evidence_path_from_state`` fall back to a file that does not exist
+        on any run that halts after this node, and ``cli.render_summary``
+        print it. The name still travels on the composed report and on the
+        synthesis event, which is where a composed name belongs.
         """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
             update["report"] = result.markdown
             update["report_evidence"] = result.evidence_markdown
-            update["evidence_path"] = result.evidence_path
             update["composition"] = result.composition
             update["unique_source_count"] = result.unique_source_count
             update["unique_claim_count"] = result.unique_claim_count
