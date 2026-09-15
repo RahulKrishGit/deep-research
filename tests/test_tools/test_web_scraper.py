@@ -13,6 +13,17 @@ def _client(handler):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+class _UnreachableClient:
+    """A client that fails the test instead of reaching the network.
+
+    Used where URL validation is supposed to reject the URL before any request
+    is made, so a validation regression cannot turn into a live call.
+    """
+
+    async def get(self, *_args: object, **_kwargs: object) -> httpx.Response:
+        raise AssertionError("an invalid URL must not reach the transport")
+
+
 # Sentinels standing in for attacker-controlled text. None of them may reach a
 # public failure field (message, error type, or details).
 _HOSTILE_EXCEPTION_TEXT = "ATTACKER-EXCEPTION-TEXT-<script>alert(1)</script>"
@@ -28,6 +39,8 @@ def _assert_failure_is_bounded(
     """A failed scrape reports only static text and bounded categorical values."""
     assert result.success is False
     assert result.error is not None
+    # Public text is project-authored ASCII, so no remote text can hide in it.
+    assert result.error.message.isascii()
     details = result.error.details
     assert set(details) <= _FAILURE_DETAIL_KEYS
     attempts = details.get("attempts")
@@ -364,6 +377,39 @@ async def test_scraper_http_status_classification_is_bounded(tracker) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [0, 600, 999])
+async def test_scraper_out_of_range_status_classification_is_bounded(
+    tracker, status_code
+) -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        calls += 1
+        return httpx.Response(
+            status_code, text=_HOSTILE_RESPONSE_TEXT, request=request
+        )
+
+    async with _client(handler) as client:
+        tool = WebScraperTool(tracker, client=client)
+        async with tracker.session_span("session-1", "question"):
+            result = await tool.execute(url="https://example.test/article")
+
+    _assert_failure_is_bounded(
+        result, (_HOSTILE_RESPONSE_TEXT, "example.test", "https://")
+    )
+    assert result.error is not None
+    assert result.error.type == "HTTPStatusError"
+    assert result.error.message == "the page request failed"
+    assert result.error.details == {"attempts": 1, "retries": 0}
+    assert "status_code" not in result.error.details
+    assert calls == 1
+    assert result.metadata["retry_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_scraper_rejects_non_html_content(tracker) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
@@ -397,6 +443,11 @@ async def test_scraper_rejects_non_html_content(tracker) -> None:
         ("application/pdf<script>alert(4)</script>", "unknown"),
         ("a" * 100 + "/b", "unknown"),
         ("/", "unknown"),
+        # Non-ASCII input is never folded or stripped into a media type: a
+        # KELVIN SIGN would become ASCII "k", a leading NBSP would be stripped.
+        ("\u212a/x", "unknown"),
+        ("\u00a0application/pdf", "unknown"),
+        ("text/plain; name=h\u00e9llo", "unknown"),
     ],
 )
 async def test_scraper_unsupported_content_type_details_are_bounded(
@@ -405,7 +456,12 @@ async def test_scraper_unsupported_content_type_details_are_bounded(
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
             return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
-        headers = {} if content_type is None else {"Content-Type": content_type}
+        # A header value arrives as bytes on the wire. httpx refuses a non-ASCII
+        # ``str`` value outright, so the value is encoded here the way a server
+        # would send it and the tool sees the decoded media type.
+        headers = (
+            {} if content_type is None else {"Content-Type": content_type.encode()}
+        )
         return httpx.Response(
             200, content=b"not html", headers=headers, request=request
         )
@@ -425,15 +481,52 @@ async def test_scraper_unsupported_content_type_details_are_bounded(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("url", ["   ", "file:///tmp/article.html"])
-async def test_scraper_rejects_blank_and_non_http_urls(tracker, url) -> None:
-    tool = WebScraperTool(tracker)
+@pytest.mark.parametrize(
+    ("url", "forbidden"),
+    [
+        ("   ", ()),
+        ("file:///tmp/article.html", ("file:///tmp/article.html",)),
+    ],
+)
+async def test_scraper_rejects_blank_and_non_http_urls(
+    tracker, url, forbidden
+) -> None:
+    tool = WebScraperTool(tracker, client=_UnreachableClient())
     async with tracker.session_span("session-1", "question"):
         result = await tool.execute(url=url)
 
-    assert result.success is False
+    _assert_failure_is_bounded(result, forbidden)
     assert result.error is not None
     assert result.error.type == "ValidationError"
+    assert result.error.message == "url must be a non-empty absolute HTTP(S) URL"
+    assert result.error.details == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("http://[ATTACKER-URL-SENTINEL]/x", id="bracketed-host"),
+        pytest.param("http://exam\u2100ple.test/x", id="nfkc-netloc"),
+    ],
+)
+async def test_scraper_unparseable_url_classification_is_bounded(tracker, url) -> None:
+    tool = WebScraperTool(tracker, client=_UnreachableClient())
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(url=url)
+
+    _assert_failure_is_bounded(
+        result,
+        (
+            "ATTACKER-URL-SENTINEL",
+            "exam\u2100ple.test",
+            "exam\\u2100ple.test",
+        ),
+    )
+    assert result.error is not None
+    assert result.error.type == "ValidationError"
+    assert result.error.message == "url must be a non-empty absolute HTTP(S) URL"
+    assert result.error.details == {}
 
 
 @pytest.mark.asyncio

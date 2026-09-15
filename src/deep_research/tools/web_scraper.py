@@ -89,8 +89,14 @@ class WebScraperTool(BaseTool):
         try:
             url = _validate_url(kwargs.get("url"))
         except ValueError as error:
+            # ``urlsplit`` inside ``_validate_url`` raises its own ``ValueError``
+            # for a bracketed host, an NFKC-invalid netloc, and a malformed IPv6
+            # literal, and its text embeds the caller-supplied host. This message
+            # reaches public state, so it is static project text instead.
             raise ToolExecutionError(
-                str(error), error_type="ValidationError", recoverable=False
+                "url must be a non-empty absolute HTTP(S) URL",
+                error_type="ValidationError",
+                recoverable=False,
             ) from error
 
         if self._client is not None:
@@ -199,10 +205,15 @@ def _bounded_content_type(content_type: str) -> str:
     """The media type of ``content_type``, or ``"unknown"`` when it has none.
 
     The result is a lower-case ASCII media type of at most
-    ``_MEDIA_TYPE_MAX_LENGTH`` characters. The header is remote-controlled, so a
-    malformed or over-long value yields the static marker instead of a
-    truncated copy of that text.
+    ``_MEDIA_TYPE_MAX_LENGTH`` characters. The header is remote-controlled and
+    reaches public state, so non-ASCII input is rejected before anything else:
+    folding and stripping are Unicode-aware (a KELVIN SIGN folds to ASCII
+    ``k``, a no-break space is stripped), which would turn malformed input into
+    a normalised copy of itself. A malformed or over-long value yields the
+    static marker instead of a truncated copy of that text.
     """
+    if not content_type.isascii():
+        return _UNKNOWN_CONTENT_TYPE
     media_type = content_type.split(";", 1)[0].strip().lower()
     if len(media_type) > _MEDIA_TYPE_MAX_LENGTH:
         return _UNKNOWN_CONTENT_TYPE
@@ -246,19 +257,25 @@ def _retry_delay(error: BaseException, retry_index: int) -> float:
 def _tool_execution_error(error: BaseException, attempts: int) -> ToolExecutionError:
     """Build the failure for one exhausted page request.
 
-    The message is static project text and the details hold only bounded
-    categorical values, because both reach public state: the retry loop catches
-    only timeouts and HTTP status errors, so no exception text, URL, or response
-    content can be echoed here. ``attempts`` is ``attempt + 1`` for an
-    ``attempt`` in ``0..max_retries`` and ``__init__`` bounds ``max_retries`` to
-    ``0..2``, so ``attempts`` is ``1..3`` and ``retries`` is ``0..2`` by
-    construction; ``raise_for_status()`` raises only for error statuses, so
-    ``status_code`` is already inside ``100..599``.
+    The message is one of this module's static sentences and the details hold
+    only published categorical values, because both reach public state: the
+    retry loop catches only timeouts and HTTP status errors, so no exception
+    text, URL, or response content can be echoed here. ``attempts`` is
+    ``attempt + 1`` for an ``attempt`` in ``0..max_retries`` and ``__init__``
+    bounds ``max_retries`` to ``0..2``, so ``attempts`` is ``1..3`` and
+    ``retries`` is ``0..2`` by construction. ``status_code`` is *not*
+    structural: ``raise_for_status()`` raises for any non-success response,
+    including informational and redirect statuses and out-of-range codes a
+    nonconforming peer can send, so it is published only when it is inside
+    ``100..599`` and the failure is otherwise reported as unclassified.
     """
     details: dict[str, Any] = {"attempts": attempts, "retries": attempts - 1}
+    message = "the page request failed"
     if isinstance(error, httpx.HTTPStatusError):
-        message = "the page request failed with an HTTP error status"
-        details["status_code"] = error.response.status_code
+        status_code = error.response.status_code
+        if 100 <= status_code <= 599:
+            message = "the page request failed with an HTTP error status"
+            details["status_code"] = status_code
     else:
         message = "the page request timed out"
     return ToolExecutionError(
