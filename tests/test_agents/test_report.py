@@ -534,14 +534,26 @@ def test_limitations_render_enumerated_reasons_only() -> None:
 
 
 def test_no_reader_section_repeats_a_canonical_url_row() -> None:
-    reader, ledger = render_reports(pathological_composition())
+    """Cited URLs exactly once in the reader; uncited ones not at all.
 
-    for source_url in (
-        "https://example.test/source-001",
-        "https://example.test/source-042",
-    ):
-        assert reader.count(source_url) <= 1
-        assessment = _section_body(ledger, "## Source assessment")
+    ``<= 1`` was unfalsifiable for the second URL: ``source-042`` is never
+    cited, so its count is 0 and the bound permitted 0 for ``source-001`` too.
+    The reader's cited set comes from the composition's own citation index, so
+    "exactly once" is asserted where a citation exists and "never" where none
+    does.
+    """
+    composition = pathological_composition()
+    reader, ledger = render_reports(composition)
+    cited = {citation.url for citation in reader_citations(composition)}
+    uncited = "https://example.test/source-042"
+    assessment = _section_body(ledger, "## Source assessment")
+
+    assert cited == {"https://example.test/source-001"}
+    assert uncited not in cited
+    for source_url in cited:
+        assert reader.count(source_url) == 1
+    assert reader.count(uncited) == 0
+    for source_url in (*sorted(cited), uncited):
         assert assessment.count(source_url) == 1
 
 

@@ -286,13 +286,39 @@ def test_a_critic_gap_still_reaches_the_reverification_matcher() -> None:
 
 
 def test_a_new_publisher_restatement_is_new_evidence() -> None:
+    """Both directions of the central provenance rule, from real provenance.
+
+    ``insufficient_claim(claim, reason="no_independent_source")`` leaves
+    ``consumed_finding_fingerprints`` empty, and ``_finding_is_new`` tests
+    membership in that empty set — so asserting ``is True`` against such a
+    prior passed for *any* implementation, ``return True`` included. The prior
+    here records a provenance that names a *different* finding, which is what
+    makes the positive half carry information; the negative half pins that a
+    finding whose fingerprint IS recorded stops looking new.
+    """
+    other_finding = _check_finding("https://independent.test/older")
     claim = _claim_draft()
-    prior = insufficient_claim(claim, reason="no_independent_source")
+    prior = Claim(
+        claim_id=claim_fingerprint(claim.text),
+        text=claim.text,
+        source_urls=list(claim.source_urls),
+        verdict="insufficient_evidence",
+        confidence=0.0,
+        evidence=[],
+        contradictions=[],
+        verification_evidence=[],
+        consumed_finding_fingerprints=[finding_fingerprint(other_finding)],
+        consumed_coverage_ids=["topic-01"],
+    )
     finding = _check_finding(
         "https://independent.test/report", content=claim.text
     )
 
+    assert prior.consumed_finding_fingerprints == [
+        finding_fingerprint(other_finding)
+    ]
     assert _finding_is_new(finding, [prior]) is True
+    assert _finding_is_new(other_finding, [prior]) is False
 
 
 def test_extraction_messages_show_findings_and_source_quality() -> None:

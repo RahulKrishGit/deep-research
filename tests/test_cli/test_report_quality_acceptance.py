@@ -55,6 +55,7 @@ from deep_research.agents.critic import (
     CriticAgent,
     critique_messages,
 )
+from deep_research.agents.events import agent_event
 from deep_research.agents.identity import (
     claim_fingerprint,
     finding_fingerprint,
@@ -80,6 +81,7 @@ from deep_research.agents.steps import ReActRun
 from deep_research.cli import EXIT_OK, is_streamed_event, render_progress
 from deep_research.cli import main as cli_main
 from deep_research.graph.events import (
+    node_completed_event,
     node_started_event,
     route_decided_event,
     session_started_event,
@@ -672,6 +674,19 @@ def _fixture() -> _Fixture:
             checkpointing=False,
         ),
         node_started_event("synthesizer", iteration=1),
+        # A node completion and a tool-call record: neither is a member of
+        # PROGRESS_EVENT_TYPES, so both exercise the *negative* half of the
+        # stdout guard below. Without at least one non-streamed event that loop
+        # `continue`d on every iteration and asserted nothing.
+        node_completed_event(
+            "synthesizer", iteration=1, event_count=2, error_count=0
+        ),
+        agent_event(
+            agent_name="researcher",
+            event_type="researcher.tool.completed",
+            message="web_search returned 4 results.",
+            metadata={"tool_name": "web_search", "success": True},
+        ),
         route_decided_event(
             destination="finalize",
             reason="critique_satisfied",
@@ -1036,12 +1051,34 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
             continue
         assert f" {event.message}\n" not in captured
     assert "Research session started." in captured
+    # At least one recorded event is not a progress event, so the negative
+    # loop above really skipped something rather than skipping nothing.
+    assert any(
+        not is_streamed_event(event.event_type, verbose=False)
+        for event in final_state.events
+    )
+    # No report text reaches stdout, on any line. The report body is what the
+    # two artifacts exist to carry, and the progress stream is the one place a
+    # report could be printed by accident.
+    assert final_state.report
+    for line in final_state.report.splitlines():
+        if line.strip():
+            assert line.strip() not in captured
 
     # Both Markdown artifacts, read back off disk.
     report = report_path.read_text(encoding="utf-8")
     ledger = evidence_path.read_text(encoding="utf-8")
     assert report == final_state.report
     assert ledger == final_state.report_evidence
+    # The plan's separation constraint, asserted in the direction that the
+    # five targets below never checked: every ledger-only section must be
+    # ABSENT from the reader report, and the reader report must be the shorter
+    # document. Appending the source-assessment table to the reader report
+    # would have left all five of them green.
+    for heading in EVIDENCE_SECTIONS:
+        assert heading not in report, f"{heading} leaked into the reader report"
+        assert heading in ledger
+    assert len(report) < len(ledger)
 
     composition = final_state.composition
     assert composition is not None
@@ -1123,7 +1160,15 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
 
     critic_body = _critic_body(final_state)
     critic_blocks = _critic_blocks(critic_body)
-    required_surfaces = 1 + len(_READER_SECTION_ORDER)
+    # The plan's target is 7/7: the report's identity block plus its six reader
+    # sections. Pinned as a literal. The expression it replaces,
+    # ``1 + len(_READER_SECTION_ORDER)``, is computed from the same private
+    # constant the request is built from, so a change that dropped one reader
+    # section from both ``REPORT_SECTIONS`` and ``_READER_SECTION_ORDER`` would
+    # read 6 == 6 == 6 and pass here at 6/6 where the plan requires 7/7.
+    assert len(_READER_SECTION_ORDER) == 6
+    required_surfaces = 7
+    assert len(REPORT_SECTIONS) == 6
     critic_present = sum(
         1
         for block in critic_blocks.values()
@@ -1164,7 +1209,11 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
         "scored_cited_sources": _Metric(
             {
                 "stdout": int(printed["scored_cited_sources"]),
-                "state": round(
+                # Labelled ``derived``, not ``state``: this leg re-evaluates the
+                # CLI's own expression (``ratio * cited_sources``), so its
+                # agreement with stdout is true by construction. The
+                # independent reading is the artifact leg.
+                "derived": round(
                     quality.scored_cited_source_ratio * quality.cited_sources
                 ),
                 "artifact": scored_referenced,
@@ -1183,7 +1232,7 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
         "critic_visible_required_sections": _Metric(
             {
                 # No stdout leg: the CLI prints no section count.
-                "state": required_surfaces,
+                "required": required_surfaces,
                 "artifact": 1
                 + sum(1 for heading in REPORT_SECTIONS if heading in report),
                 "critic": critic_present,
@@ -1229,7 +1278,11 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
             {
                 "stdout": int(printed["covered_topics"]),
                 "state": quality.covered_topics,
-                "artifact": len(covered_ids_in_report),
+                # Labelled ``echo``: this counts topic ids inside constraint-row
+                # text the fixture itself authored, so it repeats the fixture
+                # rather than independently reading the report. The stdout and
+                # state legs carry the comparison.
+                "echo": len(covered_ids_in_report),
             }
         ),
     }
@@ -1465,7 +1518,11 @@ def test_the_critic_sees_every_required_surface_of_a_long_report() -> None:
 
     body = _critic_body(state)
     blocks = _critic_blocks(body)
-    required = 1 + len(_READER_SECTION_ORDER)
+    # Pinned as a literal for the same reason as the acceptance test: a
+    # constant-derived target cannot notice one reader section leaving both
+    # ``REPORT_SECTIONS`` and ``_READER_SECTION_ORDER``.
+    assert len(_READER_SECTION_ORDER) == 6
+    required = 7
 
     assert len(blocks) == required
     assert _SECTION_NOT_PRESENT not in body
@@ -1476,7 +1533,12 @@ def test_the_critic_sees_every_required_surface_of_a_long_report() -> None:
     for heading in REPORT_SECTIONS:
         assert heading in report
     for heading in EVIDENCE_SECTIONS:
+        # Present in the ledger AND absent from the reader report: the
+        # separation constraint is a two-sided property, and asserting only
+        # the ledger half left a regression that appended the evidence tables
+        # to the reader report entirely undetected.
         assert heading in ledger
+        assert heading not in report
     # The last reader surface survives even though the report is over budget.
     assert blocks["reader-references"].startswith("1. ")
     assert "reviewed source(s)" in blocks["reader-methodology"]

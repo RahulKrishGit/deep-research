@@ -299,6 +299,24 @@ def test_plain_progress_does_not_stream_agent_completions() -> None:
     assert "Node planner completed." not in stream.getvalue()
 
 
+def test_the_numeric_exit_code_contract_is_pinned() -> None:
+    """The numbers automation and the docs depend on, asserted literally.
+
+    Every other test in this file compares against the constants themselves,
+    and the help test compares the help text to itself, so swapping two
+    constants — or renumbering one — kept the whole suite green while breaking
+    every caller that reads an exit status. Only ``2`` (argparse's usage error)
+    was pinned literally anywhere.
+    """
+    assert (
+        EXIT_OK,
+        EXIT_CONFIGURATION_ERROR,
+        EXIT_GRAPH_FAILED,
+        EXIT_QUALITY_UNACCEPTED,
+        EXIT_INTERRUPTED,
+    ) == (0, 1, 3, 4, 130)
+
+
 def test_the_help_documents_every_exit_code() -> None:
     """Step 5: the codes live in the CLI's own help, not only in a test."""
     help_text = build_parser().format_help()

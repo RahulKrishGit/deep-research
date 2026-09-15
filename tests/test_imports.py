@@ -332,24 +332,27 @@ def test_agent_submodule_public_names_all_reach_all() -> None:
     }
 
     agents_dir = Path(agents_pkg.__file__).parent
-    submodules = [
-        "base",
-        "critic",
-        "errors",
-        "events",
-        "fact_checker",
-        "planner",
-        "prompts",
-        "react",
-        "report",
-        "researcher",
-        "source_evaluator",
-        "sources",
-        "steps",
-        "synthesizer",
-        "toolset",
-        "validation",
-    ]
+    # Derived from the filesystem, not hand-written. The previous list named
+    # 16 of the 18 modules: ``identity`` and ``quality`` were missing, and the
+    # omission of ``identity`` was the only reason this invariant appeared to
+    # hold for it (its five helpers are deliberately unexported). Any future
+    # module could have slipped out the same way.
+    internal_modules = {
+        # ``identity`` is deliberately internal: its five fingerprint and
+        # snapshot-merge helpers are implementation detail of the agents that
+        # use them, not part of the package's public surface.
+        "identity",
+    }
+    submodules = sorted(
+        path.stem
+        for path in agents_dir.glob("*.py")
+        if path.stem != "__init__" and path.stem not in internal_modules
+    )
+    assert "identity" not in submodules
+    assert "quality" in submodules, "the filesystem walk must reach every module"
+    assert len(submodules) == len(
+        [path for path in agents_dir.glob("*.py") if path.stem != "__init__"]
+    ) - len(internal_modules)
 
     missing: list[str] = []
     for module_name in submodules:

@@ -12,6 +12,29 @@ from deep_research.evaluation.reporting import render_suite, write_suite_artifac
 from deep_research.evaluation.runner import run_suite_evaluation
 from tests.evaluation_fakes import FakeStructuredProvider
 
+# ``run_suite_evaluation`` reads the process environment for its preflight, and
+# a controlled run requires the selected chat provider's key plus LangSmith.
+# Supplying them here is the point: they used to arrive as a side effect of
+# ``tests/test_config.py`` loading a sibling ``.env``, whose ``load_dotenv``
+# wrote into the real ``os.environ`` and left the values there, so this file
+# only passed when that one had already run in the same session. The values are
+# obvious dummies and reach no network: the harness hands ``evaluate`` a fake
+# runner with an empty example list, so no provider is ever called.
+_SUITE_CREDENTIALS = {
+    "DEEPSEEK_API_KEY": "test-deepseek-key",
+    "OPENAI_API_KEY": "test-openai-key",
+    "TAVILY_API_KEY": "test-tavily-key",
+    "LANGSMITH_API_KEY": "test-langsmith-key",
+    "LANGSMITH_PROJECT": "test-langsmith-project",
+}
+
+
+@pytest.fixture(autouse=True)
+def _suite_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give this file's preflight an explicit, local credential set."""
+    for name, value in _SUITE_CREDENTIALS.items():
+        monkeypatch.setenv(name, value)
+
 
 @pytest.mark.asyncio
 async def test_the_suite_runs_all_six_agents_controlled(

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
+from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.graph.nodes import (
     agent_node,
     critic_node,
@@ -21,7 +24,10 @@ from deep_research.graph.state import (
     is_halted,
     load_state,
 )
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import ProviderConfigurationError
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
@@ -29,6 +35,7 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchState,
 )
+from tests.agent_fakes import ScriptedCompleter
 from tests.graph_fakes import (
     FakeAgent,
     FakePublisher,
@@ -42,6 +49,7 @@ from tests.graph_fakes import (
     fake_sub_topic,
     halting_error,
 )
+from tests.research_fakes import FakeMemory, synthesizer_tools
 
 
 def _event_types(state: ResearchState) -> list[str]:
@@ -450,6 +458,59 @@ async def test_the_finalizer_publishes_both_artifacts_exactly_once() -> None:
     assert published.metadata["evidence_path"] == "report-session-1-0-evidence.md"
     assert published.metadata["quality_status"] == QUALITY_STATUS_ACCEPTED
     assert published.metadata["document_writes"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_real_synthesizer_publishes_both_artifacts_into_a_real_root(
+    tmp_path: Path,
+) -> None:
+    """Task 7's Important 1, closed end to end.
+
+    The finalizer's write path was pinned link by link — node↔publisher
+    signatures, ``publish_document``/``publish_claim`` called directly,
+    ``terminal_publisher(agents) is synthesizer``, ``allowed_tools``,
+    ``build_agents`` fail-fast — but nothing ever ran ``finalize_report_node``
+    with the **real** ``SynthesizerAgent`` as its publisher into a real output
+    root and asserted a file exists. ``WriteDocumentTool`` is the real tool,
+    resolving against ``tmp_path`` exactly as production resolves against the
+    configured output directory.
+    """
+    memory = FakeMemory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=False, project="nodes-finalizer-test", api_key=None
+        )
+    )
+    synthesizer = SynthesizerAgent(
+        provider=ScriptedCompleter(),
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="synthesizer", max_entries=20
+        ),
+        tools=synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
+        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
+    )
+
+    # The real ``write_document`` tool opens a child span, which requires the
+    # active session span the orchestrator always runs a graph inside.
+    async with tracker.session_span("session-1", "How mature is QEC?"):
+        result = await finalize_report_node(synthesizer)(
+            dump_state(_finalized_state(quality=fake_quality()))
+        )
+    state = load_state(result)
+
+    assert state.errors == []
+    assert state.report_path == "report-session-1-0.md"
+    assert state.evidence_path == "report-session-1-0-evidence.md"
+    reader = tmp_path / "report-session-1-0.md"
+    ledger = tmp_path / "report-session-1-0-evidence.md"
+    assert reader.is_file() and ledger.is_file()
+    assert reader.read_text(encoding="utf-8") == state.report
+    assert ledger.read_text(encoding="utf-8") == state.report_evidence
+    published = state.events[-2]
+    assert published.metadata["document_writes"] == 2
+    assert published.metadata["memory_writes"] == 1
+    assert memory.saved
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,24 @@ from deep_research.utils.config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test in this file its own ``os.environ`` mapping.
+
+    ``load_config`` calls ``load_dotenv(dotenv_path=..., override=False)``,
+    which writes into ``os.environ`` itself. ``monkeypatch.delenv(name,
+    raising=False)`` records **no undo** when the name was absent, so those
+    writes were never removed and the five dummy credentials this file's
+    ``.env`` supplies leaked into the process for the rest of the session:
+    they satisfied the evaluation harness's credential preflight in
+    ``tests/test_evaluation/test_suite.py`` (which is why that file only
+    passed when this one had already run) and they left a developer's real
+    keys in the environment. Replacing the mapping gives the same isolation
+    for ``delenv`` and for dotenv's writes alike.
+    """
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+
+
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
     """Create a complete valid configuration file."""
@@ -102,6 +120,63 @@ def test_load_config_loads_sibling_dotenv_before_strict_validation(
     assert settings.langsmith.project == "dotenv-project"
     assert os.environ["OPENAI_API_KEY"] == "dotenv-openai"
     assert os.environ["TAVILY_API_KEY"] == "dotenv-tavily"
+
+
+# The five dummy credentials a sibling ``.env`` supplies in this file. The
+# two tests below are a deliberate pair: the property under test is that one
+# test's ``.env`` load cannot reach the next one, so the pair *is* the
+# assertion.
+_DOTENV_DUMMIES = {
+    "OPENAI_API_KEY": "dotenv-openai",
+    "DEEPSEEK_API_KEY": "dotenv-deepseek",
+    "TAVILY_API_KEY": "dotenv-tavily",
+    "LANGSMITH_API_KEY": "dotenv-langsmith",
+    "LANGSMITH_PROJECT": "dotenv-project",
+}
+
+
+def _write_sibling_dotenv(config_path: Path) -> None:
+    (config_path.parent / ".env").write_text(
+        "\n".join(f"{name}={value}" for name, value in _DOTENV_DUMMIES.items()),
+        encoding="utf-8",
+    )
+
+
+def test_a_sibling_dotenv_load_populates_the_environment_it_runs_in(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """``load_dotenv`` writes into ``os.environ`` — that is the production path.
+
+    The values must therefore be visible to the load that read them, and the
+    test after this one proves they are not visible to anything else.
+    """
+    for environment_name in _DOTENV_DUMMIES:
+        monkeypatch.delenv(environment_name, raising=False)
+    _write_sibling_dotenv(config_path)
+
+    settings = load_config(str(config_path), strict=True)
+
+    assert settings.langsmith.project == "dotenv-project"
+    assert os.environ["OPENAI_API_KEY"] == "dotenv-openai"
+
+
+def test_the_dotenv_load_in_the_previous_test_left_nothing_behind() -> None:
+    """Nothing a previous test's ``.env`` wrote may still be in the process.
+
+    This is the consequence the missing isolation actually had: five dummy
+    credentials outlived the test that created them, satisfied the evaluation
+    harness's credential preflight in ``tests/test_evaluation/test_suite.py``
+    (which is why that file only passed when this one had already run), and
+    left a developer's real keys in the environment. Checked by *value*, so a
+    developer who really has these variables set is unaffected.
+    """
+    persisted = {
+        name: value
+        for name, value in _DOTENV_DUMMIES.items()
+        if os.environ.get(name) == value
+    }
+
+    assert persisted == {}
 
 
 def test_process_environment_takes_precedence_over_sibling_dotenv(

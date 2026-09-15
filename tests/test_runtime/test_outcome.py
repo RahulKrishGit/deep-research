@@ -137,6 +137,21 @@ def test_a_failed_terminal_report_write_never_falls_back() -> None:
     assert report_path_from_state(state) is None
 
 
+def test_a_lone_legacy_synthesis_event_yields_no_report_path() -> None:
+    """The deleted compatibility fallback must not come back.
+
+    ``test_a_failed_terminal_report_write_never_falls_back`` pairs a legacy
+    synthesis event with a terminal ``publication_event(report_path=None)``,
+    which returns ``None`` whether or not a fallback exists — the terminal
+    record is read first either way. A state carrying *only* the legacy event
+    is the shape that distinguishes the two: with no publication record at
+    all, the legacy metadata must not be consulted.
+    """
+    state = base_state(events=[legacy_synthesis_event(REPORT_PATH)])
+
+    assert report_path_from_state(state) is None
+
+
 def test_report_path_falls_back_to_the_state_stamp() -> None:
     """A state the finalizer stamped is authoritative on its own."""
     state = base_state(report_path=REPORT_PATH)
