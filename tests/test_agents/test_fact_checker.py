@@ -63,6 +63,7 @@ from deep_research.utils.types import (
     Claim,
     ClaimVerdict,
     Critique,
+    CritiqueGap,
     EvidencePassage,
     Finding,
     MemorySnapshot,
@@ -264,7 +265,13 @@ def test_a_critic_gap_still_reaches_the_reverification_matcher() -> None:
         original_question="How mature is quantum error correction?",
         critique=Critique(
             score=4,
-            gaps=["Re-verify this claim: Break-even was reached."],
+            gaps=[
+                CritiqueGap(
+                    coverage_id=None,
+                    problem="Re-verify this claim: Break-even was reached.",
+                    recommended_queries=[],
+                )
+            ],
             unsupported_claims=[],
             recommended_queries=[],
             should_continue=True,

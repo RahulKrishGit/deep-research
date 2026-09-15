@@ -5,11 +5,14 @@ from __future__ import annotations
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError
+from deep_research.agents.synthesizer import SynthesizerAgent
+from deep_research.graph.nodes import ReportPublisher
 from deep_research.graph.orchestrator import (
     AGENT_NODE_ORDER,
     build_checkpointer,
     compile_research_graph,
     session_config,
+    terminal_publisher,
 )
 from deep_research.graph.state import (
     CRITIC_NODE,
@@ -22,11 +25,14 @@ from deep_research.graph.state import (
     is_halted,
     load_state,
 )
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     ResearchError,
     ResearchState,
 )
+from tests.agent_fakes import ScriptedCompleter
 from tests.graph_fakes import (
     FakeAgent,
     FakePublisher,
@@ -38,6 +44,7 @@ from tests.graph_fakes import (
     fake_sub_topic,
     fake_synthesis_update,
 )
+from tests.research_fakes import synthesizer_tools
 
 
 async def _run(agents, *, max_iterations: int = 3) -> ResearchState:
@@ -527,6 +534,93 @@ async def test_an_accepted_run_publishes_both_artifacts_and_one_memory_entry(
     assert published[0].metadata["document_writes"] == 2
     assert publisher.memory_writes == 1
     assert "**Quality status:** accepted" in (state.report or "")
+
+
+# --- resolving the one writer -------------------------------------------------
+
+
+def _real_synthesizer(tracker, tmp_path) -> SynthesizerAgent:
+    """A production Synthesizer, which owns the two write tools.
+
+    ``runtime/assembly.py`` builds exactly this agent and passes no
+    ``publisher=``, so this is the object the publication fallback has to
+    recognise for a real run to write anything at all.
+    """
+    return SynthesizerAgent(
+        provider=ScriptedCompleter(),
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1",
+            agent_name="synthesizer",
+            max_entries=20,
+        ),
+        tools=synthesizer_tools(tracker, output_root=tmp_path),
+        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
+    )
+
+
+def test_the_production_synthesizer_is_the_publisher_when_none_is_wired(
+    tracker, tmp_path
+) -> None:
+    """The fallback is the only reason a real run publishes at all.
+
+    ``ResearchAgents`` is built from agent names alone in
+    ``runtime/assembly.py``, so nothing injects ``publisher=`` in production.
+    If this recognition breaks, every real run silently degrades to
+    ``graph_publication_unavailable`` — a *recoverable* error — so nothing
+    would fail loudly.
+    """
+    synthesizer = _real_synthesizer(tracker, tmp_path)
+    agents = fake_research_agents(synthesizer=synthesizer, publisher=None)
+
+    assert isinstance(synthesizer, ReportPublisher) is True
+    assert terminal_publisher(agents) is synthesizer
+
+
+def test_an_explicit_publisher_slot_wins_over_the_synthesizer(
+    tracker, tmp_path
+) -> None:
+    explicit = FakePublisher()
+    synthesizer = _real_synthesizer(tracker, tmp_path)
+    agents = fake_research_agents(
+        synthesizer=synthesizer, publisher=explicit
+    )
+
+    assert terminal_publisher(agents) is explicit
+
+
+def test_a_run_only_double_is_not_a_publisher() -> None:
+    """The protocol is structural and method-based, so a double is excluded."""
+    synthesizer = FakeAgent("synthesizer", [{"report": "# pass 1"}])
+    agents = fake_research_agents(synthesizer=synthesizer, publisher=None)
+
+    assert isinstance(synthesizer, ReportPublisher) is False
+    assert terminal_publisher(agents) is None
+
+
+@pytest.mark.asyncio
+async def test_an_unwired_graph_records_that_nothing_was_published() -> None:
+    """No writer means no paths, no writes, and an honest recoverable error."""
+    agents = fake_research_agents(publisher=None)
+
+    state = await _run(agents)
+
+    assert [error.error_type for error in state.errors] == [
+        "graph_publication_unavailable"
+    ]
+    assert state.errors[0].recoverable is True
+    assert state.report_path is None
+    assert state.evidence_path is None
+    # The Markdown is still the session's report, gate status and all.
+    assert state.report == "# Research report: pass 1"
+    published = [
+        event
+        for event in state.events
+        if event.event_type == "graph.report.published"
+    ]
+    assert len(published) == 1
+    assert published[0].metadata["report_path"] is None
+    assert published[0].metadata["document_writes"] == 0
 
 
 @pytest.mark.asyncio

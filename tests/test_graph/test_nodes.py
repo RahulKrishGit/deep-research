@@ -359,15 +359,34 @@ async def test_a_compositionless_pass_records_no_quality_verdict() -> None:
 
 @pytest.mark.asyncio
 async def test_a_halted_synthesizer_pass_is_not_quality_graded() -> None:
-    agent = FakeAgent("synthesizer", [{"report": "# never written"}])
+    """A halted pass composed nothing, so nothing may be graded under it.
 
-    state = load_state(
-        await synthesizer_node(agent)(
-            dump_state(fake_research_state(errors=[halting_error()]))
-        )
+    The incoming state already carries an *earlier* pass's composition, which
+    is exactly what a halt on iteration 1 or later looks like. Re-scoring it
+    here would emit ``graph.quality.assessed`` labelled with the current
+    iteration, asserting a verdict for a pass that never composed anything.
+    """
+    agent = FakeAgent("synthesizer", [{"report": "# never written"}])
+    earlier = fake_research_state(
+        sub_topics=[fake_sub_topic()],
+        raw_findings=[fake_finding()],
+        evaluated_sources=[fake_scored_source()],
+        verified_claims=[fake_claim()],
+        report="# earlier reader report",
+        report_evidence="# earlier evidence ledger",
+    )
+    halted = earlier.model_copy(
+        update={
+            "composition": fake_reader_composition(earlier),
+            "errors": [halting_error()],
+            "iteration": 1,
+        }
     )
 
+    state = load_state(await synthesizer_node(agent)(dump_state(halted)))
+
     assert agent.calls == []
+    assert state.composition is not None
     assert state.quality is None
     assert _event_types(state) == ["graph.node.skipped"]
 

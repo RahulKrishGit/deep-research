@@ -842,6 +842,82 @@ def test_critique_gaps_preserve_known_ids_and_globalize_unknown_ids() -> None:
     ]
 
 
+def test_normalize_gaps_accepts_a_legacy_string_gap() -> None:
+    """The one gap normalizer reads the pre-Task-7 free-text shape too.
+
+    ``CritiqueDraft`` and ``Critique`` both hand a legacy string list to this
+    function, so it is the single place the old shape is understood.
+    """
+    assert normalize_gaps(["No cost data."]) == [
+        CritiqueGap(
+            coverage_id=None,
+            problem="No cost data.",
+            recommended_queries=[],
+        )
+    ]
+
+
+def test_both_typed_gap_boundaries_share_one_normalizer(monkeypatch) -> None:
+    """One normalizer, called by both entry points, not two copies.
+
+    Two verbatim copies would drift the moment the gap shape changes: one
+    boundary would keep accepting the legacy string and the other would start
+    rejecting it. Recording the calls proves they share the implementation
+    rather than merely agreeing today.
+    """
+    import deep_research.agents.critic as critic_module
+
+    real = critic_module.normalize_gap_drafts
+    recorded_payloads: list[dict] = []
+
+    def recorded(values: object) -> object:
+        assert isinstance(values, dict)
+        recorded_payloads.append(values)
+        return real(values)
+
+    monkeypatch.setattr(critic_module, "normalize_gap_drafts", recorded)
+
+    draft = CritiqueDraft.model_validate(
+        {
+            "score": 4,
+            "gaps": ["No cost data."],
+            "unsupported_claims": [],
+            "recommended_queries": [],
+            "rationale": "Thin sourcing.",
+        }
+    )
+    critique = Critique.model_validate(
+        {
+            "score": 4,
+            "gaps": ["No cost data."],
+            "unsupported_claims": [],
+            "recommended_queries": [],
+            "should_continue": True,
+            "rationale": "Thin sourcing.",
+        }
+    )
+
+    # Both boundaries handed the legacy list to the same function.
+    assert [payload["gaps"] for payload in recorded_payloads] == [
+        ["No cost data."],
+        ["No cost data."],
+    ]
+    assert draft.gaps == [
+        CritiqueGapDraft(
+            coverage_id=None,
+            problem="No cost data.",
+            recommended_queries=[],
+        )
+    ]
+    assert critique.gaps == [
+        CritiqueGap(
+            coverage_id=None,
+            problem="No cost data.",
+            recommended_queries=[],
+        )
+    ]
+
+
 def test_blank_or_title_only_gap_targets_remain_global() -> None:
     gaps = normalize_gaps(
         [

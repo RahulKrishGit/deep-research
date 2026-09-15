@@ -300,6 +300,35 @@ class CritiqueGapDraft(ContractModel):
     recommended_queries: list[str]
 
 
+def normalize_gap_drafts(values: object) -> object:
+    """Coerce the pre-Task-7 free-text gap list into typed gap drafts, once.
+
+    **The single place the legacy gap shape is understood.** Both typed
+    boundaries that carry gaps call this: the provider-facing ``CritiqueDraft``
+    and the state-facing ``Critique``. Two copies of this rule would drift the
+    moment the gap shape changes — one boundary would keep accepting a bare
+    string and the other would start rejecting the same input — so there is
+    exactly one.
+
+    A non-dict or non-list value is returned untouched, leaving the error to
+    the field validator that owns it.
+    """
+    if not isinstance(values, dict) or not isinstance(values.get("gaps"), list):
+        return values
+    converted = dict(values)
+    converted["gaps"] = [
+        {
+            "coverage_id": None,
+            "problem": gap,
+            "recommended_queries": [],
+        }
+        if isinstance(gap, str)
+        else gap
+        for gap in values["gaps"]
+    ]
+    return converted
+
+
 class CritiqueDraft(ContractModel):
     """One model review, before domain validation.
 
@@ -318,20 +347,7 @@ class CritiqueDraft(ContractModel):
     @classmethod
     def accept_legacy_gap_strings(cls, values: object) -> object:
         """Keep pre-Task-7 fixtures readable while the provider schema is typed."""
-        if not isinstance(values, dict) or not isinstance(values.get("gaps"), list):
-            return values
-        converted = dict(values)
-        converted["gaps"] = [
-            {
-                "coverage_id": None,
-                "problem": gap,
-                "recommended_queries": [],
-            }
-            if isinstance(gap, str)
-            else gap
-            for gap in values["gaps"]
-        ]
-        return converted
+        return normalize_gap_drafts(values)
 
 
 class CritiqueTask(AgentTask):
@@ -406,7 +422,7 @@ def normalize_notes(
 
 
 def normalize_gaps(
-    values: Sequence[CritiqueGapDraft],
+    values: Sequence[str | CritiqueGapDraft],
     *,
     known_coverage_ids: Collection[str] = (),
     limit: int = DEFAULT_MAX_NOTES,
@@ -416,12 +432,23 @@ def normalize_gaps(
     A blank or unknown provider ID is intentionally converted to a global
     gap.  Titles and problem text are never consulted when deciding the
     target, so a similarly named topic cannot receive another topic's gap.
+
+    The pre-Task-7 free-text shape is accepted here as well, through the same
+    ``normalize_gap_drafts`` rule both typed boundaries use, so a legacy
+    fixture cannot be read one way by a model validator and another way here.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
     gaps: list[CritiqueGap] = []
     seen: set[tuple[str | None, str, tuple[str, ...]]] = set()
-    for draft in values:
+    for value in values:
+        draft = (
+            CritiqueGapDraft(
+                coverage_id=None, problem=value, recommended_queries=[]
+            )
+            if isinstance(value, str)
+            else value
+        )
         problem = " ".join(draft.problem.split())
         if not problem:
             continue

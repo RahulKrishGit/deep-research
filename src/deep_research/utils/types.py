@@ -225,17 +225,20 @@ class Critique(ContractModel):
     @model_validator(mode="before")
     @classmethod
     def accept_legacy_gap_strings(cls, values: object) -> object:
-        """Accept older state fixtures while normalizing to targetable gaps."""
-        if not isinstance(values, dict) or not isinstance(values.get("gaps"), list):
-            return values
-        converted = dict(values)
-        converted["gaps"] = [
-            {"coverage_id": None, "problem": gap, "recommended_queries": []}
-            if isinstance(gap, str)
-            else gap
-            for gap in values["gaps"]
-        ]
-        return converted
+        """Accept older state fixtures while normalizing to targetable gaps.
+
+        The rule itself lives in ``agents.critic.normalize_gap_drafts`` and is
+        imported at call time: ``agents.critic`` imports this module, so a
+        module-level import would be a cycle, and a validator only ever runs
+        once every module is loaded. Sharing the one implementation is what
+        keeps this boundary and the provider-facing ``CritiqueDraft`` from
+        reading the same legacy input differently.
+        """
+        from deep_research.agents.critic import (  # noqa: PLC0415
+            normalize_gap_drafts,
+        )
+
+        return normalize_gap_drafts(values)
 
 
 class MemorySnapshot(ContractModel):

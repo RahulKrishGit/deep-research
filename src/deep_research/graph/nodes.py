@@ -200,14 +200,17 @@ def synthesizer_node(
 
     A pass that composed no typed composition records no snapshot. The
     absence stays visible — no run is ever accepted without one — and a halted
-    pass is not graded at all.
+    pass is not graded at all: ``agent_node`` skips a halted node without
+    touching state, so any composition still in the channel belongs to an
+    *earlier* pass, and re-scoring it would emit a verdict labelled with this
+    pass's iteration for work this pass never did.
     """
     inner = agent_node(agent, node_name=node_name)
 
     async def node(channel: ResearchGraphState) -> ResearchGraphState:
         composed = await inner(channel)
         state = load_state(composed)
-        if state.composition is None:
+        if is_halted(state) or state.composition is None:
             return composed
         quality = compute_report_quality(state, state.composition)
         return _with(
