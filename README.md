@@ -878,8 +878,10 @@ Task 9's controlled tier is network-zero. Its three cases use scripted search,
 read, memory, and publication doubles while compiling and running the
 production graph with six deterministic agent doubles. The campaign compares
 typed graph state and events with the production CLI summary formatter, and
-runs exactly three repetitions per case. The live tier is represented
-separately and is authorization-ready, but this command does not run it; live
+runs exactly three repetitions per case. The live tier is *declared only*: the
+three live cases exist as typed definitions with `tier="live"` and
+`authorization_required=True`, and `run_case`/`run_suite` raise for
+`tier="live"` unconditionally — no live runner exists in this package. Live
 provider, search, judge, and LangSmith calls belong to a separately authorized
 canary.
 

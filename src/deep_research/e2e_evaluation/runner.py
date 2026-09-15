@@ -51,7 +51,8 @@ from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.runtime.outcome import build_outcome
 
 LIVE_TIER_NOT_RUN = (
-    "live tier is authorization-ready but not run without explicit authorization"
+    "live tier is declared only and has no runner; running it requires a "
+    "separately authorized canary"
 )
 DEFAULT_OUTPUT_DIRECTORY = Path("output/evaluations/e2e")
 CONTROLLED_REPETITIONS = 3
@@ -383,7 +384,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("Controlled whole-report cases (network-zero):")
             for case in controlled_cases():
                 print(f"  {case.case_id}: {case.title}")
-            print("Live cases: authorization-ready; not run by Task 9")
+            print("Live cases: declared only; no live runner exists")
             for case_id in LIVE_CASE_IDS:
                 print(f"  {case_id}")
             return 0

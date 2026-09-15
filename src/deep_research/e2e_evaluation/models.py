@@ -158,6 +158,11 @@ class DeterministicEvaluation(ContractModel):
     repeated_source_snapshot_passes: int = Field(ge=0)
     repeated_claim_snapshot_passes: int = Field(ge=0)
     gate_forced_refinement_passes: int = Field(ge=0)
+    # A gate-forced refinement pass that the Critic gave no target for. Not a
+    # failure — the gate is the graph's own verdict and the broad case exists
+    # to exercise it — but a pass that spends budget and cannot be aimed at
+    # anything, so the artifact records it rather than accepting it silently.
+    targetless_gate_forced_refinements: int = Field(default=0, ge=0)
     publication_events: int = Field(ge=0)
     report_writes: int = Field(ge=0)
     evidence_writes: int = Field(ge=0)

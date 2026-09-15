@@ -121,11 +121,20 @@ def test_comparative_case_requires_contradiction_disclosure() -> None:
 
 
 def test_gate_forced_refinement_without_targets_is_measured() -> None:
+    """The campaign's null result is recorded, not silently accepted.
+
+    The broad case empties its reader summary at iteration 0, so the quality
+    gate forces a refinement the Critic names no target for. The pass spends
+    budget and adds nothing, and no integrity gate fails on it: the gate is the
+    graph's own verdict, and this case exists to exercise it. The count makes
+    the null result a visible artifact observation.
+    """
     _case, _state, _dependencies, metrics = _accepted_fixture()
 
     assert metrics.gate_forced_refinement_passes == 1
     assert metrics.critic_targets == 0
     assert metrics.new_evidence_in_refinement == 0
+    assert metrics.targetless_gate_forced_refinements == 1
 
 
 def test_unclosed_critic_target_is_a_deterministic_integrity_failure() -> None:

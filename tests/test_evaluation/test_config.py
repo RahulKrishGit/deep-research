@@ -142,7 +142,19 @@ from deep_research.utils.config import (
 # Critic alone: A-1 is the only edit whose module is ``agents/critic.py``, and
 # the review's assumption that it was the wave's sole module-source edit does
 # not hold for A-2/A-4/A-6.
-CRITIC_PROMPT_FINGERPRINT = "1d2833ae6bdf"
+# Fix wave P4 then moved two more values for documentation-only edits, which is
+# the documented false positive of hashing a module's full source rather than
+# its prompt text: the Critic ``1d2833ae6bdf`` -> ``bc6b1f23064c`` for A-6
+# (``normalize_gaps``' docstring claimed its legacy-shape mapping was "the same
+# ``normalize_gap_drafts`` rule both typed boundaries use" when it is a second,
+# per-value copy of that rule; ``normalize_gap_drafts``' own "single place"
+# claim is now scoped to payload boundaries), and the Synthesizer
+# ``b6cca2eaabd7`` -> ``dd422429c34b`` for A-5 (``run`` recomputed the
+# limitations list inline while ``compose_limitations`` computed it for the
+# artifacts; one computation now feeds both). No prompt string moved. Re-pinned
+# deliberately rather than silently invalidated, the same convention the
+# researcher's own module-source move used.
+CRITIC_PROMPT_FINGERPRINT = "bc6b1f23064c"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -277,8 +289,8 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "researcher": "96907685a382",
     "source_evaluator": "6e127ffba9d4",
     "fact_checker": "5080d1810c7e",
-    "synthesizer": "b6cca2eaabd7",
-    "critic": "1d2833ae6bdf",
+    "synthesizer": "dd422429c34b",
+    "critic": "bc6b1f23064c",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

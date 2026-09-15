@@ -662,6 +662,9 @@ def deterministic_evaluation(
         repeated_source_snapshot_passes=repeated_sources,
         repeated_claim_snapshot_passes=repeated_claims,
         gate_forced_refinement_passes=forced_refinements,
+        targetless_gate_forced_refinements=(
+            forced_refinements if not critic_targets else 0
+        ),
     )
 
 

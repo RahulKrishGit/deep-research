@@ -20,6 +20,7 @@ from deep_research.agents.prompts import (
     render_report_claim_packet,
 )
 from deep_research.agents.report import (
+    LIMITATION_REASONS,
     QUALITY_STATUS_NOT_GATED,
     REPORT_SECTIONS,
     REPORT_SUMMARY_FALLBACK,
@@ -45,6 +46,7 @@ from deep_research.agents.synthesizer import (
     build_report_composition,
     claim_label,
     claim_registry,
+    compose_limitations,
     compose_report,
     evidence_report_filename,
     high_confidence_claims,
@@ -61,6 +63,7 @@ from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
+    ProviderTimeoutError,
 )
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
@@ -1093,6 +1096,40 @@ async def test_a_run_emits_the_counts_the_spec_requires(
     assert "output_path" not in completed
     assert "saved_findings" not in completed
     assert completed["limitations"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_report_provider_failure_discloses_one_limitation_list(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """The event and the artifacts disclose the same limitations.
+
+    ``run`` used to recompute ``list(task.limitations) +
+    ["report_generation_failed"]`` inline while ``compose_limitations``
+    computed the same list for the artifacts. They agreed by inspection only,
+    and the two copies land in a user-visible artifact and in telemetry, so the
+    invariant is pinned here rather than assumed.
+    """
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")]),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+    state = _state()
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    completed = outcome.state_update["events"][-1].metadata
+    task = agent.build_task(state)
+    expected = compose_limitations(task, provider_failed=True)
+
+    assert expected == [*task.limitations, "report_generation_failed"]
+    assert completed["limitations"] == expected
+    assert LIMITATION_REASONS["report_generation_failed"] in (
+        outcome.result.markdown
+    )
 
 
 @pytest.mark.asyncio

@@ -348,6 +348,40 @@ def test_critic_target_failures_are_reachable_from_the_graph_path(tmp_path) -> N
     assert "critic_refinement_no_new_evidence" in metrics.integrity_failures
 
 
+def test_the_targetless_gate_forced_refinement_is_a_visible_observation(
+    tmp_path,
+) -> None:
+    """The campaign's null result must be recorded, not silently accepted.
+
+    The broad case deliberately empties its reader summary at iteration 0, so
+    the quality gate forces a refinement pass the Critic names no target for.
+    That pass spends budget and adds nothing, and no gate fails on it — the
+    gate is the graph's own verdict and this case exists to exercise it. The
+    earlier ruling deferred the underlying routing question on the grounds
+    that this campaign is where it would surface; it reaches the artifact as a
+    recorded count instead of being silently accepted.
+    """
+    result = campaign_runner.run_case(
+        CONTROLLED_CASE_IDS[0],
+        tier="controlled",
+        repetitions=3,
+        output_directory=tmp_path,
+    )
+    artifact = json.loads(
+        tmp_path.joinpath("broad-constraints", "case.json").read_text()
+    )
+    recorded = artifact["repetitions"][0]["deterministic"]
+
+    assert recorded.get("targetless_gate_forced_refinements") == 1
+    assert recorded["gate_forced_refinement_passes"] == 1
+    assert recorded["critic_targets"] == 0
+    assert recorded["new_evidence_in_refinement"] == 0
+    assert all(
+        item.deterministic.targetless_gate_forced_refinements == 1
+        for item in result.repetitions
+    )
+
+
 def test_agent_inputs_prove_ordered_upstream_handoffs(tmp_path) -> None:
     """Every real graph node consumes the preceding node's typed output."""
     case = case_by_id("refinement-evidence-recovery")

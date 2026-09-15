@@ -301,14 +301,19 @@ class CritiqueGapDraft(ContractModel):
 
 
 def normalize_gap_drafts(values: object) -> object:
-    """Coerce the pre-Task-7 free-text gap list into typed gap drafts, once.
+    """Coerce the pre-Task-7 free-text gap list into typed gap drafts.
 
-    **The single place the legacy gap shape is understood.** Both typed
-    boundaries that carry gaps call this: the provider-facing ``CritiqueDraft``
-    and the state-facing ``Critique``. Two copies of this rule would drift the
-    moment the gap shape changes — one boundary would keep accepting a bare
-    string and the other would start rejecting the same input — so there is
-    exactly one.
+    The single place the legacy gap shape is understood *at a payload
+    boundary*. Both typed boundaries that carry gaps call this: the
+    provider-facing ``CritiqueDraft`` and the state-facing ``Critique``. Two
+    copies of this rule would drift the moment the gap shape changes — one
+    boundary would keep accepting a bare string and the other would start
+    rejecting the same input — so both call the one function.
+
+    ``normalize_gaps`` below holds a deliberate per-value copy of the same
+    mapping, because it works on an already-parsed sequence rather than on a
+    payload. That copy is documented there, and a change to the legacy shape
+    has to land in both places.
 
     A non-dict or non-list value is returned untouched, leaving the error to
     the field validator that owns it.
@@ -450,9 +455,12 @@ def normalize_gaps(
     gap.  Titles and problem text are never consulted when deciding the
     target, so a similarly named topic cannot receive another topic's gap.
 
-    The pre-Task-7 free-text shape is accepted here as well, through the same
-    ``normalize_gap_drafts`` rule both typed boundaries use, so a legacy
-    fixture cannot be read one way by a model validator and another way here.
+    The pre-Task-7 free-text shape is accepted here as well. This is a SECOND
+    COPY of that rule, not a call to ``normalize_gap_drafts``: the shared
+    normalizer rewrites a whole provider payload's ``gaps`` list, while this
+    loop already holds one parsed value at a time. The two must agree, so the
+    mapping below is the per-value spelling of the payload mapping above and
+    any change to the legacy shape has to land in both.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")

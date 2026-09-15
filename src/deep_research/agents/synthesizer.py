@@ -1211,15 +1211,25 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
         async with self.tracker.agent_span(self.name) as span:
             draft, draft_errors, provider_failed = await self.draft_report(task)
             errors.extend(draft_errors)
+            # Computed once and passed to both consumers: the artifacts and the
+            # completion event must disclose the same list, and two copies of
+            # the rule are the same duplicated-rule shape this branch treats as
+            # a defect elsewhere — here it would land in a user-visible artifact
+            # and in telemetry at the same time.
+            limitations = compose_limitations(
+                task, provider_failed=provider_failed
+            )
             report, compose_errors = self.compose(
-                task, draft, provider_failed=provider_failed
+                task,
+                draft,
+                limitations=limitations,
+                provider_failed=provider_failed,
             )
             errors.extend(compose_errors)
             events.append(
                 synthesis_completed_event(
                     report,
-                    limitations=list(task.limitations)
-                    + (["report_generation_failed"] if provider_failed else []),
+                    limitations=limitations,
                     claim_count=len(task.claims),
                 )
             )
