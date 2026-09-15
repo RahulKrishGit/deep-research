@@ -187,6 +187,25 @@ class Claim(ContractModel):
     )
 
 
+class ReportQualitySnapshot(ContractModel):
+    """Deterministic integrity and coverage metrics for one report pass."""
+
+    coverage_ratio: UnitScore
+    planned_topics: int = Field(ge=0)
+    covered_topics: int = Field(ge=0)
+    unresolved_topic_ids: list[str] = Field(default_factory=list)
+    unique_findings: int = Field(ge=0)
+    unique_sources: int = Field(ge=0)
+    cited_sources: int = Field(ge=0)
+    scored_cited_source_ratio: UnitScore
+    verified_claims: int = Field(ge=0)
+    contradicted_claims: int = Field(ge=0)
+    duplicate_claims: int = Field(ge=0)
+    duplicate_source_rows: int = Field(ge=0)
+    uncited_settled_points: int = Field(ge=0)
+    hard_failures: list[str] = Field(default_factory=list)
+
+
 class Critique(ContractModel):
     score: CriticScore
     gaps: list[str]

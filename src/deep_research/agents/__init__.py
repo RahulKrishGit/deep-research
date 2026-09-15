@@ -128,6 +128,12 @@ from deep_research.agents.prompts import (
     render_source_quality,
     render_structured_reply_format,
 )
+from deep_research.agents.quality import (
+    BROAD_PLAN_COVERAGE_THRESHOLD,
+    BROAD_PLAN_MIN_TOPICS,
+    ReportQualitySnapshot,
+    compute_report_quality,
+)
 from deep_research.agents.react import (
     DecideCallback,
     StepCallback,
@@ -369,6 +375,8 @@ __all__ = [
     "AgentToolset",
     "BaseAgent",
     "BoundedFindings",
+    "BROAD_PLAN_COVERAGE_THRESHOLD",
+    "BROAD_PLAN_MIN_TOPICS",
     "ClaimDraft",
     "ClaimTask",
     "ClaimVerdictDraft",
@@ -396,6 +404,7 @@ __all__ = [
     "ReportConstraint",
     "ReportDraft",
     "ReportPoint",
+    "ReportQualitySnapshot",
     "ReportPointDraft",
     "ReportSection",
     "ReportSectionDraft",
@@ -454,6 +463,7 @@ __all__ = [
     "clamp_unit",
     "compose_limitations",
     "compose_report",
+    "compute_report_quality",
     "consumed_provenance",
     "coverage_id_for",
     "coverage_ids_by_title",
