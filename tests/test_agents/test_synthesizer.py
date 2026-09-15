@@ -14,7 +14,10 @@ import pytest
 
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.identity import claim_fingerprint
-from deep_research.agents.prompts import AgentTask
+from deep_research.agents.prompts import (
+    AgentTask,
+    render_report_claim_packet,
+)
 from deep_research.agents.report import (
     QUALITY_STATUS_NOT_GATED,
     REPORT_SECTIONS,
@@ -25,6 +28,7 @@ from deep_research.agents.report import (
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import (
     DEFAULT_MEMORY_CONFIDENCE,
+    SYNTHESIS_OPEN_QUESTIONS_CHARS,
     ConstraintDraft,
     ReportDraft,
     ReportPointDraft,
@@ -119,6 +123,7 @@ def _claim(
     confidence: float = 0.8,
     urls: list[str] | None = None,
     coverage_ids: list[str] | None = None,
+    finding_fingerprints: list[str] | None = None,
 ) -> Claim:
     return Claim(
         claim_id=claim_fingerprint(text),
@@ -129,6 +134,7 @@ def _claim(
         evidence=[],
         contradictions=[],
         verification_evidence=[],
+        consumed_finding_fingerprints=finding_fingerprints or [],
         consumed_coverage_ids=coverage_ids or [],
     )
 
@@ -329,19 +335,27 @@ def test_claims_are_labelled_by_their_canonical_position() -> None:
         claim_label(0)
 
 
-def test_claims_are_ranked_by_coverage_then_verdict_then_confidence() -> None:
+def test_claims_are_ranked_by_coverage_then_verdict_then_impact() -> None:
     covered = _claim(text="Covered.", coverage_ids=["topic-01", "topic-02"])
-    verified = _claim(text="Verified.")
-    weak = _claim(text="Weak.", confidence=0.1)
+    high_impact = _claim(
+        text="High impact.",
+        confidence=0.1,
+        finding_fingerprints=["finding-1", "finding-2"],
+    )
+    low_impact = _claim(
+        text="Low impact.",
+        confidence=0.9,
+        finding_fingerprints=["finding-3"],
+    )
     contradicted = _claim(
         text="Contradicted.", verdict="contradicted", confidence=0.9
     )
 
-    # Coverage first, then verdict, then confidence: a weakly verified claim
-    # is still settled evidence, so it outranks a contradicted one.
+    # Coverage first, then verdict, then recorded evidence impact: confidence
+    # must not move a less load-bearing claim ahead of a more load-bearing one.
     assert [claim.text for claim in ordered_claims_for_report(
-        [weak, verified, contradicted, covered]
-    )] == ["Covered.", "Verified.", "Weak.", "Contradicted."]
+        [low_impact, high_impact, contradicted, covered]
+    )] == ["Covered.", "High impact.", "Low impact.", "Contradicted."]
 
 
 def test_a_claim_repeated_in_state_is_ranked_once() -> None:
@@ -373,8 +387,59 @@ def test_the_packet_honours_a_character_budget() -> None:
         claim_registry(claims), limit=10, budget_chars=100
     )
 
-    assert len(packet) == 1
-    assert omitted == 1
+    assert packet == []
+    assert omitted == 2
+    assert len(render_report_claim_packet(packet, omitted=omitted)) <= 100
+
+
+def test_the_prompt_omitted_claim_is_not_a_validation_allow_list() -> None:
+    task = _task(
+        claims=[
+            _claim(),
+            _claim(text="Cost fell tenfold.", urls=[OTHER_URL]),
+        ]
+    )
+    report_messages(task, finding_digest=10, claim_digest=1)
+
+    composition, rejected = build_report_composition(
+        task,
+        ReportDraft(
+            executive_summary=[
+                _point_draft(
+                    "Cost fell tenfold.",
+                    claim_ids=["C002"],
+                    source_urls=[OTHER_URL],
+                )
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary == []
+    assert rejected == ["executive summary point 1: no known checked claim"]
+    # The full canonical snapshot still feeds the evidence ledger.
+    assert len(composition.claims) == 2
+
+
+def test_open_questions_use_a_deterministic_rendered_character_bound() -> None:
+    task = _task(
+        findings=[
+            _finding(url=f"https://example.test/finding-{index:03d}")
+            for index in range(100)
+        ]
+    )
+
+    body = report_messages(task, finding_digest=100, claim_digest=10)[1].content
+    open_questions = body.split(
+        "# Retrieved findings (open questions only)\n", 1
+    )[1].split("\n\n# Source quality", 1)[0]
+
+    assert len(open_questions) <= SYNTHESIS_OPEN_QUESTIONS_CHARS
+    assert open_questions.startswith("1. [Alpha] ")
 
 
 def test_the_packet_bounds_reject_a_zero() -> None:

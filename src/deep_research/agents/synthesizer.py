@@ -84,8 +84,8 @@ SYNTHESIS_CLAIM_DIGEST = 40
 # The checked-claim packet is bounded by characters, not by a position in the
 # state: the first 40 findings of a run are not the 40 most load-bearing
 # claims. Every claim that does not fit is counted in the prompt rather than
-# silently dropped from it, and validation still runs against the whole
-# canonical registry.
+# silently dropped from it. The full canonical snapshot remains in the
+# evidence ledger, while validation resolves only labels shown in this packet.
 SYNTHESIS_CLAIM_PACKET_CHARS = 12000
 SYNTHESIS_OPEN_QUESTIONS_CHARS = 2000
 
@@ -208,6 +208,10 @@ class SynthesisTask(AgentTask):
     findings: list[Finding] = []
     limitations: list[str] = []
     errors: list[ResearchError] = []
+    # The exact bounded registry shown to the provider.  The full ``claims``
+    # snapshot remains available for the evidence ledger, but settled draft
+    # points may resolve labels only through this prompt-visible subset.
+    claim_packet: list[tuple[str, Claim]] | None = None
 
 
 class SynthesizedReport(ContractModel):
@@ -327,20 +331,31 @@ def claim_registry(claims: Sequence[Claim]) -> list[tuple[str, Claim]]:
     ]
 
 
+def _claim_impact_key(claim: Claim) -> tuple[int, int, int]:
+    """Return recorded evidence breadth used as the packet impact key."""
+    return (
+        len(claim.consumed_finding_fingerprints),
+        len(claim.verification_evidence),
+        len(claim.source_urls),
+    )
+
+
 def ordered_claims_for_report(claims: Sequence[Claim]) -> list[Claim]:
     """Canonical checked claims, most load-bearing first.
 
     Coverage first (a claim carrying more planned topics answers more of the
-    question), then verdict, then confidence, then canonical order. Sorting is
-    explicit and total, so no dict or set iteration order can reach the
-    prompt.
+    question), then verdict, then recorded evidence impact, then canonical
+    order. Confidence is deliberately not a packet-priority signal: it is a
+    model judgement, not a measure of how much of the research question a
+    claim carries. Sorting is explicit and total, so no dict or set iteration
+    order can reach the prompt.
     """
     ranked = sorted(
         enumerate(canonical_claims(claims)),
         key=lambda item: (
             -len(item[1].consumed_coverage_ids),
             _VERDICT_ORDER.index(item[1].verdict),
-            -item[1].confidence,
+            tuple(-part for part in _claim_impact_key(item[1])),
             item[0],
         ),
     )
@@ -375,19 +390,40 @@ def bounded_claim_packet(
         registry,
         key=lambda item: (order.get(item[1].claim_id, len(order)), item[0]),
     )
-    packet: list[tuple[str, Claim]] = []
-    used = 0
-    for label, claim in ranked:
-        if len(packet) >= limit:
-            break
-        cost = len(label) + len(claim.text) + sum(
-            len(url) for url in claim.source_urls
-        )
-        if packet and used + cost > budget_chars:
-            break
-        packet.append((label, claim))
-        used += cost
-    return packet, len(ranked) - len(packet)
+    maximum = min(limit, len(ranked))
+    # Select the largest ranked prefix whose *actual prompt representation*
+    # fits.  This includes labels, verdict syntax, rendered text truncation,
+    # URLs, coverage, separators, and the omission notice.
+    for size in range(maximum, -1, -1):
+        packet = ranked[:size]
+        omitted = len(ranked) - size
+        rendered = render_report_claim_packet(packet, omitted=omitted)
+        if len(rendered) <= budget_chars:
+            return packet, omitted
+
+    # A positive budget may be smaller than the fixed omission notice.  The
+    # empty packet is still fail-closed; normal production budgets are large
+    # enough to carry the notice and are checked by the loop above.
+    return [], len(ranked)
+
+
+def bounded_finding_digest(
+    findings: Sequence[Finding],
+    *,
+    limit: int,
+    budget_chars: int,
+) -> str:
+    """Render the longest leading open-question digest within its ceiling."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    if budget_chars < 1:
+        raise ValueError("budget_chars must be at least 1")
+    candidates = list(findings)[:limit]
+    for size in range(len(candidates), -1, -1):
+        rendered = render_finding_digest(candidates[:size])
+        if len(rendered) <= budget_chars:
+            return rendered
+    return render_finding_digest([])
 
 
 def high_confidence_claims(
@@ -586,9 +622,12 @@ def build_report_composition(
     """
     if max_sections < 1:
         raise ValueError("max_sections must be at least 1")
-    approved = {
-        label: claim for label, claim in claim_registry(task.claims)
-    }
+    prompt_registry = (
+        task.claim_packet
+        if task.claim_packet is not None
+        else claim_registry(task.claims)
+    )
+    approved = {label: claim for label, claim in prompt_registry}
     rejected: list[str] = []
     summary: list[ReportPoint] = []
     constraints: list[ReportConstraint] = []
@@ -760,14 +799,23 @@ def report_messages(
     """Build the messages that request one structured report draft.
 
     The evidence packet is built from canonical checked claims, ranked by
-    coverage, verdict, and confidence, and bounded by characters. Raw findings
-    are carried as open questions only: they are leads, and the response
-    contract forbids resting a settled statement on one.
+    coverage, verdict, and recorded impact, and bounded by the exact rendered
+    character representation. Raw findings are carried as open questions
+    only: they are leads, and the response contract forbids resting a settled
+    statement on one.
     """
     packet, omitted = bounded_claim_packet(
         claim_registry(task.claims),
         limit=claim_digest,
         budget_chars=SYNTHESIS_CLAIM_PACKET_CHARS,
+    )
+    # Carry the exact prompt-visible registry into composition.  The complete
+    # canonical snapshot remains on ``task.claims`` for the evidence ledger.
+    task.claim_packet = packet
+    open_questions = bounded_finding_digest(
+        task.findings,
+        limit=finding_digest,
+        budget_chars=SYNTHESIS_OPEN_QUESTIONS_CHARS,
     )
     sections = [f"# Research question\n{task.instruction}"]
     if task.guidance.strip():
@@ -785,7 +833,7 @@ def report_messages(
             ),
             (
                 "# Retrieved findings (open questions only)\n"
-                f"{render_finding_digest(list(task.findings)[:finding_digest])}"
+                f"{open_questions}"
             ),
             f"# Source quality\n{render_source_quality(task.sources)}",
             f"# Known limitations\n{render_limitations(task.limitations)}",
