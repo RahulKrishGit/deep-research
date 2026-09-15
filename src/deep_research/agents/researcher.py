@@ -13,7 +13,7 @@ still considered high priority.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import NamedTuple
 
@@ -50,6 +50,7 @@ from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     ContractModel,
+    CritiqueGap,
     Finding,
     ResearchError,
     ResearchEvent,
@@ -151,18 +152,33 @@ def _normalized(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
-def _critic_gap_text(state: ResearchState) -> str:
+def _critic_gaps_by_target(
+    state: ResearchState,
+) -> dict[str, list[CritiqueGap]]:
+    """Group the Critic's gaps by the plan ID each one was routed to.
+
+    Only ``CritiqueGap.coverage_id`` decides the target. Titles and problem
+    text are never parsed: a sub-topic whose title happens to appear inside
+    another topic's prose must not receive that topic's gap, and a gap the
+    Critic could not tie to the plan is global by construction.
+    """
     critique = state.critique
-    return (
-        " ".join(_normalized(gap) for gap in critique.gaps)
-        if critique is not None
-        else ""
-    )
+    if critique is None:
+        return {}
+    grouped: dict[str, list[CritiqueGap]] = {}
+    for gap in critique.gaps:
+        if gap.coverage_id is None:
+            continue
+        grouped.setdefault(gap.coverage_id, []).append(gap)
+    return grouped
 
 
-def _is_critic_gap_target(sub_topic: SubTopic, gap_text: str) -> bool:
-    title = _normalized(sub_topic.title)
-    return bool(title and title in gap_text)
+def _is_critic_gap_target(
+    sub_topic: SubTopic,
+    gaps_by_target: Mapping[str, list[CritiqueGap]],
+) -> bool:
+    """True when the Critic routed at least one gap to this exact plan ID."""
+    return sub_topic.coverage_id in gaps_by_target
 
 
 def _has_prior_finding(state: ResearchState, sub_topic: SubTopic) -> bool:
@@ -177,33 +193,33 @@ def _refinement_satisfied_sub_topics(state: ResearchState) -> list[SubTopic]:
     """Return non-gap topics already satisfied by a prior raw finding."""
     if state.critique is None:
         return []
-    gap_text = _critic_gap_text(state)
+    gaps_by_target = _critic_gaps_by_target(state)
     return [
         sub_topic
         for sub_topic in state.sub_topics
-        if not _is_critic_gap_target(sub_topic, gap_text)
+        if not _is_critic_gap_target(sub_topic, gaps_by_target)
         and _has_prior_finding(state, sub_topic)
     ]
 
 
 def _ordered_sub_topics(state: ResearchState) -> list[SubTopic]:
-    """Order eligible sub-topics by Critic-flagged gaps, then priority.
+    """Order eligible sub-topics by Critic-targeted gaps, then priority.
 
-    A sub-topic counts as gap-flagged when its normalized title appears
-    inside the concatenated, normalized text of ``critique.gaps``. Ties
-    resolve by ``priority`` ascending (1 is most important), then by the
-    order the planner produced. On a refinement pass, non-gap topics with a
-    prior finding whose normalized related sub-topic matches their title are
-    omitted as interim-satisfied. Initial passes keep every planned topic.
-    Callers that need to know which sub-topics a ``max_sub_topics`` cap left
-    out (``ResearcherAgent.run``) use this directly instead of
-    ``select_sub_topics``, which only returns the truncated head.
+    A sub-topic counts as gap-targeted when the Critic returned a gap whose
+    ``coverage_id`` equals it exactly. Ties resolve by ``priority`` ascending
+    (1 is most important), then by the order the planner produced. On a
+    refinement pass, untargeted topics with a prior finding whose normalized
+    related sub-topic matches their title are omitted as interim-satisfied.
+    Initial passes keep every planned topic. Callers that need to know which
+    sub-topics a ``max_sub_topics`` cap left out (``ResearcherAgent.run``) use
+    this directly instead of ``select_sub_topics``, which only returns the
+    truncated head.
     """
-    gap_text = _critic_gap_text(state)
+    gaps_by_target = _critic_gaps_by_target(state)
 
     def sort_key(item: tuple[int, SubTopic]) -> tuple[int, int, int]:
         index, sub_topic = item
-        flagged = 0 if _is_critic_gap_target(sub_topic, gap_text) else 1
+        flagged = 0 if _is_critic_gap_target(sub_topic, gaps_by_target) else 1
         return (flagged, sub_topic.priority, index)
 
     ordered = sorted(enumerate(state.sub_topics), key=sort_key)
@@ -212,7 +228,7 @@ def _ordered_sub_topics(state: ResearchState) -> list[SubTopic]:
     return [
         sub_topic
         for _, sub_topic in ordered
-        if _is_critic_gap_target(sub_topic, gap_text)
+        if _is_critic_gap_target(sub_topic, gaps_by_target)
         or not _has_prior_finding(state, sub_topic)
     ]
 
@@ -332,7 +348,9 @@ def render_session_guidance(state: ResearchState) -> str:
         lines = ["The critic asked for another research pass."]
         if critique.gaps:
             lines.append("Gaps to close:")
-            lines.extend(f"- {summarize_text(gap)}" for gap in critique.gaps)
+            lines.extend(
+                f"- {summarize_text(gap.problem)}" for gap in critique.gaps
+            )
         if critique.recommended_queries:
             lines.append("Run these recommended queries first:")
             lines.extend(

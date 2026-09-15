@@ -104,7 +104,7 @@ from deep_research.utils.config import (
 # of hashing a module's full source. (The synthesizer's value covers the
 # final source of that module in this commit, including the blank-cell
 # normalization its constraint rows use.) The Judge pin did **not** move.
-CRITIC_PROMPT_FINGERPRINT = "58175fc4313b"
+CRITIC_PROMPT_FINGERPRINT = "b46dfef67238"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -200,18 +200,31 @@ CRITIC_PROMPT_FINGERPRINT = "58175fc4313b"
 # prompt edit moves all six values, while the Synthesizer source edit also
 # changes its full-source value; re-pin deliberately so this remains a drift
 # alarm. The later sub-minimum digest-budget contract fix changed only the
-# Synthesizer source value again. The current values are planner
-# ``1e244d04fe8d``, researcher
-# ``e3ffdca8f71e``, source evaluator ``b3185bb51b4e``, Fact Checker
-# ``997b6d351251``, Synthesizer ``5bc5345f1791``, and Critic
-# ``58175fc4313b``. The Judge pin did not move.
+# Synthesizer source value again.
+# Task 7 then replaced the Critic's free-text gaps with targetable
+# ``CritiqueGap`` objects carrying a plan ``coverage_id``, handed it one
+# fenced block per reader-report section so no section cap can hide a later
+# one, and added the structured quality snapshot and typed error groups to its
+# prompt. That shared ``agents.prompts`` edit moves all six values together.
+# Four module sources moved for their own reasons too: the researcher routes
+# gaps by exact plan ID instead of title substring, the Fact Checker reads a
+# gap's prose again when matching an explicit re-verification request, the
+# Synthesizer renders a gap's ``problem``, and the Critic lost the now-dead
+# combined-report clamp (and now canonicalizes once for both digests, which
+# also keeps the module inside the line-length rule). The exact moves were
+# planner ``1e244d04fe8d`` -> ``028150f7e4a5``, researcher
+# ``e3ffdca8f71e`` -> ``533350d78959``, source evaluator
+# ``b3185bb51b4e`` -> ``6e127ffba9d4``, Fact Checker
+# ``997b6d351251`` -> ``926a1d968c68``, Synthesizer
+# ``5bc5345f1791`` -> ``de9b44079616``, and Critic
+# ``58175fc4313b`` -> ``b46dfef67238``. The Judge pin did not move.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "1e244d04fe8d",
-    "researcher": "e3ffdca8f71e",
-    "source_evaluator": "b3185bb51b4e",
-    "fact_checker": "997b6d351251",
-    "synthesizer": "5bc5345f1791",
-    "critic": "58175fc4313b",
+    "planner": "028150f7e4a5",
+    "researcher": "533350d78959",
+    "source_evaluator": "6e127ffba9d4",
+    "fact_checker": "926a1d968c68",
+    "synthesizer": "de9b44079616",
+    "critic": "b46dfef67238",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

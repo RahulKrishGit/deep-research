@@ -163,7 +163,7 @@ def _critique_texts(state: ResearchState) -> tuple[str, ...]:
     return tuple(
         text
         for text in (
-            *critique.gaps,
+            *(gap.problem for gap in critique.gaps),
             *critique.unsupported_claims,
             *critique.recommended_queries,
         )

@@ -50,6 +50,7 @@ from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Critique,
+    CritiqueGap,
     Finding,
     MemorySnapshot,
     ResearchError,
@@ -123,6 +124,20 @@ def _state(
         raw_findings=raw_findings or [],
         critique=critique,
         memory_context=memory_context or MemorySnapshot(),
+    )
+
+
+def _gap(
+    problem: str,
+    *,
+    coverage_id: str | None = None,
+    recommended_queries: list[str] | None = None,
+) -> CritiqueGap:
+    """One targetable Critic gap. The plan ID is the only routing signal."""
+    return CritiqueGap(
+        coverage_id=coverage_id,
+        problem=problem,
+        recommended_queries=recommended_queries or [],
     )
 
 
@@ -238,8 +253,18 @@ def test_selection_orders_by_priority_and_caps_the_count() -> None:
 def test_selection_puts_critic_flagged_gaps_first(
 ) -> None:
     state = _state(
-        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 5)],
-        critique=_critique(gaps=["No evidence at all on   BETA yet."]),
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
+        critique=_critique(
+            gaps=[
+                _gap(
+                    "No evidence at all on Beta yet.",
+                    coverage_id="topic-02",
+                )
+            ]
+        ),
     )
 
     selected = select_sub_topics(state, max_sub_topics=2)
@@ -249,13 +274,49 @@ def test_selection_puts_critic_flagged_gaps_first(
 
 def test_selection_falls_back_to_priority_when_no_gap_matches() -> None:
     state = _state(
-        sub_topics=[_sub_topic("Alpha", 2), _sub_topic("Beta", 1)],
-        critique=_critique(gaps=["Something unrelated."]),
+        sub_topics=[
+            _sub_topic("Alpha", 2, coverage_id="topic-01"),
+            _sub_topic("Beta", 1, coverage_id="topic-02"),
+        ],
+        critique=_critique(gaps=[_gap("Something unrelated.")]),
     )
 
     selected = select_sub_topics(state)
 
     assert [sub_topic.title for sub_topic in selected] == ["Beta", "Alpha"]
+
+
+def test_a_gap_problem_naming_a_title_never_targets_that_topic() -> None:
+    """Routing is by plan ID only; a title inside the prose decides nothing."""
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
+        critique=_critique(
+            gaps=[_gap("Beta is completely uncovered.", coverage_id=None)]
+        ),
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=2)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Alpha", "Beta"]
+
+
+def test_a_gap_with_an_unknown_plan_id_targets_no_topic() -> None:
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
+        critique=_critique(
+            gaps=[_gap("Beta is uncovered.", coverage_id="topic-999")]
+        ),
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=2)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Alpha", "Beta"]
 
 
 def test_refinement_selection_uses_one_slot_for_unsatisfied_topic() -> None:
@@ -272,9 +333,14 @@ def test_refinement_selection_uses_one_slot_for_unsatisfied_topic() -> None:
 
 def test_refinement_gap_target_is_selected_even_when_prior_findings_exist() -> None:
     state = _state(
-        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 3)],
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 3, coverage_id="topic-02"),
+        ],
         raw_findings=[_finding("Alpha", "https://example.test/alpha")],
-        critique=_critique(gaps=["Alpha still has a critic gap."]),
+        critique=_critique(
+            gaps=[_gap("Alpha still has a critic gap.", coverage_id="topic-01")]
+        ),
     )
 
     selected = select_sub_topics(state, max_sub_topics=1)
@@ -410,6 +476,25 @@ def test_session_guidance_leads_with_the_critic_request() -> None:
     assert "- surface code threshold 2025" in guidance
     assert "- Error rates halved." in guidance
     assert "- Prefer peer-reviewed sources." in guidance
+
+
+def test_session_guidance_reports_every_gap_problem() -> None:
+    guidance = render_session_guidance(
+        _state(
+            critique=_critique(
+                gaps=[
+                    _gap("Alpha lacks cost evidence.", coverage_id="topic-01"),
+                    _gap(
+                        "Beta lacks durability evidence.",
+                        coverage_id="topic-02",
+                    ),
+                ]
+            )
+        )
+    )
+
+    assert "- Alpha lacks cost evidence." in guidance
+    assert "- Beta lacks durability evidence." in guidance
 
 
 def test_session_guidance_is_empty_without_a_critique_or_memory() -> None:
@@ -1599,9 +1684,14 @@ async def test_the_researcher_prioritizes_the_gap_the_critic_named(
     )
     agent = _researcher(tracker, completer, max_sub_topics=1)
     state = _state(
-        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 5)],
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
         critique=_critique(
-            gaps=["Beta is completely uncovered."],
+            gaps=[
+                _gap("Beta is completely uncovered.", coverage_id="topic-02")
+            ],
             recommended_queries=["beta throughput 2025"],
         ),
     )

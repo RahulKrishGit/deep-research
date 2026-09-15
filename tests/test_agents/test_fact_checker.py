@@ -18,6 +18,7 @@ from deep_research.agents.fact_checker import (
     EvidencePassageDraft,
     FactCheckerAgent,
     VerifiedClaims,
+    _critique_texts,
     _finding_is_new,
     build_claim,
     build_claim_drafts,
@@ -249,6 +250,31 @@ def test_claim_extraction_skips_old_snapshot_unless_evidence_or_critic_changes(
     )
     assert [item.text for item in reverified] == [claim.text]
     assert rejected == []
+
+
+def test_a_critic_gap_still_reaches_the_reverification_matcher() -> None:
+    """A targetable gap carries its prose into the Critic-text matcher.
+
+    The Critic's gaps are typed objects now. If only the raw list is handed
+    on, every gap is filtered out and an explicit "re-verify this claim"
+    instruction inside one is silently lost.
+    """
+    state = ResearchState(
+        session_id="session-1",
+        original_question="How mature is quantum error correction?",
+        critique=Critique(
+            score=4,
+            gaps=["Re-verify this claim: Break-even was reached."],
+            unsupported_claims=[],
+            recommended_queries=[],
+            should_continue=True,
+            rationale="One claim is load-bearing.",
+        ),
+    )
+
+    assert _critique_texts(state) == (
+        "Re-verify this claim: Break-even was reached.",
+    )
 
 
 def test_a_new_publisher_restatement_is_new_evidence() -> None:

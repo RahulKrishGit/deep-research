@@ -492,7 +492,7 @@ def render_revision_guidance(state: ResearchState) -> str:
     if critique.gaps:
         lines.append("Gaps the reviewer named:")
         lines.extend(
-            f"- {summarize_text(gap, limit=_GUIDANCE_CHARS)}"
+            f"- {summarize_text(gap.problem, limit=_GUIDANCE_CHARS)}"
             for gap in critique.gaps
         )
     if critique.unsupported_claims:

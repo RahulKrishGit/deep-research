@@ -19,12 +19,14 @@ from deep_research.agents.critic import (
     ROUTING_REASONS,
     CriticAgent,
     CritiqueDraft,
+    CritiqueGapDraft,
     CritiqueTask,
     _render_spot_check_guidance,
     build_critique,
     clamp_score,
     critique_messages,
     fallback_critique,
+    normalize_gaps,
     normalize_notes,
     route_decision,
 )
@@ -48,6 +50,9 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
     Critique,
+    CritiqueGap,
+    ReportQualitySnapshot,
+    ResearchError,
     ResearchState,
     ScoredSource,
     SubTopic,
@@ -787,12 +792,78 @@ def test_a_critique_is_validated_clamped_and_routed() -> None:
 
     assert isinstance(critique, Critique)
     assert critique.score == MAX_CRITIC_SCORE
-    assert critique.gaps == ["No cost data."]
+    assert [gap.problem for gap in critique.gaps] == ["No cost data."]
     assert critique.recommended_queries == ["qec cost 2025"]
     assert critique.should_continue is True
     assert reason == "critical_gaps"
     assert critique.rationale.startswith("Well sourced and complete.")
     assert ROUTING_REASONS["critical_gaps"] in critique.rationale
+
+
+def test_critique_gaps_preserve_known_ids_and_globalize_unknown_ids() -> None:
+    draft = CritiqueDraft(
+        score=4,
+        gaps=[
+            CritiqueGapDraft(
+                coverage_id="topic-01",
+                problem="Alpha lacks cost evidence.",
+                recommended_queries=["alpha cost 2025"],
+            ),
+            CritiqueGapDraft(
+                coverage_id="topic-999",
+                problem="The provider invented this plan id.",
+                recommended_queries=["invented topic evidence"],
+            ),
+        ],
+        unsupported_claims=[],
+        recommended_queries=[],
+        rationale="The report needs targeted evidence.",
+    )
+
+    critique, reason = build_critique(
+        draft,
+        iteration=0,
+        max_iterations=3,
+        known_coverage_ids={"topic-01"},
+    )
+
+    assert reason == "low_score"
+    assert critique.gaps == [
+        CritiqueGap(
+            coverage_id="topic-01",
+            problem="Alpha lacks cost evidence.",
+            recommended_queries=["alpha cost 2025"],
+        ),
+        CritiqueGap(
+            coverage_id=None,
+            problem="The provider invented this plan id.",
+            recommended_queries=["invented topic evidence"],
+        ),
+    ]
+
+
+def test_blank_or_title_only_gap_targets_remain_global() -> None:
+    gaps = normalize_gaps(
+        [
+            CritiqueGapDraft(
+                coverage_id="   ",
+                problem="The report misses Beta evidence.",
+                recommended_queries=["beta evidence"],
+            ),
+            CritiqueGapDraft(
+                coverage_id=None,
+                problem="Alpha appears only as a title in this problem.",
+                recommended_queries=["alpha evidence"],
+            ),
+        ],
+        known_coverage_ids={"topic-01", "topic-02"},
+    )
+
+    assert [gap.coverage_id for gap in gaps] == [None, None]
+    assert [gap.problem for gap in gaps] == [
+        "The report misses Beta evidence.",
+        "Alpha appears only as a title in this problem.",
+    ]
 
 
 def test_a_blank_model_rationale_still_yields_a_usable_one() -> None:
@@ -814,7 +885,7 @@ def test_the_last_iteration_stops_even_on_a_scathing_critique() -> None:
 
     assert critique.should_continue is False
     assert reason == "max_iterations_reached"
-    assert critique.gaps == ["No cost data."]
+    assert [gap.problem for gap in critique.gaps] == ["No cost data."]
     assert ROUTING_REASONS["max_iterations_reached"] in critique.rationale
 
 
@@ -836,7 +907,9 @@ def test_a_missing_report_is_worth_one_more_cycle() -> None:
 
     assert critique.should_continue is True
     assert reason == "missing_report"
-    assert critique.gaps == ["No report was available to review."]
+    assert [gap.problem for gap in critique.gaps] == [
+        "No report was available to review."
+    ]
 
     exhausted, exhausted_reason = fallback_critique(
         reason="missing_report", iteration=3, max_iterations=3
@@ -872,6 +945,68 @@ def test_critique_messages_carry_the_report_and_every_quality_signal() -> None:
     assert "2 error(s)" in body
     assert "# Spot checks" in body
     assert "# Response contract" in body
+
+
+def test_critique_messages_keep_each_reader_section_and_typed_quality_context() -> None:
+    report = "\n\n".join(
+        [
+            "# Research report: balanced input",
+            "## Executive summary\nSUMMARY-MARKER",
+            "## Constraint ranking\nCONSTRAINT-MARKER",
+            "## Findings\nFINDINGS-MARKER",
+            "## Uncertainty and conflicting evidence\nUNCERTAINTY-MARKER",
+            "## Methodology\nMETHODOLOGY-MARKER",
+            "## References\nREFERENCES-MARKER",
+        ]
+    )
+    quality = ReportQualitySnapshot(
+        coverage_ratio=0.8,
+        planned_topics=5,
+        covered_topics=4,
+        unresolved_topic_ids=["topic-05"],
+        unique_findings=6,
+        unique_sources=4,
+        cited_sources=3,
+        scored_cited_source_ratio=1.0,
+        verified_claims=4,
+        contradicted_claims=1,
+        duplicate_claims=0,
+        duplicate_source_rows=0,
+        uncited_settled_points=0,
+        hard_failures=["broad_plan_coverage_below_0.80"],
+    )
+    task = _task(
+        report=report,
+        quality=quality,
+        errors=[
+            ResearchError(
+                error_type="researcher_sub_topic_skipped",
+                source="agent.researcher",
+                message="A planned sub-topic was skipped.",
+                details={"coverage_id": "topic-05"},
+            )
+        ],
+    )
+
+    body = critique_messages(
+        task,
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=80,
+        claim_digest=10,
+    )[1].content
+
+    for marker in (
+        "SUMMARY-MARKER",
+        "CONSTRAINT-MARKER",
+        "FINDINGS-MARKER",
+        "UNCERTAINTY-MARKER",
+        "METHODOLOGY-MARKER",
+        "REFERENCES-MARKER",
+    ):
+        assert marker in body
+    assert '"coverage_ratio": 0.8' in body
+    assert "agent.researcher" in body
+    assert "researcher_sub_topic_skipped" in body
 
 
 def test_critique_messages_clamp_a_long_report_without_flattening_it() -> None:
@@ -1026,7 +1161,7 @@ async def test_a_low_quality_report_asks_for_another_pass(
     critique = outcome.result
     assert critique is not None
     assert critique.should_continue is True
-    assert critique.gaps == ["No cost data."]
+    assert [gap.problem for gap in critique.gaps] == ["No cost data."]
     assert critique.recommended_queries == ["qec cost 2025"]
 
 
@@ -1043,7 +1178,7 @@ async def test_the_final_iteration_forces_a_stop(tracker: Tracker) -> None:
     critique = outcome.result
     assert critique is not None
     assert critique.should_continue is False
-    assert critique.gaps == ["No cost data."]
+    assert [gap.problem for gap in critique.gaps] == ["No cost data."]
     event = outcome.state_update["events"][-1]
     assert event.metadata["reason"] == "max_iterations_reached"
     assert event.metadata["should_continue"] is False

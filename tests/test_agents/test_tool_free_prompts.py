@@ -702,7 +702,14 @@ def test_no_structured_request_names_a_registered_tool(
 
 
 def test_the_only_markdown_fence_is_the_critic_report_delimiter() -> None:
-    """The one fence in the matrix quotes the report, never the reply shape."""
+    """Every fence in the matrix quotes the report, never the reply shape.
+
+    The Critic clamps each reader-report section independently so one long
+    section cannot hide the ones after it, so the quoted report arrives as a
+    series of fences rather than as one block. They are still the only fences
+    in the matrix, they pair up, and each one is labelled as report content
+    rather than as this request's reply contract.
+    """
     fenced = {
         operation.operation: [
             line for line in operation.body().splitlines() if line.startswith("```")
@@ -711,7 +718,18 @@ def test_the_only_markdown_fence_is_the_critic_report_delimiter() -> None:
         if "```" in operation.body()
     }
 
-    assert fenced == {"report review": ["```report", "```"]}
+    assert set(fenced) == {"report review"}
+    lines = fenced["report review"]
+    # Balanced: an opening fence and its matching close, in order.
+    assert len(lines) % 2 == 0
+    assert lines[1::2] == ["```"] * (len(lines) // 2)
+    labels = [line[3:] for line in lines[::2]]
+    # The compatibility label for an unstructured report, then reader sections.
+    assert labels[0] in {"report", "reader-identity"}
+    assert all(
+        label == "report" or label.startswith("reader-") for label in labels
+    )
+    assert all("json" not in label.casefold() for label in labels)
 
 
 # --- scoring clarity and opposite examples ------------------------------------

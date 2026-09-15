@@ -19,6 +19,7 @@ from deep_research.agents.critic import (
     ROUTING_REASONS,
     CriticAgent,
     CritiqueDraft,
+    CritiqueGapDraft,
     CritiqueTask,
     build_critique,
     clamp_score,
@@ -28,6 +29,7 @@ from deep_research.agents.critic import (
     critique_started_event,
     fallback_critique,
     missing_report_error,
+    normalize_gaps,
     normalize_notes,
     route_decision,
 )
@@ -292,6 +294,7 @@ from deep_research.agents.synthesizer import (
     synthesis_started_event,
 )
 from deep_research.agents.toolset import AgentToolset, ToolDescriptor
+from deep_research.utils.types import CritiqueGap
 
 __all__ = [
     "ACCEPTANCE_SCORE",
@@ -386,6 +389,8 @@ __all__ = [
     "Clock",
     "ConstraintDraft",
     "CriticAgent",
+    "CritiqueGap",
+    "CritiqueGapDraft",
     "CritiqueDraft",
     "CritiqueTask",
     "DecideCallback",
@@ -501,6 +506,7 @@ __all__ = [
     "no_findings_to_check_error",
     "no_sources_error",
     "normalize_notes",
+    "normalize_gaps",
     "normalize_source_url",
     "normalize_verdict",
     "ordered_claims_for_report",

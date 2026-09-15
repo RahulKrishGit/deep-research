@@ -206,13 +206,36 @@ class ReportQualitySnapshot(ContractModel):
     hard_failures: list[str] = Field(default_factory=list)
 
 
+class CritiqueGap(ContractModel):
+    """One targetable report problem returned by the Critic."""
+
+    coverage_id: str | None = None
+    problem: str = Field(min_length=1)
+    recommended_queries: list[str] = Field(default_factory=list)
+
+
 class Critique(ContractModel):
     score: CriticScore
-    gaps: list[str]
+    gaps: list[CritiqueGap]
     unsupported_claims: list[str]
     recommended_queries: list[str]
     should_continue: bool
     rationale: str = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_gap_strings(cls, values: object) -> object:
+        """Accept older state fixtures while normalizing to targetable gaps."""
+        if not isinstance(values, dict) or not isinstance(values.get("gaps"), list):
+            return values
+        converted = dict(values)
+        converted["gaps"] = [
+            {"coverage_id": None, "problem": gap, "recommended_queries": []}
+            if isinstance(gap, str)
+            else gap
+            for gap in values["gaps"]
+        ]
+        return converted
 
 
 class MemorySnapshot(ContractModel):
