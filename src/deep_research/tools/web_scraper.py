@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -18,6 +19,14 @@ from deep_research.tools.base import (
     ToolExecution,
     ToolExecutionError,
 )
+
+# A media type published in failure details is bounded to this shape, so a
+# hostile ``Content-Type`` header can never be echoed back into public state.
+# Anything else is reported as ``_UNKNOWN_CONTENT_TYPE`` — never as a truncated
+# copy of the header.
+_MEDIA_TYPE_MAX_LENGTH = 64
+_UNKNOWN_CONTENT_TYPE = "unknown"
+_MEDIA_TYPE_PATTERN = re.compile(r"[a-z0-9!#$%&'*+.^_`|~-]+/[a-z0-9!#$%&'*+.^_`|~-]+")
 
 
 class AsyncHttpClient(Protocol):
@@ -104,7 +113,7 @@ class WebScraperTool(BaseTool):
                 "response content type is not HTML",
                 error_type="unsupported_content_type",
                 recoverable=False,
-                details={"content_type": content_type},
+                details={"content_type": _bounded_content_type(content_type)},
             )
         title, text = _extract_html(response.text)
         data = {
@@ -137,7 +146,6 @@ class WebScraperTool(BaseTool):
                     "robots policy disallows this URL",
                     error_type="robots_disallowed",
                     recoverable=False,
-                    details={"url": url},
                 )
         except ToolExecutionError:
             raise
@@ -187,6 +195,22 @@ def _is_html_content_type(content_type: str) -> bool:
     return media_type in {"text/html", "application/xhtml+xml"}
 
 
+def _bounded_content_type(content_type: str) -> str:
+    """The media type of ``content_type``, or ``"unknown"`` when it has none.
+
+    The result is a lower-case ASCII media type of at most
+    ``_MEDIA_TYPE_MAX_LENGTH`` characters. The header is remote-controlled, so a
+    malformed or over-long value yields the static marker instead of a
+    truncated copy of that text.
+    """
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if len(media_type) > _MEDIA_TYPE_MAX_LENGTH:
+        return _UNKNOWN_CONTENT_TYPE
+    if _MEDIA_TYPE_PATTERN.fullmatch(media_type) is None:
+        return _UNKNOWN_CONTENT_TYPE
+    return media_type
+
+
 def _extract_html(html: str) -> tuple[str, str]:
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(strip=True) if soup.title else ""
@@ -220,11 +244,25 @@ def _retry_delay(error: BaseException, retry_index: int) -> float:
 
 
 def _tool_execution_error(error: BaseException, attempts: int) -> ToolExecutionError:
-    details: dict[str, Any] = {"attempts": attempts}
+    """Build the failure for one exhausted page request.
+
+    The message is static project text and the details hold only bounded
+    categorical values, because both reach public state: the retry loop catches
+    only timeouts and HTTP status errors, so no exception text, URL, or response
+    content can be echoed here. ``attempts`` is ``attempt + 1`` for an
+    ``attempt`` in ``0..max_retries`` and ``__init__`` bounds ``max_retries`` to
+    ``0..2``, so ``attempts`` is ``1..3`` and ``retries`` is ``0..2`` by
+    construction; ``raise_for_status()`` raises only for error statuses, so
+    ``status_code`` is already inside ``100..599``.
+    """
+    details: dict[str, Any] = {"attempts": attempts, "retries": attempts - 1}
     if isinstance(error, httpx.HTTPStatusError):
+        message = "the page request failed with an HTTP error status"
         details["status_code"] = error.response.status_code
+    else:
+        message = "the page request timed out"
     return ToolExecutionError(
-        str(error) or type(error).__name__,
+        message,
         error_type=type(error).__name__,
         details=details,
     )

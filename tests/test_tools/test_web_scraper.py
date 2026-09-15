@@ -5,11 +5,52 @@ import httpx
 import pytest
 
 from deep_research.observability.tracker import SpanHandle
+from deep_research.tools.base import ToolResult
 from deep_research.tools.web_scraper import WebScraperTool
 
 
 def _client(handler):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+# Sentinels standing in for attacker-controlled text. None of them may reach a
+# public failure field (message, error type, or details).
+_HOSTILE_EXCEPTION_TEXT = "ATTACKER-EXCEPTION-TEXT-<script>alert(1)</script>"
+_HOSTILE_RESPONSE_TEXT = "ATTACKER-RESPONSE-TEXT-<script>alert(2)</script>"
+_HOSTILE_CONTENT_TYPE = "ATTACKER-CONTENT-TYPE-<script>alert(3)</script>"
+_HOSTILE_URL = "https://example.test/private/ATTACKER-URL-SENTINEL?key=secret"
+_FAILURE_DETAIL_KEYS = {"attempts", "retries", "status_code", "content_type"}
+
+
+def _assert_failure_is_bounded(
+    result: ToolResult, forbidden: tuple[str, ...]
+) -> None:
+    """A failed scrape reports only static text and bounded categorical values."""
+    assert result.success is False
+    assert result.error is not None
+    details = result.error.details
+    assert set(details) <= _FAILURE_DETAIL_KEYS
+    attempts = details.get("attempts")
+    if attempts is not None:
+        assert type(attempts) is int
+        assert 1 <= attempts <= 3
+    retries = details.get("retries")
+    if retries is not None:
+        assert type(retries) is int
+        assert 0 <= retries <= 2
+    status_code = details.get("status_code")
+    if status_code is not None:
+        assert type(status_code) is int
+        assert 100 <= status_code <= 599
+    content_type = details.get("content_type")
+    if content_type is not None:
+        assert type(content_type) is str
+        assert content_type == content_type.lower()
+        assert content_type.isascii()
+        assert 0 < len(content_type) <= 64
+    serialized = result.model_dump_json()
+    for marker in forbidden:
+        assert marker not in serialized
 
 
 class RecordingToolTracker:
@@ -80,7 +121,32 @@ async def test_scraper_stops_before_page_when_robots_disallows_url(tracker) -> N
     assert result.success is False
     assert result.error is not None
     assert result.error.type == "robots_disallowed"
-    assert result.error.details == {"url": "https://example.test/private/article"}
+    assert result.error.message == "robots policy disallows this URL"
+    assert result.error.details == {}
+    assert paths == ["/robots.txt"]
+
+
+@pytest.mark.asyncio
+async def test_scraper_robots_disallows_without_leaking_the_hostile_url(
+    tracker,
+) -> None:
+    paths: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(
+            200, text="User-agent: *\nDisallow: /private", request=request
+        )
+
+    async with _client(handler) as client:
+        tool = WebScraperTool(tracker, client=client)
+        async with tracker.session_span("session-1", "question"):
+            result = await tool.execute(url=_HOSTILE_URL)
+
+    _assert_failure_is_bounded(result, ("ATTACKER-URL-SENTINEL", "example.test"))
+    assert result.error is not None
+    assert result.error.type == "robots_disallowed"
+    assert result.error.details == {}
     assert paths == ["/robots.txt"]
 
 
@@ -160,9 +226,141 @@ async def test_scraper_exhausts_two_retries_for_server_errors(tracker) -> None:
     assert result.success is False
     assert result.error is not None
     assert result.error.type == "HTTPStatusError"
-    assert result.error.details == {"attempts": 3, "status_code": 503}
+    assert result.error.details == {"attempts": 3, "retries": 2, "status_code": 503}
     assert calls == 3
     assert result.metadata["retry_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_scraper_retries_page_timeout_without_changing_the_delay(
+    tracker,
+) -> None:
+    calls = 0
+    delays: list[float] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout(_HOSTILE_EXCEPTION_TEXT, request=request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            text="<title>T</title>",
+            request=request,
+        )
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async with _client(handler) as client:
+        tool = WebScraperTool(tracker, client=client, sleep=sleep)
+        async with tracker.session_span("session-1", "question"):
+            result = await tool.execute(url="https://example.test/article")
+
+    assert result.success is True
+    assert calls == 2
+    assert delays == [0.5]
+    assert result.metadata["retry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_scraper_timeout_failure_classification_is_bounded(tracker) -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        calls += 1
+        raise httpx.ReadTimeout(_HOSTILE_EXCEPTION_TEXT, request=request)
+
+    async with _client(handler) as client:
+        tool = WebScraperTool(tracker, client=client, max_retries=0)
+        async with tracker.session_span("session-1", "question"):
+            result = await tool.execute(url="https://example.test/article")
+
+    _assert_failure_is_bounded(
+        result, (_HOSTILE_EXCEPTION_TEXT, "example.test", "https://")
+    )
+    assert result.error is not None
+    assert result.error.type == "ReadTimeout"
+    assert result.error.message == "the page request timed out"
+    assert result.error.details == {"attempts": 1, "retries": 0}
+    assert calls == 1
+    assert result.metadata["retry_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scraper_exhausted_retry_classification_is_bounded(tracker) -> None:
+    calls = 0
+    delays: list[float] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        calls += 1
+        return httpx.Response(
+            503,
+            headers={"Content-Type": _HOSTILE_CONTENT_TYPE},
+            text=_HOSTILE_RESPONSE_TEXT,
+            request=request,
+        )
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async with _client(handler) as client:
+        tool = WebScraperTool(tracker, client=client, sleep=sleep)
+        async with tracker.session_span("session-1", "question"):
+            result = await tool.execute(url="https://example.test/article")
+
+    _assert_failure_is_bounded(
+        result,
+        (_HOSTILE_RESPONSE_TEXT, _HOSTILE_CONTENT_TYPE, "example.test", "https://"),
+    )
+    assert result.error is not None
+    assert result.error.type == "HTTPStatusError"
+    assert result.error.message == "the page request failed with an HTTP error status"
+    assert result.error.details == {"attempts": 3, "retries": 2, "status_code": 503}
+    assert calls == 3
+    assert delays == [0.5, 1.0]
+    assert result.metadata["retry_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_scraper_http_status_classification_is_bounded(tracker) -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        calls += 1
+        return httpx.Response(
+            404,
+            headers={"X-Hostile": _HOSTILE_RESPONSE_TEXT},
+            text=_HOSTILE_RESPONSE_TEXT,
+            request=request,
+        )
+
+    async with _client(handler) as client:
+        tool = WebScraperTool(tracker, client=client)
+        async with tracker.session_span("session-1", "question"):
+            result = await tool.execute(url="https://example.test/article")
+
+    _assert_failure_is_bounded(
+        result, (_HOSTILE_RESPONSE_TEXT, "example.test", "https://")
+    )
+    assert result.error is not None
+    assert result.error.type == "HTTPStatusError"
+    assert result.error.message == "the page request failed with an HTTP error status"
+    assert result.error.details == {"attempts": 1, "retries": 0, "status_code": 404}
+    assert calls == 1
+    assert result.metadata["retry_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -185,6 +383,45 @@ async def test_scraper_rejects_non_html_content(tracker) -> None:
     assert result.success is False
     assert result.error is not None
     assert result.error.type == "unsupported_content_type"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content_type", "expected"),
+    [
+        (None, "unknown"),
+        ("application/pdf", "application/pdf"),
+        ("APPLICATION/PDF; charset=binary", "application/pdf"),
+        ("text/plain; ATTACKER-CONTENT-TYPE-SENTINEL", "text/plain"),
+        (_HOSTILE_CONTENT_TYPE, "unknown"),
+        ("application/pdf<script>alert(4)</script>", "unknown"),
+        ("a" * 100 + "/b", "unknown"),
+        ("/", "unknown"),
+    ],
+)
+async def test_scraper_unsupported_content_type_details_are_bounded(
+    tracker, content_type, expected
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        headers = {} if content_type is None else {"Content-Type": content_type}
+        return httpx.Response(
+            200, content=b"not html", headers=headers, request=request
+        )
+
+    async with _client(handler) as client:
+        tool = WebScraperTool(tracker, client=client)
+        async with tracker.session_span("session-1", "question"):
+            result = await tool.execute(url="https://example.test/article")
+
+    _assert_failure_is_bounded(
+        result, (_HOSTILE_CONTENT_TYPE, "ATTACKER-CONTENT-TYPE-SENTINEL")
+    )
+    assert result.error is not None
+    assert result.error.type == "unsupported_content_type"
+    assert result.error.message == "response content type is not HTML"
+    assert result.error.details == {"content_type": expected}
 
 
 @pytest.mark.asyncio
