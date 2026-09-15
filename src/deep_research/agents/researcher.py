@@ -371,20 +371,55 @@ def render_session_guidance(state: ResearchState) -> str:
     return "\n\n".join(sections)
 
 
+def _critic_queries_for(state: ResearchState, sub_topic: SubTopic) -> list[str]:
+    """The queries the Critic routed to this exact plan ID, in order.
+
+    Only the gaps whose ``coverage_id`` equals the sub-topic's own are read,
+    so a refinement pass never spends another topic's queries on this one.
+    """
+    queries: list[str] = []
+    for gap in _critic_gaps_by_target(state).get(sub_topic.coverage_id, []):
+        for query in gap.recommended_queries:
+            if query not in queries:
+                queries.append(query)
+    return queries
+
+
 def render_sub_topic_guidance(
     sub_topic: SubTopic,
     existing_sources: Sequence[str],
+    *,
+    prioritized_queries: Sequence[str] = (),
 ) -> str:
-    """Render one sub-topic's brief, including sources already collected."""
+    """Render one sub-topic's brief, including sources already collected.
+
+    ``prioritized_queries`` are the ones the Critic routed to this exact plan
+    ID. They are printed ahead of the planner's own suggestions, because
+    closing a named gap is what this pass exists to do; the success criteria
+    below still state when the sub-topic is done, and a query that appears in
+    both lists is printed once.
+    """
+    first: list[str] = []
+    for query in prioritized_queries:
+        normalized = " ".join(query.split())
+        if normalized and normalized not in first:
+            first.append(normalized)
+    planned = [query for query in sub_topic.search_queries if query not in first]
     lines = [
         f"Sub-topic: {sub_topic.title}",
         f"Why it matters: {sub_topic.rationale}",
         f"Priority: {sub_topic.priority} (1 is most important)",
-        "Suggested search queries:",
-        *(f"- {query}" for query in sub_topic.search_queries),
-        "This sub-topic is done when:",
-        *(f"- {criterion}" for criterion in sub_topic.success_criteria),
     ]
+    if first:
+        lines.append("The critic routed a gap to this sub-topic.")
+        lines.append("Run these queries first:")
+        lines.extend(f"- {query}" for query in first)
+        lines.append("Then run the planned queries for the success criteria:")
+    else:
+        lines.append("Suggested search queries:")
+    lines.extend(f"- {query}" for query in planned)
+    lines.append("This sub-topic is done when:")
+    lines.extend(f"- {criterion}" for criterion in sub_topic.success_criteria)
     if existing_sources:
         lines.append(
             "Sources already collected for this sub-topic — do not repeat "
@@ -934,13 +969,19 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         base: AgentTask,
         sub_topic: SubTopic,
         existing_sources: Sequence[str],
+        *,
+        prioritized_queries: Sequence[str] = (),
     ) -> SubTopicTask:
         """Narrow the run-level task down to one sub-topic's loop."""
         sections = [
             section
             for section in (
                 base.guidance.strip(),
-                render_sub_topic_guidance(sub_topic, existing_sources),
+                render_sub_topic_guidance(
+                    sub_topic,
+                    existing_sources,
+                    prioritized_queries=prioritized_queries,
+                ),
             )
             if section
         ]
@@ -1090,7 +1131,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         stopped_at: int | None = None
         for index, sub_topic in enumerate(selected, start=1):
             existing = existing_sources_for(state, sub_topic)
-            task = self.sub_topic_task(base_task, sub_topic, existing)
+            task = self.sub_topic_task(
+                base_task,
+                sub_topic,
+                existing,
+                prioritized_queries=_critic_queries_for(state, sub_topic),
+            )
             events.append(
                 sub_topic_started_event(
                     sub_topic, index=index, existing_sources=len(existing)

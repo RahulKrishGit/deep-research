@@ -516,8 +516,35 @@ def test_sub_topic_guidance_lists_queries_criteria_and_known_sources() -> None:
 
 def test_sub_topic_guidance_omits_known_sources_when_there_are_none() -> None:
     guidance = render_sub_topic_guidance(_sub_topic("Alpha"), [])
-
     assert "do not repeat them:" not in guidance
+
+
+def test_sub_topic_guidance_runs_the_critic_queries_before_the_planned_ones() -> None:
+    guidance = render_sub_topic_guidance(
+        _sub_topic("Alpha"),
+        [],
+        prioritized_queries=["alpha cost 2025", "  alpha cost 2026  "],
+    )
+
+    assert "Run these queries first:" in guidance
+    # The Critic's own queries come before the planner's, and a duplicate of
+    # one of them is not repeated below it.
+    assert guidance.index("- alpha cost 2025") < guidance.index("- Alpha 2025")
+    assert guidance.count("- alpha cost 2025") == 1
+    assert "- alpha cost 2026" in guidance
+    # The success criteria still say when the sub-topic is done.
+    assert "This sub-topic is done when:" in guidance
+    assert "- A named source about Alpha." in guidance
+
+
+def test_sub_topic_guidance_drops_a_critic_query_the_planner_already_lists() -> None:
+    guidance = render_sub_topic_guidance(
+        _sub_topic("Alpha"),
+        [],
+        prioritized_queries=["Alpha 2025"],
+    )
+
+    assert guidance.count("- Alpha 2025") == 1
 
 
 def test_evidence_renders_only_successful_tool_payloads() -> None:
@@ -1704,6 +1731,44 @@ async def test_the_researcher_prioritizes_the_gap_the_critic_named(
     loop_body = completer.react_calls[0].messages[1].content
     assert "- beta throughput 2025" in loop_body
     assert "Sub-topic: Beta" in loop_body
+
+
+@pytest.mark.asyncio
+async def test_the_researcher_runs_a_gaps_own_queries_for_its_target(
+    tracker: Tracker,
+) -> None:
+    """A gap's queries reach the loop even when the Critic's list is empty."""
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing to retrieve.", "No new sources.")],
+        outputs=[],
+    )
+    agent = _researcher(tracker, completer, max_sub_topics=1)
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
+        critique=_critique(
+            gaps=[
+                _gap(
+                    "Beta is completely uncovered.",
+                    coverage_id="topic-02",
+                    recommended_queries=["beta durability trial 2026"],
+                )
+            ]
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = outcome.state_update["events"][0]
+    assert started.metadata["sub_topic"] == "Beta"
+    loop_body = completer.react_calls[0].messages[1].content
+    assert "Run these queries first:" in loop_body
+    assert loop_body.index("- beta durability trial 2026") < loop_body.index(
+        "- Beta 2025"
+    )
 
 
 @pytest.mark.asyncio

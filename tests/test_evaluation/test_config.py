@@ -217,10 +217,14 @@ CRITIC_PROMPT_FINGERPRINT = "b46dfef67238"
 # ``b3185bb51b4e`` -> ``6e127ffba9d4``, Fact Checker
 # ``997b6d351251`` -> ``926a1d968c68``, Synthesizer
 # ``5bc5345f1791`` -> ``de9b44079616``, and Critic
-# ``58175fc4313b`` -> ``b46dfef67238``. The Judge pin did not move.
+# ``58175fc4313b`` -> ``b46dfef67238``. The Judge pin did not move. Task 7's
+# delta-oriented refinement moved the researcher's own value once more,
+# ``533350d78959`` -> ``96907685a382``, because a gap's own recommended
+# queries are now rendered ahead of the planner's for the sub-topic that gap
+# targets; no prompt string moved for that second step.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "028150f7e4a5",
-    "researcher": "533350d78959",
+    "researcher": "96907685a382",
     "source_evaluator": "6e127ffba9d4",
     "fact_checker": "926a1d968c68",
     "synthesizer": "de9b44079616",
