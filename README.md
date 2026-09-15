@@ -750,6 +750,7 @@ python -m deep_research --resume <session_id>
 | `--output-format` | Report format. Only `markdown` is supported in this build. |
 | `--config PATH` | YAML config file. Defaults to `config.yaml`. |
 | `--verbose` | Print every progress event, tool call counts, and token totals. |
+| `--require-quality` | Exit 4 unless the terminal quality gates accepted the report; without it, a finished partial report exits 0. |
 
 Every interface calls the same `deep_research.main.run_research()`, which loads
 configuration in **strict** mode: the required secrets for the selected chat
@@ -779,6 +780,11 @@ LangGraph's `InMemorySaver`, which does not survive the process that created
 it, so resuming from a new command exits 1 with a clear message rather than
 pretending a checkpoint exists. A durable saver drops into
 `compile_research_graph` without touching a node.
+
+`--require-quality` is the automation-friendly mode: it preserves the report
+and evidence paths and the normal summary, but returns exit code 4 when the
+terminal status is not `accepted`. The default exit code remains 0 for a
+finished partial report so an operator can inspect its limitations.
 
 ## Individual Agent Evaluation
 
@@ -851,6 +857,45 @@ addition to the LangSmith experiment:
 - `output/evaluations/suite/<suite-id>/summary.json` for `suite` runs
 
 `--output-directory` overrides the `output/evaluations/` root.
+
+## Whole-Report Quality Evaluation
+
+The graph-level campaign is a separate CLI and package:
+`python -m deep_research.e2e_evaluation`. Individual-agent evaluation checks
+one agent's contract in isolation; whole-report evaluation checks the six-agent
+handoff, canonical source and claim snapshots, provenance, citation linkage,
+refinement, terminal publication, memory timing, and agreement between the
+typed state and the CLI summary. A deterministic integrity failure is a hard
+failure even when a judge score is high.
+
+Task 9's controlled tier is network-zero. Its three cases use scripted search,
+read, memory, and publication doubles and run exactly three repetitions per
+case. The live tier is represented separately and is authorization-ready, but
+this command does not run it; live provider, search, and LangSmith calls belong
+to a separately authorized canary.
+
+```powershell
+# List the three controlled whole-report cases.
+python -m deep_research.e2e_evaluation list
+
+# Run one controlled case three times.
+python -m deep_research.e2e_evaluation case broad-constraints --tier controlled --repetitions 3
+
+# Run the complete controlled campaign (network-zero).
+python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
+```
+
+Each run writes a local JSON campaign artifact under
+`output/evaluations/e2e/` containing the graph revision, all six target prompt
+fingerprints, report/quality/case schema versions, model settings, request
+counts, typed deterministic metrics, bounded judge input, and the result. The
+research output itself remains two distinct Markdown artifacts: the concise
+reader report (`report.md`) and the full evidence ledger
+(`evidence-ledger.md`). The reader report contains only unique cited sources;
+the ledger retains source assessments, checked claims, verification passages,
+unchecked findings, and run errors for auditability. Controlled stdout prints
+case/suite quality summaries and paths, never report bodies or raw tool/model
+payloads.
 
 ### Manual Live Verification
 

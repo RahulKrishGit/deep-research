@@ -13,18 +13,25 @@ def test_the_evaluation_package_never_imports_the_graph() -> None:
         path.name
         for path in EVALUATION.rglob("*.py")
         for line in path.read_text(encoding="utf-8").splitlines()
-        if line.startswith(("import ", "from "))
-        and "deep_research.graph" in line
+        if line.startswith(("import ", "from ")) and "deep_research.graph" in line
     ]
 
     assert offenders == []
+
+    # Keep this assertion broader than import statements: a future helper
+    # must not smuggle the graph in through importlib or an aliased string.
+    assert all(
+        "deep_research.graph" not in path.read_text(encoding="utf-8")
+        for path in EVALUATION.rglob("*.py")
+    )
 
 
 def test_the_evaluation_package_defines_no_graph_or_suite_dataset() -> None:
     from deep_research.evaluation.cases import all_cases
 
     assert all(
-        case.agent_name in {
+        case.agent_name
+        in {
             "planner",
             "researcher",
             "source_evaluator",
@@ -35,6 +42,18 @@ def test_the_evaluation_package_defines_no_graph_or_suite_dataset() -> None:
         for case in all_cases()
     )
     assert len(all_cases()) == 24
+
+
+def test_whole_report_evaluation_has_a_separate_package() -> None:
+    from deep_research.e2e_evaluation.cases import controlled_cases
+    from deep_research.evaluation.cases import all_cases
+
+    cases = controlled_cases()
+    assert len(cases) == 3
+    assert all(case.tier == "controlled" for case in cases)
+    assert {case.case_id for case in cases}.isdisjoint(
+        {case.case_id for case in all_cases()}
+    )
 
 
 def test_the_evaluation_cli_exposes_exactly_three_commands() -> None:
