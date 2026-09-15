@@ -630,7 +630,8 @@ AGENT_GATE_IDS: dict[AgentName, tuple[str, ...]] = {
         "valid_report",
         "citations_known_only",
         "limitations_represented",
-        "persistence_truthful",
+        "no_persistence_calls",
+        "no_false_publication_claim",
     ),
     "critic": (
         "bounded_component_scores",
@@ -672,8 +673,22 @@ def _artifact(output: TargetOutput, name: str) -> object:
 
 
 def _report_body(output: TargetOutput) -> str:
-    report = _artifact(output, "report")
+    # ``SynthesizedReport`` exposes the composed reader artifact as
+    # ``markdown``.  ``report`` is the state-update spelling retained for the
+    # replace-merged ResearchState contract, and is only a compatibility
+    # fallback for older evaluation artifacts.
+    report = _artifact(output, "markdown")
+    if not isinstance(report, str):
+        report = _artifact(output, "report")
     return report if isinstance(report, str) else ""
+
+
+def _evidence_body(output: TargetOutput) -> str:
+    """Return the composed evidence artifact using its result field name."""
+    evidence = _artifact(output, "evidence_markdown")
+    if not isinstance(evidence, str):
+        evidence = _artifact(output, "report_evidence")
+    return evidence if isinstance(evidence, str) else ""
 
 
 def _state_update(output: TargetOutput) -> dict[str, object]:
@@ -795,11 +810,22 @@ def _uncovered_sub_topics(
     ]
 
 
-def _forbidden_persistence_claims(reference: Mapping) -> list[str]:
-    claims = reference.get("forbidden_persistence_claims")
+def _forbidden_publication_claims(reference: Mapping) -> list[str]:
+    """Read the Task 6 no-publication claim phrases from a case reference."""
+    claims = reference.get("forbidden_publication_claims")
+    # Keep old artifacts readable while the active catalog migrates. New
+    # cases must use the publication-oriented key so their contract cannot be
+    # mistaken for a write-recovery expectation.
+    if claims is None:
+        claims = reference.get("forbidden_persistence_claims")
     if isinstance(claims, list):
         return [str(item) for item in claims]
     return []
+
+
+def _forbidden_persistence_claims(reference: Mapping) -> list[str]:
+    """Backward-compatible alias for older non-Task-6 metric artifacts."""
+    return _forbidden_publication_claims(reference)
 
 
 def _registrable_family_count(
@@ -1393,9 +1419,14 @@ def _gate_valid_report(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
     report = _report_body(output)
-    passed = bool(report.strip())
+    evidence = _evidence_body(output)
+    passed = bool(report.strip()) and bool(evidence.strip())
     return _agent_result(
-        "valid_report", passed, "" if passed else "report is missing or blank"
+        "valid_report",
+        passed,
+        ""
+        if passed
+        else "reader markdown or evidence markdown is missing or blank",
     )
 
 
@@ -1440,27 +1471,82 @@ def _gate_limitations_represented(
     )
 
 
-def _persistence_truthful_passes(
+_PERSISTENCE_TOOL_NAMES = frozenset({"write_document", "save_to_memory"})
+
+
+def _no_persistence_calls_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    writes = _field(output.dependencies, "document_writes")
-    if isinstance(writes, int) and writes > 0:
+    for field_name in ("document_writes", "memory_writes"):
+        writes = _field(output.dependencies, field_name)
+        if writes is None:
+            continue
+        if (
+            not isinstance(writes, int)
+            or isinstance(writes, bool)
+            or writes != 0
+        ):
+            return False
+    summaries = _field(output.dependencies, "tool_calls")
+    if not isinstance(summaries, (list, tuple)):
         return True
-    report = _report_body(output).casefold()
-    forbidden = _forbidden_persistence_claims(case.expectations.reference)
-    if any(phrase.casefold() in report for phrase in forbidden):
+    for summary in summaries:
+        if _field(summary, "tool_name") not in _PERSISTENCE_TOOL_NAMES:
+            continue
+        calls = _field(summary, "calls")
+        if (
+            not isinstance(calls, int)
+            or isinstance(calls, bool)
+            or calls != 0
+        ):
+            return False
+    return True
+
+
+def _no_false_publication_claim_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    bodies = (_report_body(output), _evidence_body(output))
+    forbidden = _forbidden_publication_claims(case.expectations.reference)
+    if any(
+        phrase.casefold() in body.casefold()
+        for body in bodies
+        for phrase in forbidden
+    ):
         return False
-    return "output_path" not in _state_update(output)
+    result = output.result if isinstance(output.result, Mapping) else {}
+    state_update = _state_update(output)
+    # ``path`` is the current SynthesizedReport publication field.  Task 6
+    # leaves it null; ``evidence_path`` is only a composed future filename and
+    # is intentionally allowed.
+    if result.get("path") is not None or state_update.get("path") is not None:
+        return False
+    if "output_path" in result or "output_path" in state_update:
+        return False
+    return True
 
 
-def _gate_persistence_truthful(
+def _gate_no_persistence_calls(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
-    passed = _persistence_truthful_passes(output, case)
+    passed = _no_persistence_calls_passes(output, case)
     return _agent_result(
-        "persistence_truthful",
+        "no_persistence_calls",
         passed,
-        "" if passed else "a persistence claim has no matching write_document call",
+        ""
+        if passed
+        else "Task 6 synthesis must not call document or memory persistence tools",
+    )
+
+
+def _gate_no_false_publication_claim(
+    output: TargetOutput, case: EvaluationCase
+) -> GateResult:
+    passed = _no_false_publication_claim_passes(output, case)
+    return _agent_result(
+        "no_false_publication_claim",
+        passed,
+        "" if passed else "the composition claims an artifact was published",
     )
 
 
@@ -1625,7 +1711,8 @@ _AGENT_GATE_FUNCTIONS: dict[
         "valid_report": _gate_valid_report,
         "citations_known_only": _gate_citations_known_only,
         "limitations_represented": _gate_limitations_represented,
-        "persistence_truthful": _gate_persistence_truthful,
+        "no_persistence_calls": _gate_no_persistence_calls,
+        "no_false_publication_claim": _gate_no_false_publication_claim,
     },
     "critic": {
         "bounded_component_scores": _gate_bounded_component_scores,
@@ -2146,6 +2233,20 @@ def _report_present_in_state_passes(
     return isinstance(report, str) and bool(report.strip())
 
 
+def _reader_markdown_present_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Task 6's reader artifact is the result's ``markdown`` field."""
+    return bool(_report_body(output).strip())
+
+
+def _evidence_markdown_present_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Task 6's evidence artifact is the result's ``evidence_markdown``."""
+    return bool(_evidence_body(output).strip())
+
+
 def _coverage_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     findings = _findings_section(_report_body(output))
     if findings is None or not findings.strip():
@@ -2256,16 +2357,6 @@ def _no_overstatement_passes(
         re.IGNORECASE,
     )
     return pattern.search(_report_body(output)) is None
-
-
-def _no_false_persistence_claim_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    report = _report_body(output).casefold()
-    forbidden = _forbidden_persistence_claims(case.expectations.reference)
-    if any(phrase.casefold() in report for phrase in forbidden):
-        return False
-    return "output_path" not in _state_update(output)
 
 
 def _rationale_present_passes(output: TargetOutput, case: EvaluationCase) -> bool:
@@ -2468,15 +2559,19 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "conservative_on_failure": _conservative_on_failure_passes,
     "partial_verification_present": _partial_verification_present_passes,
     # synthesizer
+    "reader_markdown_present": _reader_markdown_present_passes,
+    "evidence_markdown_present": _evidence_markdown_present_passes,
+    "no_persistence_calls": _no_persistence_calls_passes,
+    "no_false_publication_claim": _no_false_publication_claim_passes,
+    # Legacy aliases remain readable for pre-Task-6 artifacts; active Task 6
+    # cases use the explicit composition names above.
     "report_present": _report_present_in_state_passes,
     "citations_known": _citations_known_only_passes,
     "coverage": _coverage_passes,
     "limitations_present": _limitations_passes,
-    "persistence_truthful": _persistence_truthful_passes,
     "conflict_represented": _conflict_represented_passes,
     "no_overstatement": _no_overstatement_passes,
     "report_present_in_state": _report_present_in_state_passes,
-    "no_false_persistence_claim": _no_false_persistence_claim_passes,
     # critic
     "score_bounded": _bounded_score_passes,
     "route_consistent": _route_consistent_passes,

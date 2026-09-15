@@ -955,13 +955,20 @@ def _golden_result(case: EvaluationCase, urls: list[str]) -> dict:
                 f"A plausible, fully cited summary ({urls[0]}).\n\n"
                 "## Limitations\n\nThe evidence base is limited."
             )
+            evidence = f"## Evidence ledger\n\n[1] {urls[0]}"
         else:
             report = (
                 "## Summary\n\nA plausible summary with no external "
                 "sources to cite.\n\n## Limitations\n\nThe evidence base "
                 "is limited."
             )
-        return {"report": report}
+            evidence = "## Evidence ledger\n\nNo external sources were supplied."
+        return {
+            "markdown": report,
+            "path": None,
+            "evidence_markdown": evidence,
+            "evidence_path": "evidence.md",
+        }
     if case.agent_name == "critic":
         return {
             "critique": {

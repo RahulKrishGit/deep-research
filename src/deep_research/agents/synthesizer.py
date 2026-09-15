@@ -135,9 +135,11 @@ class ConstraintDraft(ContractModel):
     """One ranked constraint row, before validation.
 
     A constraint is a claim-linked point plus the two decision columns the
-    reader report prints. ``deployment_mechanism`` and ``geography`` are part
-    of the same claim-backed row: the prompt requires the evidence to state
-    them, and the row says ``not stated`` when it does not.
+    reader report prints. ``deployment_mechanism`` and ``geography`` are
+    provider-attested prose in the Task 6 contract: no typed evidence field
+    locally proves their semantic contents. The local validator therefore
+    checks only the row's claim and source links, while the prompt requires
+    ``not stated`` when the supplied evidence does not say.
     """
 
     constraint: str

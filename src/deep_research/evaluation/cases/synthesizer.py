@@ -1,4 +1,4 @@
-"""Synthesizer evaluation cases: citation, conflict, and write recovery."""
+"""Synthesizer evaluation cases: claim-linked composition and uncertainty."""
 
 from __future__ import annotations
 
@@ -73,17 +73,10 @@ _CONFLICT_RUBRIC = rubric(
     ),
 )
 
-_FAILURE_RUBRIC = rubric(
-    "synthesizer-write-failure",
+_COMPOSITION_RUBRIC = rubric(
+    "synthesizer-composition-only",
     *_REPORT_DIMENSIONS,
-    (
-        "persistence_honesty",
-        "Persistence claims match what was actually written and saved.",
-        "The report stays silent about saving when the write failed, and "
-        "the failure is recorded.",
-        "The report claims the report was saved or stored when the write "
-        "failed.",
-    ),
+    *_CITATION_DIMENSIONS,
 )
 
 _LIVE_RUBRIC = rubric(
@@ -146,15 +139,15 @@ _COMPLETE = build_case(
     case_id="complete-cited-report",
     agent_name="synthesizer",
     tier="controlled",
-    title="Write a cited report over six scored sources",
+    title="Compose a cited report over six scored sources",
     purpose=(
         "Synthesize six findings across three subtopics — London, New "
         "York, and broader international evidence — into a cited report. "
         "Three claims are verified with high confidence and one is "
         "unverified, and one of the six sources is low confidence, so the "
-        "report has a genuine limitations section to write. The scripted "
-        "scenario lets both persistence tools succeed: the report is "
-        "written to disk and the verified claims are saved to memory."
+        "report has a genuine limitations section to compose. The Task 6 "
+        "scenario has no persistence dependencies: it returns both reader "
+        "and evidence Markdown values without writing files or memory."
     ),
     state=evaluation_state(
         case_id="complete-cited-report",
@@ -385,30 +378,41 @@ _COMPLETE = build_case(
     ),
     dependency_scenario="synthesizer-complete",
     expectations=CaseExpectations(
-        required_output_fields=["report"],
+        required_output_fields=["markdown", "evidence_markdown"],
         reference={
             "known_citation_urls": list(_MIXED_URLS),
             "required_sections": ["summary", "findings", "limitations"],
             "minimum_cited_sources": 4,
+            "forbidden_publication_claims": [
+                "saved to",
+                "written to",
+                "stored at",
+                "published to",
+            ],
         },
         known_source_urls=list(_MIXED_URLS),
         max_iterations=1,
         max_tool_calls=5,
         deterministic_metrics=metrics(
             (
-                "report_present",
-                0.20,
-                "The state update carries a non-empty `report`.",
+                "reader_markdown_present",
+                0.15,
+                "The result carries non-empty reader `markdown`.",
+            ),
+            (
+                "evidence_markdown_present",
+                0.15,
+                "The result carries non-empty `evidence_markdown`.",
             ),
             (
                 "citations_known",
-                0.30,
+                0.20,
                 "Every URL appearing in the report body is in "
                 "`known_source_urls`.",
             ),
             (
                 "coverage",
-                0.25,
+                0.20,
                 "Every subtopic title appears in the report body.",
             ),
             (
@@ -417,10 +421,15 @@ _COMPLETE = build_case(
                 "A limitations section exists.",
             ),
             (
-                "persistence_truthful",
+                "no_persistence_calls",
                 0.10,
-                "No persistence claim without a matching successful "
-                "`write_document` call.",
+                "Neither persistence tool is called during composition.",
+            ),
+            (
+                "no_false_publication_claim",
+                0.05,
+                "The composition does not claim either artifact was "
+                "published.",
             ),
         ),
     ),
@@ -439,9 +448,9 @@ _CONFLICT = build_case(
         "advises stating disagreements explicitly. Two claims were "
         "contradicted by independent evidence and one has insufficient "
         "evidence, so an honest report says the evidence is mixed and "
-        "never claims the question is settled. Both persistence tools "
-        "succeed; the graded behavior is the report's wording, not its "
-        "persistence."
+        "never claims the question is settled. The graded behavior is the "
+        "two composed Markdown artifacts and the report's wording, not "
+        "publication."
     ),
     state=evaluation_state(
         case_id="conflict-and-limitations",
@@ -553,7 +562,7 @@ _CONFLICT = build_case(
     ),
     dependency_scenario="synthesizer-conflicted",
     expectations=CaseExpectations(
-        required_output_fields=["report"],
+        required_output_fields=["markdown", "evidence_markdown"],
         reference={
             "conflicting_claim_texts": [
                 "Return-to-office mandates raised office vacancy rates in "
@@ -568,6 +577,12 @@ _CONFLICT = build_case(
                 "limited",
             ],
             "forbidden_overstatement": ["proves", "conclusively", "definitively"],
+            "forbidden_publication_claims": [
+                "saved to",
+                "written to",
+                "stored at",
+                "published to",
+            ],
         },
         known_source_urls=list(_CONFLICT_URLS),
         max_iterations=1,
@@ -575,25 +590,46 @@ _CONFLICT = build_case(
         deterministic_metrics=metrics(
             (
                 "conflict_represented",
-                0.35,
+                0.20,
                 "The report body mentions at least one contradicted claim "
                 "or a caveat signal.",
             ),
             (
                 "no_overstatement",
-                0.25,
+                0.15,
                 "No forbidden overstatement word appears.",
             ),
             (
                 "limitations_present",
-                0.20,
+                0.10,
                 "A limitations section exists.",
             ),
             (
                 "citations_known",
-                0.20,
+                0.10,
                 "Every URL appearing in the report body is in "
                 "`known_source_urls`.",
+            ),
+            (
+                "reader_markdown_present",
+                0.15,
+                "The result carries non-empty reader `markdown`.",
+            ),
+            (
+                "evidence_markdown_present",
+                0.15,
+                "The result carries non-empty `evidence_markdown`.",
+            ),
+            (
+                "no_persistence_calls",
+                0.10,
+                "Neither persistence tool is called during composition.",
+            ),
+            (
+                "no_false_publication_claim",
+                0.05,
+                "The composition does not claim either artifact was "
+                "published.",
             ),
         ),
     ),
@@ -601,22 +637,20 @@ _CONFLICT = build_case(
     metadata={"scenario": "challenging"},
 )
 
-_FAILURE = build_case(
-    case_id="write-or-memory-failure",
+_COMPOSITION = build_case(
+    case_id="composition-no-publication",
     agent_name="synthesizer",
     tier="controlled",
-    title="Keep the report honest when both persistence tools fail",
+    title="Compose both report artifacts without publication",
     purpose=(
         "Compose a full report over four findings, four sources, and "
-        "three verified claims while both persistence tools fail when "
-        "called: the document write hits a read-only filesystem and the "
-        "memory save is unavailable. The report text must survive in the "
-        "state update, both failures must be recorded as recoverable "
-        "errors, and the report must not claim anything was saved, "
-        "written, or stored."
+        "three verified claims. Task 6 owns composition only: both reader "
+        "and evidence Markdown values must be present in the result, no "
+        "document or memory persistence call is allowed, and the output "
+        "must not claim either artifact was published."
     ),
     state=evaluation_state(
-        case_id="write-or-memory-failure",
+        case_id="composition-no-publication",
         question=(
             "How much does building retrofit depth affect realized energy "
             "savings?"
@@ -748,15 +782,15 @@ _FAILURE = build_case(
             ),
         ),
     ),
-    dependency_scenario="synthesizer-write-failure",
+    dependency_scenario="synthesizer-composition",
     expectations=CaseExpectations(
-        required_output_fields=["report"],
+        required_output_fields=["markdown", "evidence_markdown"],
         reference={
-            "expected_error_sources": ["write_document", "save_to_memory"],
-            "forbidden_persistence_claims": [
+            "forbidden_publication_claims": [
                 "saved to",
                 "written to",
                 "stored at",
+                "published to",
             ],
         },
         known_source_urls=list(_FAILURE_URLS),
@@ -764,51 +798,52 @@ _FAILURE = build_case(
         max_tool_calls=5,
         deterministic_metrics=metrics(
             (
-                "report_present_in_state",
-                0.35,
-                "The report text survives in the state update even though "
-                "the file write failed.",
+                "reader_markdown_present",
+                0.20,
+                "The result carries non-empty reader `markdown`.",
             ),
             (
-                "failure_recorded",
-                0.30,
-                "The run records the write and memory failures as "
-                "recoverable errors.",
+                "evidence_markdown_present",
+                0.20,
+                "The result carries non-empty `evidence_markdown`.",
             ),
             (
-                "no_false_persistence_claim",
+                "no_persistence_calls",
                 0.25,
-                "No forbidden persistence phrase in the report body, and "
-                "no `output_path` in the state update.",
+                "Neither persistence tool is called during composition.",
+            ),
+            (
+                "no_false_publication_claim",
+                0.20,
+                "The composition does not claim either artifact was "
+                "published.",
             ),
             (
                 "citations_known",
-                0.10,
+                0.15,
                 "Every URL appearing in the report body is in "
                 "`known_source_urls`.",
             ),
         ),
-        must_record_recoverable_error=True,
     ),
-    judge_rubric=_FAILURE_RUBRIC,
-    metadata={"scenario": "failure-recovery"},
+    judge_rubric=_COMPOSITION_RUBRIC,
+    metadata={"scenario": "composition-only"},
 )
 
 _LIVE = build_case(
     case_id="synthesizer-live-report",
     agent_name="synthesizer",
     tier="live",
-    title="Write a cited report on heat-pump retrofit costs, live",
+    title="Compose a cited report on heat-pump retrofit costs, live",
     purpose=(
         "Synthesize three current findings on heat-pump retrofit costs in "
-        "temperate climates into the same report shape as the complete "
-        "controlled case, and reuse its five metrics unchanged. The "
-        "metrics stay meaningful because a live run is still a report "
-        "over the given state: the citations come from the case's "
-        "declared sources, so citations_known is gradable, and the "
-        "subtopics make coverage gradable. Unlike every other agent's "
-        "live case, this one performs real document writes and real "
-        "memory saves."
+        "temperate climates into the same composition shape as the "
+        "controlled cases. The live case remains composition-only: both "
+        "Markdown values are returned in the result, persistence calls are "
+        "not part of the task, and the output must not claim publication. "
+        "The citations come from the case's declared sources, so "
+        "citations_known is gradable, and the subtopics make coverage "
+        "gradable."
     ),
     state=evaluation_state(
         case_id="synthesizer-live-report",
@@ -946,38 +981,41 @@ _LIVE = build_case(
     ),
     dependency_scenario="live",
     expectations=CaseExpectations(
-        required_output_fields=["report"],
-        # Live-run note for Task 18's evaluator: the Synthesizer declares
-        # only write_document and save_to_memory, so "documents" and
-        # "memory" are both required live dependencies — this is the one
-        # agent whose live case performs real document writes. No search
-        # or HTTP tool exists, so neither "tavily" nor "http" belongs in
-        # the list. The report cites the case's own declared sources, so
-        # citations_known stays gradable and the case's URLs are pinned
-        # up front.
+        required_output_fields=["markdown", "evidence_markdown"],
         reference={
             "known_citation_urls": list(_LIVE_URLS),
             "required_sections": ["summary", "findings", "limitations"],
             "minimum_cited_sources": 3,
+            "forbidden_publication_claims": [
+                "saved to",
+                "written to",
+                "stored at",
+                "published to",
+            ],
         },
         known_source_urls=list(_LIVE_URLS),
         max_iterations=1,
         max_tool_calls=5,
         deterministic_metrics=metrics(
             (
-                "report_present",
-                0.20,
-                "The state update carries a non-empty `report`.",
+                "reader_markdown_present",
+                0.15,
+                "The result carries non-empty reader `markdown`.",
+            ),
+            (
+                "evidence_markdown_present",
+                0.15,
+                "The result carries non-empty `evidence_markdown`.",
             ),
             (
                 "citations_known",
-                0.30,
+                0.20,
                 "Every URL appearing in the report body is in "
                 "`known_source_urls`.",
             ),
             (
                 "coverage",
-                0.25,
+                0.20,
                 "Every subtopic title appears in the report body.",
             ),
             (
@@ -986,17 +1024,25 @@ _LIVE = build_case(
                 "A limitations section exists.",
             ),
             (
-                "persistence_truthful",
+                "no_persistence_calls",
                 0.10,
-                "No persistence claim without a matching successful "
-                "`write_document` call.",
+                "Neither persistence tool is called during composition.",
+            ),
+            (
+                "no_false_publication_claim",
+                0.05,
+                "The composition does not claim either artifact was "
+                "published.",
             ),
         ),
-        required_live_dependencies=["documents", "memory"],
     ),
     judge_rubric=_LIVE_RUBRIC,
     metadata={"scenario": "live"},
 )
 
-CONTROLLED_CASES: tuple[EvaluationCase, ...] = (_COMPLETE, _CONFLICT, _FAILURE)
+CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
+    _COMPLETE,
+    _CONFLICT,
+    _COMPOSITION,
+)
 LIVE_CASES: tuple[EvaluationCase, ...] = (_LIVE,)

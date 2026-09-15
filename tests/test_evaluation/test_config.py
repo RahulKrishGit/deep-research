@@ -104,7 +104,7 @@ from deep_research.utils.config import (
 # of hashing a module's full source. (The synthesizer's value covers the
 # final source of that module in this commit, including the blank-cell
 # normalization its constraint rows use.) The Judge pin did **not** move.
-CRITIC_PROMPT_FINGERPRINT = "5bb5ef748a84"
+CRITIC_PROMPT_FINGERPRINT = "58175fc4313b"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -194,13 +194,22 @@ CRITIC_PROMPT_FINGERPRINT = "5bb5ef748a84"
 # causes (shared prompt text *and* its own module). ``CRITIC_PROMPT_FINGERPRINT``
 # moved with the critic entry, and ``PINNED_JUDGE_PROMPT_FINGERPRINT`` did
 # not move: the Judge prompt module was untouched.
+# Task 6's review fix then made the shared report instruction disclose the
+# provider-only mechanism/geography trust boundary and moved the Synthesizer's
+# evaluation contract to composition-only/no-publication semantics. The shared
+# prompt edit moves all six values, while the Synthesizer source edit also
+# changes its full-source value; re-pin deliberately so this remains a drift
+# alarm. The current values are planner ``1e244d04fe8d``, researcher
+# ``e3ffdca8f71e``, source evaluator ``b3185bb51b4e``, Fact Checker
+# ``997b6d351251``, Synthesizer ``bba017909b70``, and Critic
+# ``58175fc4313b``. The Judge pin did not move.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "aa648f82af71",
-    "researcher": "6d5fd0f85dc3",
-    "source_evaluator": "ddd8f9e5785a",
-    "fact_checker": "3ccaa7aa4fc1",
-    "synthesizer": "6b9c616afad9",
-    "critic": "5bb5ef748a84",
+    "planner": "1e244d04fe8d",
+    "researcher": "e3ffdca8f71e",
+    "source_evaluator": "b3185bb51b4e",
+    "fact_checker": "997b6d351251",
+    "synthesizer": "bba017909b70",
+    "critic": "58175fc4313b",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

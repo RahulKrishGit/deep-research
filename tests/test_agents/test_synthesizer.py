@@ -736,6 +736,40 @@ def test_a_blank_constraint_cell_renders_as_not_stated() -> None:
     assert composition.constraints[0].geography == ""
 
 
+def test_constraint_semantics_are_provider_attested_without_text_heuristics() -> None:
+    """The typed contract has no field that can prove these cell values.
+
+    Claim and source links are still validated, but mechanism/geography remain
+    provider-attested prose until a future contract carries structured evidence
+    for them. Arbitrary-looking values therefore must not be accepted as local
+    provenance merely because they are nonblank, nor rejected by text guesses.
+    """
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Supported constraint.",
+                deployment_mechanism="invented mechanism with no typed support",
+                geography="Atlantis",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert rejected == []
+    assert composition.constraints[0].deployment_mechanism == (
+        "invented mechanism with no typed support"
+    )
+    assert composition.constraints[0].geography == "Atlantis"
+
+
 def test_uncertainty_notes_may_carry_source_free_text() -> None:
     composition, rejected = build_report_composition(
         _task(),

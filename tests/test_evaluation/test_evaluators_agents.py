@@ -525,17 +525,53 @@ def test_the_synthesizer_gate_requires_limitations_to_be_represented(
     ).passed is False
 
 
-def test_the_synthesizer_gate_rejects_a_false_persistence_claim(
-    synthesizer_failure_case, synthesizer_failure_output
+def test_the_synthesizer_gate_rejects_a_false_publication_claim(
+    synthesizer_composition_case, synthesizer_composition_output
 ) -> None:
-    """The write failed; a report claiming it was saved is a lie."""
-    output = synthesizer_failure_output.with_report_text(
-        "The full report was written to the output directory."
+    """Task 6 composes artifacts; it must not claim they were published."""
+    output = synthesizer_composition_output.with_report_text(
+        "The full report was published to the output directory."
     )
 
     assert gate(
-        evaluate_agent_gates(output, synthesizer_failure_case),
-        "persistence_truthful",
+        evaluate_agent_gates(output, synthesizer_composition_case),
+        "no_false_publication_claim",
+    ).passed is False
+
+
+def test_the_synthesizer_gate_checks_publication_claims_in_both_artifacts(
+    synthesizer_composition_case, synthesizer_composition_output
+) -> None:
+    result = dict(synthesizer_composition_output.result or {})
+    output = synthesizer_composition_output.model_copy(
+        update={
+            "result": {
+                **result,
+                "evidence_markdown": "The evidence ledger was saved to disk.",
+            }
+        }
+    )
+
+    assert gate(
+        evaluate_agent_gates(output, synthesizer_composition_case),
+        "no_false_publication_claim",
+    ).passed is False
+
+
+def test_the_synthesizer_gate_rejects_a_persistence_call(
+    synthesizer_case, synthesizer_output
+) -> None:
+    output = synthesizer_output.model_copy(
+        update={
+            "dependencies": synthesizer_output.dependencies.model_copy(
+                update={"document_writes": 1}
+            )
+        }
+    )
+
+    assert gate(
+        evaluate_agent_gates(output, synthesizer_case),
+        "no_persistence_calls",
     ).passed is False
 
 

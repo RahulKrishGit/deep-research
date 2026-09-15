@@ -692,31 +692,45 @@ class SynthesizerOutput(TargetOutput):
 
     def with_report_citing(self, url: str) -> "SynthesizerOutput":
         result = dict(self.result or {})
-        report = str(result.get("report") or "")
+        report = str(result.get("markdown") or "")
+        state_update = dict(self.state_update)
+        report = f"{report}\n\nSee {url} for details."
         return self.model_copy(
             update={
                 "result": {
                     **result,
-                    "report": f"{report}\n\nSee {url} for details.",
-                }
+                    "markdown": report,
+                },
+                "state_update": {**state_update, "report": report},
             }
         )
 
     def without_limitations(self) -> "SynthesizerOutput":
         result = dict(self.result or {})
-        report = str(result.get("report") or "")
+        report = str(result.get("markdown") or "")
+        state_update = dict(self.state_update)
+        report = report.split(
+            "## Uncertainty and conflicting evidence"
+        )[0].rstrip()
         return self.model_copy(
             update={
                 "result": {
                     **result,
-                    "report": report.split("## Limitations")[0].rstrip(),
-                }
+                    "markdown": report,
+                },
+                "state_update": {**state_update, "report": report},
             }
         )
 
     def with_report_text(self, text: str) -> "SynthesizerOutput":
         result = dict(self.result or {})
-        return self.model_copy(update={"result": {**result, "report": text}})
+        state_update = dict(self.state_update)
+        return self.model_copy(
+            update={
+                "result": {**result, "markdown": text},
+                "state_update": {**state_update, "report": text},
+            }
+        )
 
 
 class CriticOutput(TargetOutput):
@@ -793,8 +807,8 @@ def critic_budget_case(controlled_case_for_id):
 
 
 @pytest.fixture
-def synthesizer_failure_case(controlled_case_for_id):
-    return controlled_case_for_id("synthesizer", "write-or-memory-failure")
+def synthesizer_composition_case(controlled_case_for_id):
+    return controlled_case_for_id("synthesizer", "composition-no-publication")
 
 
 @pytest.fixture
@@ -1209,19 +1223,47 @@ def fact_checker_dependent_output(
 
 @pytest.fixture
 def synthesizer_output(synthesizer_case) -> SynthesizerOutput:
-    """A complete report citing only known sources, with limitations."""
+    """Both Task 6 Markdown artifacts, citing only known sources."""
     urls = synthesizer_case.expectations.known_source_urls
     report = (
-        "## Summary\n\n"
-        f"London congestion charging evidence shows travel times fell after "
-        f"the charge was introduced ({urls[0]}).\n\n"
+        "# Research report: What is the evidence base for congestion pricing "
+        "reducing urban travel times?\n\n"
+        "**As of:** 2026-08-01T00:00:00+00:00\n\n"
+        "**Scope:** the supplied urban congestion-pricing evidence.\n\n"
+        "**Quality status:** not yet quality-gated\n\n"
+        "## Executive summary\n\n"
+        f"- London congestion charging evidence shows travel times fell "
+        f"after the charge was introduced. [{1}]\n\n"
+        "## Constraint ranking\n\n"
+        "(no constraint was ranked for this pass)\n\n"
         "## Findings\n\n"
-        f"New York congestion pricing results point to similar reductions "
-        f"({urls[1]}). Evidence beyond London and New York is thinner "
-        f"({urls[2]}).\n\n"
-        "## Limitations\n\n"
-        "The evidence is limited to a few cities and short evaluation windows."
+        "### London congestion charging evidence\n\n"
+        f"- London results show travel-time reductions. [{1}]\n\n"
+        "### New York congestion pricing evidence\n\n"
+        f"- New York results point to similar reductions. [{2}]\n\n"
+        "### International congestion-pricing evidence\n\n"
+        f"- Evidence beyond London and New York is thinner. [{3}]\n\n"
+        "## Uncertainty and conflicting evidence\n\n"
+        "The evidence is limited to a few cities and short evaluation windows.\n\n"
+        "## Methodology\n\n"
+        "- Claims and citations were composed from the supplied evidence.\n\n"
+        "## References\n\n"
+        f"1. London monitoring — {urls[0]}\n"
+        f"2. New York evaluation — {urls[1]}\n"
+        f"3. Comparative review — {urls[2]}"
     )
+    evidence = (
+        "# Evidence ledger: evaluation-complete\n\n"
+        "## Claim registry\n\n"
+        "The controlled fixture's checked claims and source assessments."
+    )
+    state_update = {
+        "report": report,
+        "report_evidence": evidence,
+        "evidence_path": "report-evaluation-complete-1-evidence.md",
+        "unique_source_count": len(urls),
+        "unique_claim_count": 4,
+    }
     return SynthesizerOutput(
         case_id=synthesizer_case.case_id,
         case_version=synthesizer_case.version,
@@ -1233,8 +1275,17 @@ def synthesizer_output(synthesizer_case) -> SynthesizerOutput:
         trace_url="https://smith.langchain.com/o/x/r/synthesizer-1",
         completed=True,
         failure=None,
-        result={"report": report},
-        state_update={"report": report},
+        result={
+            "markdown": report,
+            "path": None,
+            "evidence_markdown": evidence,
+            "evidence_path": "report-evaluation-complete-1-evidence.md",
+            "section_count": 3,
+            "citation_count": 3,
+            "unique_source_count": len(urls),
+            "unique_claim_count": 4,
+        },
+        state_update=state_update,
         errors=[],
         tracker_errors=[],
         react=ReActSummary(
@@ -1244,7 +1295,7 @@ def synthesizer_output(synthesizer_case) -> SynthesizerOutput:
             max_iterations=synthesizer_case.expectations.max_iterations,
             tool_budget=synthesizer_case.expectations.max_tool_calls,
         ),
-        dependencies=DependencyLedger(document_writes=1),
+        dependencies=DependencyLedger(),
         evidence=EvidenceContext(),
         trajectory=[],
         target_model_requested="gpt-5.6-luna",
@@ -1254,49 +1305,75 @@ def synthesizer_output(synthesizer_case) -> SynthesizerOutput:
 
 
 @pytest.fixture
-def synthesizer_failure_output(
-    synthesizer_failure_case,
+def synthesizer_composition_output(
+    synthesizer_composition_case,
 ) -> SynthesizerOutput:
-    """The write failed: zero ledger writes, no output_path, no saved-claim."""
-    urls = synthesizer_failure_case.expectations.known_source_urls
+    """A composition-only output with no publication claim or side effect."""
+    urls = synthesizer_composition_case.expectations.known_source_urls
     report = (
-        "## Summary\n\n"
-        f"Deep retrofit field studies show realized savings below modeled "
-        f"savings ({urls[0]}).\n\n"
-        "## Limitations\n\n"
-        "The evidence base is still small."
+        "# Research report: How much does building retrofit depth affect "
+        "realized energy savings?\n\n"
+        "**As of:** 2026-08-01T00:00:00+00:00\n\n"
+        "**Scope:** the supplied retrofit evidence.\n\n"
+        "**Quality status:** not yet quality-gated\n\n"
+        "## Executive summary\n\n"
+        f"- Deep retrofit results are mixed across the supplied studies. [1]\n\n"
+        "## Constraint ranking\n\n"
+        "(no constraint was ranked for this pass)\n\n"
+        "## Findings\n\n"
+        "### Retrofit depth and realized savings\n\n"
+        f"- Realized savings can fall below modeled values. [1]\n\n"
+        "## Uncertainty and conflicting evidence\n\n"
+        "The evidence base is still limited.\n\n"
+        "## Methodology\n\n"
+        "- Claims were composed from the supplied checked evidence.\n\n"
+        "## References\n\n"
+        f"1. Retrofit study — {urls[0]}"
     )
+    evidence = (
+        "# Evidence ledger: composition-no-publication\n\n"
+        "## Claim registry\n\n"
+        "The controlled fixture's checked claims and source assessments."
+    )
+    state_update = {
+        "report": report,
+        "report_evidence": evidence,
+        "evidence_path": "report-composition-no-publication-1-evidence.md",
+        "unique_source_count": len(urls),
+        "unique_claim_count": 3,
+    }
     return SynthesizerOutput(
-        case_id=synthesizer_failure_case.case_id,
-        case_version=synthesizer_failure_case.version,
-        agent_name=synthesizer_failure_case.agent_name,
-        tier=synthesizer_failure_case.tier,
+        case_id=synthesizer_composition_case.case_id,
+        case_version=synthesizer_composition_case.version,
+        agent_name=synthesizer_composition_case.agent_name,
+        tier=synthesizer_composition_case.tier,
         repetition=1,
-        session_id="evaluation-write-or-memory-failure",
+        session_id="evaluation-composition-no-publication",
         experiment_name="synthesizer-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/synthesizer-failure-1",
+        trace_url="https://smith.langchain.com/o/x/r/synthesizer-composition-1",
         completed=True,
         failure=None,
-        result={"report": report},
-        state_update={"report": report},
-        errors=[
-            {
-                "error_type": "write_failed",
-                "source": "write_document",
-                "message": "output directory was not writable",
-                "timestamp": "2026-08-01T00:00:00+00:00",
-                "recoverable": True,
-            }
-        ],
+        result={
+            "markdown": report,
+            "path": None,
+            "evidence_markdown": evidence,
+            "evidence_path": "report-composition-no-publication-1-evidence.md",
+            "section_count": 1,
+            "citation_count": 1,
+            "unique_source_count": len(urls),
+            "unique_claim_count": 3,
+        },
+        state_update=state_update,
+        errors=[],
         tracker_errors=[],
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
             stop_reason="finished",
-            max_iterations=synthesizer_failure_case.expectations.max_iterations,
-            tool_budget=synthesizer_failure_case.expectations.max_tool_calls,
+            max_iterations=synthesizer_composition_case.expectations.max_iterations,
+            tool_budget=synthesizer_composition_case.expectations.max_tool_calls,
         ),
-        dependencies=DependencyLedger(document_writes=0),
+        dependencies=DependencyLedger(),
         evidence=EvidenceContext(),
         trajectory=[],
         target_model_requested="gpt-5.6-luna",

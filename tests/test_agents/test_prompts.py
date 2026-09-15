@@ -482,6 +482,14 @@ def test_new_prompt_constants_state_their_contracts() -> None:
     assert "exact url" in SOURCE_EVALUATOR_SYSTEM_PROMPT
 
 
+def test_constraint_cells_disclose_the_provider_only_trust_boundary() -> None:
+    """Mechanism/geography have no structured provenance in Task 6."""
+    instruction = REPORT_INSTRUCTION.casefold()
+
+    assert "provider-only" in instruction
+    assert "not structurally validated" in instruction
+
+
 def test_source_consumers_distinguish_quality_scores_from_statuses() -> None:
     assert "quality score of every source" not in SYNTHESIZER_SYSTEM_PROMPT
     assert "quality score when scored" in SYNTHESIZER_SYSTEM_PROMPT

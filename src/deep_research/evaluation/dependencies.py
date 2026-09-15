@@ -1599,26 +1599,14 @@ def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
 
 
 def _synthesizer_scenarios() -> dict[str, ScenarioScript]:
-    # The Synthesizer never queries memory and never queries reputation:
-    # its only declared tools are write_document and save_to_memory. The
-    # two happy scenarios therefore script nothing at all, and the
-    # failure scenario scripts exactly the two tools that must fail —
-    # write_document via the document-directory hook in
-    # ``build_controlled_dependencies``, save_to_memory via the memory
-    # double. Both tools stay *present*; they just fail when called,
-    # which is the case's point (the agent's ``_require_tool`` raises on
-    # a missing declared tool).
+    # The Synthesizer composes both Markdown artifacts and never calls a
+    # persistence tool. Keep every controlled scenario empty: publication is
+    # a later terminal concern and Task 6 must not encode write/memory
+    # failures as evaluation dependencies.
     return {
         "synthesizer-complete": ScenarioScript(),
         "synthesizer-conflicted": ScenarioScript(),
-        "synthesizer-write-failure": ScenarioScript(
-            failures={
-                "write_document": OSError("read-only file system"),
-                "save_to_memory": RuntimeError(
-                    "long-term memory is unavailable"
-                ),
-            }
-        ),
+        "synthesizer-composition": ScenarioScript(),
     }
 
 

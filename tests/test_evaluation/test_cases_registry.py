@@ -57,7 +57,7 @@ CONTROLLED_IDS = {
     "synthesizer": (
         "complete-cited-report",
         "conflict-and-limitations",
-        "write-or-memory-failure",
+        "composition-no-publication",
     ),
     "critic": (
         "approve-strong-report",
