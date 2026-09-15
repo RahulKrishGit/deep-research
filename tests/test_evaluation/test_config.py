@@ -199,16 +199,18 @@ CRITIC_PROMPT_FINGERPRINT = "58175fc4313b"
 # evaluation contract to composition-only/no-publication semantics. The shared
 # prompt edit moves all six values, while the Synthesizer source edit also
 # changes its full-source value; re-pin deliberately so this remains a drift
-# alarm. The current values are planner ``1e244d04fe8d``, researcher
+# alarm. The later sub-minimum digest-budget contract fix changed only the
+# Synthesizer source value again. The current values are planner
+# ``1e244d04fe8d``, researcher
 # ``e3ffdca8f71e``, source evaluator ``b3185bb51b4e``, Fact Checker
-# ``997b6d351251``, Synthesizer ``bba017909b70``, and Critic
+# ``997b6d351251``, Synthesizer ``5bc5345f1791``, and Critic
 # ``58175fc4313b``. The Judge pin did not move.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "1e244d04fe8d",
     "researcher": "e3ffdca8f71e",
     "source_evaluator": "b3185bb51b4e",
     "fact_checker": "997b6d351251",
-    "synthesizer": "bba017909b70",
+    "synthesizer": "5bc5345f1791",
     "critic": "58175fc4313b",
 }
 
