@@ -816,10 +816,14 @@ def test_the_dry_run_records_exactly_one_sdk_create(
 
     ``load_settings`` runs in strict mode, so this test names the credentials it
     needs instead of inheriting whatever a previously run test happened to leave
-    in the process environment.
+    in the process environment. ``LANGSMITH_PROJECT`` is required alongside the
+    LangSmith key because the repository's config enables tracing by default,
+    and strict mode demands it in the environment whenever tracing is on.
     """
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-probe-offline-placeholder")
     monkeypatch.setenv("TAVILY_API_KEY", "sk-probe-offline-placeholder")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "sk-probe-offline-placeholder")
+    monkeypatch.setenv("LANGSMITH_PROJECT", "probe-offline-placeholder")
     recorder = probe.SdkCallRecorder()
     client = probe.RecordingSDKClient(recorder)
     asyncio.run(

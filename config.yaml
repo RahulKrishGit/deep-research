@@ -8,10 +8,15 @@ llm:
   embedding_provider: local
   embedding_model: text-embedding-3-small
   thinking_mode: enabled
-  # `max` matches what the live evaluation resolves for every agent through
-  # evaluation.target_reasoning_effort, so the runtime default and the measured
-  # path agree. DeepSeek maps `max` to the model's maximum reasoning effort.
-  reasoning_effort: max
+  # Finalized at `high` for every agent. DeepSeek V4 Flash supports only `high`
+  # and `max`, and `high` is the cheaper of the two enabled levels while still
+  # being a genuine reasoning setting; the live canary re-runs at this value.
+  # This is the SINGLE production knob — all six agents share it. The per-agent
+  # split in evaluation.target_reasoning_effort_overrides (planner, fact_checker,
+  # synthesizer and critic at `max`; researcher and source_evaluator at `high`)
+  # is the approved cutover baseline for EVALUATION targets only, and production
+  # cannot express a per-agent effort without a code change.
+  reasoning_effort: high
   model_overrides: {}
   timeout: 60.0
   # Repo-owned retry policy: up to 5 retries with exponential backoff from
@@ -29,8 +34,12 @@ llm:
   max_tokens: 32768
 
 langsmith:
-  tracing_enabled: false
-  project: ""
+  # On by default, per direct instruction. Two settings deliberately stay in
+  # .env instead of here: LANGSMITH_API_KEY (a credential) and
+  # LANGSMITH_ENDPOINT (the LangSmith SDK reads it straight from the
+  # environment and there is no config.yaml equivalent for it).
+  tracing_enabled: true
+  project: deep-research-dev
 
 tavily:
   search_depth: basic

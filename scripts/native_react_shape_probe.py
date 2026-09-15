@@ -680,7 +680,18 @@ def _offline_environment() -> Iterator[None]:
     later test order-dependent.
     """
     added: list[str] = []
-    for name in ("DEEPSEEK_API_KEY", "TAVILY_API_KEY", "LANGSMITH_API_KEY"):
+    # ``LANGSMITH_PROJECT`` is in this list because the repository's config
+    # enables LangSmith tracing by default, and strict-mode validation requires
+    # that name in the ENVIRONMENT whenever tracing is on
+    # (utils/config.py:_validate_runtime_secrets). It is a name, not a
+    # credential, and the probe's own tracker is built with tracing disabled, so
+    # nothing here reaches LangSmith.
+    for name in (
+        "DEEPSEEK_API_KEY",
+        "TAVILY_API_KEY",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_PROJECT",
+    ):
         if name not in os.environ:
             os.environ[name] = _OFFLINE_CLIENT_KEY
             added.append(name)
