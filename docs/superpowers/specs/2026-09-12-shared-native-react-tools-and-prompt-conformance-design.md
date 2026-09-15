@@ -1,8 +1,8 @@
 # Shared Native ReAct Tools and Prompt Conformance Design
 
-**Status:** Approved direction, ready for implementation planning  
-**Date:** 2026-09-12  
-**Branch:** `codex/cross-agent-planner-fix-parity`  
+**Status:** Approved direction, ready for implementation planning
+**Date:** 2026-09-12
+**Branch:** `codex/cross-agent-planner-fix-parity`
 **Evidence record:** `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`, sections 78-95
 
 ## Problem

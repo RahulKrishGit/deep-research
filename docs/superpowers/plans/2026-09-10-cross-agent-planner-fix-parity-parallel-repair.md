@@ -48,4 +48,3 @@ only approved commits; one consolidated offline gate; one scoped Sol High
 review of the integrated range; then at most one live confirmation per affected
 agent. Planner receives no new live run. No live suite, retry loop, token or
 budget increase, prompt tuning, or judge schema relaxation is allowed.
-

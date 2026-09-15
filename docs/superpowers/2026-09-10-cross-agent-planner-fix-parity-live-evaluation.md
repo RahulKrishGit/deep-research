@@ -1,10 +1,10 @@
 # Cross-Agent Planner Parity Live Evaluation
 
-Date: 2026-09-10  
-Candidate: `d697ff66cd0f42d4c1e8554622075a0ec40e1aff`  
-Branch: `codex/cross-agent-planner-fix-parity`  
-Tier: `live`, one repetition per agent  
-Authorization: explicit user request after Task 17 offline review  
+Date: 2026-09-10
+Candidate: `d697ff66cd0f42d4c1e8554622075a0ec40e1aff`
+Branch: `codex/cross-agent-planner-fix-parity`
+Tier: `live`, one repetition per agent
+Authorization: explicit user request after Task 17 offline review
 
 This is a post-plan evidence amendment. The original implementation plan prohibited live-tier calls while Tasks 1–17 were being repaired; the user explicitly authorized this six-agent live wave afterward. The original offline and controlled artifacts remain immutable. No source, case, rubric, threshold, prompt, budget, or fallback contract was changed for this run.
 

@@ -1,9 +1,9 @@
 # DeepSeek Judge Native-Schema Transport Design
 
-**Date:** 2026-09-11  
-**Repository:** `RahulKrishGit/deep-research`  
-**Branch:** `codex/cross-agent-planner-fix-parity`  
-**Design base:** `dedccd7c129288b9753bb29a7838b8d03f9372ef`  
+**Date:** 2026-09-11
+**Repository:** `RahulKrishGit/deep-research`
+**Branch:** `codex/cross-agent-planner-fix-parity`
+**Design base:** `dedccd7c129288b9753bb29a7838b8d03f9372ef`
 **Status:** Approved direction from Sol/High architecture review; implementation requires the companion Superpowers plan.
 
 ## Problem

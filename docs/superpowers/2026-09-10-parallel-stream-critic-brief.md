@@ -55,4 +55,3 @@ Write
 `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/parallel-stream-critic-report.md`
 with the typed metric, controls, RED/GREEN result, and any serialized
 evaluator follow-up. Do not edit shared documentation.
-

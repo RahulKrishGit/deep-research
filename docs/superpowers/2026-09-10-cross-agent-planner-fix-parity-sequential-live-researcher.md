@@ -1,9 +1,9 @@
 # Sequential Live-Agent Evidence: Researcher
 
-Date: 2026-09-10  
-Candidate: `c368849ac1da0280f5d1ea8428ad8b3974929fce`  
-Branch: `codex/cross-agent-planner-fix-parity`  
-Tier: `live`, one repetition  
+Date: 2026-09-10
+Candidate: `c368849ac1da0280f5d1ea8428ad8b3974929fce`
+Branch: `codex/cross-agent-planner-fix-parity`
+Tier: `live`, one repetition
 Phase: Task 19 sequential diagnosis/repair loop
 
 ## Scope and safety

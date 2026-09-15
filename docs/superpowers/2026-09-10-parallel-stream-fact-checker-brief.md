@@ -54,4 +54,3 @@ Write
 `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/parallel-stream-fact-checker-report.md`
 with the typed matrix, RED/GREEN result, no-change or conditional-fix
 decision, and remaining blocker. Do not edit shared documentation.
-

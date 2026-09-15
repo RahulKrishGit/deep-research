@@ -1,7 +1,7 @@
 # Sol High Review: Researcher Sequential Live Evidence
 
-Date: 2026-09-10  
-Reviewed branch: `RahulKrishGit/deep-research` / `codex/cross-agent-planner-fix-parity`  
+Date: 2026-09-10
+Reviewed branch: `RahulKrishGit/deep-research` / `codex/cross-agent-planner-fix-parity`
 Reviewed candidate: `fa805ab2cf11adf6620eecffd5b502c56537465d`
 
 ## Evidence supplied
