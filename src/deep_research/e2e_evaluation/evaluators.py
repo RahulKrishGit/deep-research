@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from math import fsum
 from typing import Any
@@ -13,6 +14,7 @@ from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
     canonical_claims,
     canonical_sources,
+    reader_citations,
     render_evidence_ledger,
     render_reader_report,
 )
@@ -67,6 +69,152 @@ def _snapshot_repeats(
     return source_repeats, claim_repeats
 
 
+def _has_production_graph_events(state: ResearchState) -> bool:
+    """Whether state came through the compiled graph's node wrappers."""
+    return any(
+        event.event_type == "graph.node.completed"
+        and event.metadata.get("node") == "planner"
+        for event in state.events
+    )
+
+
+def _snapshot_events(
+    state: ResearchState, agent_name: str
+) -> list[Any]:
+    event_type = f"agent.{agent_name}.snapshot.completed"
+    return [
+        event
+        for event in state.events
+        if event.event_type == event_type
+        and event.metadata.get("snapshot_kind") == "complete"
+    ]
+
+
+def _observed_snapshot_repeats(state: ResearchState) -> tuple[int, int]:
+    """Count duplicate complete snapshots emitted by source/fact nodes."""
+    source_events = _snapshot_events(state, "source_evaluator")
+    claim_events = _snapshot_events(state, "fact_checker")
+
+    def repeats(events: Sequence[Any]) -> int:
+        if not events:
+            return 0
+        first = events[0].metadata.get("snapshot_fingerprint")
+        return sum(
+            event.metadata.get("snapshot_fingerprint") == first
+            for event in events[1:]
+        )
+
+    return repeats(source_events), repeats(claim_events)
+
+
+def _observed_coverage_ids(state: ResearchState, agent_name: str) -> list[set[str]]:
+    """Return coverage identities from complete snapshot events, in order."""
+    result: list[set[str]] = []
+    for event in _snapshot_events(state, agent_name):
+        values = event.metadata.get("coverage_ids", [])
+        if isinstance(values, list):
+            result.append({value for value in values if isinstance(value, str)})
+    return result
+
+
+def _observed_critic_targets(state: ResearchState) -> set[str]:
+    targets: set[str] = set()
+    for event in state.events:
+        if event.event_type != "agent.critic.targets.recorded":
+            continue
+        values = event.metadata.get("coverage_ids", [])
+        if isinstance(values, list):
+            targets.update(value for value in values if isinstance(value, str))
+    return targets
+
+
+def _observed_attempted_topics(state: ResearchState) -> set[str]:
+    attempted: set[str] = set()
+    for event in state.events:
+        if not event.event_type.endswith((".topic.attempted", ".topic.skipped")):
+            continue
+        coverage_id = event.metadata.get("coverage_id")
+        if isinstance(coverage_id, str) and coverage_id:
+            attempted.add(coverage_id)
+    return attempted
+
+
+def _rendered_citation_resolution(
+    report: str, composition: Any
+) -> bool:
+    """Validate rendered markers against the rendered cited-only reference list."""
+    citations = reader_citations(composition)
+    expected_numbers = {citation.number for citation in citations}
+    marker_numbers = {
+        int(value) for value in re.findall(r"\[(\d+)\]", report)
+    }
+    if marker_numbers != expected_numbers:
+        return False
+    reference_section = report.split("## References", 1)
+    if len(reference_section) != 2:
+        return not expected_numbers
+    rows = re.findall(
+        r"(?m)^(\d+)\. .*? — (\S+)\s*$",
+        reference_section[1],
+    )
+    rendered_numbers = {int(number) for number, _url in rows}
+    rendered_urls = {url for _number, url in rows}
+    return rendered_numbers == expected_numbers and rendered_urls == {
+        citation.url for citation in citations
+    }
+
+
+def production_cli_summary(lines: Sequence[str]) -> dict[str, JsonValue]:
+    """Parse only the bounded summary lines emitted by ``cli.render_summary``."""
+    summary: dict[str, JsonValue] = {}
+    quality_line = next(
+        (line for line in lines if line.startswith("Quality: ")), None
+    )
+    if quality_line is not None:
+        summary["quality_status"] = quality_line.removeprefix("Quality: ").split(
+            " ", 1
+        )[0]
+        coverage = re.search(r"(\d+)/(\d+) topics covered, (\d+)%", quality_line)
+        if coverage is not None and int(coverage.group(2)):
+            summary["coverage_ratio"] = int(coverage.group(3)) / 100
+    evidence_line = next(
+        (line for line in lines if line.startswith("Evidence: ")), None
+    )
+    if evidence_line is not None:
+        match = re.search(
+            r"Evidence: (\d+) cited sources; (\d+) scored; "
+            r"(\d+) verified, (\d+) contradicted",
+            evidence_line,
+        )
+        if match:
+            summary.update(
+                {
+                    "cited_sources": int(match.group(1)),
+                    "scored_cited_sources": int(match.group(2)),
+                    "verified_claims": int(match.group(3)),
+                    "contradicted_claims": int(match.group(4)),
+                }
+            )
+    integrity_line = next(
+        (line for line in lines if line.startswith("Integrity: ")), None
+    )
+    if integrity_line is not None:
+        match = re.search(
+            r"Integrity: (\d+) duplicate claims; (\d+) duplicate source rows; "
+            r"(\d+) uncited settled points",
+            integrity_line,
+        )
+        if match:
+            summary.update(
+                {
+                    "duplicate_claims": int(match.group(1)),
+                    "duplicate_source_rows": int(match.group(2)),
+                    "uncited_settled_points": int(match.group(3)),
+                }
+            )
+    return summary
+
+
 def _terminal_counts(state: ResearchState) -> tuple[int, int, int, int, int]:
     published = [
         event for event in state.events if event.event_type == "graph.report.published"
@@ -77,13 +225,21 @@ def _terminal_counts(state: ResearchState) -> tuple[int, int, int, int, int]:
     memory = [
         event for event in state.events if event.event_type == "graph.memory.saved"
     ]
-    report_writes = sum(
-        int(event.metadata.get("report_writes", 0)) for event in published
-    )
-    evidence_writes = sum(
-        int(event.metadata.get("evidence_writes", 0)) for event in published
-    )
+    report_writes = 0
+    evidence_writes = 0
+    for event in published:
+        if "report_writes" in event.metadata or "evidence_writes" in event.metadata:
+            report_writes += int(event.metadata.get("report_writes", 0))
+            evidence_writes += int(event.metadata.get("evidence_writes", 0))
+            continue
+        document_writes = int(event.metadata.get("document_writes", 0))
+        report_writes += int(document_writes >= 1)
+        evidence_writes += int(document_writes >= 2)
     memory_writes = sum(int(event.metadata.get("memory_writes", 0)) for event in memory)
+    if not memory_writes:
+        memory_writes = sum(
+            int(event.metadata.get("memory_writes", 0)) for event in published
+        )
     # Return publication count and the event indexes needed for the timing
     # gate.  The latter are deliberately derived from typed events only.
     quality_index = next(
@@ -98,6 +254,11 @@ def _terminal_counts(state: ResearchState) -> tuple[int, int, int, int, int]:
         (index for index, event in enumerate(state.events) if event in memory),
         -1,
     )
+    if memory_writes and memory_index < 0:
+        # Production folds the memory-write count into its one terminal
+        # publication event; the publisher performs it after both documents
+        # inside that terminal operation.
+        memory_index = publication_index
     timing_failure = int(
         quality_index < 0
         or publication_index < quality_index
@@ -116,9 +277,25 @@ def _expected_cli_summary(
     state: ResearchState, metrics: Mapping[str, Any]
 ) -> dict[str, JsonValue]:
     quality = state.quality
+    quality_status = (
+        state.composition.quality_status
+        if state.composition is not None
+        else (
+            "accepted"
+            if quality is not None and not quality.hard_failures
+            else "partial"
+        )
+    )
     return {
-        "quality_status": (quality is not None and not quality.hard_failures),
-        "coverage_ratio": float(metrics["coverage_ratio"]),
+        "quality_status": quality_status,
+        "coverage_ratio": round(
+            float(
+                quality.coverage_ratio
+                if quality is not None
+                else metrics["coverage_ratio"]
+            ),
+            2,
+        ),
         "cited_sources": int(metrics["cited_sources"]),
         "scored_cited_sources": int(metrics["scored_cited_sources"]),
         "duplicate_claims": int(metrics["duplicate_claims"]),
@@ -134,8 +311,9 @@ def deterministic_evaluation(
     passes: Sequence[SnapshotPass] | None = None,
     dependencies: ScriptedDependencies | None = None,
     cli_summary: Mapping[str, Any] | None = None,
+    cli_output: Sequence[str] | None = None,
 ) -> DeterministicEvaluation:
-    """Evaluate a whole report using typed state and no report parsing."""
+    """Evaluate a whole report from typed state and bounded formatter output."""
     composition = state.composition
     integrity: list[str] = []
     hard: list[str] = []
@@ -175,8 +353,10 @@ def deterministic_evaluation(
     read_urls = (
         set(_urls(dependencies.read_urls)) if dependencies is not None else set()
     )
-    read_cited = sum(url in read_urls for url in cited_urls)
-    source_read_ratio = read_cited / len(cited_urls) if cited_urls else 0.0
+    read_source_count = sum(url in read_urls for url in source_url_set)
+    source_read_ratio = (
+        read_source_count / len(source_url_set) if source_url_set else 0.0
+    )
 
     claims_by_id = {claim.claim_id: claim for claim in canonical_claims(claims)}
     claims_with_provenance = 0
@@ -226,14 +406,19 @@ def deterministic_evaluation(
         for coverage_id in claim.consumed_coverage_ids
         if coverage_id in topic_ids
     }
-    attempted_ids = {
-        topic.coverage_id
-        for topic in topics
-        if any(
-            finding.related_sub_topic == topic.title for finding in state.raw_findings
-        )
-        or topic.coverage_id in covered_ids
-    }
+    observed_attempts = _observed_attempted_topics(state)
+    if _has_production_graph_events(state):
+        attempted_ids = observed_attempts.intersection(topic_ids)
+    else:
+        attempted_ids = {
+            topic.coverage_id
+            for topic in topics
+            if any(
+                finding.related_sub_topic == topic.title
+                for finding in state.raw_findings
+            )
+            or topic.coverage_id in covered_ids
+        }
     planned_topics = len(topics)
     covered_topics = len(covered_ids)
     attempted_topics = len(attempted_ids)
@@ -250,27 +435,53 @@ def deterministic_evaluation(
     uncited = quality.uncited_settled_points
 
     snapshots = list(passes or case.passes)
-    repeated_sources, repeated_claims = _snapshot_repeats(snapshots)
-    critic_targets = len(
-        {target for item in snapshots for target in item.critic_targets}
-    )
+    if _has_production_graph_events(state):
+        repeated_sources, repeated_claims = _observed_snapshot_repeats(state)
+        observed_targets = _observed_critic_targets(state)
+        critic_target_ids = observed_targets
+        source_coverage = _observed_coverage_ids(state, "source_evaluator")
+        claim_coverage = _observed_coverage_ids(state, "fact_checker")
+        repeated_passes = max(
+            len(_snapshot_events(state, "fact_checker")),
+            len(_snapshot_events(state, "source_evaluator")),
+            1,
+        )
+        forced_refinements = sum(
+            event.event_type == "graph.route.decided"
+            and event.metadata.get("reason") == "quality_gate_failed"
+            for event in state.events
+        )
+    else:
+        repeated_sources, repeated_claims = _snapshot_repeats(snapshots)
+        critic_target_ids = {
+            target for item in snapshots for target in item.critic_targets
+        }
+        source_coverage = []
+        claim_coverage = []
+        repeated_passes = len(snapshots)
+        forced_refinements = sum(item.force_refinement for item in snapshots)
+    critic_targets = len(critic_target_ids)
     final_covered = {
         coverage_id
         for claim in claims_by_id.values()
         for coverage_id in claim.consumed_coverage_ids
     }
-    closed_targets = len(
-        {
-            target
-            for item in snapshots
-            for target in item.critic_targets
-            if target in final_covered
-        }
-    )
-    new_evidence = len(
-        {topic for item in snapshots[1:] for topic in item.new_evidence_topics}
-    )
-    forced_refinements = sum(item.force_refinement for item in snapshots)
+    closed_targets = len(critic_target_ids.intersection(final_covered))
+    if source_coverage or claim_coverage:
+        coverage_passes = claim_coverage or source_coverage
+        prior_coverage = (
+            set().union(*coverage_passes[:1]) if coverage_passes else set()
+        )
+        later_coverage = (
+            set().union(*coverage_passes[1:])
+            if len(coverage_passes) > 1
+            else set()
+        )
+        new_evidence = len(later_coverage.difference(prior_coverage))
+    else:
+        new_evidence = len(
+            {topic for item in snapshots[1:] for topic in item.new_evidence_topics}
+        )
 
     publication_events, report_writes, evidence_writes, memory_writes, timing = (
         _terminal_counts(state)
@@ -279,6 +490,7 @@ def deterministic_evaluation(
     ledger = state.report_evidence or render_evidence_ledger(composition)
     report_words = len(report.split())
     ledger_words = len(ledger.split())
+    rendered_citations = _rendered_citation_resolution(report, composition)
 
     raw_metrics: dict[str, Any] = {
         "coverage_ratio": coverage_ratio,
@@ -289,9 +501,17 @@ def deterministic_evaluation(
         "uncited_settled_points": uncited,
     }
     expected_summary = _expected_cli_summary(state, raw_metrics)
-    cli_matches = cli_summary is None or all(
-        cli_summary.get(key) == value for key, value in expected_summary.items()
-    )
+    if cli_output is not None:
+        parsed_summary = production_cli_summary(cli_output)
+        cli_matches = all(
+            parsed_summary.get(key) == value for key, value in expected_summary.items()
+        )
+    elif cli_summary is not None:
+        cli_matches = all(
+            cli_summary.get(key) == value for key, value in expected_summary.items()
+        )
+    else:
+        cli_matches = True
 
     if source_read_ratio < 1.0:
         integrity.append("source_read_provenance")
@@ -309,16 +529,27 @@ def deterministic_evaluation(
         integrity.append("contradiction_disclosure")
     if planned_topics and coverage_ratio < 0.80:
         integrity.append("coverage_below_0.80")
+    if _has_production_graph_events(state) and not topic_ids.issubset(
+        observed_attempts
+    ):
+        integrity.append("planned_topic_attempts")
     if case.expected_refinement_topics and not set(
         case.expected_refinement_topics
     ).issubset(final_covered):
         integrity.append("refinement_targets_unresolved")
-    if case.expected_refinement_topics and not set(
-        case.expected_refinement_topics
-    ).intersection(
-        {topic for item in snapshots[1:] for topic in item.new_evidence_topics}
-    ):
-        integrity.append("refinement_added_no_evidence")
+    if case.expected_refinement_topics:
+        if source_coverage or claim_coverage:
+            prior = set().union(*(claim_coverage[:1] or source_coverage[:1]))
+            later = set().union(*(claim_coverage[1:] or source_coverage[1:]))
+            added = later.difference(prior)
+        else:
+            added = {
+                topic
+                for item in snapshots[1:]
+                for topic in item.new_evidence_topics
+            }
+        if not set(case.expected_refinement_topics).intersection(added):
+            integrity.append("refinement_added_no_evidence")
     if critic_targets and closed_targets < critic_targets:
         integrity.append("critic_targets_unresolved")
     if critic_targets and new_evidence < critic_targets:
@@ -333,6 +564,8 @@ def deterministic_evaluation(
         integrity.append("publication_memory_timing")
     if not cli_matches:
         integrity.append("cli_summary_mismatch")
+    if not rendered_citations:
+        integrity.append("rendered_citation_resolution")
     hard.extend(integrity)
 
     return DeterministicEvaluation(
@@ -359,7 +592,7 @@ def deterministic_evaluation(
         evidence_ledger_words=ledger_words,
         reader_report_chars=len(report),
         evidence_ledger_chars=len(ledger),
-        refinement_passes=len(snapshots),
+        refinement_passes=repeated_passes,
         critic_targets=critic_targets,
         closed_critic_targets=closed_targets,
         new_evidence_in_refinement=new_evidence,
@@ -368,6 +601,7 @@ def deterministic_evaluation(
         evidence_writes=evidence_writes,
         memory_writes=memory_writes,
         cli_summary_matches=cli_matches,
+        rendered_citation_resolution=rendered_citations,
         integrity_failures=integrity,
         hard_failures=hard,
         repeated_source_snapshot_passes=repeated_sources,
@@ -433,6 +667,7 @@ def build_judge_input(
         "reader_report_words": metrics.reader_report_words,
         "evidence_ledger_words": metrics.evidence_ledger_words,
         "cli_summary_matches": metrics.cli_summary_matches,
+        "rendered_citation_resolution": metrics.rendered_citation_resolution,
         "integrity_passed": metrics.integrity_passed,
     }
     return WholeReportJudgeInput(
@@ -449,42 +684,78 @@ def judge_whole_report(
     *,
     rubric: WholeReportRubric | None = None,
 ) -> WholeReportJudgeScore:
-    """Score the bounded contract with a deterministic offline judge double."""
-    dimensions = {
-        dimension: 0.90 for dimension in (rubric or WholeReportRubric()).dimensions
-    }
+    """Score seven reader-facing dimensions from the bounded contract only."""
+    rubric_value = rubric or WholeReportRubric()
     metrics = payload.deterministic_metrics
-    if not bool(metrics.get("integrity_passed", False)):
-        score = 0.95
-        rationale = (
-            "Reader quality is strong, but deterministic integrity remains "
-            "authoritative."
+    ledger = payload.evidence_ledger_summary
+    report = payload.reader_report.casefold()
+    heading_names = (
+        "## executive summary",
+        "## constraint ranking",
+        "## findings",
+        "## uncertainty and conflicting evidence",
+        "## methodology",
+        "## references",
+    )
+    heading_ratio = sum(name in report for name in heading_names) / len(heading_names)
+    coverage = float(metrics.get("coverage_ratio", 0.0))
+    read_ratio = float(metrics.get("source_read_provenance_ratio", 0.0))
+    scored_ratio = float(metrics.get("scored_cited_source_ratio", 0.0))
+    claim_ratio = float(metrics.get("checked_claim_provenance_ratio", 0.0))
+    citation_ratio = float(metrics.get("citation_linkage_ratio", 0.0))
+    citation_rendered = float(
+        bool(metrics.get("rendered_citation_resolution", False))
+    )
+    words = len(payload.reader_report.split())
+    plan_ratio = min(1.0, len(payload.scoped_plan) / 5)
+    dimensions_by_name = {
+        "completeness": (coverage + heading_ratio) / 2,
+        "prioritization": (
+            (1.0 if "## constraint ranking" in report else 0.0)
+            + (1.0 if any(word in report for word in ("rank", "priority")) else 0.0)
+            + plan_ratio
         )
-    else:
-        score = min(
-            1.0,
-            max(
-                0.0,
-                fsum(
-                    float(metrics.get(key, 0.0))
-                    for key in (
-                        "coverage_ratio",
-                        "source_read_provenance_ratio",
-                        "checked_claim_provenance_ratio",
-                        "citation_linkage_ratio",
-                        "cli_summary_matches",
-                    )
+        / 3,
+        "evidence_quality": fsum((read_ratio, scored_ratio, claim_ratio)) / 3,
+        "attribution": (citation_ratio + citation_rendered) / 2,
+        "uncertainty": (
+            (1.0 if "## uncertainty" in report else 0.0)
+            + (
+                1.0
+                if any(
+                    word in report
+                    for word in ("limitation", "conflict", "uncertain")
                 )
-                / 5.0
-                + 0.4,
-            ),
+                else 0.0
+            )
+            + min(1.0, ledger.contradicted_claim_count / max(1, ledger.claim_count))
         )
-        rationale = "Offline rubric score from bounded reader and metrics."
+        / 3,
+        "readability": (
+            (1.0 if 40 <= words <= 8_000 else 0.35 if words else 0.0)
+            + heading_ratio
+        )
+        / 2,
+        "actionability": (
+            1.0
+            if any(
+                word in report
+                for word in ("decision", "recommend", "should", "implication")
+            )
+            else 0.0
+        ),
+    }
+    dimensions = {
+        dimension: max(0.0, min(1.0, dimensions_by_name.get(dimension, 0.0)))
+        for dimension in rubric_value.dimensions
+    }
+    score = max(0.0, min(1.0, fsum(dimensions.values()) / len(dimensions)))
+    rationale = "Deterministic seven-dimension score from bounded reader evidence."
     return WholeReportJudgeScore(
         score=score,
         dimensions=dimensions,
         rationale=rationale,
-        rubric=rubric or WholeReportRubric(),
+        rubric=rubric_value,
     )
 
 
@@ -521,6 +792,7 @@ __all__ = [
     "evaluate_whole_report",
     "evidence_ledger_summary",
     "judge_whole_report",
+    "production_cli_summary",
     "build_whole_report_judge_input",
     "repetition_accepted",
 ]

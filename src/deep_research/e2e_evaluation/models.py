@@ -162,6 +162,7 @@ class DeterministicEvaluation(ContractModel):
     evidence_writes: int = Field(ge=0)
     memory_writes: int = Field(ge=0)
     cli_summary_matches: bool
+    rendered_citation_resolution: bool = True
     integrity_failures: list[str] = Field(default_factory=list)
     hard_failures: list[str] = Field(default_factory=list)
 
@@ -237,6 +238,8 @@ class CampaignRepetition(ContractModel):
     deterministic: DeterministicEvaluation
     judge: WholeReportJudgeScore
     cli_summary: dict[str, JsonValue] = Field(default_factory=dict)
+    cli_output: list[str] = Field(default_factory=list)
+    judge_input: WholeReportJudgeInput
     metadata: CampaignMetadata
     langsmith_metadata: dict[str, JsonValue] = Field(default_factory=dict)
 

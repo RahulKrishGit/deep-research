@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
+import pytest
+
 from deep_research.e2e_evaluation.cases import (
     case_by_id,
     dependencies_for,
@@ -12,20 +17,28 @@ from deep_research.e2e_evaluation.evaluators import (
     deterministic_evaluation,
     judge_whole_report,
 )
+from deep_research.e2e_evaluation.models import WholeReportJudgeInput
+from deep_research.e2e_evaluation.runner import run_case
 
 
 def _accepted_fixture(case_id: str = "broad-constraints"):
     case = case_by_id(case_id)
+    result = run_case(
+        case_id,
+        tier="controlled",
+        repetitions=3,
+        output_directory=Path(tempfile.mkdtemp()),
+    )
+    state = result.repetitions[0].state
     dependencies = dependencies_for(case)
-    for topic in case.sub_topics:
-        dependencies.web_search(topic.search_queries[0])
-    for source in case.final_pass().sources:
+    for source in state.evaluated_sources:
         dependencies.web_scraper(source.url)
-    state = terminal_state(case)
+    for claim in state.verified_claims:
+        for passage in claim.verification_evidence:
+            dependencies.web_scraper(passage.source_url)
     metrics = deterministic_evaluation(
         case,
         state,
-        passes=case.passes,
         dependencies=dependencies,
     )
     return case, state, dependencies, metrics
@@ -126,3 +139,80 @@ def test_unclosed_critic_target_is_a_deterministic_integrity_failure() -> None:
     )
 
     assert "critic_targets_unresolved" in metrics.integrity_failures
+
+
+def test_judge_rubric_distinguishes_integrity_clean_reader_quality() -> None:
+    case, state, _dependencies, metrics = _accepted_fixture()
+    base = build_judge_input(case, state, metrics)
+    high = base
+    borderline = base.model_copy(
+        update={
+            "reader_report": (
+                "# Research report\n\n## Executive summary\n\n"
+                "A short answer with limited prioritization."
+            )
+        }
+    )
+    low = base.model_copy(update={"reader_report": "One unsupported sentence."})
+
+    high_score = judge_whole_report(high)
+    borderline_score = judge_whole_report(borderline)
+    low_score = judge_whole_report(low)
+
+    assert high_score.score > borderline_score.score > low_score.score
+    assert high_score.score >= 0.80
+    assert low_score.score < 0.70
+
+
+def test_rendered_citation_marker_mismatch_is_a_hard_integrity_failure() -> None:
+    case, state, dependencies, _metrics = _accepted_fixture()
+    report = state.report or ""
+    assert "[1]" in report
+    bad_state = state.model_copy(update={"report": report.replace("[1]", "", 1)})
+
+    metrics = deterministic_evaluation(
+        case,
+        bad_state,
+        passes=case.passes,
+        dependencies=dependencies,
+    )
+
+    assert "rendered_citation_resolution" in metrics.integrity_failures
+
+
+def test_attempt_accounting_uses_observed_attempt_events() -> None:
+    case, state, dependencies, _metrics = _accepted_fixture()
+    without_attempt_events = state.model_copy(
+        update={
+            "events": [
+                event
+                for event in state.events
+                if not event.event_type.endswith(".topic.attempted")
+                and not event.event_type.endswith(".topic.skipped")
+            ]
+        }
+    )
+
+    metrics = deterministic_evaluation(
+        case,
+        without_attempt_events,
+        passes=case.passes,
+        dependencies=dependencies,
+    )
+
+    assert metrics.attempted_topics == 0
+    assert "planned_topic_attempts" in metrics.integrity_failures
+
+
+def test_judge_input_rejects_raw_provider_and_tool_fields() -> None:
+    case, state, _dependencies, metrics = _accepted_fixture()
+    payload = build_judge_input(case, state, metrics)
+    with pytest.raises(ValueError, match="prohibited field"):
+        WholeReportJudgeInput.model_validate(
+            payload.model_dump() | {
+                "deterministic_metrics": {
+                    **payload.deterministic_metrics,
+                    "raw_provider_output": True,
+                }
+            }
+        )

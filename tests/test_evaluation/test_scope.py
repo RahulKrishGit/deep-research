@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 EVALUATION = Path("src/deep_research/evaluation")
@@ -17,6 +18,25 @@ def test_the_evaluation_package_never_imports_the_graph() -> None:
     ]
 
     assert offenders == []
+
+    ast_offenders: list[str] = []
+    for path in EVALUATION.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                if any(
+                    alias.name.startswith("deep_research.graph")
+                    for alias in node.names
+                ):
+                    ast_offenders.append(path.name)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module.startswith("deep_research.graph") or (
+                    module == "deep_research"
+                    and any(alias.name == "graph" for alias in node.names)
+                ):
+                    ast_offenders.append(path.name)
+    assert ast_offenders == []
 
     # Keep this assertion broader than import statements: a future helper
     # must not smuggle the graph in through importlib or an aliased string.

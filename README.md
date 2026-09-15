@@ -795,6 +795,12 @@ CLI above: it never imports `deep_research.graph`, and evaluates each of the
 six agents (`planner`, `researcher`, `source-evaluator`, `fact-checker`,
 `synthesizer`, `critic`) in isolation against 24 code-backed cases.
 
+The individual-agent controlled tier exercises one agent contract at a time
+with the configured provider and LangSmith experiment. Its live tier adds the
+real external tools for an explicitly authorized case. These are not
+whole-report acceptance results: they do not exercise graph routing, snapshot
+replacement, terminal publication, or the reader/evidence pair.
+
 ```powershell
 # List agents, tiers, cases, repetitions, and dataset names.
 python -m deep_research.evaluation list
@@ -869,10 +875,22 @@ typed state and the CLI summary. A deterministic integrity failure is a hard
 failure even when a judge score is high.
 
 Task 9's controlled tier is network-zero. Its three cases use scripted search,
-read, memory, and publication doubles and run exactly three repetitions per
-case. The live tier is represented separately and is authorization-ready, but
-this command does not run it; live provider, search, and LangSmith calls belong
-to a separately authorized canary.
+read, memory, and publication doubles while compiling and running the
+production graph with six deterministic agent doubles. The campaign compares
+typed graph state and events with the production CLI summary formatter, and
+runs exactly three repetitions per case. The live tier is represented
+separately and is authorization-ready, but this command does not run it; live
+provider, search, judge, and LangSmith calls belong to a separately authorized
+canary.
+
+Whole-report gates are independent of the individual-agent gates: every
+integrity failure (including duplicate canonical rows, missing read
+provenance, unresolved citations, incomplete attempts, or publication timing)
+hard-fails the repetition regardless of judge score. The controlled runner's
+acceptance floors are 0.70 for every repetition and 0.80 for the three-run
+mean, with coverage and evidence gates applied separately. The production CLI
+`--require-quality` flag is a graph-run exit policy (exit 4 for a non-accepted
+terminal quality status); it does not replace these campaign gates.
 
 ```powershell
 # List the three controlled whole-report cases.
@@ -888,9 +906,12 @@ python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
 Each run writes a local JSON campaign artifact under
 `output/evaluations/e2e/` containing the graph revision, all six target prompt
 fingerprints, report/quality/case schema versions, model settings, request
-counts, typed deterministic metrics, bounded judge input, and the result. The
-research output itself remains two distinct Markdown artifacts: the concise
-reader report (`report.md`) and the full evidence ledger
+counts, typed deterministic metrics, the exact bounded `WholeReportJudgeInput`,
+and the result. The bounded judge input contains only the question, scoped
+plan, reader report, deterministic metrics, and a bounded evidence-ledger
+summary; it never contains secrets, raw provider output, tool payloads, or
+hidden reasoning. The research output itself remains two distinct Markdown
+artifacts per repetition: the concise reader report (`report.md`) and the full evidence ledger
 (`evidence-ledger.md`). The reader report contains only unique cited sources;
 the ledger retains source assessments, checked claims, verification passages,
 unchecked findings, and run errors for auditability. Controlled stdout prints

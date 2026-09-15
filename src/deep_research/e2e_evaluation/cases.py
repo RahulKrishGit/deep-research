@@ -7,11 +7,17 @@ or running it cannot discover credentials or open a network client.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from pydantic import JsonValue
 
+from deep_research.agents.base import AgentRun
 from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
@@ -22,19 +28,24 @@ from deep_research.agents.report import (
     report_as_of,
     report_scope,
 )
-from deep_research.agents.steps import ReActStep
+from deep_research.agents.steps import ReActRun, ReActStep
 from deep_research.e2e_evaluation.models import (
     CASE_REGISTRY_VERSION,
     CASE_SCHEMA_VERSION,
     ControlledCase,
     SnapshotPass,
 )
+from deep_research.graph.orchestrator import ResearchAgents
+from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
     Claim,
+    Critique,
+    CritiqueGap,
     EvidencePassage,
     Finding,
     ResearchEvent,
     ResearchState,
+    ResearchStateUpdate,
     ScoredSource,
     SubTopic,
 )
@@ -143,6 +154,284 @@ class ScriptedDependencies:
         )
 
 
+def _scripted_event(
+    *,
+    agent_name: str,
+    event_type: str,
+    message: str,
+    metadata: Mapping[str, JsonValue] | None = None,
+) -> ResearchEvent:
+    """Create a deterministic, bounded event emitted by a scripted agent."""
+    return ResearchEvent(
+        event_type=event_type,
+        source=f"agent.{agent_name}",
+        message=message,
+        timestamp=FIXED_TIMESTAMP,
+        metadata=dict(metadata or {}),
+    )
+
+
+def _snapshot_fingerprint(snapshot: SnapshotPass) -> str:
+    """Fingerprint a complete canonical snapshot without storing its payload."""
+    payload = {
+        "sources": sorted(source.url for source in snapshot.sources),
+        "claims": sorted(claim.claim_id for claim in snapshot.claims),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+@dataclass
+class ScriptedGraphAgent:
+    """A deterministic six-agent double that runs through graph nodes."""
+
+    agent_name: str
+    case: ControlledCase
+    dependencies: ScriptedDependencies
+    calls: int = 0
+    input_states: list[ResearchState] = field(default_factory=list)
+    output_snapshots: list[SnapshotPass] = field(default_factory=list)
+
+    @property
+    def name(self) -> str:
+        return self.agent_name
+
+    def _snapshot(self, state: ResearchState) -> SnapshotPass:
+        index = min(state.iteration, len(self.case.passes) - 1)
+        return self.case.passes[index]
+
+    def _run_record(self) -> ReActRun:
+        return ReActRun(agent_name=self.agent_name, stop_reason="finished")
+
+    async def run(self, state: ResearchState) -> AgentRun[Any]:
+        self.calls += 1
+        self.input_states.append(state.model_copy(deep=True))
+        snapshot = self._snapshot(state)
+        update: ResearchStateUpdate = {}
+
+        if self.agent_name == "planner":
+            update["sub_topics"] = list(self.case.sub_topics)
+        elif self.agent_name == "researcher":
+            if state.iteration == 0:
+                self.dependencies.query_memory(state.original_question)
+            events: list[ResearchEvent] = []
+            findings_by_topic = {
+                finding.related_sub_topic for finding in snapshot.findings
+            }
+            for topic in self.case.sub_topics:
+                self.dependencies.web_search(topic.search_queries[0])
+                has_finding = topic.title in findings_by_topic
+                if has_finding:
+                    for finding in snapshot.findings:
+                        if finding.related_sub_topic == topic.title:
+                            self.dependencies.web_scraper(finding.source_url)
+                event_type = (
+                    "agent.researcher.topic.attempted"
+                    if has_finding
+                    else "agent.researcher.topic.skipped"
+                )
+                events.append(
+                    _scripted_event(
+                        agent_name=self.agent_name,
+                        event_type=event_type,
+                        message="Scripted topic attempt recorded.",
+                        metadata={
+                            "coverage_id": topic.coverage_id,
+                            "iteration": state.iteration,
+                            "reason": "scripted_evidence"
+                            if has_finding
+                            else "scripted_evidence_unavailable",
+                        },
+                    )
+                )
+            update["raw_findings"] = list(snapshot.findings)
+            update["events"] = events
+        elif self.agent_name == "source_evaluator":
+            for source in snapshot.sources:
+                self.dependencies.web_scraper(source.url)
+            self.output_snapshots.append(snapshot.model_copy(deep=True))
+            update["evaluated_sources"] = list(snapshot.sources)
+            update["events"] = [
+                _scripted_event(
+                    agent_name=self.agent_name,
+                    event_type="agent.source_evaluator.snapshot.completed",
+                    message="Complete source snapshot recorded.",
+                    metadata={
+                        "snapshot_kind": "complete",
+                        "iteration": state.iteration,
+                        "count": len(snapshot.sources),
+                        "snapshot_fingerprint": _snapshot_fingerprint(snapshot),
+                        "coverage_ids": sorted(
+                            {
+                                coverage_id
+                                for claim in snapshot.claims
+                                for coverage_id in claim.consumed_coverage_ids
+                            }
+                        ),
+                    },
+                )
+            ]
+        elif self.agent_name == "fact_checker":
+            for claim in snapshot.claims:
+                for passage in claim.verification_evidence:
+                    self.dependencies.web_scraper(passage.source_url)
+            self.output_snapshots.append(snapshot.model_copy(deep=True))
+            update["verified_claims"] = list(snapshot.claims)
+            update["events"] = [
+                _scripted_event(
+                    agent_name=self.agent_name,
+                    event_type="agent.fact_checker.snapshot.completed",
+                    message="Complete claim snapshot recorded.",
+                    metadata={
+                        "snapshot_kind": "complete",
+                        "iteration": state.iteration,
+                        "count": len(snapshot.claims),
+                        "snapshot_fingerprint": _snapshot_fingerprint(snapshot),
+                        "coverage_ids": sorted(
+                            {
+                                coverage_id
+                                for claim in snapshot.claims
+                                for coverage_id in claim.consumed_coverage_ids
+                            }
+                        ),
+                    },
+                )
+            ]
+        elif self.agent_name == "synthesizer":
+            observed = snapshot.model_copy(
+                update={
+                    "findings": list(state.raw_findings),
+                    "sources": list(state.evaluated_sources),
+                    "claims": list(state.verified_claims),
+                }
+            )
+            composition = _composition(case=self.case, snapshot=observed, state=state)
+            update.update(
+                {
+                    "report": render_reader_report(composition),
+                    "report_evidence": render_evidence_ledger(composition),
+                    "evidence_path": (
+                        f"output/evaluations/e2e/{self.case.case_id}/"
+                        "evidence-ledger.md"
+                    ),
+                    "composition": composition,
+                    "unique_source_count": len(composition.sources),
+                    "unique_claim_count": len(composition.claims),
+                }
+            )
+        elif self.agent_name == "critic":
+            targets = list(snapshot.critic_targets)
+            gaps = [
+                CritiqueGap(
+                    coverage_id=target,
+                    problem="The scripted review needs a bounded evidence update.",
+                    recommended_queries=[
+                        topic.search_queries[0]
+                        for topic in self.case.sub_topics
+                        if topic.coverage_id == target
+                    ]
+                    or ["targeted evidence"],
+                )
+                for target in targets
+            ]
+            update["critique"] = Critique(
+                score=6 if targets else 9,
+                gaps=gaps,
+                unsupported_claims=[],
+                recommended_queries=[
+                    query for gap in gaps for query in gap.recommended_queries
+                ],
+                should_continue=False,
+                rationale="Scripted bounded critique.",
+            )
+            update["events"] = [
+                _scripted_event(
+                    agent_name=self.agent_name,
+                    event_type="agent.critic.targets.recorded",
+                    message="Critic target identities recorded.",
+                    metadata={
+                        "iteration": state.iteration,
+                        "coverage_ids": targets,
+                        "should_continue": False,
+                    },
+                )
+            ]
+        else:
+            raise ValueError(f"unknown scripted graph agent {self.agent_name!r}")
+
+        return AgentRun(
+            agent_name=self.agent_name,
+            result=None,
+            react=self._run_record(),
+            errors=[],
+            state_update=update,
+        )
+
+
+@dataclass
+class ScriptedGraphPublisher:
+    """Terminal publisher double with safe per-repetition local artifact writes."""
+
+    dependencies: ScriptedDependencies
+    artifact_directory: Path
+    document_calls: int = 0
+
+    async def publish_document(
+        self, *, filename: str, content: str
+    ) -> ToolResult:
+        self.document_calls += 1
+        target_name = "report.md" if self.document_calls == 1 else "evidence-ledger.md"
+        target = self.artifact_directory / target_name
+        self.artifact_directory.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        self.dependencies.write_document(filename=str(target), content=content)
+        return ToolResult(
+            tool_name="write_document",
+            success=True,
+            data={"path": str(target), "bytes_written": len(content.encode("utf-8"))},
+            latency_ms=0.0,
+            metadata={"scripted": True},
+        )
+
+    async def publish_claim(
+        self, *, content: str, metadata: Mapping[str, JsonValue]
+    ) -> ToolResult:
+        self.dependencies.save_to_memory(
+            {
+                "content_chars": len(content),
+                "metadata_keys": sorted(metadata),
+            }
+        )
+        return ToolResult(
+            tool_name="save_to_memory",
+            success=True,
+            data={"saved": True},
+            latency_ms=0.0,
+            metadata={"scripted": True},
+        )
+
+
+def scripted_research_agents(
+    case: ControlledCase,
+    dependencies: ScriptedDependencies,
+    publisher: ScriptedGraphPublisher,
+) -> ResearchAgents:
+    """Build all six scripted agents and the terminal publisher for one run."""
+    agents = {
+        name: ScriptedGraphAgent(name, case, dependencies)
+        for name in (
+            "planner",
+            "researcher",
+            "source_evaluator",
+            "fact_checker",
+            "synthesizer",
+            "critic",
+        )
+    }
+    return ResearchAgents(**agents, publisher=publisher)
+
+
 def _topic(coverage_id: str, title: str, priority: int) -> SubTopic:
     return SubTopic(
         coverage_id=coverage_id,
@@ -219,6 +508,12 @@ def _composition(
     claims = list(snapshot.claims)
     sources = list(snapshot.sources)
     reader_claims = [claim for claim in claims if claim.verdict != "contradicted"]
+    # This case intentionally starts with a complete evidence snapshot whose
+    # reader composition omits its settled points.  The production quality
+    # node therefore forces a refinement with no critic targets; the next
+    # synthesizer pass restores the same complete snapshot to the reader.
+    if case.case_id == "broad-constraints" and snapshot.iteration == 0:
+        reader_claims = []
     summary = [
         {
             "text": claim.text,
@@ -640,11 +935,14 @@ __all__ = [
     "LIVE_CASES",
     "ControlledDependencyError",
     "ScriptedDependencies",
+    "ScriptedGraphAgent",
+    "ScriptedGraphPublisher",
     "all_cases",
     "case_by_id",
     "controlled_cases",
     "dependencies_for",
     "live_cases",
     "state_for_pass",
+    "scripted_research_agents",
     "terminal_state",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -12,18 +13,21 @@ from uuid import uuid4
 
 from pydantic import JsonValue
 
+from deep_research.cli import render_summary
 from deep_research.e2e_evaluation.cases import (
     CONTROLLED_CASE_IDS,
     LIVE_CASE_IDS,
+    ScriptedGraphPublisher,
     case_by_id,
     controlled_cases,
     dependencies_for,
-    terminal_state,
+    scripted_research_agents,
 )
 from deep_research.e2e_evaluation.evaluators import (
     build_judge_input,
     deterministic_evaluation,
     judge_whole_report,
+    production_cli_summary,
 )
 from deep_research.e2e_evaluation.models import (
     AGENT_NAMES,
@@ -37,15 +41,28 @@ from deep_research.e2e_evaluation.models import (
     CampaignResult,
     CaseCampaignResult,
     ControlledCase,
-    DeterministicEvaluation,
     WholeReportJudgeScore,
 )
+from deep_research.graph.orchestrator import (
+    compile_research_graph,
+    run_research_graph,
+)
+from deep_research.observability import LangSmithRuntimeConfig, Tracker
+from deep_research.runtime.outcome import build_outcome
 
 LIVE_TIER_NOT_RUN = (
     "live tier is authorization-ready but not run without explicit authorization"
 )
 DEFAULT_OUTPUT_DIRECTORY = Path("output/evaluations/e2e")
 CONTROLLED_REPETITIONS = 3
+JUDGE_FLOOR = 0.70
+JUDGE_MEAN_FLOOR = 0.80
+_SCORE_EPSILON = 1e-9
+
+
+def _score_at_least(value: float, floor: float) -> bool:
+    """Treat an exact decimal boundary as inclusive despite binary floats."""
+    return value + _SCORE_EPSILON >= floor
 
 
 def graph_revision() -> str:
@@ -113,22 +130,6 @@ def graph_revision_value() -> str:
     return graph_revision()
 
 
-def _cli_summary(
-    metrics: DeterministicEvaluation,
-    state: Any,
-) -> dict[str, JsonValue]:
-    quality = state.quality
-    return {
-        "quality_status": bool(quality is not None and not quality.hard_failures),
-        "coverage_ratio": metrics.coverage_ratio,
-        "cited_sources": metrics.cited_sources,
-        "scored_cited_sources": metrics.scored_cited_sources,
-        "duplicate_claims": metrics.duplicate_claims,
-        "duplicate_source_rows": metrics.duplicate_source_rows,
-        "uncited_settled_points": metrics.uncited_settled_points,
-    }
-
-
 def _scripted_repetition(
     case: ControlledCase,
     repetition: int,
@@ -137,48 +138,38 @@ def _scripted_repetition(
     judge: Callable[[Any], WholeReportJudgeScore] = judge_whole_report,
 ) -> CampaignRepetition:
     dependencies = dependencies_for(case)
-    dependencies.query_memory(case.question)
-    for topic in case.sub_topics:
-        dependencies.web_search(topic.search_queries[0])
-    # The controlled reader path records a read for every final source, which
-    # makes source-read provenance a real gate rather than a fixture default.
-    for source in case.final_pass().sources:
-        dependencies.web_scraper(source.url)
-
-    report_path = artifact_directory / "report.md"
-    evidence_path = artifact_directory / "evidence-ledger.md"
-    state = terminal_state(
-        case,
-        report_path=str(report_path),
-        evidence_path=str(evidence_path),
-    )
     artifact_directory.mkdir(parents=True, exist_ok=True)
-    report = state.report or ""
-    evidence_ledger = state.report_evidence or ""
-    report_path.write_text(report, encoding="utf-8")
-    evidence_path.write_text(evidence_ledger, encoding="utf-8")
-    dependencies.write_document(filename=str(report_path), content=report)
-    dependencies.write_document(filename=str(evidence_path), content=evidence_ledger)
-    if state.quality is not None and not state.quality.hard_failures:
-        dependencies.save_to_memory(
-            {"case_id": case.case_id, "claim_count": len(state.verified_claims)}
+    publisher = ScriptedGraphPublisher(dependencies, artifact_directory)
+    agents = scripted_research_agents(case, dependencies, publisher)
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=False,
+            project="controlled-e2e",
+            api_key=None,
         )
+    )
+    graph = compile_research_graph(agents)
+    observed_events: list[Any] = []
+    graph_run = asyncio.run(
+        run_research_graph(
+            graph=graph,
+            tracker=tracker,
+            session_id=f"controlled-{case.case_id}-r{repetition}",
+            question=case.question,
+            max_iterations=max(2, len(case.passes)),
+            event_handler=observed_events.append,
+        )
+    )
+    state = graph_run.state
+    outcome = build_outcome(graph_run, metrics=tracker.metrics)
+    cli_output = render_summary(outcome, verbose=False)
     metrics = deterministic_evaluation(
         case,
         state,
-        passes=case.passes,
         dependencies=dependencies,
+        cli_output=cli_output,
     )
-    summary = _cli_summary(metrics, state)
-    # Re-evaluate against the exact summary surface the CLI would print. This
-    # keeps the agreement gate independent from any report text parsing.
-    metrics = deterministic_evaluation(
-        case,
-        state,
-        passes=case.passes,
-        dependencies=dependencies,
-        cli_summary=summary,
-    )
+    summary = production_cli_summary(cli_output)
     judge_input = build_judge_input(case, state, metrics)
     judge_result = judge(judge_input)
     metadata = build_judge_metadata(
@@ -198,6 +189,8 @@ def _scripted_repetition(
         deterministic=metrics,
         judge=judge_result,
         cli_summary=summary,
+        cli_output=list(cli_output),
+        judge_input=judge_input,
         metadata=CampaignMetadata.model_validate(metadata),
         langsmith_metadata=dict(metadata),
     )
@@ -228,8 +221,8 @@ def _case_result(
         and all(item.deterministic.duplicate_claims == 0 for item in repetitions)
         and all(item.deterministic.duplicate_source_rows == 0 for item in repetitions)
         and all(item.deterministic.uncited_settled_points == 0 for item in repetitions)
-        and all(item.judge.score >= 0.70 for item in repetitions)
-        and sum(judges) / len(judges) >= 0.80
+        and all(_score_at_least(item.judge.score, JUDGE_FLOOR) for item in repetitions)
+        and _score_at_least(sum(judges) / len(judges), JUDGE_MEAN_FLOOR)
     )
     return CaseCampaignResult(
         case_id=case.case_id,
