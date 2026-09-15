@@ -31,6 +31,10 @@ from deep_research.agents.report import (
 )
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActRun, ReActStep
+from deep_research.agents.synthesizer import (
+    evidence_report_filename,
+    report_filename,
+)
 from deep_research.e2e_evaluation.models import (
     CASE_REGISTRY_VERSION,
     CASE_SCHEMA_VERSION,
@@ -524,6 +528,17 @@ class ScriptedGraphAgent:
         )
 
 
+# The ledger's name is derived from the reader report's by production
+# (``evidence_report_filename``). Read the suffix from that function rather than
+# repeating the literal here, so a change to the production naming rule cannot
+# leave this double classifying artifacts by a stale convention.
+_LEDGER_NAME_SUFFIX = evidence_report_filename(
+    session_id="probe", iteration=0
+).removeprefix(
+    report_filename(session_id="probe", iteration=0).removesuffix(".md")
+)
+
+
 @dataclass
 class ScriptedGraphPublisher:
     """Terminal publisher double with safe per-repetition local artifact writes."""
@@ -535,17 +550,22 @@ class ScriptedGraphPublisher:
     async def publish_document(
         self, *, filename: str, content: str
     ) -> ToolResult:
+        """Write the file the finalizer named, and record *that* name.
+
+        The target and the recorded publication operation both come from the
+        real ``filename`` argument. Naming the target by call ordinal (first
+        call ``report.md``, second ``evidence-ledger.md``) meant a finalizer
+        regression that published both artifacts under one name, or swapped
+        them, still looked like a clean publication.
+        """
         self.document_calls += 1
-        if self.document_calls == 1:
-            target_name = "report.md"
-            self.dependencies.record_publication("reader_document")
-        elif self.document_calls == 2:
-            target_name = "evidence-ledger.md"
-            self.dependencies.record_publication("evidence_document")
-        else:
-            target_name = f"unexpected-document-{self.document_calls}.md"
-            self.dependencies.record_publication("unexpected_document")
-        target = self.artifact_directory / target_name
+        operation = (
+            "evidence_document"
+            if filename.endswith(_LEDGER_NAME_SUFFIX)
+            else "reader_document"
+        )
+        self.dependencies.record_publication(operation)
+        target = self.artifact_directory / Path(filename).name
         self.artifact_directory.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         self.dependencies.write_document(filename=str(target), content=content)
@@ -712,14 +732,22 @@ def _composition(
     )
 
 
-def state_for_pass(
+def _state_for_pass(
     case: ControlledCase,
     snapshot: SnapshotPass,
     *,
     report_path: str | None = None,
     evidence_path: str | None = None,
 ) -> ResearchState:
-    """Materialize one pass as a typed state, including both artifacts."""
+    """Materialize one pass as a typed state, including both artifacts.
+
+    Private on purpose, and paired with ``_terminal_state``: these helpers
+    fabricate a state that never came through the compiled graph, so the
+    evaluator's observed metric legs all fall back to ``case.passes``. They
+    exist so a gate can be driven from a hand-made pass in a test; nothing on
+    this package's accepted path may be derived from one, which is exactly
+    what ``DeterministicEvaluation.graph_observed`` records.
+    """
     state = ResearchState(
         session_id=f"controlled-{case.case_id}",
         original_question=case.question,
@@ -757,14 +785,20 @@ def state_for_pass(
     )
 
 
-def terminal_state(
+def _terminal_state(
     case: ControlledCase,
     *,
     report_path: str | None = None,
     evidence_path: str | None = None,
 ) -> ResearchState:
-    """Materialize the final pass with terminal quality/publication events."""
-    state = state_for_pass(
+    """Materialize the final pass with terminal quality/publication events.
+
+    Private for the same reason as ``_state_for_pass``: the terminal events it
+    appends are written by hand, so the state is a *simulation* of a finished
+    run rather than one. It is a test seam for the deterministic gates, never
+    a producer of campaign evidence.
+    """
+    state = _state_for_pass(
         case,
         case.final_pass(),
         report_path=report_path,
@@ -1138,7 +1172,5 @@ __all__ = [
     "controlled_cases",
     "dependencies_for",
     "live_cases",
-    "state_for_pass",
     "scripted_research_agents",
-    "terminal_state",
 ]

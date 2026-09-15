@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +18,7 @@ from deep_research.e2e_evaluation.cases import (
     dependencies_for,
     scripted_research_agents,
 )
+from deep_research.e2e_evaluation.evaluators import deterministic_evaluation
 from deep_research.e2e_evaluation.models import CaseCampaignResult
 from deep_research.e2e_evaluation.runner import (
     LIVE_TIER_NOT_RUN,
@@ -26,6 +29,7 @@ from deep_research.e2e_evaluation.runner import (
 )
 from deep_research.graph.orchestrator import compile_research_graph, run_research_graph
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
+from deep_research.runtime.outcome import build_outcome
 
 
 def test_controlled_case_runs_exactly_three_repetitions_and_writes_artifact(
@@ -44,11 +48,15 @@ def test_controlled_case_runs_exactly_three_repetitions_and_writes_artifact(
     assert result.repetitions[0].report
     assert result.repetitions[0].evidence_ledger
     assert tmp_path.joinpath("broad-constraints", "case.json").is_file()
-    assert tmp_path.joinpath(
-        "broad-constraints", "repetition-1", "report.md"
+    # The published names are the finalizer's own, not the double's ordinal
+    # placeholders: the campaign writes each artifact under the filename the
+    # terminal publisher asked for.
+    repetition_root = tmp_path.joinpath("broad-constraints", "repetition-1")
+    assert repetition_root.joinpath(
+        "report-controlled-broad-constraints-r1-1.md"
     ).is_file()
-    assert tmp_path.joinpath(
-        "broad-constraints", "repetition-1", "evidence-ledger.md"
+    assert repetition_root.joinpath(
+        "report-controlled-broad-constraints-r1-1-evidence.md"
     ).is_file()
     assert result.repetitions[0].metadata.request_counts["query_memory"] == 1
     assert result.repetitions[0].metadata.request_counts["write_document"] == 2
@@ -197,6 +205,147 @@ def test_snapshot_replacement_is_proven_by_agent_histories_and_final_state(
         and event.metadata.get("reason") == "quality_gate_failed"
         for event in run.state.events
     )
+
+
+def test_a_campaign_that_cannot_see_graph_events_is_never_accepted(tmp_path) -> None:
+    """The campaign's green verdict must mean the graph ran, not the fixture.
+
+    When ``_has_production_graph_events`` is False the evaluator substitutes
+    fixture values (``case.passes``, ``critic_targets``,
+    ``new_evidence_topics``, ``force_refinement``) that are true by
+    construction, and the repetition still reported ``accepted``. The
+    campaign's acceptance verdict is what the plan's checklist consumes, so an
+    operator running the suite CLI without the test suite could be handed a
+    fixture-based "accepted".
+    """
+    original_run = campaign_runner.run_research_graph
+
+    async def blind_run(*args, **kwargs):
+        run = await original_run(*args, **kwargs)
+        return dataclasses.replace(
+            run,
+            state=run.state.model_copy(
+                update={
+                    "events": [
+                        event
+                        for event in run.state.events
+                        if event.event_type != "graph.node.completed"
+                    ]
+                }
+            ),
+        )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(campaign_runner, "run_research_graph", blind_run)
+    try:
+        result = campaign_runner.run_case(
+            CONTROLLED_CASE_IDS[0],
+            tier="controlled",
+            repetitions=3,
+            output_directory=tmp_path,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert not any(item.accepted for item in result.repetitions)
+    assert not result.accepted
+    assert "production_graph_unobserved" in result.hard_failures
+    assert all(
+        item.deterministic.graph_observed is False
+        for item in result.repetitions
+    )
+    assert all(
+        "production_graph_unobserved" in item.deterministic.integrity_failures
+        for item in result.repetitions
+    )
+
+
+def test_the_publisher_writes_the_filename_the_finalizer_asked_for(
+    tmp_path,
+) -> None:
+    """The campaign must be able to see which artifact was written where.
+
+    ``ScriptedGraphPublisher.publish_document`` named its target by call
+    ordinal — first call ``report.md``, second ``evidence-ledger.md`` — and
+    never read its ``filename`` argument, so a finalizer regression publishing
+    both artifacts under one name, or swapping them, still passed. Binding the
+    target and the recorded operation to the real filename, and re-reading the
+    published bytes off disk, is what makes the campaign's publication evidence
+    about the finalizer rather than about the double.
+    """
+    result = campaign_runner.run_case(
+        CONTROLLED_CASE_IDS[0],
+        tier="controlled",
+        repetitions=3,
+        output_directory=tmp_path,
+    )
+    repetition = result.repetitions[0]
+    reader = Path(repetition.state.report_path or "")
+    ledger = Path(repetition.state.evidence_path or "")
+
+    assert reader.name == "report-controlled-broad-constraints-r1-1.md"
+    assert ledger.name == "report-controlled-broad-constraints-r1-1-evidence.md"
+    assert reader.is_file() and ledger.is_file()
+    assert reader.read_text(encoding="utf-8") == repetition.state.report
+    assert ledger.read_text(encoding="utf-8") == repetition.state.report_evidence
+    # The name decides the recorded operation, so a swap is recorded as one.
+    assert repetition.publication_operations[:2] == [
+        "reader_document",
+        "evidence_document",
+    ]
+
+
+def test_critic_target_failures_are_reachable_from_the_graph_path(tmp_path) -> None:
+    """Both Critic-target failures must be driven by real graph events.
+
+    ``critic_targets_unresolved`` and ``critic_refinement_no_new_evidence``
+    were reachable only through ``_terminal_state``, i.e. a hand-written
+    state. Here the Critic's own ``agent.critic.targets.recorded`` event and
+    the Fact Checker's complete-snapshot events carry the comparison: the plan
+    has five topics, only three carry claims in the first pass, and the
+    refinement pass republishes the same snapshot, so the two targets the
+    Critic named are never closed and no new coverage arrives.
+    """
+    case = case_by_id("refinement-evidence-recovery")
+    stale_pass = case.passes[0].model_copy(
+        update={"iteration": 1, "force_refinement": True}
+    )
+    case = case.model_copy(
+        update={"passes": [case.passes[0], stale_pass]}
+    )
+    dependencies = dependencies_for(case)
+    publisher = ScriptedGraphPublisher(dependencies, tmp_path)
+    agents = scripted_research_agents(case, dependencies, publisher)
+    graph = compile_research_graph(agents)
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=False,
+            project="controlled-critic-failure-test",
+            api_key=None,
+        )
+    )
+    run = asyncio.run(
+        run_research_graph(
+            graph=graph,
+            tracker=tracker,
+            session_id="controlled-critic-failures",
+            question=case.question,
+            max_iterations=2,
+        )
+    )
+    cli_output = campaign_runner.render_summary(
+        build_outcome(run, metrics=tracker.metrics), verbose=False
+    )
+    metrics = deterministic_evaluation(
+        case, run.state, dependencies=dependencies, cli_output=cli_output
+    )
+
+    assert metrics.graph_observed is True
+    assert metrics.critic_targets == 2
+    assert metrics.closed_critic_targets == 0
+    assert metrics.new_evidence_in_refinement == 0
+    assert "critic_targets_unresolved" in metrics.integrity_failures
+    assert "critic_refinement_no_new_evidence" in metrics.integrity_failures
 
 
 def test_agent_inputs_prove_ordered_upstream_handoffs(tmp_path) -> None:

@@ -164,6 +164,11 @@ class DeterministicEvaluation(ContractModel):
     memory_writes: int = Field(ge=0)
     cli_summary_matches: bool
     rendered_citation_resolution: bool = True
+    # Whether the state this verdict came from carried the production graph's
+    # own node events. When it did not, every *observed* metric leg was
+    # substituted from the case fixture and is true by construction, so the
+    # verdict has to say which branch ran.
+    graph_observed: bool = True
     integrity_failures: list[str] = Field(default_factory=list)
     hard_failures: list[str] = Field(default_factory=list)
 

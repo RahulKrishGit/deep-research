@@ -317,6 +317,17 @@ def _expected_cli_summary(
         ),
         "cited_sources": int(metrics["cited_sources"]),
         "scored_cited_sources": int(metrics["scored_cited_sources"]),
+        # The formatter prints these two from the same quality snapshot, and
+        # the plan requires the CLI to match state *exactly*: leaving them out
+        # of the comparison meant a formatter that printed either count wrongly
+        # still agreed with state. ``None`` when no quality pass ran, because
+        # ``render_summary`` then prints no evidence line at all.
+        "verified_claims": (
+            int(quality.verified_claims) if quality is not None else None
+        ),
+        "contradicted_claims": (
+            int(quality.contradicted_claims) if quality is not None else None
+        ),
         "duplicate_claims": int(metrics["duplicate_claims"]),
         "duplicate_source_rows": int(metrics["duplicate_source_rows"]),
         "uncited_settled_points": int(metrics["uncited_settled_points"]),
@@ -341,6 +352,14 @@ def deterministic_evaluation(
         # The report cannot be meaningfully evaluated without its typed
         # composition. Keep the failure shape deterministic for callers.
         raise ValueError("whole-report evaluation requires state.composition")
+
+    # Which of the two metric branches below ran. Every *observed* leg is
+    # gated on this, and when it is False the evaluator substitutes fixture
+    # values that are true by construction — so a verdict that could not say
+    # which branch ran reported a fixture-based "accepted".
+    graph_observed = _has_production_graph_events(state)
+    if not graph_observed:
+        integrity.append("production_graph_unobserved")
 
     quality = compute_report_quality(state, composition)
     hard.extend(quality.hard_failures)
@@ -432,7 +451,7 @@ def deterministic_evaluation(
         if coverage_id in topic_ids
     }
     observed_attempts = _observed_attempted_topics(state)
-    if _has_production_graph_events(state):
+    if graph_observed:
         attempted_ids = observed_attempts.intersection(topic_ids)
     else:
         attempted_ids = {
@@ -460,7 +479,7 @@ def deterministic_evaluation(
     uncited = quality.uncited_settled_points
 
     snapshots = list(passes or case.passes)
-    if _has_production_graph_events(state):
+    if graph_observed:
         repeated_sources, repeated_claims = _observed_snapshot_repeats(state)
         observed_targets = _observed_critic_targets(state)
         critic_target_ids = observed_targets
@@ -540,7 +559,10 @@ def deterministic_evaluation(
             cli_summary.get(key) == value for key, value in expected_summary.items()
         )
     else:
-        cli_matches = True
+        # Fails closed, like every other leg. The runner always supplies
+        # ``cli_output``, so a caller that supplies neither has not shown that
+        # the CLI agrees with state and must not be handed a passing gate.
+        cli_matches = False
 
     if source_read_ratio < 1.0:
         integrity.append("source_read_provenance")
@@ -560,9 +582,7 @@ def deterministic_evaluation(
         integrity.append("contradiction_disclosure")
     if planned_topics and coverage_ratio < 0.80:
         integrity.append("coverage_below_0.80")
-    if _has_production_graph_events(state) and not topic_ids.issubset(
-        observed_attempts
-    ):
+    if graph_observed and not topic_ids.issubset(observed_attempts):
         integrity.append("planned_topic_attempts")
     if case.expected_refinement_topics and not set(
         case.expected_refinement_topics
@@ -636,6 +656,7 @@ def deterministic_evaluation(
         memory_writes=memory_writes,
         cli_summary_matches=cli_matches,
         rendered_citation_resolution=rendered_citations,
+        graph_observed=graph_observed,
         integrity_failures=integrity,
         hard_failures=hard,
         repeated_source_snapshot_passes=repeated_sources,
@@ -646,8 +667,17 @@ def deterministic_evaluation(
 
 def evidence_ledger_summary(
     composition: Any,
+    *,
+    duplicate_source_rows: int = 0,
+    duplicate_claims: int = 0,
 ) -> EvidenceLedgerSummary:
-    """Build the bounded summary permitted in the judge contract."""
+    """Build the bounded summary permitted in the judge contract.
+
+    The two duplicate counts are passed in from the deterministic evaluation
+    rather than hardcoded to zero: this is the only ledger surface the judge
+    sees, and a repetition whose ``integrity_failures`` named
+    ``duplicate_claims`` was still handing the judge a clean duplicate count.
+    """
     sources = canonical_sources(composition.sources)
     claims = canonical_claims(composition.claims)
     return EvidenceLedgerSummary(
@@ -663,8 +693,8 @@ def evidence_ledger_summary(
         verification_passage_count=sum(
             len(claim.verification_evidence) for claim in claims
         ),
-        duplicate_source_rows=0,
-        duplicate_claims=0,
+        duplicate_source_rows=duplicate_source_rows,
+        duplicate_claims=duplicate_claims,
         source_titles=[
             source.title[:120] for source in sources[:MAX_EVIDENCE_SUMMARY_SOURCES]
         ],
@@ -686,6 +716,10 @@ def build_judge_input(
     report = state.report or render_reader_report(composition)
     metrics_payload: dict[str, float | int | bool] = {
         "coverage_ratio": metrics.coverage_ratio,
+        # How much of the scoped plan the reader report actually presents as
+        # ranked points. ``case.sub_topics`` cardinality is a property of the
+        # fixture; this is a property of the report.
+        "ranked_reader_points": len(composition.summary),
         "source_read_provenance_ratio": metrics.source_read_provenance_ratio,
         "scored_cited_source_ratio": (
             metrics.scored_cited_sources / metrics.cited_sources
@@ -710,7 +744,11 @@ def build_judge_input(
         scoped_plan=list(case.sub_topics),
         reader_report=report[:16_000],
         deterministic_metrics=metrics_payload,
-        evidence_ledger_summary=evidence_ledger_summary(composition),
+        evidence_ledger_summary=evidence_ledger_summary(
+            composition,
+            duplicate_source_rows=metrics.duplicate_source_rows,
+            duplicate_claims=metrics.duplicate_claims,
+        ),
     )
 
 
@@ -719,20 +757,39 @@ def judge_whole_report(
     *,
     rubric: WholeReportRubric | None = None,
 ) -> WholeReportJudgeScore:
-    """Score seven reader-facing dimensions from the bounded contract only."""
+    """Score seven reader-facing dimensions from the bounded contract only.
+
+    Every dimension is scored on its own 0..1 satisfaction scale, and no term
+    is included that cannot vary with the input:
+
+    * ``completeness`` is the evaluator's covered-topic ratio. The six
+      ``REPORT_SECTIONS`` headings are printed by ``render_reader_report``
+      unconditionally, so a "heading present" term scores 1.0 on every
+      rendered report and could only inflate the mean.
+    * ``prioritization`` is the share of the scoped plan the report presents
+      as ranked points, not the plan's cardinality: a three-topic plan is not
+      evidence that the report ranked anything.
+    * ``uncertainty`` is the share of contradicted claims the report actually
+      discloses, and 1.0 when there is nothing contradictory to disclose.
+      Scoring ``contradicted / claims`` rewarded having a contradiction and
+      scored an honest clean report at zero.
+    * ``readability`` is the length band alone, and ``actionability`` the
+      presence of decision language. Neither averages in an always-true term.
+    * ``evidence_quality`` and ``attribution`` are **structural bounds**: they
+      average ratios a hard integrity gate already requires to be 1.0
+      (``source_read_provenance_ratio``, ``scored_cited_source_ratio``,
+      ``checked_claim_provenance_ratio``, ``citation_linkage_ratio``,
+      ``rendered_citation_resolution``). They stay in the score because the
+      plan's Step 4 fixes the rubric at seven dimensions, and they are read
+      here as what they are — a restatement of the gates, not independent
+      reader-quality evidence. The positive control that the remaining terms
+      can still fail a report the integrity gates pass is
+      ``test_the_judge_can_score_an_integrity_clean_report_below_its_floor``.
+    """
     rubric_value = rubric or WholeReportRubric()
     metrics = payload.deterministic_metrics
     ledger = payload.evidence_ledger_summary
     report = payload.reader_report.casefold()
-    heading_names = (
-        "## executive summary",
-        "## constraint ranking",
-        "## findings",
-        "## uncertainty and conflicting evidence",
-        "## methodology",
-        "## references",
-    )
-    heading_ratio = sum(name in report for name in heading_names) / len(heading_names)
     coverage = float(metrics.get("coverage_ratio", 0.0))
     read_ratio = float(metrics.get("source_read_provenance_ratio", 0.0))
     scored_ratio = float(metrics.get("scored_cited_source_ratio", 0.0))
@@ -742,35 +799,23 @@ def judge_whole_report(
         bool(metrics.get("rendered_citation_resolution", False))
     )
     words = len(payload.reader_report.split())
-    plan_ratio = min(1.0, len(payload.scoped_plan) / 5)
+    planned = len(payload.scoped_plan)
+    ranked = float(metrics.get("ranked_reader_points", 0))
+    ranked_ratio = min(1.0, ranked / planned) if planned else 0.0
+    contradicted = ledger.contradicted_claim_count
+    disclosed = float(metrics.get("disclosed_contradictions", 0))
+    disclosure_ratio = (
+        min(1.0, disclosed / contradicted) if contradicted else 1.0
+    )
     dimensions_by_name = {
-        "completeness": (coverage + heading_ratio) / 2,
-        "prioritization": (
-            (1.0 if "## constraint ranking" in report else 0.0)
-            + (1.0 if any(word in report for word in ("rank", "priority")) else 0.0)
-            + plan_ratio
-        )
-        / 3,
+        "completeness": coverage,
+        "prioritization": ranked_ratio,
         "evidence_quality": fsum((read_ratio, scored_ratio, claim_ratio)) / 3,
         "attribution": (citation_ratio + citation_rendered) / 2,
-        "uncertainty": (
-            (1.0 if "## uncertainty" in report else 0.0)
-            + (
-                1.0
-                if any(
-                    word in report
-                    for word in ("limitation", "conflict", "uncertain")
-                )
-                else 0.0
-            )
-            + min(1.0, ledger.contradicted_claim_count / max(1, ledger.claim_count))
-        )
-        / 3,
+        "uncertainty": disclosure_ratio,
         "readability": (
-            (1.0 if 40 <= words <= 8_000 else 0.35 if words else 0.0)
-            + heading_ratio
-        )
-        / 2,
+            1.0 if 40 <= words <= 8_000 else 0.35 if words else 0.0
+        ),
         "actionability": (
             1.0
             if any(
