@@ -375,6 +375,10 @@ attempts but never block.
 
 ### Task 4: Project bounded scraper diagnostics into agent records
 
+**Status:** complete — **controller-verified**, pushed at `a360bf7a1042d02c0cb0e77af49648f6a05ab3ad`. **The independent scoped review never reported (two dispatches, no verdict);** completion rests on reproduced gates, a controller read of the production code, and a controller read of the tests for non-vacuity. One item is explicitly left open for the final whole-branch review: whether duplicating the media-type pattern and integer bounds in `react.py` (rather than importing them from `tools/web_scraper.py`) is a defect or legitimate contract independence.
+
+**Interface note for later tasks:** the producer **omits** `status_code` when it falls outside `100..599`, so any consumer must treat it as optional.
+
 **Files:**
 
 - Modify: `src/deep_research/agents/react.py`
