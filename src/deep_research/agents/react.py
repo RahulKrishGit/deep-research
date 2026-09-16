@@ -8,6 +8,7 @@ one ``react_iteration_span`` per turn.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TypeAlias
 
@@ -41,6 +42,116 @@ SufficiencyCallback: TypeAlias = Callable[[Sequence[ReActStep]], bool]
 # It is project-authored on purpose: the count of dropped calls is what the
 # record must carry, and the provider's own names for them are not retained.
 _UNEXECUTED_REMAINDER_TOOL_NAME = "(unexecuted)"
+
+# The one tool whose failures publish a bounded, countable diagnosis. Those
+# values are bounded by the producer too (``tools/web_scraper.py``), and they
+# are revalidated here against the same bounds rather than trusted, because
+# the record is public state and the values arrive from a tool: ``attempts``
+# is 1..3, ``retries`` is 0..2, ``status_code`` is an integer in 100..599, and
+# ``content_type`` is a lower-case ASCII media type of at most 64 characters.
+# Nothing else in the failure is ever read, so the message, the request URL,
+# the page content, and any unexpected key have no path into the record.
+_SCRAPER_TOOL_NAME = "web_scraper"
+_MIN_ATTEMPTS = 1
+_MAX_ATTEMPTS = 3
+_MIN_RETRIES = 0
+_MAX_RETRIES = 2
+_MIN_STATUS_CODE = 100
+_MAX_STATUS_CODE = 599
+_MAX_MEDIA_TYPE_LENGTH = 64
+_MEDIA_TYPE_PATTERN = re.compile(
+    r"[a-z0-9!#$%&'*+.^_`|~-]+/[a-z0-9!#$%&'*+.^_`|~-]+"
+)
+
+
+def _bounded_int(value: JsonValue, *, minimum: int, maximum: int) -> int | None:
+    """``value`` when it is an integer inside the bound, else ``None``.
+
+    ``bool`` is rejected deliberately even though it is an ``int`` subclass: a
+    published count of ``True`` is a type error, not a one, and the record
+    exists to be counted by class.
+    """
+    if type(value) is not int:
+        return None
+    return value if minimum <= value <= maximum else None
+
+
+def _bounded_media_type(value: JsonValue) -> str | None:
+    """``value`` when it is a lower-case ASCII media type, else ``None``.
+
+    Mirrors the producer's bound, ASCII first: folding and stripping are
+    Unicode-aware, so a KELVIN SIGN would fold to ASCII ``k`` and a no-break
+    space would be stripped, turning malformed input into a normalised copy of
+    itself. A value that is not already the published shape is dropped, never
+    truncated into one.
+    """
+    if not isinstance(value, str) or not value.isascii():
+        return None
+    if len(value) > _MAX_MEDIA_TYPE_LENGTH or value != value.lower():
+        return None
+    return value if _MEDIA_TYPE_PATTERN.fullmatch(value) is not None else None
+
+
+def _bounded_scraper_details(result: ToolResult) -> dict[str, JsonValue]:
+    """The scraper's published failure values, revalidated one by one.
+
+    ``status_code`` is optional by construction: ``raise_for_status()`` raises
+    for any non-success response, including an out-of-range code a
+    nonconforming peer can send, and the producer then omits the key entirely.
+    An absent status therefore stays absent — never ``None``, never
+    synthesized, never a bucket that no response produced.
+    """
+    error = result.error
+    if error is None:
+        return {}
+    published = error.details
+    projected: dict[str, JsonValue] = {}
+    attempts = _bounded_int(
+        published.get("attempts"), minimum=_MIN_ATTEMPTS, maximum=_MAX_ATTEMPTS
+    )
+    if attempts is not None:
+        projected["attempts"] = attempts
+    retries = _bounded_int(
+        published.get("retries"), minimum=_MIN_RETRIES, maximum=_MAX_RETRIES
+    )
+    if retries is not None:
+        projected["retries"] = retries
+    status_code = _bounded_int(
+        published.get("status_code"),
+        minimum=_MIN_STATUS_CODE,
+        maximum=_MAX_STATUS_CODE,
+    )
+    if status_code is not None:
+        projected["status_code"] = status_code
+    content_type = _bounded_media_type(published.get("content_type"))
+    if content_type is not None:
+        projected["content_type"] = content_type
+    return projected
+
+
+def _tool_failure_details(
+    result: ToolResult,
+    *,
+    tool_name: str,
+    iteration: int,
+    tool_error_type: str,
+) -> dict[str, JsonValue]:
+    """Build the details for one ``agent_tool_failed`` record.
+
+    Every failed call records the tool, the iteration, and the error type the
+    observation already carries. Only ``web_scraper`` adds its own bounded
+    diagnosis, and only for the tool the loop actually executed: the gate is
+    the name the toolset resolved, never a name the result asserts about
+    itself, so no other tool can reach into this projection.
+    """
+    details: dict[str, JsonValue] = {
+        "tool": tool_name,
+        "iteration": iteration,
+        "tool_error_type": tool_error_type,
+    }
+    if tool_name == _SCRAPER_TOOL_NAME:
+        details.update(_bounded_scraper_details(result))
+    return details
 
 
 def _tool_observation(result: ToolResult, *, limit: int) -> ReActObservation:
@@ -267,14 +378,15 @@ async def run_react_loop(
                                                 f"{tool_name} failed; the agent "
                                                 "continued with an observation."
                                             ),
-                                            details={
-                                                "tool": tool_name,
-                                                "iteration": iteration,
-                                                "tool_error_type": (
+                                            details=_tool_failure_details(
+                                                tool_result,
+                                                tool_name=tool_name,
+                                                iteration=iteration,
+                                                tool_error_type=(
                                                     observation.error_type
                                                     or "unknown"
                                                 ),
-                                            },
+                                            ),
                                         )
                                     )
 

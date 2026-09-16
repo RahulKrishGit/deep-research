@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
+from typing import Any
 
 import pytest
 
 from deep_research.agents.react import run_react_loop
-from deep_research.agents.steps import ReActDecision, ReActStep
+from deep_research.agents.steps import ReActDecision, ReActRun, ReActStep
 from deep_research.agents.toolset import AgentToolset
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -17,6 +18,13 @@ from deep_research.providers import (
     ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
+)
+from deep_research.tools.base import (
+    BaseTool,
+    ToolCallContext,
+    ToolError,
+    ToolExecution,
+    ToolResult,
 )
 from tests.agent_fakes import (
     BoomTool,
@@ -93,6 +101,116 @@ def _toolset(tracker: Tracker, *names: str) -> AgentToolset:
         [EchoTool(tracker), BoomTool(tracker), StrictEchoTool(tracker)],
         allowed=list(names),
     )
+
+
+# Sentinels standing in for attacker-controlled text a failed scrape can
+# carry. The ``agent_tool_failed`` record publishes counting values, so none
+# of these markers may reach it; the failure message keeps travelling through
+# the observation, exactly as it did before the record carried any of them.
+_HOSTILE_EXCEPTION_TEXT = "ATTACKER-EXCEPTION-TEXT-<script>alert(1)</script>"
+_HOSTILE_PAGE_TEXT = "ATTACKER-PAGE-CONTENT-<script>alert(2)</script>"
+_HOSTILE_CONTENT_TYPE = "ATTACKER-CONTENT-TYPE-<script>alert(3)</script>"
+_HOSTILE_URL = "https://example.test/private/ATTACKER-URL-SENTINEL?key=secret"
+_FORBIDDEN_MARKERS = (
+    _HOSTILE_EXCEPTION_TEXT,
+    _HOSTILE_PAGE_TEXT,
+    _HOSTILE_CONTENT_TYPE,
+    _HOSTILE_URL,
+)
+
+
+class _ScriptedFailureTool(BaseTool):
+    """Hand the loop one exact failed ``ToolResult`` and nothing else.
+
+    The loop records whatever result a tool returns, and ``BaseTool.execute``
+    would rebuild that result from a ``ToolExecutionError`` — normalizing away
+    exactly the unexpected keys, hostile values, and out-of-bound counts a
+    projection test has to feed. Overriding ``execute`` is the only way to put
+    the result itself under test; ``_execute`` stays unreachable.
+    """
+
+    name = "scripted_failure"
+    description = "Return a scripted failure."
+    input_schema: dict[str, Any] = {}
+    output_schema: dict[str, Any] = {}
+
+    def __init__(self, tracker: Tracker, result: ToolResult) -> None:
+        super().__init__(tracker)
+        self._result = result
+
+    async def execute(self, **_kwargs: Any) -> ToolResult:
+        return self._result
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: Any
+    ) -> ToolExecution:
+        raise AssertionError("this fake returns a result without executing")
+
+
+class _ScraperFailureTool(_ScriptedFailureTool):
+    name = "web_scraper"
+
+
+class _OtherFailureTool(_ScriptedFailureTool):
+    name = "other_tool"
+
+
+def _hostile_scraper_failure() -> ToolResult:
+    """A failed scrape carrying the published keys and every forbidden one."""
+    return ToolResult(
+        tool_name="web_scraper",
+        success=False,
+        error=ToolError(
+            type="unsupported_content_type",
+            message=f"the page request failed: {_HOSTILE_EXCEPTION_TEXT}",
+            recoverable=False,
+            details={
+                "attempts": 3,
+                "retries": 2,
+                "status_code": 503,
+                "content_type": "text/html",
+                "message": _HOSTILE_EXCEPTION_TEXT,
+                "url": _HOSTILE_URL,
+                "text": _HOSTILE_PAGE_TEXT,
+                "body": _HOSTILE_PAGE_TEXT,
+                "content": _HOSTILE_CONTENT_TYPE,
+            },
+        ),
+        latency_ms=12.5,
+        metadata={"retry_count": 2, "url": _HOSTILE_URL},
+    )
+
+
+def _scraper_failure(**details: Any) -> ToolResult:
+    """A failed scrape whose error details are exactly ``details``."""
+    return ToolResult(
+        tool_name="web_scraper",
+        success=False,
+        error=ToolError(
+            type="HTTPStatusError",
+            message="the page request failed",
+            details=details,
+        ),
+        latency_ms=3.0,
+    )
+
+
+async def _run_one_tool_failure(tracker: Tracker, tool: BaseTool) -> ReActRun:
+    """Run a two-turn loop in which ``tool`` fails and the agent moves on."""
+    async with agent_scope(tracker):
+        return await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset([tool], allowed=[tool.name]),
+            decide=_decider(
+                [
+                    use_tool("Try the tool.", tool.name),
+                    finish("Move on.", "Partial answer."),
+                ]
+            ),
+            max_iterations=4,
+            tool_budget=5,
+        )
 
 
 @pytest.mark.asyncio
@@ -536,6 +654,191 @@ async def test_tool_failure_becomes_an_observation_and_the_loop_continues(
         "tool": "boom",
         "iteration": 1,
         "tool_error_type": "TimeoutError",
+    }
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_failed_keeps_the_bounded_safe_scraper_diagnostics(
+    tracker: Tracker,
+) -> None:
+    """A failed scrape publishes countable classes, never the page or the URL.
+
+    The record is what the canary counts ``web_scraper`` failures by, so it
+    carries the four bounded values the scraper publishes and nothing else.
+    The hostile message, URL, and page content the same result carries stay
+    where they already travelled — the observation — and are not copied here.
+    """
+    result = _hostile_scraper_failure()
+    run = await _run_one_tool_failure(tracker, _ScraperFailureTool(tracker, result))
+
+    assert run.stop_reason == "finished"
+    assert len(run.errors) == 1
+    error = run.errors[0]
+    assert error.error_type == "agent_tool_failed"
+    assert error.details == {
+        "tool": "web_scraper",
+        "iteration": 1,
+        "tool_error_type": "unsupported_content_type",
+        "attempts": 3,
+        "retries": 2,
+        "status_code": 503,
+        "content_type": "text/html",
+    }
+
+    # The bounded record is a second home for the diagnosis, not a sanitizer
+    # for the observation: the failure message still reaches the model.
+    observation = run.steps[0].observation
+    assert observation is not None
+    assert observation.error_type == "unsupported_content_type"
+    assert observation.summary == (
+        f"web_scraper failed (unsupported_content_type): {result.error.message}"
+    )
+
+    serialized = error.model_dump_json()
+    assert _HOSTILE_EXCEPTION_TEXT in observation.summary
+    for marker in _FORBIDDEN_MARKERS:
+        assert marker not in serialized
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_failed_drops_scraper_details_that_fail_revalidation(
+    tracker: Tracker,
+) -> None:
+    """Every published value is revalidated, not trusted, before it is copied.
+
+    A result whose counts and status do not satisfy the published bounds, and
+    which carries forbidden keys beside them, contributes only the value that
+    does hold up: an out-of-range count, a wrong type, and unexpected keys are
+    dropped instead of being copied into public state.
+    """
+    result = ToolResult(
+        tool_name="web_scraper",
+        success=False,
+        error=ToolError(
+            type="unsupported_content_type",
+            message=f"the page request failed: {_HOSTILE_EXCEPTION_TEXT}",
+            recoverable=False,
+            details={
+                "attempts": 9,
+                "retries": -1,
+                "status_code": _HOSTILE_URL,
+                "content_type": "text/html",
+                "url": _HOSTILE_URL,
+                "text": _HOSTILE_PAGE_TEXT,
+                "retry_after": _HOSTILE_CONTENT_TYPE,
+            },
+        ),
+        latency_ms=1.0,
+    )
+    run = await _run_one_tool_failure(tracker, _ScraperFailureTool(tracker, result))
+
+    error = run.errors[0]
+    assert error.error_type == "agent_tool_failed"
+    assert error.details == {
+        "tool": "web_scraper",
+        "iteration": 1,
+        "tool_error_type": "unsupported_content_type",
+        "content_type": "text/html",
+    }
+    serialized = error.model_dump_json()
+    for marker in _FORBIDDEN_MARKERS:
+        assert marker not in serialized
+
+
+@pytest.mark.asyncio
+async def test_the_scraper_projection_omits_an_absent_status_code(
+    tracker: Tracker,
+) -> None:
+    """An unpublished status stays absent instead of becoming ``None``.
+
+    ``raise_for_status()`` raises for any non-success response, including a
+    code outside ``100..599`` that a nonconforming peer can send, and the
+    scraper then publishes no ``status_code`` at all. The record mirrors that
+    omission: a null bucket is a bucket no response ever produced, and the
+    failure counts are the whole point of the record.
+    """
+    run = await _run_one_tool_failure(
+        tracker, _ScraperFailureTool(tracker, _scraper_failure(attempts=1, retries=0))
+    )
+
+    error = run.errors[0]
+    assert error.details == {
+        "tool": "web_scraper",
+        "iteration": 1,
+        "tool_error_type": "HTTPStatusError",
+        "attempts": 1,
+        "retries": 0,
+    }
+    assert "status_code" not in error.details
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("details", "projected"),
+    [
+        ({"attempts": 1, "retries": 0}, {"attempts": 1, "retries": 0}),
+        ({"attempts": 3, "retries": 2}, {"attempts": 3, "retries": 2}),
+        # A bool is an int subclass, so it is rejected by type and not just by
+        # range: a published count of ``True`` is a type error, not a one.
+        ({"attempts": True}, {}),
+        ({"attempts": 0}, {}),
+        ({"attempts": 4}, {}),
+        ({"attempts": "2"}, {}),
+        ({"retries": -1}, {}),
+        ({"retries": 3}, {}),
+        ({"retries": 2.0}, {}),
+        ({"status_code": 100}, {"status_code": 100}),
+        ({"status_code": 599}, {"status_code": 599}),
+        ({"status_code": 99}, {}),
+        ({"status_code": 600}, {}),
+        ({"status_code": 503.0}, {}),
+        ({"status_code": _HOSTILE_URL}, {}),
+        ({"content_type": "text/html"}, {"content_type": "text/html"}),
+        ({"content_type": _HOSTILE_CONTENT_TYPE}, {}),
+        ({"content_type": "TEXT/HTML"}, {}),
+        ({"content_type": "a" * 100 + "/b"}, {}),
+        ({"content_type": "\u212a/x"}, {}),
+        ({"content_type": "text/plain; charset=utf-8"}, {}),
+        ({}, {}),
+    ],
+)
+async def test_the_scraper_projection_revalidates_every_published_value(
+    tracker: Tracker, details: dict[str, Any], projected: dict[str, Any]
+) -> None:
+    """Only values inside the published bounds are copied into the record."""
+    run = await _run_one_tool_failure(
+        tracker, _ScraperFailureTool(tracker, _scraper_failure(**details))
+    )
+
+    error = run.errors[0]
+    assert error.details == {
+        "tool": "web_scraper",
+        "iteration": 1,
+        "tool_error_type": "HTTPStatusError",
+        **projected,
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_arbitrary_tool_does_not_gain_the_scraper_projection(
+    tracker: Tracker,
+) -> None:
+    """The projection belongs to the scraper the loop executed, and no other.
+
+    The result here even claims to be ``web_scraper`` while the executed tool
+    is not, so the gate is the name the toolset resolved rather than a name a
+    result can assert: every other tool keeps the existing three-key record.
+    """
+    run = await _run_one_tool_failure(
+        tracker, _OtherFailureTool(tracker, _hostile_scraper_failure())
+    )
+
+    error = run.errors[0]
+    assert error.error_type == "agent_tool_failed"
+    assert error.details == {
+        "tool": "other_tool",
+        "iteration": 1,
+        "tool_error_type": "unsupported_content_type",
     }
 
 
