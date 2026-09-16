@@ -40,11 +40,16 @@ def test_factory_builds_exactly_the_selected_adapter(
     built: list[type[object]] = []
 
     class RecordingAdapter:
-        def __init__(self, config, received_tracker, *, api_key=None):
+        def __init__(
+            self, config, received_tracker, *, api_key=None, request_budget=None
+        ):
             built.append(expected)
             assert config.provider == provider_name
             assert received_tracker is tracker
             assert api_key is None
+            # No budget was supplied by this caller, so the adapter's own
+            # uncounted default applies unchanged.
+            assert request_budget is None
 
     monkeypatch.setattr(factory, expected.__name__, RecordingAdapter)
     config = LLMConfig(
@@ -75,9 +80,12 @@ def test_judge_factory_builds_the_selected_judge_adapter(
 
     def make_recording_adapter(adapter_name: str):
         class RecordingAdapter:
-            def __init__(self, config, received_tracker, *, api_key=None):
+            def __init__(
+                self, config, received_tracker, *, api_key=None, request_budget=None
+            ):
                 assert config.provider == provider_name
                 assert received_tracker is tracker
+                assert request_budget is None
                 built.append((adapter_name, api_key))
 
         recorders[adapter_name] = RecordingAdapter
@@ -238,3 +246,71 @@ def test_build_chat_provider_passes_an_explicit_key_through(tracker) -> None:
     # proves the explicit key -- and not the popped environment variable --
     # reached the adapter.
     assert provider._client.api_key == "sk-deepseek-abcdefgh"
+
+
+# ---------------------------------------------------------------------------
+# Request-budget plumbing: the factory is the only place a chat or judge
+# adapter is selected, so it is also the only place a run's attempt budget can
+# reach the adapter that has to reserve against it.
+# ---------------------------------------------------------------------------
+
+
+def test_request_budget_reaches_the_deepseek_chat_adapter(tracker) -> None:
+    from deep_research.request_budget import RequestBudget
+    from deep_research.utils.config import LLMConfig
+
+    budget = RequestBudget()
+
+    provider = build_chat_provider(
+        LLMConfig(), tracker, api_key="sk-deepseek-abcdefgh", request_budget=budget
+    )
+
+    assert provider._request_budget is budget
+
+
+def test_request_budget_reaches_the_deepseek_judge_adapter(tracker) -> None:
+    from deep_research.request_budget import RequestBudget
+    from deep_research.utils.config import LLMConfig
+
+    budget = RequestBudget()
+
+    provider = factory.build_judge_provider(
+        LLMConfig(), tracker, api_key="sk-deepseek-abcdefgh", request_budget=budget
+    )
+
+    assert provider._request_budget is budget
+
+
+def test_request_budget_defaults_to_none_in_both_deepseek_factories(tracker) -> None:
+    """Every existing caller keeps exactly today's uncounted behaviour."""
+    from deep_research.utils.config import LLMConfig
+
+    chat = build_chat_provider(
+        LLMConfig(), tracker, api_key="sk-deepseek-abcdefgh"
+    )
+    judge = factory.build_judge_provider(
+        LLMConfig(), tracker, api_key="sk-deepseek-abcdefgh"
+    )
+
+    assert chat._request_budget is None
+    assert judge._request_budget is None
+
+
+def test_request_budget_is_refused_for_an_adapter_that_cannot_honour_it(
+    tracker,
+) -> None:
+    """A budget that would be silently dropped is a decorative ceiling."""
+    from deep_research.request_budget import RequestBudget
+
+    budget = RequestBudget()
+    config = LLMConfig(
+        provider="openai",
+        model="gpt-4o",
+        thinking_mode="disabled",
+        reasoning_effort="none",
+    )
+
+    with pytest.raises(ProviderConfigurationError) as caught:
+        build_chat_provider(config, tracker, request_budget=budget)
+
+    assert "request_budget" in str(caught.value)

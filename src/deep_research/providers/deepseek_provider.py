@@ -40,6 +40,7 @@ from deep_research.providers.contracts import (
 from deep_research.providers.native_output import native_text_violation
 from deep_research.providers.retry import with_retries
 from deep_research.providers.validation import validation_category
+from deep_research.request_budget import RequestBudget
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -687,11 +688,48 @@ class DeepSeekChatProvider:
         *,
         api_key: str | None = None,
         client: Any | None = None,
+        request_budget: RequestBudget | None = None,
     ) -> None:
         self._config = config
         self._tracker = tracker
         self._client = _build_client(config, api_key=api_key, client=client)
+        self._request_budget = request_budget
         self._last_model_returned: str | None = None
+
+    def _reserve_attempt(self) -> None:
+        """Reserve one DeepSeek transport attempt before any network I/O.
+
+        Called from *inside* the retried operation, because each retry is a
+        real outbound request: reserving once outside the retry wrapper would
+        under-count a run's attempts by up to its retry count. The refusal
+        therefore also sits outside SDK exception translation, so a
+        :class:`~deep_research.request_budget.RequestAttemptLimitError` -- a
+        hard run boundary -- escapes instead of being rewritten into an
+        ordinary, retryable provider error.
+
+        A ``None`` budget reserves nothing: this is today's uncounted
+        behaviour, and every existing caller keeps it.
+        """
+        budget = self._request_budget
+        if budget is None:
+            return
+        budget.reserve("deepseek")
+
+    def _record_tokens(self, usage: TokenUsage) -> None:
+        """Record reported usage, and only for a response that arrived.
+
+        Never called for a transport failure, and never for a response whose
+        usage failed to parse: a token figure invented after a failed call
+        would report spend that did not happen and hide spend that did.
+        """
+        budget = self._request_budget
+        if budget is None:
+            return
+        budget.record_tokens(
+            "deepseek",
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+        )
 
     @property
     def last_model_returned(self) -> str | None:
@@ -760,6 +798,7 @@ class DeepSeekChatProvider:
 
                 async def _request() -> Any:
                     nonlocal request_attempt
+                    self._reserve_attempt()
                     request_attempt += 1
                     try:
                         return await self._client.chat.completions.create(
@@ -789,6 +828,7 @@ class DeepSeekChatProvider:
                     configured_max_tokens=self._config.max_tokens,
                     request_attempt=request_attempt,
                 )
+                self._record_tokens(telemetry.usage)
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
                     raise ProviderOutputLimitError(telemetry)
@@ -834,6 +874,7 @@ class DeepSeekChatProvider:
 
             async def _request() -> Any:
                 nonlocal request_attempt
+                self._reserve_attempt()
                 request_attempt += 1
                 try:
                     return await self._client.chat.completions.create(
@@ -868,6 +909,7 @@ class DeepSeekChatProvider:
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
             )
+            self._record_tokens(telemetry.usage)
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
                 raise ProviderOutputLimitError(telemetry)
@@ -1020,6 +1062,7 @@ class DeepSeekChatProvider:
 
             async def _request() -> Any:
                 nonlocal request_attempt
+                self._reserve_attempt()
                 request_attempt += 1
                 try:
                     return await self._client.chat.completions.create(
@@ -1073,6 +1116,7 @@ class DeepSeekChatProvider:
                 # the frames that still hold the raw response.
                 failure = _fresh_provider_error(error)
             if failure is None:
+                self._record_tokens(telemetry.usage)
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
                     failure = ProviderOutputLimitError(telemetry)
@@ -1160,6 +1204,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
 
             async def _request() -> Any:
                 nonlocal request_attempt
+                self._reserve_attempt()
                 request_attempt += 1
                 try:
                     return await self._client.responses.create(
@@ -1202,6 +1247,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
             )
+            self._record_tokens(telemetry.usage)
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
                 response = None

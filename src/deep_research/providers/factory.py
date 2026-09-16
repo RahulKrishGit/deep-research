@@ -29,6 +29,7 @@ from deep_research.providers.embeddings import (
     OpenAIEmbeddingProvider,
 )
 from deep_research.providers.openai_provider import OpenAIChatProvider
+from deep_research.request_budget import RequestBudget
 from deep_research.utils.config import EmbeddingProviderName, LLMConfig
 
 ChatAdapter: TypeAlias = OpenAIChatProvider | DeepSeekSchemaChatProvider
@@ -37,7 +38,11 @@ EmbeddingAdapter: TypeAlias = LocalEmbeddingProvider | OpenAIEmbeddingProvider
 
 
 def build_chat_provider(
-    config: LLMConfig, tracker: Tracker, *, api_key: str | None = None
+    config: LLMConfig,
+    tracker: Tracker,
+    *,
+    api_key: str | None = None,
+    request_budget: RequestBudget | None = None,
 ) -> ChatAdapter:
     """Select the chat adapter by configured name; never infer, never fall back.
 
@@ -46,14 +51,24 @@ def build_chat_provider(
     explicitly. ``None`` keeps the adapters' default behaviour of reading
     the process environment, which is what production wiring relies on.
 
+    ``request_budget`` is the run's attempt budget. It reaches the DeepSeek
+    adapter, whose transport reserves one attempt before every SDK call;
+    ``None`` means uncounted, which is what every existing caller gets. An
+    adapter that cannot honour a budget refuses it here rather than accepting
+    and dropping it: a budget that silently goes nowhere is exactly the
+    decorative ceiling this machinery exists to replace.
+
     The DeepSeek target adapter is ``DeepSeekSchemaChatProvider``: plain
     completions still use Chat Completions, but structured output is asked
     for through the provider's native schema, because JSON mode alone left
     target structured calls returning non-JSON text in live canaries.
     """
     if config.provider == "deepseek":
-        return DeepSeekSchemaChatProvider(config, tracker, api_key=api_key)
+        return DeepSeekSchemaChatProvider(
+            config, tracker, api_key=api_key, request_budget=request_budget
+        )
     if config.provider == "openai":
+        _reject_unhonourable_budget(request_budget)
         return OpenAIChatProvider(config, tracker, api_key=api_key)
     raise ProviderConfigurationError(
         f"Unsupported chat provider {config.provider!r}; "
@@ -66,15 +81,36 @@ def build_judge_provider(
     tracker: Tracker,
     *,
     api_key: str | None = None,
+    request_budget: RequestBudget | None = None,
 ) -> JudgeAdapter:
-    """Select the judge adapter by configured provider name."""
+    """Select the judge adapter by configured provider name.
+
+    ``request_budget`` follows the same rule as in
+    :func:`build_chat_provider`: the DeepSeek judge transport reserves
+    against it, and an adapter that cannot honour one refuses it instead of
+    dropping it.
+    """
     if config.provider == "deepseek":
-        return DeepSeekJudgeProvider(config, tracker, api_key=api_key)
+        return DeepSeekJudgeProvider(
+            config, tracker, api_key=api_key, request_budget=request_budget
+        )
     if config.provider == "openai":
+        _reject_unhonourable_budget(request_budget)
         return OpenAIChatProvider(config, tracker, api_key=api_key)
     raise ProviderConfigurationError(
         f"Unsupported chat provider {config.provider!r}; "
         "accepted values: deepseek, openai"
+    )
+
+
+def _reject_unhonourable_budget(request_budget: RequestBudget | None) -> None:
+    """Refuse a budget the selected adapter would silently ignore."""
+    if request_budget is None:
+        return
+    raise ProviderConfigurationError(
+        "request_budget was supplied for the openai adapter, which does not "
+        "reserve against it; a budget that is accepted and dropped is a "
+        "ceiling that does not hold"
     )
 
 

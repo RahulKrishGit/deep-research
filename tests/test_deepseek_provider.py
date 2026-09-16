@@ -42,12 +42,14 @@ from deep_research.observability import (
 from deep_research.providers import (
     NativeToolCall,
     NativeToolTurn,
+    ProviderError,
     ToolDefinition,
 )
 from deep_research.providers.deepseek_provider import (
     DEEPSEEK_BASE_URL,
     ChatMessage,
     DeepSeekChatProvider,
+    DeepSeekJudgeProvider,
     ProviderConfigurationError,
     ProviderOutputLimitError,
     ProviderRateLimitError,
@@ -56,7 +58,11 @@ from deep_research.providers.deepseek_provider import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
-from deep_research.utils.config import LLMConfig
+from deep_research.request_budget import (
+    RequestAttemptLimitError,
+    RequestBudget,
+)
+from deep_research.utils.config import LLMConfig, RequestBudgetConfig
 
 
 class RecordingCompletions:
@@ -3725,3 +3731,295 @@ async def test_deepseek_native_react_exhausted_retries_chain_no_sdk_error(
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert NATIVE_SENTINEL not in repr(_provider_exception_surfaces(caught.value))
+
+
+# ---------------------------------------------------------------------------
+# Request-budget wiring.
+#
+# Every DeepSeek transport attempt -- including each repo-owned retry, which is
+# a real outbound request -- reserves one unit *before* the SDK call, and the
+# attempt past the effective limit is refused before any network I/O. Reported
+# tokens are recorded only when a real response carried a safely parsed usage
+# figure; a transport failure reports no tokens at all.
+# ---------------------------------------------------------------------------
+
+
+def _deepseek_budget(
+    *, ceiling: int | None = None, stop_fraction: float = 1.0
+) -> RequestBudget:
+    """A run budget capping DeepSeek attempts; uncapped by default."""
+    return RequestBudget(
+        RequestBudgetConfig(
+            deepseek_attempt_ceiling=ceiling,
+            stop_fraction=stop_fraction,
+        )
+    )
+
+
+def _budgeted_provider(
+    tracker: Tracker,
+    completions: RecordingCompletions,
+    budget: RequestBudget,
+    **config_updates: object,
+) -> DeepSeekChatProvider:
+    return DeepSeekChatProvider(
+        deepseek_config(**config_updates),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+        request_budget=budget,
+    )
+
+
+def test_request_budget_defaults_to_none_so_existing_callers_are_uncounted() -> None:
+    provider = DeepSeekChatProvider(
+        deepseek_config(),
+        local_tracker(),
+        client=FakeDeepSeekClient(RecordingCompletions()),
+    )
+
+    assert provider._request_budget is None
+
+
+@pytest.mark.asyncio
+async def test_request_budget_reserves_once_per_repo_retry_attempt(
+    monkeypatch,
+) -> None:
+    """Each retry is a real outbound attempt and reserves its own unit."""
+    slept = _recorded_sleeps(monkeypatch)
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        RateLimitError(
+            "limited",
+            response=httpx.Response(
+                429, request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+            ),
+            body=None,
+        ),
+        chat_response(text="answer"),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        completions,
+        budget,
+        retry_count=3,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+
+    assert result.text == "answer"
+    assert len(completions.calls) == 3
+    assert slept == [1.0, 2.0]
+    # Three outbound attempts, three reservations -- reserving once outside the
+    # retry wrapper would have recorded a single unit here.
+    assert budget.snapshot("deepseek").attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_request_budget_refuses_the_attempt_past_the_limit_before_io() -> None:
+    budget = _deepseek_budget(ceiling=1)
+    completions = RecordingCompletions(chat_response(text="answer"))
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        first = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+        with pytest.raises(RequestAttemptLimitError) as caught:
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert first.text == "answer"
+    # The refused attempt reached no transport at all.
+    assert len(completions.calls) == 1
+    assert budget.snapshot("deepseek").attempts == 1
+    assert not isinstance(caught.value, ProviderError)
+
+
+@pytest.mark.asyncio
+async def test_request_budget_refuses_the_first_attempt_when_the_limit_is_zero() -> (
+    None
+):
+    """A limit of zero is a real declaration: no request may leave at all."""
+    budget = _deepseek_budget(ceiling=1, stop_fraction=0.5)
+    completions = RecordingCompletions(chat_response(text="answer"))
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert completions.calls == []
+    assert budget.snapshot("deepseek").attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_request_budget_refusal_during_retry_escapes_sdk_translation(
+    monkeypatch,
+) -> None:
+    """A limit error is a hard run boundary, never a retryable provider error."""
+    _recorded_sleeps(monkeypatch)
+    budget = _deepseek_budget(ceiling=1)
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(text="answer"),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        completions,
+        budget,
+        retry_count=3,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError) as caught:
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    # The retry was refused before it became a request.
+    assert len(completions.calls) == 1
+    assert budget.snapshot("deepseek").attempts == 1
+    assert type(caught.value) is RequestAttemptLimitError
+    assert not isinstance(caught.value, ProviderError)
+    assert caught.value.snapshot.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_request_budget_structured_repair_reserves_each_transport_attempt() -> (
+    None
+):
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(
+        chat_response(text="not-json"),
+        chat_response(text='{"answer": "yes", "confidence": 3}'),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "decide"):
+        parsed = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert parsed.answer == "yes"
+    assert len(completions.calls) == 2
+    snapshot = budget.snapshot("deepseek")
+    assert snapshot.attempts == 2
+    # Both responses really carried usage, so both are recorded.
+    assert snapshot.input_tokens == 8
+    assert snapshot.output_tokens == 4
+
+
+@pytest.mark.asyncio
+async def test_request_budget_native_react_reserves_and_records_one_attempt() -> None:
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec capacity"}')],
+            prompt_tokens=11,
+            completion_tokens=5,
+        )
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].tool_name == "web_search"
+    snapshot = budget.snapshot("deepseek")
+    assert snapshot.attempts == 1
+    assert snapshot.input_tokens == 11
+    assert snapshot.output_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_request_budget_responses_schema_call_reserves_and_records() -> None:
+    budget = _deepseek_budget()
+    responses = RecordingResponses(
+        responses_response(output_text='{"answer": "yes", "confidence": 3}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekJudgeProvider(
+        deepseek_config(),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+        request_budget=budget,
+    )
+
+    async with tracker.session_span("session-1", "judge"):
+        verdict = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge")], TinyAnswer
+        )
+
+    assert verdict.confidence == 3
+    snapshot = budget.snapshot("deepseek")
+    assert snapshot.attempts == 1
+    assert snapshot.input_tokens == 8
+    assert snapshot.output_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_request_budget_records_no_tokens_on_transport_failure(
+    monkeypatch,
+) -> None:
+    """A failed call must not report spend that never happened."""
+    slept = _recorded_sleeps(monkeypatch)
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        completions,
+        budget,
+        retry_count=1,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    snapshot = budget.snapshot("deepseek")
+    assert len(completions.calls) == 2
+    assert slept == [1.0]
+    assert snapshot.attempts == 2
+    assert snapshot.input_tokens == 0
+    assert snapshot.output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_request_budget_records_no_tokens_when_usage_is_malformed() -> None:
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(chat_response(prompt_tokens="4"))
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="malformed usage"):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    snapshot = budget.snapshot("deepseek")
+    assert snapshot.attempts == 1
+    assert snapshot.input_tokens == 0
+    assert snapshot.output_tokens == 0
