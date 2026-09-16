@@ -15,7 +15,7 @@ exit **4** (`--require-quality` failed). Record:
 | --- | --- | --- | --- |
 | 1 | Terminal `accepted` quality | **FAIL** | `partial` — critic **3/10** |
 | 2 | Coverage ≥ 0.80, every topic accounted for | **FAIL** | **3 of 6 topics = 50%** |
-| 3 | Zero duplicate claims / source rows / unresolved citations | **PASS** | 0 / 0 / 0 uncited settled points |
+| 3 | Zero duplicate claims / source rows / unresolved citations | **PASS — exact-fingerprint only, see below** | 0 / 0 / 0 uncited settled points |
 | 4 | Every cited source scored; settled points claim-linked | **PASS** | 5 cited, **5 scored** |
 | 5 | Verification passages provenance-bearing, independently published | **NOT MET** | only 2 verified claims; the report itself carries sections titled *"Not addressed by independent sources"* and *"Insufficient independent evidence"* |
 | 6 | Reader report ≤ 8,000 words | **PASS here — not enforced in production** | **1,629 words**, but the ceiling exists only as an *evaluation* metric (`e2e_evaluation/evaluators.py:34`, scored `1.0 if 40 <= words <= 8_000 else 0.35`). The CLI does not check it, and a sibling session published a **15,567-word** report with nothing objecting |
