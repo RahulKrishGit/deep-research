@@ -16,6 +16,7 @@ from pydantic import JsonValue
 
 from deep_research.agents.errors import PlanningError
 from deep_research.graph.state import GRAPH_SOURCE, HALTING_ERROR_TYPES
+from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.utils.types import ResearchError
 
 # Enumerated, project-generated failure messages. Never provider text and
@@ -40,6 +41,10 @@ GRAPH_ERROR_REASONS = {
     "graph_invalid_route": (
         "The graph attempted a refinement pass with no budget left, so the "
         "research run stopped."
+    ),
+    "graph_request_attempt_limit_exceeded": (
+        "The request attempt budget declared for this run was exhausted, so "
+        "the research run stopped."
     ),
     "graph_publication_unavailable": (
         "No report publisher was configured, so the composed artifacts were "
@@ -156,6 +161,36 @@ def invalid_route_error(
         error_type="graph_invalid_route",
         node=node,
         details={"iteration": iteration, "max_iterations": max_iterations},
+    )
+
+
+def request_attempt_limit_error(
+    error: RequestAttemptLimitError,
+    *,
+    node: str,
+) -> ResearchError:
+    """Record that a provider refused an attempt past the run's ceiling.
+
+    The refusal already carries its machine-readable reason: the snapshot's
+    provider category and bounded integers. Those, plus the enumerated
+    exception class name, are the whole record — exactly five keys. The
+    exception's own message is deliberately *not* copied, even though it is
+    static project text: the enumerated message above is the one this project
+    renders, and a second copy is a second place for a ceiling or a count to
+    be interpolated later. Token totals are not details either; they are
+    reported through the budget's own snapshots, not through a failure.
+    """
+    snapshot = error.snapshot
+    return graph_error(
+        error_type="graph_request_attempt_limit_exceeded",
+        node=node,
+        details={
+            "exception_type": type(error).__name__,
+            "provider": snapshot.provider,
+            "attempts": snapshot.attempts,
+            "ceiling": snapshot.ceiling,
+            "effective_limit": snapshot.effective_limit,
+        },
     )
 
 

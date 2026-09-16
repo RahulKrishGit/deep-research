@@ -129,6 +129,32 @@ def test_graph_exceptions_share_one_base() -> None:
     assert issubclass(GraphResumeError, GraphError)
 
 
+def test_the_request_attempt_limit_error_is_enumerated_and_non_recoverable() -> None:
+    """A refused attempt past a declared ceiling is a graph halt, not a blip."""
+    error_type = "graph_request_attempt_limit_exceeded"
+
+    assert error_type in GRAPH_ERROR_REASONS
+    assert GRAPH_ERROR_REASONS[error_type].strip()
+    assert error_type in HALTING_ERROR_TYPES
+
+    recorded = graph_error(
+        error_type=error_type,
+        node="researcher",
+        details={
+            "exception_type": "RequestAttemptLimitError",
+            "provider": "tavily",
+            "attempts": 5,
+            "ceiling": 5,
+            "effective_limit": 5,
+        },
+    )
+
+    assert recorded.error_type == error_type
+    assert recorded.message == GRAPH_ERROR_REASONS[error_type]
+    assert recorded.source == "graph.researcher"
+    assert recorded.recoverable is False
+
+
 def test_a_graph_event_names_its_node_in_the_source() -> None:
     event = graph_event(
         event_type="graph.node.started",

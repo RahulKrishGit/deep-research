@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.graph.errors import GRAPH_ERROR_REASONS
 from deep_research.graph.nodes import (
+    GraphNode,
     agent_node,
     critic_node,
     finalize_report_node,
@@ -21,6 +23,7 @@ from deep_research.graph.state import (
     ROUTE_END,
     ROUTE_FINALIZE,
     ROUTE_REFINE,
+    ResearchGraphState,
     dump_state,
     is_halted,
     load_state,
@@ -28,6 +31,11 @@ from deep_research.graph.state import (
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import ProviderConfigurationError
+from deep_research.request_budget import (
+    ProviderCategory,
+    RequestAttemptLimitError,
+    RequestBudgetSnapshot,
+)
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
@@ -188,6 +196,133 @@ async def test_planning_failure_preserves_safe_problems_without_hostile_text() -
     assert hostile_exception_text not in str(recorded.details)
     assert hostile_provider_sentinel not in str(recorded.details)
     assert is_halted(state)
+
+
+def _request_attempt_refusal(
+    *,
+    provider: ProviderCategory = "tavily",
+    attempts: int = 5,
+    ceiling: int | None = 5,
+    effective_limit: int | None = 5,
+) -> RequestAttemptLimitError:
+    """One refusal, as the budget raises it: static message plus snapshot."""
+    return RequestAttemptLimitError(
+        RequestBudgetSnapshot(
+            provider=provider,
+            attempts=attempts,
+            ceiling=ceiling,
+            effective_limit=effective_limit,
+            input_tokens=0,
+            output_tokens=0,
+        )
+    )
+
+
+async def _run_node(
+    node: GraphNode, channel: ResearchGraphState
+) -> ResearchState:
+    """Drive one node, reporting an escaped refusal as a plain failure.
+
+    ``agent_node`` is required to *record* a spent request budget as an
+    enumerated halt. Before that behaviour existed the refusal escaped the node
+    entirely, so it is reported here as a readable failure rather than as a
+    traceback from the awaited call.
+    """
+    try:
+        result = await node(channel)
+    except RequestAttemptLimitError as escaped:
+        pytest.fail(
+            "the request attempt limit refusal escaped the node instead of "
+            f"halting the run: {escaped!r}"
+        )
+    return load_state(result)
+
+
+@pytest.mark.asyncio
+async def test_a_request_attempt_limit_refusal_halts_with_safe_snapshot_details(
+) -> None:
+    refusal = _request_attempt_refusal()
+    agent = FakeAgent("researcher", [refusal])
+
+    state = await _run_node(agent_node(agent), dump_state(fake_research_state()))
+
+    assert [error.error_type for error in state.errors] == [
+        "graph_request_attempt_limit_exceeded"
+    ]
+    recorded = state.errors[0]
+    # Exact equality, so a sixth key cannot slip into a state record the CLI,
+    # the API stream, and the UI all render.
+    assert recorded.details == {
+        "exception_type": "RequestAttemptLimitError",
+        "provider": "tavily",
+        "attempts": 5,
+        "ceiling": 5,
+        "effective_limit": 5,
+    }
+    assert recorded.message == GRAPH_ERROR_REASONS[
+        "graph_request_attempt_limit_exceeded"
+    ]
+    assert recorded.source == "graph.researcher"
+    assert recorded.recoverable is False
+    assert is_halted(state)
+
+    # The refusal's own text is never recorded, and neither are the token
+    # totals the snapshot also carries.
+    serialized = json.dumps(recorded.model_dump(mode="json"))
+    assert str(refusal) not in serialized
+    assert "Request attempt limit reached" not in serialized
+    assert "input_tokens" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_a_request_attempt_limit_refusal_with_a_zero_limit_records_the_zero(
+) -> None:
+    """A zero effective limit is a declared refusal, and is recorded as ``0``."""
+    refusal = _request_attempt_refusal(
+        provider="openai", attempts=0, ceiling=4, effective_limit=0
+    )
+
+    state = await _run_node(
+        agent_node(FakeAgent("fact_checker", [refusal])),
+        dump_state(fake_research_state()),
+    )
+
+    assert state.errors[0].details == {
+        "exception_type": "RequestAttemptLimitError",
+        "provider": "openai",
+        "attempts": 0,
+        "ceiling": 4,
+        "effective_limit": 0,
+    }
+    assert is_halted(state)
+
+
+@pytest.mark.asyncio
+async def test_a_request_attempt_limit_refusal_is_never_retried_or_converted() -> None:
+    """One pass, one graph-owned record: never a retry, provider, or tool error."""
+    refusal = _request_attempt_refusal(
+        provider="deepseek", attempts=7, ceiling=7, effective_limit=7
+    )
+    agent = FakeAgent("synthesizer", [refusal])
+
+    state = await _run_node(agent_node(agent), dump_state(fake_research_state()))
+
+    assert len(agent.calls) == 1
+    assert [error.error_type for error in state.errors] == [
+        "graph_request_attempt_limit_exceeded"
+    ]
+    # Not converted into any other enumerated failure, and never attributed to
+    # a recoverable agent or tool taxonomy.
+    assert {
+        "graph_agent_configuration_error",
+        "graph_provider_configuration_error",
+        "graph_invalid_agent_state",
+        "graph_planning_failed",
+        "agent_tool_failed",
+    }.isdisjoint({error.error_type for error in state.errors})
+    assert [error.source for error in state.errors] == ["graph.synthesizer"]
+    # The pass is left unfinished rather than completed.
+    assert _event_types(state) == ["graph.node.started"]
 
 
 @pytest.mark.asyncio

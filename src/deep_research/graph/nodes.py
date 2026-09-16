@@ -7,13 +7,13 @@ function from channel to channel, which is what makes every rule below
 testable by calling it directly.
 
 Failure handling is a halt discipline rather than an exception escaping
-``ainvoke``. Three exception types become enumerated graph errors that mark
+``ainvoke``. Four exception types become enumerated graph errors that mark
 the run dead; every later node sees the mark, records ``graph.node.skipped``
 and returns without invoking its agent; the router sends the run to ``END``
 with status ``failed``. The state collected before the failure survives —
 which is the whole point of not raising.
 
-Anything other than those three exception types propagates. An unhandled
+Anything other than those four exception types propagates. An unhandled
 exception is a defect, not a research outcome, and converting it into a
 recorded error would hide it.
 """
@@ -50,6 +50,7 @@ from deep_research.graph.errors import (
     provider_configuration_error,
     publication_unavailable_error,
     publication_write_error,
+    request_attempt_limit_error,
 )
 from deep_research.graph.events import (
     node_completed_event,
@@ -73,6 +74,7 @@ from deep_research.graph.state import (
     load_state,
 )
 from deep_research.providers import ProviderConfigurationError
+from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
     ReportComposition,
@@ -150,6 +152,18 @@ def agent_node(
         )
         try:
             outcome = await agent.run(started)
+        except RequestAttemptLimitError as error:
+            # The run's declared attempt budget is spent. It arrives here only
+            # because the tool and provider layers deliberately re-raise it
+            # instead of translating it, so this is the one place it can be
+            # turned into a record: an enumerated halt whose details are the
+            # refusal's own snapshot. It must never reach _from_exception(),
+            # the provider retry policy, or a recoverable tool taxonomy — a
+            # recoverable record here would let the run carry on spending past
+            # a ceiling the user declared.
+            return _halt(
+                started, request_attempt_limit_error(error, node=name)
+            )
         except PlanningError as error:
             return _halt(started, planning_failed_error(error, node=name))
         except AgentConfigurationError as error:

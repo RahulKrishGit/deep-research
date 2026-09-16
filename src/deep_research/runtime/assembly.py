@@ -39,6 +39,7 @@ from deep_research.providers import (
     build_embedding_provider,
     validate_agent_model_configs,
 )
+from deep_research.request_budget import RequestBudget
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
 from deep_research.tools.base import BaseTool
@@ -60,6 +61,7 @@ def build_tools(
     tavily_api_key: str | None = None,
     search_client: Any | None = None,
     http_client: Any | None = None,
+    request_budget: RequestBudget | None = None,
 ) -> list[BaseTool]:
     """Build every tool any agent declares, in one shared registry.
 
@@ -68,6 +70,13 @@ def build_tools(
     ignores the rest, and it raises ``AgentConfigurationError`` when a
     declared tool was never injected — so the wiring guard is kept without
     six lists to keep in step.
+
+    ``request_budget`` goes to ``WebSearchTool`` and nowhere else. Tavily is
+    the only transport behind these six tools, and the remaining five make no
+    request at all, so handing any of them a budget would create the
+    impression of a bound that does not exist. The budget is shared, never
+    copied: ``RequestBudget`` holds mutable counters, and a copy per tool
+    would spend a second set of them.
     """
     return [
         WebSearchTool(
@@ -80,6 +89,7 @@ def build_tools(
             client=search_client,
             search_depth=settings.tavily.search_depth,
             max_results=settings.tavily.max_results,
+            request_budget=request_budget,
         ),
         WebScraperTool(tracker, client=http_client),
         DocumentReaderTool(tracker, client=http_client),
@@ -222,6 +232,7 @@ class ResearchRuntime:
     session_id: str
     settings: ConfigSettings
     tracker: Tracker
+    request_budget: RequestBudget
     graph: Any
     long_term: LongTermMemory | None
     procedural: ProceduralMemory | None
@@ -295,8 +306,16 @@ async def build_runtime(
             message=f"Memory could not be initialized: {error}",
         ) from error
 
+    # Exactly one budget for the whole run. The chat transports and the Tavily
+    # search tool reserve against this same object, so ``settings.request_budget``
+    # bounds the run rather than a single collaborator; a second budget would
+    # double every declared ceiling while each half looked correct on its own.
+    request_budget = RequestBudget(settings.request_budget)
+
     try:
-        provider = chat_provider or build_chat_provider(settings.llm, tracker)
+        provider = chat_provider or build_chat_provider(
+            settings.llm, tracker, request_budget=request_budget
+        )
     except ProviderConfigurationError as error:
         raise configuration_error(
             reason="provider_unconfigured",
@@ -314,6 +333,7 @@ async def build_runtime(
         tavily_api_key=tavily_api_key,
         search_client=search_client,
         http_client=http_client,
+        request_budget=request_budget,
     )
     agents = build_agents(
         settings,
@@ -333,6 +353,7 @@ async def build_runtime(
         session_id=session_id,
         settings=settings,
         tracker=tracker,
+        request_budget=request_budget,
         graph=graph,
         long_term=long_term,
         procedural=procedural,

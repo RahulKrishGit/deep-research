@@ -271,3 +271,28 @@ def test_the_node_names_are_unique_and_ordered() -> None:
 def test_the_halting_error_types_are_all_graph_owned() -> None:
     assert HALTING_ERROR_TYPES
     assert all(name.startswith("graph_") for name in HALTING_ERROR_TYPES)
+
+
+def test_the_request_attempt_limit_error_type_halts_a_run() -> None:
+    """A spent request budget stops the run; it is never merely recoverable."""
+    error_type = "graph_request_attempt_limit_exceeded"
+
+    assert error_type in HALTING_ERROR_TYPES
+
+    state = fake_research_state(
+        errors=[
+            ResearchError(
+                error_type=error_type,
+                source="graph.researcher",
+                message=(
+                    "The request attempt budget for this run was exhausted, "
+                    "so the research run stopped."
+                ),
+                recoverable=False,
+            )
+        ]
+    )
+
+    assert is_halted(state)
+    assert graph_route(state) == (ROUTE_END, "halted")
+    assert graph_status(state) == "failed"

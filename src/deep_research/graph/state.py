@@ -102,6 +102,7 @@ HALTING_ERROR_TYPES = frozenset(
         "graph_provider_configuration_error",
         "graph_invalid_agent_state",
         "graph_invalid_route",
+        "graph_request_attempt_limit_exceeded",
     }
 )
 
