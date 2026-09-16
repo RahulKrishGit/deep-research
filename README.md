@@ -4,7 +4,7 @@ Multi-agent deep research system using LangGraph, DeepSeek, ChromaDB, and LangSm
 
 ## Project Status
 
-Phase 4 complete — the package foundation, typed configuration/state, LangSmith observability, selectable DeepSeek/OpenAI chat providers, local and OpenAI embedding providers, core tools, the three-layer memory stack, the shared agent ReAct runtime, CLI, FastAPI API, and Streamlit Editorial Research Canvas UI are implemented.
+Phase 4 complete — the package foundation, typed configuration/state, LangSmith observability, selectable DeepSeek/OpenAI chat providers, local and OpenAI embedding providers, core tools, the three-layer memory stack, the shared agent ReAct runtime, CLI, and FastAPI API are implemented.
 
 ## Setup
 
@@ -732,44 +732,16 @@ everything disappears when the process exits. Authentication, multi-tenant
 authorization, durable queues, databases, and deployment setup remain out of
 scope — running the app is left to the caller.
 
-## Streamlit UI
+## UI
 
-The local Streamlit app provides the editorial Question → Investigation →
-Answer experience over the existing synchronous research engine. Install the
-development extras and launch it with:
-
-```bash
-pip install -e .[dev]
-streamlit run src/deep_research/ui/app.py
-```
-
-The UI accepts and renders Markdown only. Maximum iterations defaults to the
-`graph.max_iterations` value from the loaded configuration and can be adjusted
-for an individual run. While a session is running, only the live progress
-region refreshes every two seconds; the sidebar and user-controlled disclosure
-state remain stable.
-
-Session history is local compact metadata under
-`Path(output.directory) / "sessions"`. It does not persist report bodies, raw
-events, prompts, tool payloads, model messages, provider settings, or secrets.
-The Streamlit app calls the in-process controller directly and does not require
-FastAPI.
-
-When telemetry is unavailable, token totals and the LangSmith trace action are
-omitted rather than replaced with zero or dead controls. This keeps the UI's
-privacy boundary and status semantics explicit: the app never renders provider
-secrets, exception text, raw traces, or diagnostic payloads.
-
-For deterministic offline visual review, run the development-only harness and
-use its `Demo state` selector to inspect New, Running, Completed, History,
-Max iterations, and Failed/partial states:
-
-```bash
-streamlit run tests/test_ui/manual_mock_app.py
-```
+The Streamlit app was removed. It built `ScoredSource` objects with the
+`corroboration_score` field, which the research engine no longer defines, so it
+could not run against the current engine. The CLI and the FastAPI interface are
+the supported interfaces until a replacement front end lands on top of the
+FastAPI API.
 
 Live-provider smoke tests are opt-in and require separate authorization at
-execution time. They are not part of the default UI or repository test runs.
+execution time. They are not part of the default repository test runs.
 
 ## Command Line Interface
 
