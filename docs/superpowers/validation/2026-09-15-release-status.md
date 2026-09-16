@@ -18,8 +18,8 @@ exit **4** (`--require-quality` failed). Record:
 | 3 | Zero duplicate claims / source rows / unresolved citations | **PASS** | 0 / 0 / 0 uncited settled points |
 | 4 | Every cited source scored; settled points claim-linked | **PASS** | 5 cited, **5 scored** |
 | 5 | Verification passages provenance-bearing, independently published | **NOT MET** | only 2 verified claims; the report itself carries sections titled *"Not addressed by independent sources"* and *"Insufficient independent evidence"* |
-| 6 | Reader report ≤ 8,000 words | **PASS** | **1,629 words** (11,389 chars) |
-| 7 | Backmatter ≤ 35% of reader-report characters | **PASS** | Methodology + References = **16.9%** (boundary: the `## Methodology` heading) |
+| 6 | Reader report ≤ 8,000 words | **PASS here — not enforced in production** | **1,629 words**, but the ceiling exists only as an *evaluation* metric (`e2e_evaluation/evaluators.py:34`, scored `1.0 if 40 <= words <= 8_000 else 0.35`). The CLI does not check it, and a sibling session published a **15,567-word** report with nothing objecting |
+| 7 | Backmatter ≤ 35% of reader-report characters | **PASS here — not implemented anywhere** | **16.9%** by my own measurement (boundary: the `## Methodology` heading). The string `backmatter` does not appear anywhere in `src/`; the criterion is a design goal in the spec (§ line 80) with **no code that measures it** |
 | 8 | No unexplained agent error; no generic-only limitation | **FAIL** | status `max_iterations`: *"the refinement budget was exhausted before the critic accepted the report"*; many `agent_tool_budget_exhausted` events |
 | 9 | Whole-report judge ≥ 0.80 | **NOT MEASURED** | the judge step was never reached — 0 occurrences of `judge` in the run log, as in Q1 |
 | 10 | CLI summary matches artifacts and state | **PASS (after a fix)** | `855b883` removed a `getattr` fallback that could print no budget section for a run whose ceilings *were* enforced |
