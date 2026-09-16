@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
@@ -16,6 +17,18 @@ from deep_research.tools.base import (
     ToolExecution,
     ToolExecutionError,
 )
+
+# A failure published for a search request is bounded to this shape, so an
+# exception message or a remote ``Content-Type`` header can never be echoed
+# back into public state. ``__init__`` bounds ``max_retries`` to ``0..2``, so a
+# published attempt count is ``1.._MAX_ATTEMPTS``, a status code is an integer
+# in ``100..599``, and a media type is a lower-case ASCII type of at most
+# ``_MEDIA_TYPE_MAX_LENGTH`` characters. Anything else is reported as one of
+# this module's static markers.
+_MAX_ATTEMPTS = 3
+_MEDIA_TYPE_MAX_LENGTH = 64
+_UNKNOWN_CONTENT_TYPE = "unknown"
+_MEDIA_TYPE_PATTERN = re.compile(r"[a-z0-9!#$%&'*+.^_`|~-]+/[a-z0-9!#$%&'*+.^_`|~-]+")
 
 
 class SearchClient(Protocol):
@@ -171,12 +184,88 @@ def _retry_delay(error: BaseException, retry_index: int) -> float:
     return 0.5 * (2**retry_index)
 
 
-def _tool_execution_error(error: BaseException, attempts: int) -> ToolExecutionError:
-    details: dict[str, Any] = {"attempts": attempts}
+def _bounded_attempts(value: Any) -> int | None:
+    """``value`` as a published attempt count, or ``None`` when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if not 1 <= value <= _MAX_ATTEMPTS:
+        return None
+    return value
+
+
+def _bounded_status_code(value: Any) -> int | None:
+    """``value`` as a published status code, or ``None`` when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if not 100 <= value <= 599:
+        return None
+    return value
+
+
+def _content_type(response: Any) -> Any:
+    """The ``Content-Type`` of ``response``, when it exposes one."""
+    headers = getattr(response, "headers", None)
+    if not isinstance(headers, Mapping):
+        return None
+    return headers.get("content-type")
+
+
+def _bounded_content_type(value: Any) -> str:
+    """The media type of ``value``, or the marker when it has none.
+
+    The result is a lower-case ASCII media type of at most
+    ``_MEDIA_TYPE_MAX_LENGTH`` characters or ``_UNKNOWN_CONTENT_TYPE``. The
+    value comes from a remote provider and reaches public state, so it is
+    revalidated by type and non-ASCII input is rejected before anything else:
+    folding and stripping are Unicode-aware (a KELVIN SIGN folds to ASCII
+    ``k``, a no-break space is stripped), which would turn malformed input into
+    a normalised copy of itself. A malformed or over-long value yields the
+    static marker instead of a truncated copy of that text.
+    """
+    if not isinstance(value, str) or not value.isascii():
+        return _UNKNOWN_CONTENT_TYPE
+    media_type = value.split(";", 1)[0].strip().lower()
+    if len(media_type) > _MEDIA_TYPE_MAX_LENGTH:
+        return _UNKNOWN_CONTENT_TYPE
+    if _MEDIA_TYPE_PATTERN.fullmatch(media_type) is None:
+        return _UNKNOWN_CONTENT_TYPE
+    return media_type
+
+
+def _tool_execution_error(error: BaseException, attempts: Any) -> ToolExecutionError:
+    """Build the failure for one exhausted search request.
+
+    The message is one of this module's static sentences and the details hold
+    only bounded values, because both reach public state: the retry loop
+    catches timeouts and HTTP status errors raised on behalf of a remote
+    provider, so ``str(error)`` routinely embeds remote text. Every value is
+    revalidated here rather than trusted from the caller. ``attempts`` is
+    ``attempt + 1`` for an ``attempt`` in ``0..max_retries`` and ``__init__``
+    bounds ``max_retries`` to ``0..2``, so a published count is ``1..3`` and
+    ``retries`` is ``0..2``; an unusable count is dropped rather than clamped.
+    ``status_code`` is *not* structural — a nonconforming peer can report any
+    code — so it is published only inside ``100..599`` and the key is omitted,
+    never nulled, otherwise. The content type of the failing response is
+    published as a bounded media type, or the static marker when it carries
+    none.
+    """
+    details: dict[str, Any] = {}
+    bounded_attempts = _bounded_attempts(attempts)
+    if bounded_attempts is not None:
+        details["attempts"] = bounded_attempts
+        details["retries"] = bounded_attempts - 1
+    message = "the search request timed out"
     if isinstance(error, httpx.HTTPStatusError):
-        details["status_code"] = error.response.status_code
+        response = getattr(error, "response", None)
+        status_code = _bounded_status_code(getattr(response, "status_code", None))
+        if status_code is None:
+            message = "the search request failed"
+        else:
+            message = "the search request failed with an HTTP error status"
+            details["status_code"] = status_code
+        details["content_type"] = _bounded_content_type(_content_type(response))
     return ToolExecutionError(
-        str(error) or type(error).__name__,
+        message,
         error_type=type(error).__name__,
         details=details,
     )
