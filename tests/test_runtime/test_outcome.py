@@ -6,6 +6,10 @@ from deep_research.agents.events import agent_event
 from deep_research.graph.events import report_published_event
 from deep_research.graph.orchestrator import GraphRun
 from deep_research.observability import TokenUsageMetric, ToolMetric
+from deep_research.request_budget import (
+    ProviderCategory,
+    RequestBudgetSnapshot,
+)
 from deep_research.runtime.outcome import (
     ResearchOutcome,
     ToolCallSummary,
@@ -471,3 +475,69 @@ def test_a_failed_run_is_reported_as_failed() -> None:
     )
 
     assert build_outcome(run, metrics=[]).failed is True
+
+
+def budget_snapshot(
+    provider: ProviderCategory,
+    *,
+    attempts: int,
+    ceiling: int | None = None,
+    effective_limit: int | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> RequestBudgetSnapshot:
+    return RequestBudgetSnapshot(
+        provider=provider,
+        attempts=attempts,
+        ceiling=ceiling,
+        effective_limit=effective_limit,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+def completed_run() -> GraphRun:
+    return GraphRun(
+        session_id="session-1",
+        state=base_state(),
+        status="completed",
+        trace_url=None,
+    )
+
+
+def test_request_budget_snapshots_default_to_an_empty_tuple() -> None:
+    """A caller that never saw a budget still gets an immutable tuple."""
+    outcome = build_outcome(completed_run(), metrics=[])
+
+    assert outcome.request_budget_snapshots == ()
+    assert isinstance(outcome.request_budget_snapshots, tuple)
+
+
+def test_build_outcome_carries_the_request_budget_snapshots() -> None:
+    snapshots = (
+        budget_snapshot(
+            "tavily", attempts=11, ceiling=11, effective_limit=11
+        ),
+    )
+
+    outcome = build_outcome(
+        completed_run(), metrics=[], request_budget_snapshots=snapshots
+    )
+
+    assert outcome.request_budget_snapshots == snapshots
+    assert outcome.request_budget_snapshots[0].attempts == 11
+    assert outcome.request_budget_snapshots[0].ceiling == 11
+
+
+def test_request_budget_snapshots_preserve_the_declared_absence_of_a_ceiling() -> (
+    None
+):
+    """An uncapped provider is recorded as ``None``, never as a zero limit."""
+    outcome = build_outcome(
+        completed_run(),
+        metrics=[],
+        request_budget_snapshots=(budget_snapshot("openai", attempts=2),),
+    )
+
+    assert outcome.request_budget_snapshots[0].ceiling is None
+    assert outcome.request_budget_snapshots[0].effective_limit is None

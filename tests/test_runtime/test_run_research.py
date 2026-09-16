@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import yaml
 
@@ -13,6 +15,7 @@ from deep_research.main import (
     run_research,
     run_research_sync,
 )
+from deep_research.request_budget import RequestBudget, RequestBudgetUpdate
 from deep_research.runtime.assembly import ResearchRuntime
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.outcome import ResearchOutcome
@@ -451,3 +454,164 @@ async def test_resume_forwards_the_event_handler_and_streams_the_terminal_sessio
     assert resumed.status == "completed"
     assert received == resumed.state.events
     assert received[-1].event_type == "graph.session.completed"
+
+
+def budget_runtime(settings, *, session_id, tracker, budget, agents=None):
+    """A runtime stand-in exposing the shared run budget.
+
+    ``ResearchRuntime`` gains ``request_budget`` in the task that owns
+    ``assembly.py``; the budget surface ``run_research`` touches is only
+    ``request_budget``, so a stand-in keeps this task's tests independent of
+    that one.
+    """
+    return SimpleNamespace(
+        session_id=session_id,
+        settings=settings,
+        tracker=tracker,
+        graph=compile_research_graph(
+            agents or fake_research_agents(), checkpointer=None
+        ),
+        long_term=None,
+        procedural=None,
+        request_budget=budget,
+    )
+
+
+def reserving_builder(tracker, budget, *, on_start=None):
+    """A runtime builder whose run reserves one Tavily attempt at start."""
+
+    async def build(settings, *, session_id, **_ignored):
+        if on_start is not None:
+            on_start(budget)
+        return budget_runtime(
+            settings, session_id=session_id, tracker=tracker, budget=budget
+        )
+
+    return build
+
+
+@pytest.mark.asyncio
+async def test_run_research_installs_the_request_budget_handler_before_the_graph(
+    config_file, tracker
+) -> None:
+    """The observer is installed after construction, before any graph work."""
+    budget = RequestBudget()
+    seen: list[str] = []
+    installed_when_the_graph_started: list[bool] = []
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings, session_id=session_id, tracker=tracker, budget=budget
+        )
+
+    def event_handler(event: ResearchEvent) -> None:
+        if event.event_type == "graph.session.started":
+            budget.reserve("tavily")
+            installed_when_the_graph_started.append(bool(seen))
+
+    def record(update: RequestBudgetUpdate) -> None:
+        seen.append(update.kind)
+
+    await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        event_handler=event_handler,
+        request_budget_handler=record,
+    )
+
+    assert installed_when_the_graph_started == [True]
+    assert seen == ["attempt_reserved"]
+
+
+@pytest.mark.asyncio
+async def test_run_research_carries_request_budget_snapshots_into_the_outcome(
+    config_file, tracker
+) -> None:
+    budget = RequestBudget()
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings, session_id=session_id, tracker=tracker, budget=budget
+        )
+
+    def event_handler(event: ResearchEvent) -> None:
+        if event.event_type == "graph.session.started":
+            budget.reserve("tavily")
+
+    outcome = await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        event_handler=event_handler,
+    )
+
+    by_provider = {
+        snapshot.provider: snapshot
+        for snapshot in outcome.request_budget_snapshots
+    }
+    assert [
+        snapshot.provider for snapshot in outcome.request_budget_snapshots
+    ] == ["deepseek", "openai", "tavily"]
+    assert by_provider["tavily"].attempts == 1
+    assert by_provider["deepseek"].attempts == 0
+    assert by_provider["openai"].attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_run_research_clears_the_request_budget_handler_when_it_returns(
+    config_file, tracker
+) -> None:
+    """The runtime outlives one call; its observer must not."""
+    budget = RequestBudget()
+    seen: list[str] = []
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings, session_id=session_id, tracker=tracker, budget=budget
+        )
+
+    def record(update: RequestBudgetUpdate) -> None:
+        seen.append(update.kind)
+
+    await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        request_budget_handler=record,
+    )
+    budget.reserve("tavily")
+
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_run_research_applies_request_budget_config_overrides(
+    config_file, tracker
+) -> None:
+    observed: dict[str, object] = {}
+
+    async def builder(settings, *, session_id, **_ignored):
+        observed["tavily"] = settings.request_budget.tavily_attempt_ceiling
+        observed["deepseek"] = settings.request_budget.deepseek_attempt_ceiling
+        observed["stop_fraction"] = settings.request_budget.stop_fraction
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=RequestBudget(settings.request_budget),
+        )
+
+    await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        config_overrides={
+            "request_budget": {
+                "tavily_attempt_ceiling": 11,
+                "stop_fraction": 0.5,
+            }
+        },
+    )
+
+    assert observed == {"tavily": 11, "deepseek": None, "stop_fraction": 0.5}

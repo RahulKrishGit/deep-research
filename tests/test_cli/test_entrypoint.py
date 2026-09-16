@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import threading
 
 import pytest
 import yaml
@@ -26,6 +27,10 @@ from deep_research.graph.events import (
 )
 from deep_research.main import run_research_sync
 from deep_research.observability import TokenUsage
+from deep_research.request_budget import (
+    RequestBudgetSnapshot,
+    RequestBudgetUpdate,
+)
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.types import (
@@ -163,12 +168,14 @@ def test_the_cli_passes_every_option_through_to_run_research() -> None:
 
     call = dict(runner.calls[0])
     assert isinstance(call.pop("event_handler"), ProgressStream)
+    assert call.pop("request_budget_handler", None) is not None
     assert call == {
         "question": QUESTION,
         "resume_session_id": None,
         "config_path": "custom.yaml",
         "max_iterations": 5,
         "output_format": "markdown",
+        "config_overrides": None,
     }
 
 
@@ -605,3 +612,179 @@ def test_the_module_entry_point_exposes_main() -> None:
     from deep_research.__main__ import main as module_main
 
     assert module_main is main
+
+
+# --- the request budget ----------------------------------------------------
+
+
+def budget_snapshot(
+    provider: str,
+    *,
+    attempts: int,
+    ceiling: int | None = None,
+    effective_limit: int | None = None,
+) -> RequestBudgetSnapshot:
+    return RequestBudgetSnapshot(
+        provider=provider,  # type: ignore[arg-type]
+        attempts=attempts,
+        ceiling=ceiling,
+        effective_limit=effective_limit,
+        input_tokens=0,
+        output_tokens=0,
+    )
+
+
+def reserved_update() -> RequestBudgetUpdate:
+    return RequestBudgetUpdate(
+        kind="attempt_reserved",
+        snapshot=budget_snapshot(
+            "tavily", attempts=1, ceiling=11, effective_limit=11
+        ),
+    )
+
+
+class BudgetReportingRunner:
+    """Hand one budget update to the CLI's own handler, then return."""
+
+    def __init__(self, result: ResearchOutcome | None = None) -> None:
+        self.result = result if result is not None else outcome()
+        self.handlers: list[object] = []
+
+    def __call__(self, **kwargs: object) -> ResearchOutcome:
+        handler = kwargs.get("request_budget_handler")
+        self.handlers.append(handler)
+        assert callable(handler)
+        handler(reserved_update())
+        return self.result
+
+
+def test_main_builds_the_nested_request_budget_overrides() -> None:
+    runner = RecordingRunner()
+
+    main(
+        [
+            QUESTION,
+            "--request-deepseek-attempt-ceiling",
+            "5",
+            "--request-openai-attempt-ceiling",
+            "7",
+            "--request-tavily-attempt-ceiling",
+            "11",
+            "--request-stop-fraction",
+            "0.5",
+        ],
+        runner=runner,
+        stream=io.StringIO(),
+    )
+
+    assert runner.calls[0].get("config_overrides") == {
+        "request_budget": {
+            "deepseek_attempt_ceiling": 5,
+            "openai_attempt_ceiling": 7,
+            "tavily_attempt_ceiling": 11,
+            "stop_fraction": 0.5,
+        }
+    }
+
+
+def test_only_the_supplied_request_budget_keys_reach_the_config() -> None:
+    runner = RecordingRunner()
+
+    main(
+        [QUESTION, "--request-tavily-attempt-ceiling", "11"],
+        runner=runner,
+        stream=io.StringIO(),
+    )
+
+    assert runner.calls[0].get("config_overrides") == {
+        "request_budget": {"tavily_attempt_ceiling": 11}
+    }
+
+
+def test_no_request_budget_flag_means_no_overrides_at_all() -> None:
+    runner = RecordingRunner()
+
+    main([QUESTION], runner=runner, stream=io.StringIO())
+
+    assert runner.calls[0].get("config_overrides") is None
+
+
+def test_main_passes_a_request_budget_stream_to_its_runner() -> None:
+    from deep_research.cli import RequestBudgetStream
+
+    runner = RecordingRunner()
+
+    main([QUESTION], runner=runner, stream=io.StringIO())
+
+    assert isinstance(
+        runner.calls[0].get("request_budget_handler"), RequestBudgetStream
+    )
+
+
+def test_request_budget_updates_stream_live_only_when_verbose() -> None:
+    """A worker thread's update is flushed in verbose mode, silent otherwise."""
+    verbose_stream = FlushCountingStream()
+
+    main(
+        [QUESTION, "--verbose"],
+        runner=BudgetReportingRunner(),
+        stream=verbose_stream,
+    )
+
+    assert any("tavily" in line for line in verbose_stream.flushed_lines)
+
+    quiet_stream = io.StringIO()
+    main([QUESTION], runner=BudgetReportingRunner(), stream=quiet_stream)
+
+    assert "tavily" not in quiet_stream.getvalue()
+    assert "Request budget" not in quiet_stream.getvalue()
+
+
+def test_the_request_budget_stream_serializes_worker_thread_writes() -> None:
+    """Provider work really is concurrent; the stream must not interleave."""
+    from deep_research.cli import RequestBudgetStream
+
+    stream = io.StringIO()
+    handler = RequestBudgetStream(stream, verbose=True)
+
+    def worker() -> None:
+        for _ in range(20):
+            handler(reserved_update())
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    lines = [line for line in stream.getvalue().splitlines() if line]
+    assert len(lines) == 160
+    assert all(line.startswith("  request budget: tavily") for line in lines)
+    assert all(line.endswith(")") for line in lines)
+
+
+def test_a_request_limit_graph_failure_exits_three_before_require_quality() -> None:
+    """Exit 3 outranks the opt-in quality exit: the run did not finish."""
+    runner = RecordingRunner(
+        result=outcome(
+            status="failed",
+            request_budget_snapshots=(
+                budget_snapshot(
+                    "tavily", attempts=11, ceiling=11, effective_limit=11
+                ),
+            ),
+        )
+    )
+    stream = io.StringIO()
+
+    code = main(
+        [QUESTION, "--require-quality", "--verbose"],
+        runner=runner,
+        stream=stream,
+    )
+
+    printed = stream.getvalue()
+    assert code == EXIT_GRAPH_FAILED
+    assert "Status: failed" in printed
+    assert "Request budget:" in printed
+    assert "--require-quality" not in printed

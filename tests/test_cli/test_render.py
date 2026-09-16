@@ -13,6 +13,10 @@ from deep_research.graph.events import (
     session_started_event,
 )
 from deep_research.observability import TokenUsage
+from deep_research.request_budget import (
+    ProviderCategory,
+    RequestBudgetSnapshot,
+)
 from deep_research.runtime.outcome import ResearchOutcome, ToolCallSummary
 from deep_research.utils.types import (
     Critique,
@@ -515,3 +519,145 @@ def test_verbose_summary_is_explicit_when_no_tool_calls_were_recorded() -> None:
     joined = "\n".join(render_summary(build_outcome(), verbose=True))
 
     assert "Tool calls: none recorded" in joined
+
+
+# --- the request budget ----------------------------------------------------
+
+
+def budget_snapshot(
+    provider: ProviderCategory,
+    *,
+    attempts: int,
+    ceiling: int | None = None,
+    effective_limit: int | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> RequestBudgetSnapshot:
+    return RequestBudgetSnapshot(
+        provider=provider,
+        attempts=attempts,
+        ceiling=ceiling,
+        effective_limit=effective_limit,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+def budgeted_outcome(**overrides: object) -> ResearchOutcome:
+    """An outcome carrying the three provider categories a run really records."""
+    snapshots = overrides.pop(
+        "request_budget_snapshots",
+        (
+            budget_snapshot(
+                "deepseek",
+                attempts=3,
+                ceiling=10,
+                effective_limit=10,
+                input_tokens=900,
+                output_tokens=100,
+            ),
+            budget_snapshot("openai", attempts=2),
+            budget_snapshot(
+                "tavily", attempts=11, ceiling=11, effective_limit=11
+            ),
+        ),
+    )
+    return build_outcome(request_budget_snapshots=snapshots, **overrides)
+
+
+def test_the_request_budget_section_names_all_three_providers() -> None:
+    joined = "\n".join(render_summary(budgeted_outcome(), verbose=True))
+
+    assert "Request budget:" in joined
+    assert "deepseek: 3 attempts reserved" in joined
+    assert "openai: 2 attempts reserved" in joined
+    assert "tavily: 11 attempts reserved" in joined
+
+
+def test_a_request_budget_ceiling_renders_its_effective_limit() -> None:
+    joined = "\n".join(render_summary(budgeted_outcome(), verbose=True))
+
+    assert "(ceiling 10, effective limit 10)" in joined
+    assert "(ceiling 11, effective limit 11)" in joined
+
+
+def test_an_absent_request_budget_ceiling_is_never_rendered_as_zero() -> None:
+    joined = "\n".join(render_summary(budgeted_outcome(), verbose=True))
+    line = next(
+        row for row in joined.splitlines() if row.strip().startswith("openai:")
+    )
+
+    assert "ceiling not set" in line
+    assert "0" not in line
+    assert "effective limit" not in line
+
+
+def test_the_request_budget_tokens_are_post_response_counts_not_cost() -> None:
+    joined = "\n".join(render_summary(budgeted_outcome(), verbose=True))
+
+    assert "reported post-response" in joined
+    assert "not a cost" in joined
+    assert "1000 total (900 in / 100 out)" in joined
+
+
+def test_the_request_budget_section_is_verbose_only() -> None:
+    joined = "\n".join(render_summary(budgeted_outcome(), verbose=False))
+
+    assert "Request budget" not in joined
+    assert "post-response" not in joined
+    assert "deepseek" not in joined
+    assert "openai" not in joined
+    assert "tavily" not in joined
+
+
+def test_verbose_summary_does_not_print_request_budget_tokens_twice() -> None:
+    """The snapshots carry the tokens once the budget reported them."""
+    outcome = budgeted_outcome(
+        token_usage=TokenUsage(input_tokens=900, output_tokens=100)
+    )
+
+    joined = "\n".join(render_summary(outcome, verbose=True))
+
+    assert joined.count("900 in") == 1
+    assert "Tokens: 1000 total (900 in / 100 out)" not in joined
+
+
+def test_a_legacy_outcome_without_request_budget_snapshots_keeps_the_token_line() -> (
+    None
+):
+    """An injected outcome from before the budget existed still reports."""
+    outcome = build_outcome(
+        token_usage=TokenUsage(input_tokens=900, output_tokens=100)
+    )
+
+    joined = "\n".join(render_summary(outcome, verbose=True))
+
+    assert "Tokens: 1000 total (900 in / 100 out)" in joined
+
+
+def test_a_scraper_failure_and_request_budget_render_no_urls_or_queries() -> None:
+    """Bounded fields only: no error text, no URL, no query content."""
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        errors=[
+            ResearchError(
+                error_type="scraper_failure",
+                source="tools.scraper",
+                message="The scraper could not read one source.",
+                details={"url": "https://example.invalid/secret-page"},
+            )
+        ],
+    )
+    outcome = budgeted_outcome(state=state)
+
+    joined = "\n".join(
+        render_summary(outcome, verbose=True)
+        + render_warnings(outcome, verbose=True)
+    )
+
+    assert "Request budget:" in joined
+    assert "https://" not in joined
+    assert "example.invalid" not in joined
+    assert "secret-page" not in joined
+    assert QUESTION not in joined

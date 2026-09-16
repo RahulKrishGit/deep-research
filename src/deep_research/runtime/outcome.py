@@ -26,6 +26,7 @@ from deep_research.observability import (
     TokenUsageMetric,
     ToolMetric,
 )
+from deep_research.request_budget import RequestBudgetSnapshot
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     ReportQualitySnapshot,
@@ -178,6 +179,16 @@ class ResearchOutcome:
     ledger write is ``None`` rather than an earlier pass's file.
     """
 
+    request_budget_snapshots: tuple[RequestBudgetSnapshot, ...] = ()
+    """The run's terminal per-provider attempt and token counts.
+
+    The budget's own immutable snapshots, in its fixed ``deepseek``,
+    ``openai``, ``tavily`` order, and empty when no budget was observed at
+    all — an injected outcome, or a runtime that carries none. Never
+    ``None``: a front-end renders "not recorded" rather than inventing a
+    limit, and an absent ceiling stays absent instead of becoming a zero.
+    """
+
     @property
     def report(self) -> str | None:
         """The report Markdown, authoritative whether or not it was written."""
@@ -213,8 +224,14 @@ def build_outcome(
     run: GraphRun,
     *,
     metrics: Sequence[MetricRecord],
+    request_budget_snapshots: Sequence[RequestBudgetSnapshot] = (),
 ) -> ResearchOutcome:
-    """Fold one graph run and the tracker's metrics into an outcome."""
+    """Fold one graph run and the tracker's metrics into an outcome.
+
+    ``request_budget_snapshots`` defaults to the empty tuple so every existing
+    injected and unit caller stays source-compatible: an outcome built without
+    a budget simply records none.
+    """
     return ResearchOutcome(
         session_id=run.session_id,
         question=run.state.original_question,
@@ -227,4 +244,5 @@ def build_outcome(
             tool_call_summaries(metrics, session_id=run.session_id)
         ),
         evidence_path=evidence_path_from_state(run.state),
+        request_budget_snapshots=tuple(request_budget_snapshots),
     )

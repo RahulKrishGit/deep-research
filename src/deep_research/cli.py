@@ -18,20 +18,34 @@ report included, unless ``--require-quality`` was passed — 1 a configuration
 failure, 2 a usage error, 3 a graph failure, 4 a report the terminal quality
 gates did not accept while ``--require-quality`` was set, and 130 an
 interrupt.
+
+One surface is not a ``ResearchEvent`` stream: the run's request budget
+publishes from provider worker threads, several of which are in flight at
+once. ``RequestBudgetStream`` serializes those lines and, like the rest of the
+diagnostic detail, prints them only under ``--verbose``. The terminal section
+in the summary is the same data read once, from the budget's own immutable
+snapshots.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TextIO
+
+from pydantic import JsonValue
 
 from deep_research.main import (
     DEFAULT_CONFIG_PATH,
     SUPPORTED_OUTPUT_FORMATS,
     run_research_sync,
+)
+from deep_research.request_budget import (
+    RequestBudgetSnapshot,
+    RequestBudgetUpdate,
 )
 from deep_research.runtime.errors import (
     ResearchConfigurationError,
@@ -74,6 +88,14 @@ class CliOptions:
     verbose: bool
     require_quality: bool
 
+    # Request-scoped budget controls. ``None`` means "this run requested
+    # nothing", so the value the config file declares stays in force; the CLI
+    # never rewrites the file.
+    request_deepseek_attempt_ceiling: int | None = None
+    request_openai_attempt_ceiling: int | None = None
+    request_tavily_attempt_ceiling: int | None = None
+    request_stop_fraction: float | None = None
+
 
 def _positive_int(value: str) -> int:
     try:
@@ -84,6 +106,27 @@ def _positive_int(value: str) -> int:
         ) from error
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _stop_fraction(value: str) -> float:
+    """Parse ``0 < F <= 1``, the interval ``RequestBudgetConfig`` validates.
+
+    The chained comparison is the validation: it also refuses ``nan`` and
+    ``inf``, which compare false against both bounds, so a caller cannot slip
+    past the config model's own ``gt=0, le=1`` constraint into a validation
+    error at startup instead of a usage error here.
+    """
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a number"
+        ) from error
+    if not 0 < parsed <= 1:
+        raise argparse.ArgumentTypeError(
+            "must be greater than 0 and at most 1"
+        )
     return parsed
 
 
@@ -160,6 +203,37 @@ def build_parser() -> argparse.ArgumentParser:
             "(by default a partial report still exits 0)"
         ),
     )
+    parser.add_argument(
+        "--request-deepseek-attempt-ceiling",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="DeepSeek transport attempts this run may reserve",
+    )
+    parser.add_argument(
+        "--request-openai-attempt-ceiling",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="OpenAI transport attempts this run may reserve",
+    )
+    parser.add_argument(
+        "--request-tavily-attempt-ceiling",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Tavily transport attempts this run may reserve",
+    )
+    parser.add_argument(
+        "--request-stop-fraction",
+        type=_stop_fraction,
+        default=None,
+        metavar="F",
+        help=(
+            "fraction of each requested ceiling this run may actually spend "
+            "(0 < F <= 1); the limit is floor(ceiling * F)"
+        ),
+    )
     return parser
 
 
@@ -199,7 +273,44 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
         config=namespace.config,
         verbose=bool(namespace.verbose),
         require_quality=bool(namespace.require_quality),
+        request_deepseek_attempt_ceiling=(
+            namespace.request_deepseek_attempt_ceiling
+        ),
+        request_openai_attempt_ceiling=namespace.request_openai_attempt_ceiling,
+        request_tavily_attempt_ceiling=namespace.request_tavily_attempt_ceiling,
+        request_stop_fraction=namespace.request_stop_fraction,
     )
+
+
+def request_budget_overrides(
+    options: CliOptions,
+) -> dict[str, JsonValue] | None:
+    """The request-scoped budget overrides this command line asked for.
+
+    A partial nested mapping, applied to the loaded settings — never an edit
+    to the YAML file. Only the options actually passed appear, so every
+    omitted limit keeps whatever the file declares, and a command line that
+    asks for nothing produces no override at all rather than a section that
+    resets the file's own values.
+    """
+    requested: dict[str, JsonValue] = {}
+    if options.request_deepseek_attempt_ceiling is not None:
+        requested["deepseek_attempt_ceiling"] = (
+            options.request_deepseek_attempt_ceiling
+        )
+    if options.request_openai_attempt_ceiling is not None:
+        requested["openai_attempt_ceiling"] = (
+            options.request_openai_attempt_ceiling
+        )
+    if options.request_tavily_attempt_ceiling is not None:
+        requested["tavily_attempt_ceiling"] = (
+            options.request_tavily_attempt_ceiling
+        )
+    if options.request_stop_fraction is not None:
+        requested["stop_fraction"] = options.request_stop_fraction
+    if not requested:
+        return None
+    return {"request_budget": requested}
 
 
 # The events a plain run shows: the session's boundaries, which agent is
@@ -302,6 +413,84 @@ class ProgressStream:
     def __call__(self, event: ResearchEvent) -> None:
         line = render_progress(event, verbose=self._verbose)
         if line is not None:
+            print(line, file=self._stream, flush=True)
+
+
+def _attempts_phrase(count: int) -> str:
+    """One count, as a reader would write it: ``1 attempt``, ``2 attempts``."""
+    return f"{count} attempt" + ("" if count == 1 else "s")
+
+
+def _ceiling_phrase(snapshot: RequestBudgetSnapshot) -> str:
+    """The declared bound, or an explicit statement that none was declared.
+
+    An absent ceiling is printed as absent. Printing it as ``0`` would claim
+    the run refused every attempt, which is the opposite of what it did.
+    """
+    if snapshot.ceiling is None:
+        return "ceiling not set"
+    return (
+        f"ceiling {snapshot.ceiling}, "
+        f"effective limit {snapshot.effective_limit}"
+    )
+
+
+# The enumerated update kinds, rendered as the half-sentence each one is.
+# Nothing here interpolates the refusal's error message: the machine-readable
+# reason is the kind itself.
+BUDGET_UPDATE_LABELS = {
+    "attempt_reserved": "attempt reserved",
+    "tokens_reported": "tokens reported post-response",
+    "attempt_blocked": "attempt refused at the declared ceiling",
+}
+
+
+def render_request_budget_update(
+    update: RequestBudgetUpdate, *, verbose: bool
+) -> str | None:
+    """The one line one budget update streams, or ``None`` when it is skipped.
+
+    Verbose-only, like every other diagnostic line: a plain run shows progress
+    and the summary, and the budget section of that summary is verbose detail
+    too. The line carries the provider category, the enumerated update kind,
+    and bounded integers — the snapshot's own fields — so no provider text, no
+    URL, no query, and no error message can reach the terminal here.
+    """
+    if not verbose:
+        return None
+    snapshot = update.snapshot
+    label = BUDGET_UPDATE_LABELS[update.kind]
+    return (
+        f"  request budget: {snapshot.provider} {label} "
+        f"({_attempts_phrase(snapshot.attempts)}, "
+        f"{_ceiling_phrase(snapshot)})"
+    )
+
+
+class RequestBudgetStream:
+    """Print each request-budget update as the provider thread produces it.
+
+    The callable ``RequestBudget.set_observer`` accepts. It is invoked from
+    worker threads — several provider calls are genuinely in flight at once —
+    so the lock is what keeps one line whole instead of two interleaved ones.
+    It is held across the write alone and never around a provider call, so it
+    cannot serialize the research itself.
+
+    Verbose-only and flushed for the same reason ``ProgressStream`` is: a
+    redirected stream is block-buffered, and a diagnostic that appears only at
+    process exit is not a diagnostic.
+    """
+
+    def __init__(self, stream: TextIO, *, verbose: bool) -> None:
+        self._stream = stream
+        self._verbose = verbose
+        self._lock = threading.Lock()
+
+    def __call__(self, update: RequestBudgetUpdate) -> None:
+        line = render_request_budget_update(update, verbose=self._verbose)
+        if line is None:
+            return
+        with self._lock:
             print(line, file=self._stream, flush=True)
 
 
@@ -417,6 +606,40 @@ def _quality_lines(outcome: ResearchOutcome) -> list[str]:
     return lines
 
 
+def _request_budget_lines(
+    snapshots: Sequence[RequestBudgetSnapshot],
+) -> list[str]:
+    """The three provider categories, then the tokens they reported.
+
+    Read from the budget's own immutable snapshots in its fixed order, so the
+    same run always renders the same rows and each provider category is its
+    own line rather than one pooled number. The tokens are what providers
+    reported *after* their responses: they are counts, not a price, and the
+    line says so instead of implying a cost the run never measured.
+    """
+    lines = ["Request budget:"]
+    input_tokens = 0
+    output_tokens = 0
+    for snapshot in snapshots:
+        lines.append(
+            f"  {snapshot.provider}: "
+            f"{_attempts_phrase(snapshot.attempts)} reserved "
+            f"({_ceiling_phrase(snapshot)})"
+        )
+        input_tokens += snapshot.input_tokens
+        output_tokens += snapshot.output_tokens
+    total = input_tokens + output_tokens
+    counts = (
+        f"{total} total ({input_tokens} in / {output_tokens} out)"
+        if total
+        else "none reported"
+    )
+    lines.append(
+        f"  Tokens (reported post-response, not a cost estimate): {counts}"
+    )
+    return lines
+
+
 def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
     """Render the run's identity, quality verdict, artifacts, and costs."""
     lines = [
@@ -461,15 +684,22 @@ def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
         else:
             lines.append("Tool calls: none recorded")
 
-        usage = outcome.token_usage
-        total = usage.total_tokens or 0
-        if total:
-            lines.append(
-                f"Tokens: {total} total ({usage.input_tokens} in / "
-                f"{usage.output_tokens} out)"
+        if outcome.request_budget_snapshots:
+            # The budget reported the tokens, per provider, so the pooled
+            # tracker total would print the same tokens a second time.
+            lines.extend(
+                _request_budget_lines(outcome.request_budget_snapshots)
             )
         else:
-            lines.append("Tokens: not available")
+            usage = outcome.token_usage
+            total = usage.total_tokens or 0
+            if total:
+                lines.append(
+                    f"Tokens: {total} total ({usage.input_tokens} in / "
+                    f"{usage.output_tokens} out)"
+                )
+            else:
+                lines.append("Tokens: not available")
     return lines
 
 
@@ -565,6 +795,7 @@ def main(
             print(line, file=out)
 
     progress = ProgressStream(out, verbose=options.verbose)
+    budget = RequestBudgetStream(out, verbose=options.verbose)
 
     try:
         question = resolve_question(options, prompt=prompt)
@@ -575,7 +806,9 @@ def main(
             config_path=options.config,
             max_iterations=options.max_iterations,
             output_format=options.output_format,
+            config_overrides=request_budget_overrides(options),
             event_handler=progress,
+            request_budget_handler=budget,
         )
     except ResearchConfigurationError as error:
         print(f"error: {error}", file=out)
