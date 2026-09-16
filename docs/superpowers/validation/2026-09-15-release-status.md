@@ -5,7 +5,40 @@ criteria. This is the explicit partial result the objective calls for: the
 shortfall is named with its evidence, and **no criterion was relaxed, no
 threshold lowered, and no fixture adjusted** to make a run appear to pass.
 
-## 1. The ten criteria, against the most recent live run
+## 0. Current run pointer (updated 2026-09-16)
+
+Every historical entry in this document is retained. The only edits in this
+revision are this new section, the §1 heading (which now names the run it was
+written from instead of calling it "the most recent"), and the dated update at
+the end of §6. **The current run is `417fa9338e10450784b459f89af98b1c`**
+(evidence pooling, iteration 3, historical application candidate `2bc6665`).
+Its frozen artifact/commit inventory, SHA-256 hashes, per-agent `results.json`
+inventory, F1 payload findings, and defect-to-task matrix are in
+[the output-quality baseline](2026-09-16-output-quality-baseline.md); the binding
+analysis of that run is
+[the last-run agent trace review](2026-09-16-last-run-agent-trace-review.md).
+
+| Measure | Current run `417fa933` | §1 run `ce8911ee` |
+| --- | --- | --- |
+| Terminal quality | `partial` | `partial` |
+| Critic | **5/10** | 3/10 |
+| Topics covered | **4/6 (67%)** | 3/6 (50%) |
+| Verified / contradicted claims | 5 / 0 | 2 / 0 |
+| Cited / scored sources | 8 / 8 | 5 / 5 |
+| Integrity (dupes / source rows / uncited) | 0 / 0 / 0 | 0 / 0 / 0 |
+| CLI exit | 4 (`--require-quality`) | 4 (`--require-quality`) |
+| Whole-report judge (criterion 9) | **NOT MEASURED** — 0 occurrences of `judge` in the run log | NOT MEASURED |
+
+The intervening runs — agent baseline, agent fixes, corroboration, resource,
+publisher retention, and corroboration criterion — are inventoried with their
+session IDs, hashes, and measured outcomes in the baseline document.
+
+**No criterion changed state in a way that clears the release bar.** The critic
+rose 3/10 → 5/10 against a ≥7/10 requirement, and coverage moved 3/6 → 4/6
+against a ≥0.80 requirement. Criterion 9 was reached in neither run.
+**NOT READY stands.**
+
+## 1. The ten criteria, against the run this document was written from
 
 Run: `ce8911eef28847d7ac739be450430ca8`, candidate `9d87360`, 26.4 minutes,
 exit **4** (`--require-quality` failed). Record:
@@ -90,3 +123,15 @@ corroborated, citable sources to cover six topics.
 
 Three of ~10 authorized live runs are spent (Q1, Q1's paid planner-failure
 attempt, this canary). Roughly seven remain, subject to the Tavily plan quota.
+
+**Update, 2026-09-16.** That paragraph is retained as written. Seven further
+authorizations have since been spent — agent baseline, agent fixes, corroboration,
+resource, publisher retention, corroboration criterion, and evidence pooling — so
+the standing authorization is **exhausted at its declared tenth run** by the
+predeclarations' own numbering (see the baseline document §3.2, where the declared
+ordinals are also shown to conflict at slot 4). The heat-pump run, declared as the
+seventh, left no log, report, or ledger in any checkout. **No further live run is
+authorized by this document.** Task 13 of the current plan is paid/live and
+requires a separately reconciled allowance and an explicit stage confirmation;
+the historical ~US$100 / approximately ten-run authorization is not a fresh
+allowance.
