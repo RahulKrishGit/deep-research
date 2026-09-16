@@ -1,46 +1,99 @@
-"""Tests for the pure Markdown report skeleton."""
+"""Tests for the two pure Markdown artifacts: reader report and ledger.
+
+The reader report is what a decision-maker reads: a claim-linked summary, a
+constraint ranking, findings whose every bullet ends in its own citation
+markers, the uncertainty the pass recorded, a compact methodology note, and a
+reference list holding only the sources the points actually cite. Everything
+verbose — the checked-claim registry, the complete source assessment, the
+verification passages, the rejected draft content, and the run's errors —
+belongs to the evidence ledger instead.
+
+Nothing here performs I/O, so both artifacts are asserted directly.
+"""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
+from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.report import (
+    EVIDENCE_SECTIONS,
+    EVIDENCE_TITLE_PREFIX,
     LIMITATION_REASONS,
+    QUALITY_STATUS_NOT_GATED,
     REPORT_SECTIONS,
+    REPORT_SUMMARY_FALLBACK,
     REPORT_TITLE_PREFIX,
     Citation,
+    ReportComposition,
+    ReportConstraint,
+    ReportPoint,
     ReportSection,
-    assemble_report,
-    build_citation_index,
+    canonical_claims,
+    canonical_sources,
     citation_markers,
+    reader_citations,
     render_citations,
-    render_findings,
+    render_evidence_ledger,
     render_limitations,
-    render_source_appendix,
-    render_uncertain_claims,
-    render_verified_claims,
+    render_reader_report,
+    report_as_of,
+    report_scope,
 )
-from deep_research.utils.types import Claim, ScoredSource
+from deep_research.utils.types import (
+    Claim,
+    EvidencePassage,
+    Finding,
+    ResearchError,
+    ResearchEvent,
+    ScoredSource,
+    SubTopic,
+)
+
+EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
+SOURCE_URL = "https://example.org/a"
+OTHER_URL = "https://other.test/b"
+THIRD_URL = "https://third.test/c"
+
+
+def render_reports(composition: ReportComposition) -> tuple[str, str]:
+    """Both artifacts, exactly as a caller sees them.
+
+    Test-local on purpose: the two renderers are the production interface.
+    """
+    return (
+        render_reader_report(composition),
+        render_evidence_ledger(composition),
+    )
 
 
 def _source(
     *,
-    url: str = "https://example.org/a",
+    url: str = SOURCE_URL,
     title: str = "QEC 2025",
-    overall: float = 0.76,
+    overall: float | None = 0.76,
+    status: str = "scored",
     low_confidence: bool = False,
     rationale: str = "Peer-reviewed and corroborated.",
 ) -> ScoredSource:
+    if status == "scored":
+        return ScoredSource(
+            url=url,
+            title=title,
+            authority_score=0.8,
+            recency_score=0.7,
+            relevance_score=0.9,
+            overall_score=overall,
+            rationale=rationale,
+            low_confidence=low_confidence,
+        )
     return ScoredSource(
         url=url,
         title=title,
-        authority_score=0.8,
-        recency_score=0.7,
-        relevance_score=0.9,
-        corroboration_score=0.5,
-        overall_score=overall,
         rationale=rationale,
-        low_confidence=low_confidence,
+        evaluation_status=status,
     )
 
 
@@ -51,145 +104,501 @@ def _claim(
     verdict: str = "verified",
     confidence: float = 0.8,
     contradictions: list[str] | None = None,
+    passages: list[EvidencePassage] | None = None,
+    coverage_ids: list[str] | None = None,
+    finding_fingerprints: list[str] | None = None,
+    insufficient_reason: str | None = None,
 ) -> Claim:
     return Claim(
+        claim_id=claim_fingerprint(text),
         text=text,
-        source_urls=urls or ["https://example.org/a"],
+        source_urls=urls or [SOURCE_URL],
         verdict=verdict,
         confidence=confidence,
         evidence=["An independent review states the same figure."],
         contradictions=contradictions or [],
+        verification_evidence=passages or [],
+        # The reason is set on the insufficient path only, so a fixture that
+        # is not an insufficient claim does not carry the field at all —
+        # the same shape the fact checker emits.
+        **(
+            {"insufficient_reason": insufficient_reason}
+            if insufficient_reason is not None
+            else {}
+        ),
+        consumed_finding_fingerprints=finding_fingerprints or [],
+        consumed_coverage_ids=coverage_ids or [],
     )
 
 
-def test_citation_numbers_run_sources_first_then_claim_sources() -> None:
-    index = build_citation_index(
-        [_source(url="https://example.org/a"), _source(url="https://other.test/b")],
-        [_claim(urls=["https://third.test/c", "https://example.org/a"])],
+def _passage(url: str = THIRD_URL) -> EvidencePassage:
+    return EvidencePassage(
+        source_url=url,
+        source_title="Independent review",
+        locator="p. 1",
+        excerpt="An independent review states the same figure.",
+        stance="supports",
     )
 
-    assert [(citation.number, citation.url) for citation in index] == [
-        (1, "https://example.org/a"),
-        (2, "https://other.test/b"),
-        (3, "https://third.test/c"),
+
+def _point(
+    text: str = "Break-even was reached.",
+    *,
+    claim_ids: list[str] | None = None,
+    source_urls: list[str] | None = None,
+) -> ReportPoint:
+    return ReportPoint(
+        text=text,
+        claim_ids=claim_ids if claim_ids is not None else [_claim().claim_id],
+        source_urls=source_urls if source_urls is not None else [SOURCE_URL],
+    )
+
+
+def _composition(**overrides: object) -> ReportComposition:
+    claim = _claim()
+    payload: dict[str, object] = {
+        "question": "How mature is quantum error correction?",
+        "session_id": "session-1",
+        "iteration": 0,
+        "as_of": EXTRACTED_AT,
+        "scope": "1 planned sub-topic, as recorded below.",
+        "claims": [claim],
+        "sources": [_source()],
+        "findings": [
+            Finding(
+                content="Logical error rates fell below break-even.",
+                source_url=SOURCE_URL,
+                source_title="QEC 2025",
+                extracted_at=EXTRACTED_AT,
+                confidence=0.8,
+                related_sub_topic="Alpha",
+            )
+        ],
+        "limitations": [],
+        "summary": [_point(claim_ids=[claim.claim_id])],
+        "sections": [
+            ReportSection(
+                title="Error correction",
+                points=[_point(claim_ids=[claim.claim_id])],
+            )
+        ],
+    }
+    payload.update(overrides)
+    return ReportComposition.model_validate(payload)
+
+
+# --- the pathological fixture -------------------------------------------------
+
+PATHOLOGICAL_CANONICAL_SOURCES = 101
+PATHOLOGICAL_SOURCE_RECORDS = 257
+PATHOLOGICAL_CANONICAL_CLAIMS = 40
+PATHOLOGICAL_CLAIM_RECORDS = 257
+
+
+def _pathological_sources() -> list[ScoredSource]:
+    """101 canonical URLs behind 257 records, exactly the observed shape."""
+    return [
+        _source(
+            url=f"https://example.test/source-{record % 101 + 1:03d}",
+            title=f"Source {record % 101 + 1:03d}",
+            overall=0.60 + (record % 20) / 100,
+        )
+        for record in range(PATHOLOGICAL_SOURCE_RECORDS)
     ]
 
 
-def test_citation_numbers_are_assigned_to_canonical_urls() -> None:
-    index = build_citation_index(
-        [_source(url="https://WWW.Example.ORG/a/")],
-        [_claim(urls=["https://example.org/a"])],
-    )
-
-    assert len(index) == 1
-    assert index[0].url == "https://example.org/a"
-
-
-def test_markers_render_sorted_and_deduplicated() -> None:
-    index = build_citation_index(
-        [_source(url="https://example.org/a"), _source(url="https://other.test/b")],
-        [],
-    )
-
-    assert (
-        citation_markers(
-            ["https://other.test/b", "https://example.org/a", "https://other.test/b"],
-            index,
+def _pathological_claims() -> list[Claim]:
+    """40 canonical claims repeated across 257 records, at three verdicts."""
+    claims: list[Claim] = []
+    for record in range(PATHOLOGICAL_CLAIM_RECORDS):
+        index = record % 40 + 1
+        verdict = (
+            "contradicted"
+            if index % 5 == 0
+            else "unverified"
+            if index % 7 == 0
+            else "verified"
         )
-        == "[1][2]"
+        claims.append(
+            _claim(
+                text=f"Claim {index:03d} states a measured result.",
+                urls=[f"https://example.test/source-{index:03d}"],
+                verdict=verdict,
+                confidence=0.4 + (record % 6) / 10,
+                contradictions=(
+                    ["An independent source disagrees."]
+                    if verdict == "contradicted"
+                    else None
+                ),
+            )
+        )
+    return claims
+
+
+def pathological_composition() -> ReportComposition:
+    """The pathological state's composition, with one cited settled point."""
+    claim_id = claim_fingerprint("Claim 001 states a measured result.")
+    source_url = "https://example.test/source-001"
+    return ReportComposition.model_validate(
+        {
+            "question": "How much of the evidence is load-bearing?",
+            "session_id": "pathological",
+            "iteration": 1,
+            "as_of": EXTRACTED_AT,
+            "scope": "3 planned sub-topics.",
+            "claims": _pathological_claims(),
+            "sources": _pathological_sources(),
+            "findings": [],
+            "limitations": ["no_verified_claims"],
+            "summary": [
+                _point(
+                    "One measured result is load-bearing.",
+                    claim_ids=[claim_id],
+                    source_urls=[source_url],
+                )
+            ],
+            "sections": [
+                ReportSection(
+                    title="Load-bearing evidence",
+                    points=[
+                        _point(
+                            "The first source carries the result.",
+                            claim_ids=[claim_id],
+                            source_urls=[source_url],
+                        )
+                    ],
+                )
+            ],
+        }
     )
 
 
-def test_an_uncited_url_is_never_marked() -> None:
-    index = build_citation_index([_source()], [])
+def duplicate_claim_text(markdown: str) -> bool:
+    """True when any bullet of ``markdown`` repeats another one verbatim.
 
-    assert citation_markers(["https://invented.test/x"], index) == ""
+    Repeated claims with different confidences are the observed pathology:
+    every settled statement, and every conflicting claim the report prints,
+    must appear exactly once.
+    """
+    bullets = [
+        " ".join(line.split())
+        for line in markdown.splitlines()
+        if line.strip().startswith(("- ", "* "))
+    ]
+    return len(bullets) != len(set(bullets))
 
 
-def test_citations_render_one_numbered_line_each() -> None:
-    index = build_citation_index([_source(title="QEC 2025")], [])
+def test_the_pathological_state_renders_each_canonical_record_once() -> None:
+    reader, ledger = render_reports(pathological_composition())
 
-    assert "1. QEC 2025 — https://example.org/a" in render_citations(index)
-    assert render_citations([]) == "(no sources were cited)"
+    assert reader.count("https://example.test/source-001") == 1
+    assert "Reviewed but not cited" not in reader
+    assert "Reviewed but not cited" in ledger
+    assert duplicate_claim_text(reader) is False
 
 
-def test_the_appendix_marks_low_confidence_sources_and_escapes_pipes() -> None:
-    index = build_citation_index(
-        [_source(), _source(url="https://weak.test/b", title="A | B")], []
+def test_the_pathological_ledger_carries_one_row_per_canonical_source() -> None:
+    _, ledger = render_reports(pathological_composition())
+    rows = _table_rows(_section_body(ledger, "## Source assessment"))[2:]
+
+    urls = [
+        re.search(r"https://[^\s)]+", row).group(0)  # type: ignore[union-attr]
+        for row in rows
+    ]
+    assert len(rows) == PATHOLOGICAL_CANONICAL_SOURCES
+    assert len(set(urls)) == PATHOLOGICAL_CANONICAL_SOURCES
+
+
+def test_the_pathological_ledger_registers_each_canonical_claim_once() -> None:
+    _, ledger = render_reports(pathological_composition())
+    registry = _section_body(ledger, "## Checked claim registry")
+
+    rows = _table_rows(registry)[2:]
+    assert len(rows) == PATHOLOGICAL_CANONICAL_CLAIMS
+    assert ledger.count("Claim 001 states a measured result.") == 1
+
+
+def test_the_claim_registry_keeps_its_columns_and_ends_with_reason() -> None:
+    """The audit column is additive: nothing the ledger already showed moves.
+
+    A reader who learned the registry's eight columns must find all eight in
+    the same order, with the new ``Reason`` column appended rather than
+    inserted, and every row — header, separator and data — as wide as the
+    header it belongs to.
+    """
+    _, ledger = render_reports(pathological_composition())
+    rows = _table_rows(_section_body(ledger, "## Checked claim registry"))
+
+    assert _cells(rows[0]) == [
+        "#",
+        "Claim ID",
+        "Verdict",
+        "Confidence",
+        "Claim",
+        "Sources",
+        "Coverage",
+        "Contradictions",
+        "Reason",
+    ]
+    assert {len(_cells(row)) for row in rows} == {9}
+
+
+def test_an_insufficient_claim_registers_its_reason_in_the_ledger() -> None:
+    """The classification a reviewer asked for, read off the artifact.
+
+    ``verdict`` alone cannot say whether a claim went unjudged because nothing
+    independent was ever read or because the verdict came back thin; the
+    enumerated reason is what separates them, and the ledger is where a
+    reviewer who never sees the event log reads it.
+    """
+    _, ledger = render_reports(
+        _composition(
+            claims=[
+                _claim(
+                    verdict="insufficient_evidence",
+                    confidence=0.0,
+                    insufficient_reason="no_independent_source",
+                )
+            ]
+        )
     )
-    rendered = render_source_appendix(
-        [
-            _source(),
-            _source(
-                url="https://weak.test/b",
-                title="A | B",
-                overall=0.08,
-                low_confidence=True,
-                rationale="Anonymous blog.",
+    cells = _cells(
+        _table_rows(_section_body(ledger, "## Checked claim registry"))[2]
+    )
+
+    assert len(cells) == 9
+    assert cells[-1] == "no_independent_source"
+
+
+def test_a_verified_claim_registers_no_reason() -> None:
+    """The reason is an admission, not a verdict.
+
+    A claim that was judged against independent evidence carries no reason —
+    on the record or in the ledger — so an empty ``Reason`` cell stays
+    distinguishable from a populated one.
+    """
+    claim = _claim()
+    _, ledger = render_reports(_composition(claims=[claim]))
+    cells = _cells(
+        _table_rows(_section_body(ledger, "## Checked claim registry"))[2]
+    )
+
+    # Nine cells: the eight the registry always had, plus Reason, which is
+    # empty for a claim nothing was wrong with.
+    assert len(cells) == 9
+    assert cells[-1] == "—"
+    assert claim.insufficient_reason is None
+
+
+def test_reviewed_but_unused_sources_reach_the_ledger_only() -> None:
+    composition = _composition(
+        sources=[_source(), _source(url=OTHER_URL, title="Other study")],
+    )
+    reader, ledger = render_reports(composition)
+
+    assert OTHER_URL not in reader
+    assert "Reviewed but not cited" in ledger
+    unused = _section_body(ledger, "## Reviewed but not cited")
+    assert OTHER_URL in unused
+    assert SOURCE_URL not in unused
+
+
+# --- the reader report's shape ------------------------------------------------
+
+
+def test_the_reader_report_carries_every_section_in_order() -> None:
+    reader = render_reader_report(_composition())
+
+    positions = [reader.index(heading) for heading in REPORT_SECTIONS]
+    assert positions == sorted(positions)
+    assert reader.startswith(
+        f"{REPORT_TITLE_PREFIX}How mature is quantum error correction?"
+    )
+    assert reader.endswith("\n")
+
+
+def test_the_reader_report_declares_as_of_scope_and_quality_status() -> None:
+    reader = render_reader_report(_composition())
+
+    assert f"**As of:** {EXTRACTED_AT}" in reader
+    assert "**Scope:** 1 planned sub-topic, as recorded below." in reader
+    assert f"**Quality status:** {QUALITY_STATUS_NOT_GATED}" in reader
+
+
+def test_an_undated_pass_says_so_instead_of_reading_a_clock() -> None:
+    reader = render_reader_report(_composition(as_of=""))
+
+    assert "**As of:** no dated evidence was recorded" in reader
+
+
+def test_every_point_carries_its_own_inline_markers() -> None:
+    composition = _composition(
+        claims=[
+            _claim(),
+            _claim(
+                text="Cost fell tenfold.",
+                urls=[OTHER_URL],
+                verdict="unverified",
             ),
         ],
-        index,
-    )
-
-    assert "| # | Source | Score | Confidence | Assessment |" in rendered
-    assert "| 1 | QEC 2025 (https://example.org/a) | 0.76 | normal |" in rendered
-    assert "| 2 | A \\| B (https://weak.test/b) | 0.08 | low |" in rendered
-    assert render_source_appendix([], index) == "(no sources were evaluated)"
-
-
-def test_findings_render_their_citation_line() -> None:
-    index = build_citation_index([_source()], [])
-    rendered = render_findings(
-        [
+        sources=[_source(), _source(url=OTHER_URL, title="Other study")],
+        summary=[],
+        sections=[
             ReportSection(
                 title="Error correction",
-                body="Break-even was reached.",
-                source_urls=["https://example.org/a"],
+                points=[
+                    _point(
+                        "Break-even was reached.",
+                        claim_ids=[claim_fingerprint(
+                            "Logical error rates fell below break-even in 2025."
+                        )],
+                        source_urls=[SOURCE_URL],
+                    ),
+                    _point(
+                        "Costs fell.",
+                        claim_ids=[claim_fingerprint("Cost fell tenfold.")],
+                        source_urls=[OTHER_URL],
+                    ),
+                ],
+            )
+        ],
+    )
+    reader = render_reader_report(composition)
+    findings = _section_body(reader, "## Findings")
+
+    assert "- Break-even was reached. [1]" in findings
+    assert "- Costs fell. [2]" in findings
+    # The old renderer closed every section with one pile of markers.
+    assert "Sources: [" not in reader
+    assert "Sources: none cited" not in reader
+
+
+def test_an_empty_findings_section_renders_no_heading_at_all() -> None:
+    composition = _composition(
+        sections=[
+            ReportSection(title="Kept", points=[_point()]),
+            ReportSection(title="Dropped", points=[]),
+        ]
+    )
+    reader = render_reader_report(composition)
+
+    assert "### Kept" in reader
+    assert "### Dropped" not in reader
+
+
+def test_the_constraint_table_carries_the_five_decision_columns() -> None:
+    composition = _composition(
+        summary=[],
+        sections=[],
+        constraints=[
+            ReportConstraint(
+                text="Cordon tolling inside the central business district",
+                deployment_mechanism="area licence with camera enforcement",
+                geography="London",
+                claim_ids=[_claim().claim_id],
+                source_urls=[SOURCE_URL],
             ),
-            ReportSection(title="Outlook", body="Scaling remains open."),
+            ReportConstraint(
+                text="Distance-based charging",
+                deployment_mechanism="not stated",
+                geography="not stated",
+                claim_ids=[_claim().claim_id],
+                source_urls=[SOURCE_URL],
+            ),
         ],
-        index,
+    )
+    table = _section_body(render_reader_report(composition), "## Constraint ranking")
+
+    assert (
+        "| Constraint | Deployment mechanism | Geography | Evidence strength "
+        "| Confidence |"
+    ) in table
+    assert "| Cordon tolling inside the central business district [1] " in table
+    assert "| area licence with camera enforcement | London |" in table
+    assert "| not stated | not stated |" in table
+    # Confidence is the weakest confidence behind the row, rendered locally.
+    assert "| 0.80 |" in table
+
+
+def test_uncertainty_prints_gaps_conflicts_and_limitations_once_each() -> None:
+    contradicted = _claim(
+        text="Cost fell tenfold.",
+        verdict="contradicted",
+        confidence=0.4,
+        contradictions=["A vendor report disagrees."],
+    )
+    composition = _composition(
+        claims=[_claim(), contradicted],
+        uncertainty_notes=["Vendor numbers remain unaudited."],
+        limitations=["errors_recorded"],
+    )
+    section = _section_body(
+        render_reader_report(composition), "## Uncertainty and conflicting evidence"
     )
 
-    assert "### Error correction" in rendered
-    assert "Sources: [1]" in rendered
-    assert "Sources: none cited" in rendered
-    assert render_findings([], index) == "(no findings were reported)"
+    assert "Vendor numbers remain unaudited." in section
+    assert "- Cost fell tenfold." in section
+    assert "1 contradicting passage(s)" in section
+    assert LIMITATION_REASONS["errors_recorded"] in section
+    # A verified claim is not uncertain; it stays out of this section.
+    assert "Logical error rates fell below break-even" not in section
 
 
-def test_verified_claims_are_always_cited() -> None:
-    index = build_citation_index([_source()], [])
-    rendered = render_verified_claims(
-        [_claim(), _claim(text="Adoption is broad.", verdict="unverified")],
-        index,
+def test_methodology_is_a_compact_locally_generated_run_summary() -> None:
+    section = _section_body(
+        render_reader_report(
+            _composition(
+                sub_topics=[
+                    SubTopic(
+                        coverage_id="topic-01",
+                        title="Alpha",
+                        rationale="First.",
+                        search_queries=["alpha"],
+                        success_criteria=["alpha evidence"],
+                        priority=1,
+                    )
+                ],
+                sources=[
+                    _source(),
+                    _source(
+                        url=OTHER_URL,
+                        title="Unscored study",
+                        status="unscored_provider",
+                        rationale=(
+                            "The provider was unavailable, so this source "
+                            "carries no quality judgement."
+                        ),
+                    ),
+                ],
+                limitations=["low_confidence_sources"],
+            )
+        ),
+        "## Methodology",
     )
 
-    assert rendered.count("- ") == 1
-    assert "[1] (confidence 0.80)" in rendered
-    assert render_verified_claims([], index) == "(no claim reached a verified verdict)"
+    assert "2 reviewed source(s)" in section
+    assert "1 scored" in section
+    assert "1 unscored" in section
+    assert "topic-01" in section
+    # No persistence claim: synthesis writes nothing.
+    for phrase in ("saved to", "written to", "stored at"):
+        assert phrase not in section
+    # Limitations are disclosed once, in the uncertainty section.
+    assert LIMITATION_REASONS["low_confidence_sources"] not in section
 
 
-def test_unverified_claims_are_grouped_away_from_strong_findings() -> None:
-    index = build_citation_index([_source()], [])
-    rendered = render_uncertain_claims(
-        [
-            _claim(),
-            _claim(text="Cost fell tenfold.", verdict="contradicted",
-                   contradictions=["A vendor report disagrees."]),
-            _claim(text="Adoption is broad.", verdict="unverified"),
-            _claim(text="Latency improved.", verdict="insufficient_evidence"),
-        ],
-        index,
+def test_an_evidence_free_reader_report_still_carries_every_section() -> None:
+    reader = render_reader_report(
+        ReportComposition(question="What is known?", session_id="session-1")
     )
 
-    assert "### Contradicted by independent sources" in rendered
-    assert "1 contradicting passage(s)" in rendered
-    assert "### Not addressed by independent sources" in rendered
-    assert "### Insufficient independent evidence" in rendered
-    assert "Logical error rates" not in rendered
-    assert render_uncertain_claims([], index) == (
-        "(no unresolved claims were recorded)"
-    )
+    for heading in REPORT_SECTIONS:
+        assert heading in reader
+    assert REPORT_SUMMARY_FALLBACK in reader
+    assert "(no sources were cited)" in reader
+    assert render_reader_report(
+        ReportComposition(question="What is known?", session_id="session-1")
+    ) == reader
 
 
 def test_limitations_render_enumerated_reasons_only() -> None:
@@ -202,52 +611,607 @@ def test_limitations_render_enumerated_reasons_only() -> None:
         render_limitations(["because"])
 
 
-def test_a_report_always_carries_every_required_section_in_order() -> None:
-    index = build_citation_index([_source()], [_claim()])
-    markdown = assemble_report(
-        question="  How mature is quantum error correction?  ",
-        summary="Break-even was reached in 2025.",
+# --- Step 7: the structural bounds -------------------------------------------
+
+
+def test_no_reader_section_repeats_a_canonical_url_row() -> None:
+    """Cited URLs exactly once in the reader; uncited ones not at all.
+
+    ``<= 1`` was unfalsifiable for the second URL: ``source-042`` is never
+    cited, so its count is 0 and the bound permitted 0 for ``source-001`` too.
+    The reader's cited set comes from the composition's own citation index, so
+    "exactly once" is asserted where a citation exists and "never" where none
+    does.
+    """
+    composition = pathological_composition()
+    reader, ledger = render_reports(composition)
+    cited = {citation.url for citation in reader_citations(composition)}
+    uncited = "https://example.test/source-042"
+    assessment = _section_body(ledger, "## Source assessment")
+
+    assert cited == {"https://example.test/source-001"}
+    assert uncited not in cited
+    for source_url in cited:
+        assert reader.count(source_url) == 1
+    assert reader.count(uncited) == 0
+    for source_url in (*sorted(cited), uncited):
+        assert assessment.count(source_url) == 1
+
+
+def test_no_claim_id_is_registered_twice() -> None:
+    _, ledger = render_reports(pathological_composition())
+    registry = _section_body(ledger, "## Checked claim registry")
+    ids = [
+        row.split("|")[2].strip()
+        for row in _table_rows(registry)[2:]
+    ]
+
+    assert len(ids) == len(set(ids))
+    assert all(re.fullmatch(r"[0-9a-f]{64}", claim_id) for claim_id in ids)
+
+
+def test_every_reader_citation_resolves_and_every_reference_is_used() -> None:
+    reader = render_reader_report(
+        _composition(
+            claims=[
+                _claim(),
+                _claim(
+                    text="Cost fell tenfold.",
+                    urls=[OTHER_URL],
+                    verdict="unverified",
+                ),
+            ],
+            sources=[_source(), _source(url=OTHER_URL, title="Other study")],
+            sections=[
+                ReportSection(
+                    title="Both",
+                    points=[
+                        _point(),
+                        _point(
+                            "Costs fell.",
+                            claim_ids=[claim_fingerprint("Cost fell tenfold.")],
+                            source_urls=[OTHER_URL],
+                        ),
+                    ],
+                )
+            ],
+        )
+    )
+
+    markers = {int(number) for number in re.findall(r"\[(\d+)\]", reader)}
+    references = {
+        int(match.group(1))
+        for match in re.finditer(r"(?m)^(\d+)\. ", reader)
+    }
+    assert markers
+    assert markers == references
+
+
+def test_every_settled_point_is_cited_and_carries_a_checked_claim() -> None:
+    composition = pathological_composition()
+    reader = render_reader_report(composition)
+    cited = {citation.url for citation in reader_citations(composition)}
+
+    for point in _reader_points(composition):
+        assert point.claim_ids
+        assert point.source_urls
+        assert cited.issuperset(point.source_urls)
+    # Every settled statement the reader prints ends in its own markers.
+    for heading in ("## Executive summary", "## Findings"):
+        bullets = [
+            line
+            for line in _section_body(reader, heading).splitlines()
+            if line.startswith("- ")
+        ]
+        assert bullets
+        assert all(re.search(r"\[\d+\]", line) for line in bullets)
+
+
+def test_references_equal_the_urls_the_reader_points_use() -> None:
+    composition = _composition(
+        claims=[
+            _claim(),
+            _claim(text="Cost fell tenfold.", urls=[OTHER_URL], verdict="unverified"),
+        ],
+        sources=[_source(), _source(url=OTHER_URL, title="Other study")],
         sections=[
             ReportSection(
-                title="Error correction",
-                body="Break-even was reached.",
-                source_urls=["https://example.org/a"],
+                title="Both",
+                points=[
+                    _point(),
+                    _point(
+                        "Costs fell.",
+                        claim_ids=[claim_fingerprint("Cost fell tenfold.")],
+                        source_urls=[OTHER_URL],
+                    ),
+                ],
             )
         ],
-        claims=[_claim()],
-        sources=[_source()],
-        index=index,
-        limitations=["errors_recorded"],
-        uncertainty_notes="Vendor numbers remain unaudited.",
+    )
+    reader = render_reader_report(composition)
+    index = reader_citations(composition)
+    references = _section_body(reader, "## References")
+
+    assert [citation.url for citation in index] == [SOURCE_URL, OTHER_URL]
+    assert references.strip() == render_citations(index)
+
+
+def test_no_finding_section_says_sources_none_cited() -> None:
+    reader = render_reader_report(
+        _composition(
+            sections=[ReportSection(title="Uncited", points=[])],
+        )
     )
 
-    positions = [markdown.index(heading) for heading in REPORT_SECTIONS]
-    assert positions == sorted(positions)
-    assert markdown.startswith(
-        f"{REPORT_TITLE_PREFIX}How mature is quantum error correction?"
+    assert "Sources: none cited" not in reader
+    assert "### Uncited" not in reader
+
+
+def test_the_reference_material_stays_below_a_third_of_the_reader_report() -> None:
+    claims = [
+        _claim(
+            text=f"Measured result {index} was reported.",
+            urls=[f"https://example.test/study-{index}"],
+        )
+        for index in range(6)
+    ]
+    sources = [
+        _source(
+            url=f"https://example.test/study-{index}",
+            title=f"Study {index}",
+        )
+        for index in range(6)
+    ]
+    composition = _composition(
+        claims=claims,
+        sources=sources,
+        summary=[
+            _point(
+                "Six measured results were reported.",
+                claim_ids=[claims[0].claim_id],
+                source_urls=[claims[0].source_urls[0]],
+            )
+        ],
+        constraints=[
+            ReportConstraint(
+                text=f"Constraint {index}",
+                deployment_mechanism="licence",
+                geography="a city",
+                claim_ids=[claim.claim_id],
+                source_urls=list(claim.source_urls),
+            )
+            for index, claim in enumerate(claims)
+        ],
+        sections=[
+            ReportSection(
+                title=f"Theme {index}",
+                points=[
+                    _point(
+                        f"Result {index} was measured.",
+                        claim_ids=[claim.claim_id],
+                        source_urls=list(claim.source_urls),
+                    )
+                ],
+            )
+            for index, claim in enumerate(claims)
+        ],
     )
-    assert "Vendor numbers remain unaudited." in markdown
-    assert "1. QEC 2025 — https://example.org/a" in markdown
-    assert markdown.endswith("\n")
+    reader = render_reader_report(composition)
+    references = _section_body(reader, "## References")
+
+    assert len(references) / len(reader) < 0.35
+    assert reader.count(claims[0].source_urls[0]) == 1
 
 
-def test_an_evidence_free_report_still_carries_every_section() -> None:
-    markdown = assemble_report(
-        question="What is known?",
-        summary="   ",
-        sections=[],
-        claims=[],
-        sources=[],
-        index=[],
-        limitations=[],
+# --- Step 6: honest statuses --------------------------------------------------
+
+
+def test_scored_sources_print_numbers_and_unscored_ones_print_status() -> None:
+    _, ledger = render_reports(
+        _composition(
+            sources=[
+                _source(),
+                _source(
+                    url=OTHER_URL,
+                    title="Capped study",
+                    status="unscored_cap",
+                    rationale=(
+                        "The per-run source cap was reached before this "
+                        "source was scored."
+                    ),
+                ),
+            ]
+        )
+    )
+    assessment = _section_body(ledger, "## Source assessment")
+    scored_row, unscored_row = _table_rows(assessment)[2:]
+
+    assert "0.76" in scored_row
+    assert "scored" in scored_row
+    assert "unscored_cap" in unscored_row
+    assert "per-run source cap was reached" in unscored_row
+    # No numeric quality field is printed for a source nobody scored.
+    assert "0.76" not in unscored_row
+    assert "0.80" not in unscored_row
+
+
+def test_low_confidence_means_a_real_score_below_the_threshold() -> None:
+    _, ledger = render_reports(
+        _composition(
+            sources=[
+                _source(
+                    url=OTHER_URL,
+                    title="Anonymous blog",
+                    overall=0.08,
+                    low_confidence=True,
+                    rationale="Anonymous blog.",
+                )
+            ]
+        )
+    )
+    assessment = _section_body(ledger, "## Source assessment")
+    row = _table_rows(assessment)[2]
+
+    assert "0.08" in row
+    assert "low" in row
+
+
+def test_an_unscored_source_is_never_reported_as_low_confidence() -> None:
+    _, ledger = render_reports(
+        _composition(
+            sources=[
+                _source(
+                    url=OTHER_URL,
+                    title="Unscored study",
+                    status="unscored_missing",
+                    rationale="The model returned no row for this source.",
+                )
+            ]
+        )
+    )
+    row = _table_rows(_section_body(ledger, "## Source assessment"))[2]
+
+    assert "unscored_missing" in row
+    assert "low" not in row
+
+
+# --- the evidence ledger ------------------------------------------------------
+
+
+def test_the_ledger_carries_every_verbose_block() -> None:
+    _, ledger = render_reports(
+        _composition(
+            claims=[
+                _claim(passages=[_passage()], coverage_ids=["topic-01"]),
+                _claim(
+                    text="Cost fell tenfold.",
+                    urls=[OTHER_URL],
+                    verdict="contradicted",
+                    contradictions=["A vendor report disagrees."],
+                ),
+            ],
+            sources=[_source(), _source(url=OTHER_URL, title="Other study")],
+            errors=[
+                ResearchError(
+                    error_type="synthesizer_invalid_section",
+                    source="agent.synthesizer",
+                    message="Some drafted content was refused.",
+                    recoverable=True,
+                    details={"rejected": ["section 2: no known checked claim"]},
+                )
+            ],
+            rejected=["section 2: no known checked claim"],
+        )
     )
 
-    for heading in REPORT_SECTIONS:
-        assert heading in markdown
-    assert "(no executive summary was produced)" in markdown
-    assert "No limitations were recorded for this pass." in markdown
+    assert ledger.startswith(
+        f"{EVIDENCE_TITLE_PREFIX}How mature is quantum error correction?"
+    )
+    for heading in EVIDENCE_SECTIONS:
+        assert heading in ledger
+    passages = _section_body(ledger, "## Verification passages")
+    assert THIRD_URL in passages
+    assert "An independent review states the same figure." in passages
+    assert "A vendor report disagrees." in _section_body(
+        ledger, "## Checked claim registry"
+    )
+    assert "section 2: no known checked claim" in _section_body(
+        ledger, "## Rejected draft content"
+    )
+    assert "synthesizer_invalid_section" in _section_body(ledger, "## Run errors")
+
+
+def test_the_ledger_records_the_coverage_a_claim_consumed() -> None:
+    _, ledger = render_reports(
+        _composition(claims=[_claim(coverage_ids=["topic-01", "topic-02"])])
+    )
+
+    assert "topic-01, topic-02" in ledger
+
+
+def test_same_url_findings_only_hide_the_consumed_finding() -> None:
+    consumed = Finding(
+        content="The consumed finding is checked.",
+        source_url=SOURCE_URL,
+        source_title="QEC 2025",
+        extracted_at=EXTRACTED_AT,
+        confidence=0.8,
+        related_sub_topic="Alpha",
+    )
+    untouched = Finding(
+        content="The untouched finding remains an open question.",
+        source_url=SOURCE_URL,
+        source_title="QEC 2025",
+        extracted_at=EXTRACTED_AT,
+        confidence=0.7,
+        related_sub_topic="Alpha",
+    )
+    ledger = render_evidence_ledger(
+        _composition(
+            claims=[
+                _claim(
+                    finding_fingerprints=[finding_fingerprint(consumed)]
+                )
+            ],
+            findings=[consumed, untouched],
+        )
+    )
+
+    open_questions = _section_body(
+        ledger, "## Unchecked findings and open questions"
+    )
+    assert "The consumed finding is checked." not in open_questions
+    assert "The untouched finding remains an open question." in open_questions
+
+
+def test_an_empty_ledger_still_carries_every_block() -> None:
+    ledger = render_evidence_ledger(
+        ReportComposition(question="What is known?", session_id="session-1")
+    )
+
+    for heading in EVIDENCE_SECTIONS:
+        assert heading in ledger
+    assert ledger.endswith("\n")
+
+
+def test_the_run_errors_block_publishes_bounded_tool_failure_details() -> None:
+    """A classified tool failure reaches the ledger; an unvetted one does not.
+
+    The bounded scraper diagnosis is the only reason a ``web_scraper`` failure
+    can be counted *by class* rather than merely counted, so the evidence
+    artifact has to carry it — otherwise classifying the failure buys nothing
+    for the reader of this artifact. Every other error type's details are
+    withheld: this ledger is public, and those values are not produced by a
+    projection that revalidates them.
+    """
+    ledger = render_evidence_ledger(
+        _composition(
+            errors=[
+                ResearchError(
+                    error_type="agent_tool_failed",
+                    source="agent.researcher",
+                    message="web_scraper failed; the agent continued.",
+                    recoverable=True,
+                    details={
+                        "tool": "web_scraper",
+                        "iteration": 3,
+                        "tool_error_type": "HTTPStatusError",
+                        "attempts": 2,
+                        "retries": 1,
+                        "status_code": 503,
+                        "content_type": "text/html",
+                    },
+                ),
+                ResearchError(
+                    error_type="synthesizer_invalid_section",
+                    source="agent.synthesizer",
+                    message="Some drafted content was refused.",
+                    recoverable=True,
+                    details={"unvetted": "https://internal.example/secret"},
+                ),
+            ]
+        )
+    )
+
+    errors = _section_body(ledger, "## Run errors")
+
+    assert "tool_error_type=HTTPStatusError" in errors
+    assert "status_code=503" in errors
+    assert "content_type=text/html" in errors
+    assert "unvetted" not in errors
+    assert "internal.example" not in errors
+
+
+def test_the_run_errors_block_names_why_a_sub_topic_was_skipped() -> None:
+    """A skipped sub-topic must publish *which* one and *why*.
+
+    It is the difference between a coverage gap and an acceptable skip: "cap"
+    and "provider_failure_stopped_processing" are losses, while
+    "interim_satisfaction" is a refinement pass correctly reusing a prior
+    finding. A run lost three planned sub-topics and the artifact could not say
+    which reason applied, so the reason is now published alongside the
+    locally-stamped coverage id.
+    """
+    ledger = render_evidence_ledger(
+        _composition(
+            errors=[
+                ResearchError(
+                    error_type="researcher_sub_topic_skipped",
+                    source="agent.researcher",
+                    message="A planned sub-topic was never researched.",
+                    recoverable=True,
+                    details={
+                        "sub_topic": "Interconnection queue reform",
+                        "coverage_id": "topic-04",
+                        "priority": 4,
+                        "reason": "provider_failure_stopped_processing",
+                    },
+                )
+            ]
+        )
+    )
+
+    errors = _section_body(ledger, "## Run errors")
+
+    assert "coverage_id=topic-04" in errors
+    assert "reason=provider_failure_stopped_processing" in errors
+
+
+# --- identity and citation helpers -------------------------------------------
+
+
+def test_canonicalization_collapses_repeated_records_in_first_seen_order() -> None:
+    sources = _pathological_sources()
+    claims = _pathological_claims()
+
+    canonical = canonical_sources(sources)
+    canonical_claim_list = canonical_claims(claims)
+
+    assert len(canonical) == PATHOLOGICAL_CANONICAL_SOURCES
+    assert len({source.url for source in canonical}) == len(canonical)
+    assert len(canonical_claim_list) == PATHOLOGICAL_CANONICAL_CLAIMS
+    assert len({claim.claim_id for claim in canonical_claim_list}) == len(
+        canonical_claim_list
+    )
+    # The latest record for a repeated claim wins, as the state contract says.
+    assert canonical_claims(claims)[0] == claims[240]
+
+
+def test_the_latest_recorded_timestamp_is_the_as_of_value() -> None:
+    earlier = Finding(
+        content="Earlier.",
+        source_url=SOURCE_URL,
+        source_title="QEC 2025",
+        extracted_at="2026-07-01T09:00:00+00:00",
+        confidence=0.5,
+        related_sub_topic="Alpha",
+    )
+    later = earlier.model_copy(update={"extracted_at": EXTRACTED_AT})
+
+    assert report_as_of(findings=[earlier, later], events=[]) == EXTRACTED_AT
+    assert (
+        report_as_of(
+            findings=[earlier],
+            events=[
+                ResearchEvent(
+                    event_type="researcher.sub_topic.completed",
+                    source="agent.researcher",
+                    message="Done.",
+                    timestamp="2026-09-01T00:00:00+00:00",
+                )
+            ],
+        )
+        == "2026-09-01T00:00:00+00:00"
+    )
+    assert report_as_of(findings=[], events=[]) == ""
+
+
+def test_scope_is_stated_from_the_plan_alone() -> None:
+    topic = SubTopic(
+        coverage_id="topic-01",
+        title="Alpha",
+        rationale="First.",
+        search_queries=["alpha"],
+        success_criteria=["alpha evidence"],
+        priority=1,
+    )
+
+    rendered = report_scope([topic])
+
+    assert "topic-01" in rendered
+    assert "Alpha" in rendered
+    assert "no geography" in rendered.lower()
+    assert report_scope([]) != ""
+
+
+def test_citation_numbers_follow_first_use_in_the_reader_report() -> None:
+    composition = _composition(
+        claims=[
+            _claim(),
+            _claim(text="Cost fell tenfold.", urls=[OTHER_URL], verdict="unverified"),
+        ],
+        sources=[_source(), _source(url=OTHER_URL, title="Other study")],
+        summary=[
+            _point(
+                "Costs fell.",
+                claim_ids=[claim_fingerprint("Cost fell tenfold.")],
+                source_urls=[OTHER_URL],
+            )
+        ],
+        sections=[
+            ReportSection(
+                title="Both",
+                points=[
+                    _point(
+                        "Break-even was reached.",
+                        claim_ids=[
+                            claim_fingerprint(
+                                "Logical error rates fell below break-even in 2025."
+                            )
+                        ],
+                        source_urls=[SOURCE_URL],
+                    )
+                ],
+            )
+        ],
+    )
+
+    assert [citation.url for citation in reader_citations(composition)] == [
+        OTHER_URL,
+        SOURCE_URL,
+    ]
+
+
+def test_markers_render_sorted_and_deduplicated() -> None:
+    index = [
+        Citation(number=1, url=SOURCE_URL, title="QEC 2025"),
+        Citation(number=2, url=OTHER_URL, title="Other study"),
+    ]
+
+    assert (
+        citation_markers([OTHER_URL, SOURCE_URL, OTHER_URL], index) == "[1][2]"
+    )
+    assert citation_markers(["https://invented.test/x"], index) == ""
+
+
+def test_citations_render_one_numbered_line_each() -> None:
+    index = [Citation(number=1, url=SOURCE_URL, title="QEC 2025")]
+
+    assert render_citations(index) == f"1. QEC 2025 — {SOURCE_URL}"
+    assert render_citations([]) == "(no sources were cited)"
 
 
 def test_a_citation_object_rejects_a_zero_number() -> None:
     with pytest.raises(ValueError):
-        Citation(number=0, url="https://example.org/a", title="A")
+        Citation(number=0, url=SOURCE_URL, title="A")
+
+
+# --- helpers ------------------------------------------------------------------
+
+
+def _section_body(markdown: str, heading: str) -> str:
+    """The text between ``heading`` and the next H2 heading (or the end)."""
+    start = markdown.index(heading)
+    tail = markdown[start + len(heading) :]
+    match = re.search(r"(?m)^## ", tail)
+    return tail[: match.start()] if match else tail
+
+
+def _table_rows(body: str) -> list[str]:
+    return [line for line in body.splitlines() if line.startswith("| ")]
+
+
+def _cells(row: str) -> list[str]:
+    """One Markdown table row as its stripped cells.
+
+    Test-local: every row asserted through it is built from fixture text with
+    no escaped pipe, so splitting on the delimiter is exact.
+    """
+    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+
+def _reader_points(composition: ReportComposition) -> list[ReportPoint]:
+    points: list[ReportPoint] = [*composition.summary, *composition.constraints]
+    for section in composition.sections:
+        points.extend(section.points)
+    return points

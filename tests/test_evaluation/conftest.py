@@ -11,9 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.planner import ResearchPlanDraft, SubTopicDraft
 from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
-from deep_research.agents.steps import ReActDecision
+from deep_research.agents.steps import ReActDecision, ReActStep
 from deep_research.evaluation.cases import (
     all_cases as _all_cases,
 )
@@ -27,8 +28,10 @@ from deep_research.evaluation.config import (
 )
 from deep_research.evaluation.datasets import example_payload
 from deep_research.evaluation.dependencies import (
+    bounded_url_fingerprints,
     build_controlled_dependencies,
     build_live_dependencies,
+    read_url_fingerprints,
 )
 from deep_research.evaluation.models import (
     CaseResult,
@@ -129,6 +132,11 @@ def planner_case(controlled_case_for):
 
 
 @pytest.fixture
+def critic_live_case(live_case_for):
+    return live_case_for("critic")
+
+
+@pytest.fixture
 def researcher_case(controlled_case_for):
     return controlled_case_for("researcher")
 
@@ -161,6 +169,7 @@ def clean_target_output(planner_case) -> TargetOutput:
         result={
             "sub_topics": [
                 {
+                    "coverage_id": "topic-01",
                     "title": "Solid-state electrolyte degradation",
                     "rationale": "Electrolyte stability dominates cycle life.",
                     "search_queries": [
@@ -170,6 +179,7 @@ def clean_target_output(planner_case) -> TargetOutput:
                     "priority": 1,
                 },
                 {
+                    "coverage_id": "topic-02",
                     "title": "Cathode interface resistance",
                     "rationale": "Interface resistance limits capacity retention.",
                     "search_queries": [
@@ -186,7 +196,7 @@ def clean_target_output(planner_case) -> TargetOutput:
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=planner_case.expectations.max_iterations,
             tool_budget=planner_case.expectations.max_tool_calls,
         ),
@@ -221,6 +231,7 @@ def leaking_target_output(planner_case) -> TargetOutput:
         result={
             "sub_topics": [
                 {
+                    "coverage_id": "topic-01",
                     "title": "Solid-state electrolyte degradation",
                     "rationale": (
                         "Electrolyte stability dominates cycle life. "
@@ -242,7 +253,7 @@ def leaking_target_output(planner_case) -> TargetOutput:
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=planner_case.expectations.max_iterations,
             tool_budget=planner_case.expectations.max_tool_calls,
         ),
@@ -307,7 +318,7 @@ def researcher_target_output(researcher_case) -> TargetOutput:
         react=ReActSummary(
             iterations=4,
             tool_calls=6,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=researcher_case.expectations.max_iterations,
             tool_budget=researcher_case.expectations.max_tool_calls,
         ),
@@ -417,8 +428,50 @@ def experiment_result(repetition_result) -> ExperimentResult:
 # --- Task 18: per-agent output builders for the agent-specific gate tests ---
 
 
+def _read_trajectory(urls: list[str]) -> list[TrajectoryStep]:
+    """Trajectory steps of a run that READ each URL, not merely found it."""
+    return [
+        TrajectoryStep(
+            iteration=index,
+            thought="",
+            tool_name="web_scraper",
+            succeeded=True,
+            observation_summary=f"Read {url}.",
+        )
+        for index, url in enumerate(urls)
+    ]
+
+
+def _ledger_with_reads(
+    ledger: DependencyLedger,
+    fingerprints: list[str],
+    *,
+    complete: bool,
+) -> DependencyLedger:
+    """Return ``ledger`` plus the bounded read identities of a run."""
+    return ledger.model_copy(
+        update={
+            "read_url_fingerprints": list(fingerprints),
+            "read_url_fingerprints_complete": complete,
+        }
+    )
+
+
+def _read_ledger(urls: Sequence[str]) -> DependencyLedger:
+    """A ledger proving the run READ exactly ``urls``."""
+    fingerprints, complete = bounded_url_fingerprints(urls)
+    return _ledger_with_reads(
+        DependencyLedger(), fingerprints, complete=complete
+    )
+
+
 class PlannerOutput(TargetOutput):
-    """A planner repetition with builder helpers for the agent gate tests."""
+    """A planner repetition with builder helpers for the agent gate tests.
+
+    Each rebuilt sub-topic carries the ``topic-NN`` id the Planner stamps for
+    its position, so a rebuilt repetition stays something the Planner's own
+    ``valid_subtopics`` gate accepts.
+    """
 
     def with_sub_topics(self, count: int) -> "PlannerOutput":
         return self.model_copy(
@@ -426,6 +479,7 @@ class PlannerOutput(TargetOutput):
                 "result": {
                     "sub_topics": [
                         {
+                            "coverage_id": f"topic-{index + 1:02d}",
                             "title": f"Sub-topic {index}",
                             "rationale": f"Rationale {index}",
                             "search_queries": [f"query {index}"],
@@ -444,6 +498,7 @@ class PlannerOutput(TargetOutput):
                 "result": {
                     "sub_topics": [
                         {
+                            "coverage_id": f"topic-{index + 1:02d}",
                             "title": title,
                             "rationale": f"Rationale {index}",
                             "search_queries": [f"query {index}"],
@@ -524,7 +579,14 @@ class SourceEvaluatorOutput(TargetOutput):
 
 
 class FactCheckerOutput(TargetOutput):
-    """A fact-checker repetition with builder helpers."""
+    """A fact-checker repetition with builder helpers.
+
+    Every helper that adds verification passages also records the read
+    provenance those passages need. Task 5 review: a fixture that moved the
+    claim alone could assert passages at URLs the run never read — or that no
+    run could have read — which is exactly what the read-provenance gate
+    exists to refuse.
+    """
 
     def with_verified_claim_sources(
         self, urls: Sequence[str]
@@ -544,25 +606,71 @@ class FactCheckerOutput(TargetOutput):
             update={"result": {**result, "verified_claims": claims}}
         )
 
-    def with_trajectory_urls(self, urls: Sequence[str]) -> "FactCheckerOutput":
-        """Record one web_search step per URL, the shape a verification
-        loop's tool calls take in the repetition's trajectory."""
-        trajectory = [
-            TrajectoryStep(
-                iteration=index,
-                thought="",
-                tool_name="web_search",
-                succeeded=True,
-                observation_summary=f"Retrieved {url}.",
-            )
+    def with_read_urls(
+        self, urls: Sequence[str], *, complete: bool = True
+    ) -> "FactCheckerOutput":
+        """Declare exactly which URLs this repetition READ.
+
+        ``complete=False`` models an artifact that lost read identities, which
+        the gate must treat as unable to prove anything.
+        """
+        fingerprints, derived_complete = bounded_url_fingerprints(urls)
+        return self.model_copy(
+            update={
+                "dependencies": _ledger_with_reads(
+                    self.dependencies,
+                    fingerprints,
+                    complete=complete and derived_complete,
+                )
+            }
+        )
+
+    def with_read_trajectory(self, urls: Sequence[str]) -> "FactCheckerOutput":
+        """Record one web_scraper step per URL: reads, not discovery."""
+        return self.model_copy(
+            update={"trajectory": _read_trajectory(list(urls))}
+        )
+
+    def with_read_steps(self, steps: Sequence[ReActStep]) -> "FactCheckerOutput":
+        """Derive read provenance from typed steps, exactly as the target does.
+
+        Uses the production ``read_url_fingerprints`` classifier, so a fixture
+        can prove — rather than assert — that a search-only step set yields no
+        read identity at all.
+        """
+        fingerprints, complete = read_url_fingerprints(steps)
+        return self.model_copy(
+            update={
+                "dependencies": _ledger_with_reads(
+                    self.dependencies, fingerprints, complete=complete
+                )
+            }
+        )
+
+    def with_verification_passage_urls(
+        self, urls: Sequence[str]
+    ) -> "FactCheckerOutput":
+        result = dict(self.result or {})
+        claims = [dict(item) for item in (result.get("verified_claims") or [])]
+        claims[0]["verification_evidence"] = [
+            {
+                "source_url": url,
+                "source_title": "Independent review",
+                "locator": f"p. {index + 1}",
+                "excerpt": "An independent source reports the same result.",
+                "stance": "supports",
+            }
             for index, url in enumerate(urls)
         ]
-        return self.model_copy(update={"trajectory": trajectory})
+        return self.model_copy(
+            update={"result": {**result, "verified_claims": claims}}
+        ).with_read_urls(urls).with_read_trajectory(urls)
 
     def with_empty_evidence(self) -> "FactCheckerOutput":
         result = dict(self.result or {})
         claims = [dict(item) for item in (result.get("verified_claims") or [])]
         claims[0]["evidence"] = []
+        claims[0]["verification_evidence"] = []
         return self.model_copy(
             update={"result": {**result, "verified_claims": claims}}
         )
@@ -584,31 +692,45 @@ class SynthesizerOutput(TargetOutput):
 
     def with_report_citing(self, url: str) -> "SynthesizerOutput":
         result = dict(self.result or {})
-        report = str(result.get("report") or "")
+        report = str(result.get("markdown") or "")
+        state_update = dict(self.state_update)
+        report = f"{report}\n\nSee {url} for details."
         return self.model_copy(
             update={
                 "result": {
                     **result,
-                    "report": f"{report}\n\nSee {url} for details.",
-                }
+                    "markdown": report,
+                },
+                "state_update": {**state_update, "report": report},
             }
         )
 
     def without_limitations(self) -> "SynthesizerOutput":
         result = dict(self.result or {})
-        report = str(result.get("report") or "")
+        report = str(result.get("markdown") or "")
+        state_update = dict(self.state_update)
+        report = report.split(
+            "## Uncertainty and conflicting evidence"
+        )[0].rstrip()
         return self.model_copy(
             update={
                 "result": {
                     **result,
-                    "report": report.split("## Limitations")[0].rstrip(),
-                }
+                    "markdown": report,
+                },
+                "state_update": {**state_update, "report": report},
             }
         )
 
     def with_report_text(self, text: str) -> "SynthesizerOutput":
         result = dict(self.result or {})
-        return self.model_copy(update={"result": {**result, "report": text}})
+        state_update = dict(self.state_update)
+        return self.model_copy(
+            update={
+                "result": {**result, "markdown": text},
+                "state_update": {**state_update, "report": text},
+            }
+        )
 
 
 class CriticOutput(TargetOutput):
@@ -685,8 +807,8 @@ def critic_budget_case(controlled_case_for_id):
 
 
 @pytest.fixture
-def synthesizer_failure_case(controlled_case_for_id):
-    return controlled_case_for_id("synthesizer", "write-or-memory-failure")
+def synthesizer_composition_case(controlled_case_for_id):
+    return controlled_case_for_id("synthesizer", "composition-no-publication")
 
 
 @pytest.fixture
@@ -706,6 +828,7 @@ def planner_output(planner_case) -> PlannerOutput:
         result={
             "sub_topics": [
                 {
+                    "coverage_id": "topic-01",
                     "title": "Solid-state electrolyte degradation",
                     "rationale": "Electrolyte stability dominates cycle life.",
                     "search_queries": [
@@ -715,6 +838,7 @@ def planner_output(planner_case) -> PlannerOutput:
                     "priority": 1,
                 },
                 {
+                    "coverage_id": "topic-02",
                     "title": "Cathode interface resistance",
                     "rationale": "Interface resistance limits capacity retention.",
                     "search_queries": [
@@ -724,6 +848,7 @@ def planner_output(planner_case) -> PlannerOutput:
                     "priority": 2,
                 },
                 {
+                    "coverage_id": "topic-03",
                     "title": "Mechanical stress and cracking",
                     "rationale": "Stress from cycling drives crack formation.",
                     "search_queries": [
@@ -740,7 +865,7 @@ def planner_output(planner_case) -> PlannerOutput:
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=planner_case.expectations.max_iterations,
             tool_budget=planner_case.expectations.max_tool_calls,
         ),
@@ -796,7 +921,7 @@ def researcher_output(researcher_case) -> ResearcherOutput:
         react=ReActSummary(
             iterations=4,
             tool_calls=6,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=researcher_case.expectations.max_iterations,
             tool_budget=researcher_case.expectations.max_tool_calls,
         ),
@@ -837,9 +962,9 @@ def source_evaluator_output(
                     "authority_score": 0.90,
                     "recency_score": 0.85,
                     "relevance_score": 0.92,
-                    "corroboration_score": 0.80,
                     "overall_score": 0.88,
                     "rationale": "Authoritative assessment with broad corroboration.",
+                    "evaluation_status": "scored",
                     "low_confidence": False,
                 },
                 {
@@ -848,9 +973,9 @@ def source_evaluator_output(
                     "authority_score": 0.85,
                     "recency_score": 0.80,
                     "relevance_score": 0.90,
-                    "corroboration_score": 0.78,
                     "overall_score": 0.84,
                     "rationale": "Peer-reviewed regional analysis.",
+                    "evaluation_status": "scored",
                     "low_confidence": False,
                 },
                 {
@@ -859,9 +984,9 @@ def source_evaluator_output(
                     "authority_score": 0.88,
                     "recency_score": 0.82,
                     "relevance_score": 0.88,
-                    "corroboration_score": 0.75,
                     "overall_score": 0.85,
                     "rationale": "Agency assessment with solid corroboration.",
+                    "evaluation_status": "scored",
                     "low_confidence": False,
                 },
                 {
@@ -870,9 +995,9 @@ def source_evaluator_output(
                     "authority_score": 0.30,
                     "recency_score": 0.60,
                     "relevance_score": 0.50,
-                    "corroboration_score": 0.30,
                     "overall_score": 0.42,
                     "rationale": "Opinion piece without independent verification.",
+                    "evaluation_status": "scored",
                     "low_confidence": False,
                 },
                 {
@@ -881,9 +1006,9 @@ def source_evaluator_output(
                     "authority_score": 0.20,
                     "recency_score": 0.50,
                     "relevance_score": 0.45,
-                    "corroboration_score": 0.25,
                     "overall_score": 0.35,
                     "rationale": "Anonymous forum discussion.",
+                    "evaluation_status": "scored",
                     "low_confidence": True,
                 },
             ]
@@ -894,7 +1019,7 @@ def source_evaluator_output(
         react=ReActSummary(
             iterations=2,
             tool_calls=4,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=source_evaluator_case.expectations.max_iterations,
             tool_budget=source_evaluator_case.expectations.max_tool_calls,
         ),
@@ -928,6 +1053,10 @@ def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
                         "Small modular reactor designs must satisfy the same "
                         "international safety standards as large reactors."
                     ),
+                    "claim_id": claim_fingerprint(
+                        "Small modular reactor designs must satisfy the same "
+                        "international safety standards as large reactors."
+                    ),
                     "source_urls": ["https://iaea.org/smr-safety-assessment"],
                     "verdict": "verified",
                     "confidence": 0.85,
@@ -938,6 +1067,26 @@ def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
                         "(https://world-nuclear.org/smr-safety-standards).",
                     ],
                     "contradictions": [],
+                    "verification_evidence": [
+                        {
+                            "source_url": "https://syndication.news.example.com/c",
+                            "source_title": "Independent safety review",
+                            "locator": "p. 1",
+                            "excerpt": (
+                                "The IAEA framework covers SMR designs."
+                            ),
+                            "stance": "supports",
+                        },
+                        {
+                            "source_url": (
+                                "https://world-nuclear.org/smr-safety-standards"
+                            ),
+                            "source_title": "Independent safety review",
+                            "locator": "p. 2",
+                            "excerpt": "The NRC applies the same review.",
+                            "stance": "supports",
+                        },
+                    ],
                 }
             ]
         },
@@ -947,13 +1096,23 @@ def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
         react=ReActSummary(
             iterations=2,
             tool_calls=4,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=fact_checker_case.expectations.max_iterations,
             tool_budget=fact_checker_case.expectations.max_tool_calls,
         ),
-        dependencies=DependencyLedger(),
+        dependencies=_read_ledger(
+            [
+                "https://syndication.news.example.com/c",
+                "https://world-nuclear.org/smr-safety-standards",
+            ]
+        ),
         evidence=EvidenceContext(),
-        trajectory=[],
+        trajectory=_read_trajectory(
+            [
+                "https://syndication.news.example.com/c",
+                "https://world-nuclear.org/smr-safety-standards",
+            ]
+        ),
         target_model_requested="gpt-5.6-luna",
         target_model_returned="gpt-5.6-luna",
         target_reasoning_effort="low",
@@ -987,6 +1146,10 @@ def fact_checker_dependent_output(
                         "The 2025 grid upgrade reduced outage minutes by "
                         "40 percent."
                     ),
+                    "claim_id": claim_fingerprint(
+                        "The 2025 grid upgrade reduced outage minutes by "
+                        "40 percent."
+                    ),
                     "source_urls": [
                         "https://news.example.com/outage-coverage",
                         "https://news.example.com/outage-verification",
@@ -1005,6 +1168,27 @@ def fact_checker_dependent_output(
                         "40 percent figure.",
                     ],
                     "contradictions": [],
+                    "verification_evidence": [
+                        {
+                            "source_url": "https://news.example.com/outage-minutes-fall",
+                            "source_title": "News follow-up",
+                            "locator": "p. 1",
+                            "excerpt": (
+                                "A follow-up report confirms outage minutes fell."
+                            ),
+                            "stance": "supports",
+                        },
+                        {
+                            "source_url": (
+                                "https://syndication.news.example.com/"
+                                "outage-minutes-fall"
+                            ),
+                            "source_title": "Syndicated report",
+                            "locator": "p. 1",
+                            "excerpt": "The same figure is repeated.",
+                            "stance": "supports",
+                        },
+                    ],
                 }
             ]
         },
@@ -1014,34 +1198,23 @@ def fact_checker_dependent_output(
         react=ReActSummary(
             iterations=2,
             tool_calls=4,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=fact_checker_dependent_case.expectations.max_iterations,
             tool_budget=fact_checker_dependent_case.expectations.max_tool_calls,
         ),
-        dependencies=DependencyLedger(),
+        dependencies=_read_ledger(
+            [
+                "https://news.example.com/outage-minutes-fall",
+                "https://syndication.news.example.com/outage-minutes-fall",
+            ]
+        ),
         evidence=EvidenceContext(),
-        trajectory=[
-            TrajectoryStep(
-                iteration=0,
-                thought="",
-                tool_name="web_search",
-                succeeded=True,
-                observation_summary=(
-                    "Retrieved https://news.example.com/outage-minutes-fall "
-                    "which confirms the 40 percent figure."
-                ),
-            ),
-            TrajectoryStep(
-                iteration=1,
-                thought="",
-                tool_name="web_search",
-                succeeded=True,
-                observation_summary=(
-                    "Retrieved https://syndication.news.example.com/"
-                    "outage-minutes-fall, the same 40 percent figure."
-                ),
-            ),
-        ],
+        trajectory=_read_trajectory(
+            [
+                "https://news.example.com/outage-minutes-fall",
+                "https://syndication.news.example.com/outage-minutes-fall",
+            ]
+        ),
         target_model_requested="gpt-5.6-luna",
         target_model_returned="gpt-5.6-luna",
         target_reasoning_effort="low",
@@ -1050,19 +1223,47 @@ def fact_checker_dependent_output(
 
 @pytest.fixture
 def synthesizer_output(synthesizer_case) -> SynthesizerOutput:
-    """A complete report citing only known sources, with limitations."""
+    """Both Task 6 Markdown artifacts, citing only known sources."""
     urls = synthesizer_case.expectations.known_source_urls
     report = (
-        "## Summary\n\n"
-        f"London congestion charging evidence shows travel times fell after "
-        f"the charge was introduced ({urls[0]}).\n\n"
+        "# Research report: What is the evidence base for congestion pricing "
+        "reducing urban travel times?\n\n"
+        "**As of:** 2026-08-01T00:00:00+00:00\n\n"
+        "**Scope:** the supplied urban congestion-pricing evidence.\n\n"
+        "**Quality status:** not yet quality-gated\n\n"
+        "## Executive summary\n\n"
+        f"- London congestion charging evidence shows travel times fell "
+        f"after the charge was introduced. [{1}]\n\n"
+        "## Constraint ranking\n\n"
+        "(no constraint was ranked for this pass)\n\n"
         "## Findings\n\n"
-        f"New York congestion pricing results point to similar reductions "
-        f"({urls[1]}). Evidence beyond London and New York is thinner "
-        f"({urls[2]}).\n\n"
-        "## Limitations\n\n"
-        "The evidence is limited to a few cities and short evaluation windows."
+        "### London congestion charging evidence\n\n"
+        f"- London results show travel-time reductions. [{1}]\n\n"
+        "### New York congestion pricing evidence\n\n"
+        f"- New York results point to similar reductions. [{2}]\n\n"
+        "### International congestion-pricing evidence\n\n"
+        f"- Evidence beyond London and New York is thinner. [{3}]\n\n"
+        "## Uncertainty and conflicting evidence\n\n"
+        "The evidence is limited to a few cities and short evaluation windows.\n\n"
+        "## Methodology\n\n"
+        "- Claims and citations were composed from the supplied evidence.\n\n"
+        "## References\n\n"
+        f"1. London monitoring — {urls[0]}\n"
+        f"2. New York evaluation — {urls[1]}\n"
+        f"3. Comparative review — {urls[2]}"
     )
+    evidence = (
+        "# Evidence ledger: evaluation-complete\n\n"
+        "## Claim registry\n\n"
+        "The controlled fixture's checked claims and source assessments."
+    )
+    state_update = {
+        "report": report,
+        "report_evidence": evidence,
+        "evidence_path": "report-evaluation-complete-1-evidence.md",
+        "unique_source_count": len(urls),
+        "unique_claim_count": 4,
+    }
     return SynthesizerOutput(
         case_id=synthesizer_case.case_id,
         case_version=synthesizer_case.version,
@@ -1074,18 +1275,27 @@ def synthesizer_output(synthesizer_case) -> SynthesizerOutput:
         trace_url="https://smith.langchain.com/o/x/r/synthesizer-1",
         completed=True,
         failure=None,
-        result={"report": report},
-        state_update={"report": report},
+        result={
+            "markdown": report,
+            "path": None,
+            "evidence_markdown": evidence,
+            "evidence_path": "report-evaluation-complete-1-evidence.md",
+            "section_count": 3,
+            "citation_count": 3,
+            "unique_source_count": len(urls),
+            "unique_claim_count": 4,
+        },
+        state_update=state_update,
         errors=[],
         tracker_errors=[],
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=synthesizer_case.expectations.max_iterations,
             tool_budget=synthesizer_case.expectations.max_tool_calls,
         ),
-        dependencies=DependencyLedger(document_writes=1),
+        dependencies=DependencyLedger(),
         evidence=EvidenceContext(),
         trajectory=[],
         target_model_requested="gpt-5.6-luna",
@@ -1095,49 +1305,75 @@ def synthesizer_output(synthesizer_case) -> SynthesizerOutput:
 
 
 @pytest.fixture
-def synthesizer_failure_output(
-    synthesizer_failure_case,
+def synthesizer_composition_output(
+    synthesizer_composition_case,
 ) -> SynthesizerOutput:
-    """The write failed: zero ledger writes, no output_path, no saved-claim."""
-    urls = synthesizer_failure_case.expectations.known_source_urls
+    """A composition-only output with no publication claim or side effect."""
+    urls = synthesizer_composition_case.expectations.known_source_urls
     report = (
-        "## Summary\n\n"
-        f"Deep retrofit field studies show realized savings below modeled "
-        f"savings ({urls[0]}).\n\n"
-        "## Limitations\n\n"
-        "The evidence base is still small."
+        "# Research report: How much does building retrofit depth affect "
+        "realized energy savings?\n\n"
+        "**As of:** 2026-08-01T00:00:00+00:00\n\n"
+        "**Scope:** the supplied retrofit evidence.\n\n"
+        "**Quality status:** not yet quality-gated\n\n"
+        "## Executive summary\n\n"
+        f"- Deep retrofit results are mixed across the supplied studies. [1]\n\n"
+        "## Constraint ranking\n\n"
+        "(no constraint was ranked for this pass)\n\n"
+        "## Findings\n\n"
+        "### Retrofit depth and realized savings\n\n"
+        f"- Realized savings can fall below modeled values. [1]\n\n"
+        "## Uncertainty and conflicting evidence\n\n"
+        "The evidence base is still limited.\n\n"
+        "## Methodology\n\n"
+        "- Claims were composed from the supplied checked evidence.\n\n"
+        "## References\n\n"
+        f"1. Retrofit study — {urls[0]}"
     )
+    evidence = (
+        "# Evidence ledger: composition-no-publication\n\n"
+        "## Claim registry\n\n"
+        "The controlled fixture's checked claims and source assessments."
+    )
+    state_update = {
+        "report": report,
+        "report_evidence": evidence,
+        "evidence_path": "report-composition-no-publication-1-evidence.md",
+        "unique_source_count": len(urls),
+        "unique_claim_count": 3,
+    }
     return SynthesizerOutput(
-        case_id=synthesizer_failure_case.case_id,
-        case_version=synthesizer_failure_case.version,
-        agent_name=synthesizer_failure_case.agent_name,
-        tier=synthesizer_failure_case.tier,
+        case_id=synthesizer_composition_case.case_id,
+        case_version=synthesizer_composition_case.version,
+        agent_name=synthesizer_composition_case.agent_name,
+        tier=synthesizer_composition_case.tier,
         repetition=1,
-        session_id="evaluation-write-or-memory-failure",
+        session_id="evaluation-composition-no-publication",
         experiment_name="synthesizer-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/synthesizer-failure-1",
+        trace_url="https://smith.langchain.com/o/x/r/synthesizer-composition-1",
         completed=True,
         failure=None,
-        result={"report": report},
-        state_update={"report": report},
-        errors=[
-            {
-                "error_type": "write_failed",
-                "source": "write_document",
-                "message": "output directory was not writable",
-                "timestamp": "2026-08-01T00:00:00+00:00",
-                "recoverable": True,
-            }
-        ],
+        result={
+            "markdown": report,
+            "path": None,
+            "evidence_markdown": evidence,
+            "evidence_path": "report-composition-no-publication-1-evidence.md",
+            "section_count": 1,
+            "citation_count": 1,
+            "unique_source_count": len(urls),
+            "unique_claim_count": 3,
+        },
+        state_update=state_update,
+        errors=[],
         tracker_errors=[],
         react=ReActSummary(
             iterations=2,
             tool_calls=3,
-            stop_reason="completed",
-            max_iterations=synthesizer_failure_case.expectations.max_iterations,
-            tool_budget=synthesizer_failure_case.expectations.max_tool_calls,
+            stop_reason="finished",
+            max_iterations=synthesizer_composition_case.expectations.max_iterations,
+            tool_budget=synthesizer_composition_case.expectations.max_tool_calls,
         ),
-        dependencies=DependencyLedger(document_writes=0),
+        dependencies=DependencyLedger(),
         evidence=EvidenceContext(),
         trajectory=[],
         target_model_requested="gpt-5.6-luna",
@@ -1179,7 +1415,7 @@ def critic_output(critic_case) -> CriticOutput:
         react=ReActSummary(
             iterations=1,
             tool_calls=1,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=critic_case.expectations.max_iterations,
             tool_budget=critic_case.expectations.max_tool_calls,
         ),
@@ -1230,7 +1466,7 @@ def critic_gap_output(critic_gap_case) -> CriticOutput:
         react=ReActSummary(
             iterations=1,
             tool_calls=1,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=critic_gap_case.expectations.max_iterations,
             tool_budget=critic_gap_case.expectations.max_tool_calls,
         ),
@@ -1281,7 +1517,7 @@ def critic_budget_output(critic_budget_case) -> CriticOutput:
         react=ReActSummary(
             iterations=3,
             tool_calls=6,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=critic_budget_case.expectations.max_iterations,
             tool_budget=critic_budget_case.expectations.max_tool_calls,
         ),
@@ -1514,7 +1750,10 @@ def live_target_harness(tracker, settings, tmp_path):
                 "results": [
                     {
                         "url": _LIVE_FINDING_URL,
-                        "title": "Sodium-ion energy density report",
+                        "title": (
+                            "Sodium-ion energy density report "
+                            + "x" * 240
+                        ),
                         "content": (
                             "Cell-level energy density reported at "
                             "160 Wh/kg."

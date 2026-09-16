@@ -15,21 +15,41 @@ from openai import (
     OpenAIError,
     RateLimitError,
 )
-from pydantic import BaseModel, ValidationError, create_model, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    ValidationError,
+    create_model,
+    field_validator,
+)
 
 import deep_research.providers.contracts as contracts_module
 import deep_research.providers.deepseek_provider as deepseek_module
 from deep_research.agents.steps import ReActDecision
+from deep_research.evaluation.judging import JUDGE_RATIONALE_GUIDANCE_MAX
+from deep_research.evaluation.models import (
+    JUDGE_RATIONALE_SCHEMA_MAX,
+    JudgeVerdict,
+)
 from deep_research.observability import (
     LangSmithRuntimeConfig,
     TokenUsage,
     TokenUsageMetric,
     Tracker,
 )
+from deep_research.providers import (
+    NativeToolCall,
+    NativeToolTurn,
+    ProviderError,
+    ToolDefinition,
+)
 from deep_research.providers.deepseek_provider import (
     DEEPSEEK_BASE_URL,
     ChatMessage,
     DeepSeekChatProvider,
+    DeepSeekJudgeProvider,
     ProviderConfigurationError,
     ProviderOutputLimitError,
     ProviderRateLimitError,
@@ -38,7 +58,11 @@ from deep_research.providers.deepseek_provider import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
-from deep_research.utils.config import LLMConfig
+from deep_research.request_budget import (
+    RequestAttemptLimitError,
+    RequestBudget,
+)
+from deep_research.utils.config import LLMConfig, RequestBudgetConfig
 
 
 class RecordingCompletions:
@@ -54,9 +78,29 @@ class RecordingCompletions:
         return outcome
 
 
+class RecordingResponses:
+    def __init__(self, *outcomes: object) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, object]] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class FakeDeepSeekClient:
-    def __init__(self, completions: RecordingCompletions) -> None:
-        self.chat = SimpleNamespace(completions=completions)
+    def __init__(
+        self,
+        completions: RecordingCompletions | None = None,
+        responses: RecordingResponses | None = None,
+    ) -> None:
+        self.chat = SimpleNamespace(
+            completions=completions or RecordingCompletions()
+        )
+        self.responses = responses or RecordingResponses()
 
 
 def chat_response(
@@ -66,6 +110,7 @@ def chat_response(
     prompt_tokens: object = 4,
     completion_tokens: object = 2,
     reasoning_content: str | None = None,
+    tool_calls: object = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id="deepseek-response",
@@ -73,7 +118,9 @@ def chat_response(
             SimpleNamespace(
                 finish_reason=finish_reason,
                 message=SimpleNamespace(
-                    content=text, reasoning_content=reasoning_content
+                    content=text,
+                    reasoning_content=reasoning_content,
+                    tool_calls=tool_calls,
                 ),
             )
         ],
@@ -88,6 +135,41 @@ def chat_response(
                 and not isinstance(completion_tokens, bool)
                 else None
             ),
+        ),
+    )
+
+
+def native_call(name: str, arguments: str) -> SimpleNamespace:
+    """One DeepSeek function call, shaped as the SDK returns it."""
+    return SimpleNamespace(
+        type="function",
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
+
+
+def responses_response(
+    *,
+    output_text: object,
+    status: str = "completed",
+    incomplete_reason: str | None = None,
+    input_tokens: int = 8,
+    output_tokens: int = 3,
+    model: str = "deepseek-v4-flash",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="deepseek-response",
+        status=status,
+        incomplete_details=(
+            None
+            if incomplete_reason is None
+            else SimpleNamespace(reason=incomplete_reason)
+        ),
+        output_text=output_text,
+        model=model,
+        usage=SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
         ),
     )
 
@@ -117,6 +199,65 @@ def local_tracker() -> Tracker:
     return Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
 
 
+def _provider_exception_surfaces(error: BaseException) -> list[str]:
+    """Collect public exception data and provider traceback locals only."""
+    surfaces: list[str] = []
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        surfaces.append(repr((current.args, vars(current))))
+        traceback = current.__traceback__
+        while traceback is not None:
+            filename = traceback.tb_frame.f_code.co_filename.replace("\\", "/")
+            if "/src/deep_research/providers/" in filename:
+                surfaces.append(repr(traceback.tb_frame.f_locals))
+            traceback = traceback.tb_next
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+    return surfaces
+
+
+def _exception_reaches(error: BaseException, target: object) -> bool:
+    """True when ``target`` is reachable from the error's public surface.
+
+    Walks the exception graph and the *provider* frames on those exceptions'
+    tracebacks -- never module globals, never the garbage collector, and never
+    caller frames. Callers are skipped deliberately: this test necessarily
+    holds the SDK object in its own local, and a caller's own reference is not
+    a disclosure by the provider. A True result is therefore a path the
+    provider itself opened.
+    """
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if current is target:
+            return True
+        pending.extend(
+            linked
+            for linked in (current.__cause__, current.__context__)
+            if isinstance(linked, BaseException)
+        )
+        traceback = current.__traceback__
+        while traceback is not None:
+            frame = traceback.tb_frame
+            filename = frame.f_code.co_filename.replace("\\", "/")
+            if "/src/deep_research/providers/" in filename and any(
+                value is target for value in frame.f_locals.values()
+            ):
+                return True
+            traceback = traceback.tb_next
+    return False
+
+
 def deepseek_config(**updates: object) -> LLMConfig:
     return LLMConfig.model_validate(
         {
@@ -132,6 +273,62 @@ def deepseek_config(**updates: object) -> LLMConfig:
 class TinyAnswer(BaseModel):
     answer: str
     confidence: int
+
+
+def _judge_payload(*, rationale: str) -> dict[str, object]:
+    """Return a hand-written valid judge response with the requested rationale."""
+    return {
+        "scores": {
+            "role_adherence": 0.8,
+            "completeness": 0.8,
+            "groundedness": 0.8,
+            "reasoning_quality": 0.8,
+            "usefulness": 0.8,
+            "uncertainty_calibration": 0.8,
+        },
+        "agent_specific": {},
+        "rationale": rationale,
+    }
+
+
+class NestedDiagnosticPayload(BaseModel):
+    count: int = Field(ge=1, le=4)
+    label: str = Field(min_length=2, max_length=5)
+
+
+class StrictDiagnosticEnvelope(BaseModel):
+    nested: NestedDiagnosticPayload
+    required: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StrictBoundedRationale(BaseModel):
+    """A local strict schema, so repair mechanics stay off the Judge contract.
+
+    ``JudgeVerdict`` deliberately ignores added top-level properties and
+    accepts a rationale far longer than its prompt guidance, so it can no
+    longer express "this reply is invalid" for the generic repair tests.
+    This schema can: extras are fatal and the string bound is 20 characters.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rationale: str = Field(min_length=1, max_length=20)
+
+
+class RootDiagnosticPayload(RootModel[list[str]]):
+    pass
+
+
+class OtherDiagnosticPayload(BaseModel):
+    answer: str
+
+    @field_validator("answer")
+    @classmethod
+    def reject_answer(cls, value: str) -> str:
+        del value
+        raise ValueError("answer is not accepted")
 
 
 def test_deepseek_requires_key_without_injected_client(monkeypatch) -> None:
@@ -218,8 +415,441 @@ async def test_deepseek_plain_completion_translates_roles_and_thinking() -> None
     ]
     assert call["extra_body"] == {"thinking": {"type": "enabled"}}
     assert call["reasoning_effort"] == "high"
-    assert call["max_tokens"] == 4096
+    assert call["max_tokens"] == 32768
     assert "temperature" not in call
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_uses_responses_json_schema_with_prompt_parity() -> None:
+    verdict_payload = _judge_payload(rationale="Grounded judge rationale.")
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(verdict_payload))
+    )
+    client = FakeDeepSeekClient(responses=responses)
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=client
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [
+                ChatMessage(role="developer", content="judge policy"),
+                ChatMessage(role="user", content="judge input"),
+            ],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert result == JudgeVerdict.model_validate(verdict_payload)
+    assert len(responses.calls) == 1
+    call = responses.calls[0]
+    assert call["model"] == "deepseek-v4-flash"
+    assert call["max_output_tokens"] == 32768
+    assert call["reasoning"] == {"effort": "high"}
+    assert "temperature" not in call
+    assert call["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "JudgeVerdict",
+            "schema": JudgeVerdict.model_json_schema(),
+        }
+    }
+    assert call["input"][0] == {"role": "system", "content": "judge policy"}
+    assert call["input"][1] == {"role": "user", "content": "judge input"}
+    assert call["input"][2]["role"] == "system"
+    assert "JSON Schema:" in call["input"][2]["content"]
+    assert "response_format" not in call
+    assert "max_tokens" not in call
+    assert client.chat.completions.calls == []
+
+
+def test_deepseek_judge_responses_usage_absent_maps_to_zero_tokens() -> None:
+    response = responses_response(output_text="unused")
+    del response.usage
+
+    usage = deepseek_module._responses_usage_from_response(response)
+
+    assert usage == TokenUsage()
+
+
+def test_deepseek_judge_responses_usage_maps_counts_and_total() -> None:
+    response = SimpleNamespace(
+        usage=SimpleNamespace(input_tokens=8, output_tokens=3, total_tokens=11)
+    )
+
+    usage = deepseek_module._responses_usage_from_response(response)
+
+    assert usage.model_dump() == {
+        "input_tokens": 8,
+        "output_tokens": 3,
+        "total_tokens": 11,
+    }
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        SimpleNamespace(input_tokens=True, output_tokens=2, total_tokens=3),
+        SimpleNamespace(input_tokens="8", output_tokens=2, total_tokens=10),
+        SimpleNamespace(input_tokens=8, output_tokens=-1, total_tokens=7),
+        SimpleNamespace(input_tokens=8, output_tokens=None, total_tokens=8),
+        SimpleNamespace(input_tokens=8, output_tokens=2, total_tokens=5),
+        SimpleNamespace(input_tokens=8, output_tokens=2, total_tokens="10"),
+        SimpleNamespace(input_tokens=8, output_tokens=True, total_tokens=9),
+    ],
+)
+def test_deepseek_judge_responses_usage_rejects_malformed(
+    usage: SimpleNamespace,
+) -> None:
+    with pytest.raises(ProviderResponseError, match="malformed usage"):
+        deepseek_module._responses_usage_from_response(
+            SimpleNamespace(usage=usage)
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "incomplete_reason", "expected"),
+    [
+        ("completed", None, "stop"),
+        ("incomplete", "max_output_tokens", "length"),
+        ("incomplete", "content_filter", "content_filter"),
+        ("failed", None, "other"),
+        ("unknown", None, "other"),
+        (None, None, "other"),
+        (42, None, "other"),
+        ("incomplete", "unknown", "other"),
+        ("incomplete", None, "other"),
+    ],
+)
+def test_deepseek_judge_responses_status_normalizes_to_finite_category(
+    status: object, incomplete_reason: object, expected: str
+) -> None:
+    response = SimpleNamespace(
+        status=status,
+        incomplete_details=(
+            None
+            if incomplete_reason is None
+            else SimpleNamespace(reason=incomplete_reason)
+        ),
+    )
+
+    assert deepseek_module._responses_finish_reason(response) == expected
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_output_limit_is_typed() -> None:
+    responses = RecordingResponses(
+        responses_response(
+            output_text="partial",
+            status="incomplete",
+            incomplete_reason="max_output_tokens",
+            output_tokens=4096,
+        )
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        with pytest.raises(ProviderOutputLimitError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="judge input")],
+                JudgeVerdict,
+                agent_name="judge",
+            )
+
+    assert caught.value.telemetry.finish_reason_category == "length"
+    assert caught.value.telemetry.configured_max_tokens == 32768
+    assert caught.value.telemetry.structured_attempt == 1
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_repair_succeeds_once() -> None:
+    """The Judge tolerates *added* top-level properties, never an omitted one.
+
+    The first reply drops the required ``rationale`` (and carries an added
+    property purely as a leak marker), so it is genuinely invalid and the
+    one structured repair must actually run.
+    """
+    extra_key = "undeclared_responses_property"
+    marker = "RESPONSES_FIRST_OUTPUT_MARKER_93A7"
+    first_payload = _judge_payload(rationale="valid judge rationale")
+    del first_payload["rationale"]
+    first_payload[extra_key] = marker
+    second_payload = _judge_payload(rationale="repaired judge rationale")
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(first_payload)),
+        responses_response(output_text=json.dumps(second_payload)),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert result == JudgeVerdict.model_validate(second_payload)
+    assert len(responses.calls) == 2
+    assert provider._client.chat.completions.calls == []
+    for call in responses.calls:
+        assert call["text"]["format"]["type"] == "json_schema"
+        assert call["text"]["format"]["schema"] == JudgeVerdict.model_json_schema()
+    repair_input = str(responses.calls[1]["input"])
+    assert "previous JSON response failed JudgeVerdict validation" in repair_input
+    assert "category=missing; field_paths=rationale" in repair_input
+    assert extra_key not in repair_input
+    assert marker not in repair_input
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_repair_exhaustion_is_typed_and_safe() -> None:
+    """A missing field then an over-backstop rationale exhausts the one repair."""
+    extra_key = "undeclared_responses_property"
+    first_marker = "RESPONSES_FIRST_OUTPUT_MARKER_1B42"
+    second_marker = "RESPONSES_SECOND_OUTPUT_MARKER_7C18"
+    first_payload = _judge_payload(rationale="valid judge rationale")
+    del first_payload["rationale"]
+    first_payload[extra_key] = first_marker
+    second_payload = _judge_payload(
+        rationale=second_marker
+        + "x" * (JUDGE_RATIONALE_SCHEMA_MAX + 1 - len(second_marker))
+    )
+    assert len(second_payload["rationale"]) == JUDGE_RATIONALE_SCHEMA_MAX + 1
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(first_payload)),
+        responses_response(output_text=json.dumps(second_payload)),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="judge input")],
+                JudgeVerdict,
+                agent_name="judge",
+            )
+
+    assert len(responses.calls) == 2
+    assert provider._client.chat.completions.calls == []
+    assert str(caught.value) == (
+        "DeepSeek output failed JudgeVerdict validation after one repair attempt"
+    )
+    assert [
+        (item.category, item.field_paths) for item in caught.value.diagnostics
+    ] == [
+        ("missing", ("rationale",)),
+        ("string_bounds", ("rationale",)),
+    ]
+    second_input = str(responses.calls[1]["input"])
+    assert "category=missing; field_paths=rationale" in second_input
+    assert extra_key not in second_input
+    assert first_marker not in second_input
+    assert first_marker not in str(caught.value)
+    assert second_marker not in str(caught.value)
+    assert second_marker not in json.dumps(
+        [item.model_dump(mode="json") for item in caught.value.diagnostics],
+        sort_keys=True,
+    )
+    for call in responses.calls:
+        assert call["text"]["format"]["type"] == "json_schema"
+        assert call["text"]["format"]["schema"] == JudgeVerdict.model_json_schema()
+
+
+@pytest.mark.asyncio
+async def test_judge_ignores_one_top_level_note_without_repair() -> None:
+    """The Judge's deliberate tolerance: one added top-level note is dropped.
+
+    Measured cause of the tolerance: naming the reply's fields in the judge
+    prompt invited the model to append a note such as ``agent_specific_note``,
+    and repairing over it lost whole repetitions as unscorable
+    ``judge_schema_failure``. Addition is therefore dropped, not repaired --
+    with no second Responses call.
+    """
+    note_key = "agent_specific_note"
+    note = "JUDGE_NOTE_MARKER_5E21"
+    payload = _judge_payload(rationale="valid judge rationale")
+    payload[note_key] = note
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(payload)),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert len(responses.calls) == 1
+    assert result == JudgeVerdict.model_validate(
+        _judge_payload(rationale="valid judge rationale")
+    )
+    assert not hasattr(result, note_key)
+    assert note_key not in result.model_dump()
+    assert note not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_judge_accepts_rationale_above_guidance_below_backstop() -> None:
+    """2,001 characters exceed the prompt's guidance, not the schema bound.
+
+    The judge prompt asks for a rationale shorter than the schema enforces,
+    so a reply between the two numbers is accepted on the first call. A
+    future "fix" that tightened the schema to the guidance would spend a
+    repair on a reply the model was told was acceptable.
+    """
+    rationale = "x" * (JUDGE_RATIONALE_GUIDANCE_MAX + 1)
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps(_judge_payload(rationale=rationale))
+        ),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert len(responses.calls) == 1
+    assert result.rationale == rationale
+    assert JUDGE_RATIONALE_GUIDANCE_MAX < len(result.rationale)
+    assert len(result.rationale) < JUDGE_RATIONALE_SCHEMA_MAX
+
+
+@pytest.mark.asyncio
+async def test_judge_repairs_rationale_above_the_local_backstop() -> None:
+    """One character past the local backstop is a real violation: repair it.
+
+    ``JUDGE_RATIONALE_SCHEMA_MAX`` is the enforced bound, so a rationale one
+    character past it must spend exactly one repair carrying the
+    ``string_bounds`` diagnostic, and the repaired verdict must be the result.
+    """
+    oversized = "x" * (JUDGE_RATIONALE_SCHEMA_MAX + 1)
+    repaired = "repaired judge rationale"
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps(_judge_payload(rationale=oversized))
+        ),
+        responses_response(
+            output_text=json.dumps(_judge_payload(rationale=repaired))
+        ),
+    )
+    tracker = CapturingTracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert len(responses.calls) == 2
+    assert result.rationale == repaired
+    repair_input = str(responses.calls[1]["input"])
+    assert "category=string_bounds; field_paths=rationale" in repair_input
+    assert "every string constraint" in repair_input
+    assert oversized not in repair_input
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_failure_drops_provider_and_request_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_marker = "RESPONSES_RESPONSE_FRAME_MARKER_2A61"
+    prompt_marker = "RESPONSES_PROMPT_FRAME_MARKER_5D37"
+    request_marker = "RESPONSES_REQUEST_FRAME_MARKER_8F24"
+    schema_marker = "RESPONSES_SCHEMA_REQUEST_MARKER_6C31"
+
+    class MarkedTinyAnswer(BaseModel):
+        answer: str
+        confidence: int
+
+        model_config = ConfigDict(
+            json_schema_extra={"description": schema_marker}
+        )
+
+    invalid_response = json.dumps(
+        {"answer": response_marker, "confidence": "not-an-integer"}
+    )
+    responses = RecordingResponses(
+        responses_response(output_text=invalid_response),
+        responses_response(output_text=invalid_response),
+    )
+    tracker = CapturingTracker()
+    client = FakeDeepSeekClient(responses=responses)
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(), tracker, client=client
+    )
+    original_options = deepseek_module._responses_request_options
+
+    def marked_options(config, agent_name):
+        effective, request, metadata = original_options(config, agent_name)
+        return effective, {**request, "request_marker": request_marker}, metadata
+
+    monkeypatch.setattr(
+        deepseek_module, "_responses_request_options", marked_options
+    )
+
+    with pytest.raises(StructuredOutputError) as caught:
+        async with tracker.session_span("session-1", prompt_marker):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content=prompt_marker)],
+                MarkedTinyAnswer,
+            )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    from deep_research.evaluation.failure_taxonomy import safe_failure_details
+
+    details = safe_failure_details(caught.value)
+    assert details is not None
+    surfaces = {
+        "exception_frames": repr(_provider_exception_surfaces(caught.value)),
+        "exception_strings": repr([str(caught.value)]),
+        "exception_attributes": repr(vars(caught.value)),
+        "provider_diagnostics": json.dumps(
+            [item.model_dump(mode="json") for item in caught.value.diagnostics],
+            sort_keys=True,
+        ),
+        "evaluation_projection": details.model_dump_json(),
+    }
+    assert all(
+        marker not in surface
+        for surface in surfaces.values()
+        for marker in (
+            response_marker,
+            prompt_marker,
+            request_marker,
+            schema_marker,
+        )
+    )
+    recorded_requests = json.dumps(responses.calls, default=repr, sort_keys=True)
+    assert prompt_marker in recorded_requests
+    assert request_marker in recorded_requests
+    assert schema_marker in recorded_requests
 
 
 @pytest.mark.asyncio
@@ -456,7 +1086,7 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
     assert telemetry_type is not None
     telemetry = telemetry_type(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
         structured_attempt=2,
@@ -464,7 +1094,7 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
 
     assert telemetry.model_dump(mode="json") == {
         "finish_reason_category": "length",
-        "configured_max_tokens": 4096,
+        "configured_max_tokens": 32768,
         "usage": {
             "input_tokens": 8,
             "output_tokens": 4096,
@@ -484,14 +1114,14 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
     with pytest.raises(ValueError):
         telemetry_type(
             finish_reason_category="length",
-            configured_max_tokens=4096,
+            configured_max_tokens=32768,
             usage=TokenUsage(),
             request_attempt=0,
         )
     with pytest.raises(ValueError):
         telemetry_type(
             finish_reason_category="length",
-            configured_max_tokens=4096,
+            configured_max_tokens=32768,
             usage=TokenUsage(),
             request_attempt=1,
             raw_finish_reason="length",
@@ -501,7 +1131,7 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
 def test_provider_response_telemetry_rejects_top_level_mutation() -> None:
     telemetry = contracts_module.ProviderResponseTelemetry(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
     )
@@ -513,7 +1143,7 @@ def test_provider_response_telemetry_rejects_top_level_mutation() -> None:
 def test_provider_response_telemetry_rejects_nested_usage_replacement() -> None:
     telemetry = contracts_module.ProviderResponseTelemetry(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
     )
@@ -526,7 +1156,7 @@ def test_provider_response_telemetry_rejects_nested_mutation_and_stays_bounded(
 ) -> None:
     telemetry = contracts_module.ProviderResponseTelemetry(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
     )
@@ -538,7 +1168,7 @@ def test_provider_response_telemetry_rejects_nested_mutation_and_stays_bounded(
     assert telemetry.model_dump(mode="json") == serialized_before
     assert json.loads(telemetry.model_dump_json()) == {
         "finish_reason_category": "length",
-        "configured_max_tokens": 4096,
+        "configured_max_tokens": 32768,
         "usage": {
             "input_tokens": 8,
             "output_tokens": 4096,
@@ -597,7 +1227,7 @@ async def test_deepseek_output_limit_finish_reason_telemetry_is_finite_and_safe(
             assert type(caught.value).__name__ == "ProviderOutputLimitError"
             assert getattr(caught.value, "telemetry").model_dump(mode="json") == {
                 "finish_reason_category": "length",
-                "configured_max_tokens": 4096,
+                "configured_max_tokens": 32768,
                 "usage": {
                     "input_tokens": 8,
                     "output_tokens": 4096,
@@ -626,7 +1256,7 @@ async def test_deepseek_output_limit_finish_reason_telemetry_is_finite_and_safe(
     assert tracker.llm_outputs == [
         {
             "finish_reason_category": expected_category,
-            "configured_max_tokens": 4096,
+            "configured_max_tokens": 32768,
             "usage": {
                 "input_tokens": 8,
                 "output_tokens": 4096,
@@ -668,7 +1298,7 @@ async def test_deepseek_structured_length_error_carries_structured_attempt() -> 
     assert type(caught.value).__name__ == "ProviderOutputLimitError"
     assert getattr(caught.value, "telemetry").model_dump(mode="json") == {
         "finish_reason_category": "length",
-        "configured_max_tokens": 4096,
+        "configured_max_tokens": 32768,
         "usage": {
             "input_tokens": 8,
             "output_tokens": 4096,
@@ -716,12 +1346,12 @@ async def test_deepseek_structured_error_retains_safe_diagnostics() -> None:
         {
             "attempt": 1,
             "field_paths": ["$"],
-            "category": "schema_output",
+            "category": "other_schema",
         },
         {
             "attempt": 2,
             "field_paths": ["$"],
-            "category": "schema_output",
+            "category": "other_schema",
         },
     ]
     serialized = json.dumps(
@@ -780,12 +1410,74 @@ async def test_custom_validator_data_never_reaches_repair_or_exception_graph() -
                 pending.append(linked)
 
     assert [type(item).__name__ for item in reachable] == [
-        "StructuredOutputError",
-        "_StructuredValidationFailure",
+        "StructuredOutputError"
     ]
     for item in reachable:
         attributes = repr({"args": item.args, "private": vars(item)})
         assert marker not in attributes
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_failure_drops_provider_and_request_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_marker = "DEEPSEEK_RESPONSE_FRAME_MARKER_4F9A"
+    prompt_marker = "DEEPSEEK_PROMPT_FRAME_MARKER_8B2D"
+    request_marker = "DEEPSEEK_REQUEST_FRAME_MARKER_C671"
+    schema_marker = "DEEPSEEK_SCHEMA_REQUEST_MARKER_6C31"
+
+    class MarkedTinyAnswer(BaseModel):
+        answer: str
+        confidence: int
+
+        model_config = ConfigDict(
+            json_schema_extra={"description": schema_marker}
+        )
+
+    invalid_response = json.dumps(
+        {"answer": response_marker, "confidence": "not-an-integer"}
+    )
+    completions = RecordingCompletions(
+        chat_response(text=invalid_response),
+        chat_response(text=invalid_response),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+    original_options = provider._request_options
+
+    def marked_options(agent_name):
+        effective, request, metadata = original_options(agent_name)
+        return effective, {**request, "request_marker": request_marker}, metadata
+
+    monkeypatch.setattr(provider, "_request_options", marked_options)
+
+    with pytest.raises(StructuredOutputError) as caught:
+        async with tracker.session_span("session-1", prompt_marker):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content=prompt_marker)],
+                MarkedTinyAnswer,
+            )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    requests = json.dumps(completions.calls, default=repr, sort_keys=True)
+    assert schema_marker in requests
+    assert schema_marker in completions.calls[0]["messages"][-1]["content"]
+    assert schema_marker in completions.calls[1]["messages"][-1]["content"]
+    surfaces = _provider_exception_surfaces(caught.value)
+    assert surfaces
+    assert all(
+        marker not in surface
+        for surface in surfaces
+        for marker in (
+            response_marker,
+            prompt_marker,
+            request_marker,
+            schema_marker,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -915,6 +1607,108 @@ def test_structured_validation_diagnostic_normalizes_and_bounds_paths() -> None:
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schema", "invalid_json", "expected_category", "expected_paths"),
+    [
+        (TinyAnswer, "not-json", "json_invalid", ("$",)),
+        (
+            TinyAnswer,
+            '{"answer":"ok"}',
+            "missing",
+            ("confidence",),
+        ),
+        (
+            StrictDiagnosticEnvelope,
+            '{"nested":{"count":"bad","label":"ok"},"required":"ok"}',
+            "type_mismatch",
+            ("nested.count",),
+        ),
+        (
+            RootDiagnosticPayload,
+            '{"not":"a list"}',
+            "type_mismatch",
+            ("$",),
+        ),
+        (
+            StrictDiagnosticEnvelope,
+            '{"nested":{"count":2,"label":"ok"},"required":"ok",'
+            '"unexpected":"provider-value"}',
+            "extra_forbidden",
+            ("$",),
+        ),
+        (
+            StrictDiagnosticEnvelope,
+            '{"nested":{"count":9,"label":"ok"},"required":"ok"}',
+            "numeric_bounds",
+            ("nested.count",),
+        ),
+        (
+            StrictDiagnosticEnvelope,
+            '{"nested":{"count":2,"label":"x"},"required":"ok"}',
+            "string_bounds",
+            ("nested.label",),
+        ),
+        (
+            OtherDiagnosticPayload,
+            '{"answer":"ok"}',
+            "other_schema",
+            ("answer",),
+        ),
+    ],
+)
+async def test_structured_validation_diagnostic_classifies_local_pydantic_errors(
+    schema: type[BaseModel],
+    invalid_json: str,
+    expected_category: str,
+    expected_paths: tuple[str, ...],
+) -> None:
+    completions = RecordingCompletions(
+        chat_response(text=invalid_json),
+        chat_response(text=invalid_json),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "classify this"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="classify this")], schema
+            )
+
+    assert [item.category for item in caught.value.diagnostics] == [
+        expected_category,
+        expected_category,
+    ]
+    assert [item.field_paths for item in caught.value.diagnostics] == [
+        expected_paths,
+        expected_paths,
+    ]
+
+
+def test_structured_validation_category_is_finite_and_legacy_compatible() -> None:
+    diagnostic_type = contracts_module.StructuredValidationDiagnostic
+    for category in (
+        "schema_output",
+        "json_invalid",
+        "missing",
+        "extra_forbidden",
+        "type_mismatch",
+        "numeric_bounds",
+        "string_bounds",
+        "other_schema",
+    ):
+        diagnostic = diagnostic_type(
+            attempt=1, field_paths=("$",), category=category
+        )
+        assert diagnostic.category == category
+
+    with pytest.raises(ValidationError):
+        diagnostic_type(attempt=1, field_paths=("$",), category="raw_value")
+
+
 def test_structured_output_error_retains_only_two_diagnostics() -> None:
     diagnostic_type = contracts_module.StructuredValidationDiagnostic
     diagnostics = tuple(
@@ -934,7 +1728,7 @@ def test_structured_output_error_retains_only_two_diagnostics() -> None:
 def test_provider_output_limit_error_keeps_typed_telemetry() -> None:
     telemetry = ProviderResponseTelemetry(
         finish_reason_category="length",
-        configured_max_tokens=4096,
+        configured_max_tokens=32768,
         usage=TokenUsage(input_tokens=8, output_tokens=4096),
         request_attempt=1,
     )
@@ -1159,7 +1953,7 @@ async def test_deepseek_structured_defaults_max_tokens_to_the_global_cap() -> No
             [ChatMessage(role="user", content="decide")], TinyAnswer
         )
 
-    assert completions.calls[0]["max_tokens"] == 4096
+    assert completions.calls[0]["max_tokens"] == 32768
 
 
 @pytest.mark.asyncio
@@ -1280,6 +2074,120 @@ async def test_deepseek_structured_repairs_once_then_succeeds() -> None:
         "previous JSON response failed TinyAnswer validation"
         in completions.calls[1]["messages"][-1]["content"]
     )
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_repair_guides_root_extra_properties() -> None:
+    extra_key = "undeclared_provider_property"
+    marker = "ROOT_EXTRA_PROVIDER_MARKER_4C8A"
+    valid_payload = {"rationale": "ok"}
+    invalid_payload = {**valid_payload, extra_key: marker}
+    completions = RecordingCompletions(
+        chat_response(text=json.dumps(invalid_payload)),
+        chat_response(text=json.dumps(valid_payload)),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="question")],
+            StrictBoundedRationale,
+        )
+
+    assert result.rationale == "ok"
+    assert len(completions.calls) == 2
+    repair_message = str(completions.calls[1]["messages"][-1]["content"])
+    assert "category=extra_forbidden; field_paths=$" in repair_message
+    assert "only properties declared" in repair_message
+    assert "undeclared properties" in repair_message
+    assert "re-check every retained value" in repair_message
+    assert extra_key not in repair_message
+    assert marker not in repair_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("invalid_rationale", "forbidden_repair_fragment"),
+    [
+        pytest.param("", '"rationale": ""', id="empty"),
+        pytest.param(
+            "STRING_BOUNDS_PROVIDER_MARKER_" + "x" * 8,
+            "STRING_BOUNDS_PROVIDER_MARKER_" + "x" * 8,
+            id="too-long",
+        ),
+    ],
+)
+async def test_deepseek_structured_repair_guides_string_bounds(
+    invalid_rationale: str, forbidden_repair_fragment: str
+) -> None:
+    # Both values violate ``StrictBoundedRationale`` (min_length=1,
+    # max_length=20) without touching the Judge contract.
+    assert len(invalid_rationale) == 0 or len(invalid_rationale) > 20
+    valid_payload = {"rationale": "ok"}
+    invalid_payload = {"rationale": invalid_rationale}
+    completions = RecordingCompletions(
+        chat_response(text=json.dumps(invalid_payload)),
+        chat_response(text=json.dumps(valid_payload)),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="question")],
+            StrictBoundedRationale,
+        )
+
+    assert result.rationale == "ok"
+    assert len(completions.calls) == 2
+    repair_message = str(completions.calls[1]["messages"][-1]["content"])
+    assert "category=string_bounds; field_paths=rationale" in repair_message
+    assert "every string constraint" in repair_message
+    assert "minLength" in repair_message
+    assert "maxLength" in repair_message
+    assert "pattern" in repair_message
+    assert forbidden_repair_fragment not in repair_message
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_repair_preserves_prior_diagnostics() -> None:
+    extra_key = "undeclared_provider_property"
+    marker = "PRESERVED_EXTRA_PROVIDER_MARKER_2D91"
+    first_payload = {"rationale": "ok", extra_key: marker}
+    second_payload = {"rationale": ""}
+    completions = RecordingCompletions(
+        chat_response(text=json.dumps(first_payload)),
+        chat_response(text=json.dumps(second_payload)),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="question")],
+                StrictBoundedRationale,
+            )
+
+    assert len(completions.calls) == 2
+    assert [
+        (item.category, item.field_paths) for item in caught.value.diagnostics
+    ] == [
+        ("extra_forbidden", ("$",)),
+        ("string_bounds", ("rationale",)),
+    ]
+    first_repair_message = str(
+        completions.calls[1]["messages"][-1]["content"]
+    )
+    assert extra_key not in first_repair_message
+    assert marker not in first_repair_message
 
 
 class _LastModelSpyingCompletions(RecordingCompletions):
@@ -1638,13 +2546,10 @@ async def test_deepseek_structured_public_cause_chain_hides_provider_output() ->
     assert str(caught.value) == (
         "DeepSeek output failed TinyAnswer validation after one repair attempt"
     )
-    failure = caught.value.__cause__
-    assert isinstance(failure, deepseek_module._StructuredValidationFailure)
-    assert failure.__cause__ is None
-    assert failure.__suppress_context__ is True
-    for link in (caught.value, failure):
-        for sensitive in ("not-json", "still invalid", "decide"):
-            assert sensitive not in str(link)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    for sensitive in ("not-json", "still invalid", "decide"):
+        assert sensitive not in str(caught.value)
 
 
 def _recorded_sleeps(monkeypatch) -> list[float]:
@@ -1813,3 +2718,1308 @@ async def test_deepseek_plain_retries_server_status_errors(monkeypatch) -> None:
     assert result.text == "answer"
     assert len(completions.calls) == 3
     assert slept == [1.0, 2.0]
+
+
+# --- Schema-enforced target structured transport -------------------------
+#
+# The target structured path previously used Chat Completions JSON mode
+# (``response_format={"type": "json_object"}``) plus a JSON-Schema system
+# message. Live Critic canaries recorded ``json_invalid`` at ``$`` on both the
+# initial attempt and the single repair, which is only reachable when the
+# provider returns non-empty text that is not parseable JSON. These tests pin
+# the repaired transport: schema-enforced ``json_schema`` on the Responses
+# endpoint, with the Chat Completions path retained for plain completions.
+
+
+@pytest.mark.asyncio
+async def test_schema_target_structured_uses_responses_json_schema() -> None:
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps({"answer": "yes", "confidence": 9})
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            agent_name="critic",
+        )
+
+    assert result == TinyAnswer(answer="yes", confidence=9)
+    assert provider._client.chat.completions.calls == []
+    call = responses.calls[0]
+    assert call["text"]["format"]["type"] == "json_schema"
+    assert call["text"]["format"]["name"] == "TinyAnswer"
+    assert call["text"]["format"]["schema"] == TinyAnswer.model_json_schema()
+    assert call["max_output_tokens"] == 32768
+
+
+@pytest.mark.asyncio
+async def test_schema_target_plain_completion_stays_on_chat_completions() -> None:
+    completions = RecordingCompletions(chat_response(text="answer"))
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+
+    assert result.text == "answer"
+    call = completions.calls[0]
+    assert call["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert "response_format" not in call
+
+
+@pytest.mark.asyncio
+async def test_schema_target_responses_carries_thinking_effort() -> None:
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps({"answer": "yes", "confidence": 9})
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(reasoning_effort="max"),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert responses.calls[0]["reasoning"] == {"effort": "max"}
+
+
+@pytest.mark.asyncio
+async def test_schema_target_validation_failure_repairs_exactly_once() -> None:
+    first = json.dumps({"answer": 3})
+    second = json.dumps({"answer": "yes", "confidence": 8})
+    responses = RecordingResponses(
+        responses_response(output_text=first),
+        responses_response(output_text=second),
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert result.confidence == 8
+    assert len(responses.calls) == 2
+    assert (
+        "previous JSON response failed TinyAnswer validation"
+        in str(responses.calls[1]["input"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_schema_target_unparseable_output_is_json_invalid_at_root() -> None:
+    """The exact live failure shape: readable text that is not JSON, twice."""
+    responses = RecordingResponses(
+        responses_response(output_text="I could not produce a review."),
+        responses_response(output_text="Still not JSON."),
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(contracts_module.StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    diagnostics = caught.value.diagnostics
+    assert [item.attempt for item in diagnostics] == [1, 2]
+    assert [item.category for item in diagnostics] == [
+        "json_invalid",
+        "json_invalid",
+    ]
+    assert [item.field_paths for item in diagnostics] == [("$",), ("$",)]
+    assert "I could not produce a review." not in str(caught.value)
+    assert len(responses.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_schema_target_output_limit_stays_typed() -> None:
+    responses = RecordingResponses(
+        responses_response(
+            output_text="",
+            status="incomplete",
+            incomplete_reason="max_output_tokens",
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(contracts_module.ProviderOutputLimitError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    assert caught.value.telemetry.finish_reason_category == "length"
+    assert len(responses.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_empty_structured_response_is_its_own_category() -> None:
+    """Empty output must not be reported as malformed JSON.
+
+    DeepSeek's JSON Output guide warns that "the API may occasionally return
+    empty content". ``_responses_structured_attempt`` accepts any ``str``,
+    including ``""``, and hands it to ``model_validate_json``, where it raises
+    ``JSONDecodeError`` and is recorded as ``json_invalid``. Empty and malformed
+    are therefore indistinguishable in an artifact, which blocks attributing a
+    measured improvement to the right failure mode.
+
+    ``category="schema_output"`` is the honest label for an empty envelope: it
+    is an existing member of ``StructuredDiagnosticCategory`` and never carries
+    provider text.
+    """
+    responses = RecordingResponses(
+        responses_response(output_text=""),
+        responses_response(output_text="   "),
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(contracts_module.StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    diagnostics = caught.value.diagnostics
+    assert [item.attempt for item in diagnostics] == [1, 2]
+    assert [item.category for item in diagnostics] == [
+        "schema_output",
+        "schema_output",
+    ]
+    assert [item.field_paths for item in diagnostics] == [("$",), ("$",)]
+    # Exactly one repair: an empty body is an envelope failure, not a new attempt.
+    assert len(responses.calls) == 2
+
+
+# --- native ReAct tool turns -------------------------------------------------
+
+WEB_SEARCH_DEFINITION = ToolDefinition(
+    name="web_search",
+    description="Search the web.",
+    parameters={
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+)
+
+
+def _native_provider(
+    tracker: Tracker, completions: RecordingCompletions
+) -> DeepSeekChatProvider:
+    return DeepSeekChatProvider(
+        deepseek_config(),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_asks_auto_and_parses_one_tool_call() -> None:
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec capacity"}')],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "find capacity evidence"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="find capacity evidence")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    call = completions.calls[0]
+    assert call["tool_choice"] == "auto"
+    assert call["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    assert "response_format" not in call
+    assert turn.tool_calls == (
+        NativeToolCall(
+            tool_name="web_search",
+            arguments_json='{"query":"qec capacity"}',
+        ),
+    )
+    assert turn.final_answer is None
+    assert isinstance(turn, NativeToolTurn)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_accepts_two_tool_calls_in_one_turn() -> None:
+    """Two native calls in one turn are well formed, not a malformed envelope.
+
+    This parser used to require exactly one call per ``tool_calls`` finish and
+    discarded the whole turn otherwise. The second live release gate attempt
+    lost 4 of its 30 requests to that rule — its probe diagnosis named every
+    residual failure ``call_count_not_one`` — while parallel tool calls are a
+    normal part of the provider protocol. Every call is still validated exactly
+    as the single one was, so a second call cannot smuggle in a shape the first
+    call's validation would have refused.
+    """
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[
+                native_call("web_search", '{"query":"qec capacity"}'),
+                native_call("web_search", '{"query":"qec error rates"}'),
+            ],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "find capacity evidence"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="find capacity evidence")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    assert turn.tool_calls == (
+        NativeToolCall(
+            tool_name="web_search",
+            arguments_json='{"query":"qec capacity"}',
+        ),
+        NativeToolCall(
+            tool_name="web_search",
+            arguments_json='{"query":"qec error rates"}',
+        ),
+    )
+    assert turn.final_answer is None
+    assert len(completions.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_returns_a_final_answer_without_a_tool() -> None:
+    completions = RecordingCompletions(
+        chat_response(text="  The report is complete.  ", finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_calls == ()
+    assert turn.final_answer == "The report is complete."
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_rejects_empty_messages_and_tools() -> None:
+    provider = _native_provider(local_tracker(), RecordingCompletions())
+
+    with pytest.raises(ValueError, match="at least one item"):
+        await provider.complete_react([], [WEB_SEARCH_DEFINITION])
+    with pytest.raises(ValueError, match="at least one item"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")], []
+        )
+
+
+NATIVE_SENTINEL = "NATIVE_REACT_PROVIDER_SENTINEL_3B71"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=[],
+            ),
+            id="tool-calls-with-zero-calls",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    SimpleNamespace(
+                        type=NATIVE_SENTINEL,
+                        function=SimpleNamespace(
+                            name="web_search", arguments="{}"
+                        ),
+                    )
+                ],
+            ),
+            id="non-function-call-type",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=[native_call(NATIVE_SENTINEL, "{}")],
+            ),
+            id="unknown-function-name",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    SimpleNamespace(
+                        type="function",
+                        function=SimpleNamespace(
+                            name="web_search",
+                            arguments={"marker": NATIVE_SENTINEL},
+                        ),
+                    )
+                ],
+            ),
+            id="non-string-arguments",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="stop",
+                tool_calls=[native_call("web_search", "{}")],
+            ),
+            id="stop-with-a-tool-call",
+        ),
+        pytest.param(
+            chat_response(text="   ", finish_reason="stop"),
+            id="stop-with-blank-text",
+        ),
+        pytest.param(
+            chat_response(text=NATIVE_SENTINEL, finish_reason="content_filter"),
+            id="content-filter",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="insufficient_system_resource",
+            ),
+            id="insufficient-system-resource",
+        ),
+        pytest.param(
+            chat_response(text=NATIVE_SENTINEL, finish_reason=NATIVE_SENTINEL),
+            id="unknown-finish-reason",
+        ),
+        pytest.param(
+            SimpleNamespace(
+                id="malformed-usage",
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(
+                            content=NATIVE_SENTINEL,
+                            reasoning_content=None,
+                            tool_calls=None,
+                        ),
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=NATIVE_SENTINEL,
+                    completion_tokens=NATIVE_SENTINEL,
+                    total_tokens=NATIVE_SENTINEL,
+                ),
+                marker=NATIVE_SENTINEL,
+            ),
+            id="malformed-usage",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="tool_calls",
+                tool_calls=NATIVE_SENTINEL,
+            ),
+            id="non-sequence-tool-calls",
+        ),
+        pytest.param(
+            chat_response(
+                text=NATIVE_SENTINEL,
+                finish_reason="stop",
+                tool_calls=NATIVE_SENTINEL,
+            ),
+            id="non-sequence-tool-calls-on-stop",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_deepseek_native_react_fails_closed_without_leaking(
+    response: object,
+) -> None:
+    completions = RecordingCompletions(response)
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    # One request only: a malformed native envelope is never repaired into a
+    # second shape.
+    assert len(completions.calls) == 1
+    surfaces = _provider_exception_surfaces(caught.value)
+    assert surfaces
+    assert all(
+        NATIVE_SENTINEL not in surface
+        for surface in [str(caught.value), *surfaces]
+    )
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_sdk_and_envelope_failures_are_distinguishable() -> None:
+    """The formerly ambiguous pair: one public category, two origins.
+
+    An SDK rejection and a malformed native envelope both surface as
+    ``failure_category="response"``, so both classify as ``provider_response``.
+    Only ``failure_origin`` says whether the remedy is a transport/retry fix or
+    a response-grammar fix -- which is the whole point of adding the field.
+    """
+    tracker = local_tracker()
+    sdk_provider = _native_provider(
+        tracker, RecordingCompletions(OpenAIError("sdk rejected the request"))
+    )
+    envelope_provider = _native_provider(
+        tracker,
+        RecordingCompletions(
+            chat_response(text=NATIVE_SENTINEL, finish_reason=NATIVE_SENTINEL)
+        ),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as sdk_caught:
+            await sdk_provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+        with pytest.raises(ProviderResponseError) as envelope_caught:
+            await envelope_provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    sdk_error = sdk_caught.value
+    envelope_error = envelope_caught.value
+
+    assert sdk_error.failure_category == "response"
+    assert sdk_error.failure_origin == "sdk"
+    assert envelope_error.failure_category == "response"
+    assert envelope_error.failure_origin == "local_response"
+
+    # Every other public field a consumer can read stays identical.
+    assert sdk_error.retryable is False
+    assert envelope_error.retryable is False
+    assert sdk_error.http_status_code is None
+    assert envelope_error.http_status_code is None
+    assert sdk_error.status_code is None
+    assert envelope_error.status_code is None
+
+
+def test_fresh_provider_error_copies_the_failure_origin() -> None:
+    """The traceback-free copy must not silently drop the origin."""
+    original = ProviderResponseError(
+        "DeepSeek response contained malformed content",
+        failure_origin="local_response",
+    )
+
+    fresh = deepseek_module._fresh_provider_error(original)
+
+    assert fresh is not original
+    assert fresh.failure_origin == "local_response"
+    assert fresh.failure_category == original.failure_category
+    assert fresh.retryable == original.retryable
+    assert fresh.__traceback__ is None
+
+
+@pytest.mark.asyncio
+async def test_deepseek_public_error_never_reaches_the_sdk_exception(
+    monkeypatch,
+) -> None:
+    """The SDK object must be unreachable, not merely unchained.
+
+    ``with_retries`` clears ``__cause__``/``__context__``, but a typed error
+    raised inside the SDK handler carries the translator frame on its
+    traceback, and that frame still holds the SDK exception as a parameter
+    local -- so the object stays reachable through ``f_locals``.
+    """
+    _recorded_sleeps(monkeypatch)
+    request_marker = "DEEPSEEK_REQUEST_MARKER_4F2A"
+    sdk_error = APIConnectionError(
+        request=httpx.Request(
+            "POST", DEEPSEEK_BASE_URL, content=request_marker
+        )
+    )
+    completions = RecordingCompletions(sdk_error, sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert len(completions.calls) == 3
+    assert caught.value.failure_category == "transport"
+    assert caught.value.failure_origin == "sdk"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert not _exception_reaches(caught.value, sdk_error)
+    assert request_marker not in repr(
+        _provider_exception_surfaces(caught.value)
+    )
+
+
+@pytest.mark.parametrize("path", ["plain", "structured"])
+@pytest.mark.asyncio
+async def test_deepseek_every_entry_point_severs_the_sdk_exception(
+    monkeypatch, path: str
+) -> None:
+    """Severing is a property of the translator, not of the native path.
+
+    The reachability test above drives ``complete_react``; this one proves the
+    other two entry points produce an error with the same unreachable SDK
+    object, so a future call site cannot quietly reintroduce the leak.
+    """
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(
+        request=httpx.Request("POST", DEEPSEEK_BASE_URL, content="MARKER")
+    )
+    completions = RecordingCompletions(sdk_error, sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            if path == "plain":
+                await provider.complete(
+                    [ChatMessage(role="user", content="review")]
+                )
+            else:
+                await provider.complete_structured(
+                    [ChatMessage(role="user", content="review")],
+                    TinyAnswer,
+                )
+
+    assert len(completions.calls) == 3
+    assert caught.value.failure_origin == "sdk"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert not _exception_reaches(caught.value, sdk_error)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_severs_the_sdk_exception(monkeypatch) -> None:
+    """The Judge carries its own Responses client, so it needs its own pin."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(
+        request=httpx.Request("POST", DEEPSEEK_BASE_URL, content="MARKER")
+    )
+    responses = RecordingResponses(sdk_error, sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(retry_count=2),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="judge input")],
+                JudgeVerdict,
+                agent_name="judge",
+            )
+
+    assert len(responses.calls) == 3
+    assert caught.value.failure_origin == "sdk"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert not _exception_reaches(caught.value, sdk_error)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_maps_length_to_the_output_limit() -> None:
+    completions = RecordingCompletions(
+        chat_response(text=NATIVE_SENTINEL, finish_reason="length")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderOutputLimitError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert caught.value.telemetry.finish_reason_category == "length"
+    assert NATIVE_SENTINEL not in repr(_provider_exception_surfaces(caught.value))
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_sends_the_per_call_output_budget() -> None:
+    completions = RecordingCompletions(
+        chat_response(text="done", finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            max_tokens=1234,
+        )
+
+    assert completions.calls[0]["max_tokens"] == 1234
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_uses_the_global_budget_without_an_override() -> (
+    None
+):
+    completions = RecordingCompletions(
+        chat_response(text="done", finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+
+    assert completions.calls[0]["max_tokens"] == deepseek_config().max_tokens
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_retries_one_transient_error(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        ),
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
+    )
+    assert turn.final_answer is None
+    assert len(completions.calls) == 2
+    assert slept == [1.0]
+    # The attempt counter is the only consumer of request_attempt on this path.
+    assert tracker.llm_outputs[-1]["request_attempt"] == 2
+
+
+PROHIBITED_TEXT_SENTINEL = "NATIVE_PROHIBITED_TEXT_SENTINEL_4D17"
+
+# Every template stays a valid instance of its own prohibited shape while
+# carrying the sentinel, so "the text is not reachable" is a real check rather
+# than one an escaping artefact of ``repr`` would satisfy for free.
+PROHIBITED_FINAL_TEXT: tuple[tuple[str, str], ...] = (
+    (
+        "dsml-markup",
+        '<|DSML|tool_calls><|DSML|invoke name="web_search">'
+        '{"query":"<S>"}</|DSML|invoke></|DSML|tool_calls>',
+    ),
+    (
+        "tool-call-tag",
+        '<tool_call>{"name": "web_search", "note": "<S>"}</tool_call>',
+    ),
+    (
+        "invoke-tag",
+        '<invoke name="web_search">{"query": "<S>"}</invoke>',
+    ),
+    (
+        "fenced-legacy-action",
+        "```json\n"
+        '{"action": "use_tool", "tool_name": "web_search", '
+        '"tool_input_json": "{}", "note": "<S>"}\n'
+        "```",
+    ),
+    (
+        "bare-legacy-action-object",
+        '{"action": "use_tool", "tool_name": "web_search", '
+        '"tool_input_json": "{}", "note": "<S>"}',
+    ),
+    ("bare-tool-name-object", '{"tool_name": "web_search", "note": "<S>"}'),
+    (
+        "bare-tool-input-object",
+        '{"tool_input_json": "{\\"query\\": \\"<S>\\"}"}',
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "template"),
+    PROHIBITED_FINAL_TEXT,
+    ids=[shape for shape, _ in PROHIBITED_FINAL_TEXT],
+)
+@pytest.mark.asyncio
+async def test_deepseek_native_react_rejects_tool_protocol_text(
+    shape: str,
+    template: str,
+) -> None:
+    """Only the typed native field may request execution.
+
+    DeepSeek's own DSML markup, fenced or bare legacy action objects, and tool
+    markup all arrive as ordinary message text. None may cross the boundary as
+    a final answer: a ``finish`` carrying one would let a rejected tool
+    invocation decide the loop.
+    """
+    text = template.replace("<S>", PROHIBITED_TEXT_SENTINEL)
+    completions = RecordingCompletions(
+        chat_response(text=text, finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    error = caught.value
+    assert error.failure_category == "response"
+    assert error.failure_origin == "local_response"
+    assert error.retryable is False
+    assert error.http_status_code is None
+    # One request only: a malformed native envelope is never repaired.
+    assert len(completions.calls) == 1
+    surfaces = _provider_exception_surfaces(error)
+    assert surfaces
+    assert all(
+        PROHIBITED_TEXT_SENTINEL not in surface
+        for surface in [str(error), *surfaces]
+    )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(None, id="absent"),
+        pytest.param("", id="empty"),
+        pytest.param("   \n ", id="blank"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_deepseek_native_react_accepts_a_call_with_no_answer_text(
+    content: object,
+) -> None:
+    """Blank or absent content beside a typed call is the normal shape."""
+    completions = RecordingCompletions(
+        chat_response(
+            text=content,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
+    )
+    assert turn.final_answer is None
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_accepts_a_call_beside_answer_text() -> None:
+    """A typed call beside non-blank content is still exactly one decision.
+
+    Task 4 made this envelope a rejection, and the first live release gate then
+    failed 8 of 30 requests to `local_response` — a rate far above the two
+    earlier pre-Task-4 live batches, which accepted 56 of 60 turns and produced
+    no final answers at all. The typed call field remains the *only* thing that
+    can select a tool, so content beside it cannot request execution; the
+    strictness bought no safety the typed-field rule did not already provide,
+    while rejecting well-formed provider output. The mixed-envelope rejection
+    is therefore retained only where it is genuinely incoherent: a call on a
+    `stop` finish, or tool-protocol *text* passed off as the answer.
+    """
+    answer = "I will look that up."
+    completions = RecordingCompletions(
+        chat_response(
+            text=answer,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        )
+    )
+    tracker = local_tracker()
+    provider = _native_provider(tracker, completions)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+
+    # The call is selected, and the accompanying prose is never parsed,
+    # executed, or surfaced as the final answer.
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
+    )
+    assert turn.final_answer is None
+    assert len(completions.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_deepseek_target_adapter_serves_native_react_turns() -> None:
+    """The production target adapter inherits the native tool turn unchanged."""
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")], [WEB_SEARCH_DEFINITION]
+        )
+
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
+    )
+    assert "response_format" not in completions.calls[0]
+    assert provider.last_model_returned == "deepseek-v4-flash"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_span_records_counts_not_names() -> None:
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec capacity"}')],
+        )
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    assert tracker.llm_inputs[0]["operation"] == "react_tool_turn"
+    assert tracker.llm_inputs[0]["tool_count"] == 1
+    assert tracker.llm_inputs[0]["message_count"] == 1
+    assert tracker.llm_inputs[0]["agent_name"] == "critic"
+    recorded = repr(tracker.llm_inputs)
+    assert "web_search" not in recorded
+    assert "qec capacity" not in recorded
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_exhausted_retries_chain_no_sdk_error(
+    monkeypatch,
+) -> None:
+    """A typed error must not carry the SDK exception, which holds
+    ``request`` (the prompt and tool definitions) and ``body``."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(
+        request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+    )
+    sdk_error.request_marker = NATIVE_SENTINEL
+    completions = RecordingCompletions(sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError) as caught:
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert NATIVE_SENTINEL not in repr(_provider_exception_surfaces(caught.value))
+
+
+# ---------------------------------------------------------------------------
+# Request-budget wiring.
+#
+# Every DeepSeek transport attempt -- including each repo-owned retry, which is
+# a real outbound request -- reserves one unit *before* the SDK call, and the
+# attempt past the effective limit is refused before any network I/O. Reported
+# tokens are recorded only when a real response carried a safely parsed usage
+# figure; a transport failure reports no tokens at all.
+# ---------------------------------------------------------------------------
+
+
+def _deepseek_budget(
+    *, ceiling: int | None = None, stop_fraction: float = 1.0
+) -> RequestBudget:
+    """A run budget capping DeepSeek attempts; uncapped by default."""
+    return RequestBudget(
+        RequestBudgetConfig(
+            deepseek_attempt_ceiling=ceiling,
+            stop_fraction=stop_fraction,
+        )
+    )
+
+
+def _budgeted_provider(
+    tracker: Tracker,
+    completions: RecordingCompletions,
+    budget: RequestBudget,
+    **config_updates: object,
+) -> DeepSeekChatProvider:
+    return DeepSeekChatProvider(
+        deepseek_config(**config_updates),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+        request_budget=budget,
+    )
+
+
+def test_request_budget_defaults_to_none_so_existing_callers_are_uncounted() -> None:
+    provider = DeepSeekChatProvider(
+        deepseek_config(),
+        local_tracker(),
+        client=FakeDeepSeekClient(RecordingCompletions()),
+    )
+
+    assert provider._request_budget is None
+
+
+@pytest.mark.asyncio
+async def test_request_budget_reserves_once_per_repo_retry_attempt(
+    monkeypatch,
+) -> None:
+    """Each retry is a real outbound attempt and reserves its own unit."""
+    slept = _recorded_sleeps(monkeypatch)
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        RateLimitError(
+            "limited",
+            response=httpx.Response(
+                429, request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+            ),
+            body=None,
+        ),
+        chat_response(text="answer"),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        completions,
+        budget,
+        retry_count=3,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+
+    assert result.text == "answer"
+    assert len(completions.calls) == 3
+    assert slept == [1.0, 2.0]
+    # Three outbound attempts, three reservations -- reserving once outside the
+    # retry wrapper would have recorded a single unit here.
+    assert budget.snapshot("deepseek").attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_request_budget_refuses_the_attempt_past_the_limit_before_io() -> None:
+    budget = _deepseek_budget(ceiling=1)
+    completions = RecordingCompletions(chat_response(text="answer"))
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        first = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+        with pytest.raises(RequestAttemptLimitError) as caught:
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert first.text == "answer"
+    # The refused attempt reached no transport at all.
+    assert len(completions.calls) == 1
+    assert budget.snapshot("deepseek").attempts == 1
+    assert not isinstance(caught.value, ProviderError)
+
+
+@pytest.mark.asyncio
+async def test_request_budget_refuses_the_first_attempt_when_the_limit_is_zero() -> (
+    None
+):
+    """A limit of zero is a real declaration: no request may leave at all."""
+    budget = _deepseek_budget(ceiling=1, stop_fraction=0.5)
+    completions = RecordingCompletions(chat_response(text="answer"))
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert completions.calls == []
+    assert budget.snapshot("deepseek").attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_request_budget_refusal_during_retry_escapes_sdk_translation(
+    monkeypatch,
+) -> None:
+    """A limit error is a hard run boundary, never a retryable provider error."""
+    _recorded_sleeps(monkeypatch)
+    budget = _deepseek_budget(ceiling=1)
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(text="answer"),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        completions,
+        budget,
+        retry_count=3,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError) as caught:
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    # The retry was refused before it became a request.
+    assert len(completions.calls) == 1
+    assert budget.snapshot("deepseek").attempts == 1
+    assert type(caught.value) is RequestAttemptLimitError
+    assert not isinstance(caught.value, ProviderError)
+    assert caught.value.snapshot.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_request_budget_structured_repair_reserves_each_transport_attempt() -> (
+    None
+):
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(
+        chat_response(text="not-json"),
+        chat_response(text='{"answer": "yes", "confidence": 3}'),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "decide"):
+        parsed = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert parsed.answer == "yes"
+    assert len(completions.calls) == 2
+    snapshot = budget.snapshot("deepseek")
+    assert snapshot.attempts == 2
+    # Both responses really carried usage, so both are recorded.
+    assert snapshot.input_tokens == 8
+    assert snapshot.output_tokens == 4
+
+
+@pytest.mark.asyncio
+async def test_request_budget_native_react_reserves_and_records_one_attempt() -> None:
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec capacity"}')],
+            prompt_tokens=11,
+            completion_tokens=5,
+        )
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].tool_name == "web_search"
+    snapshot = budget.snapshot("deepseek")
+    assert snapshot.attempts == 1
+    assert snapshot.input_tokens == 11
+    assert snapshot.output_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_request_budget_responses_schema_call_reserves_and_records() -> None:
+    budget = _deepseek_budget()
+    responses = RecordingResponses(
+        responses_response(output_text='{"answer": "yes", "confidence": 3}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekJudgeProvider(
+        deepseek_config(),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+        request_budget=budget,
+    )
+
+    async with tracker.session_span("session-1", "judge"):
+        verdict = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge")], TinyAnswer
+        )
+
+    assert verdict.confidence == 3
+    snapshot = budget.snapshot("deepseek")
+    assert snapshot.attempts == 1
+    assert snapshot.input_tokens == 8
+    assert snapshot.output_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_request_budget_records_no_tokens_on_transport_failure(
+    monkeypatch,
+) -> None:
+    """A failed call must not report spend that never happened."""
+    slept = _recorded_sleeps(monkeypatch)
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        completions,
+        budget,
+        retry_count=1,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    snapshot = budget.snapshot("deepseek")
+    assert len(completions.calls) == 2
+    assert slept == [1.0]
+    assert snapshot.attempts == 2
+    assert snapshot.input_tokens == 0
+    assert snapshot.output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_request_budget_records_no_tokens_when_usage_is_malformed() -> None:
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(chat_response(prompt_tokens="4"))
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="malformed usage"):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    snapshot = budget.snapshot("deepseek")
+    assert snapshot.attempts == 1
+    assert snapshot.input_tokens == 0
+    assert snapshot.output_tokens == 0

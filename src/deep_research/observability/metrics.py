@@ -9,6 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 NonNegativeInt: TypeAlias = Annotated[int, Field(ge=0)]
 NonNegativeFloat: TypeAlias = Annotated[float, Field(ge=0)]
 
+# The finite set of model operations one llm span may declare. It is a closed
+# literal rather than free text so no provider-supplied string can ride an
+# operation field into a metric.
+LLMOperation: TypeAlias = Literal["chat", "structured_output", "react_tool_turn"]
+
 
 class MetricModel(BaseModel):
     model_config = ConfigDict(
@@ -78,6 +83,14 @@ class TokenUsageMetric(OutcomeMetric):
     input_tokens: NonNegativeInt = 0
     output_tokens: NonNegativeInt = 0
     total_tokens: NonNegativeInt = 0
+
+    # The structured-attempt ledger. Both fields are optional so every metric
+    # recorded before they existed still validates, and both carry a scalar the
+    # provider already passed as a safe span input -- never a prompt, response,
+    # argument, rationale, or output. ``structured_attempt`` is the provider's
+    # own 1-or-2 repair attempt, so 2 is exactly "this call was repaired once".
+    operation: LLMOperation | None = None
+    structured_attempt: int | None = Field(default=None, ge=1, le=2)
 
     @model_validator(mode="after")
     def validate_total_tokens(self) -> "TokenUsageMetric":

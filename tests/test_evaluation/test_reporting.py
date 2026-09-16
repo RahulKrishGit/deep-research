@@ -179,6 +179,10 @@ def test_the_artifact_contains_every_repetition_result(
     for item in repetitions:
         assert "gates" in item
         assert "deterministic_quality" in item
+        assert "deterministic_metrics" in item
+        assert "prohibited_call_count" in item
+        assert "react_stop_reason" in item
+        assert "fallback_provider_diagnostic" in item
         assert "judge" in item
         assert "trace_url" in item
 

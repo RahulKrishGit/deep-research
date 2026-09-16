@@ -3,16 +3,48 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from math import isfinite
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, JsonValue, field_validator, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 
 from deep_research.observability import TokenUsage
-from deep_research.providers.contracts import FinishReasonCategory
+from deep_research.providers.contracts import (
+    FinishReasonCategory,
+    ProviderFailureKind,
+    ProviderFailureOrigin,
+    StructuredDiagnosticCategory,
+)
 from deep_research.utils.config import ReasoningEffort
 from deep_research.utils.types import ContractModel, ResearchState, UnitScore
 
 ARTIFACT_SCHEMA_VERSION = 1
+
+_MAX_ARTIFACT_DETERMINISTIC_METRICS = 16
+_MAX_ARTIFACT_METRIC_ID_LENGTH = 64
+_MAX_ARTIFACT_OPERATION_LENGTH = 96
+_MAX_ARTIFACT_PROHIBITED_CALL_COUNT = 10_000
+_MAX_SCENARIO_MISSES = 16
+_MAX_SCENARIO_MISS_LENGTH = 256
+_MAX_SOURCE_URL_FINGERPRINTS = 128
+# Read-bearing identities are bounded separately and more tightly than
+# discovery identities: a run reads far fewer pages than it searches.
+_MAX_READ_URL_FINGERPRINTS = 64
+# Declared with the other module bounds, not beside EvaluatorDiagnostic:
+# FallbackProviderDiagnostic (defined above EvaluatorDiagnostic) reads it at
+# class-construction time, so a later definition is a NameError at import.
+_MAX_DIAGNOSTIC_PATHS = 16
+_MAX_DIAGNOSTIC_PATH_LENGTH = 128
+_ARTIFACT_METRIC_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 AgentName: TypeAlias = Literal[
     "planner",
@@ -143,7 +175,6 @@ class EvaluationCase(ContractModel):
     expectations: CaseExpectations
     judge_rubric: JudgeRubric
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
-
     @model_validator(mode="after")
     def validate_case_id(self) -> "EvaluationCase":
         if not _CASE_ID_PATTERN.match(self.case_id):
@@ -168,15 +199,81 @@ class ToolCallSummary(ContractModel):
     failures: int = Field(ge=0)
 
 
+class StructuredCallSummary(ContractModel):
+    """Content-free counts of one repetition's structured model calls.
+
+    The ledger exists so an artifact can prove whether a schema repair
+    happened on a successful run. It is counts only: no operation text,
+    prompt, response, argument, rationale, or invalid JSON ever reaches it.
+    ``repaired_calls`` counts the provider's second attempt, so it can never
+    exceed the number of calls, and the number of failed attempts can never
+    exceed the total attempts those calls made.
+    """
+
+    calls: int = Field(default=0, ge=0)
+    repaired_calls: int = Field(default=0, ge=0)
+    failed_attempts: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "StructuredCallSummary":
+        if self.repaired_calls > self.calls:
+            raise ValueError("repaired_calls cannot exceed calls")
+        if self.failed_attempts > self.calls + self.repaired_calls:
+            raise ValueError(
+                "failed_attempts cannot exceed calls + repaired_calls"
+            )
+        return self
+
+
+ScenarioMissSummary: TypeAlias = Annotated[
+    str, Field(min_length=1, max_length=_MAX_SCENARIO_MISS_LENGTH)
+]
+SourceURLFingerprint: TypeAlias = Annotated[
+    str, Field(pattern=r"^[0-9a-f]{64}$")
+]
+
+
 class DependencyLedger(ContractModel):
     """What this repetition actually touched.
 
-    Controlled gates read ``prohibited_calls``; live gates read
+    ``scenario_misses`` are failed requests to an injected controlled double
+    for which no exact response was scripted. They are diagnostic telemetry,
+    not evidence that a real dependency was reached. Controlled security
+    gates read only ``prohibited_calls``; live gates read
     ``real_services_used``.
     """
 
+    # Additive field: older v1 artifacts validate with the default while new
+    # controlled artifacts identify the repaired scenario contract explicitly.
+    scenario_contract_version: int = Field(default=1, ge=1)
     tool_calls: list[ToolCallSummary] = Field(default_factory=list)
     prohibited_calls: list[str] = Field(default_factory=list)
+    scenario_misses: list[ScenarioMissSummary] = Field(
+        default_factory=list, max_length=_MAX_SCENARIO_MISSES
+    )
+    # Additive, secret-safe provenance telemetry. The raw URLs stay out of
+    # evaluation artifacts; live Researcher gates can compare these bounded
+    # fingerprints with the URLs reported in the final findings.
+    source_url_fingerprints: list[SourceURLFingerprint] = Field(
+        default_factory=list, max_length=_MAX_SOURCE_URL_FINGERPRINTS
+    )
+    # ``False`` explicitly means that at least one valid source identity did
+    # not fit in the bounded fingerprint list. The default keeps old v1
+    # artifacts backward compatible: an absent field means complete.
+    source_url_fingerprints_complete: bool = True
+    # Identities of the URLs this repetition actually READ content from,
+    # derived from the typed ReAct steps through the one read-bearing
+    # classifier (``agents.steps.read_evidence_urls``). Unlike
+    # ``source_url_fingerprints``, which also records discovery-only
+    # ``web_search`` result URLs, this is the only field a verification-passage
+    # provenance gate may trust — so it fails CLOSED, the opposite polarity to
+    # the permissive-additive source field above: the flag defaults to False
+    # and every consumer must read anything but ``True`` as "this artifact
+    # cannot prove that a passage was read".
+    read_url_fingerprints: list[SourceURLFingerprint] = Field(
+        default_factory=list, max_length=_MAX_READ_URL_FINGERPRINTS
+    )
+    read_url_fingerprints_complete: bool = False
     real_services_used: list[str] = Field(default_factory=list)
     memory_writes: int = Field(default=0, ge=0)
     memory_reads: int = Field(default=0, ge=0)
@@ -202,12 +299,51 @@ class EvidenceContext(ContractModel):
     scripted_search_urls: list[str] = Field(default_factory=list)
 
 
+ReActStopReason: TypeAlias = Literal[
+    "finished",
+    "sufficient",
+    "max_iterations",
+    "tool_budget_exhausted",
+    "provider_error",
+]
+
+
 class ReActSummary(ContractModel):
     iterations: int = Field(ge=0)
     tool_calls: int = Field(ge=0)
-    stop_reason: str = Field(min_length=1)
+    stop_reason: ReActStopReason
     max_iterations: int = Field(ge=1)
     tool_budget: int = Field(ge=0)
+    # The largest single loop's own totals, for agents that run one bounded
+    # loop per unit of work and merge them: ``iterations`` and ``tool_calls``
+    # above are whole-case sums, while these are what the per-loop runtime
+    # budget actually governs. Optional with ``None`` so artifacts written
+    # before they existed still validate; a reader that finds ``None`` falls
+    # back to the summed value rather than treating it as zero.
+    max_loop_iterations: int | None = Field(default=None, ge=0)
+    max_loop_tool_calls: int | None = Field(default=None, ge=0)
+
+
+class FallbackProviderDiagnostic(ContractModel):
+    """The bounded provider diagnosis safe to project into an artifact.
+
+    ``diagnostics`` carries the same normalized, provider-content-free
+    ``attempt``/``category``/``field_paths`` records the judge path already
+    retains as ``JudgeFeedback.diagnostics``. A ``json_invalid`` whose only
+    field path is ``$`` means no parseable JSON object was produced at all,
+    while a named path means valid JSON arrived in the wrong shape; without
+    these records an artifact cannot tell the two apart.
+    """
+
+    kind: ProviderFailureKind
+    operation: str = Field(
+        min_length=1,
+        max_length=_MAX_ARTIFACT_OPERATION_LENGTH,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )
+    diagnostics: tuple[EvaluatorDiagnostic, ...] = Field(
+        default_factory=tuple, max_length=_MAX_DIAGNOSTIC_PATHS
+    )
 
 
 FailureStage: TypeAlias = Literal[
@@ -249,8 +385,6 @@ EvaluatorDiagnosticKind: TypeAlias = Literal[
 ]
 
 _FIELD_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$|^[0-9]+$")
-_MAX_DIAGNOSTIC_PATHS = 16
-_MAX_DIAGNOSTIC_PATH_LENGTH = 128
 
 
 def _normalize_diagnostic_path(value: object) -> str:
@@ -270,6 +404,10 @@ class EvaluatorDiagnostic(ContractModel):
 
     kind: EvaluatorDiagnosticKind
     attempt: PositiveInt | None = None
+    category: StructuredDiagnosticCategory | None = Field(
+        default=None,
+        exclude_if=lambda value: value in (None, "schema_output"),
+    )
     field_paths: tuple[str, ...] = Field(
         default_factory=tuple, max_length=_MAX_DIAGNOSTIC_PATHS
     )
@@ -289,6 +427,57 @@ class EvaluatorDiagnostic(ContractModel):
 # The shorter name is retained for callers that describe this as an evaluation
 # diagnostic rather than an evaluator-facing one.
 EvaluationDiagnostic = EvaluatorDiagnostic
+
+
+def fallback_provider_diagnostic(
+    output: TargetOutput,
+) -> FallbackProviderDiagnostic | None:
+    """Project the first valid provider fallback from typed error details.
+
+    Lives beside the model it builds rather than in ``runner.py``: ``runner``
+    imports ``judging``, so a shared implementation here is the only placement
+    both can reach without an import cycle. It sits below
+    ``EvaluatorDiagnostic`` because it builds one, and below ``TargetOutput``
+    only in the sense that its argument is resolved at call time.
+
+    The snapshot's bounded diagnostics are retained rather than dropped. They
+    are already normalized to schema-proven field names and never carry
+    provider text, and they are what makes a live schema failure attributable
+    without repeating the paid call.
+    """
+    for error in output.errors:
+        details = error.get("details")
+        if not isinstance(details, Mapping):
+            continue
+        provider_failure = details.get("provider_failure")
+        if not isinstance(provider_failure, Mapping):
+            continue
+        raw_diagnostics = provider_failure.get("diagnostics")
+        diagnostics: list[EvaluatorDiagnostic] = []
+        if isinstance(raw_diagnostics, (list, tuple)):
+            for item in raw_diagnostics[:_MAX_DIAGNOSTIC_PATHS]:
+                if not isinstance(item, Mapping):
+                    continue
+                try:
+                    diagnostics.append(
+                        EvaluatorDiagnostic(
+                            kind="schema_output",
+                            attempt=item.get("attempt"),
+                            category=item.get("category"),
+                            field_paths=tuple(item.get("field_paths") or ()),
+                        )
+                    )
+                except ValidationError:
+                    continue
+        try:
+            return FallbackProviderDiagnostic(
+                kind=provider_failure.get("kind"),
+                operation=details.get("operation"),
+                diagnostics=tuple(diagnostics),
+            )
+        except ValidationError:
+            continue
+    return None
 
 
 class OutputLimitFailureDetails(ContractModel):
@@ -322,10 +511,17 @@ ProviderFailureDetailKind: TypeAlias = Literal[
 
 
 class ProviderFailureDetails(ContractModel):
-    """Allow-listed type/retry/status facts for provider failures."""
+    """Allow-listed type/retry/status facts for provider failures.
+
+    ``failure_origin`` is optional with a ``None`` default so artifacts
+    written before the field existed still validate; a reader that needs the
+    origin must treat ``None`` as "recorded without it", never as either
+    origin.
+    """
 
     kind: ProviderFailureDetailKind
     type: str = Field(min_length=1, max_length=128)
+    failure_origin: ProviderFailureOrigin | None = None
     retryable: bool
     status_code: int | None = Field(default=None, ge=100, le=599)
 
@@ -371,6 +567,11 @@ class TargetOutput(ContractModel):
     errors: list[dict[str, JsonValue]] = Field(default_factory=list)
     tracker_errors: list[dict[str, JsonValue]] = Field(default_factory=list)
     react: ReActSummary | None = None
+    # Additive field: older v1 artifacts validate with the zeroed default
+    # while new ones prove whether a structured call needed its one repair.
+    structured_calls: StructuredCallSummary = Field(
+        default_factory=StructuredCallSummary
+    )
     dependencies: DependencyLedger = Field(default_factory=DependencyLedger)
     evidence: EvidenceContext = Field(default_factory=EvidenceContext)
     trajectory: list[TrajectoryStep] = Field(default_factory=list)
@@ -419,10 +620,79 @@ class JudgeScores(ContractModel):
     uncertainty_calibration: UnitScore
 
 
+# The bound enforced on ``JudgeVerdict.rationale``, checked by a validator rather
+# than declared as a schema constraint so that it never reaches the model.
+#
+# The judge prompt states a hard 2000-character limit, which is the steering
+# device that keeps the model inside the range. If the transmitted schema also
+# carried a length, the request would present two different numbers for the same
+# field -- the prose said 2000 while the schema said this value -- and the model
+# would have to guess which to obey. So the length is enforced locally, after the
+# response returns, and the schema the model sees carries only ``minLength``.
+#
+# Measured with the limit declared in the schema: 5 of 30 production attempts
+# exceeded 2000 and became validation failures, against a maximum of 2,263 and a
+# median of 1,735. This bound is roughly nine times anything observed, so it
+# exists as a backstop against pathological output rather than as a live
+# constraint.
+#
+# Kept as a validator rather than removed because any bound makes an over-long
+# rationale a *validation* failure, and the structured attempt loop catches those
+# and retries once. With no bound at all the only remaining backstop is
+# ``max_tokens``, and hitting that is a truncated response -- a
+# ``ProviderOutputLimitError`` the same loop does not catch, so it is never
+# repaired.
+#
+# ``rationale`` is a recorded comment and never an input to ``judge_quality``,
+# which reads ``scores`` alone, so this bound cannot move a score.
+JUDGE_RATIONALE_SCHEMA_MAX = 20000
+
+
 class JudgeVerdict(ContractModel):
+    """One judge verdict, tolerating additive noise in the model's reply.
+
+    ``ContractModel`` forbids extra properties project-wide so that a model which
+    renames or invents a field is caught rather than silently half-read. This one
+    model relaxes that to ``ignore``, for a measured reason.
+
+    Naming the three fields in the judge prompt invited the model to append an
+    explanatory one: with no field named, 30 probe attempts added none, and with
+    the fields named, 11 of 30 added ``agent_specific_note``, ``agent_specific_notes``,
+    ``rationale_note`` or ``final_note``. One repair then invented a further key,
+    and 3 of 30 runs were lost outright as unscorable ``judge_schema_failure``.
+
+    An added note carries nothing this system reads: ``judge_quality`` consumes
+    ``scores`` alone and ``rationale`` is a recorded comment. Losing a whole
+    evaluation repetition over it is disproportionate, so additions are dropped
+    instead of fatal.
+
+    Drift is still caught. ``scores`` and ``rationale`` remain required, so a
+    rename or an omission still reports ``missing`` and still fails; only
+    addition is tolerated. Nested extras inside ``scores`` remain forbidden.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
     scores: JudgeScores
     agent_specific: dict[str, UnitScore] = Field(default_factory=dict)
-    rationale: str = Field(min_length=1, max_length=2000)
+    rationale: str = Field(min_length=1)
+
+    @field_validator("rationale")
+    @classmethod
+    def _rationale_within_bound(cls, value: str) -> str:
+        """Enforce the length the schema deliberately does not declare.
+
+        Registered as ``string_too_long`` so the shared diagnostic classifier
+        reports ``string_bounds`` and the one-repair flow still tells the model
+        to satisfy the string constraints.
+        """
+        if len(value) > JUDGE_RATIONALE_SCHEMA_MAX:
+            raise PydanticCustomError(
+                "string_too_long",
+                "String should have at most {max_length} characters",
+                {"max_length": JUDGE_RATIONALE_SCHEMA_MAX},
+            )
+        return value
 
 
 JudgeStatus: TypeAlias = Literal["scored", "judge_not_run"]
@@ -456,6 +726,13 @@ class JudgeFeedback(ContractModel):
     latency_ms: float | None = Field(default=None, ge=0.0)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    # Additive field: the deepest structured attempt the judge's own call
+    # reached for this row. The evaluator shares its tracker -- and the row's
+    # session id -- with the target, so this is scoped to the metrics the judge
+    # call itself appended, never to the session as a whole. ``None`` means the
+    # judge was never invoked, or that the row predates the field -- a missing
+    # value is never read as "no repair happened".
+    structured_attempts: int | None = Field(default=None, ge=1, le=2)
 
     @model_validator(mode="after")
     def validate_status(self) -> "JudgeFeedback":
@@ -481,10 +758,59 @@ class RepetitionResult(ContractModel):
     completed: bool
     gates: GateReport
     deterministic_quality: UnitScore | None = None
+    deterministic_metrics: dict[str, UnitScore] = Field(
+        default_factory=dict,
+        max_length=_MAX_ARTIFACT_DETERMINISTIC_METRICS,
+    )
+    prohibited_call_count: int = Field(
+        default=0,
+        ge=0,
+        le=_MAX_ARTIFACT_PROHIBITED_CALL_COUNT,
+        strict=True,
+    )
+    react_stop_reason: ReActStopReason | None = None
+    fallback_provider_diagnostic: FallbackProviderDiagnostic | None = None
     judge: JudgeFeedback | None = None
     aggregate_quality: UnitScore | None = None
     trace_url: str | None = None
     errors: list[EvaluationFailure] = Field(default_factory=list)
+
+    @field_validator("deterministic_metrics", mode="before")
+    @classmethod
+    def validate_metric_ids(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            raise TypeError("deterministic_metrics must be a mapping")
+        if len(value) > _MAX_ARTIFACT_DETERMINISTIC_METRICS:
+            raise ValueError("too many deterministic metrics")
+        for metric_id in value:
+            if (
+                not isinstance(metric_id, str)
+                or len(metric_id) > _MAX_ARTIFACT_METRIC_ID_LENGTH
+                or _ARTIFACT_METRIC_ID.fullmatch(metric_id) is None
+            ):
+                raise ValueError("deterministic metric ids must be lower snake case")
+        return value
+
+    @field_validator("deterministic_metrics", mode="before")
+    @classmethod
+    def validate_metric_value_types(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            raise TypeError("deterministic_metrics must be a mapping")
+        if any(
+            isinstance(score, bool) or not isinstance(score, (int, float))
+            for score in value.values()
+        ):
+            raise ValueError("deterministic metric values must be numeric")
+        return value
+
+    @field_validator("deterministic_metrics")
+    @classmethod
+    def validate_metric_values(
+        cls, value: dict[str, UnitScore]
+    ) -> dict[str, UnitScore]:
+        if any(not isfinite(score) for score in value.values()):
+            raise ValueError("deterministic metric values must be finite")
+        return value
 
     @property
     def passed(self) -> bool:

@@ -10,6 +10,15 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from deep_research.observability import SpanHandle, Tracker
+from deep_research.request_budget import RequestAttemptLimitError
+
+# A tool that lets an exception escape the framework's own error type is
+# reported with this static sentence rather than ``str(error)``: the message
+# reaches public state and the model-visible observation summary, so the text
+# of an arbitrary exception (a URL, a response body, a prompt, a credential)
+# must never be published there. The failure stays classifiable through its
+# enumerated error type instead.
+_UNEXPECTED_FAILURE_MESSAGE = "the tool failed unexpectedly"
 
 
 class ToolError(BaseModel):
@@ -87,6 +96,10 @@ class BaseTool(ABC):
     description: ClassVar[str]
     input_schema: ClassVar[dict[str, JsonValue]]
     output_schema: ClassVar[dict[str, JsonValue]]
+    # Which of ``input_schema``'s keys a provider must supply. Empty by
+    # default so a no-argument tool needs no declaration; a name that is not
+    # in ``input_schema`` fails loudly at agent construction.
+    required_arguments: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, tracker: Tracker) -> None:
         self._tracker = tracker
@@ -112,12 +125,26 @@ class BaseTool(ABC):
                 )
                 span.set_outputs({**execution.output_summary, "success": True})
             return result
+        except RequestAttemptLimitError:
+            # A spent run-wide attempt ceiling is not a tool failure. The
+            # refusal is the budget's own decision and already carries the
+            # machine-readable reason, while a returned ``ToolResult`` would
+            # publish it as an ``agent_tool_failed`` record and let the run
+            # carry on spending past a declared limit. It is re-raised so the
+            # caller can stop instead. ``RequestAttemptLimitError`` subclasses
+            # ``RuntimeError``, so this handler is deliberately narrower than
+            # the generic one below rather than wider: every other
+            # ``RuntimeError`` a tool lets escape is still converted.
+            raise
         except Exception as error:
+            # A ``ToolExecutionError`` is authored by the tool itself, so its
+            # message is published as-is; anything else is an exception this
+            # framework does not own, and only its enumerated type is public.
             failure = (
                 error
                 if isinstance(error, ToolExecutionError)
                 else ToolExecutionError(
-                    str(error) or type(error).__name__,
+                    _UNEXPECTED_FAILURE_MESSAGE,
                     error_type=type(error).__name__,
                 )
             )

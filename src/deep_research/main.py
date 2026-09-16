@@ -26,6 +26,7 @@ from deep_research.graph.orchestrator import (
     resume_research_graph,
     run_research_graph,
 )
+from deep_research.request_budget import RequestBudgetObserver
 from deep_research.runtime.assembly import ResearchRuntime, build_runtime
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome, build_outcome
@@ -128,6 +129,7 @@ async def run_research(
     config_overrides: Mapping[str, JsonValue] | None = None,
     runtime_builder: RuntimeBuilder = build_runtime,
     event_handler: ProgressHandler | None = None,
+    request_budget_handler: RequestBudgetObserver | None = None,
 ) -> ResearchOutcome:
     """Run one research session, or continue a checkpointed one.
 
@@ -139,6 +141,13 @@ async def run_research(
     it — the session's events exactly, in order, ending with
     ``graph.session.completed`` — and the run otherwise proceeds unchanged
     when it is omitted.
+    ``request_budget_handler`` observes the run's shared request budget. It is
+    installed on ``runtime.request_budget`` *after* the runtime is built and
+    *before* the graph starts, because the first reservation happens inside
+    the graph, and it is cleared again when this call returns: a runtime can
+    outlive one run (a resume reuses the runtime that made the checkpoint),
+    and a stale observer would attribute a later run's attempts to this
+    caller. The terminal snapshots reach the outcome either way.
 
     Inputs are normalized and validated before any configuration or runtime
     setup: outer whitespace is stripped, and blank questions and session ids
@@ -192,44 +201,67 @@ async def run_research(
         settings, session_id=effective_session_id
     )
 
-    if resume_session_id is not None:
-        try:
-            run = await resume_research_graph(
+    # The shared run budget belongs to the runtime assembly, where it is a
+    # required field: ``build_runtime`` always constructs exactly one so the
+    # provider transports and the search tool reserve against the same
+    # counters. It is therefore read as a required attribute rather than
+    # defensively. A ``getattr(..., None)`` fallback would let a builder that
+    # carries no budget — or one that names it differently — run with declared
+    # ceilings enforced while the summary reported no budget section at all,
+    # which is exactly the "the summary matches the run" property this
+    # reporting exists to guarantee. Failing loudly is the honest failure.
+    budget = runtime.request_budget
+    observing = request_budget_handler is not None
+    if observing:
+        budget.set_observer(request_budget_handler)
+    try:
+        if resume_session_id is not None:
+            try:
+                run = await resume_research_graph(
+                    graph=runtime.graph,
+                    tracker=runtime.tracker,
+                    session_id=resume_session_id,
+                    max_iterations=max_iterations,
+                    event_handler=event_handler,
+                )
+            except GraphResumeError as error:
+                raise configuration_error(
+                    reason="no_checkpoint",
+                    message=(
+                        f"Session {resume_session_id} cannot be resumed: "
+                        f"{error}"
+                    ),
+                ) from error
+        else:
+            assert question is not None  # narrowed by the guards above
+            memory_context = await recall_memory_context(
+                question=question,
+                long_term=runtime.long_term,
+                procedural=runtime.procedural,
+            )
+            run = await run_research_graph(
                 graph=runtime.graph,
                 tracker=runtime.tracker,
-                session_id=resume_session_id,
-                max_iterations=max_iterations,
+                session_id=effective_session_id,
+                question=question,
+                max_iterations=(
+                    settings.graph.max_iterations
+                    if max_iterations is None
+                    else max_iterations
+                ),
+                memory_context=memory_context,
                 event_handler=event_handler,
             )
-        except GraphResumeError as error:
-            raise configuration_error(
-                reason="no_checkpoint",
-                message=(
-                    f"Session {resume_session_id} cannot be resumed: {error}"
-                ),
-            ) from error
-    else:
-        assert question is not None  # narrowed by the guards above
-        memory_context = await recall_memory_context(
-            question=question,
-            long_term=runtime.long_term,
-            procedural=runtime.procedural,
-        )
-        run = await run_research_graph(
-            graph=runtime.graph,
-            tracker=runtime.tracker,
-            session_id=effective_session_id,
-            question=question,
-            max_iterations=(
-                settings.graph.max_iterations
-                if max_iterations is None
-                else max_iterations
-            ),
-            memory_context=memory_context,
-            event_handler=event_handler,
-        )
+        snapshots = budget.snapshots()
+    finally:
+        if observing:
+            budget.set_observer(None)
 
-    return build_outcome(run, metrics=runtime.tracker.metrics)
+    return build_outcome(
+        run,
+        metrics=runtime.tracker.metrics,
+        request_budget_snapshots=snapshots,
+    )
 
 
 def run_research_sync(**kwargs: Any) -> ResearchOutcome:

@@ -299,6 +299,7 @@ _STRONG_CASE = build_case(
                 urls=(_EPA_CANOPY_URL, _NOAA_CANOPY_URL),
                 verdict="verified",
                 confidence=0.90,
+                verification_urls=(_CANOPY_REVIEW_URL,),
             ),
             claim(
                 "Peer-reviewed field measurements find urban tree canopy "
@@ -307,6 +308,7 @@ _STRONG_CASE = build_case(
                 urls=(_CANOPY_REVIEW_URL, _USFS_CANOPY_URL),
                 verdict="verified",
                 confidence=0.85,
+                verification_urls=(_EPA_CANOPY_URL,),
             ),
             claim(
                 "The cooling effect of tree canopy grows with canopy "
@@ -314,6 +316,7 @@ _STRONG_CASE = build_case(
                 urls=(_USFS_CANOPY_URL, _CANOPY_REVIEW_URL),
                 verdict="verified",
                 confidence=0.82,
+                verification_urls=(_NOAA_CANOPY_URL,),
             ),
             claim(
                 "Neighborhoods with more than 30 percent canopy cover "
@@ -322,6 +325,7 @@ _STRONG_CASE = build_case(
                 urls=(_PHOENIX_CANOPY_URL,),
                 verdict="verified",
                 confidence=0.80,
+                verification_urls=(_CANOPY_REVIEW_URL,),
             ),
             claim(
                 "Urban tree canopy reduced summer surface temperatures "
@@ -330,6 +334,7 @@ _STRONG_CASE = build_case(
                 urls=(_PHOENIX_CANOPY_URL,),
                 verdict="unverified",
                 confidence=0.55,
+                verification_urls=(_USFS_CANOPY_URL,),
             ),
         ),
         sources=(
@@ -344,7 +349,6 @@ _STRONG_CASE = build_case(
                 authority=0.95,
                 recency=0.88,
                 relevance=0.92,
-                corroboration=0.80,
                 overall=0.89,
             ),
             scored_source(
@@ -357,7 +361,6 @@ _STRONG_CASE = build_case(
                 authority=0.90,
                 recency=0.85,
                 relevance=0.90,
-                corroboration=0.78,
                 overall=0.86,
             ),
             scored_source(
@@ -371,7 +374,6 @@ _STRONG_CASE = build_case(
                 authority=0.88,
                 recency=0.82,
                 relevance=0.92,
-                corroboration=0.85,
                 overall=0.87,
             ),
             scored_source(
@@ -384,7 +386,6 @@ _STRONG_CASE = build_case(
                 authority=0.85,
                 recency=0.80,
                 relevance=0.88,
-                corroboration=0.75,
                 overall=0.82,
             ),
             scored_source(
@@ -394,7 +395,6 @@ _STRONG_CASE = build_case(
                 authority=0.72,
                 recency=0.86,
                 relevance=0.90,
-                corroboration=0.65,
                 overall=0.78,
             ),
         ),
@@ -558,6 +558,7 @@ _GAPPY_CASE = build_case(
                 urls=(_COMPOST_BLOG_URL,),
                 verdict="unverified",
                 confidence=0.55,
+                verification_urls=(_LMOP_URL,),
             ),
         ),
         sources=(
@@ -568,7 +569,6 @@ _GAPPY_CASE = build_case(
                 authority=0.90,
                 recency=0.80,
                 relevance=0.85,
-                corroboration=0.70,
                 overall=0.81,
             ),
             scored_source(
@@ -581,7 +581,6 @@ _GAPPY_CASE = build_case(
                 authority=0.35,
                 recency=0.70,
                 relevance=0.65,
-                corroboration=0.25,
                 overall=0.49,
                 low_confidence=True,
             ),
@@ -742,7 +741,6 @@ _BUDGET_CASE = build_case(
                 authority=0.30,
                 recency=0.65,
                 relevance=0.70,
-                corroboration=0.20,
                 overall=0.46,
                 low_confidence=True,
             ),
@@ -921,6 +919,7 @@ _LIVE_CASE = build_case(
                 urls=(_GCCA_URL, _IEA_CE_URL),
                 verdict="verified",
                 confidence=0.85,
+                verification_urls=(_NATURE_CE_URL,),
             ),
             claim(
                 "Low-carbon cements meet compressive strength standards "
@@ -929,6 +928,7 @@ _LIVE_CASE = build_case(
                 urls=(_NATURE_CE_URL, _GCCA_URL),
                 verdict="verified",
                 confidence=0.80,
+                verification_urls=(_IEA_CE_URL,),
             ),
         ),
         sources=(
@@ -939,7 +939,6 @@ _LIVE_CASE = build_case(
                 authority=0.85,
                 recency=0.90,
                 relevance=0.90,
-                corroboration=0.80,
                 overall=0.86,
             ),
             scored_source(
@@ -949,7 +948,6 @@ _LIVE_CASE = build_case(
                 authority=0.92,
                 recency=0.90,
                 relevance=0.88,
-                corroboration=0.82,
                 overall=0.88,
             ),
             scored_source(
@@ -959,7 +957,6 @@ _LIVE_CASE = build_case(
                 authority=0.90,
                 recency=0.85,
                 relevance=0.85,
-                corroboration=0.78,
                 overall=0.85,
             ),
         ),

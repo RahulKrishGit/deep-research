@@ -13,11 +13,12 @@ from collections.abc import Mapping
 from pydantic import JsonValue
 
 from deep_research.graph.state import (
+    FINALIZE_NODE,
     GRAPH_ROUTES,
     GRAPH_SOURCE,
     GRAPH_STATUSES,
 )
-from deep_research.utils.types import ResearchEvent
+from deep_research.utils.types import ReportQualitySnapshot, ResearchEvent
 
 
 def graph_event(
@@ -127,6 +128,68 @@ def refinement_started_event(
         event_type="graph.refinement.started",
         message=f"Refinement pass {iteration} started.",
         metadata={"iteration": iteration, "max_iterations": max_iterations},
+    )
+
+
+def quality_assessed_event(
+    *,
+    iteration: int,
+    quality: ReportQualitySnapshot,
+) -> ResearchEvent:
+    """Record the deterministic quality verdict for one composed report.
+
+    Counts and enumerated hard-failure names only — never report prose. The
+    names come from ``agents.quality``'s closed set, which is what makes this
+    record groupable without reading a report.
+    """
+    failures = list(quality.hard_failures)
+    return graph_event(
+        event_type="graph.quality.assessed",
+        message=(
+            "The report quality gates found no hard failure."
+            if not failures
+            else "The report quality gates found a hard failure."
+        ),
+        metadata={
+            "iteration": iteration,
+            "hard_failures": failures,
+            "coverage_ratio": quality.coverage_ratio,
+            "duplicate_claims": quality.duplicate_claims,
+            "duplicate_source_rows": quality.duplicate_source_rows,
+            "uncited_settled_points": quality.uncited_settled_points,
+        },
+    )
+
+
+def report_published_event(
+    *,
+    quality_status: str,
+    report_path: str | None,
+    evidence_path: str | None,
+    document_writes: int,
+    memory_writes: int,
+    error_count: int,
+) -> ResearchEvent:
+    """Record the one terminal publication of both composed artifacts.
+
+    This is the only event that names where the session's final report lives,
+    and it carries *both* paths. A path is ``None`` when that write failed, so
+    a front-end reading this event is never pointed at an earlier refinement
+    pass's file. ``quality_status`` is an enumerated ``QUALITY_STATUS_*``
+    value; the counts are write outcomes, never content.
+    """
+    return graph_event(
+        event_type="graph.report.published",
+        message="The final report and its evidence ledger were published.",
+        node=FINALIZE_NODE,
+        metadata={
+            "quality_status": quality_status,
+            "report_path": report_path,
+            "evidence_path": evidence_path,
+            "document_writes": document_writes,
+            "memory_writes": memory_writes,
+            "error_count": error_count,
+        },
     )
 
 

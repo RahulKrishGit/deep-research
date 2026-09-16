@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
+from hashlib import sha256
 from typing import TypeAlias
 
 from langsmith.schemas import Example, Run
@@ -24,7 +25,12 @@ from deep_research.agents.fact_checker import (
     claimed_domains_for,
     independent_domains,
 )
-from deep_research.agents.sources import normalize_source_url, source_domain
+from deep_research.agents.report import build_citation_index
+from deep_research.agents.sources import (
+    normalize_source_url,
+    publisher_identity,
+    source_domain,
+)
 from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.config import contains_secret
 from deep_research.evaluation.models import (
@@ -34,7 +40,7 @@ from deep_research.evaluation.models import (
     GateResult,
     TargetOutput,
 )
-from deep_research.utils.types import Claim, ScoredSource, SubTopic
+from deep_research.utils.types import Claim, ScoredSource, SubTopic, UnitScore
 
 GENERAL_GATE_IDS: tuple[str, ...] = (
     "agent_constructed",
@@ -56,11 +62,24 @@ _RESEARCH_ERROR_KEYS = frozenset(
     {"error_type", "source", "message", "timestamp"}
 )
 _URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+")
+_CITATION_MARKER_PATTERN = re.compile(r"\[(\d+)\]")
 # Greedy URL matching keeps trailing punctuation that belongs to prose
 # (markdown parens, commas, periods, ...). Strip it so the extracted string
 # compares equal to the canonical ``known_source_urls`` entry.
 _URL_TRAILING_PUNCTUATION = ".,;:!?)]}'\"'"
 _TRANSPORT_FAILURE_TYPE = "langsmith_tracing_failure"
+_PROVIDER_FAILURE_KINDS = frozenset(
+    {
+        "output_limit",
+        "schema_output",
+        "provider_timeout",
+        "provider_rate_limit",
+        "provider_transport",
+        "provider_http",
+        "provider_response",
+        "provider_failure",
+    }
+)
 
 
 class MissingMetricError(RuntimeError):
@@ -148,10 +167,13 @@ def _gate_required_fields_present(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
     result = output.result if isinstance(output.result, Mapping) else {}
+    state_update = (
+        output.state_update if isinstance(output.state_update, Mapping) else {}
+    )
     missing = [
         name
         for name in case.expectations.required_output_fields
-        if name not in result
+        if name not in result and name not in state_update
     ]
     return GateResult(
         gate_id="required_fields_present",
@@ -165,6 +187,18 @@ def _gate_required_fields_present(
 def _gate_budgets_respected(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
+    """Check the budgets the runtime actually enforces, per loop.
+
+    ``tool_budget`` and ``max_iterations`` bound **one** ReAct loop, and an
+    agent that runs one bounded loop per unit of work merges them: the
+    fact-checker runs a loop per claim, so its ``tool_calls`` is a whole-case
+    sum that can legitimately exceed a per-loop ceiling (two in-budget loops of
+    6 and 5 sum to 11). This gate therefore compares the largest single loop's
+    own totals, which ``ReActSummary.max_loop_*`` carries, and falls back to
+    the summed totals for artifacts written before those fields existed. The
+    detail reports the value that decided the outcome, plus the whole-case
+    total when it differs, so a failure still names the number to diagnose.
+    """
     react = output.react
     if react is None:
         return GateResult(
@@ -174,28 +208,46 @@ def _gate_budgets_respected(
         )
     iterations = _field(react, "iterations")
     tool_calls = _field(react, "tool_calls")
+    # ``None`` means the artifact predates the per-loop fields, not zero.
+    per_loop_iterations = _field(react, "max_loop_iterations")
+    per_loop_tool_calls = _field(react, "max_loop_tool_calls")
+    measured_iterations = (
+        per_loop_iterations if isinstance(per_loop_iterations, int) else iterations
+    )
+    measured_tool_calls = (
+        per_loop_tool_calls if isinstance(per_loop_tool_calls, int) else tool_calls
+    )
     violations: list[str] = []
     if (
-        not isinstance(iterations, int)
-        or iterations > case.expectations.max_iterations
+        not isinstance(measured_iterations, int)
+        or measured_iterations > case.expectations.max_iterations
     ):
         violations.append(
-            f"iterations {iterations} exceed "
+            f"iterations {measured_iterations} exceed "
             f"{case.expectations.max_iterations}"
+            f"{_budget_total_note(iterations, measured_iterations)}"
         )
     if (
-        not isinstance(tool_calls, int)
-        or tool_calls > case.expectations.max_tool_calls
+        not isinstance(measured_tool_calls, int)
+        or measured_tool_calls > case.expectations.max_tool_calls
     ):
         violations.append(
-            f"tool_calls {tool_calls} exceed "
+            f"tool_calls {measured_tool_calls} exceed "
             f"{case.expectations.max_tool_calls}"
+            f"{_budget_total_note(tool_calls, measured_tool_calls)}"
         )
     return GateResult(
         gate_id="budgets_respected",
         passed=not violations,
         detail="; ".join(violations),
     )
+
+
+def _budget_total_note(total: object, measured: object) -> str:
+    """Name the whole-case total too, when it differs from the per-loop value."""
+    if not isinstance(total, int) or total == measured:
+        return ""
+    return f" (largest single loop; whole case total {total})"
 
 
 def _gate_errors_typed(output: TargetOutput, case: EvaluationCase) -> GateResult:
@@ -233,6 +285,42 @@ def _normalized(url: str) -> str:
         return normalize_source_url(url)
     except ValueError:
         return url
+
+
+def _researcher_live_url_fingerprints(
+    output: TargetOutput, case: EvaluationCase
+) -> set[str]:
+    """Return provenance fingerprints only for live Researcher outputs."""
+    if case.tier != "live" or case.agent_name != "researcher":
+        return set()
+    values = _field(output.dependencies, "source_url_fingerprints")
+    if not isinstance(values, (list, tuple)):
+        return set()
+    return {value for value in values if isinstance(value, str)}
+
+
+def _researcher_live_provenance_incomplete(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Report whether bounded live Researcher provenance lost identities.
+
+    An absent field is the backward-compatible shape of an old artifact and
+    therefore means complete, while any present non-``True`` value is treated
+    as incomplete so malformed untyped payloads fail closed.
+    """
+    if case.tier != "live" or case.agent_name != "researcher":
+        return False
+    value = _field(output.dependencies, "source_url_fingerprints_complete")
+    return value is not None and value is not True
+
+
+def _url_is_known(
+    url: str, allowed: set[str], fingerprints: set[str]
+) -> bool:
+    normalized = _normalized(url)
+    if normalized in allowed:
+        return True
+    return sha256(normalized.encode("utf-8")).hexdigest() in fingerprints
 
 
 def _gate_citations_known(
@@ -292,6 +380,7 @@ def _gate_citations_known(
                 _normalized(url)
                 for url in _url_like_strings(_field(step, "observation_summary"))
             )
+    fingerprints = _researcher_live_url_fingerprints(output, case)
     cited = {
         _normalized(url)
         for url in (
@@ -299,12 +388,21 @@ def _gate_citations_known(
             | _url_like_strings(output.state_update)
         )
     }
-    unknown = sorted(cited - allowed)
+    unknown = sorted(
+        url for url in cited if not _url_is_known(url, allowed, fingerprints)
+    )
     return GateResult(
         gate_id="citations_known",
         passed=not unknown,
         detail=(
-            "unknown source urls: " + ", ".join(unknown) if unknown else ""
+            (
+                "source provenance incomplete; unknown source urls could not be "
+                "verified: " + ", ".join(unknown)
+            )
+            if unknown and _researcher_live_provenance_incomplete(output, case)
+            else "unknown source urls: " + ", ".join(unknown)
+            if unknown
+            else ""
         ),
     )
 
@@ -430,7 +528,23 @@ def deterministic_quality(
     function that raises is a failed metric (weight zero) and must not
     abort the other metrics.
     """
-    score = 0.0
+    scores = deterministic_metric_scores(
+        output, case, metric_functions=metric_functions
+    )
+    return sum(
+        metric.weight * scores[metric.metric_id]
+        for metric in case.expectations.deterministic_metrics
+    )
+
+
+def deterministic_metric_scores(
+    output: TargetOutput,
+    case: EvaluationCase,
+    *,
+    metric_functions: Mapping[str, MetricFunction],
+) -> dict[str, UnitScore]:
+    """Evaluate every declared metric into a bounded unit-score map."""
+    scores: dict[str, UnitScore] = {}
     for metric in case.expectations.deterministic_metrics:
         function = metric_functions.get(metric.metric_id)
         if function is None:
@@ -438,12 +552,33 @@ def deterministic_quality(
                 f"no metric function registered for {metric.metric_id!r}"
             )
         try:
-            if function(output, case):
-                score += metric.weight
+            scores[metric.metric_id] = 1.0 if function(output, case) else 0.0
         except Exception:
             # One broken metric must not lose every other metric's score.
-            continue
-    return score
+            scores[metric.metric_id] = 0.0
+    return scores
+
+
+def evaluate_target_with_metrics(
+    output: TargetOutput,
+    case: EvaluationCase,
+    *,
+    secrets: Sequence[str],
+    metric_functions: Mapping[str, MetricFunction] | None = None,
+) -> tuple[GateReport, float, dict[str, UnitScore]]:
+    """Evaluate gates and expose metric details without changing the public API."""
+    if metric_functions is None:
+        metric_functions = METRIC_FUNCTIONS
+    results = evaluate_general_gates(output, case, secrets=secrets)
+    results.extend(evaluate_agent_gates(output, case))
+    scores = deterministic_metric_scores(
+        output, case, metric_functions=metric_functions
+    )
+    score = sum(
+        metric.weight * scores[metric.metric_id]
+        for metric in case.expectations.deterministic_metrics
+    )
+    return GateReport(results=results), score, scores
 
 
 def evaluate_target(
@@ -455,18 +590,14 @@ def evaluate_target(
 ) -> tuple[GateReport, float]:
     """General and agent-specific gates plus the deterministic score.
 
-    The general gates come first, in ``GENERAL_GATE_IDS`` order, then the
-    agent's own gates in ``AGENT_GATE_IDS`` order. ``metric_functions``
-    defaults to the complete ``METRIC_FUNCTIONS`` table.
+    The general gates come first, in GENERAL_GATE_IDS order, then the
+    agent's own gates in AGENT_GATE_IDS order. metric_functions defaults
+    to the complete METRIC_FUNCTIONS table.
     """
-    if metric_functions is None:
-        metric_functions = METRIC_FUNCTIONS
-    results = evaluate_general_gates(output, case, secrets=secrets)
-    results.extend(evaluate_agent_gates(output, case))
-    score = deterministic_quality(
-        output, case, metric_functions=metric_functions
+    gates, score, _ = evaluate_target_with_metrics(
+        output, case, secrets=secrets, metric_functions=metric_functions
     )
-    return GateReport(results=results), score
+    return gates, score
 
 
 # --- Agent-specific hard gates ---------------------------------------------
@@ -499,12 +630,14 @@ AGENT_GATE_IDS: dict[AgentName, tuple[str, ...]] = {
         "valid_report",
         "citations_known_only",
         "limitations_represented",
-        "persistence_truthful",
+        "no_persistence_calls",
+        "no_false_publication_claim",
     ),
     "critic": (
         "bounded_component_scores",
         "critique_actionable",
         "route_consistent",
+        "review_produced",
     ),
 }
 
@@ -516,7 +649,7 @@ _SCORE_FIELDS: tuple[str, ...] = tuple(
 )
 
 _LIMITATION_PHRASES = ("limitation", "caveat", "what we could not")
-_SIGNAL_KEYWORDS = ("authority", "recency", "reputation", "corroboration")
+_SIGNAL_KEYWORDS = ("authority", "recency", "relevance", "reputation")
 _YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
 _CAPITALIZED_PATTERN = re.compile(r"\b[A-Z][A-Za-z]+\b")
 
@@ -540,8 +673,22 @@ def _artifact(output: TargetOutput, name: str) -> object:
 
 
 def _report_body(output: TargetOutput) -> str:
-    report = _artifact(output, "report")
+    # ``SynthesizedReport`` exposes the composed reader artifact as
+    # ``markdown``.  ``report`` is the state-update spelling retained for the
+    # replace-merged ResearchState contract, and is only a compatibility
+    # fallback for older evaluation artifacts.
+    report = _artifact(output, "markdown")
+    if not isinstance(report, str):
+        report = _artifact(output, "report")
     return report if isinstance(report, str) else ""
+
+
+def _evidence_body(output: TargetOutput) -> str:
+    """Return the composed evidence artifact using its result field name."""
+    evidence = _artifact(output, "evidence_markdown")
+    if not isinstance(evidence, str):
+        evidence = _artifact(output, "report_evidence")
+    return evidence if isinstance(evidence, str) else ""
 
 
 def _state_update(output: TargetOutput) -> dict[str, object]:
@@ -559,10 +706,77 @@ def _error_records(output: TargetOutput) -> list[dict[str, object]]:
     return [dict(entry) for entry in entries if isinstance(entry, Mapping)]
 
 
+def _has_typed_provider_fallback(
+    output: TargetOutput, *, operation: str
+) -> bool:
+    """Recognize one allow-listed provider fallback operation."""
+    for entry in _error_records(output):
+        details = entry.get("details")
+        if not isinstance(details, Mapping):
+            continue
+        if details.get("operation") != operation:
+            continue
+        provider_failure = details.get("provider_failure")
+        if not isinstance(provider_failure, Mapping):
+            continue
+        if provider_failure.get("kind") in _PROVIDER_FAILURE_KINDS:
+            return True
+    return False
+
+
 def _normalized_text(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return " ".join(value.split()).casefold()
+
+
+def _findings_section(report: str) -> str | None:
+    """Return only the narrative between the report's Findings boundaries.
+
+    The reader report opens its narrative at ``## Findings`` and closes it at
+    ``## Uncertainty and conflicting evidence``: the verified-claim registry
+    that used to sit between them now belongs to the evidence ledger, so a
+    report that still carried one would fail this boundary closed.
+    """
+    findings_matches = list(
+        re.finditer(r"(?m)^## Findings[ \t]*\r?$", report)
+    )
+    boundary_matches = list(
+        re.finditer(
+            r"(?m)^## Uncertainty and conflicting evidence[ \t]*\r?$",
+            report,
+        )
+    )
+    if len(findings_matches) != 1 or len(boundary_matches) != 1:
+        return None
+    findings_heading = findings_matches[0]
+    boundary_heading = boundary_matches[0]
+    if findings_heading.end() > boundary_heading.start():
+        return None
+    return report[findings_heading.end() : boundary_heading.start()]
+
+
+_READER_REFERENCE_PATTERN = re.compile(
+    r"(?m)^(\d+)\.\s+.*?\s+—\s+(\S+)\s*$"
+)
+
+
+def _reader_reference_urls(report: str) -> dict[int, str]:
+    """Number to URL, read from the reader report's own reference list.
+
+    The reader report numbers only the sources its own points cite, in
+    first-use order, so its markers are resolved through the list it printed
+    rather than through a second, wider index computed from state. A marker
+    with no matching reference line therefore resolves to nothing and the
+    citation gate fails closed, which is the direction an integrity gate must
+    fail in.
+    """
+    references: dict[int, str] = {}
+    for match in _READER_REFERENCE_PATTERN.finditer(report):
+        normalized = _normalized(match.group(2))
+        if normalized:
+            references[int(match.group(1))] = normalized
+    return references
 
 
 def _reference_int(case: EvaluationCase, key: str, default: int) -> int:
@@ -596,11 +810,22 @@ def _uncovered_sub_topics(
     ]
 
 
-def _forbidden_persistence_claims(reference: Mapping) -> list[str]:
-    claims = reference.get("forbidden_persistence_claims")
+def _forbidden_publication_claims(reference: Mapping) -> list[str]:
+    """Read the Task 6 no-publication claim phrases from a case reference."""
+    claims = reference.get("forbidden_publication_claims")
+    # Keep old artifacts readable while the active catalog migrates. New
+    # cases must use the publication-oriented key so their contract cannot be
+    # mistaken for a write-recovery expectation.
+    if claims is None:
+        claims = reference.get("forbidden_persistence_claims")
     if isinstance(claims, list):
         return [str(item) for item in claims]
     return []
+
+
+def _forbidden_persistence_claims(reference: Mapping) -> list[str]:
+    """Backward-compatible alias for older non-Task-6 metric artifacts."""
+    return _forbidden_publication_claims(reference)
 
 
 def _registrable_family_count(
@@ -806,12 +1031,15 @@ def _no_invented_sources_passes(
                 normalize_source_url(url)
                 for url in _url_like_strings(_field(step, "observation_summary"))
             )
+    fingerprints = _researcher_live_url_fingerprints(output, case)
     findings = _artifact(output, "findings")
     if not isinstance(findings, list):
         return False
     for finding in findings:
         url = _field(finding, "source_url")
-        if not isinstance(url, str) or normalize_source_url(url) not in allowed:
+        if not isinstance(url, str) or not _url_is_known(
+            url, allowed, fingerprints
+        ):
             return False
     return True
 
@@ -820,10 +1048,18 @@ def _gate_no_invented_sources(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
     passed = _no_invented_sources_passes(output, case)
+    incomplete = _researcher_live_provenance_incomplete(output, case)
     return _agent_result(
         "no_invented_sources",
         passed,
-        "" if passed else "a finding cites a url outside the known sources",
+        ""
+        if passed
+        else (
+            "source provenance incomplete; cited source verification could not "
+            "be completed"
+            if incomplete
+            else "a finding cites a url outside the known sources"
+        ),
     )
 
 
@@ -870,6 +1106,18 @@ def _bounded_scores_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     if not isinstance(evaluated, list):
         return False
     for entry in evaluated:
+        status = _field(entry, "evaluation_status") or "scored"
+        if status not in {
+            "scored",
+            "unscored_cap",
+            "unscored_provider",
+            "unscored_missing",
+        }:
+            return False
+        if status != "scored":
+            if any(_field(entry, name) is not None for name in _SCORE_FIELDS):
+                return False
+            continue
         for name in _SCORE_FIELDS:
             value = _field(entry, name)
             if (
@@ -905,7 +1153,8 @@ def _low_confidence_flagged_passes(
     flagged = {
         normalize_source_url(_field(entry, "url"))
         for entry in evaluated
-        if _field(entry, "low_confidence") is True
+        if (_field(entry, "evaluation_status") or "scored") == "scored"
+        and _field(entry, "low_confidence") is True
     }
     return all(
         isinstance(url, str) and normalize_source_url(url) in flagged
@@ -945,21 +1194,117 @@ def _gate_valid_verdicts(
     return _agent_result("valid_verdicts", True)
 
 
+def _read_url_identities(output: TargetOutput) -> set[str] | None:
+    """Identities of the URLs this repetition proved it READ, or ``None``.
+
+    ``None`` means the artifact cannot prove any read at all, and the
+    read-provenance gate must then fail closed: the field is absent, the
+    completeness flag is anything but ``True``, or the payload is not a list
+    of strings. This is the opposite polarity to
+    ``_researcher_live_provenance_incomplete``, whose absent-means-complete
+    default is permissive-additive — acceptable for discovery provenance,
+    wrong for a guarantee that a passage was actually read.
+    """
+    fingerprints = _field(output.dependencies, "read_url_fingerprints")
+    complete = _field(output.dependencies, "read_url_fingerprints_complete")
+    if not isinstance(fingerprints, (list, tuple)) or complete is not True:
+        return None
+    return {value for value in fingerprints if isinstance(value, str)}
+
+
+def _passage_url_is_read(source_url: str, identities: set[str]) -> bool:
+    """True when ``source_url``'s canonical identity is a recorded read.
+
+    The identity is computed exactly as the recorder computes it, from
+    ``normalize_source_url``, so two spellings of one page compare equal and a
+    URL that was never read — or could never carry an identity — does not.
+    """
+    return (
+        sha256(_normalized(source_url).encode("utf-8")).hexdigest()
+        in identities
+    )
+
+
 def _evidence_linked_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
         return False
+    read_identities: set[str] | None = None
     for entry in claims:
         if _field(entry, "verdict") == "insufficient_evidence":
             continue
         evidence = _field(entry, "evidence")
         source_urls = _field(entry, "source_urls")
-        if not isinstance(evidence, list) or not isinstance(source_urls, list):
+        passages = _field(entry, "verification_evidence")
+        if (
+            not isinstance(evidence, list)
+            or not isinstance(source_urls, list)
+            or not isinstance(passages, list)
+        ):
             return False
-        if not any(isinstance(item, str) and item.strip() for item in evidence):
+        contradictions = _field(entry, "contradictions")
+        if not isinstance(contradictions, list):
+            return False
+        if not any(
+            isinstance(item, str) and item.strip()
+            for item in (*evidence, *contradictions)
+        ):
             return False
         if not any(isinstance(item, str) and item.strip() for item in source_urls):
             return False
+        claim_source_urls = [
+            item for item in source_urls if isinstance(item, str) and item.strip()
+        ]
+        if not passages:
+            return False
+        if read_identities is None:
+            read_identities = _read_url_identities(output)
+            if read_identities is None:
+                return False
+        if _field(entry, "verdict") == "verified" and not any(
+            _field(passage, "stance") == "supports" for passage in passages
+        ):
+            return False
+        if _field(entry, "verdict") == "contradicted" and not any(
+            _field(passage, "stance") == "contradicts" for passage in passages
+        ):
+            return False
+        for passage in passages:
+            source_url = _field(passage, "source_url")
+            source_title = _field(passage, "source_title")
+            locator = _field(passage, "locator")
+            excerpt = _field(passage, "excerpt")
+            stance = _field(passage, "stance")
+            if (
+                not isinstance(source_url, str)
+                or not source_url.strip()
+                or not isinstance(source_title, str)
+                or not source_title.strip()
+                or not isinstance(locator, str)
+                or not locator.strip()
+                or not isinstance(excerpt, str)
+                or not excerpt.strip()
+                or stance not in {"supports", "contradicts"}
+            ):
+                return False
+            # A passage may only cite a URL this repetition actually read.
+            # ``citations_known`` is no substitute: it also admits URLs that
+            # merely appear anywhere in live trajectory text, including
+            # discovery-only search observations.
+            if not _passage_url_is_read(source_url, read_identities):
+                return False
+        if _field(entry, "verdict") in {"verified", "contradicted"}:
+            passage_urls = [
+                source_url
+                for passage in passages
+                for source_url in [_field(passage, "source_url")]
+                if isinstance(source_url, str)
+            ]
+            if not independent_domains(
+                passage_urls,
+                claimed_domains=claimed_domains_for(claim_source_urls),
+            ):
+                return False
     return True
 
 
@@ -970,7 +1315,14 @@ def _gate_evidence_linked(
     return _agent_result(
         "evidence_linked",
         passed,
-        "" if passed else "a non-insufficient claim lacks evidence or sources",
+        (
+            ""
+            if passed
+            else (
+                "a non-insufficient claim lacks evidence or sources, or a "
+                "verification passage cites a URL the run never read"
+            )
+        ),
     )
 
 
@@ -988,28 +1340,8 @@ def _independent_domains_passes(
     minimum = int(minimum)
     family = reference.get("dependent_domain_family")
     family = family if isinstance(family, str) else None
-    # What counts as retrieved evidence: the verification prompt only asks
-    # the model to "quote or closely paraphrase" the retrieved passages
-    # (``CLAIM_VERIFICATION_INSTRUCTION``), so URLs in the evidence strings
-    # are optional. Count every URL the repetition recorded instead, the
-    # way ``_no_invented_sources_passes`` does:
-    #   - URL-like strings in trajectory thoughts/observation summaries
-    #     (the verification loop's web_search results land there), and
-    #   - ``scripted_search_urls`` on the evidence context (controlled
-    #     runs).
-    # Deliberately NOT counted: ``EvidenceContext.sources/findings/claims``
-    # — those are the input evidence the agent was given, i.e. the claim's
-    # own source set, which must never double as corroboration.
-    recorded_urls: list[str] = []
-    for step in output.trajectory:
-        recorded_urls.extend(_url_like_strings(_field(step, "thought")))
-        recorded_urls.extend(
-            _url_like_strings(_field(step, "observation_summary"))
-        )
-    recorded_urls.extend(
-        url
-        for url in (_field(output.evidence, "scripted_search_urls") or ())
-        if isinstance(url, str)
+    family_identity = (
+        publisher_identity(f"https://{family}") if family else None
     )
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
@@ -1023,18 +1355,18 @@ def _independent_domains_passes(
             if isinstance(url, str)
         ]
         claimed = claimed_domains_for(source_urls)
-        evidence_urls = list(source_urls)
-        for string in _field(entry, "evidence") or []:
-            if isinstance(string, str):
-                evidence_urls.extend(
-                    url.rstrip(_URL_TRAILING_PUNCTUATION)
-                    for url in _URL_PATTERN.findall(string)
-                )
-        evidence_urls.extend(recorded_urls)
+        evidence_urls = [
+            url
+            for passage in (_field(entry, "verification_evidence") or [])
+            for url in [_field(passage, "source_url")]
+            if isinstance(url, str)
+        ]
         independent = independent_domains(
             evidence_urls, claimed_domains=claimed
         )
-        if _registrable_family_count(independent, family=family) < minimum:
+        if _registrable_family_count(
+            independent, family=family_identity
+        ) < minimum:
             return False
     return True
 
@@ -1087,9 +1419,14 @@ def _gate_valid_report(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
     report = _report_body(output)
-    passed = bool(report.strip())
+    evidence = _evidence_body(output)
+    passed = bool(report.strip()) and bool(evidence.strip())
     return _agent_result(
-        "valid_report", passed, "" if passed else "report is missing or blank"
+        "valid_report",
+        passed,
+        ""
+        if passed
+        else "reader markdown or evidence markdown is missing or blank",
     )
 
 
@@ -1134,27 +1471,82 @@ def _gate_limitations_represented(
     )
 
 
-def _persistence_truthful_passes(
+_PERSISTENCE_TOOL_NAMES = frozenset({"write_document", "save_to_memory"})
+
+
+def _no_persistence_calls_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    writes = _field(output.dependencies, "document_writes")
-    if isinstance(writes, int) and writes > 0:
+    for field_name in ("document_writes", "memory_writes"):
+        writes = _field(output.dependencies, field_name)
+        if writes is None:
+            continue
+        if (
+            not isinstance(writes, int)
+            or isinstance(writes, bool)
+            or writes != 0
+        ):
+            return False
+    summaries = _field(output.dependencies, "tool_calls")
+    if not isinstance(summaries, (list, tuple)):
         return True
-    report = _report_body(output).casefold()
-    forbidden = _forbidden_persistence_claims(case.expectations.reference)
-    if any(phrase.casefold() in report for phrase in forbidden):
+    for summary in summaries:
+        if _field(summary, "tool_name") not in _PERSISTENCE_TOOL_NAMES:
+            continue
+        calls = _field(summary, "calls")
+        if (
+            not isinstance(calls, int)
+            or isinstance(calls, bool)
+            or calls != 0
+        ):
+            return False
+    return True
+
+
+def _no_false_publication_claim_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    bodies = (_report_body(output), _evidence_body(output))
+    forbidden = _forbidden_publication_claims(case.expectations.reference)
+    if any(
+        phrase.casefold() in body.casefold()
+        for body in bodies
+        for phrase in forbidden
+    ):
         return False
-    return "output_path" not in _state_update(output)
+    result = output.result if isinstance(output.result, Mapping) else {}
+    state_update = _state_update(output)
+    # ``path`` is the current SynthesizedReport publication field.  Task 6
+    # leaves it null; ``evidence_path`` is only a composed future filename and
+    # is intentionally allowed.
+    if result.get("path") is not None or state_update.get("path") is not None:
+        return False
+    if "output_path" in result or "output_path" in state_update:
+        return False
+    return True
 
 
-def _gate_persistence_truthful(
+def _gate_no_persistence_calls(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
-    passed = _persistence_truthful_passes(output, case)
+    passed = _no_persistence_calls_passes(output, case)
     return _agent_result(
-        "persistence_truthful",
+        "no_persistence_calls",
         passed,
-        "" if passed else "a persistence claim has no matching write_document call",
+        ""
+        if passed
+        else "Task 6 synthesis must not call document or memory persistence tools",
+    )
+
+
+def _gate_no_false_publication_claim(
+    output: TargetOutput, case: EvaluationCase
+) -> GateResult:
+    passed = _no_false_publication_claim_passes(output, case)
+    return _agent_result(
+        "no_false_publication_claim",
+        passed,
+        "" if passed else "the composition claims an artifact was published",
     )
 
 
@@ -1214,6 +1606,10 @@ def _gate_critique_actionable(
 
 def _route_consistent_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     critique = _artifact(output, "critique")
+    if _has_typed_provider_fallback(
+        output, operation="critic_report_review"
+    ):
+        return _field(critique, "should_continue") is False
     score = _field(critique, "score")
     if not isinstance(score, int) or isinstance(score, bool):
         return False
@@ -1252,6 +1648,39 @@ def _gate_route_consistent(
     )
 
 
+def _review_produced_passes(output: TargetOutput) -> bool:
+    """A report review that fell back to the provider-unavailable path is not
+    a review.
+
+    When the structured review call fails, ``fallback_critique`` returns a
+    placeholder score of ``1`` with empty gap, unsupported-claim, and
+    recommended-query lists. Those empty lists then satisfy every other gate:
+    ``critique_actionable`` returns ``True`` whenever ``should_continue`` is not
+    ``True``, ``bounded_component_scores`` accepts the placeholder ``1``, and
+    ``route_consistent`` matches the fallback's own stop. A live repetition was
+    observed passing the aggregate quality threshold with no critique at all.
+
+    The fallback remains correct agent behaviour — an outage says nothing about
+    the report and must not buy another research cycle — and the judge remains
+    free to score the fallback's honesty. What this gate forbids is a *quality
+    gate* certifying a run in which the agent produced no review.
+    """
+    return not _has_typed_provider_fallback(
+        output, operation="critic_report_review"
+    )
+
+
+def _gate_review_produced(
+    output: TargetOutput, case: EvaluationCase
+) -> GateResult:
+    passed = _review_produced_passes(output)
+    return _agent_result(
+        "review_produced",
+        passed,
+        "" if passed else "the report review fell back; no critique was produced",
+    )
+
+
 _AGENT_GATE_FUNCTIONS: dict[
     AgentName, dict[str, Callable[[TargetOutput, EvaluationCase], GateResult]]
 ] = {
@@ -1282,12 +1711,14 @@ _AGENT_GATE_FUNCTIONS: dict[
         "valid_report": _gate_valid_report,
         "citations_known_only": _gate_citations_known_only,
         "limitations_represented": _gate_limitations_represented,
-        "persistence_truthful": _gate_persistence_truthful,
+        "no_persistence_calls": _gate_no_persistence_calls,
+        "no_false_publication_claim": _gate_no_false_publication_claim,
     },
     "critic": {
         "bounded_component_scores": _gate_bounded_component_scores,
         "critique_actionable": _gate_critique_actionable,
         "route_consistent": _gate_route_consistent,
+        "review_produced": _gate_review_produced,
     },
 }
 
@@ -1538,12 +1969,15 @@ def _sources_are_real_urls_passes(
             normalize_source_url(url)
             for url in _url_like_strings(_field(step, "observation_summary"))
         )
+    fingerprints = _researcher_live_url_fingerprints(output, case)
     findings = _artifact(output, "findings")
     if not isinstance(findings, list):
         return False
     for finding in findings:
         url = _field(finding, "source_url")
-        if not isinstance(url, str) or normalize_source_url(url) not in trajectory_urls:
+        if not isinstance(url, str) or not _url_is_known(
+            url, trajectory_urls, fingerprints
+        ):
             return False
     return True
 
@@ -1563,6 +1997,9 @@ def _score_ordering_passes(output: TargetOutput, case: EvaluationCase) -> bool:
         return False
     scores: dict[str, float] = {}
     for entry in evaluated:
+        status = _field(entry, "evaluation_status") or "scored"
+        if status != "scored":
+            continue
         url = _field(entry, "url")
         overall = _field(entry, "overall_score")
         if (
@@ -1591,12 +2028,14 @@ def _balanced_scoring_passes(output: TargetOutput, case: EvaluationCase) -> bool
         "authority_score",
         "recency_score",
         "relevance_score",
-        "corroboration_score",
     )
     evaluated = _artifact(output, "evaluated_sources")
     if not isinstance(evaluated, list):
         return False
     for entry in evaluated:
+        status = _field(entry, "evaluation_status") or "scored"
+        if status != "scored":
+            return False
         overall = _field(entry, "overall_score")
         if not isinstance(overall, (int, float)) or isinstance(overall, bool):
             return False
@@ -1614,6 +2053,9 @@ def _rationale_signals_passes(output: TargetOutput, case: EvaluationCase) -> boo
     if not isinstance(evaluated, list):
         return False
     for entry in evaluated:
+        status = _field(entry, "evaluation_status") or "scored"
+        if status != "scored":
+            continue
         rationale = _field(entry, "rationale")
         if not isinstance(rationale, str):
             continue
@@ -1639,6 +2081,18 @@ def _fallback_scores_bounded_passes(
     for entry in evaluated:
         url = _field(entry, "url")
         if not isinstance(url, str) or source_domain(url).casefold() not in failing:
+            continue
+        status = _field(entry, "evaluation_status") or "scored"
+        if status not in {
+            "scored",
+            "unscored_cap",
+            "unscored_provider",
+            "unscored_missing",
+        }:
+            return False
+        if status != "scored":
+            if any(_field(entry, name) is not None for name in _SCORE_FIELDS):
+                return False
             continue
         for name in _SCORE_FIELDS:
             value = _field(entry, name)
@@ -1779,10 +2233,90 @@ def _report_present_in_state_passes(
     return isinstance(report, str) and bool(report.strip())
 
 
+def _reader_markdown_present_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Task 6's reader artifact is the result's ``markdown`` field."""
+    return bool(_report_body(output).strip())
+
+
+def _evidence_markdown_present_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Task 6's evidence artifact is the result's ``evidence_markdown``."""
+    return bool(_evidence_body(output).strip())
+
+
 def _coverage_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    report = _report_body(output).casefold()
+    findings = _findings_section(_report_body(output))
+    if findings is None or not findings.strip():
+        return False
+
+    sub_topics = _field(case.state, "sub_topics")
+    if not isinstance(sub_topics, list):
+        return False
+    normalized_findings = _normalized_text(findings)
+    uncovered_topics: list[str] = []
+    for topic in sub_topics:
+        title = _normalized_text(_field(topic, "title"))
+        if not title:
+            return False
+        if title not in normalized_findings:
+            uncovered_topics.append(title)
+    if not uncovered_topics:
+        return True
+
+    raw_findings = _field(case.state, "raw_findings")
+    if not isinstance(raw_findings, list) or not raw_findings:
+        return False
+    evaluated_sources = _field(case.state, "evaluated_sources")
+    verified_claims = _field(case.state, "verified_claims")
+    try:
+        citation_index = build_citation_index(
+            evaluated_sources or (), verified_claims or ()
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not citation_index:
+        return False
+    declared_urls = {
+        _normalized(citation.url)
+        for citation in citation_index
+        if isinstance(citation.url, str) and _normalized(citation.url)
+    }
+
+    # The reader report's own reference list is the authority for its
+    # markers; the case's declared evidence is the whitelist those
+    # references must resolve inside. Both directions fail closed.
+    citation_urls = _reader_reference_urls(_report_body(output))
+    citation_numbers = {
+        int(number) for number in _CITATION_MARKER_PATTERN.findall(findings)
+    }
+    if not citation_numbers or not citation_numbers <= citation_urls.keys():
+        return False
+    cited_urls = {citation_urls[number] for number in citation_numbers}
+    if not cited_urls <= declared_urls:
+        return False
+
+    source_topics: dict[str, set[str]] = {}
+    for finding in raw_findings:
+        source_url = _field(finding, "source_url")
+        related_sub_topic = _normalized_text(
+            _field(finding, "related_sub_topic")
+        )
+        if not isinstance(source_url, str) or not related_sub_topic:
+            return False
+        normalized_url = _normalized(source_url)
+        if not normalized_url:
+            return False
+        source_topics.setdefault(normalized_url, set()).add(related_sub_topic)
+
     return all(
-        _normalized_text(topic.title) in report for topic in case.state.sub_topics
+        any(
+            source_topics.get(url) == {topic_title}
+            for url in cited_urls
+        )
+        for topic_title in uncovered_topics
     )
 
 
@@ -1825,16 +2359,6 @@ def _no_overstatement_passes(
     return pattern.search(_report_body(output)) is None
 
 
-def _no_false_persistence_claim_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    report = _report_body(output).casefold()
-    forbidden = _forbidden_persistence_claims(case.expectations.reference)
-    if any(phrase.casefold() in report for phrase in forbidden):
-        return False
-    return "output_path" not in _state_update(output)
-
-
 def _rationale_present_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     critique = _artifact(output, "critique")
     rationale = _field(critique, "rationale")
@@ -1867,12 +2391,57 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
     ]
     if not themes:
         return True
-    theme_words = {
-        word.casefold()
-        for theme in themes
-        for word in theme.split()
-        if len(word) >= 5
+    stop_words = {
+        "a",
+        "an",
+        "and",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "with",
     }
+
+    def meaningful_tokens(value: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", value.casefold())) - stop_words
+
+    theme_tokens = [
+        meaningful_tokens(theme)
+        for theme in themes
+    ]
+    report = " ".join((case.state.report or "").split()).casefold()
+    report_sentences = re.split(r"(?<=[.!?])\s+", report)
+    report_clauses = [
+        clause
+        for sentence in report_sentences
+        for clause in re.split(r"[,;:]", sentence)
+    ]
+    unresolved_markers = (
+        "absence of",
+        "do not yet exist",
+        "insufficient",
+        "main uncertainty",
+        "not yet",
+        "outstanding question",
+        "still accumulating",
+        "uncertain",
+        "uncertainty",
+        "unresolved",
+    )
+
+    def report_acknowledges_unresolved(tokens: set[str]) -> bool:
+        return any(
+            tokens <= meaningful_tokens(clause)
+            and any(marker in clause for marker in unresolved_markers)
+            for clause in report_clauses
+        )
+
     critique = _artifact(output, "critique")
     gaps = _field(critique, "gaps")
     if not isinstance(gaps, list):
@@ -1880,10 +2449,13 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
     for gap in gaps:
         if not isinstance(gap, str):
             continue
-        folded = " ".join(gap.split()).casefold()
-        if any(theme.casefold() in folded for theme in themes):
-            return False
-        if theme_words & set(folded.split()):
+        gap_tokens = meaningful_tokens(gap)
+        if any(
+            tokens
+            and tokens <= gap_tokens
+            and not report_acknowledges_unresolved(tokens)
+            for tokens in theme_tokens
+        ):
             return False
     return True
 
@@ -1987,15 +2559,19 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "conservative_on_failure": _conservative_on_failure_passes,
     "partial_verification_present": _partial_verification_present_passes,
     # synthesizer
+    "reader_markdown_present": _reader_markdown_present_passes,
+    "evidence_markdown_present": _evidence_markdown_present_passes,
+    "no_persistence_calls": _no_persistence_calls_passes,
+    "no_false_publication_claim": _no_false_publication_claim_passes,
+    # Legacy aliases remain readable for pre-Task-6 artifacts; active Task 6
+    # cases use the explicit composition names above.
     "report_present": _report_present_in_state_passes,
     "citations_known": _citations_known_only_passes,
     "coverage": _coverage_passes,
     "limitations_present": _limitations_passes,
-    "persistence_truthful": _persistence_truthful_passes,
     "conflict_represented": _conflict_represented_passes,
     "no_overstatement": _no_overstatement_passes,
     "report_present_in_state": _report_present_in_state_passes,
-    "no_false_persistence_claim": _no_false_persistence_claim_passes,
     # critic
     "score_bounded": _bounded_score_passes,
     "route_consistent": _route_consistent_passes,
@@ -2020,6 +2596,29 @@ if not _CASE_METRIC_IDS.issubset(METRIC_FUNCTIONS):
 
 
 # --- The LangSmith code-evaluator adapter -----------------------------------
+
+
+def format_code_evaluator_feedback(
+    report: GateReport, quality: float
+) -> dict[str, list[dict[str, object]]]:
+    """Format an already-computed gate report and quality score."""
+    results: list[dict[str, object]] = [
+        {
+            "key": f"gate:{result.gate_id}",
+            "score": 1 if result.passed else 0,
+            "comment": result.detail,
+        }
+        for result in report.results
+    ]
+    results.append(
+        {
+            "key": "hard_gates_passed",
+            "score": 1 if report.passed else 0,
+            "comment": "",
+        }
+    )
+    results.append({"key": "deterministic_quality", "score": quality, "comment": ""})
+    return {"results": results}
 
 
 def code_evaluator(
@@ -2053,24 +2652,6 @@ def code_evaluator(
                 ]
             }
         report, quality = evaluate_target(output, case, secrets=secrets)
-        results = [
-            {
-                "key": f"gate:{result.gate_id}",
-                "score": 1 if result.passed else 0,
-                "comment": result.detail,
-            }
-            for result in report.results
-        ]
-        results.append(
-            {
-                "key": "hard_gates_passed",
-                "score": 1 if report.passed else 0,
-                "comment": "",
-            }
-        )
-        results.append(
-            {"key": "deterministic_quality", "score": quality, "comment": ""}
-        )
-        return {"results": results}
+        return format_code_evaluator_feedback(report, quality)
 
     return evaluate

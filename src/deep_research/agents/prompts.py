@@ -12,9 +12,9 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
-from deep_research.agents.sources import SourceGroup
+from deep_research.agents.identity import merge_source_snapshot
+from deep_research.agents.sources import SourceGroup, normalize_source_url
 from deep_research.agents.steps import summarize_text
-from deep_research.agents.toolset import ToolDescriptor
 from deep_research.memory.entries import ScratchpadEntry
 from deep_research.providers import ChatMessage
 from deep_research.utils.types import (
@@ -25,17 +25,61 @@ from deep_research.utils.types import (
     ScoredSource,
 )
 
-REACT_RESPONSE_CONTRACT = (
-    "Respond with one decision.\n"
-    'Set action to "use_tool" to call exactly one listed tool: put its name in '
-    "tool_name and its arguments in tool_input_json as a JSON object string "
-    '(for example {"value": "hello"}). Use "{}" when the tool takes no '
-    "arguments, and leave final_answer empty.\n"
-    'Set action to "finish" when you can answer without another tool call: put '
-    "the answer in final_answer and leave tool_name empty. Use \"{}\" for "
-    "tool_input_json when finishing.\n"
-    "Always explain the choice in thought."
+# The request itself carries the tools as provider-native function
+# definitions, so this text must never advertise a catalogue or ask for an
+# action envelope. Asking for one in text is what produced DeepSeek's DSML
+# markup on 16 of 30 measured first attempts. Neither may it cap the model at
+# one call per turn: every function call in one response is executed, so "at
+# most one" only discards independent lookups the tools were given.
+NATIVE_REACT_RESPONSE_CONTRACT = (
+    "Call one or more tools supplied with this request when independent "
+    "lookups or actions are needed. Use provider-native tool calling; never "
+    "write or imitate a tool call in text, JSON, XML, DSML, or a Markdown "
+    "fence. When no tool is needed, return the final answer directly."
 )
+
+# The one output-shape sentence every tool-free structured request carries, plus
+# the notice that keeps a synthetic example subordinate to the real request.
+STRUCTURED_REPLY_FORMAT = (
+    "Return exactly one JSON object matching the supplied response schema, "
+    "with no Markdown fence and no text before or after it."
+)
+
+STRUCTURED_EXAMPLE_NOTICE = (
+    "The compact examples below show format and field relationships only. "
+    "Each example input is separate from the real request. Do not copy its "
+    "facts, URLs, or wording into the real answer."
+)
+
+
+def render_structured_reply_format(
+    examples: Sequence[tuple[str, str]],
+) -> str:
+    """Render one or two compact, complete JSON-object examples.
+
+    Raises before any request is built, so a malformed or over-long example
+    table fails where it is defined rather than reaching a paid call.
+    """
+    if not 1 <= len(examples) <= 2:
+        raise ValueError("structured prompts require one or two examples")
+    rendered: list[str] = []
+    for label, payload in examples:
+        if not label.strip() or "\n" in label:
+            raise ValueError("example labels must be non-blank single lines")
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise ValueError("structured examples must be valid JSON") from error
+        if not isinstance(decoded, dict):
+            raise ValueError("structured examples must be JSON objects")
+        compact = json.dumps(
+            decoded, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        rendered.append(f"{label.strip()}\nExample JSON output:\n{compact}")
+    return (
+        f"{STRUCTURED_REPLY_FORMAT}\n{STRUCTURED_EXAMPLE_NOTICE}\n"
+        + "\n".join(rendered)
+    )
 
 SOURCE_EVALUATOR_SYSTEM_PROMPT = (
     "You are the source evaluator of a multi-agent research system. You "
@@ -43,8 +87,7 @@ SOURCE_EVALUATOR_SYSTEM_PROMPT = (
     "trusted.\n"
     "You are shown one dossier per source: its URL, its title, the "
     "sub-topics it was cited for, an excerpt of every finding drawn from "
-    "it, a corroboration score this system already computed, and any "
-    "reputation previous sessions recorded for it.\n"
+    "it, and any reputation previous sessions recorded for it.\n"
     "Score only what the dossier supports. Do not assume a publisher you "
     "were not told about, and never invent a source that is not listed. "
     "Return one score object per listed source, using the exact url string "
@@ -54,6 +97,8 @@ SOURCE_EVALUATOR_SYSTEM_PROMPT = (
 SOURCE_SCORING_INSTRUCTION = (
     "For each listed source return authority, recency, and relevance as "
     "numbers between 0 and 1, plus a one- or two-sentence rationale.\n"
+    "All three scores use one direction: 0.0 is weakest and 1.0 is strongest. "
+    "Use intermediate values in proportion to the evidence in the dossier.\n"
     "authority: how much the publisher's identity, expertise, and "
     "editorial process justify trust. Peer-reviewed venues, standards "
     "bodies, and primary institutional publications score high; anonymous "
@@ -61,11 +106,11 @@ SOURCE_SCORING_INSTRUCTION = (
     "recency: how current the source's own content is for this question, "
     "judged from the dates, versions, and events its excerpts mention — "
     "not from when this system retrieved it. Use 0.5 when the excerpts "
-    "carry no dating signal at all.\n"
+    "carry no dating signal at all. A clearly current version scores high; "
+    "a demonstrably superseded source on a time-sensitive topic scores low.\n"
     "relevance: how directly the excerpts answer the sub-topics the source "
     "was cited for, rather than merely mentioning them.\n"
-    "Corroboration is computed for you and is not yours to return. Neither "
-    "is the combined score.\n"
+    "The combined score is computed for you and is not yours to return.\n"
     "rationale: name the concrete signals you used. Never restate the "
     "numbers alone."
 )
@@ -77,11 +122,26 @@ FACT_CHECKER_SYSTEM_PROMPT = (
     "Use web_search to find sources that could confirm or refute the "
     "claim, web_scraper to read a promising page, document_reader for PDFs "
     "and data files, and query_memory to recall what previous sessions "
-    "established.\n"
+    "established. Search results are discovery leads, never evidence: read "
+    "the page or document before asking for a verdict.\n"
     "A page from the claim's own publisher is not independent "
     "corroboration; look for a different organisation. Actively look for "
     "evidence that the claim is wrong, not only evidence that it is "
     "right.\n"
+    # Measured: the verification loops made 146 web_search calls against about
+    # 31 reads, and a claim whose loop read nothing independent is recorded
+    # ``insufficient_evidence`` with no verdict call at all — so searches spent
+    # without reading cost the claim its verdict. Same pathology the researcher
+    # had, and the same instruction fixes it.
+    "Spend your calls on reading, not on repeating searches. After a search, "
+    "read the most promising result before searching again, and keep "
+    "alternating: only a page or document you have actually read can settle "
+    "the claim, so a verdict is impossible without one. Prefer primary "
+    "documents — PDFs, filings, datasets and government or laboratory reports "
+    "— which are published to be read and are far likelier to load than a "
+    "publisher's article page. If a publisher refuses automated access to a "
+    "page, do not try that page or that host again; find the same material as "
+    "a document or from a different organisation.\n"
     "Finish once you have retrieved enough independent material to judge "
     "the claim, or once no further source is worth retrieving."
 )
@@ -115,7 +175,9 @@ CLAIM_VERIFICATION_SYSTEM_PROMPT = (
     "retrieved. Report only what that evidence states.\n"
     "If the evidence does not settle the claim, say so. Never invent "
     "confidence, and never treat the claim's own sources as confirmation "
-    "of themselves."
+    "of themselves. Every passage must identify the read URL, source title, "
+    "locator, bounded excerpt, and whether it supports or contradicts the "
+    "claim. Search-result URLs alone are not passages."
 )
 
 CLAIM_VERIFICATION_INSTRUCTION = (
@@ -128,10 +190,10 @@ CLAIM_VERIFICATION_INSTRUCTION = (
     "incompatible with the claim.\n"
     "insufficient_evidence: nothing independent was retrieved, or what was "
     "retrieved is too thin to judge.\n"
-    "Also return confidence as a number between 0 and 1, an evidence list "
-    "quoting or closely paraphrasing the independent passages supporting "
-    "your verdict, and a contradictions list holding every independent "
-    "passage that conflicts with the claim. Leave a list empty rather than "
+    "Also return confidence as a number between 0 and 1 and a passages list. "
+    "Each passage has source_url, source_title, locator, excerpt, and "
+    "stance (supports or contradicts). Quote or closely paraphrase only "
+    "independent read-bearing passages, and leave the list empty rather than "
     "filling it with restatements of the claim."
 )
 
@@ -139,34 +201,54 @@ SYNTHESIZER_SYSTEM_PROMPT = (
     "You are the synthesizer of a multi-agent research system. You write "
     "the prose of the final report from evidence this system already "
     "collected and checked.\n"
-    "You are shown the research question, every claim with its verification "
-    "verdict, the retrieved findings, the quality score of every source, "
-    "and the limitations this pass already knows about.\n"
-    "Report only what that evidence states. Never invent a source, a "
-    "number, or a claim that is not in front of you, and never present a "
+    "You are shown the research question, every checked claim with its "
+    "verdict, the labels that address those claims, the retrieved findings, "
+    "each source's quality score when scored or explicit evaluation status "
+    "otherwise, and the limitations this pass already knows about.\n"
+    "Every statement you return is a point: one short statement carrying the "
+    "labels of the checked claims it rests on and the source urls those "
+    "claims carry. A point with no checked claim, or one citing a url those "
+    "claims do not carry, is refused and never reaches the report.\n"
+    "Report only what that evidence states. Never invent a source, a number, "
+    "a claim, or a label that is not in front of you, and never present a "
     "claim that was not verified as though it were settled.\n"
-    "The report's headings, citation numbering, claim lists, limitations, "
-    "and source appendix are assembled by this system. Write the prose; do "
-    "not write the skeleton."
+    "The report's headings, citation numbering, reference list, uncertainty "
+    "grouping, limitations, and evidence ledger are assembled by this "
+    "system. Write the prose; do not write the skeleton."
 )
 
 REPORT_INSTRUCTION = (
-    "Return an executive summary, a list of narrative sections, and "
-    "uncertainty notes.\n"
-    "executive_summary: three to six sentences answering the research "
-    "question directly, naming what is settled and what is not. Do not open "
-    "with a heading.\n"
-    "sections: one per theme worth its own heading, ordered as a reader "
-    "should meet them. Each carries a short title, a body of plain "
-    "paragraphs, and the source urls that body rests on, copied exactly "
-    "from the evidence above. Do not write Markdown headings, citation "
-    "markers, or a source list inside a body — the citation line is added "
-    "for you from the urls you attach.\n"
+    "Return an executive summary, a ranked constraint list, findings "
+    "sections, and uncertainty notes. Every statement you return is a point "
+    "with exactly three fields: text, claim_ids, and source_urls.\n"
+    "executive_summary: three to six points answering the research question "
+    "directly, naming what is settled and what is not. Do not open with a "
+    "heading.\n"
+    "ranked_constraints: the constraints a decision-maker must respect, most "
+    "consequential first, as objects with constraint, "
+    "deployment_mechanism, geography, claim_ids, and source_urls. State a "
+    "mechanism or a geography only when the checked claims state it; write "
+    "'not stated' otherwise. Never guess a jurisdiction.\n"
+    "The mechanism and geography cells have no structured provenance field in "
+    "this Task 6 contract: their semantic grounding is provider-only and not "
+    "structurally validated locally. Treat them as provider-attested prose, "
+    "and use 'not stated' whenever the supplied evidence does not say.\n"
+    "sections: one object per theme worth its own heading, ordered as a "
+    "reader should meet them, each with a short title and a points list.\n"
     "uncertainty_notes: what a reader should distrust and why — thin "
     "sourcing, conflicting evidence, questions the research did not reach. "
-    "Return an empty string when there is nothing to add.\n"
-    "A url you attach that is not in the evidence above is dropped, and the "
-    "section loses that citation. Copy urls exactly."
+    "This is the one place source-free text belongs. Return an empty list "
+    "when there is nothing to add.\n"
+    "claim_ids: copy the labels exactly as printed in the checked-claims "
+    "packet (such as C001). A label that is not in that packet is refused.\n"
+    "source_urls: copy urls exactly from the claims you cite. A url that is "
+    "not on one of those claims is refused, and the point is lost.\n"
+    "One point carries one statement. If a sentence makes three separate "
+    "factual assertions, return three points — or one point only if all "
+    "three share exactly the same claims and sources.\n"
+    "Do not write Markdown headings, citation markers, or a source list "
+    "inside any text field: the markers and the reference list are added for "
+    "you from the urls you attach."
 )
 
 CRITIC_SYSTEM_PROMPT = (
@@ -177,22 +259,55 @@ CRITIC_SYSTEM_PROMPT = (
     "sessions established. Finish without calling a tool when the report "
     "and the evidence summary are enough to judge.\n"
     "Judge completeness against the research question, accuracy against the "
-    "claim verdicts, source diversity and strength against the source "
-    "scores, and whether uncertainty is disclosed rather than hidden.\n"
+    "claim verdicts, source diversity and strength against each source's "
+    "quality score when scored or explicit evaluation status otherwise, and "
+    "whether uncertainty is disclosed rather than hidden.\n"
+    "Report what the evidence in front of you supports. Do not invent a gap "
+    "to look thorough, and do not excuse a thin report to look agreeable."
+)
+
+# The review request offers NO tools, so its prompt must not mention any.
+# Announcing tools the request cannot accept made the model emit DeepSeek
+# tool-invocation markup into the message text, where local JSON validation
+# rejected it: 16 of 30 first attempts in a measured shape probe. This prompt
+# is for the single structured judgement only; the tool-aware prompt above
+# belongs to the ReAct spot-check loop, which does offer the tools.
+CRITIC_REVIEW_SYSTEM_PROMPT = (
+    "You are the critic of a multi-agent research system. You judge one "
+    "finished report and say what another research pass would have to fix.\n"
+    "Everything needed is printed below: the research question, every reader "
+    "report section in its own fenced block, the deterministic quality "
+    "snapshot, the sub-topics that were planned, canonical checked claims, "
+    "each cited source's quality score when scored or its explicit "
+    "evaluation status otherwise, and typed errors grouped by "
+    "agent and stage. Judge "
+    "that material alone.\n"
+    "Judge completeness against the research question, accuracy against the "
+    "claim verdicts, source diversity and strength against the source quality "
+    "signals, and whether uncertainty is disclosed rather than hidden.\n"
     "Report what the evidence in front of you supports. Do not invent a gap "
     "to look thorough, and do not excuse a thin report to look agreeable."
 )
 
 CRITIQUE_INSTRUCTION = (
-    "Return a score, the gaps, the unsupported claims, the queries a "
-    "further pass should run, and a rationale.\n"
+    "Return a score, targetable gap objects, the unsupported claims, the "
+    "queries a further pass should run, and a rationale.\n"
     "score: an integer from 1 to 10. 1 is unusable; 10 answers the question "
     "completely from strong, diverse, well-cited sources.\n"
     "gaps: list a gap only when closing it would materially change the "
-    "answer to the research question. A missing nicety is not a gap. Return "
-    "an empty list when the report is materially complete.\n"
-    "unsupported_claims: statements the report makes that no cited source "
-    "or verified claim backs. Quote or closely paraphrase each one.\n"
+    "answer to the research question. Each gap is an object with "
+    "coverage_id, problem, and recommended_queries. Copy coverage_id "
+    "exactly from a planned sub-topic; use null when the gap is global or "
+    "you cannot identify one from the plan. Never infer a coverage_id from a "
+    "sub-topic title or from the problem text. A missing nicety is not a gap. "
+    "Return an empty list when the report is materially complete.\n"
+    "unsupported_claims: statements presented as fact that are neither "
+    "clearly attributed to one of the report's cited sources nor backed by a "
+    "verified claim. Do not mark a cited statement unsupported solely because "
+    "it lacks a separate verified-claim entry: the claim digest is deliberately "
+    "partial, so absence from it is not evidence of unsupportedness. A contrary "
+    "claim verdict or spot-check evidence still makes a statement unsupported, "
+    "however it is cited. Quote or closely paraphrase each one.\n"
     "recommended_queries: concrete search queries that would close the gaps "
     "you listed, in the order they should be run.\n"
     "rationale: two to four sentences naming the concrete signals behind "
@@ -207,17 +322,6 @@ class AgentTask(ContractModel):
 
     instruction: str = Field(min_length=1)
     guidance: str = ""
-
-
-def render_tool_catalog(descriptors: Sequence[ToolDescriptor]) -> str:
-    """Render the allowed tools as one line each, in declaration order."""
-    if not descriptors:
-        return "(no tools available)"
-    return "\n".join(
-        f"- {descriptor.name}: {descriptor.description} "
-        f"Arguments: {json.dumps(descriptor.input_schema, sort_keys=True)}"
-        for descriptor in descriptors
-    )
 
 
 def render_scratchpad(entries: Sequence[ScratchpadEntry]) -> str:
@@ -238,12 +342,15 @@ def render_react_messages(
     *,
     system_prompt: str,
     task: AgentTask,
-    descriptors: Sequence[ToolDescriptor],
     scratchpad: Sequence[ScratchpadEntry],
     iteration: int,
     max_iterations: int,
 ) -> list[ChatMessage]:
-    """Build the two messages one ReAct turn sends to the provider."""
+    """Build the two messages one ReAct turn sends to the provider.
+
+    The tools travel as provider-native function definitions on the request
+    itself, so this text carries no catalogue and no action envelope.
+    """
     if not system_prompt.strip():
         raise ValueError("system_prompt must not be blank")
     if max_iterations < 1:
@@ -256,10 +363,9 @@ def render_react_messages(
     sections = [f"## Task\n{task.instruction}"]
     if task.guidance.strip():
         sections.append(f"## Guidance\n{task.guidance}")
-    sections.append(f"## Tools\n{render_tool_catalog(descriptors)}")
     sections.append(f"## Notes so far\n{render_scratchpad(scratchpad)}")
     sections.append(f"## Budget\nIteration {iteration} of {max_iterations}.")
-    sections.append(f"## Response contract\n{REACT_RESPONSE_CONTRACT}")
+    sections.append(f"## How to respond\n{NATIVE_REACT_RESPONSE_CONTRACT}")
 
     return [
         ChatMessage(role="developer", content=system_prompt),
@@ -297,7 +403,6 @@ def render_source_dossier(
     group: SourceGroup,
     *,
     index: int,
-    corroboration: float,
     reputation: float | None,
     excerpt_chars: int = 400,
 ) -> str:
@@ -312,7 +417,6 @@ def render_source_dossier(
         f"Title: {group.title}",
         f"Cited for: {', '.join(group.sub_topics) or 'no sub-topic'}",
         f"Findings drawn from it: {len(group.findings)}",
-        f"Corroboration (computed): {corroboration:.2f}",
     ]
     if reputation is None:
         lines.append("Known reputation: none on record")
@@ -342,12 +446,52 @@ def render_finding_digest(
     return "\n".join(lines) or "(no findings)"
 
 
-def render_source_quality(sources: Sequence[ScoredSource]) -> str:
-    """Render scored sources so weak ones are visible in a prompt."""
+def render_source_quality(
+    sources: Sequence[ScoredSource],
+    *,
+    max_sources: int = 36,
+) -> str:
+    """Render a bounded, canonical source-quality summary for prompts.
+
+    Historical snapshots may still be handed to a renderer by callers that
+    have not merged state yet. Canonicalize them here and retain the most
+    relevant scored rows first, so prompt size is controlled without printing
+    duplicate URLs or pretending an unscored source has a numeric quality.
+    """
+    if max_sources < 1:
+        raise ValueError("max_sources must be at least 1")
+    canonical = merge_source_snapshot([], sources)
+    ranked = sorted(
+        enumerate(canonical),
+        key=lambda item: (
+            item[1].evaluation_status != "scored",
+            -(
+                item[1].relevance_score
+                if item[1].relevance_score is not None
+                else -1.0
+            ),
+            -(
+                item[1].overall_score
+                if item[1].overall_score is not None
+                else -1.0
+            ),
+            item[0],
+        ),
+    )[:max_sources]
     lines: list[str] = []
-    for source in sources:
-        flag = " (LOW CONFIDENCE)" if source.low_confidence else ""
-        lines.append(f"- {source.url}: {source.overall_score:.2f}{flag}")
+    for _, source in ranked:
+        if source.overall_score is None:
+            lines.append(
+                f"- {normalize_source_url(source.url)}: "
+                f"status={source.evaluation_status}"
+            )
+            continue
+        flag = " low_confidence=true" if source.low_confidence else ""
+        lines.append(
+            f"- {normalize_source_url(source.url)}: "
+            f"score={source.overall_score:.2f} "
+            f"status={source.evaluation_status}{flag}"
+        )
     return "\n".join(lines) or "(no sources scored)"
 
 
@@ -364,5 +508,39 @@ def render_claim_digest(
         lines.append(
             f"{position}. [{claim.verdict} {claim.confidence:.2f}] {text} "
             f"({urls})"
+        )
+    return "\n".join(lines) or "(no claims were checked)"
+
+
+def render_report_claim_packet(
+    packet: Sequence[tuple[str, Claim]],
+    *,
+    omitted: int = 0,
+    limit: int = 240,
+) -> str:
+    """Render the labelled checked-claim packet a report draft cites.
+
+    Each line is addressable: the model returns the label, and the validator
+    resolves it against the same registry, so a claim can never be cited by a
+    string that does not name a checked claim. Claims the packet's budget left
+    out are counted here rather than silently missing, so the model knows the
+    packet is partial.
+    """
+    if omitted < 0:
+        raise ValueError("omitted must not be negative")
+    lines: list[str] = []
+    for label, claim in packet:
+        text = summarize_text(claim.text, limit=limit)
+        urls = ", ".join(claim.source_urls)
+        coverage = ", ".join(claim.consumed_coverage_ids)
+        suffix = f" coverage={coverage}" if coverage else ""
+        lines.append(
+            f"{label} [{claim.verdict} {claim.confidence:.2f}] {text} "
+            f"({urls}){suffix}"
+        )
+    if omitted:
+        lines.append(
+            f"({omitted} further checked claim(s) were omitted for length; "
+            "they cannot be cited by this draft.)"
         )
     return "\n".join(lines) or "(no claims were checked)"

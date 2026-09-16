@@ -11,17 +11,24 @@ domain rules locally where their failures can be turned into a repair prompt.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 
-from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
+from deep_research.agents.base import AgentRun, BaseAgent
 from deep_research.agents.errors import PlanningError, planning_provider_error
 from deep_research.agents.events import agent_event
-from deep_research.agents.prompts import AgentTask, render_memory_guidance
-from deep_research.agents.steps import ReActDecision, ReActRun, summarize_text
+from deep_research.agents.prompts import (
+    AgentTask,
+    render_memory_guidance,
+    render_structured_reply_format,
+)
+from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.validation import _invalid_fields
-from deep_research.providers import ChatMessage, ProviderError
+from deep_research.providers import (
+    ChatMessage,
+    ProviderError,
+    StructuredOutputError,
+)
 from deep_research.utils.types import (
     ContractModel,
     MemorySnapshot,
@@ -34,6 +41,7 @@ from deep_research.utils.types import (
 PLANNER_NAME = "planner"
 MIN_SUB_TOPICS = 3
 MAX_SUB_TOPICS = 7
+_COVERAGE_ID_WIDTH = 2
 
 PLANNER_SYSTEM_PROMPT = (
     "You are the planner of a multi-agent research system. Your job is to "
@@ -45,6 +53,16 @@ PLANNER_SYSTEM_PROMPT = (
     "If every term in the research question is familiar to you, finish "
     "without searching.\n"
     "Finish as soon as you understand the shape of the question."
+)
+
+# The plan request offers NO tools, so its prompt must not name any. It is a
+# separate call from the ReAct scoping loop above: that loop really does carry
+# the tools, and this one really does not.
+PLANNER_PLAN_SYSTEM_PROMPT = (
+    "You are the planner of a multi-agent research system. Turn the research "
+    "question, context, and completed scoping notes printed below into a final "
+    "research plan. Everything needed for this structured plan is already in "
+    "the request. Do not propose or describe another lookup."
 )
 
 PLAN_INSTRUCTION = (
@@ -59,10 +77,77 @@ PLAN_INSTRUCTION = (
     "When the question concerns a technology or intervention, ensure the "
     "plan explicitly covers both benefits and risks (or harms) in the "
     "subtopic titles or search queries.\n"
-    "Do not introduce any capitalized word or four-digit year in titles or "
-    "queries that the research question does not itself contain; write "
-    "queries in lowercase except for words already in the question.\n"
+    # A lexical ban used to forbid any capitalized word or four-digit year
+    # the question did not contain. Search cannot reach a named regulation,
+    # standard, jurisdiction, agency, or current-year primary source without
+    # those tokens, so the ban made a whole class of evidence unfindable.
+    # Its replacement permits the tokens and forbids asserting them.
+    "Search queries may introduce organizations, standards, laws, acronyms, "
+    "jurisdictions, and years needed to find authoritative current "
+    "evidence.\n"
+    "Do not assert those terms as facts in the plan; use them only as "
+    "search targets.\n"
+    "For an unqualified broad question, state the assumed scope and create "
+    "distinct sub-topics for materially different mechanisms rather than "
+    "bundling them.\n"
+    "Each success criterion must name the evidence type, geography, and "
+    "measurement or decision needed to consider the sub-topic answered.\n"
+    # Verification needs a source independent of the one that produced a claim:
+    # ``fact_checker.independent_domains`` refuses to corroborate a claim with a
+    # page on the claim's own publisher's domain, and a claim with no independent
+    # source is recorded as ``insufficient_evidence``. Measured twice: the
+    # pipeline now reads plenty — 64 document reads and 11 scored sources in one
+    # run — and still produced ZERO claims with a second independent publisher,
+    # because a sub-topic is finished as soon as a single source answers it. The
+    # earlier wording asked for corroboration *beside* the criteria, which was
+    # advice the Researcher could satisfy and then stop anyway. The demand now
+    # belongs to the criterion it stops on.
+    "Every success criterion must require independent corroboration as part of "
+    "what settles the sub-topic: state that at least two sources from different "
+    "publishers must state each load-bearing number or finding, and say how a "
+    "reader would recognise the second one. A fact only one source states is "
+    "recorded as unverified no matter how authoritative that source is, so a "
+    "sub-topic is not answered while a single publisher states it.\n"
+    "Aim the queries at primary sources — regulations, standards, filings, "
+    "and datasets that state the facts directly — and say which class of "
+    "source each query should reach. Include, for each sub-topic, a query "
+    "aimed at an independent second source for its key facts.\n"
+    "State the as-of date and the geographic scope the plan assumes, and "
+    "write both into the queries or success criteria; the plan has no field "
+    "of its own for either.\n"
+    "Make every success criterion measurable, so a reader can tell from the "
+    "evidence it names whether the sub-topic was answered.\n"
     "Two sub-topics must never share a title."
+)
+
+# One example, because there is no valid "empty plan" case to show: the plan
+# requirements already state the 3-7 sub-topic bound, and an empty list would
+# be a different failure mode rather than the opposite end of a scale.
+_PLAN_REPLY_EXAMPLES = (
+    (
+        "Example input: compare bus and rail options for a city.",
+        '{"sub_topics":['
+        '{"title":"travel demand and coverage",'
+        '"rationale":"Establish which trips each option must serve.",'
+        '"search_queries":["city bus rail travel demand route coverage"],'
+        '"success_criteria":['
+        '"Measured demand and coverage estimates are available for both '
+        'options."],"priority":1},'
+        '{"title":"cost and delivery",'
+        '"rationale":"Compare the resources and time required to deliver each '
+        'option.",'
+        '"search_queries":["city bus rail capital operating cost delivery '
+        'time"],"success_criteria":['
+        '"Comparable cost and delivery estimates are available."],"priority":2},'
+        '{"title":"benefits and risks",'
+        '"rationale":"Identify the main outcomes and failure modes for each '
+        'option.",'
+        '"search_queries":["city bus rail benefits risks evidence"],'
+        '"success_criteria":['
+        '"Measured benefits and documented risks are available for both '
+        'options."],"priority":3}'
+        "]}",
+    ),
 )
 
 
@@ -79,6 +164,31 @@ class SubTopicDraft(ContractModel):
     search_queries: list[str]
     success_criteria: list[str]
     priority: int
+
+    @field_validator("search_queries", "success_criteria", mode="before")
+    @classmethod
+    def _accept_a_lone_string(cls, value: object) -> object:
+        """Read a bare string as a one-element list, and nothing else.
+
+        A plan request sampled 11 times returned ``success_criteria`` with
+        exactly one element every time, and two of the last four live CLI
+        runs died at the planner with ``graph_planning_failed`` after 22,593
+        and 17,433 tokens because both structured attempts reported
+        ``type_mismatch`` on ``sub_topics.success_criteria`` for every
+        sub-topic: the model wrote that one criterion as a bare string where
+        the schema declares ``list[str]``. The value was always otherwise
+        usable, so the whole session was lost to a missing pair of brackets.
+
+        A ``mode="before"`` validator adds no JSON schema keyword — Pydantic
+        renders constraints, not validators — so the schema the provider is
+        handed stays byte-identical and the model is still asked for an
+        array of strings. Only a ``str`` is wrapped; a dict, a number, or a
+        list holding non-strings keeps failing exactly as before, where the
+        repair prompt and ``PlanningError.problems`` can report it.
+        """
+        if isinstance(value, str):
+            return [value]
+        return value
 
 
 class ResearchPlanDraft(ContractModel):
@@ -105,14 +215,44 @@ def _normalized_title(title: str) -> str:
     return " ".join(title.split()).casefold()
 
 
+def coverage_id_for(position: int) -> str:
+    """The id this planner stamps on its ``position``-th (1-based) sub-topic.
+
+    ``position`` counts through the plan in priority order, so ``topic-01``
+    is always the most important planned sub-topic. The id is local and
+    positional: no provider ever proposes one, and the same ordered plan
+    always produces the same ids — including on a plan that is repaired.
+    """
+    return f"topic-{position:0{_COVERAGE_ID_WIDTH}d}"
+
+
+def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
+    """Order ``sub_topics`` by priority and stamp ``topic-01``, ``topic-02``…
+
+    The plan instruction asks the model to list sub-topics in priority order
+    and the model does not always obey, so the ordering is established here
+    rather than trusted. ``sorted`` is stable, so sub-topics that share a
+    priority keep the order the model produced — the same tie-break
+    ``researcher._ordered_sub_topics`` applies downstream. Ids are stamped
+    after that ordering, never before it, so an id always names a plan
+    position rather than a draft position.
+    """
+    ordered = sorted(sub_topics, key=lambda sub_topic: sub_topic.priority)
+    return [
+        sub_topic.model_copy(update={"coverage_id": coverage_id_for(position)})
+        for position, sub_topic in enumerate(ordered, start=1)
+    ]
+
+
 def validate_plan_draft(
     draft: ResearchPlanDraft,
 ) -> tuple[list[SubTopic], list[str]]:
     """Convert a model plan into ``SubTopic`` values, listing every problem.
 
-    Returns the sub-topics that validated and a list of problem strings.
-    Problem text is generated here and never copied from provider output, so
-    it is safe to place in a repair prompt and in ``PlanningError.problems``.
+    Returns the sub-topics that validated — ordered by priority and carrying
+    their assigned ``coverage_id`` — and a list of problem strings. Problem
+    text is generated here and never copied from provider output, so it is
+    safe to place in a repair prompt and in ``PlanningError.problems``.
     """
     validated: list[tuple[int, SubTopic]] = []
     problems: list[str] = []
@@ -120,7 +260,20 @@ def validate_plan_draft(
     for index, item in enumerate(draft.sub_topics, start=1):
         try:
             validated.append(
-                (index, SubTopic.model_validate(item.model_dump()))
+                (
+                    index,
+                    SubTopic.model_validate(
+                        {
+                            **item.model_dump(),
+                            # A provisional id, so ``SubTopic``'s own rules —
+                            # including this field's — apply to every value
+                            # here. ``_assign_coverage_ids`` re-stamps all of
+                            # them in final order, so no caller ever observes
+                            # a draft-position id.
+                            "coverage_id": coverage_id_for(index),
+                        }
+                    ),
+                )
             )
         except ValidationError as error:
             problems.append(
@@ -148,7 +301,7 @@ def validate_plan_draft(
             f"{MIN_SUB_TOPICS} and {MAX_SUB_TOPICS}"
         )
 
-    return sub_topics, problems
+    return _assign_coverage_ids(sub_topics), problems
 
 
 def format_plan_problems(problems: Sequence[str]) -> str:
@@ -179,15 +332,18 @@ def plan_messages(
     repair: str | None = None,
 ) -> list[ChatMessage]:
     """Build the messages that request one structured plan draft."""
-    sections = [f"## Research question\n{task.instruction}"]
+    sections = [f"# Research question\n{task.instruction}"]
     if task.guidance.strip():
-        sections.append(f"## Context\n{task.guidance}")
-    sections.append(f"## Scoping notes\n{_render_notes(run)}")
-    sections.append(f"## Plan requirements\n{PLAN_INSTRUCTION}")
+        sections.append(f"# Context\n{task.guidance}")
+    sections.append(f"# Scoping notes\n{_render_notes(run)}")
+    sections.append(f"# Plan requirements\n{PLAN_INSTRUCTION}")
     if repair is not None:
-        sections.append(f"## Repair\n{repair}")
+        sections.append(f"# Repair\n{repair}")
+    sections.append(
+        f"# Reply format\n{render_structured_reply_format(_PLAN_REPLY_EXAMPLES)}"
+    )
     return [
-        ChatMessage(role="developer", content=PLANNER_SYSTEM_PROMPT),
+        ChatMessage(role="developer", content=PLANNER_PLAN_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
 
@@ -239,43 +395,29 @@ def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent
     )
 
 
-class _DecisionNormalizingCompleter(StructuredCompleter):
-    """Serve structured responses, normalizing empty optional ReActDecision fields.
+_UNCATEGORIZED = "unclassified"
 
-    The model sometimes emits ``""`` for the optional field it is not using
-    (``tool_name`` on finish decisions, ``final_answer`` on tool decisions).
-    ``ReActDecision`` accepts those empty strings, but ``ReActStep`` requires
-    ``min_length=1``, so the shared loop would crash building the step. The
-    planner is the only agent this campaign may change, so normalization lives
-    here instead of in the shared loop; every other schema, including
-    ``ResearchPlanDraft``, passes through untouched.
+
+def structured_output_problems(error: StructuredOutputError) -> tuple[str, ...]:
+    """Render each structured-validation diagnostic as one project-authored line.
+
+    The provider throws its diagnostic away one frame above the catch that
+    turns a failed plan request into a ``PlanningError``, so these lines are
+    the last artifact that can explain a ``graph_planning_failed`` run.
+
+    Only ``attempt``, ``field_paths`` and ``category`` are read: never the
+    exception message, provider text, or the rejected model output. The
+    contract already normalizes every field path, replacing anything that is
+    not a plain schema path with ``"$"``, and already keeps at most two
+    diagnostics — so this returns at most two short lines. A diagnostic that
+    recorded no ``category`` renders as ``unclassified``.
     """
-
-    def __init__(self, inner: StructuredCompleter) -> None:
-        self._inner = inner
-
-    async def complete_structured(
-        self,
-        messages: Sequence[ChatMessage],
-        schema: type[Any],
-        *,
-        agent_name: str | None = None,
-        max_tokens: int | None = None,
-    ) -> Any:
-        result = await self._inner.complete_structured(
-            messages,
-            schema,
-            agent_name=agent_name,
-            max_tokens=max_tokens,
-        )
-        if schema is ReActDecision and isinstance(result, ReActDecision):
-            return result.model_copy(
-                update={
-                    "tool_name": result.tool_name or None,
-                    "final_answer": result.final_answer or None,
-                }
-            )
-        return result
+    return tuple(
+        "the plan draft failed schema validation on attempt "
+        f"{diagnostic.attempt} at {', '.join(diagnostic.field_paths)} "
+        f"({diagnostic.category or _UNCATEGORIZED})"
+        for diagnostic in error.diagnostics
+    )
 
 
 class PlannerAgent(BaseAgent[ResearchPlan]):
@@ -326,6 +468,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 agent_name=self.name,
                 max_tokens=self.config.planner_final_max_tokens,
             )
+        except StructuredOutputError as error:
+            raise planning_provider_error(
+                "plan_draft", problems=structured_output_problems(error)
+            ) from error
         except ProviderError as error:
             raise planning_provider_error("plan_draft") from error
         return validate_plan_draft(draft)
@@ -366,28 +512,15 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
 
     async def run(self, state: ResearchState) -> AgentRun[ResearchPlan]:
         """Run the inherited loop, bracketed by planning progress events.
-
-        The structured provider is wrapped for the duration of the run so
-        ``ReActDecision`` results never carry ``""`` in the optional
-        ``tool_name``/``final_answer`` fields (the shared loop builds
-        ``ReActStep`` from them, which requires ``min_length=1``). The
-        wrapper is installed and removed around ``super().run`` so the
-        ``provider`` property keeps its original identity for callers and
-        parity tests, and repeated runs never stack wrappers.
         """
         events = [
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
         ]
-        original_provider = self._provider
-        if not isinstance(original_provider, _DecisionNormalizingCompleter):
-            self._provider = _DecisionNormalizingCompleter(original_provider)
         try:
             outcome = await super().run(state)
         except ProviderError as error:
             raise planning_provider_error("react_decision") from error
-        finally:
-            self._provider = original_provider
         events.append(planning_completed_event(outcome))
         return AgentRun(
             agent_name=outcome.agent_name,

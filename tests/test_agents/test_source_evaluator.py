@@ -6,7 +6,7 @@ import pytest
 
 from deep_research.agents.source_evaluator import (
     AUTHORITY_WEIGHT,
-    CORROBORATION_WEIGHT,
+    FALLBACK_REASONS,
     LOW_CONFIDENCE_THRESHOLD,
     RECENCY_WEIGHT,
     RELEVANCE_WEIGHT,
@@ -29,8 +29,11 @@ from deep_research.agents.source_evaluator import (
 from deep_research.agents.sources import SourceGroup
 from deep_research.agents.steps import ReActRun
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderTimeoutError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
+)
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Finding,
@@ -43,6 +46,17 @@ from tests.agent_fakes import ScriptedCompleter
 from tests.research_fakes import FakeReputationSource
 
 EVAL_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
 
 
 def _group(
@@ -92,7 +106,6 @@ def test_the_weights_are_a_convex_combination() -> None:
         AUTHORITY_WEIGHT
         + RECENCY_WEIGHT
         + RELEVANCE_WEIGHT
-        + CORROBORATION_WEIGHT
     )
 
     assert total == pytest.approx(1.0)
@@ -108,22 +121,22 @@ def test_clamp_unit_pins_every_value_into_the_unit_interval(
     assert clamp_unit(raw) == pytest.approx(expected)
 
 
-def test_overall_score_is_the_weighted_mean_of_the_four_dimensions() -> None:
+def test_overall_score_is_the_weighted_mean_of_the_three_dimensions() -> None:
     score = overall_score(
-        authority=0.8, recency=0.6, relevance=0.9, corroboration=0.5
+        authority=0.8, recency=0.6, relevance=0.9
     )
 
     assert score == pytest.approx(
-        0.35 * 0.8 + 0.15 * 0.6 + 0.30 * 0.9 + 0.20 * 0.5
+        0.45 * 0.8 + 0.15 * 0.6 + 0.40 * 0.9
     )
 
 
 def test_overall_score_stays_in_bounds_for_extreme_inputs() -> None:
     assert overall_score(
-        authority=1.0, recency=1.0, relevance=1.0, corroboration=1.0
+        authority=1.0, recency=1.0, relevance=1.0
     ) == pytest.approx(1.0)
     assert overall_score(
-        authority=0.0, recency=0.0, relevance=0.0, corroboration=0.0
+        authority=0.0, recency=0.0, relevance=0.0
     ) == pytest.approx(0.0)
 
 
@@ -140,23 +153,22 @@ def test_authority_blends_a_known_reputation() -> None:
     assert blended < 0.8
 
 
-def test_rationale_always_records_corroboration_and_reputation() -> None:
+def test_rationale_records_source_context_and_reputation() -> None:
     rationale = build_rationale(
         "Peer-reviewed.",
-        corroboration=0.5,
         reputation=0.9,
         sub_topics=["Alpha", "Beta"],
     )
 
     assert rationale.startswith("Peer-reviewed.")
     assert "Cited for: Alpha, Beta." in rationale
-    assert "Corroboration 0.50" in rationale
+    assert "Corroboration" not in rationale
     assert "Prior reputation 0.90" in rationale
 
 
 def test_rationale_is_never_blank_when_the_model_returned_nothing() -> None:
     rationale = build_rationale(
-        "   ", corroboration=0.0, reputation=None, sub_topics=[]
+        "   ", reputation=None, sub_topics=[]
     )
 
     assert rationale.strip()
@@ -168,7 +180,6 @@ def test_a_scored_source_clamps_out_of_range_model_scores() -> None:
     source = build_scored_source(
         _group(),
         _draft(authority=9.0, recency=-2.0, relevance=0.9),
-        corroboration=0.5,
         reputation=None,
     )
 
@@ -177,7 +188,7 @@ def test_a_scored_source_clamps_out_of_range_model_scores() -> None:
     assert source.recency_score == pytest.approx(0.0)
     assert source.overall_score == pytest.approx(
         overall_score(
-            authority=1.0, recency=0.0, relevance=0.9, corroboration=0.5
+            authority=1.0, recency=0.0, relevance=0.9
         )
     )
     assert source.low_confidence is False
@@ -187,7 +198,6 @@ def test_a_weak_source_is_flagged_low_confidence() -> None:
     source = build_scored_source(
         _group(),
         _draft(authority=0.1, recency=0.1, relevance=0.1),
-        corroboration=0.0,
         reputation=None,
     )
 
@@ -195,48 +205,254 @@ def test_a_weak_source_is_flagged_low_confidence() -> None:
     assert source.low_confidence is True
 
 
-def test_a_fallback_record_is_conservative_and_always_low_confidence() -> None:
+def test_a_fallback_record_is_explicitly_unscored() -> None:
     source = fallback_scored_source(
-        _group(), corroboration=0.5, reputation=0.9, reason="model_unavailable"
+        _group(), reason="unscored_provider"
     )
 
     assert source.url == "https://example.org/a"
     assert source.title == "QEC 2025"
-    assert source.recency_score == pytest.approx(0.0)
-    assert source.relevance_score == pytest.approx(0.0)
-    assert source.corroboration_score == pytest.approx(0.5)
-    assert source.authority_score == pytest.approx(blend_authority(0.0, 0.9))
-    assert source.low_confidence is True
+    assert source.recency_score is None
+    assert source.relevance_score is None
+    assert source.authority_score is None
+    assert source.overall_score is None
+    assert source.evaluation_status == "unscored_provider"
+    assert source.low_confidence is False
     assert "could not be reached" in source.rationale
 
 
 def test_a_fallback_record_rejects_an_unenumerated_reason() -> None:
     with pytest.raises(ValueError, match="reason"):
         fallback_scored_source(
-            _group(), corroboration=0.0, reputation=None, reason="because"
+            _group(), reason="because"
         )
 
 
 def test_observability_aggregates_are_finite_for_an_empty_run() -> None:
-    assert average_score([]) == pytest.approx(0.0)
+    assert average_score([]) is None
     assert low_confidence_count([]) == 0
+
+
+def test_unscored_sources_do_not_affect_quality_aggregates() -> None:
+    source = ScoredSource(
+        url="https://cap.test/source",
+        title="Capped source",
+        authority_score=None,
+        recency_score=None,
+        relevance_score=None,
+        overall_score=None,
+        rationale="This source was not scored.",
+        evaluation_status="unscored_cap",
+    )
+
+    assert average_score([source]) is None
+    assert low_confidence_count([source]) == 0
+
+
+def test_unrelated_findings_do_not_change_source_quality() -> None:
+    first = build_scored_source(
+        _group(url="https://first.test/a", sub_topics=["Alpha"]),
+        _draft(url="https://first.test/a"),
+        reputation=None,
+    )
+    second = build_scored_source(
+        _group(url="https://second.test/b", sub_topics=["Alpha"]),
+        _draft(url="https://second.test/b"),
+        reputation=None,
+    )
+
+    assert first.overall_score == second.overall_score
+
+
+@pytest.mark.asyncio
+async def test_scoring_batches_unique_sources_and_stops_at_the_total_cap(
+    tracker: Tracker,
+) -> None:
+    findings = [
+        _eval_finding(f"https://source-{index}.test/page")
+        for index in range(5)
+    ]
+    first_batch = SourceScoresDraft(
+        sources=[
+            _draft(url="https://source-0.test/page"),
+            _draft(url="https://source-1.test/page"),
+        ]
+    )
+    second_batch = SourceScoresDraft(
+        sources=[
+            _draft(url="https://source-2.test/page"),
+            _draft(url="https://source-3.test/page"),
+        ]
+    )
+    completer = ScriptedCompleter(outputs=[first_batch, second_batch])
+    agent = _evaluator(
+        tracker,
+        completer,
+        batch_size=2,
+        max_total_sources=4,
+    )
+
+    task, _, _ = await agent.lookup_reputations(
+        agent.build_task(_eval_state(findings))
+    )
+    sources, errors, provider_failed = await agent.score_sources(task)
+
+    assert errors == []
+    assert provider_failed is False
+    assert [source.url for source in sources] == [
+        f"https://source-{index}.test/page" for index in range(5)
+    ]
+    assert [source.evaluation_status for source in sources] == [
+        "scored",
+        "scored",
+        "scored",
+        "scored",
+        "unscored_cap",
+    ]
+    assert sources[-1].overall_score is None
+    assert len(completer.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_marks_only_the_failed_and_remaining_batches(
+    tracker: Tracker,
+) -> None:
+    findings = [
+        _eval_finding(f"https://source-{index}.test/page")
+        for index in range(5)
+    ]
+    first_batch = SourceScoresDraft(
+        sources=[
+            _draft(url="https://source-0.test/page"),
+            _draft(url="https://source-1.test/page"),
+        ]
+    )
+    completer = ScriptedCompleter(outputs=[first_batch, _output_limit_error()])
+    agent = _evaluator(
+        tracker,
+        completer,
+        batch_size=2,
+        max_total_sources=5,
+    )
+
+    task, _, _ = await agent.lookup_reputations(
+        agent.build_task(_eval_state(findings))
+    )
+    sources, errors, provider_failed = await agent.score_sources(task)
+
+    assert provider_failed is True
+    assert errors[0].error_type == "source_evaluator_scoring_provider_error"
+    assert [source.evaluation_status for source in sources] == [
+        "scored",
+        "scored",
+        "unscored_provider",
+        "unscored_provider",
+        "unscored_provider",
+    ]
+    assert all(source.overall_score is None for source in sources[2:])
+
+
+@pytest.mark.asyncio
+async def test_new_sources_are_not_capped_by_prior_scored_sources(
+    tracker: Tracker,
+) -> None:
+    findings = [
+        _eval_finding("https://source-0.test/page"),
+        _eval_finding("https://source-1.test/page"),
+        _eval_finding("https://source-2.test/page"),
+    ]
+    prior = [
+        build_scored_source(
+            _group(url=finding.source_url),
+            _draft(url=finding.source_url),
+            reputation=None,
+        )
+        for finding in findings[:2]
+    ]
+    completer = ScriptedCompleter(
+        outputs=[
+            SourceScoresDraft(
+                sources=[_draft(url="https://source-2.test/page")]
+            )
+        ]
+    )
+    agent = _evaluator(
+        tracker,
+        completer,
+        batch_size=2,
+        max_total_sources=2,
+    )
+    state = _eval_state(findings, evaluated_sources=prior)
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [source.url for source in outcome.result.sources] == [
+        finding.source_url for finding in findings
+    ]
+    assert outcome.result.sources[-1].evaluation_status == "scored"
+    assert outcome.result.sources[-1].overall_score is not None
+    assert len(completer.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_prior_unscored_cap_sources_are_eligible_on_a_later_pass(
+    tracker: Tracker,
+) -> None:
+    findings = [
+        _eval_finding("https://source-0.test/page"),
+        _eval_finding("https://source-1.test/page"),
+        _eval_finding("https://source-2.test/page"),
+    ]
+    prior = [
+        build_scored_source(
+            _group(url=finding.source_url),
+            _draft(url=finding.source_url),
+            reputation=None,
+        )
+        for finding in findings[:2]
+    ]
+    prior.append(
+        fallback_scored_source(
+            _group(url=findings[2].source_url), reason="unscored_cap"
+        )
+    )
+    completer = ScriptedCompleter(
+        outputs=[
+            SourceScoresDraft(
+                sources=[_draft(url="https://source-2.test/page")]
+            )
+        ]
+    )
+    agent = _evaluator(
+        tracker,
+        completer,
+        batch_size=2,
+        max_total_sources=2,
+    )
+    state = _eval_state(findings, evaluated_sources=prior)
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert outcome.result.sources[-1].evaluation_status == "scored"
+    assert outcome.result.sources[-1].overall_score is not None
+    assert len(completer.calls) == 1
 
 
 def test_observability_aggregates_summarize_scored_sources() -> None:
     strong = build_scored_source(
-        _group(), _draft(), corroboration=1.0, reputation=None
+        _group(), _draft(), reputation=None
     )
     weak = fallback_scored_source(
         _group(url="https://weak.test/b"),
-        corroboration=0.0,
-        reputation=None,
-        reason="not_scored_by_model",
+        reason="unscored_missing",
     )
 
-    assert low_confidence_count([strong, weak]) == 1
-    assert average_score([strong, weak]) == pytest.approx(
-        round((strong.overall_score + weak.overall_score) / 2, 4)
-    )
+    assert low_confidence_count([strong, weak]) == 0
+    assert average_score([strong, weak]) == pytest.approx(strong.overall_score)
 
 
 def _evaluator(
@@ -244,7 +460,9 @@ def _evaluator(
     completer: ScriptedCompleter,
     *,
     reputation: object | None = None,
-    max_sources: int = 12,
+    max_sources: int | None = None,
+    batch_size: int | None = None,
+    max_total_sources: int | None = None,
 ) -> SourceEvaluatorAgent:
     return SourceEvaluatorAgent(
         provider=completer,
@@ -257,6 +475,8 @@ def _evaluator(
         config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
         reputation=reputation,
         max_sources=max_sources,
+        batch_size=batch_size,
+        max_total_sources=max_total_sources,
     )
 
 
@@ -302,7 +522,6 @@ def test_build_task_groups_findings_and_seeds_remembered_reputations(
         "https://example.org/a",
         "https://other.test/b",
     ]
-    assert task.corroborations["https://example.org/a"] == pytest.approx(1.0)
     assert task.reputations == {"https://example.org/a": 0.9}
     assert "How mature is quantum error correction?" in task.instruction
 
@@ -383,10 +602,12 @@ async def test_scoring_stamps_computed_fields_onto_model_scores(
         "https://other.test/b",
     ]
     scored = sources[0]
-    assert scored.corroboration_score == pytest.approx(1.0)
+    assert scored.evaluation_status == "scored"
     assert scored.low_confidence is False
     # other.test was never scored by the model, so it still gets a record.
-    assert sources[1].low_confidence is True
+    assert sources[1].evaluation_status == "unscored_missing"
+    assert sources[1].low_confidence is False
+    assert sources[1].overall_score is None
     assert "returned no score" in sources[1].rationale
 
 
@@ -394,7 +615,7 @@ async def test_scoring_stamps_computed_fields_onto_model_scores(
 async def test_every_source_still_gets_a_record_when_the_provider_fails(
     tracker: Tracker,
 ) -> None:
-    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    completer = ScriptedCompleter(outputs=[_output_limit_error()])
     agent = _evaluator(tracker, completer)
     state = _eval_state([_eval_finding("https://example.org/a")])
     task, _, _ = await agent.lookup_reputations(agent.build_task(state))
@@ -403,11 +624,17 @@ async def test_every_source_still_gets_a_record_when_the_provider_fails(
 
     assert provider_failed is True
     assert [source.url for source in sources] == ["https://example.org/a"]
-    assert sources[0].low_confidence is True
+    assert sources[0].evaluation_status == "unscored_provider"
+    assert sources[0].low_confidence is False
+    assert sources[0].overall_score is None
     assert "could not be reached" in sources[0].rationale
     assert errors[0].error_type == "source_evaluator_scoring_provider_error"
     assert errors[0].recoverable is False
-    assert errors[0].details["exception_type"] == "ProviderTimeoutError"
+    assert errors[0].details["operation"] == "source_evaluator_scoring"
+    provider = errors[0].details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
 
 
 @pytest.mark.asyncio
@@ -444,7 +671,9 @@ async def test_sources_past_the_cap_are_recorded_not_dropped(
         "https://example.org/a",
         "https://other.test/b",
     ]
-    assert sources[1].low_confidence is True
+    assert sources[1].evaluation_status == "unscored_cap"
+    assert sources[1].low_confidence is False
+    assert sources[1].overall_score is None
     assert "past this run's scoring cap" in sources[1].rationale
     # Only the sources under the cap reached the prompt.
     scoring_call = completer.calls[-1]
@@ -472,7 +701,7 @@ def test_state_update_carries_scored_sources_and_errors(
 ) -> None:
     agent = _evaluator(tracker, ScriptedCompleter())
     scored = build_scored_source(
-        _group(), _draft(), corroboration=1.0, reputation=None
+        _group(), _draft(), reputation=None
     )
     run = ReActRun(agent_name="source_evaluator", stop_reason="finished")
 
@@ -480,6 +709,49 @@ def test_state_update_carries_scored_sources_and_errors(
 
     assert update["evaluated_sources"] == [scored]
     assert update["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_second_pass_carries_the_sources_of_the_first(
+    tracker: Tracker,
+) -> None:
+    """``evaluated_sources`` replaces, so the update is a whole snapshot.
+
+    An update carrying only this pass's sources would erase every earlier one
+    when the state merges it, so the producer merges into the snapshot it
+    found on the state it was handed.
+    """
+    earlier = ScoredSource(
+        url="https://earlier.test/z",
+        title="Scored in an earlier pass",
+        authority_score=0.5,
+        recency_score=0.5,
+        relevance_score=0.5,
+        overall_score=0.45,
+        rationale="Scored before this pass began.",
+    )
+    agent = _evaluator(tracker, ScriptedCompleter(outputs=[_scoring_response()]))
+    state = _eval_state(
+        [
+            _eval_finding("https://example.org/a", "Alpha"),
+            _eval_finding("https://other.test/b", "Alpha"),
+        ],
+        evaluated_sources=[earlier],
+    )
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    expected = [
+        "https://earlier.test/z",
+        "https://example.org/a",
+        "https://other.test/b",
+    ]
+    assert [
+        source.url for source in outcome.state_update["evaluated_sources"]
+    ] == expected
+    merged = merge_research_state(state, outcome.state_update)
+    assert [source.url for source in merged.evaluated_sources] == expected
 
 
 def _scoring_response() -> SourceScoresDraft:
@@ -505,13 +777,11 @@ def _scoring_response() -> SourceScoresDraft:
 
 def test_the_completed_event_reports_the_three_required_counts() -> None:
     strong = build_scored_source(
-        _group(), _draft(), corroboration=1.0, reputation=None
+        _group(), _draft(), reputation=None
     )
     weak = fallback_scored_source(
         _group(url="https://weak.test/b"),
-        corroboration=0.0,
-        reputation=None,
-        reason="not_scored_by_model",
+        reason="unscored_missing",
     )
 
     event = evaluation_completed_event(
@@ -521,10 +791,15 @@ def test_the_completed_event_reports_the_three_required_counts() -> None:
     assert event.event_type == "source_evaluator.evaluation.completed"
     assert event.source == "agent.source_evaluator"
     assert event.metadata["source_count"] == 2
-    assert event.metadata["low_confidence_count"] == 1
+    assert event.metadata["low_confidence_count"] == 0
     assert event.metadata["average_score"] == pytest.approx(
         average_score([strong, weak])
     )
+    assert event.metadata["scored_count"] == 1
+    assert event.metadata["unscored_missing_count"] == 1
+    assert event.metadata["unscored_cap_count"] == 0
+    assert event.metadata["unscored_provider_count"] == 0
+    assert event.metadata["unique_source_count"] == 2
     assert event.metadata["reputation_hits"] == 1
     assert event.metadata["reputation_failures"] == 0
 
@@ -535,7 +810,7 @@ def test_the_completed_event_is_finite_for_an_empty_run() -> None:
     )
 
     assert event.metadata["source_count"] == 0
-    assert event.metadata["average_score"] == pytest.approx(0.0)
+    assert event.metadata["average_score"] is None
 
 
 @pytest.mark.asyncio
@@ -543,8 +818,9 @@ async def test_a_full_run_writes_sources_events_and_span_outputs(
     tracker: Tracker,
 ) -> None:
     memory = FakeReputationSource(reputations={"https://example.org/a": 0.95})
+    completer = ScriptedCompleter(outputs=[_scoring_response()])
     agent = _evaluator(
-        tracker, ScriptedCompleter(outputs=[_scoring_response()]),
+        tracker, completer,
         reputation=memory,
     )
     state = _eval_state(
@@ -561,6 +837,12 @@ async def test_a_full_run_writes_sources_events_and_span_outputs(
     assert outcome.react.stop_reason == "finished"
     assert outcome.result is not None
     assert len(outcome.result.sources) == 2
+    requested_schemas = [call[0] for call in completer.calls]
+    assert requested_schemas == ["SourceScoresDraft"]
+    assert "ReActDecision" not in requested_schemas
+    # Control: this agent asks no model to select a tool, so it never crosses
+    # the native ReAct boundary at all.
+    assert completer.react_calls == []
 
     merged = merge_research_state(state, outcome.state_update)
     assert [source.url for source in merged.evaluated_sources] == [
@@ -620,3 +902,52 @@ async def test_a_reputation_failure_is_visible_in_state_and_events(
     assert "source_evaluator_reputation_unavailable" in types
     completed = outcome.state_update["events"][-1]
     assert completed.metadata["reputation_failures"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_score_returned_for_an_example_url_is_ignored(
+    tracker: Tracker,
+) -> None:
+    """Copied example URLs must not become scores for real sources.
+
+    The reply-format examples use reserved ``.example.test`` URLs. A model that
+    echoes one back is scored against the real dossier URL list, so the real
+    group falls back to ``unscored_missing`` instead of being credited with
+    the example's numbers.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            SourceScoresDraft(
+                sources=[
+                    SourceScoreDraft(
+                        url="https://weak.example.test/post",
+                        authority_score=0.1,
+                        recency_score=0.5,
+                        relevance_score=0.2,
+                        rationale="Copied from the weak example.",
+                    ),
+                    SourceScoreDraft(
+                        url="https://strong.example.test/standard",
+                        authority_score=0.95,
+                        recency_score=0.9,
+                        relevance_score=0.95,
+                        rationale="Copied from the strong example.",
+                    ),
+                ]
+            )
+        ]
+    )
+    agent = _evaluator(tracker, completer)
+    state = _eval_state([_eval_finding("https://real.test/one", "Alpha")])
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [source.url for source in outcome.result.sources] == [
+        "https://real.test/one"
+    ]
+    real = outcome.result.sources[0]
+    assert real.low_confidence is False
+    assert real.evaluation_status == "unscored_missing"
+    assert real.rationale.startswith(FALLBACK_REASONS["unscored_missing"])

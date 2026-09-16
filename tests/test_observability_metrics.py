@@ -190,6 +190,82 @@ def test_memory_metric_defaults_result_count_to_zero() -> None:
     assert metric.top_k is None
 
 
+def test_token_usage_metric_omits_the_attempt_ledger_by_default() -> None:
+    """Both ledger fields are optional, so older metrics still validate."""
+    metric = TokenUsageMetric(
+        session_id="session-1",
+        agent_name="planner",
+        model="gpt-4o",
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+        latency_ms=40.0,
+        success=True,
+    )
+
+    assert metric.operation is None
+    assert metric.structured_attempt is None
+
+
+def test_a_legacy_token_usage_payload_still_validates() -> None:
+    """A metric recorded before the ledger fields existed must still load."""
+    metric = TokenUsageMetric.model_validate(
+        {
+            "metric_type": "token_usage",
+            "session_id": "session-1",
+            "agent_name": "planner",
+            "model": "gpt-4o",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "latency_ms": 40.0,
+            "success": True,
+            "error_type": None,
+        }
+    )
+
+    assert metric.operation is None
+    assert metric.structured_attempt is None
+
+
+def test_token_usage_metric_accepts_only_the_finite_attempt_ledger() -> None:
+    metric = TokenUsageMetric(
+        session_id="session-1",
+        model="gpt-4o",
+        total_tokens=0,
+        latency_ms=1.0,
+        success=True,
+        operation="structured_output",
+        structured_attempt=2,
+    )
+
+    assert (metric.operation, metric.structured_attempt) == (
+        "structured_output",
+        2,
+    )
+
+    with pytest.raises(ValidationError):
+        TokenUsageMetric(
+            session_id="session-1",
+            model="gpt-4o",
+            total_tokens=0,
+            latency_ms=1.0,
+            success=True,
+            operation="judge",
+        )
+    for attempt in (0, 3):
+        with pytest.raises(ValidationError):
+            TokenUsageMetric(
+                session_id="session-1",
+                model="gpt-4o",
+                total_tokens=0,
+                latency_ms=1.0,
+                success=True,
+                operation="structured_output",
+                structured_attempt=attempt,
+            )
+
+
 def test_memory_metric_rejects_unknown_layers_and_non_positive_top_k() -> None:
     from pydantic import ValidationError
 

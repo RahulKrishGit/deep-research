@@ -4,7 +4,7 @@ Multi-agent deep research system using LangGraph, DeepSeek, ChromaDB, and LangSm
 
 ## Project Status
 
-Phase 4 complete — the package foundation, typed configuration/state, LangSmith observability, selectable DeepSeek/OpenAI chat providers, local and OpenAI embedding providers, core tools, the three-layer memory stack, the shared agent ReAct runtime, CLI, FastAPI API, and Streamlit Editorial Research Canvas UI are implemented.
+Phase 4 complete — the package foundation, typed configuration/state, LangSmith observability, selectable DeepSeek/OpenAI chat providers, local and OpenAI embedding providers, core tools, the three-layer memory stack, the shared agent ReAct runtime, CLI, and FastAPI API are implemented.
 
 ## Setup
 
@@ -732,44 +732,16 @@ everything disappears when the process exits. Authentication, multi-tenant
 authorization, durable queues, databases, and deployment setup remain out of
 scope — running the app is left to the caller.
 
-## Streamlit UI
+## UI
 
-The local Streamlit app provides the editorial Question → Investigation →
-Answer experience over the existing synchronous research engine. Install the
-development extras and launch it with:
-
-```bash
-pip install -e .[dev]
-streamlit run src/deep_research/ui/app.py
-```
-
-The UI accepts and renders Markdown only. Maximum iterations defaults to the
-`graph.max_iterations` value from the loaded configuration and can be adjusted
-for an individual run. While a session is running, only the live progress
-region refreshes every two seconds; the sidebar and user-controlled disclosure
-state remain stable.
-
-Session history is local compact metadata under
-`Path(output.directory) / "sessions"`. It does not persist report bodies, raw
-events, prompts, tool payloads, model messages, provider settings, or secrets.
-The Streamlit app calls the in-process controller directly and does not require
-FastAPI.
-
-When telemetry is unavailable, token totals and the LangSmith trace action are
-omitted rather than replaced with zero or dead controls. This keeps the UI's
-privacy boundary and status semantics explicit: the app never renders provider
-secrets, exception text, raw traces, or diagnostic payloads.
-
-For deterministic offline visual review, run the development-only harness and
-use its `Demo state` selector to inspect New, Running, Completed, History,
-Max iterations, and Failed/partial states:
-
-```bash
-streamlit run tests/test_ui/manual_mock_app.py
-```
+The Streamlit app was removed. It built `ScoredSource` objects with the
+`corroboration_score` field, which the research engine no longer defines, so it
+could not run against the current engine. The CLI and the FastAPI interface are
+the supported interfaces until a replacement front end lands on top of the
+FastAPI API.
 
 Live-provider smoke tests are opt-in and require separate authorization at
-execution time. They are not part of the default UI or repository test runs.
+execution time. They are not part of the default repository test runs.
 
 ## Command Line Interface
 
@@ -789,6 +761,7 @@ python -m deep_research --resume <session_id>
 | `--output-format` | Report format. Only `markdown` is supported in this build. |
 | `--config PATH` | YAML config file. Defaults to `config.yaml`. |
 | `--verbose` | Print every progress event, tool call counts, and token totals. |
+| `--require-quality` | Exit 4 unless the terminal quality gates accepted the report; without it, a finished partial report exits 0. |
 
 Every interface calls the same `deep_research.main.run_research()`, which loads
 configuration in **strict** mode: the required secrets for the selected chat
@@ -819,6 +792,11 @@ it, so resuming from a new command exits 1 with a clear message rather than
 pretending a checkpoint exists. A durable saver drops into
 `compile_research_graph` without touching a node.
 
+`--require-quality` is the automation-friendly mode: it preserves the report
+and evidence paths and the normal summary, but returns exit code 4 when the
+terminal status is not `accepted`. The default exit code remains 0 for a
+finished partial report so an operator can inspect its limitations.
+
 ## Individual Agent Evaluation
 
 A separate, dedicated CLI at `python -m deep_research.evaluation` runs
@@ -827,6 +805,12 @@ deterministic gates and a judge model. It is independent of the graph-level
 CLI above: it never imports `deep_research.graph`, and evaluates each of the
 six agents (`planner`, `researcher`, `source-evaluator`, `fact-checker`,
 `synthesizer`, `critic`) in isolation against 24 code-backed cases.
+
+The individual-agent controlled tier exercises one agent contract at a time
+with the configured provider and LangSmith experiment. Its live tier adds the
+real external tools for an explicitly authorized case. These are not
+whole-report acceptance results: they do not exercise graph routing, snapshot
+replacement, terminal publication, or the reader/evidence pair.
 
 ```powershell
 # List agents, tiers, cases, repetitions, and dataset names.
@@ -890,6 +874,62 @@ addition to the LangSmith experiment:
 - `output/evaluations/suite/<suite-id>/summary.json` for `suite` runs
 
 `--output-directory` overrides the `output/evaluations/` root.
+
+## Whole-Report Quality Evaluation
+
+The graph-level campaign is a separate CLI and package:
+`python -m deep_research.e2e_evaluation`. Individual-agent evaluation checks
+one agent's contract in isolation; whole-report evaluation checks the six-agent
+handoff, canonical source and claim snapshots, provenance, citation linkage,
+refinement, terminal publication, memory timing, and agreement between the
+typed state and the CLI summary. A deterministic integrity failure is a hard
+failure even when a judge score is high.
+
+Task 9's controlled tier is network-zero. Its three cases use scripted search,
+read, memory, and publication doubles while compiling and running the
+production graph with six deterministic agent doubles. The campaign compares
+typed graph state and events with the production CLI summary formatter, and
+runs exactly three repetitions per case. The live tier is *declared only*: the
+three live cases exist as typed definitions with `tier="live"` and
+`authorization_required=True`, and `run_case`/`run_suite` raise for
+`tier="live"` unconditionally — no live runner exists in this package. Live
+provider, search, judge, and LangSmith calls belong to a separately authorized
+canary.
+
+Whole-report gates are independent of the individual-agent gates: every
+integrity failure (including duplicate canonical rows, missing read
+provenance, unresolved citations, incomplete attempts, or publication timing)
+hard-fails the repetition regardless of judge score. The controlled runner's
+acceptance floors are 0.70 for every repetition and 0.80 for the three-run
+mean, with coverage and evidence gates applied separately. The production CLI
+`--require-quality` flag is a graph-run exit policy (exit 4 for a non-accepted
+terminal quality status); it does not replace these campaign gates.
+
+```powershell
+# List the three controlled whole-report cases.
+python -m deep_research.e2e_evaluation list
+
+# Run one controlled case three times.
+python -m deep_research.e2e_evaluation case broad-constraints --tier controlled --repetitions 3
+
+# Run the complete controlled campaign (network-zero).
+python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
+```
+
+Each run writes a local JSON campaign artifact under
+`output/evaluations/e2e/` containing the graph revision, all six target prompt
+fingerprints, report/quality/case schema versions, model settings, request
+counts, typed deterministic metrics, the exact bounded `WholeReportJudgeInput`,
+and the result. The bounded judge input contains only the question, scoped
+plan, reader report, deterministic metrics, and a bounded evidence-ledger
+summary; it never contains secrets, raw provider output, tool payloads, or
+hidden reasoning. The research output itself remains two distinct Markdown
+artifacts per repetition: the concise reader report (`report.md`) and the full evidence ledger
+(`evidence-ledger.md`). The reader report contains only unique cited sources;
+the ledger retains source assessments, checked claims, verification passages,
+unchecked findings, and run errors for auditability. Controlled stdout prints
+case/suite quality summaries and paths, never report bodies or raw tool/model
+payloads.
 
 ### Manual Live Verification
 

@@ -24,6 +24,8 @@ from deep_research.providers.contracts import (
     ChatMessage,
     ChatResult,
     FinishReasonCategory,
+    NativeToolCall,
+    NativeToolTurn,
     ProviderConfigurationError,
     ProviderError,
     ProviderOutputLimitError,
@@ -33,8 +35,12 @@ from deep_research.providers.contracts import (
     ProviderTimeoutError,
     StructuredOutputError,
     StructuredValidationDiagnostic,
+    ToolDefinition,
 )
+from deep_research.providers.native_output import native_text_violation
 from deep_research.providers.retry import with_retries
+from deep_research.providers.validation import validation_category
+from deep_research.request_budget import RequestBudget
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -250,7 +256,7 @@ def _validation_diagnostic(
     return StructuredValidationDiagnostic(
         attempt=attempt,
         field_paths=tuple(paths) or ("$",),
-        category="schema_output",
+        category=validation_category(error),
     )
 
 
@@ -274,6 +280,23 @@ def _validation_summary(
     return summary
 
 
+def _validation_repair_guidance(
+    diagnostic: StructuredValidationDiagnostic,
+) -> str:
+    """Return static repair guidance for categories with known remedies."""
+    if diagnostic.category == "extra_forbidden":
+        return (
+            "Repair guidance: Return only properties declared by the schema. "
+            "Remove undeclared properties and re-check every retained value.\n"
+        )
+    if diagnostic.category == "string_bounds":
+        return (
+            "Repair guidance: Satisfy every string constraint declared by the "
+            "schema, including minLength, maxLength, and pattern.\n"
+        )
+    return ""
+
+
 def _usage_from_response(response: Any) -> TokenUsage:
     """Map a Chat Completions usage object to project-owned token counts.
 
@@ -294,19 +317,85 @@ def _usage_from_response(response: Any) -> TokenUsage:
         or not isinstance(output_tokens, int)
         or output_tokens < 0
     ):
-        raise ProviderResponseError("DeepSeek response contained malformed usage")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed usage",
+     failure_origin="local_response",
+ )
     total_tokens = getattr(usage, "total_tokens", None)
     if total_tokens is not None and (
         isinstance(total_tokens, bool)
         or not isinstance(total_tokens, int)
         or total_tokens != input_tokens + output_tokens
     ):
-        raise ProviderResponseError("DeepSeek response contained malformed usage")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed usage",
+     failure_origin="local_response",
+ )
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
     )
+
+
+def _responses_usage_from_response(response: Any) -> TokenUsage:
+    """Map a Responses usage object to project-owned token counts."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return TokenUsage()
+    input_tokens = getattr(usage, "input_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    if (
+        isinstance(input_tokens, bool)
+        or not isinstance(input_tokens, int)
+        or input_tokens < 0
+        or isinstance(output_tokens, bool)
+        or not isinstance(output_tokens, int)
+        or output_tokens < 0
+    ):
+        response = None
+        usage = None
+        input_tokens = None
+        output_tokens = None
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed usage",
+     failure_origin="local_response",
+ )
+    total_tokens = getattr(usage, "total_tokens", None)
+    if total_tokens is not None and (
+        isinstance(total_tokens, bool)
+        or not isinstance(total_tokens, int)
+        or total_tokens != input_tokens + output_tokens
+    ):
+        response = None
+        usage = None
+        input_tokens = None
+        output_tokens = None
+        total_tokens = None
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed usage",
+     failure_origin="local_response",
+ )
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+    )
+
+
+def _responses_finish_reason(response: Any) -> FinishReasonCategory:
+    """Map the Responses terminal status to the finite project taxonomy."""
+    status = getattr(response, "status", None)
+    if status == "completed":
+        return "stop"
+    if status == "incomplete":
+        details = getattr(response, "incomplete_details", None)
+        reason = getattr(details, "reason", None)
+        if reason == "max_output_tokens":
+            return "length"
+        if reason == "content_filter":
+            return "content_filter"
+    return "other"
 
 
 def _normalize_finish_reason(value: object) -> FinishReasonCategory:
@@ -361,7 +450,10 @@ def _choice_text(
     """
     choices = getattr(response, "choices", None)
     if not isinstance(choices, (list, tuple)) or len(choices) != 1:
-        raise ProviderResponseError("DeepSeek response contained malformed choices")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed choices",
+     failure_origin="local_response",
+ )
     choice = choices[0]
     is_stop = (
         finish_reason_category == "stop"
@@ -369,45 +461,182 @@ def _choice_text(
         else getattr(choice, "finish_reason", None) == "stop"
     )
     if not is_stop:
-        raise ProviderResponseError("DeepSeek response did not stop cleanly")
+        raise ProviderResponseError(
+     "DeepSeek response did not stop cleanly",
+     failure_origin="local_response",
+ )
     message = getattr(choice, "message", None)
     content = getattr(message, "content", None) if message is not None else None
     if not isinstance(content, str):
-        raise ProviderResponseError("DeepSeek response contained malformed content")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed content",
+     failure_origin="local_response",
+ )
     text = content.strip()
     if not text and not allow_empty:
-        raise ProviderResponseError("DeepSeek response contained malformed content")
+        raise ProviderResponseError(
+     "DeepSeek response contained malformed content",
+     failure_origin="local_response",
+ )
     return text
 
 
-def _raise_deepseek_error(error: Exception) -> None:
+def _fresh_provider_error(error: ProviderResponseError) -> ProviderResponseError:
+    """A copy of a typed rejection carrying no traceback and no chain.
+
+    Re-raising the caught object would keep its original traceback, whose
+    frames still reference the raw response. A new instance carries only the
+    static project-authored message.
+    """
+    return ProviderResponseError(
+        str(error),
+        failure_origin=error.failure_origin,
+        retryable=error.retryable,
+        failure_category=error.failure_category,
+        http_status_code=error.http_status_code,
+    )
+
+
+def _native_outcome(
+    response: Any,
+    *,
+    allowed: set[str],
+    finish_reason_category: FinishReasonCategory,
+) -> tuple[tuple[NativeToolCall, ...], str | None, str | None]:
+    """Read every native tool call, or one non-blank final answer.
+
+    Returns ``(tool_calls, final_answer, rejection_reason)`` with exactly one of
+    the last two set. Only the typed ``message.tool_calls`` field can select a
+    tool: text is inspected for tool markup, but only in order to *reject* it,
+    so DSML, XML, Markdown fences, and JSON action envelopes in the message
+    body can never request execution and can never pass as a final answer
+    either.
+
+    A ``tool_calls`` finish carrying **one or more** calls is accepted, and
+    every call is validated exactly as a lone call is. Only *zero* calls on
+    that finish is malformed: it names a tool selection that does not exist.
+    Several calls in one turn are a normal part of the provider protocol, and
+    requiring exactly one discarded whole turns in live traffic.
+
+    This function never raises. A rejection is returned instead, so the caller
+    can clear its own provider-adjacent locals before that rejection becomes a
+    public error whose traceback would otherwise retain the response text.
+
+    Arguments must be a non-blank string. That is stricter than "a string":
+    every tool in the registry requires at least one argument, so a blank
+    argument payload can never be a legitimate call.
+    """
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, (list, tuple)) or len(choices) != 1:
+        return (), None, "DeepSeek response contained malformed choices"
+    message = getattr(choices[0], "message", None)
+    if message is None:
+        return (), None, "DeepSeek response contained no message"
+    raw_calls = getattr(message, "tool_calls", None)
+    calls = raw_calls if isinstance(raw_calls, (list, tuple)) else ()
+    # A container the provider did send, but not as a sequence, is a malformed
+    # envelope: it must be rejected rather than read as "no call at all".
+    malformed_calls = raw_calls is not None and not isinstance(
+        raw_calls, (list, tuple)
+    )
+    if malformed_calls:
+        return (), None, (
+            "DeepSeek native tool response carried a malformed tool_calls field"
+        )
+
+    if finish_reason_category == "tool_calls":
+        if not calls:
+            return (), None, (
+                "DeepSeek native tool response must carry at least one tool call"
+            )
+        selected: list[NativeToolCall] = []
+        for call in calls:
+            if getattr(call, "type", None) != "function":
+                return (), None, (
+                    "DeepSeek native tool response carried a non-function call"
+                )
+            function = getattr(call, "function", None)
+            name = (
+                getattr(function, "name", None) if function is not None else None
+            )
+            if not isinstance(name, str) or name not in allowed:
+                return (), None, (
+                    "DeepSeek native tool response named an unavailable tool"
+                )
+            arguments = getattr(function, "arguments", None)
+            if not isinstance(arguments, str) or not arguments.strip():
+                return (), None, (
+                    "DeepSeek native tool response carried malformed arguments"
+                )
+            selected.append(
+                NativeToolCall(tool_name=name, arguments_json=arguments)
+            )
+        # Non-blank ``content`` beside typed calls is deliberately *accepted*.
+        # The typed field is still the only thing that can select a tool, so
+        # prose here cannot request execution, and rejecting it cost real
+        # production turns: the first live release gate failed 8 of 30 requests
+        # to this rule, against 56 of 60 accepted turns in the two earlier
+        # pre-strictness batches. The mixed-envelope rejection is retained only
+        # where the envelope is genuinely incoherent -- a call on a ``stop``
+        # finish, below, or tool-protocol *text* passed off as the answer.
+        return tuple(selected), None, None
+
+    if finish_reason_category != "stop":
+        return (), None, "DeepSeek response did not stop cleanly"
+    if calls:
+        return (), None, (
+            "DeepSeek native tool response mixed a final answer with a tool call"
+        )
+    content = getattr(message, "content", None)
+    if not isinstance(content, str) or not content.strip():
+        return (), None, (
+            "DeepSeek native tool response carried no usable final answer"
+        )
+    violation = native_text_violation(content)
+    if violation is not None:
+        return (), None, (
+            "DeepSeek native tool response carried tool protocol text as its "
+            f"final answer ({violation})"
+        )
+    return (), content.strip(), None
+
+
+def _translate_deepseek_error(error: Exception) -> ProviderError:
     """Translate SDK operational failures to safe typed provider errors.
 
-    Any exception outside the handled SDK types falls through and is
-    re-raised unchanged; callers decide how to classify it. In
-    ``complete`` only the handled types can reach this helper, so the
-    fallthrough is defensive rather than reachable there.
+    Returns a fresh project error instead of raising it. Raising from inside
+    this frame would put the frame -- and therefore the SDK exception it holds
+    as a parameter local -- on the new error's traceback, where a caller could
+    still reach the SDK object through ``tb_frame.f_locals`` even after
+    ``with_retries`` has cleared ``__cause__`` and ``__context__``. Returning
+    keeps the SDK object confined to the caller's handler, whose locals the
+    interpreter clears when the handler exits.
     """
     sdk = _openai_errors()
     if isinstance(error, sdk.APITimeoutError):
-        raise ProviderTimeoutError("DeepSeek request timed out") from error
+        return ProviderTimeoutError("DeepSeek request timed out")
     if isinstance(error, sdk.RateLimitError):
-        raise ProviderRateLimitError("DeepSeek rate limit exceeded") from error
+        return ProviderRateLimitError("DeepSeek rate limit exceeded")
     if isinstance(error, sdk.APIConnectionError):
-        raise ProviderResponseError(
+        return ProviderResponseError(
             "DeepSeek connection failed",
+            failure_origin="sdk",
             retryable=True,
             failure_category="transport",
-        ) from error
+        )
     if isinstance(error, sdk.APIStatusError):
         status = error.status_code
-        raise ProviderResponseError(
+        return ProviderResponseError(
             f"DeepSeek request failed with status {status}",
+            failure_origin="sdk",
             retryable=status >= 500 or status in (408, 409),
             failure_category="http",
             http_status_code=status,
-        ) from error
-    raise error
+        )
+    # Unreachable while every call site catches exactly the four SDK types
+    # handled above. Fail loudly rather than invent a category for a type
+    # whose public semantics nobody has decided.
+    raise AssertionError("untranslated DeepSeek SDK error type")
 
 
 def _set_span_result(span: Any, telemetry: ProviderResponseTelemetry) -> None:
@@ -417,6 +646,36 @@ def _set_span_result(span: Any, telemetry: ProviderResponseTelemetry) -> None:
         output_tokens=telemetry.usage.output_tokens,
         total_tokens=telemetry.usage.total_tokens,
     )
+
+
+def _responses_request_options(
+    config: LLMConfig,
+    agent_name: str | None,
+) -> tuple[EffectiveModelConfig, dict[str, object], dict[str, JsonValue]]:
+    effective = config.resolve_for(agent_name)
+    resolved = resolve_request_settings("deepseek", effective)
+    request: dict[str, object] = {
+        "model": effective.model,
+        "reasoning": {
+            "effort": (
+                resolved.reasoning_effort
+                if resolved.reasoning_effort is not None
+                else "none"
+            )
+        },
+    }
+    if resolved.include_temperature:
+        request["temperature"] = config.temperature
+    metadata: dict[str, JsonValue] = {
+        "provider": "deepseek",
+        "thinking_mode": effective.thinking_mode,
+        "requested_reasoning_effort": effective.reasoning_effort,
+    }
+    if agent_name is not None:
+        metadata["agent_name"] = agent_name
+    if resolved.reasoning_effort is not None:
+        metadata["effective_reasoning_effort"] = resolved.reasoning_effort
+    return effective, request, metadata
 
 
 class DeepSeekChatProvider:
@@ -429,11 +688,48 @@ class DeepSeekChatProvider:
         *,
         api_key: str | None = None,
         client: Any | None = None,
+        request_budget: RequestBudget | None = None,
     ) -> None:
         self._config = config
         self._tracker = tracker
         self._client = _build_client(config, api_key=api_key, client=client)
+        self._request_budget = request_budget
         self._last_model_returned: str | None = None
+
+    def _reserve_attempt(self) -> None:
+        """Reserve one DeepSeek transport attempt before any network I/O.
+
+        Called from *inside* the retried operation, because each retry is a
+        real outbound request: reserving once outside the retry wrapper would
+        under-count a run's attempts by up to its retry count. The refusal
+        therefore also sits outside SDK exception translation, so a
+        :class:`~deep_research.request_budget.RequestAttemptLimitError` -- a
+        hard run boundary -- escapes instead of being rewritten into an
+        ordinary, retryable provider error.
+
+        A ``None`` budget reserves nothing: this is today's uncounted
+        behaviour, and every existing caller keeps it.
+        """
+        budget = self._request_budget
+        if budget is None:
+            return
+        budget.reserve("deepseek")
+
+    def _record_tokens(self, usage: TokenUsage) -> None:
+        """Record reported usage, and only for a response that arrived.
+
+        Never called for a transport failure, and never for a response whose
+        usage failed to parse: a token figure invented after a failed call
+        would report spend that did not happen and hide spend that did.
+        """
+        budget = self._request_budget
+        if budget is None:
+            return
+        budget.record_tokens(
+            "deepseek",
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+        )
 
     @property
     def last_model_returned(self) -> str | None:
@@ -502,6 +798,7 @@ class DeepSeekChatProvider:
 
                 async def _request() -> Any:
                     nonlocal request_attempt
+                    self._reserve_attempt()
                     request_attempt += 1
                     try:
                         return await self._client.chat.completions.create(
@@ -513,10 +810,11 @@ class DeepSeekChatProvider:
                         _sdk.APIConnectionError,
                         _sdk.APIStatusError,
                     ) as error:
-                        _raise_deepseek_error(error)
+                        raise _translate_deepseek_error(error)
                     except _sdk.OpenAIError as error:
                         raise ProviderResponseError(
-                            "DeepSeek chat request failed"
+                            "DeepSeek chat request failed",
+                            failure_origin="sdk",
                         ) from error
 
                 response = await with_retries(
@@ -530,6 +828,7 @@ class DeepSeekChatProvider:
                     configured_max_tokens=self._config.max_tokens,
                     request_attempt=request_attempt,
                 )
+                self._record_tokens(telemetry.usage)
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
                     raise ProviderOutputLimitError(telemetry)
@@ -575,6 +874,7 @@ class DeepSeekChatProvider:
 
             async def _request() -> Any:
                 nonlocal request_attempt
+                self._reserve_attempt()
                 request_attempt += 1
                 try:
                     return await self._client.chat.completions.create(
@@ -590,10 +890,11 @@ class DeepSeekChatProvider:
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
                 ) as error:
-                    _raise_deepseek_error(error)
+                    raise _translate_deepseek_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
-                        "DeepSeek structured output request failed"
+                        "DeepSeek structured output request failed",
+                        failure_origin="sdk",
                     ) from error
 
             response = await with_retries(
@@ -608,6 +909,7 @@ class DeepSeekChatProvider:
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
             )
+            self._record_tokens(telemetry.usage)
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
                 raise ProviderOutputLimitError(telemetry)
@@ -656,6 +958,7 @@ class DeepSeekChatProvider:
         ]
 
         diagnostics: list[StructuredValidationDiagnostic] = []
+        final_error: StructuredOutputError | None = None
         for attempt in (1, 2):
             try:
                 return await self._structured_attempt(
@@ -670,20 +973,23 @@ class DeepSeekChatProvider:
             except _StructuredValidationFailure as error:
                 diagnostics.append(error.diagnostic)
                 if attempt == 2:
-                    raise StructuredOutputError(
+                    final_error = StructuredOutputError(
                         f"DeepSeek output failed {schema.__name__} validation "
                         "after one repair attempt",
                         diagnostics=tuple(diagnostics),
-                    ) from error
+                    )
+                    break
                 schema_json = json.dumps(
                     schema.model_json_schema(), sort_keys=True, separators=(",", ":")
                 )
+                repair_guidance = _validation_repair_guidance(error.diagnostic)
                 repair = (
                     f"The previous JSON response failed {schema.__name__} "
                     "validation. Return only one JSON object that validates "
                     "against the supplied JSON Schema. Do not add Markdown or "
                     "explanatory text. "
                     f"Validation summary: {_validation_summary(error.diagnostic)}\n"
+                    f"{repair_guidance}"
                     f"JSON Schema:\n{schema_json}"
                 )
                 current_messages = [
@@ -691,4 +997,402 @@ class DeepSeekChatProvider:
                     {"role": "system", "content": repair},
                 ]
 
-        raise AssertionError("structured output attempt loop did not return")
+        if final_error is None:
+            raise AssertionError("structured output attempt loop did not return")
+
+        # Do not raise while handling the internal validation failure: that
+        # would retain it through ``__context__``/``__cause__``. Clear all
+        # provider-adjacent locals before the public error's traceback is
+        # captured, leaving only the bounded typed diagnostics.
+        self = None
+        messages = []
+        current_messages = []
+        request = {}
+        metadata = {}
+        effective = None
+        agent_name = None
+        schema = BaseModel
+        instruction = None
+        schema_json = ""
+        repair = ""
+        repair_guidance = ""
+        raise final_error
+
+    async def complete_react(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> NativeToolTurn:
+        """One native ReAct turn: a provider tool call or a final answer.
+
+        The request carries real function definitions with
+        ``tool_choice="auto"``. Function-specific and ``required`` tool choice
+        are never sent: with thinking enabled DeepSeek answers both with HTTP
+        400, so the model decides for itself whether to call a tool.
+
+        There is no ``response_format`` and no structured repair. The native
+        tool-call envelope is the contract, and a malformed one fails closed
+        rather than being retried into a possibly different shape.
+        """
+        if not messages:
+            raise ValueError("messages must contain at least one item")
+        if not tools:
+            raise ValueError("tools must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(
+            self._config.max_tokens, max_tokens
+        )
+        effective, request, metadata = self._request_options(agent_name)
+        request = {**request, "max_tokens": resolved_max_tokens}
+        payload = _translated_messages(messages)
+        allowed = {definition.name for definition in tools}
+        request_attempt = 0
+        async with self._tracker.llm_span(
+            effective.model,
+            {
+                **metadata,
+                "operation": "react_tool_turn",
+                "message_count": len(payload),
+                "tool_count": len(tools),
+            },
+        ) as span:
+            _sdk = _openai_errors()
+
+            async def _request() -> Any:
+                nonlocal request_attempt
+                self._reserve_attempt()
+                request_attempt += 1
+                try:
+                    return await self._client.chat.completions.create(
+                        **{
+                            **request,
+                            "messages": payload,
+                            "tools": [
+                                {
+                                    "type": "function",
+                                    "function": definition.model_dump(mode="json"),
+                                }
+                                for definition in tools
+                            ],
+                            "tool_choice": "auto",
+                        }
+                    )
+                except (
+                    _sdk.APITimeoutError,
+                    _sdk.RateLimitError,
+                    _sdk.APIConnectionError,
+                    _sdk.APIStatusError,
+                ) as error:
+                    raise _translate_deepseek_error(error)
+                except _sdk.OpenAIError as error:
+                    raise ProviderResponseError(
+                        "DeepSeek native tool request failed",
+                        failure_origin="sdk",
+                    ) from error
+
+            response = await with_retries(
+                _request,
+                retry_count=self._config.retry_count,
+                initial_delay=self._config.retry_initial_delay,
+                max_delay=self._config.retry_max_delay,
+            )
+            telemetry: ProviderResponseTelemetry | None = None
+            tool_calls: tuple[NativeToolCall, ...] = ()
+            final_answer: str | None = None
+            rejection: str | None = None
+            failure: ProviderError | None = None
+            try:
+                telemetry = _response_telemetry(
+                    response,
+                    configured_max_tokens=resolved_max_tokens,
+                    request_attempt=request_attempt,
+                )
+            except ProviderResponseError as error:
+                # A malformed usage shape is rejected *before* the clearing
+                # block below, so the rejection has to be replaced with a
+                # traceback-free copy: re-raising the caught object would keep
+                # the frames that still hold the raw response.
+                failure = _fresh_provider_error(error)
+            if failure is None:
+                self._record_tokens(telemetry.usage)
+                _set_span_result(span, telemetry)
+                if telemetry.finish_reason_category == "length":
+                    failure = ProviderOutputLimitError(telemetry)
+                else:
+                    tool_calls, final_answer, rejection = _native_outcome(
+                        response,
+                        allowed=allowed,
+                        finish_reason_category=telemetry.finish_reason_category,
+                    )
+                    if rejection is not None:
+                        failure = ProviderResponseError(
+            rejection, failure_origin="local_response"
+        )
+            if failure is None:
+                self._last_model_returned = (
+                    getattr(response, "model", None) or effective.model
+                )
+                return NativeToolTurn(
+                    model=effective.model,
+                    usage=telemetry.usage,
+                    tool_calls=tool_calls,
+                    final_answer=final_answer,
+                )
+
+            # Do not raise while holding provider-adjacent locals: the public
+            # error's traceback would otherwise retain the response text, the
+            # prompt, and the tool arguments. ``complete_structured`` clears its
+            # locals for the same reason.
+            response = None
+            payload = []
+            request = {}
+            metadata = {}
+            messages = ()
+            tools = ()
+            allowed = set()
+            effective = None
+            agent_name = None
+            telemetry = None
+            tool_calls = ()
+            final_answer = None
+            rejection = None
+            raise failure
+
+
+class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
+    """DeepSeek structured output through native Responses ``json_schema``.
+
+    Chat Completions JSON mode only guarantees JSON *syntax*; it neither
+    accepts a schema nor enforces one, so conformance is left to the model and
+    enforced locally by Pydantic. That was sufficient for the judge only after
+    this transport existed, and it is not sufficient for the target agents: a
+    live Critic canary recorded ``json_invalid`` at ``$`` on both the initial
+    attempt and the one repair, which is reachable only when the provider
+    returns non-empty text that is not parseable JSON at all.
+
+    This base asks the model for the exact requested schema, so the provider
+    constrains its own decoding. Pydantic remains the local authority, the
+    one-repair flow is unchanged, and every failure stays in the existing
+    typed taxonomy. Plain completions keep the Chat Completions path; only
+    ``complete_structured`` moves.
+    """
+
+    async def _responses_structured_attempt(
+        self,
+        messages: list[dict[str, str]],
+        schema: type[SchemaT],
+        *,
+        model: str,
+        request: dict[str, object],
+        metadata: dict[str, JsonValue],
+        configured_max_tokens: int,
+        attempt: int,
+    ) -> SchemaT:
+        async with self._tracker.llm_span(
+            model,
+            {
+                **metadata,
+                "operation": "structured_output",
+                "attempt": attempt,
+                "message_count": len(messages),
+            },
+        ) as span:
+            _sdk = _openai_errors()
+            request_attempt = 0
+
+            async def _request() -> Any:
+                nonlocal request_attempt
+                self._reserve_attempt()
+                request_attempt += 1
+                try:
+                    return await self._client.responses.create(
+                        **{
+                            **request,
+                            "input": messages,
+                            "max_output_tokens": configured_max_tokens,
+                            "text": {
+                                "format": {
+                                    "type": "json_schema",
+                                    "name": schema.__name__,
+                                    "schema": schema.model_json_schema(),
+                                }
+                            },
+                        }
+                    )
+                except (
+                    _sdk.APITimeoutError,
+                    _sdk.RateLimitError,
+                    _sdk.APIConnectionError,
+                    _sdk.APIStatusError,
+                ) as error:
+                    raise _translate_deepseek_error(error)
+                except _sdk.OpenAIError as error:
+                    raise ProviderResponseError(
+                        "DeepSeek Responses request failed",
+                        failure_origin="sdk",
+                    ) from error
+
+            response = await with_retries(
+                _request,
+                retry_count=self._config.retry_count,
+                initial_delay=self._config.retry_initial_delay,
+                max_delay=self._config.retry_max_delay,
+            )
+            telemetry = ProviderResponseTelemetry(
+                finish_reason_category=_responses_finish_reason(response),
+                configured_max_tokens=configured_max_tokens,
+                usage=_responses_usage_from_response(response),
+                request_attempt=request_attempt,
+                structured_attempt=attempt,
+            )
+            self._record_tokens(telemetry.usage)
+            _set_span_result(span, telemetry)
+            if telemetry.finish_reason_category == "length":
+                response = None
+                raise ProviderOutputLimitError(telemetry)
+            if telemetry.finish_reason_category != "stop":
+                response = None
+                raise ProviderResponseError(
+                    "DeepSeek Responses request did not complete cleanly",
+                    failure_origin="local_response",
+                )
+            text = getattr(response, "output_text", None)
+            if not isinstance(text, str):
+                response = None
+                raise ProviderResponseError(
+                    "DeepSeek Responses output did not contain text",
+                    failure_origin="local_response",
+                )
+            if not text.strip():
+                # DeepSeek documents that JSON Output "may occasionally return
+                # empty content". An empty body must not be reported as
+                # malformed JSON: both would otherwise record json_invalid at
+                # the root, making the two failure modes indistinguishable in
+                # an artifact. This mirrors the non-empty requirement
+                # ``_choice_text`` already applies on the chat path.
+                response = None
+                raise _StructuredValidationFailure(
+                    schema.__name__,
+                    StructuredValidationDiagnostic(
+                        attempt=attempt,
+                        field_paths=("$",),
+                        category="schema_output",
+                    ),
+                ) from None
+            try:
+                parsed = schema.model_validate_json(text)
+            except (json.JSONDecodeError, ValidationError) as error:
+                diagnostic = _validation_diagnostic(
+                    error,
+                    attempt=attempt,
+                    schema=schema,
+                )
+            else:
+                self._last_model_returned = (
+                    getattr(response, "model", None) or model
+                )
+                return parsed
+            response = None
+            text = ""
+            parsed = None
+            raise _StructuredValidationFailure(schema.__name__, diagnostic) from None
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[SchemaT],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> SchemaT:
+        if not messages:
+            raise ValueError("messages must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(
+            self._config.max_tokens, max_tokens
+        )
+        effective, request, metadata = _responses_request_options(
+            self._config, agent_name
+        )
+        instruction = _json_instruction(schema)
+        current_messages = [
+            *_translated_messages(messages),
+            {"role": "system", "content": instruction.content},
+        ]
+
+        diagnostics: list[StructuredValidationDiagnostic] = []
+        final_error: StructuredOutputError | None = None
+        for attempt in (1, 2):
+            try:
+                return await self._responses_structured_attempt(
+                    current_messages,
+                    schema,
+                    model=effective.model,
+                    request=request,
+                    metadata=metadata,
+                    configured_max_tokens=resolved_max_tokens,
+                    attempt=attempt,
+                )
+            except _StructuredValidationFailure as error:
+                diagnostics.append(error.diagnostic)
+                if attempt == 2:
+                    final_error = StructuredOutputError(
+                        f"DeepSeek output failed {schema.__name__} validation "
+                        "after one repair attempt",
+                        diagnostics=tuple(diagnostics),
+                    )
+                    break
+                schema_json = json.dumps(
+                    schema.model_json_schema(), sort_keys=True, separators=(",", ":")
+                )
+                repair_guidance = _validation_repair_guidance(error.diagnostic)
+                repair = (
+                    f"The previous JSON response failed {schema.__name__} "
+                    "validation. Return only one JSON object that validates "
+                    "against the supplied JSON Schema. Do not add Markdown or "
+                    "explanatory text. "
+                    f"Validation summary: {_validation_summary(error.diagnostic)}\n"
+                    f"{repair_guidance}"
+                    f"JSON Schema:\n{schema_json}"
+                )
+                current_messages = [
+                    *current_messages,
+                    {"role": "system", "content": repair},
+                ]
+
+        if final_error is None:
+            raise AssertionError("structured output attempt loop did not return")
+
+        # Do not raise while handling the internal validation failure: that
+        # would retain it through ``__context__``/``__cause__``. Clear all
+        # provider-adjacent locals before the public error's traceback is
+        # captured, leaving only the bounded typed diagnostics.
+        self = None
+        messages = []
+        current_messages = []
+        request = {}
+        metadata = {}
+        effective = None
+        agent_name = None
+        schema = BaseModel
+        instruction = None
+        schema_json = ""
+        repair = ""
+        repair_guidance = ""
+        raise final_error
+
+
+class DeepSeekJudgeProvider(_DeepSeekSchemaStructuredProvider):
+    """DeepSeek judge access through the native Responses schema transport."""
+
+
+class DeepSeekSchemaChatProvider(_DeepSeekSchemaStructuredProvider):
+    """DeepSeek target-agent access with schema-enforced structured output.
+
+    Distinct from :class:`DeepSeekJudgeProvider` so the judge and target
+    transports stay separately selectable and separately testable: the
+    evaluation factory builds the target through ``build_chat_provider`` and
+    the judge through ``build_judge_provider``, and a single class would make
+    those two decisions impossible to vary independently.
+    """

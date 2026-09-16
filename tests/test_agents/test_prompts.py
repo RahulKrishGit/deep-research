@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import (
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
     CLAIM_VERIFICATION_INSTRUCTION,
     CLAIM_VERIFICATION_SYSTEM_PROMPT,
+    CRITIC_REVIEW_SYSTEM_PROMPT,
     CRITIC_SYSTEM_PROMPT,
     CRITIQUE_INSTRUCTION,
     FACT_CHECKER_SYSTEM_PROMPT,
-    REACT_RESPONSE_CONTRACT,
+    NATIVE_REACT_RESPONSE_CONTRACT,
     REPORT_INSTRUCTION,
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
+    STRUCTURED_EXAMPLE_NOTICE,
+    STRUCTURED_REPLY_FORMAT,
     SYNTHESIZER_SYSTEM_PROMPT,
     AgentTask,
     render_claim_digest,
@@ -24,38 +28,17 @@ from deep_research.agents.prompts import (
     render_scratchpad,
     render_source_dossier,
     render_source_quality,
-    render_tool_catalog,
+    render_structured_reply_format,
 )
 from deep_research.agents.sources import SourceGroup
-from deep_research.agents.toolset import ToolDescriptor
 from deep_research.memory.entries import ScratchpadEntry
 from deep_research.utils.types import Claim, Finding, ScoredSource
-
-
-def _descriptor(name: str = "echo") -> ToolDescriptor:
-    return ToolDescriptor(
-        name=name,
-        description=f"Call {name}.",
-        input_schema={"value": "string"},
-    )
 
 
 def _entry(content: str, kind: str = "thought") -> ScratchpadEntry:
     return ScratchpadEntry.model_validate(
         {"agent_name": "researcher", "kind": kind, "content": content}
     )
-
-
-def test_tool_catalog_lists_name_description_and_arguments() -> None:
-    catalog = render_tool_catalog([_descriptor("echo"), _descriptor("boom")])
-
-    assert '- echo: Call echo. Arguments: {"value": "string"}' in catalog
-    assert '- boom: Call boom. Arguments: {"value": "string"}' in catalog
-    assert catalog.index("echo") < catalog.index("boom")
-
-
-def test_tool_catalog_says_so_when_no_tool_is_allowed() -> None:
-    assert render_tool_catalog([]) == "(no tools available)"
 
 
 def test_scratchpad_renders_kind_prefixed_lines_oldest_first() -> None:
@@ -86,21 +69,47 @@ def test_scratchpad_collapses_multiline_entry_content_onto_one_line() -> None:
     assert "\n" not in rendered.split("] ", 1)[1]
 
 
-def test_response_contract_tells_the_model_to_leave_final_answer_empty_for_tools() -> (
-    None
-):
-    assert "leave final_answer empty" in REACT_RESPONSE_CONTRACT
+def test_the_native_contract_asks_for_provider_native_tool_calling() -> None:
+    assert "provider-native tool calling" in NATIVE_REACT_RESPONSE_CONTRACT
+    assert (
+        "never write or imitate a tool call in text, JSON, XML, DSML, or a "
+        "Markdown fence" in NATIVE_REACT_RESPONSE_CONTRACT
+    )
+    assert (
+        "return the final answer directly" in NATIVE_REACT_RESPONSE_CONTRACT
+    )
 
 
-def test_response_contract_gives_tool_input_json_guidance_for_finish() -> None:
-    assert 'tool_input_json when finishing' in REACT_RESPONSE_CONTRACT
+def test_the_native_contract_asks_for_one_or_more_tools() -> None:
+    """The transport accepts several calls per turn, so the text must too.
+
+    ``_native_response_outcome`` accepts every ``function_call`` item in one
+    response, so a contract capping the model at one call throws away
+    lookups the transport would have executed.
+    """
+    assert "one or more tools" in NATIVE_REACT_RESPONSE_CONTRACT
+    assert "at most one" not in NATIVE_REACT_RESPONSE_CONTRACT
+    assert (
+        "never write or imitate a tool call in text, JSON, XML, DSML, or a "
+        "Markdown fence" in NATIVE_REACT_RESPONSE_CONTRACT
+    )
+
+
+def test_the_native_contract_never_mentions_the_simulated_protocol() -> None:
+    for forbidden in (
+        "## Tools",
+        "tool_input_json",
+        "tool_name",
+        "ReActDecision",
+        "leave final_answer empty",
+    ):
+        assert forbidden not in NATIVE_REACT_RESPONSE_CONTRACT
 
 
 def test_react_messages_open_with_the_agent_system_prompt() -> None:
     messages = render_react_messages(
         system_prompt="You are a researcher.",
         task=AgentTask(instruction="Summarize QEC progress."),
-        descriptors=[_descriptor()],
         scratchpad=[],
         iteration=1,
         max_iterations=3,
@@ -112,14 +121,13 @@ def test_react_messages_open_with_the_agent_system_prompt() -> None:
     assert messages[1].role == "user"
 
 
-def test_react_messages_carry_task_tools_notes_and_the_iteration_budget() -> None:
+def test_react_messages_carry_task_notes_and_the_iteration_budget() -> None:
     messages = render_react_messages(
         system_prompt="You are a researcher.",
         task=AgentTask(
             instruction="Summarize QEC progress.",
             guidance="Prefer 2025 sources.",
         ),
-        descriptors=[_descriptor()],
         scratchpad=[_entry("Search for benchmarks.")],
         iteration=2,
         max_iterations=3,
@@ -128,17 +136,37 @@ def test_react_messages_carry_task_tools_notes_and_the_iteration_budget() -> Non
 
     assert "Summarize QEC progress." in body
     assert "Prefer 2025 sources." in body
-    assert "- echo: Call echo." in body
     assert "- [thought] Search for benchmarks." in body
     assert "Iteration 2 of 3." in body
-    assert "tool_input_json" in body
+    assert NATIVE_REACT_RESPONSE_CONTRACT in body
+
+
+def test_react_messages_advertise_no_tool_catalogue_and_no_action_envelope() -> None:
+    """The tools ride on the request itself, so the text must name none."""
+    messages = render_react_messages(
+        system_prompt="You are a researcher.",
+        task=AgentTask(instruction="Summarize QEC progress."),
+        scratchpad=[],
+        iteration=1,
+        max_iterations=3,
+    )
+    body = messages[1].content
+
+    for forbidden in (
+        "## Tools",
+        "tool_input_json",
+        "tool_name",
+        "ReActDecision",
+        "Arguments:",
+        "no tools available",
+    ):
+        assert forbidden not in body
 
 
 def test_react_messages_omit_the_guidance_section_when_it_is_blank() -> None:
     messages = render_react_messages(
         system_prompt="You are a researcher.",
         task=AgentTask(instruction="Summarize QEC progress."),
-        descriptors=[],
         scratchpad=[],
         iteration=1,
         max_iterations=1,
@@ -154,7 +182,6 @@ def test_react_messages_are_deterministic() -> None:
             for message in render_react_messages(
                 system_prompt="You are a researcher.",
                 task=AgentTask(instruction="Summarize QEC progress."),
-                descriptors=[_descriptor()],
                 scratchpad=[_entry("note")],
                 iteration=1,
                 max_iterations=3,
@@ -179,7 +206,6 @@ def test_react_messages_reject_an_impossible_iteration_budget(
         render_react_messages(
             system_prompt="You are a researcher.",
             task=AgentTask(instruction="Summarize QEC progress."),
-            descriptors=[],
             scratchpad=[],
             iteration=iteration,
             max_iterations=max_iterations,
@@ -193,7 +219,6 @@ def test_react_messages_render_the_full_body_verbatim() -> None:
             instruction="Summarize QEC progress.",
             guidance="Prefer 2025 sources.",
         ),
-        descriptors=[_descriptor()],
         scratchpad=[_entry("Search for benchmarks.")],
         iteration=2,
         max_iterations=3,
@@ -204,14 +229,12 @@ def test_react_messages_render_the_full_body_verbatim() -> None:
         "Summarize QEC progress.\n\n"
         "## Guidance\n"
         "Prefer 2025 sources.\n\n"
-        "## Tools\n"
-        '- echo: Call echo. Arguments: {"value": "string"}\n\n'
         "## Notes so far\n"
         "- [thought] Search for benchmarks.\n\n"
         "## Budget\n"
         "Iteration 2 of 3.\n\n"
-        "## Response contract\n"
-        f"{REACT_RESPONSE_CONTRACT}"
+        "## How to respond\n"
+        f"{NATIVE_REACT_RESPONSE_CONTRACT}"
     )
 
 
@@ -220,7 +243,6 @@ def test_react_messages_reject_a_blank_system_prompt() -> None:
         render_react_messages(
             system_prompt="   ",
             task=AgentTask(instruction="Summarize QEC progress."),
-            descriptors=[],
             scratchpad=[],
             iteration=1,
             max_iterations=1,
@@ -289,14 +311,12 @@ def test_source_dossier_renders_every_scoring_input() -> None:
         findings=[_prompt_finding()],
     )
 
-    rendered = render_source_dossier(
-        group, index=2, corroboration=0.5, reputation=0.9
-    )
+    rendered = render_source_dossier(group, index=2, reputation=0.9)
 
     assert "Source 2: https://example.org/a" in rendered
     assert "Title: QEC 2025" in rendered
     assert "Cited for: Alpha" in rendered
-    assert "Corroboration (computed): 0.50" in rendered
+    assert "Corroboration" not in rendered
     assert "Known reputation: 0.90" in rendered
     assert "Logical error rates fell below break-even." in rendered
 
@@ -306,9 +326,7 @@ def test_source_dossier_says_so_when_no_reputation_is_known() -> None:
         url="https://example.org/a", domain="example.org", title="A"
     )
 
-    rendered = render_source_dossier(
-        group, index=1, corroboration=0.0, reputation=None
-    )
+    rendered = render_source_dossier(group, index=1, reputation=None)
 
     assert "Known reputation: none on record" in rendered
     assert "(no findings)" in rendered
@@ -324,7 +342,7 @@ def test_source_dossier_clamps_long_finding_text() -> None:
     )
 
     rendered = render_source_dossier(
-        group, index=1, corroboration=0.0, reputation=None, excerpt_chars=50
+        group, index=1, reputation=None, excerpt_chars=50
     )
 
     assert "x" * 500 not in rendered
@@ -357,7 +375,6 @@ def test_source_quality_marks_low_confidence_sources() -> None:
                 authority_score=0.9,
                 recency_score=0.8,
                 relevance_score=0.9,
-                corroboration_score=1.0,
                 overall_score=0.9,
                 rationale="Strong.",
             ),
@@ -367,7 +384,6 @@ def test_source_quality_marks_low_confidence_sources() -> None:
                 authority_score=0.1,
                 recency_score=0.1,
                 relevance_score=0.1,
-                corroboration_score=0.0,
                 overall_score=0.08,
                 rationale="Weak.",
                 low_confidence=True,
@@ -375,21 +391,114 @@ def test_source_quality_marks_low_confidence_sources() -> None:
         ]
     )
 
-    assert "https://example.org/a: 0.90" in rendered
-    assert "https://weak.test/b: 0.08 (LOW CONFIDENCE)" in rendered
+    assert "https://example.org/a: score=0.90 status=scored" in rendered
+    assert (
+        "https://weak.test/b: score=0.08 status=scored low_confidence=true"
+        in rendered
+    )
 
 
 def test_source_quality_handles_an_empty_list() -> None:
     assert render_source_quality([]) == "(no sources scored)"
 
 
+def test_source_quality_renders_unscored_status_without_a_numeric_placeholder() -> None:
+    rendered = render_source_quality(
+        [
+            ScoredSource(
+                url="https://capped.test/source",
+                title="Capped",
+                authority_score=None,
+                recency_score=None,
+                relevance_score=None,
+                overall_score=None,
+                rationale="Past the source cap.",
+                evaluation_status="unscored_cap",
+            )
+        ]
+    )
+
+    assert rendered == "- https://capped.test/source: status=unscored_cap"
+    assert "0.20" not in rendered
+
+
+def test_source_quality_deduplicates_and_caps_by_relevance() -> None:
+    rendered = render_source_quality(
+        [
+            ScoredSource(
+                url="https://example.test/a",
+                title="A old",
+                authority_score=0.8,
+                recency_score=0.8,
+                relevance_score=0.2,
+                overall_score=0.3,
+                rationale="Old assessment.",
+            ),
+            ScoredSource(
+                url="https://EXAMPLE.test/a/",
+                title="A current",
+                authority_score=0.9,
+                recency_score=0.9,
+                relevance_score=0.95,
+                overall_score=0.92,
+                rationale="Current assessment.",
+            ),
+            ScoredSource(
+                url="https://other.test/b",
+                title="B",
+                authority_score=0.3,
+                recency_score=0.4,
+                relevance_score=0.1,
+                overall_score=0.2,
+                rationale="Low relevance.",
+            ),
+            ScoredSource(
+                url="https://capped.test/c",
+                title="C",
+                authority_score=None,
+                recency_score=None,
+                relevance_score=None,
+                overall_score=None,
+                rationale="Past the cap.",
+                evaluation_status="unscored_cap",
+            ),
+        ],
+        max_sources=2,
+    )
+
+    assert rendered.splitlines() == [
+        "- https://example.test/a: score=0.92 status=scored",
+        "- https://other.test/b: score=0.20 status=scored",
+    ]
+    assert rendered.count("https://example.test/a") == 1
+
+
 def test_new_prompt_constants_state_their_contracts() -> None:
     # The scoring call must never be asked for a combined score: this
-    # project computes overall_score from the four recorded dimensions.
+    # project computes overall_score from the three source dimensions.
     assert "overall" not in SOURCE_SCORING_INSTRUCTION
     assert "authority" in SOURCE_SCORING_INSTRUCTION
     assert "between 0 and 1" in SOURCE_SCORING_INSTRUCTION
     assert "exact url" in SOURCE_EVALUATOR_SYSTEM_PROMPT
+
+
+def test_constraint_cells_disclose_the_provider_only_trust_boundary() -> None:
+    """Mechanism/geography have no structured provenance in Task 6."""
+    instruction = REPORT_INSTRUCTION.casefold()
+
+    assert "provider-only" in instruction
+    assert "not structurally validated" in instruction
+
+
+def test_source_consumers_distinguish_quality_scores_from_statuses() -> None:
+    assert "quality score of every source" not in SYNTHESIZER_SYSTEM_PROMPT
+    assert "quality score when scored" in SYNTHESIZER_SYSTEM_PROMPT
+    assert "explicit evaluation status otherwise" in SYNTHESIZER_SYSTEM_PROMPT
+    assert "quality score when scored" in CRITIC_REVIEW_SYSTEM_PROMPT
+    assert "explicit evaluation status otherwise" in CRITIC_REVIEW_SYSTEM_PROMPT
+    assert "source scores" not in CRITIC_SYSTEM_PROMPT
+    assert "quality score when scored" in CRITIC_SYSTEM_PROMPT
+    assert "explicit evaluation status otherwise" in CRITIC_SYSTEM_PROMPT
     assert "independent" in FACT_CHECKER_SYSTEM_PROMPT
     assert "retrieved findings" in CLAIM_EXTRACTION_SYSTEM_PROMPT
     assert "empty list" in CLAIM_EXTRACTION_INSTRUCTION
@@ -407,12 +516,14 @@ def _digest_claim(
     urls: list[str] | None = None,
 ) -> Claim:
     return Claim(
+        claim_id=claim_fingerprint(text),
         text=text,
         source_urls=urls or ["https://example.org/a"],
         verdict=verdict,
         confidence=confidence,
         evidence=[],
         contradictions=[],
+        verification_evidence=[],
     )
 
 
@@ -462,3 +573,125 @@ def test_the_critic_prompt_states_the_gap_and_score_contracts() -> None:
     assert "materially" in CRITIQUE_INSTRUCTION
     assert "routing" not in CRITIQUE_INSTRUCTION
     assert "recommended" in CRITIQUE_INSTRUCTION
+
+
+def test_the_review_system_prompt_names_no_tools() -> None:
+    """The review request offers no tools, so its prompt must not name any.
+
+    Measured: the review payload carries no ``tools`` and no ``tool_choice``,
+    yet the prompt announced ``web_search`` and ``query_memory``. The model
+    obeyed and emitted DeepSeek tool-invocation markup into the message text,
+    which local JSON validation rejected — 16 of 30 first attempts.
+    """
+    lowered = CRITIC_REVIEW_SYSTEM_PROMPT.lower()
+    for forbidden in ("web_search", "query_memory", "tool", "spot-check"):
+        assert forbidden not in lowered, forbidden
+
+
+def test_the_review_prompt_describes_the_report_boundaries() -> None:
+    assert "fenced block" in CRITIC_REVIEW_SYSTEM_PROMPT
+    # No angle-bracket marker vocabulary may survive anywhere in the prompt.
+    assert "BEGIN" not in CRITIC_REVIEW_SYSTEM_PROMPT
+    assert "END marker" not in CRITIC_REVIEW_SYSTEM_PROMPT
+    assert "<" not in CRITIC_REVIEW_SYSTEM_PROMPT
+    # The tool-aware prompt still belongs to the ReAct spot-check loop.
+    assert "web_search" in CRITIC_SYSTEM_PROMPT
+    assert "query_memory" in CRITIC_SYSTEM_PROMPT
+
+
+def test_unsupported_claims_are_defined_leniently_with_an_override() -> None:
+    """Attribution counts as support, unless evidence contradicts it.
+
+    Measured: the earlier wording — "statements the report makes that no cited
+    source or verified claim backs" — admitted two readings, and the Critic took
+    the strict one. Live canary judge rationales report 4, 8 and 5 unsupported
+    claims, reasoned from "outside the two verified claims" while the report
+    attributes those statements inline to named sources.
+
+    Strictness is self-defeating here for a structural reason: claim extraction
+    is deliberately partial (it selects only the most load-bearing claims), so
+    absence from the digest would function as evidence of unsupportedness, and
+    `route_decision` consults `unsupported_claims` after the score and gaps
+    checks, so over-reporting forces refinement on runs that would otherwise be
+    accepted.
+
+    The override matters as much as the leniency: a bare citation must not
+    survive a claim verdict or spot-check evidence that contradicts it.
+    """
+    prose = " ".join(CRITIQUE_INSTRUCTION.split())
+
+    # Lenient by default.
+    assert "neither clearly attributed to one of the report's cited sources" in prose
+    assert "nor backed by a verified claim" in prose
+    # Absence from the digest is explicitly not evidence of unsupportedness.
+    assert "the claim digest is deliberately partial" in prose
+    assert "absence from it is not evidence of unsupportedness" in prose
+    assert (
+        "Do not mark a cited statement unsupported solely because it lacks a "
+        "separate verified-claim entry" in prose
+    )
+    # …and the override keeps the lenient reading from laundering citations.
+    assert "A contrary claim verdict or spot-check evidence still makes a " in prose
+    assert "statement unsupported, however it is cited" in prose
+    # The superseded strict wording must be gone.
+    assert "that no cited source or verified claim backs" not in prose
+
+
+# --- the shared structured reply format --------------------------------------
+
+def test_the_shared_reply_format_names_json_and_forbids_a_fence() -> None:
+    assert "JSON object" in STRUCTURED_REPLY_FORMAT
+    assert "no Markdown fence" in STRUCTURED_REPLY_FORMAT
+
+
+def test_render_structured_reply_format_normalizes_each_example() -> None:
+    rendered = render_structured_reply_format(
+        (
+            (
+                "Example input: an isolated case.",
+                '{ "b": 2,\n "a": 1 }',
+            ),
+        )
+    )
+
+    assert STRUCTURED_REPLY_FORMAT in rendered
+    assert STRUCTURED_EXAMPLE_NOTICE in rendered
+    assert "Example input: an isolated case.\nExample JSON output:\n" in rendered
+    # Compact, sorted, single-line, and never fenced.
+    assert '{"a":1,"b":2}' in rendered
+    assert "```" not in rendered
+
+
+def test_render_structured_reply_format_accepts_two_examples() -> None:
+    rendered = render_structured_reply_format(
+        (
+            ("Weak example input: a.", '{"score":1}'),
+            ("Strong example input: b.", '{"score":9}'),
+        )
+    )
+
+    assert rendered.count("Example JSON output:") == 2
+
+
+@pytest.mark.parametrize(
+    "examples",
+    [
+        pytest.param((), id="zero-examples"),
+        pytest.param(
+            (
+                ("One.", '{"a":1}'),
+                ("Two.", '{"a":2}'),
+                ("Three.", '{"a":3}'),
+            ),
+            id="three-examples",
+        ),
+        pytest.param((("Example input: x.", "{not json}"),), id="malformed-json"),
+        pytest.param((("Example input: x.", "[1, 2]"),), id="array-payload"),
+        pytest.param((("Example input: x.", '"scalar"'),), id="scalar-payload"),
+        pytest.param((("   ", '{"a":1}'),), id="blank-label"),
+        pytest.param((("Line one\nLine two", '{"a":1}'),), id="multi-line-label"),
+    ],
+)
+def test_render_structured_reply_format_fails_closed(examples) -> None:
+    with pytest.raises(ValueError):
+        render_structured_reply_format(examples)

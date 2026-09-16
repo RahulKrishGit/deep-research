@@ -12,6 +12,7 @@ from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
 from deep_research.providers import validate_agent_model_configs
+from deep_research.request_budget import RequestBudget
 from deep_research.runtime.assembly import (
     AGENT_NAMES,
     ResearchRuntime,
@@ -181,7 +182,7 @@ async def test_the_memory_tools_are_wired_to_the_bridge(tracker) -> None:
 
 
 class RecordingProvider:
-    """A structured completer that is never called during assembly."""
+    """A full agent provider that is never called during assembly."""
 
     def __init__(self) -> None:
         self.calls: list[object] = []
@@ -191,6 +192,26 @@ class RecordingProvider:
     ):
         self.calls.append((messages, schema, agent_name))
         raise AssertionError("assembly must not call the provider")
+
+    async def complete_react(
+        self, messages, tools, *, agent_name=None, max_tokens=None
+    ):
+        self.calls.append((messages, tools, agent_name))
+        raise AssertionError("assembly must not call the provider")
+
+
+class StructuredOnlyProvider:
+    """A provider missing the native tool capability.
+
+    Construction must reject it: an agent that reached its first ReAct
+    iteration without ``complete_react`` would fail mid-loop, after the
+    session had already begun.
+    """
+
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None
+    ):
+        raise AssertionError("a rejected provider must never be called")
 
 
 def _recording_agent_class(real_class, *, kwarg: str, captured: list[object]):
@@ -292,6 +313,32 @@ def test_build_agents_reports_a_missing_tool_as_a_configuration_failure(
     assert caught.value.reason == "agents_misconfigured"
 
 
+@pytest.mark.parametrize("agent_name", AGENT_NAMES)
+def test_a_provider_without_native_react_is_rejected_before_an_agent_runs(
+    agent_name,
+    tracker,
+) -> None:
+    """A structured-only provider must fail at construction, not mid-loop."""
+    settings = ConfigSettings()
+    with pytest.raises(AgentConfigurationError) as caught:
+        build_agent(
+            agent_name,
+            settings,
+            tracker=tracker,
+            provider=StructuredOnlyProvider(),
+            tools=build_tools(
+                settings,
+                tracker=tracker,
+                memory=build_bridge(),
+                search_client=FakeSearchClient(),
+            ),
+            session_id="session-1",
+            reputation=None,
+        )
+
+    assert "native ReAct" in str(caught.value)
+
+
 def test_build_agent_matches_production_build_agents_for_every_agent(
     tracker,
 ) -> None:
@@ -363,6 +410,105 @@ def test_build_agent_gives_the_source_evaluator_the_reputation_source(
     )
 
     assert agent._reputation is memory
+
+
+def test_the_production_researcher_gets_only_read_and_discovery_tools(
+    tracker,
+) -> None:
+    """Four tools, and nothing that writes.
+
+    A finding is not evidence until the Source Evaluator and the Fact Checker
+    have judged it, so the agent that gathers one must not be able to keep it
+    in long-term memory first. ``build_tools`` still builds
+    ``save_to_memory`` for the agents that finalize evidence; this is about
+    what the Researcher's own toolset admits.
+    """
+    settings = ConfigSettings()
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    agent = build_agent(
+        "researcher",
+        settings,
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    assert agent.toolset.names == (
+        "web_search",
+        "web_scraper",
+        "document_reader",
+        "query_memory",
+    )
+    assert "save_to_memory" not in agent.toolset
+    assert "save_to_memory" in {tool.name for tool in tools}
+
+
+def test_the_production_researcher_receives_the_configured_sub_topic_cap(
+    tracker,
+) -> None:
+    """The configured bound must reach the agent, not just the settings object.
+
+    ``agents.max_sub_topics`` exists so a deployment can decide how much of a
+    plan one pass attempts; a value nothing passes to the Researcher is a
+    knob that silently does nothing.
+    """
+    settings = ConfigSettings.model_validate(
+        {"agents": {"max_sub_topics": 2}}
+    )
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    agent = build_agent(
+        "researcher",
+        settings,
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    assert agent._max_sub_topics == 2
+
+
+def test_an_agent_without_a_sub_topic_cap_is_not_given_one(tracker) -> None:
+    """The four sub-topic cap belongs to the Researcher alone."""
+    tools = build_tools(
+        ConfigSettings(),
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    for name in (
+        "planner",
+        "source_evaluator",
+        "fact_checker",
+        "synthesizer",
+        "critic",
+    ):
+        agent = build_agent(
+            name,
+            ConfigSettings(),
+            tracker=tracker,
+            provider=RecordingProvider(),
+            tools=tools,
+            session_id="session-1",
+            reputation=None,
+        )
+        assert not hasattr(agent, "_max_sub_topics"), name
 
 
 def test_build_agent_rejects_an_unknown_agent_name(tracker) -> None:
@@ -630,7 +776,7 @@ async def test_deepseek_chat_still_builds_the_configured_embedding_provider(
     monkeypatch.setattr(
         assembly,
         "build_chat_provider",
-        lambda config, received_tracker: (
+        lambda config, received_tracker, **_kwargs: (
             built.append((config.provider, received_tracker)) or provider
         ),
     )
@@ -672,9 +818,9 @@ async def test_deepseek_key_failure_never_falls_back_to_openai_chat(
     factory_calls: list[str] = []
     real_build = assembly.build_chat_provider
 
-    def recording_build(config, received_tracker):
+    def recording_build(config, received_tracker, **kwargs):
         factory_calls.append(config.provider)
-        return real_build(config, received_tracker)
+        return real_build(config, received_tracker, **kwargs)
 
     monkeypatch.setattr(assembly, "build_chat_provider", recording_build)
 
@@ -899,3 +1045,199 @@ async def test_build_runtime_uses_the_local_embedding_provider_by_default(
     )
 
     assert isinstance(captured[0], LocalEmbeddingProvider)
+
+
+# --- the run's request budget -------------------------------------------------
+#
+# One budget per run: the chat transports and the Tavily search tool reserve
+# against the same counters, so a declared ceiling bounds the run rather than a
+# single collaborator. Every assertion about that budget is an ``is``
+# comparison, never ``==``: ``RequestBudget`` holds mutable counters, so a copy
+# would spend a *second* set of them and the ceiling would be whatever each
+# collaborator happened to be handed.
+
+
+def _recording_tool_class(real_class, *, captured: list[dict[str, object]]):
+    """A tool subclass that records the keyword arguments it was built with."""
+
+    class RecordingTool(real_class):
+        def __init__(self, *args, **kwargs):
+            captured.append(dict(kwargs))
+            super().__init__(*args, **kwargs)
+
+    return RecordingTool
+
+
+class _BudgetSeams:
+    """Capture what ``build_runtime`` hands each seam, without a network.
+
+    ``build_tools`` is wrapped rather than replaced, so the tools that come out
+    are the real ones; the provider and embedding factories are replaced by
+    doubles that record their arguments and build nothing external.
+    """
+
+    TOOL_CLASSES = (
+        "WebScraperTool",
+        "DocumentReaderTool",
+        "QueryMemoryTool",
+        "SaveToMemoryTool",
+        "WriteDocumentTool",
+    )
+
+    def __init__(self, monkeypatch) -> None:
+        self.provider: list[object] = []
+        self.tools: list[object] = []
+        self.search: list[dict[str, object]] = []
+        self.embeddings: list[dict[str, object]] = []
+        self.other_tools: dict[str, list[dict[str, object]]] = {
+            name: [] for name in self.TOOL_CLASSES
+        }
+        self.constructed: list[object] = []
+        constructed = self.constructed
+        real_build_tools = assembly.build_tools
+
+        class RecordingRequestBudget(RequestBudget):
+            """Counts every budget the wiring constructs."""
+
+            def __init__(self, config=None) -> None:
+                super().__init__(config)
+                constructed.append(self)
+
+        def recording_build_tools(*args, **kwargs):
+            self.tools.append(kwargs.get("request_budget"))
+            return real_build_tools(*args, **kwargs)
+
+        def recording_build_chat_provider(*args, **kwargs):
+            self.provider.append(kwargs.get("request_budget"))
+            return RecordingProvider()
+
+        def recording_build_embedding_provider(provider, *, model, **kwargs):
+            self.embeddings.append(
+                {"provider": provider, "model": model, **kwargs}
+            )
+            return FakeEmbeddings()
+
+        # ``raising=False``: a module that has not imported the name yet must
+        # fail the behaviour assertions below, not the patch itself.
+        monkeypatch.setattr(
+            assembly, "RequestBudget", RecordingRequestBudget, raising=False
+        )
+        monkeypatch.setattr(assembly, "build_tools", recording_build_tools)
+        monkeypatch.setattr(
+            assembly, "build_chat_provider", recording_build_chat_provider
+        )
+        monkeypatch.setattr(
+            assembly,
+            "build_embedding_provider",
+            recording_build_embedding_provider,
+        )
+        monkeypatch.setattr(
+            assembly,
+            "WebSearchTool",
+            _recording_tool_class(assembly.WebSearchTool, captured=self.search),
+        )
+        for class_name in self.TOOL_CLASSES:
+            monkeypatch.setattr(
+                assembly,
+                class_name,
+                _recording_tool_class(
+                    getattr(assembly, class_name),
+                    captured=self.other_tools[class_name],
+                ),
+            )
+
+
+async def _runtime_through_the_seams(tracker, tmp_path, *, settings=None):
+    """Build one runtime through the captured seams, with nothing external."""
+    return await build_runtime(
+        settings
+        if settings is not None
+        else ConfigSettings.model_validate(
+            {"output": {"directory": str(tmp_path)}}
+        ),
+        session_id="session-1",
+        tracker=tracker,
+        long_term=LongTermMemory(
+            collection=FakeCollection(), embeddings=FakeEmbeddings()
+        ),
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+        search_client=FakeSearchClient(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_shares_one_request_budget_by_identity(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """Exactly one budget, and every seam receives that same object."""
+    seams = _BudgetSeams(monkeypatch)
+
+    runtime = await _runtime_through_the_seams(tracker, tmp_path)
+
+    assert len(seams.constructed) == 1
+    budget = seams.constructed[0]
+    assert isinstance(budget, RequestBudget)
+    assert len(seams.provider) == 1
+    assert len(seams.tools) == 1
+    assert len(seams.search) == 1
+    assert seams.provider[0] is budget
+    assert seams.tools[0] is budget
+    assert seams.search[0].get("request_budget") is budget
+    assert runtime.request_budget is budget
+
+
+@pytest.mark.asyncio
+async def test_the_configured_request_budget_reaches_the_run_budget(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """A declared ceiling and stop fraction survive the wiring unchanged."""
+    seams = _BudgetSeams(monkeypatch)
+    settings = ConfigSettings.model_validate(
+        {
+            "request_budget": {
+                "deepseek_attempt_ceiling": 10,
+                "openai_attempt_ceiling": 6,
+                "tavily_attempt_ceiling": 4,
+                "stop_fraction": 0.5,
+            }
+        }
+    )
+
+    runtime = await _runtime_through_the_seams(
+        tracker, tmp_path, settings=settings
+    )
+
+    budget = seams.provider[0]
+    assert isinstance(budget, RequestBudget)
+    assert [
+        (snapshot.provider, snapshot.ceiling, snapshot.effective_limit)
+        for snapshot in budget.snapshots()
+    ] == [("deepseek", 10, 5), ("openai", 6, 3), ("tavily", 4, 2)]
+    assert runtime.request_budget is budget
+
+
+@pytest.mark.asyncio
+async def test_only_the_search_tool_receives_the_run_request_budget(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """The budget belongs to the Tavily transport. No other collaborator gets one."""
+    seams = _BudgetSeams(monkeypatch)
+    settings = ConfigSettings.model_validate(
+        {"request_budget": {"tavily_attempt_ceiling": 3}}
+    )
+
+    await _runtime_through_the_seams(tracker, tmp_path, settings=settings)
+
+    assert {
+        name: [kwargs.get("request_budget") for kwargs in calls]
+        for name, calls in seams.other_tools.items()
+    } == dict.fromkeys(_BudgetSeams.TOOL_CLASSES, [None])
+    # Embeddings are not transport attempts, so the factory is called with its
+    # own two arguments and nothing else.
+    assert seams.embeddings == [
+        {"provider": "local", "model": "text-embedding-3-small"}
+    ]
+
+    assert len(seams.search) == 1
+    assert seams.search[0].get("request_budget") is not None
+    assert seams.search[0].get("request_budget") is seams.provider[0]

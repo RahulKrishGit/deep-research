@@ -8,6 +8,14 @@ llm:
   embedding_provider: local
   embedding_model: text-embedding-3-small
   thinking_mode: enabled
+  # Finalized at `high` for every agent. DeepSeek V4 Flash supports only `high`
+  # and `max`, and `high` is the cheaper of the two enabled levels while still
+  # being a genuine reasoning setting; the live canary re-runs at this value.
+  # This is the SINGLE production knob — all six agents share it. The per-agent
+  # split in evaluation.target_reasoning_effort_overrides (planner, fact_checker,
+  # synthesizer and critic at `max`; researcher and source_evaluator at `high`)
+  # is the approved cutover baseline for EVALUATION targets only, and production
+  # cannot express a per-agent effort without a code change.
   reasoning_effort: high
   model_overrides: {}
   timeout: 60.0
@@ -18,11 +26,20 @@ llm:
   retry_initial_delay: 1.0
   retry_max_delay: 16.0
   temperature: 0.7
-  max_tokens: 4096
+  # Output budget ceiling. Every request type now carries a generous budget:
+  # the global cap and each operation-specific budget are all 32768. A low cap
+  # does not save money when it is unused, but it does cost a whole repetition
+  # when it truncates a large structured reply. If a particular operation
+  # proves slow, reduce its prompt rather than this ceiling.
+  max_tokens: 32768
 
 langsmith:
-  tracing_enabled: false
-  project: ""
+  # On by default, per direct instruction. Two settings deliberately stay in
+  # .env instead of here: LANGSMITH_API_KEY (a credential) and
+  # LANGSMITH_ENDPOINT (the LangSmith SDK reads it straight from the
+  # environment and there is no config.yaml equivalent for it).
+  tracing_enabled: true
+  project: deep-research-dev
 
 tavily:
   search_depth: basic
@@ -38,14 +55,46 @@ memory:
     strategies_path: memory/strategies.json
 
 agents:
+  source_evaluator:
+    # Score new canonical URLs in bounded provider batches, while retaining a
+    # complete explicit record for every source beyond the run cap.
+    batch_size: 12
+    max_total_sources: 36
   max_iterations: 5
   tool_budget: 10
+  # How many planned sub-topics one Researcher pass attempts
+  # (AGENTS_MAX_SUB_TOPICS overrides this). Seven is the Planner's own ceiling,
+  # so the default attempts the whole plan. A smaller cap silently drops the
+  # least important planned sub-topics; each dropped one is recorded as
+  # researcher_sub_topic_skipped with its coverage id, but the report is short
+  # for it regardless.
+  max_sub_topics: 7
   prompt_context_entries: 8
   observation_summary_chars: 200
   # Operation-specific output budget for the planner's final
   # ResearchPlanDraft request only; ReAct decisions and judge calls keep
   # llm.max_tokens (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).
-  planner_final_max_tokens: 4096
+  planner_final_max_tokens: 32768
+  # Operation-specific output budget for the Critic's report-review request
+  # only (AGENTS_CRITIC_REVIEW_MAX_TOKENS overrides this). That call renders
+  # the report, the claims, the source scores, and the spot-check evidence,
+  # then asks for a score plus three lists plus a rationale in one object. At
+  # 4096 it returned non-JSON text on both the initial attempt and the single
+  # repair in three consecutive live canaries.
+  critic_review_max_tokens: 32768
+  # Operation-specific output budget for the judge's JudgeVerdict request
+  # (AGENTS_JUDGE_MAX_TOKENS overrides this). The verdict carries six common
+  # dimensions, the agent-specific dimensions, and a rationale; once the
+  # Critic began producing a real critique the judge hit the global cap and
+  # returned judge_output_limit with no score at all.
+  judge_max_tokens: 32768
+  # Output budget for every ReAct decision request
+  # (AGENTS_REACT_DECISION_MAX_TOKENS overrides this). A live Critic repetition
+  # recorded {kind: output_limit, operation: react_decision}: the spot-check
+  # decision hit the global cap and was truncated, which degrades the
+  # spot-check phase silently rather than failing the run. A decision carries
+  # the agent's reasoning, one tool call, and that call's arguments.
+  react_decision_max_tokens: 32768
 
 graph:
   max_iterations: 3

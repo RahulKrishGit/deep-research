@@ -13,6 +13,10 @@ from deep_research.providers.contracts import (
     ProviderTimeoutError,
 )
 from deep_research.providers.retry import with_retries
+from deep_research.request_budget import (
+    RequestAttemptLimitError,
+    RequestBudgetSnapshot,
+)
 
 
 def _recorded_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
@@ -68,7 +72,7 @@ async def test_with_retries_raises_final_error_after_exhaustion(monkeypatch) -> 
     slept = _recorded_sleeps(monkeypatch)
 
     async def operation() -> str:
-        raise ProviderResponseError("boom", retryable=True)
+        raise ProviderResponseError("boom", retryable=True, failure_origin="sdk")
 
     with pytest.raises(ProviderResponseError, match="boom"):
         await with_retries(operation, retry_count=3, initial_delay=1.0, max_delay=4.0)
@@ -120,4 +124,44 @@ async def test_with_retries_propagates_output_limit_without_retrying(
         await with_retries(operation, retry_count=5, initial_delay=1.0, max_delay=16.0)
 
     assert calls == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_with_retries_never_retries_a_spent_request_budget(monkeypatch) -> None:
+    """A refused attempt is a ceiling, not a transient failure.
+
+    Today the refusal survives this loop only because ``_is_transient``
+    recognises exactly three typed provider errors and nothing else. A future
+    broadening of that predicate — the natural-looking way to "make retries
+    more robust" — would silently retry a spent budget: every retry would ask
+    the same budget for headroom it has already refused, so the declared
+    ceiling would stop being a ceiling. This test freezes today's contract; it
+    is not a licence to change ``retry.py``.
+    """
+    slept = _recorded_sleeps(monkeypatch)
+    refusal = RequestAttemptLimitError(
+        RequestBudgetSnapshot(
+            provider="tavily",
+            attempts=4,
+            ceiling=4,
+            effective_limit=4,
+            input_tokens=0,
+            output_tokens=0,
+        )
+    )
+    calls = 0
+
+    async def operation() -> str:
+        nonlocal calls
+        calls += 1
+        raise refusal
+
+    with pytest.raises(RequestAttemptLimitError) as caught:
+        await with_retries(
+            operation, retry_count=5, initial_delay=1.0, max_delay=16.0
+        )
+
+    assert calls == 1
+    assert caught.value is refusal
     assert slept == []

@@ -5,7 +5,14 @@ from collections.abc import Sequence
 from itertools import islice
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 from deep_research.observability import TokenUsage
 
@@ -20,6 +27,17 @@ FinishReasonCategory: TypeAlias = Literal[
 ]
 ProviderFailureCategory: TypeAlias = Literal[
     "output_limit", "transport", "http", "response"
+]
+ProviderFailureOrigin: TypeAlias = Literal["sdk", "local_response"]
+ProviderFailureKind: TypeAlias = Literal[
+    "output_limit",
+    "schema_output",
+    "provider_timeout",
+    "provider_rate_limit",
+    "provider_transport",
+    "provider_http",
+    "provider_response",
+    "provider_failure",
 ]
 StructuredDiagnosticCategory: TypeAlias = Literal[
     "schema_output",
@@ -37,6 +55,7 @@ _FIELD_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$|^[0-9]+$")
 _MAX_FIELD_PATHS = 16
 _MAX_FIELD_PATH_LENGTH = 128
 _MAX_STRUCTURED_DIAGNOSTICS = 2
+_PROVIDER_FAILURE_ORIGINS = frozenset({"sdk", "local_response"})
 
 
 def _normalize_field_path(value: object) -> str:
@@ -68,6 +87,57 @@ class ChatResult(ProviderContract):
     text: str = Field(min_length=1)
     model: str = Field(min_length=1)
     usage: TokenUsage
+
+
+class ToolDefinition(ProviderContract):
+    """One sanitized function definition as a provider receives it."""
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    parameters: dict[str, JsonValue]
+
+
+class NativeToolCall(ProviderContract):
+    """One provider-selected application tool, with no provider object or id."""
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    tool_name: str = Field(min_length=1)
+    arguments_json: str = Field(min_length=1)
+
+
+class NativeToolTurn(ProviderContract):
+    """One native ReAct turn: one or more tool calls, or one final answer.
+
+    The provider protocol allows a single turn to select several tools at once.
+    That shape is accepted rather than rejected: it is well formed, and the
+    second live release gate lost 4 of its 30 requests to a parser that
+    required exactly one call per turn.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    model: str = Field(min_length=1)
+    usage: TokenUsage
+    tool_calls: tuple[NativeToolCall, ...] = ()
+    final_answer: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "NativeToolTurn":
+        if bool(self.tool_calls) == (self.final_answer is not None):
+            raise ValueError(
+                "native tool turns require exactly one of: one or more tool "
+                "calls, or a final answer"
+            )
+        return self
 
 
 class ProviderResponseTelemetry(ProviderContract):
@@ -109,6 +179,13 @@ class StructuredValidationDiagnostic(ProviderContract):
 class ProviderError(RuntimeError):
     """Base caller-facing error for every chat provider boundary."""
 
+    def redacted_copy(self, message: str) -> "ProviderError":
+        """A same-typed copy whose message carries no provider content."""
+        try:
+            return type(self)(message)
+        except Exception:
+            return ProviderError(message)
+
 
 class ProviderConfigurationError(ProviderError):
     """The selected provider or effective model configuration is invalid."""
@@ -128,18 +205,29 @@ class ProviderResponseError(ProviderError):
     ``retryable`` marks transient failures (connection errors, 408/409/429,
     and 5xx statuses) that the repo-owned retry policy may retry;
     deterministic 4xx and content failures default to ``False``.
+
+    ``failure_origin`` separates the two situations that share
+    ``failure_category="response"`` and are otherwise indistinguishable after
+    the fact: the SDK itself rejected the request (``"sdk"``), or the SDK
+    returned a response our own validation refused (``"local_response"``).
+    It is required rather than defaulted because a caller that omits it would
+    silently record a guess, and the origin decides whether the remedy is a
+    retry/transport fix or a response-grammar fix.
     """
 
     def __init__(
         self,
         message: str,
         *,
+        failure_origin: ProviderFailureOrigin,
         retryable: bool = False,
         failure_category: ProviderFailureCategory = "response",
         http_status_code: int | None = None,
     ) -> None:
         if failure_category not in {"output_limit", "transport", "http", "response"}:
             raise ValueError("failure_category must be a known provider category")
+        if failure_origin not in _PROVIDER_FAILURE_ORIGINS:
+            raise ValueError("failure_origin must be a known provider origin")
         if http_status_code is not None and (
             isinstance(http_status_code, bool)
             or not isinstance(http_status_code, int)
@@ -149,12 +237,23 @@ class ProviderResponseError(ProviderError):
         super().__init__(message)
         self.retryable = retryable
         self.failure_category = failure_category
+        self.failure_origin = failure_origin
         self.http_status_code = http_status_code
 
     @property
     def status_code(self) -> int | None:
         """Compatibility alias for the safe HTTP status value."""
         return self.http_status_code
+
+    def redacted_copy(self, message: str) -> "ProviderResponseError":
+        """Keep the typed failure fields while dropping provider content."""
+        return ProviderResponseError(
+            message,
+            failure_origin=self.failure_origin,
+            retryable=self.retryable,
+            failure_category=self.failure_category,
+            http_status_code=self.http_status_code,
+        )
 
 
 class ProviderOutputLimitError(ProviderResponseError):
@@ -169,8 +268,13 @@ class ProviderOutputLimitError(ProviderResponseError):
             self.SAFE_MESSAGE,
             retryable=False,
             failure_category="output_limit",
+            failure_origin="local_response",
         )
         self.telemetry = telemetry
+
+    def redacted_copy(self, message: str) -> "ProviderOutputLimitError":
+        """Its message is already provider-free, so only telemetry carries over."""
+        return ProviderOutputLimitError(self.telemetry)
 
 
 class StructuredOutputError(ProviderError):
@@ -194,6 +298,84 @@ class StructuredOutputError(ProviderError):
     def validation_diagnostics(self) -> tuple[StructuredValidationDiagnostic, ...]:
         """Compatibility alias for callers that name the validation records."""
         return self.diagnostics
+
+
+class ProviderFailureSnapshot(ProviderContract):
+    """Immutable, finite details safe to retain for an agent provider error."""
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    kind: ProviderFailureKind
+    exception_type: str = Field(min_length=1, max_length=128)
+    failure_origin: ProviderFailureOrigin | None = None
+    retryable: bool | None = None
+    http_status_code: int | None = Field(default=None, ge=100, le=599)
+    configured_max_tokens: PositiveInt | None = None
+    usage: TokenUsage | None = None
+    request_attempt: PositiveInt | None = None
+    structured_attempt: PositiveInt | None = None
+    diagnostics: tuple[StructuredValidationDiagnostic, ...] = Field(
+        default=(), max_length=_MAX_STRUCTURED_DIAGNOSTICS
+    )
+
+
+def provider_failure_snapshot(error: ProviderError) -> ProviderFailureSnapshot:
+    """Project one provider error into bounded, provider-content-free data."""
+    exception_type = type(error).__name__
+    if isinstance(error, ProviderOutputLimitError):
+        telemetry = error.telemetry
+        return ProviderFailureSnapshot(
+            kind="output_limit",
+            exception_type=exception_type,
+            retryable=error.retryable,
+            configured_max_tokens=telemetry.configured_max_tokens,
+            usage=telemetry.usage,
+            request_attempt=telemetry.request_attempt,
+            structured_attempt=telemetry.structured_attempt,
+        )
+    if isinstance(error, StructuredOutputError):
+        diagnostics = tuple(
+            item
+            for item in islice(error.diagnostics, _MAX_STRUCTURED_DIAGNOSTICS)
+            if isinstance(item, StructuredValidationDiagnostic)
+        )
+        return ProviderFailureSnapshot(
+            kind="schema_output",
+            exception_type=exception_type,
+            diagnostics=diagnostics,
+        )
+    if isinstance(error, ProviderTimeoutError):
+        return ProviderFailureSnapshot(
+            kind="provider_timeout",
+            exception_type=exception_type,
+            retryable=True,
+        )
+    if isinstance(error, ProviderRateLimitError):
+        return ProviderFailureSnapshot(
+            kind="provider_rate_limit",
+            exception_type=exception_type,
+            retryable=True,
+        )
+    if isinstance(error, ProviderResponseError):
+        kind: ProviderFailureKind = {
+            "transport": "provider_transport",
+            "http": "provider_http",
+            "response": "provider_response",
+            "output_limit": "provider_response",
+        }[error.failure_category]
+        return ProviderFailureSnapshot(
+            kind=kind,
+            exception_type=exception_type,
+            failure_origin=error.failure_origin,
+            retryable=error.retryable,
+            http_status_code=error.http_status_code,
+        )
+    return ProviderFailureSnapshot(
+        kind="provider_failure",
+        exception_type=exception_type,
+    )
 
 
 OpenAIProviderError = ProviderError

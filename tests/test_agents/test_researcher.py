@@ -11,11 +11,14 @@ from deep_research.agents.prompts import AgentTask
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
     HIGH_PRIORITY_THRESHOLD,
+    MAX_FINDINGS_PER_SUB_TOPIC,
+    MAX_UNIQUE_SOURCES_PER_SUB_TOPIC,
     FindingDraft,
     ResearcherAgent,
     ResearchFindings,
     SubTopicFindingsDraft,
     SubTopicTask,
+    bound_sub_topic_findings,
     build_findings,
     existing_sources_for,
     extraction_messages,
@@ -24,21 +27,30 @@ from deep_research.agents.researcher import (
     render_evidence,
     render_session_guidance,
     render_sub_topic_guidance,
+    retrieved_finding_urls,
     select_sub_topics,
 )
 from deep_research.agents.steps import (
+    ReActDecision,
     ReActObservation,
     ReActRun,
     ReActStep,
+    read_evidence_urls,
     summarize_text,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderTimeoutError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
+    ProviderTimeoutError,
+    StructuredOutputError,
+)
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Critique,
+    CritiqueGap,
     Finding,
     MemorySnapshot,
     ResearchError,
@@ -57,8 +69,11 @@ from tests.research_fakes import (
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
 
-def _sub_topic(title: str, priority: int = 1) -> SubTopic:
+def _sub_topic(
+    title: str, priority: int = 1, coverage_id: str = "topic-01"
+) -> SubTopic:
     return SubTopic(
+        coverage_id=coverage_id,
         title=title,
         rationale=f"{title} matters.",
         search_queries=[f"{title} 2025"],
@@ -67,14 +82,31 @@ def _sub_topic(title: str, priority: int = 1) -> SubTopic:
     )
 
 
-def _finding(sub_topic: str, url: str) -> Finding:
+def _finding(
+    sub_topic: str,
+    url: str,
+    *,
+    content: str = "Logical error rates fell below break-even.",
+    confidence: float = 0.8,
+) -> Finding:
     return Finding(
-        content="Logical error rates fell below break-even.",
+        content=content,
         source_url=url,
         source_title="QEC 2025",
         extracted_at=EXTRACTED_AT,
-        confidence=0.8,
+        confidence=confidence,
         related_sub_topic=sub_topic,
+    )
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
     )
 
 
@@ -95,6 +127,20 @@ def _state(
     )
 
 
+def _gap(
+    problem: str,
+    *,
+    coverage_id: str | None = None,
+    recommended_queries: list[str] | None = None,
+) -> CritiqueGap:
+    """One targetable Critic gap. The plan ID is the only routing signal."""
+    return CritiqueGap(
+        coverage_id=coverage_id,
+        problem=problem,
+        recommended_queries=recommended_queries or [],
+    )
+
+
 def _critique(**overrides: object) -> Critique:
     payload: dict[str, object] = {
         "score": 4,
@@ -106,6 +152,34 @@ def _critique(**overrides: object) -> Critique:
     }
     payload.update(overrides)
     return Critique.model_validate(payload)
+
+
+# A search payload is discovery only: it names candidates this loop has not
+# read, so it can never make a finding survive extraction however relevant it
+# looks. It stays in the transcript, and out of the allow-list.
+QEC_EVIDENCE = {
+    "results": [
+        {
+            "url": "https://example.test/qec",
+            "title": "QEC 2025",
+            "content": "Logical error rates fell below break-even.",
+        }
+    ]
+}
+
+# What a finding has to come from instead: a page this loop actually READ, at
+# the URL the draft cites.
+QEC_SCRAPE = {
+    "url": "https://example.test/qec",
+    "text": "Logical error rates fell below break-even in 2025.",
+}
+
+_FINDING_EXAMPLE_OUTPUT = (
+    "Example JSON output:\n"
+    '{"findings":[{"confidence":0.8,"content":"The example report measured a '
+    '12 percent reduction.","source_title":"Example report","source_url":'
+    '"https://evidence.example.test/report"}]}'
+)
 
 
 def _tool_step(
@@ -145,7 +219,20 @@ def _tool_step(
 
 def test_priority_and_selection_defaults_match_the_plan() -> None:
     assert HIGH_PRIORITY_THRESHOLD == 2
-    assert DEFAULT_MAX_SUB_TOPICS == 3
+    assert DEFAULT_MAX_SUB_TOPICS == 7
+    assert MAX_FINDINGS_PER_SUB_TOPIC == 6
+    assert MAX_UNIQUE_SOURCES_PER_SUB_TOPIC == 4
+
+
+def test_the_default_cap_attempts_the_whole_planner_output() -> None:
+    """One pass attempts every sub-topic the Planner is allowed to produce.
+
+    A cap below the planner's own maximum silently truncates a plan the
+    Planner was told to produce, and the truncated topics never get a turn.
+    """
+    from deep_research.agents.planner import MAX_SUB_TOPICS
+
+    assert DEFAULT_MAX_SUB_TOPICS == MAX_SUB_TOPICS
 
 
 def test_selection_orders_by_priority_and_caps_the_count() -> None:
@@ -166,8 +253,18 @@ def test_selection_orders_by_priority_and_caps_the_count() -> None:
 def test_selection_puts_critic_flagged_gaps_first(
 ) -> None:
     state = _state(
-        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 5)],
-        critique=_critique(gaps=["No evidence at all on   BETA yet."]),
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
+        critique=_critique(
+            gaps=[
+                _gap(
+                    "No evidence at all on Beta yet.",
+                    coverage_id="topic-02",
+                )
+            ]
+        ),
     )
 
     selected = select_sub_topics(state, max_sub_topics=2)
@@ -177,13 +274,89 @@ def test_selection_puts_critic_flagged_gaps_first(
 
 def test_selection_falls_back_to_priority_when_no_gap_matches() -> None:
     state = _state(
-        sub_topics=[_sub_topic("Alpha", 2), _sub_topic("Beta", 1)],
-        critique=_critique(gaps=["Something unrelated."]),
+        sub_topics=[
+            _sub_topic("Alpha", 2, coverage_id="topic-01"),
+            _sub_topic("Beta", 1, coverage_id="topic-02"),
+        ],
+        critique=_critique(gaps=[_gap("Something unrelated.")]),
     )
 
     selected = select_sub_topics(state)
 
     assert [sub_topic.title for sub_topic in selected] == ["Beta", "Alpha"]
+
+
+def test_a_gap_problem_naming_a_title_never_targets_that_topic() -> None:
+    """Routing is by plan ID only; a title inside the prose decides nothing."""
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
+        critique=_critique(
+            gaps=[_gap("Beta is completely uncovered.", coverage_id=None)]
+        ),
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=2)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Alpha", "Beta"]
+
+
+def test_a_gap_with_an_unknown_plan_id_targets_no_topic() -> None:
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
+        critique=_critique(
+            gaps=[_gap("Beta is uncovered.", coverage_id="topic-999")]
+        ),
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=2)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Alpha", "Beta"]
+
+
+def test_refinement_selection_uses_one_slot_for_unsatisfied_topic() -> None:
+    state = _state(
+        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 3)],
+        raw_findings=[_finding(" alpha ", "https://example.test/alpha")],
+        critique=_critique(),
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=1)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Beta"]
+
+
+def test_refinement_gap_target_is_selected_even_when_prior_findings_exist() -> None:
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 3, coverage_id="topic-02"),
+        ],
+        raw_findings=[_finding("Alpha", "https://example.test/alpha")],
+        critique=_critique(
+            gaps=[_gap("Alpha still has a critic gap.", coverage_id="topic-01")]
+        ),
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=1)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Alpha"]
+
+
+def test_initial_selection_keeps_topics_with_prior_findings() -> None:
+    state = _state(
+        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 3)],
+        raw_findings=[_finding("Alpha", "https://example.test/alpha")],
+    )
+
+    selected = select_sub_topics(state, max_sub_topics=2)
+
+    assert [sub_topic.title for sub_topic in selected] == ["Alpha", "Beta"]
 
 
 def test_high_priority_is_a_threshold_on_the_priority_value() -> None:
@@ -305,6 +478,25 @@ def test_session_guidance_leads_with_the_critic_request() -> None:
     assert "- Prefer peer-reviewed sources." in guidance
 
 
+def test_session_guidance_reports_every_gap_problem() -> None:
+    guidance = render_session_guidance(
+        _state(
+            critique=_critique(
+                gaps=[
+                    _gap("Alpha lacks cost evidence.", coverage_id="topic-01"),
+                    _gap(
+                        "Beta lacks durability evidence.",
+                        coverage_id="topic-02",
+                    ),
+                ]
+            )
+        )
+    )
+
+    assert "- Alpha lacks cost evidence." in guidance
+    assert "- Beta lacks durability evidence." in guidance
+
+
 def test_session_guidance_is_empty_without_a_critique_or_memory() -> None:
     assert render_session_guidance(_state()) == ""
 
@@ -324,8 +516,35 @@ def test_sub_topic_guidance_lists_queries_criteria_and_known_sources() -> None:
 
 def test_sub_topic_guidance_omits_known_sources_when_there_are_none() -> None:
     guidance = render_sub_topic_guidance(_sub_topic("Alpha"), [])
-
     assert "do not repeat them:" not in guidance
+
+
+def test_sub_topic_guidance_runs_the_critic_queries_before_the_planned_ones() -> None:
+    guidance = render_sub_topic_guidance(
+        _sub_topic("Alpha"),
+        [],
+        prioritized_queries=["alpha cost 2025", "  alpha cost 2026  "],
+    )
+
+    assert "Run these queries first:" in guidance
+    # The Critic's own queries come before the planner's, and a duplicate of
+    # one of them is not repeated below it.
+    assert guidance.index("- alpha cost 2025") < guidance.index("- Alpha 2025")
+    assert guidance.count("- alpha cost 2025") == 1
+    assert "- alpha cost 2026" in guidance
+    # The success criteria still say when the sub-topic is done.
+    assert "This sub-topic is done when:" in guidance
+    assert "- A named source about Alpha." in guidance
+
+
+def test_sub_topic_guidance_drops_a_critic_query_the_planner_already_lists() -> None:
+    guidance = render_sub_topic_guidance(
+        _sub_topic("Alpha"),
+        [],
+        prioritized_queries=["Alpha 2025"],
+    )
+
+    assert guidance.count("- Alpha 2025") == 1
 
 
 def test_evidence_renders_only_successful_tool_payloads() -> None:
@@ -351,6 +570,191 @@ def test_evidence_reports_when_nothing_was_retrieved() -> None:
     assert render_evidence(run, limit=200) == "(no evidence retrieved)"
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "data", "expected"),
+    [
+        (
+            "web_scraper",
+            {"url": "https://b.test/two", "text": "body"},
+            ("https://b.test/two",),
+        ),
+        (
+            "document_reader",
+            {"source": "https://c.test/three.pdf", "chunks": ["chunk"]},
+            ("https://c.test/three.pdf",),
+        ),
+        (
+            "query_memory",
+            {
+                "matches": [
+                    {"content": "Recalled.", "source_url": "https://d.test/four"}
+                ]
+            },
+            ("https://d.test/four",),
+        ),
+        (
+            "query_memory",
+            {
+                "matches": [
+                    {
+                        "content": "Recalled.",
+                        "metadata": {"source_url": "https://e.test/five"},
+                    }
+                ]
+            },
+            ("https://e.test/five",),
+        ),
+    ],
+)
+def test_retrieved_finding_urls_reads_every_read_bearing_tool(
+    tool_name: str, data: object, expected: tuple[str, ...]
+) -> None:
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, tool_name, data)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    assert retrieved_finding_urls(run) == expected
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "data", "success"),
+    [
+        # A search that returned five results read none of them: every hit is a
+        # candidate, and the loop has not opened a single page.
+        (
+            "web_search",
+            {
+                "results": [
+                    {"title": f"Hit {index}", "url": f"https://s.test/{index}"}
+                    for index in range(5)
+                ]
+            },
+            True,
+        ),
+        # A failed call retrieved nothing, whatever its payload claims.
+        ("web_search", {"results": [{"url": "https://a.test/one"}]}, False),
+        ("web_scraper", QEC_SCRAPE, False),
+        # Empty payloads carry no evidence.
+        ("web_search", {"results": []}, True),
+        ("web_scraper", {"url": "https://b.test/two", "text": "   "}, True),
+        (
+            "document_reader",
+            {"source": "https://c.test/three.pdf", "chunks": []},
+            True,
+        ),
+        ("query_memory", {"matches": []}, True),
+        # A memory match with no readable content was never read either.
+        ("query_memory", {"matches": [{"source_url": "https://g.test/seven"}]}, True),
+        # A write is never evidence.
+        ("save_to_memory", {"entry_id": "1", "url": "https://f.test/six"}, True),
+        # Malformed entries contribute nothing rather than raising.
+        ("web_search", {"results": ["not-a-dict", {"no_url": True}]}, True),
+        ("query_memory", {"matches": [{"metadata": "not-a-dict"}]}, True),
+        ("document_reader", {"source": 17, "chunks": ["chunk"]}, True),
+    ],
+)
+def test_retrieved_finding_urls_excludes_everything_that_is_not_evidence(
+    tool_name: str, data: object, success: bool
+) -> None:
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, tool_name, data, success=success)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    assert retrieved_finding_urls(run) == ()
+
+
+def test_retrieved_finding_urls_deduplicates_after_normalizing() -> None:
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                1,
+                "document_reader",
+                {"source": "HTTPS://A.test/one/", "chunks": ["chunk"]},
+            ),
+            _tool_step(
+                2,
+                "web_scraper",
+                {"url": "https://a.test/one", "text": "body"},
+            ),
+        ],
+        iterations=2,
+        tool_calls=2,
+    )
+
+    assert retrieved_finding_urls(run) == ("https://a.test/one",)
+
+
+def _search_only_run() -> ReActRun:
+    """One successful search carrying five hits, and no page ever read."""
+    return ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                1,
+                "web_search",
+                {
+                    "results": [
+                        {
+                            "title": f"QEC {index}",
+                            "url": f"https://candidate.test/{index}",
+                            "content": "A snippet, not a page.",
+                        }
+                        for index in range(5)
+                    ]
+                },
+            )
+        ],
+        iterations=1,
+        tool_calls=1,
+    )
+
+
+def _loop_read_anything(run: ReActRun) -> bool:
+    """The question ``extract_findings`` asks before it extracts.
+
+    Recomputed here from the shared classifier rather than imported from the
+    agent, because the point of the assertion is that the agent's own gate and
+    this one cannot disagree.
+    """
+    return any(read_evidence_urls(step) for step in run.steps)
+
+
+def test_a_search_only_loop_read_nothing_and_retrieves_no_source() -> None:
+    run = _search_only_run()
+
+    assert retrieved_finding_urls(run) == ()
+    assert _loop_read_anything(run) is False
+
+
+def test_the_example_url_is_not_retrieved_by_any_real_tool_shape() -> None:
+    """The prompt example's URL must never clear the allow-list on its own.
+
+    Search is the shape that could smuggle it in: the example is a *result*
+    in the prompt, and no read-bearing tool ever reports it.
+    """
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_search", QEC_EVIDENCE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    assert retrieved_finding_urls(run) == ()
+    assert "https://evidence.example.test/report" not in retrieved_finding_urls(run)
+
+
 def test_evidence_is_clamped_to_the_configured_budget() -> None:
     run = ReActRun(
         agent_name="researcher",
@@ -366,6 +770,120 @@ def test_evidence_is_clamped_to_the_configured_budget() -> None:
     assert len(line) == len("- [web_scraper] ") + 40
 
 
+def test_duplicate_findings_are_folded_before_the_cap() -> None:
+    """One claim, one page, one sub-topic: one finding, at its best confidence."""
+    findings = [
+        _finding("Alpha", "https://a.test/one", content="One.", confidence=0.5),
+        _finding("Alpha", "https://a.test/one", content="One.", confidence=0.9),
+        _finding("Alpha", "https://a.test/one", content="One.", confidence=0.6),
+    ]
+
+    budget = bound_sub_topic_findings(findings)
+
+    assert [finding.confidence for finding in budget.retained] == [0.9]
+    assert budget.dropped_duplicate == 2
+    assert budget.dropped_cap == 0
+    assert budget.sources_retained == 1
+
+
+def test_the_cap_keeps_the_six_most_confident_findings() -> None:
+    findings = [
+        _finding(
+            "Alpha",
+            "https://a.test/one",
+            content=f"Claim {index}.",
+            confidence=confidence,
+        )
+        for index, confidence in enumerate(
+            [0.1, 0.8, 0.3, 0.6, 0.2, 0.7, 0.5, 0.4], start=1
+        )
+    ]
+
+    budget = bound_sub_topic_findings(findings)
+
+    assert [finding.confidence for finding in budget.retained] == [
+        0.8,
+        0.7,
+        0.6,
+        0.5,
+        0.4,
+        0.3,
+    ]
+    assert budget.dropped_duplicate == 0
+    assert budget.dropped_cap == 2
+    assert budget.sources_retained == 1
+
+
+def test_the_cap_keeps_at_most_four_distinct_sources() -> None:
+    findings = [
+        _finding(
+            "Alpha",
+            f"https://s{index}.test/one",
+            content=f"Claim {index}.",
+            confidence=confidence,
+        )
+        for index, confidence in enumerate(
+            [0.9, 0.8, 0.7, 0.6, 0.5, 0.4], start=1
+        )
+    ]
+
+    budget = bound_sub_topic_findings(findings)
+
+    assert {finding.source_url for finding in budget.retained} == {
+        "https://s1.test/one",
+        "https://s2.test/one",
+        "https://s3.test/one",
+        "https://s4.test/one",
+    }
+    assert budget.dropped_cap == 2
+    assert budget.sources_retained == 4
+
+
+def test_a_second_source_keeps_a_slot_confidence_alone_would_fill() -> None:
+    """Bounding evidence must not narrow it to one publisher.
+
+    Six findings from one page and one from an independent one: a pure
+    confidence ranking would keep six of the seven and drop the single
+    independent source, which is the one a reader most needs to see.
+    """
+    findings = [
+        _finding(
+            "Alpha",
+            "https://a.test/one",
+            content=f"Claim {index}.",
+            confidence=confidence,
+        )
+        for index, confidence in enumerate(
+            [0.98, 0.96, 0.94, 0.92, 0.90, 0.88], start=1
+        )
+    ] + [
+        _finding(
+            "Alpha", "https://b.test/two", content="Independent.", confidence=0.5
+        )
+    ]
+
+    budget = bound_sub_topic_findings(findings)
+
+    assert [finding.source_url for finding in budget.retained] == [
+        "https://a.test/one",
+        "https://a.test/one",
+        "https://a.test/one",
+        "https://a.test/one",
+        "https://a.test/one",
+        "https://b.test/two",
+    ]
+    assert [finding.confidence for finding in budget.retained] == [
+        0.98,
+        0.96,
+        0.94,
+        0.92,
+        0.90,
+        0.5,
+    ]
+    assert budget.dropped_cap == 1
+    assert budget.sources_retained == 2
+
+
 def test_extraction_messages_carry_the_sub_topic_criteria_and_evidence() -> None:
     task = SubTopicTask(
         instruction="Gather evidence for Alpha.",
@@ -374,19 +892,48 @@ def test_extraction_messages_carry_the_sub_topic_criteria_and_evidence() -> None
     run = ReActRun(
         agent_name="researcher",
         stop_reason="finished",
-        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
-        iterations=1,
-        tool_calls=1,
+        steps=[
+            _tool_step(1, "web_search", {"results": [{"title": "T", "url": "https://t.test/a"}]}),
+            _tool_step(2, "web_scraper", QEC_SCRAPE),
+        ],
+        iterations=2,
+        tool_calls=2,
     )
 
     messages = extraction_messages(task, run, evidence_chars=200)
 
     assert messages[0].role == "developer"
     body = messages[1].content
-    assert "## Sub-topic\nAlpha" in body
+    assert "# Sub-topic\nAlpha" in body
     assert "- A named source about Alpha." in body
-    assert '- [web_search] {"results": ["a"]}' in body
+    assert '- [web_scraper] {"url": "https://example.test/qec"' in body
+    assert body.rstrip().endswith(_FINDING_EXAMPLE_OUTPUT)
 
+
+def test_extraction_evidence_keeps_search_payloads_out_of_the_evidence_block() -> None:
+    """A search hit is a candidate, and the block must say so.
+
+    The transcript keeps the whole search payload for discovery and debugging;
+    the extraction call sees only candidate title/URL metadata, so a snippet
+    cannot be read as if the loop had opened the page.
+    """
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.",
+        sub_topic=_sub_topic("Alpha"),
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_search", QEC_EVIDENCE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    body = extraction_messages(task, run, evidence_chars=200)[1].content
+
+    assert "- [web_search]" not in body
+    assert "Logical error rates fell below break-even." not in body
+    assert "- QEC 2025: https://example.test/qec" in body
 
 def test_drafts_are_stamped_with_the_sub_topic_and_extraction_time() -> None:
     draft = SubTopicFindingsDraft(
@@ -401,7 +948,10 @@ def test_drafts_are_stamped_with_the_sub_topic_and_extraction_time() -> None:
     )
 
     findings, rejected = build_findings(
-        draft, sub_topic=_sub_topic("Alpha"), extracted_at=EXTRACTED_AT
+        draft,
+        sub_topic=_sub_topic("Alpha"),
+        extracted_at=EXTRACTED_AT,
+        known_urls=("https://example.test/qec",),
     )
 
     assert rejected == []
@@ -429,11 +979,49 @@ def test_malformed_drafts_are_dropped_and_named_by_field() -> None:
     )
 
     findings, rejected = build_findings(
-        draft, sub_topic=_sub_topic("Alpha"), extracted_at=EXTRACTED_AT
+        draft,
+        sub_topic=_sub_topic("Alpha"),
+        extracted_at=EXTRACTED_AT,
+        known_urls=("https://example.test/qec",),
     )
 
     assert [finding.content for finding in findings] == ["Also fine."]
     assert rejected == ["finding 1: invalid confidence"]
+
+
+def test_a_finding_citing_an_unretrieved_url_is_dropped_and_named() -> None:
+    """Provenance, not syntax: the exact failure a copied prompt example causes.
+
+    ``build_findings`` previously checked only whether a URL was well formed,
+    so the synthetic URL from a reply-format example would have entered
+    research state as though it had been retrieved.
+    """
+    draft = SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content="Copied from the example.",
+                source_url="https://evidence.example.test/report",
+                source_title="Example report",
+                confidence=0.9,
+            ),
+            FindingDraft(
+                content="Actually retrieved.",
+                source_url="https://example.test/qec",
+                source_title="QEC 2025",
+                confidence=0.7,
+            ),
+        ]
+    )
+
+    findings, rejected = build_findings(
+        draft,
+        sub_topic=_sub_topic("Alpha"),
+        extracted_at=EXTRACTED_AT,
+        known_urls=("https://example.test/qec",),
+    )
+
+    assert [finding.content for finding in findings] == ["Actually retrieved."]
+    assert rejected == ["finding 1: source url was not retrieved"]
 
 
 def _clock() -> datetime:
@@ -463,14 +1051,32 @@ def _researcher(
 
 
 def test_the_researcher_declares_its_identity_and_tools() -> None:
+    """Four read/discovery tools and no writer.
+
+    The Researcher gathers evidence; nothing it holds has been evaluated yet,
+    so it must not be able to keep a finding in long-term memory before the
+    pass that validates it has run.
+    """
     assert ResearcherAgent.name == "researcher"
     assert ResearcherAgent.allowed_tools == (
         "web_search",
         "web_scraper",
         "document_reader",
         "query_memory",
-        "save_to_memory",
     )
+
+
+def test_the_researcher_prompt_requires_reading_and_prefers_primary_sources(
+    tracker: Tracker,
+) -> None:
+    agent = _researcher(tracker, ScriptedCompleter())
+
+    prompt = agent.system_prompt(AgentTask(instruction="Gather evidence."))
+
+    assert "Read a source before reporting a finding from it." in prompt
+    assert "Prefer primary sources" in prompt
+    assert "Record publication date and geographic applicability" in prompt
+    assert "save_to_memory" not in prompt
 
 
 @pytest.mark.parametrize(
@@ -561,7 +1167,7 @@ async def test_extraction_stamps_findings_from_retrieved_evidence(
     run = ReActRun(
         agent_name="researcher",
         stop_reason="finished",
-        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
         iterations=1,
         tool_calls=1,
     )
@@ -629,6 +1235,32 @@ async def test_extraction_makes_no_provider_call_when_the_only_hit_is_empty(
 
 
 @pytest.mark.asyncio
+async def test_extraction_makes_no_provider_call_when_search_was_the_only_tool(
+    tracker: Tracker,
+) -> None:
+    """Five search hits and no page read: there is nothing to extract from.
+
+    A search result is a DISCOVERY record. Extracting from the loop that only
+    searched would let the model turn snippets into findings the agent never
+    read, which is the hallucination-pressure case this gate exists to stop.
+    """
+    completer = ScriptedCompleter(outputs=[_findings_draft()])
+    agent = _researcher(tracker, completer)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+
+    findings, errors, provider_failed = await agent.extract_findings(
+        task, _search_only_run()
+    )
+
+    assert findings == []
+    assert errors == []
+    assert provider_failed is False
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
 async def test_extraction_makes_no_provider_call_when_every_tool_call_failed(
     tracker: Tracker,
 ) -> None:
@@ -668,7 +1300,7 @@ async def test_extraction_makes_no_provider_call_after_a_provider_failure(
     run = ReActRun(
         agent_name="researcher",
         stop_reason="provider_error",
-        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
         iterations=1,
         tool_calls=1,
     )
@@ -705,7 +1337,7 @@ async def test_malformed_extracted_findings_become_a_recoverable_error(
     run = ReActRun(
         agent_name="researcher",
         stop_reason="finished",
-        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
         iterations=1,
         tool_calls=1,
     )
@@ -733,7 +1365,16 @@ async def test_extraction_reports_a_provider_failure_without_raising(
     non-recoverable structured error, and signal the failure back to the
     caller via ``provider_failed`` rather than letting the exception escape.
     """
-    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    completer = ScriptedCompleter(
+        outputs=[
+            StructuredOutputError(
+                "PROVIDER_SECRET_SENTINEL",
+                diagnostics=[
+                    {"attempt": 1, "field_paths": ["findings"]}
+                ],
+            )
+        ]
+    )
     agent = _researcher(tracker, completer)
     task = SubTopicTask(
         instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
@@ -741,7 +1382,7 @@ async def test_extraction_reports_a_provider_failure_without_raising(
     run = ReActRun(
         agent_name="researcher",
         stop_reason="finished",
-        steps=[_tool_step(1, "web_search", {"results": ["a"]})],
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
         iterations=1,
         tool_calls=1,
     )
@@ -753,8 +1394,10 @@ async def test_extraction_reports_a_provider_failure_without_raising(
     assert len(errors) == 1
     assert errors[0].error_type == "researcher_extraction_provider_error"
     assert errors[0].recoverable is False
-    assert errors[0].details["exception_type"] == "ProviderTimeoutError"
-    assert "timed out" not in str(errors[0].details)
+    assert errors[0].details["operation"] == "researcher_finding_extraction"
+    provider = errors[0].details["provider_failure"]
+    assert provider["kind"] == "schema_output"
+    assert "PROVIDER_SECRET_SENTINEL" not in str(errors[0].details)
 
 
 @pytest.mark.asyncio
@@ -829,6 +1472,33 @@ async def test_the_researcher_creates_findings_from_search_and_scrape(
 
 
 @pytest.mark.asyncio
+async def test_researcher_react_handles_empty_unused_final_answer(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            ReActDecision(
+                thought="Find one source.",
+                action="use_tool",
+                tool_name="web_search",
+                tool_input_json='{"query": "qec 2025"}',
+                final_answer="",
+            ),
+            finish("The source is enough.", "Error rates fell."),
+        ],
+        outputs=[_findings_draft()],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(sub_topics=[_sub_topic("Alpha", 1)])
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.steps[0].final_answer is None
+
+
+@pytest.mark.asyncio
 async def test_findings_merge_into_research_state(tracker: Tracker) -> None:
     completer = ScriptedCompleter(
         decisions=_search_and_scrape_decisions(),
@@ -878,6 +1548,62 @@ async def test_the_researcher_reports_counts_and_stop_reason_per_sub_topic(
         "sub_topics_skipped": 0,
         "findings": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
+    tracker: Tracker,
+) -> None:
+    """Bounded evidence must be visible: what was kept, and what was not.
+
+    Ten drafted findings collapse to six: three restatements of one claim, and
+    two distinct claims over the six-finding cap. An operator reading only the
+    event stream has to be able to see both, and see that the six came from a
+    single source.
+    """
+    draft = SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content="Duplicated claim.",
+                source_url="https://example.test/qec",
+                source_title="QEC 2025",
+                confidence=confidence,
+            )
+            for confidence in (0.4, 0.9, 0.6)
+        ]
+        + [
+            FindingDraft(
+                content=f"Distinct claim {index}.",
+                source_url="https://example.test/qec",
+                source_title="QEC 2025",
+                confidence=0.5,
+            )
+            for index in range(7)
+        ]
+    )
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(),
+        outputs=[draft],
+    )
+    agent = _researcher(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    completed = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+    )
+    assert completed.metadata["findings"] == 6
+    assert completed.metadata["findings_dropped_duplicate"] == 2
+    assert completed.metadata["findings_dropped_cap"] == 2
+    assert completed.metadata["sources_retained"] == 1
+
+    assert len(outcome.result.findings) == 6
+    assert max(
+        finding.confidence for finding in outcome.result.findings
+    ) == 0.9
 
 
 @pytest.mark.asyncio
@@ -985,9 +1711,14 @@ async def test_the_researcher_prioritizes_the_gap_the_critic_named(
     )
     agent = _researcher(tracker, completer, max_sub_topics=1)
     state = _state(
-        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 5)],
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
         critique=_critique(
-            gaps=["Beta is completely uncovered."],
+            gaps=[
+                _gap("Beta is completely uncovered.", coverage_id="topic-02")
+            ],
             recommended_queries=["beta throughput 2025"],
         ),
     )
@@ -997,9 +1728,97 @@ async def test_the_researcher_prioritizes_the_gap_the_critic_named(
 
     started = outcome.state_update["events"][0]
     assert started.metadata["sub_topic"] == "Beta"
-    loop_body = completer.calls[0][2][1].content
+    loop_body = completer.react_calls[0].messages[1].content
     assert "- beta throughput 2025" in loop_body
     assert "Sub-topic: Beta" in loop_body
+
+
+@pytest.mark.asyncio
+async def test_the_researcher_runs_a_gaps_own_queries_for_its_target(
+    tracker: Tracker,
+) -> None:
+    """A gap's queries reach the loop even when the Critic's list is empty."""
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing to retrieve.", "No new sources.")],
+        outputs=[],
+    )
+    agent = _researcher(tracker, completer, max_sub_topics=1)
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 5, coverage_id="topic-02"),
+        ],
+        critique=_critique(
+            gaps=[
+                _gap(
+                    "Beta is completely uncovered.",
+                    coverage_id="topic-02",
+                    recommended_queries=["beta durability trial 2026"],
+                )
+            ]
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = outcome.state_update["events"][0]
+    assert started.metadata["sub_topic"] == "Beta"
+    loop_body = completer.react_calls[0].messages[1].content
+    assert "Run these queries first:" in loop_body
+    assert loop_body.index("- beta durability trial 2026") < loop_body.index(
+        "- Beta 2025"
+    )
+
+
+@pytest.mark.asyncio
+async def test_refinement_skips_a_satisfied_non_gap_topic_with_an_honest_reason(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Research Beta.", "No new sources.")],
+        outputs=[],
+    )
+    agent = _researcher(tracker, completer, max_sub_topics=1)
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 3, coverage_id="topic-02"),
+        ],
+        raw_findings=[_finding("alpha", "https://example.test/alpha")],
+        critique=_critique(),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == ["Beta"]
+
+    skipped = [
+        error
+        for error in outcome.errors
+        if error.error_type == "researcher_sub_topic_skipped"
+    ]
+    assert len(skipped) == 1
+    assert skipped[0].details == {
+        "sub_topic": "Alpha",
+        "coverage_id": "topic-01",
+        "priority": 1,
+        "reason": "interim_satisfaction",
+    }
+    completed = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.research.completed"
+    )
+    assert completed.metadata["sub_topics_planned"] == 2
+    assert completed.metadata["sub_topics_researched"] == 1
+    assert completed.metadata["sub_topics_skipped"] == 1
 
 
 @pytest.mark.asyncio
@@ -1110,7 +1929,7 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
 
     Regression guard for the Critical finding: sub-topic Alpha's loop and
     extraction both succeed and produce one finding. Sub-topic Beta's loop
-    *also* succeeds, but its extraction call raises ``ProviderTimeoutError``
+    *also* succeeds, but its extraction call reaches the provider output limit
     — the failure specifically identified as escaping ``run`` uncaught and
     destroying every finding collected so far. Sub-topic Gamma must never be
     started at all.
@@ -1118,11 +1937,13 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
     completer = ScriptedCompleter(
         decisions=[
             use_tool("Search Alpha.", "web_search", '{"query": "alpha 2025"}'),
+            use_tool("Read Alpha.", "web_scraper", '{"url": "https://example.test/qec"}'),
             finish("Done with Alpha.", "Alpha answer."),
             use_tool("Search Beta.", "web_search", '{"query": "beta 2025"}'),
+            use_tool("Read Beta.", "web_scraper", '{"url": "https://example.test/qec"}'),
             finish("Done with Beta.", "Beta answer."),
         ],
-        outputs=[_findings_draft(), ProviderTimeoutError("timed out")],
+        outputs=[_findings_draft(), _output_limit_error()],
     )
     agent = _researcher(
         tracker,
@@ -1157,6 +1978,14 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
     ]
     assert len(extraction_errors) == 1
     assert extraction_errors[0].recoverable is False
+    assert (
+        extraction_errors[0].details["operation"]
+        == "researcher_finding_extraction"
+    )
+    provider = extraction_errors[0].details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
 
     # Finding 2 (stop_reason override): the merged run must report
     # "provider_error", not "finished" — Beta's extraction failure is what
@@ -1195,9 +2024,9 @@ async def test_a_provider_failure_mid_loop_skips_the_remaining_high_priority_sub
     agent = _researcher(tracker, completer)
     state = _state(
         sub_topics=[
-            _sub_topic("Alpha", 1),
-            _sub_topic("Beta", 2),
-            _sub_topic("Gamma", 2),
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 2, coverage_id="topic-02"),
+            _sub_topic("Gamma", 2, coverage_id="topic-03"),
         ]
     )
 
@@ -1219,7 +2048,100 @@ async def test_a_provider_failure_mid_loop_skips_the_remaining_high_priority_sub
     assert len(skipped) == 1
     assert skipped[0].details["sub_topic"] == "Gamma"
     assert skipped[0].details["reason"] == "provider_failure_stopped_processing"
+    assert skipped[0].details["coverage_id"] == "topic-03"
     assert skipped[0].recoverable is True
+
+
+@pytest.mark.asyncio
+async def test_every_capped_sub_topic_is_recorded_with_its_coverage_id(
+    tracker: Tracker,
+) -> None:
+    """A low-priority topic the cap dropped is skipped, and says so.
+
+    Only high-priority topics used to get a record, so a capped topic below
+    ``HIGH_PRIORITY_THRESHOLD`` vanished from ``state.errors`` and from the
+    event stream with nothing naming its coverage id — the plan was silently
+    short of what it promised.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing for Alpha.", "Alpha has no sources.")],
+    )
+    agent = _researcher(tracker, completer, max_sub_topics=1)
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 9, coverage_id="topic-02"),
+        ]
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    skipped = {
+        error.details["sub_topic"]: error
+        for error in outcome.errors
+        if error.error_type == "researcher_sub_topic_skipped"
+    }
+    assert set(skipped) == {"Beta"}
+    assert skipped["Beta"].details["coverage_id"] == "topic-02"
+    assert skipped["Beta"].details["reason"] == "cap"
+    assert skipped["Beta"].details["priority"] == 9
+    assert skipped["Beta"].recoverable is True
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_records_every_unattempted_topic(
+    tracker: Tracker,
+) -> None:
+    """After a break, every topic without a turn is named, not only the top ones."""
+    completer = ScriptedCompleter(
+        decisions=[
+            finish("Nothing for Alpha.", "Alpha has no sources."),
+            ProviderTimeoutError("timed out"),
+        ],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 2, coverage_id="topic-02"),
+            _sub_topic("Gamma", 9, coverage_id="topic-03"),
+            _sub_topic("Delta", 9, coverage_id="topic-04"),
+        ]
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    skipped = {
+        error.details["sub_topic"]: error.details
+        for error in outcome.errors
+        if error.error_type == "researcher_sub_topic_skipped"
+    }
+    assert set(skipped) == {"Gamma", "Delta"}
+    assert [
+        details["coverage_id"] for details in skipped.values()
+    ] == ["topic-03", "topic-04"]
+    assert {
+        details["reason"] for details in skipped.values()
+    } == {"provider_failure_stopped_processing"}
+
+
+@pytest.mark.asyncio
+async def test_an_attempted_low_priority_topic_gets_no_skip_record(
+    tracker: Tracker,
+) -> None:
+    """Attempted is attempted: the record is for topics with no turn at all."""
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing for Alpha.", "Alpha has no sources.")],
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(sub_topics=[_sub_topic("Alpha", 9, coverage_id="topic-01")])
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert outcome.errors == []
 
 
 @pytest.mark.asyncio
@@ -1285,5 +2207,5 @@ async def test_the_scratchpad_does_not_leak_between_sub_topics(
     async with tracker.session_span("session-1", "q"):
         await agent.run(state)
 
-    second_loop_body = completer.calls[1][2][1].content
+    second_loop_body = completer.react_calls[1].messages[1].content
     assert "(no notes yet)" in second_loop_body

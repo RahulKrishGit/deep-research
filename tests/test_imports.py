@@ -42,6 +42,7 @@ def test_shared_research_types_import_from_utils_package() -> None:
         ResearchState,
         ResearchStateUpdate,
         ScoredSource,
+        SourceEvaluationStatus,
         SubTopic,
         UnitScore,
         advance_research_iteration,
@@ -120,6 +121,8 @@ def test_provider_public_api_imports() -> None:
         ChatResult,
         DeepSeekChatProvider,
         LocalEmbeddingProvider,
+        NativeToolCall,
+        NativeToolTurn,
         OpenAIChatProvider,
         OpenAIEmbeddingProvider,
         OpenAIProviderError,
@@ -129,6 +132,7 @@ def test_provider_public_api_imports() -> None:
         ProviderResponseError,
         ProviderTimeoutError,
         StructuredOutputError,
+        ToolDefinition,
         build_chat_provider,
         build_embedding_provider,
         capability_for,
@@ -157,6 +161,9 @@ def test_provider_public_api_imports() -> None:
     assert issubclass(ProviderResponseError, OpenAIProviderError)
     assert issubclass(ProviderTimeoutError, OpenAIProviderError)
     assert issubclass(StructuredOutputError, OpenAIProviderError)
+    assert ToolDefinition.__name__ == "ToolDefinition"
+    assert NativeToolCall.__name__ == "NativeToolCall"
+    assert NativeToolTurn.__name__ == "NativeToolTurn"
 
 
 def test_agent_runtime_contracts_import_from_package() -> None:
@@ -175,13 +182,13 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         MAX_SUB_TOPICS,
         MIN_CRITIC_SCORE,
         MIN_SUB_TOPICS,
-        REACT_RESPONSE_CONTRACT,
+        NATIVE_REACT_RESPONSE_CONTRACT,
         REPORT_SECTIONS,
         ROUTING_REASONS,
         SOURCE_EVALUATOR_NAME,
         SYNTHESIZER_NAME,
         VERDICT_VALUES,
-        WRITE_FAILURE_REASONS,
+        AgentCompleter,
         AgentConfigurationError,
         AgentError,
         AgentRun,
@@ -234,16 +241,14 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         VerifiedClaims,
         agent_error,
         agent_event,
-        assemble_report,
         build_citation_index,
         build_claim,
         build_critique,
         build_findings,
-        build_report_sections,
+        build_report_composition,
         build_scored_source,
         clamp_score,
         compose_report,
-        corroboration_score,
         critique_completed_event,
         critique_messages,
         critique_provider_error,
@@ -252,10 +257,9 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         extraction_provider_error,
         fallback_critique,
         group_findings_by_url,
-        invalid_section_error,
+        invalid_draft_error,
         is_high_priority,
         limitation_reasons,
-        memory_save_error,
         merge_react_runs,
         missing_report_error,
         no_evidence_error,
@@ -263,13 +267,14 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         normalize_source_url,
         normalize_verdict,
         parse_tool_input,
+        react_decision_from_native_turn,
         render_claim_digest,
+        render_evidence_ledger,
         render_memory_guidance,
         render_react_messages,
+        render_reader_report,
         render_scratchpad,
-        render_tool_catalog,
         report_filename,
-        report_not_written_error,
         report_provider_error,
         resolve_verdict,
         retrieved_source_urls,
@@ -327,24 +332,27 @@ def test_agent_submodule_public_names_all_reach_all() -> None:
     }
 
     agents_dir = Path(agents_pkg.__file__).parent
-    submodules = [
-        "base",
-        "critic",
-        "errors",
-        "events",
-        "fact_checker",
-        "planner",
-        "prompts",
-        "react",
-        "report",
-        "researcher",
-        "source_evaluator",
-        "sources",
-        "steps",
-        "synthesizer",
-        "toolset",
-        "validation",
-    ]
+    # Derived from the filesystem, not hand-written. The previous list named
+    # 16 of the 18 modules: ``identity`` and ``quality`` were missing, and the
+    # omission of ``identity`` was the only reason this invariant appeared to
+    # hold for it (its five helpers are deliberately unexported). Any future
+    # module could have slipped out the same way.
+    internal_modules = {
+        # ``identity`` is deliberately internal: its five fingerprint and
+        # snapshot-merge helpers are implementation detail of the agents that
+        # use them, not part of the package's public surface.
+        "identity",
+    }
+    submodules = sorted(
+        path.stem
+        for path in agents_dir.glob("*.py")
+        if path.stem != "__init__" and path.stem not in internal_modules
+    )
+    assert "identity" not in submodules
+    assert "quality" in submodules, "the filesystem walk must reach every module"
+    assert len(submodules) == len(
+        [path for path in agents_dir.glob("*.py") if path.stem != "__init__"]
+    ) - len(internal_modules)
 
     missing: list[str] = []
     for module_name in submodules:
@@ -404,7 +412,6 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
         "web_scraper",
         "document_reader",
         "query_memory",
-        "save_to_memory",
     }
     assert SourceEvaluatorAgent.name == "source_evaluator"
     assert SourceEvaluatorAgent.allowed_tools == ()
@@ -534,7 +541,12 @@ def test_graph_submodule_public_names_all_reach_all() -> None:
 
 
 def test_the_graph_nodes_cover_the_designed_sequence() -> None:
-    from deep_research.graph import AGENT_NODE_ORDER, CRITIC_NODE, NODE_NAMES
+    from deep_research.graph import (
+        AGENT_NODE_ORDER,
+        CRITIC_NODE,
+        FINALIZE_NODE,
+        NODE_NAMES,
+    )
 
     assert AGENT_NODE_ORDER == (
         "planner",
@@ -544,7 +556,8 @@ def test_the_graph_nodes_cover_the_designed_sequence() -> None:
         "synthesizer",
     )
     assert CRITIC_NODE == "critic"
-    assert NODE_NAMES[-1] == "refine"
+    assert NODE_NAMES[-2] == "refine"
+    assert NODE_NAMES[-1] == FINALIZE_NODE == "finalize_report"
 
 
 def test_runtime_contracts_import_from_package() -> None:

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
+from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
     SCENARIOS,
+    DependencyRecorder,
     ProhibitedDependencyError,
+    _FingerprintingTool,
     build_controlled_dependencies,
     isolated_settings,
 )
@@ -23,10 +27,9 @@ from deep_research.evaluation.models import (
 )
 from deep_research.utils.types import ResearchState
 
-# The registry is empty until Tasks 10-15 land the case files, so the
-# fixtures below fall back to minimal sample cases whose dependency
-# scenarios are the real scenario keys. The moment a case file lands, the
-# registry lookup wins and these tests exercise the real cases.
+# The registry is the normal source for these fixtures. The fallback keeps
+# the bundle tests useful if they are run against a minimal case catalog, but
+# the populated campaign registry always wins and exercises real cases.
 
 _SAMPLE_CASE_IDS = {
     "planner": "focused-decomposition",
@@ -155,7 +158,7 @@ def test_controlled_documents_land_in_an_evaluation_only_directory(
 
 
 @pytest.mark.asyncio
-async def test_an_unscripted_search_is_a_prohibited_call(
+async def test_an_unscripted_search_returns_a_typed_scenario_miss(
     tracker, settings, tmp_path, runtime_config_for, planner_case
 ) -> None:
     bundle = build(runtime_config_for, tracker, settings, tmp_path, planner_case)
@@ -168,11 +171,60 @@ async def test_an_unscripted_search_is_a_prohibited_call(
 
     ledger = bundle.recorder.ledger()
     assert result.success is False
-    assert ledger.prohibited_calls
+    assert result.error is not None
+    assert result.error.type == "ScenarioMissError"
+    assert ledger.prohibited_calls == []
+    assert ledger.scenario_misses == [
+        "web_search: something nobody scripted"
+    ]
     assert any(
         summary.tool_name == "web_search" and summary.failures == 1
         for summary in ledger.tool_calls
     )
+
+
+@pytest.mark.asyncio
+async def test_an_unscripted_search_is_a_scenario_miss_not_prohibited_access(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    """A fake-query miss is telemetry, not evidence of real-service access."""
+    bundle = build(runtime_config_for, tracker, settings, tmp_path, planner_case)
+    search = next(
+        tool for tool in bundle.tools if tool.name == "web_search"
+    )
+
+    async with tracker.session_span("evaluation-1", "q"):
+        result = await search.execute(query="something nobody scripted")
+
+    ledger = bundle.recorder.ledger()
+    assert result.success is False
+    assert ledger.prohibited_calls == []
+    assert ledger.scenario_contract_version == 2
+    assert ledger.scenario_misses == [
+        "web_search: something nobody scripted"
+    ]
+    assert ledger.real_services_used == []
+
+
+@pytest.mark.asyncio
+async def test_a_long_unscripted_search_is_bounded_in_scenario_telemetry(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    bundle = build(runtime_config_for, tracker, settings, tmp_path, planner_case)
+    search = next(
+        tool for tool in bundle.tools if tool.name == "web_search"
+    )
+    query = "q" * 4096
+
+    async with tracker.session_span("evaluation-1", "q"):
+        result = await search.execute(query=query)
+
+    assert result.success is False
+    misses = bundle.recorder.ledger().scenario_misses
+    assert len(misses) == 1
+    assert len(misses[0]) <= 256
+    assert misses[0].startswith("web_search: q")
+    assert misses[0] != f"web_search: {query}"
 
 
 @pytest.mark.asyncio
@@ -215,6 +267,181 @@ async def test_a_scripted_search_succeeds_and_is_recorded(
         for summary in ledger.tool_calls
     )
     assert ledger.real_services_used == []
+
+
+def test_source_payload_telemetry_fingerprints_all_remote_source_shapes() -> None:
+    recorder = DependencyRecorder()
+    urls = [
+        "https://www.example.com/search-result/",
+        "https://example.com/article",
+        "https://example.com/report.pdf",
+    ]
+
+    recorder.record_source_url_payload(
+        "web_search", {"results": [{"url": urls[0]}]}
+    )
+    recorder.record_source_url_payload("web_scraper", {"url": urls[1]})
+    recorder.record_source_url_payload(
+        "document_reader", {"source": urls[2]}
+    )
+    recorder.record_source_url_payload(
+        "document_reader", {"source": "C:/local/report.pdf"}
+    )
+
+    fingerprints = recorder.ledger().source_url_fingerprints
+    expected = [
+        sha256(normalize_source_url(url).encode("utf-8")).hexdigest()
+        for url in urls
+    ]
+    assert fingerprints == expected
+    assert all(url not in repr(fingerprints) for url in urls)
+
+
+def test_source_payload_telemetry_rejects_invalid_and_unrelated_identities() -> None:
+    recorder = DependencyRecorder()
+    search_url = "https://example.com/search-result"
+    scraper_url = "https://example.com/article"
+    document_url = "https://example.com/report.pdf"
+    unrelated_url = "https://example.com/unrelated"
+    invalid_urls = [
+        "ftp://example.com/not-http",
+        "https://",
+        "https://[::1",
+        "https://example.com:99999/page",
+        "https://example.com:not-a-port/page",
+        "example.com/no-scheme",
+    ]
+
+    recorder.record_source_url_payload(
+        "web_search",
+        {
+            "results": [
+                {"url": search_url},
+                *({"url": url} for url in invalid_urls),
+                {"link": unrelated_url},
+            ],
+            "url": unrelated_url,
+        },
+    )
+    recorder.record_source_url_payload(
+        "web_scraper",
+        {"url": scraper_url, "source": unrelated_url},
+    )
+    recorder.record_source_url_payload(
+        "document_reader",
+        {"source": document_url, "url": unrelated_url},
+    )
+    for invalid_url in invalid_urls:
+        recorder.record_source_url_payload(
+            "web_scraper", {"url": invalid_url}
+        )
+        recorder.record_source_url_payload(
+            "document_reader", {"source": invalid_url}
+        )
+
+    fingerprints = recorder.ledger().source_url_fingerprints
+    expected = [
+        sha256(normalize_source_url(url).encode("utf-8")).hexdigest()
+        for url in (search_url, scraper_url, document_url)
+    ]
+
+    assert fingerprints == expected
+    assert all(url not in repr(fingerprints) for url in invalid_urls)
+    assert unrelated_url not in repr(fingerprints)
+
+
+def test_source_fingerprint_validates_raw_candidates_before_normalizing() -> None:
+    recorder = DependencyRecorder()
+    ipv6_url = "https://[2001:db8::1]/report"
+    invalid_urls = [
+        "https://example.com/a b",
+        "https://example.com/search?q=two words",
+        "https://example.com/a\tb",
+        "https://example.com/a\nb",
+        " https://example.com/leading-space",
+        "https://example.com/trailing-space ",
+    ]
+
+    recorder.record_source_url_fingerprints([ipv6_url, *invalid_urls])
+
+    fingerprints = recorder.ledger().source_url_fingerprints
+    expected = sha256(
+        normalize_source_url(ipv6_url).encode("utf-8")
+    ).hexdigest()
+
+    assert fingerprints == [expected]
+    assert recorder.ledger().source_url_fingerprints_complete is True
+
+
+def test_fingerprinting_proxy_copies_the_wrapped_tool_metadata(tracker) -> None:
+    """The proxy is the tool the agent actually holds.
+
+    Dropping a copied attribute here would make the evaluation path advertise
+    different tool metadata than production does — and the required-argument
+    list is exactly what a provider-native tool call is validated against.
+    """
+    recorder = DependencyRecorder()
+
+    class SourceTool:
+        name = "web_search"
+        description = "source tool"
+        input_schema = {"query": "string"}
+        required_arguments = ("query",)
+        output_schema = {"results": "array"}
+
+    proxy = _FingerprintingTool(SourceTool(), tracker, recorder=recorder)
+
+    assert proxy.name == "web_search"
+    assert proxy.description == "source tool"
+    assert proxy.input_schema == {"query": "string"}
+    assert proxy.output_schema == {"results": "array"}
+    assert proxy.required_arguments == ("query",)
+
+
+@pytest.mark.asyncio
+async def test_fingerprinting_proxy_ignores_failed_source_results(tracker) -> None:
+    recorder = DependencyRecorder()
+
+    class FailedSourceTool:
+        name = "web_search"
+        description = "failed source tool"
+        input_schema = {}
+        required_arguments = ()
+        output_schema = {"results": "array"}
+
+        async def execute(self, **kwargs):
+            del kwargs
+            return type(
+                "FailedResult",
+                (),
+                {
+                    "success": False,
+                    "data": {"results": [{"url": "https://example.com/failed"}]},
+                },
+            )()
+
+    proxy = _FingerprintingTool(
+        FailedSourceTool(), tracker, recorder=recorder
+    )
+
+    result = await proxy.execute(query="failed")
+
+    assert result.success is False
+    assert recorder.ledger().source_url_fingerprints == []
+
+
+def test_source_fingerprint_overflow_is_explicit() -> None:
+    recorder = DependencyRecorder()
+    urls = [f"https://example.com/source-{index}" for index in range(129)]
+
+    recorder.record_source_url_fingerprints(urls)
+
+    ledger = recorder.ledger()
+    assert len(ledger.source_url_fingerprints) == 128
+    assert ledger.source_url_fingerprints_complete is False
+    artifact = ledger.model_dump(mode="json")
+    assert artifact["source_url_fingerprints_complete"] is False
+    assert DependencyRecorder().ledger().source_url_fingerprints_complete is True
 
 
 @pytest.mark.asyncio

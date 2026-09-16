@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,6 +11,7 @@ from deep_research.agents.errors import PlanningError
 from deep_research.agents.planner import (
     MAX_SUB_TOPICS,
     MIN_SUB_TOPICS,
+    PLAN_INSTRUCTION,
     PlannerAgent,
     ResearchPlan,
     ResearchPlanDraft,
@@ -25,12 +28,15 @@ from deep_research.providers import (
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
     ProviderTimeoutError,
+    StructuredOutputError,
+    StructuredValidationDiagnostic,
 )
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Finding,
     MemorySnapshot,
     ResearchState,
+    SubTopic,
     merge_research_state,
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
@@ -211,6 +217,99 @@ def test_a_sub_topic_with_a_zero_priority_is_reported_by_field() -> None:
     )
 
 
+# Three distinct mechanisms, drafted out of priority order. Ordering is only
+# observable once a draft disagrees with it, which is exactly what the plan
+# instruction asks the model for and the model does not always produce.
+_SCRAMBLED_PLAN_TITLES = (
+    ("Market rules", 3),
+    ("Grid connection", 1),
+    ("Siting and safety", 2),
+)
+
+_ORDERED_PLAN_TITLES = ("Grid connection", "Siting and safety", "Market rules")
+
+
+def _scrambled_plan() -> ResearchPlanDraft:
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft(title, priority=priority)
+            for title, priority in _SCRAMBLED_PLAN_TITLES
+        ]
+    )
+
+
+def test_validated_sub_topics_are_priority_ordered_and_carry_stable_ids() -> None:
+    sub_topics, problems = validate_plan_draft(_scrambled_plan())
+
+    assert problems == []
+    assert [sub_topic.title for sub_topic in sub_topics] == list(
+        _ORDERED_PLAN_TITLES
+    )
+    assert [sub_topic.coverage_id for sub_topic in sub_topics] == [
+        "topic-01",
+        "topic-02",
+        "topic-03",
+    ]
+
+
+def test_equal_priorities_keep_the_models_order_and_the_same_ids() -> None:
+    draft = ResearchPlanDraft(
+        sub_topics=[
+            _draft(title, priority=1) for title in _ORDERED_PLAN_TITLES
+        ]
+    )
+
+    first, first_problems = validate_plan_draft(draft)
+    again, again_problems = validate_plan_draft(draft)
+
+    assert first_problems == again_problems == []
+    assert [sub_topic.title for sub_topic in first] == list(_ORDERED_PLAN_TITLES)
+    assert [sub_topic.coverage_id for sub_topic in first] == [
+        f"topic-{index:02d}" for index in (1, 2, 3)
+    ]
+    assert [sub_topic.coverage_id for sub_topic in again] == [
+        sub_topic.coverage_id for sub_topic in first
+    ]
+
+
+def test_a_repair_pass_produces_the_same_ids_for_the_same_ordered_titles() -> None:
+    """A repair keeps the ids a surviving title already had.
+
+    The first draft is rejected for carrying too many sub-topics, so the
+    repair returns the fewest, most important ones. Their ids are a pure
+    function of their position in priority order, so nothing is renumbered.
+    """
+    rejected = ResearchPlanDraft(
+        sub_topics=[
+            _draft(f"Mechanism {name}", priority=index)
+            for index, name in enumerate("ABCDEFGH", start=1)
+        ]
+    )
+    repaired = _plan("Mechanism A", "Mechanism B", "Mechanism C")
+
+    rejected_sub_topics, rejected_problems = validate_plan_draft(rejected)
+    repaired_sub_topics, repaired_problems = validate_plan_draft(repaired)
+
+    assert rejected_problems == [
+        "the plan has 8 valid sub-topics; produce between 3 and 7"
+    ]
+    assert repaired_problems == []
+    kept = {
+        sub_topic.title: sub_topic.coverage_id
+        for sub_topic in rejected_sub_topics
+        if sub_topic.title in {"Mechanism A", "Mechanism B", "Mechanism C"}
+    }
+    assert kept == {
+        sub_topic.title: sub_topic.coverage_id
+        for sub_topic in repaired_sub_topics
+    }
+    assert kept == {
+        "Mechanism A": "topic-01",
+        "Mechanism B": "topic-02",
+        "Mechanism C": "topic-03",
+    }
+
+
 def test_problems_render_as_one_corrective_instruction() -> None:
     rendered = format_plan_problems(["problem one", "problem two"])
 
@@ -236,7 +335,7 @@ def test_plan_messages_carry_question_notes_and_requirements() -> None:
     assert "- web_search succeeded: 3 results" in body
     assert "- Enough." in body
     assert "between 3 and 7" in body
-    assert "## Repair" not in body
+    assert "# Repair" not in body
 
 
 def test_plan_messages_report_when_nothing_was_scoped() -> None:
@@ -252,7 +351,7 @@ def test_plan_messages_append_the_repair_section_only_when_given() -> None:
         repair="The previous plan was rejected.\n- problem one",
     )
 
-    assert "## Repair" in messages[1].content
+    assert "# Repair" in messages[1].content
     assert "- problem one" in messages[1].content
 
 
@@ -298,6 +397,323 @@ def _planner(
 def test_the_planner_declares_its_identity_and_tools() -> None:
     assert PlannerAgent.name == "planner"
     assert PlannerAgent.allowed_tools == ("query_memory", "web_search")
+
+
+def test_the_plan_request_is_tool_free_while_the_loop_prompt_is_tool_aware(
+    tracker: Tracker,
+) -> None:
+    """Transport and prompt must agree.
+
+    ``plan_messages`` builds the separate structured plan call, which sends no
+    tools. Reusing the ReAct system prompt there announced ``query_memory`` and
+    ``web_search`` to a request that could not accept them — the measured cause
+    of DeepSeek emitting tool markup into ordinary text. The loop prompt keeps
+    naming them, because that request really does carry the tools.
+    """
+    task = AgentTask(instruction="How much capacity can QEC reach?")
+    messages = plan_messages(
+        task, ReActRun(agent_name="planner", stop_reason="finished")
+    )
+
+    developer = messages[0].content
+    assert "query_memory" not in developer
+    assert "web_search" not in developer
+
+    loop_prompt = _planner(tracker, ScriptedCompleter()).system_prompt(task)
+    assert "query_memory" in loop_prompt
+    assert "web_search" in loop_prompt
+
+
+@pytest.mark.asyncio
+async def test_the_plan_reaching_state_carries_coverage_ids_in_priority_order(
+    tracker: Tracker,
+) -> None:
+    """The ids a later stage reads are the ones the planner stamped."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_scrambled_plan()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert [
+        (sub_topic.coverage_id, sub_topic.title)
+        for sub_topic in outcome.result.sub_topics
+    ] == [
+        ("topic-01", "Grid connection"),
+        ("topic-02", "Siting and safety"),
+        ("topic-03", "Market rules"),
+    ]
+    assert outcome.state_update["sub_topics"] == outcome.result.sub_topics
+
+
+def test_the_plan_request_never_asks_the_model_for_a_coverage_id() -> None:
+    """The id is stamped locally, so no provider request can propose one.
+
+    ``coverage_id`` lives on ``SubTopic``, which is never sent to a provider,
+    and not on the provider-facing ``ResearchPlanDraft``. This pins that
+    boundary in both directions: the rendered request, and the strict JSON
+    schema the request is constrained by.
+    """
+    messages = plan_messages(AgentTask(instruction="Question?"), _run())
+    rendered = " ".join(message.content for message in messages)
+
+    assert "coverage_id" not in rendered
+    assert "topic-01" not in rendered
+    assert "coverage_id" not in json.dumps(
+        ResearchPlanDraft.model_json_schema(), sort_keys=True
+    )
+
+
+# The two ``list[str]`` fields the provider is asked for. A plan request
+# sampled 11 times returned ``success_criteria`` with exactly one element
+# every time, and the live failure was that lone criterion arriving as a
+# bare string instead of a one-element list.
+_SCALAR_LIST_FIELDS = ("search_queries", "success_criteria")
+
+_LONE_CRITERION = "A benchmark with a named source."
+
+
+def _raw_draft(**overrides: object) -> dict[str, object]:
+    """One sub-topic payload exactly as a provider would send it."""
+    payload: dict[str, object] = {
+        "title": "Error correction",
+        "rationale": "Error correction is load-bearing for the answer.",
+        "search_queries": ["qec benchmarks 2025"],
+        "success_criteria": [_LONE_CRITERION],
+        "priority": 1,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize("field", _SCALAR_LIST_FIELDS)
+def test_a_lone_string_is_read_as_a_one_element_list(field: str) -> None:
+    """The model's one-bracket wobble must not kill the whole session."""
+    draft = ResearchPlanDraft.model_validate(
+        {"sub_topics": [_raw_draft(**{field: _LONE_CRITERION})]}
+    )
+
+    assert getattr(draft.sub_topics[0], field) == [_LONE_CRITERION]
+
+
+@pytest.mark.parametrize("field", _SCALAR_LIST_FIELDS)
+def test_a_list_of_strings_is_read_unchanged(field: str) -> None:
+    """The tolerance widens nothing that already worked."""
+    values = ["qec benchmarks 2025", "surface code threshold 2026"]
+
+    draft = ResearchPlanDraft.model_validate(
+        {"sub_topics": [_raw_draft(**{field: values})]}
+    )
+
+    assert getattr(draft.sub_topics[0], field) == values
+
+
+@pytest.mark.parametrize("field", _SCALAR_LIST_FIELDS)
+@pytest.mark.parametrize(
+    "wrong",
+    [
+        5,
+        3.5,
+        True,
+        None,
+        {"a": 1},
+        [5],
+        ["ok", 5],
+        [["nested"]],
+    ],
+    ids=["int", "float", "bool", "null", "dict", "list-of-int", "mixed", "nested"],
+)
+def test_a_non_string_wrong_type_is_still_rejected(
+    field: str, wrong: object
+) -> None:
+    """Only a bare ``str`` is tolerated; nothing else becomes valid."""
+    with pytest.raises(ValidationError):
+        ResearchPlanDraft.model_validate(
+            {"sub_topics": [_raw_draft(**{field: wrong})]}
+        )
+
+
+@pytest.mark.parametrize("field", _SCALAR_LIST_FIELDS)
+def test_the_field_schema_still_asks_the_model_for_an_array_of_strings(
+    field: str,
+) -> None:
+    """The model is asked for a list, so the fix must add no schema keyword."""
+    properties = SubTopicDraft.model_json_schema()["properties"]
+
+    assert properties[field] == {
+        "items": {"type": "string"},
+        "title": field.replace("_", " ").title(),
+        "type": "array",
+    }
+
+
+# ``SubTopicDraft.model_json_schema()`` captured before the tolerance was
+# added, minus the ``description`` that the class docstring renders into.
+_PLAN_SCHEMA_BEFORE_THE_FIX: dict[str, object] = {
+    "additionalProperties": False,
+    "properties": {
+        "priority": {"title": "Priority", "type": "integer"},
+        "rationale": {"title": "Rationale", "type": "string"},
+        "search_queries": {
+            "items": {"type": "string"},
+            "title": "Search Queries",
+            "type": "array",
+        },
+        "success_criteria": {
+            "items": {"type": "string"},
+            "title": "Success Criteria",
+            "type": "array",
+        },
+        "title": {"title": "Title", "type": "string"},
+    },
+    "required": [
+        "title",
+        "rationale",
+        "search_queries",
+        "success_criteria",
+        "priority",
+    ],
+    "title": "SubTopicDraft",
+    "type": "object",
+}
+
+
+def test_the_plan_schema_the_model_is_handed_is_unchanged() -> None:
+    """A validator is not a schema keyword, so the request cannot shift.
+
+    The draft model is converted to a strict JSON schema and sent to the
+    provider, so anything that leaked into that schema would change what the
+    model is asked for. This pins the whole schema but the human-readable
+    docstring.
+    """
+    schema = dict(SubTopicDraft.model_json_schema())
+    schema.pop("description", None)
+
+    assert schema == _PLAN_SCHEMA_BEFORE_THE_FIX
+
+
+def _plan_text(sub_topic: SubTopic) -> str:
+    """Everything about one planned sub-topic that a reader or search sees."""
+    return " ".join(
+        [
+            sub_topic.title,
+            *sub_topic.search_queries,
+            *sub_topic.success_criteria,
+        ]
+    ).casefold()
+
+
+# The recorded CLI run answered "What are the current constraints on
+# grid-scale battery storage deployment?" with a report whose plan could not
+# separate the constraint mechanisms. This fixture is a contract example of
+# what a plan must be able to carry — the production planner holds no
+# taxonomy of its own, so the five mechanisms live here and nowhere else.
+BATTERY_CONSTRAINT_MECHANISMS = (
+    "grid connection",
+    "supply chain",
+    "siting",
+    "market rules",
+    "project economics",
+)
+
+
+def _battery_storage_plan() -> ResearchPlanDraft:
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft(
+                "Grid connection and interconnection queue position",
+                priority=2,
+                search_queries=[
+                    "FERC interconnection queue storage wait times 2026"
+                ],
+                success_criteria=[
+                    "A filing or queue dataset gives measured United States "
+                    "interconnection wait times for storage in 2026."
+                ],
+            ),
+            _draft(
+                "Equipment supply chain and trade exposure",
+                priority=3,
+                search_queries=[
+                    "battery cell supply chain tariffs 2026 United States"
+                ],
+                success_criteria=[
+                    "A trade dataset or standards-body report measures "
+                    "United States cell and inverter lead times in 2026."
+                ],
+            ),
+            _draft(
+                "Siting, permitting, and fire safety rules",
+                priority=4,
+                search_queries=[
+                    "NFPA 855 UL 9540A local siting permit requirements 2026"
+                ],
+                success_criteria=[
+                    "A standard or permit record names the United States "
+                    "fire-safety thresholds a 2026 project must meet."
+                ],
+            ),
+            _draft(
+                "Wholesale market rules and storage compensation",
+                priority=5,
+                search_queries=[
+                    "FERC Order 841 storage market participation 2026"
+                ],
+                success_criteria=[
+                    "An ISO market filing documents the United States "
+                    "compensation a 2026 storage project can earn."
+                ],
+            ),
+            _draft(
+                "Project economics and financing",
+                priority=1,
+                search_queries=[
+                    "grid-scale battery storage levelized cost financing 2026"
+                ],
+                success_criteria=[
+                    "A lender or utility filing reports the measured United "
+                    "States cost and financing terms for 2026 projects."
+                ],
+            ),
+        ]
+    )
+
+
+def test_a_battery_storage_plan_separates_every_constraint_mechanism() -> None:
+    """Each mechanism gets its own planned sub-topic, not a bundled one."""
+    sub_topics, problems = validate_plan_draft(_battery_storage_plan())
+
+    assert problems == []
+    assert len(sub_topics) == len(BATTERY_CONSTRAINT_MECHANISMS) == 5
+    assert [sub_topic.coverage_id for sub_topic in sub_topics] == [
+        f"topic-{index:02d}" for index in range(1, 6)
+    ]
+
+    carriers = {
+        mechanism: [
+            sub_topic.coverage_id
+            for sub_topic in sub_topics
+            if mechanism in _plan_text(sub_topic)
+        ]
+        for mechanism in BATTERY_CONSTRAINT_MECHANISMS
+    }
+    for mechanism, coverage_ids in carriers.items():
+        assert len(coverage_ids) == 1, (mechanism, coverage_ids)
+    assert sorted(
+        coverage_id
+        for coverage_ids in carriers.values()
+        for coverage_id in coverage_ids
+    ) == [f"topic-{index:02d}" for index in range(1, 6)]
+
+    # The question is unqualified, so the plan states the scope it assumes:
+    # a jurisdiction and an as-of year, in the text the plan already carries.
+    plan_text = " ".join(_plan_text(sub_topic) for sub_topic in sub_topics)
+    assert "united states" in plan_text
+    assert "2026" in plan_text
 
 
 def test_build_task_carries_the_question_and_recalled_memory(
@@ -354,10 +770,18 @@ async def test_the_planner_turns_a_question_into_a_validated_plan(
 
 
 @pytest.mark.asyncio
-async def test_react_decision_requests_carry_no_max_tokens_override(
+async def test_react_decision_requests_carry_the_react_decision_budget(
     tracker: Tracker,
 ) -> None:
-    """ReAct decisions never receive the planner-final budget override."""
+    """ReAct decisions carry their own budget, never the planner-final one.
+
+    This replaces the earlier invariant that decisions carried no override at
+    all. A live Critic repetition recorded ``{kind: output_limit,
+    operation: react_decision}``, so decisions were being truncated at the
+    global cap. The separation that still matters is which budget reaches
+    which request: decisions get ``react_decision_max_tokens`` and only plan
+    drafts get ``planner_final_max_tokens``.
+    """
     completer = ScriptedCompleter(
         decisions=[
             use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
@@ -371,11 +795,11 @@ async def test_react_decision_requests_carry_no_max_tokens_override(
         await agent.run(_state())
 
     assert [call[0] for call in completer.calls] == [
-        "ReActDecision",
-        "ReActDecision",
         "ResearchPlanDraft",
     ]
-    assert completer.budgets == [None, None, 4096]
+    decision_budget = AgentRuntimeConfig().react_decision_max_tokens
+    assert completer.react_budgets == [decision_budget, decision_budget]
+    assert completer.budgets == [32768]
 
 
 @pytest.mark.asyncio
@@ -403,7 +827,9 @@ async def test_only_final_plan_requests_use_the_planner_final_budget(
     async with tracker.session_span("session-1", "q"):
         await agent.run(_state())
 
-    assert completer.budgets == [None, None, 8192]
+    decision_budget = AgentRuntimeConfig().react_decision_max_tokens
+    assert completer.react_budgets == [decision_budget, decision_budget]
+    assert completer.budgets == [8192]
 
 
 @pytest.mark.asyncio
@@ -439,14 +865,16 @@ async def test_repair_plan_requests_also_use_the_planner_final_budget(
 
     assert outcome.result is not None
     assert outcome.result.repair_attempted is True
-    assert completer.budgets == [None, 8192, 8192]
+    decision_budget = AgentRuntimeConfig().react_decision_max_tokens
+    assert completer.react_budgets == [decision_budget]
+    assert completer.budgets == [8192, 8192]
 
 
 def _output_limit_error() -> ProviderOutputLimitError:
     return ProviderOutputLimitError(
         ProviderResponseTelemetry(
             finish_reason_category="length",
-            configured_max_tokens=4096,
+            configured_max_tokens=32768,
             usage=TokenUsage(input_tokens=5, output_tokens=4096),
             request_attempt=1,
             structured_attempt=1,
@@ -566,7 +994,7 @@ async def test_a_redundant_plan_is_repaired_once_and_then_accepted(
     assert outcome.result is not None
     assert outcome.result.repair_attempted is True
     repair_body = completer.calls[-1][2][1].content
-    assert "## Repair" in repair_body
+    assert "# Repair" in repair_body
     assert "repeat the same title" in repair_body
     assert "produce between 3 and 7" in repair_body
 
@@ -601,7 +1029,8 @@ async def test_a_provider_failure_fails_the_session_without_a_plan_request(
         async with tracker.session_span("session-1", "q"):
             await agent.run(_state())
 
-    assert [call[0] for call in completer.calls] == ["ReActDecision"]
+    assert completer.calls == []
+    assert len(completer.react_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -620,9 +1049,9 @@ async def test_a_provider_failure_during_the_initial_plan_draft_raises_planning_
 
     assert "timed out" not in str(failure.value)
     assert [call[0] for call in completer.calls] == [
-        "ReActDecision",
         "ResearchPlanDraft",
     ]
+    assert len(completer.react_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -644,10 +1073,185 @@ async def test_a_provider_failure_during_the_repair_call_raises_planning_error(
 
     assert "timed out" not in str(failure.value)
     assert [call[0] for call in completer.calls] == [
-        "ReActDecision",
         "ResearchPlanDraft",
         "ResearchPlanDraft",
     ]
+    assert len(completer.react_calls) == 1
+
+
+def _schema_failure(
+    *diagnostics: StructuredValidationDiagnostic,
+) -> StructuredOutputError:
+    """A structured failure whose message is hostile and must never surface."""
+    return StructuredOutputError(
+        "PROVIDER_SECRET_SENTINEL", diagnostics=diagnostics
+    )
+
+
+_PLAN_DRAFT_STATIC_PROBLEM = (
+    "the planner provider failed while requesting the final plan draft"
+)
+
+
+@pytest.mark.asyncio
+async def test_the_plan_draft_schema_diagnostic_reaches_the_planning_error(
+    tracker: Tracker,
+) -> None:
+    """Both structured attempts stay diagnosable after the run has failed.
+
+    The provider discards the validation diagnostic one frame above this
+    catch, so the planner error is the last artifact that can carry it.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _schema_failure(
+                StructuredValidationDiagnostic(
+                    attempt=1,
+                    field_paths=("sub_topics.0.title",),
+                    category="missing",
+                ),
+                StructuredValidationDiagnostic(
+                    attempt=2,
+                    field_paths=("sub_topics.1.priority", "sub_topics.2.title"),
+                    category="type_mismatch",
+                ),
+            )
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        _PLAN_DRAFT_STATIC_PROBLEM,
+        "the plan draft failed schema validation on attempt 1 at "
+        "sub_topics.0.title (missing)",
+        "the plan draft failed schema validation on attempt 2 at "
+        "sub_topics.1.priority, sub_topics.2.title (type_mismatch)",
+    )
+    assert "PROVIDER_SECRET_SENTINEL" not in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_a_diagnostic_without_a_category_uses_the_documented_fallback(
+    tracker: Tracker,
+) -> None:
+    """``category`` is optional on the contract, so the line needs a word."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _schema_failure(
+                StructuredValidationDiagnostic(
+                    attempt=2,
+                    field_paths=("sub_topics",),
+                    category=None,
+                )
+            )
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        _PLAN_DRAFT_STATIC_PROBLEM,
+        "the plan draft failed schema validation on attempt 2 at "
+        "sub_topics (unclassified)",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_hostile_field_path_never_reaches_the_planning_error(
+    tracker: Tracker,
+) -> None:
+    """Only the contract's normalized ``$`` placeholder may be published."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _schema_failure(
+                StructuredValidationDiagnostic(
+                    attempt=1,
+                    field_paths=("<script>alert(1)</script>",),
+                    category="other_schema",
+                )
+            )
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        _PLAN_DRAFT_STATIC_PROBLEM,
+        "the plan draft failed schema validation on attempt 1 at "
+        "$ (other_schema)",
+    )
+    assert "<script>" not in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_a_third_diagnostic_is_not_carried_into_extra_lines(
+    tracker: Tracker,
+) -> None:
+    """The provider bounds its diagnostics at two, so the lines stay bounded."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _schema_failure(
+                *(
+                    StructuredValidationDiagnostic(
+                        attempt=index,
+                        field_paths=(f"sub_topics.{index}",),
+                        category="missing",
+                    )
+                    for index in range(1, 4)
+                )
+            )
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        _PLAN_DRAFT_STATIC_PROBLEM,
+        "the plan draft failed schema validation on attempt 1 at "
+        "sub_topics.1 (missing)",
+        "the plan draft failed schema validation on attempt 2 at "
+        "sub_topics.2 (missing)",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_structured_failure_without_diagnostics_keeps_the_static_error(
+    tracker: Tracker,
+) -> None:
+    """No diagnostics means no extra lines: the static pair is untouched."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_schema_failure()],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert str(failure.value) == (
+        "The planner could not produce the requested plan draft because "
+        "the model provider operation failed."
+    )
+    assert failure.value.problems == (_PLAN_DRAFT_STATIC_PROBLEM,)
+    assert failure.value.operation == "plan_draft"
 
 
 @pytest.mark.asyncio
@@ -772,11 +1376,32 @@ def test_planner_regression_plan_instruction_requires_priority_order() -> None:
     assert "most important first" in rendered
 
 
+def test_planner_regression_plan_instruction_permits_real_search_terms() -> None:
+    """The plan instruction must permit the terms a real search needs.
+
+    The removed sentence forbade any capitalized word or four-digit year the
+    question did not itself contain, which blocked the identifiers, acronyms,
+    jurisdictions, and years a query needs to reach primary or current
+    evidence — exactly the planner defect the plan records for FERC, NFPA,
+    UL 9540A, FEOC, and current-year material.
+    """
+    assert "Do not introduce any capitalized word" not in PLAN_INSTRUCTION
+    for phrase in (
+        "primary sources",
+        "as-of date",
+        "geographic scope",
+        "measurable",
+    ):
+        assert phrase in PLAN_INSTRUCTION
+
+
 def test_planner_regression_plan_instruction_requires_balanced_wording() -> None:
     task = AgentTask(instruction="Some research question.")
     messages = plan_messages(task, _run())
     rendered = " ".join(message.content for message in messages)
     assert "benefits" in rendered
     assert "risks" in rendered
-    assert "capitalized word" in rendered
-    assert "lowercase" in rendered
+    # The lexical ban is gone, so what replaces it has to keep the terms it
+    # permits out of the plan's assertions.
+    assert "Do not assert those terms as facts" in rendered
+    assert "use them only as search targets" in rendered

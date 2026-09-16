@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.errors import PlanningError
 from deep_research.graph.errors import (
     GRAPH_ERROR_REASONS,
     GraphConfigurationError,
@@ -74,7 +75,6 @@ def test_a_blank_node_is_attributed_to_the_graph() -> None:
     ("builder", "expected_type"),
     [
         (agent_configuration_error, "graph_agent_configuration_error"),
-        (planning_failed_error, "graph_planning_failed"),
         (provider_configuration_error, "graph_provider_configuration_error"),
         (invalid_agent_state_error, "graph_invalid_agent_state"),
     ],
@@ -90,6 +90,32 @@ def test_failure_builders_record_the_exception_type_only(
     assert recorded.recoverable is False
 
 
+def test_planning_failed_error_preserves_safe_problems_without_hostile_text() -> None:
+    hostile_exception_text = "hostile exception text from provider response"
+    hostile_provider_sentinel = "hostile-provider-sentinel"
+    error = PlanningError(
+        hostile_exception_text,
+        problems=("the plan contains no sub-topics",),
+        operation=hostile_provider_sentinel,
+    )
+
+    recorded = planning_failed_error(error, node="planner")
+
+    assert recorded.error_type == "graph_planning_failed"
+    assert recorded.message == GRAPH_ERROR_REASONS["graph_planning_failed"]
+    assert recorded.details == {
+        "exception_type": "PlanningError",
+        "problems": ["the plan contains no sub-topics"],
+    }
+    assert isinstance(recorded.details["problems"], list)
+    assert recorded.details["problems"] is not error.problems
+    assert hostile_exception_text not in recorded.message
+    assert hostile_provider_sentinel not in recorded.message
+    assert hostile_exception_text not in str(recorded.details)
+    assert hostile_provider_sentinel not in str(recorded.details)
+    assert recorded.recoverable is False
+
+
 def test_an_invalid_route_records_the_budget_it_violated() -> None:
     recorded = invalid_route_error(node="refine", iteration=3, max_iterations=3)
 
@@ -101,6 +127,32 @@ def test_an_invalid_route_records_the_budget_it_violated() -> None:
 def test_graph_exceptions_share_one_base() -> None:
     assert issubclass(GraphConfigurationError, GraphError)
     assert issubclass(GraphResumeError, GraphError)
+
+
+def test_the_request_attempt_limit_error_is_enumerated_and_non_recoverable() -> None:
+    """A refused attempt past a declared ceiling is a graph halt, not a blip."""
+    error_type = "graph_request_attempt_limit_exceeded"
+
+    assert error_type in GRAPH_ERROR_REASONS
+    assert GRAPH_ERROR_REASONS[error_type].strip()
+    assert error_type in HALTING_ERROR_TYPES
+
+    recorded = graph_error(
+        error_type=error_type,
+        node="researcher",
+        details={
+            "exception_type": "RequestAttemptLimitError",
+            "provider": "tavily",
+            "attempts": 5,
+            "ceiling": 5,
+            "effective_limit": 5,
+        },
+    )
+
+    assert recorded.error_type == error_type
+    assert recorded.message == GRAPH_ERROR_REASONS[error_type]
+    assert recorded.source == "graph.researcher"
+    assert recorded.recoverable is False
 
 
 def test_a_graph_event_names_its_node_in_the_source() -> None:

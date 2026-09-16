@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 import pytest
 
 from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.evaluators import (
     GENERAL_GATE_IDS,
+    METRIC_FUNCTIONS,
     MissingMetricError,
+    deterministic_metric_scores,
     deterministic_quality,
+    evaluate_agent_gates,
     evaluate_general_gates,
     evaluate_target,
+    evaluate_target_with_metrics,
 )
 from deep_research.evaluation.models import (
     DependencyLedger,
@@ -115,6 +121,144 @@ def test_a_missing_required_field_fails_its_gate(
     assert "sub_topics" in gate(results, "required_fields_present").detail
 
 
+def _production_target_output(
+    case: EvaluationCase,
+    *,
+    result: dict,
+    state_update: dict,
+) -> TargetOutput:
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id=f"required-fields-{case.agent_name}",
+        experiment_name=f"{case.agent_name}-required-fields",
+        trace_url="https://smith.langchain.com/o/x/r/required-fields",
+        completed=True,
+        result=result,
+        state_update=state_update,
+        react=ReActSummary(
+            iterations=0,
+            tool_calls=0,
+            stop_reason="finished",
+            max_iterations=case.expectations.max_iterations,
+            tool_budget=case.expectations.max_tool_calls,
+        ),
+        target_model_requested="deepseek-v4-flash",
+        target_model_returned="deepseek-v4-flash",
+        target_reasoning_effort="medium",
+    )
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "result", "state_update", "required_field"),
+    [
+        (
+            "source_evaluator",
+            {"sources": []},
+            {"evaluated_sources": []},
+            "evaluated_sources",
+        ),
+        (
+            "fact_checker",
+            {"claims": []},
+            {"verified_claims": []},
+            "verified_claims",
+        ),
+        (
+            "synthesizer",
+            {
+                "markdown": "",
+                "path": None,
+                "evidence_markdown": "",
+                "evidence_path": "report-session-1-0-evidence.md",
+                "section_count": 0,
+                "citation_count": 0,
+                "unique_source_count": 0,
+                "unique_claim_count": 0,
+            },
+            {
+                "report": "",
+                "report_evidence": "",
+                "evidence_path": "report-session-1-0-evidence.md",
+                "unique_source_count": 0,
+                "unique_claim_count": 0,
+            },
+            "report",
+        ),
+        (
+            "critic",
+            {
+                "score": 1,
+                "gaps": [],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "should_continue": False,
+                "rationale": "No report gaps found.",
+            },
+            {
+                "critique": {
+                    "score": 1,
+                    "gaps": [],
+                    "unsupported_claims": [],
+                    "recommended_queries": [],
+                    "should_continue": False,
+                    "rationale": "No report gaps found.",
+                }
+            },
+            "critique",
+        ),
+        (
+            "researcher",
+            {"findings": []},
+            {},
+            "findings",
+        ),
+    ],
+    ids=[
+        "source-evaluator-state-update",
+        "fact-checker-state-update",
+        "synthesizer-state-update",
+        "critic-state-update",
+        "researcher-result-control",
+    ],
+)
+def test_required_field_presence_accepts_production_output_boundaries(
+    controlled_case_for,
+    agent_name,
+    result,
+    state_update,
+    required_field,
+) -> None:
+    case = controlled_case_for(agent_name)
+    output = _production_target_output(
+        case, result=result, state_update=state_update
+    )
+
+    results = evaluate_general_gates(output, case, secrets=())
+
+    assert gate(results, "required_fields_present").passed is True
+    assert required_field in state_update or required_field in result
+
+
+def test_required_field_missing_from_result_and_state_update_fails(
+    controlled_case_for,
+) -> None:
+    case = controlled_case_for("source_evaluator")
+    output = _production_target_output(
+        case, result={"sources": []}, state_update={}
+    )
+
+    results = evaluate_general_gates(output, case, secrets=())
+
+    assert gate(results, "required_fields_present").passed is False
+    assert "evaluated_sources" in gate(
+        results, "required_fields_present"
+    ).detail
+
+
 def test_exceeding_the_iteration_budget_fails_the_budget_gate(
     planner_case, clean_target_output
 ) -> None:
@@ -130,6 +274,88 @@ def test_exceeding_the_tool_budget_fails_the_budget_gate(
     planner_case, clean_target_output
 ) -> None:
     react = clean_target_output.react.model_copy(update={"tool_calls": 99})
+    output = clean_target_output.model_copy(update={"react": react})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "budgets_respected").passed is False
+
+
+def test_merged_loops_each_inside_their_budget_pass_the_gate(
+    planner_case, clean_target_output
+) -> None:
+    """A whole-case sum is not a per-loop budget.
+
+    The fact-checker runs one bounded loop per claim and merges them, summing
+    ``tool_calls`` and ``iterations``. Every loop respects its own budget, yet
+    the sum can exceed the per-loop ceiling the case declares -- which is
+    exactly what failed a live canary with ``tool_calls 11 exceed 10`` where
+    11 was two in-budget loops of 6 and 5. The gate must measure the per-loop
+    maximum, which is the bound the runtime actually enforces.
+    """
+    react = clean_target_output.react.model_copy(
+        update={
+            "tool_calls": 11,  # the merged sum, over the per-loop ceiling of 10
+            "iterations": 14,  # the merged sum, over the per-loop ceiling of 5
+            "max_loop_tool_calls": 6,  # no single loop exceeded 10
+            "max_loop_iterations": 4,  # no single loop exceeded 5
+        }
+    )
+    output = clean_target_output.model_copy(update={"react": react})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "budgets_respected").passed is True
+
+
+def test_a_single_loop_exceeding_its_own_budget_still_fails_the_gate(
+    planner_case, clean_target_output
+) -> None:
+    """The fix must not stop catching a real violation."""
+    react = clean_target_output.react.model_copy(
+        update={
+            "tool_calls": 12,
+            "max_loop_tool_calls": 12,
+            "max_loop_iterations": 3,
+        }
+    )
+    output = clean_target_output.model_copy(update={"react": react})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    result = gate(results, "budgets_respected")
+    assert result.passed is False
+    assert "12" in result.detail
+
+
+def test_a_single_loop_exceeding_its_iteration_budget_still_fails_the_gate(
+    planner_case, clean_target_output
+) -> None:
+    react = clean_target_output.react.model_copy(
+        update={
+            "iterations": 4,
+            "max_loop_iterations": 99,
+            "max_loop_tool_calls": 1,
+        }
+    )
+    output = clean_target_output.model_copy(update={"react": react})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "budgets_respected").passed is False
+
+
+def test_an_artifact_without_per_loop_maxima_still_gates_on_the_total(
+    planner_case, clean_target_output
+) -> None:
+    """Backward compatibility: older artifacts keep gating exactly as before."""
+    react = clean_target_output.react.model_copy(
+        update={
+            "tool_calls": 99,
+            "max_loop_tool_calls": None,
+            "max_loop_iterations": None,
+        }
+    )
     output = clean_target_output.model_copy(update={"react": react})
 
     results = evaluate_general_gates(output, planner_case, secrets=())
@@ -252,6 +478,108 @@ def test_a_live_case_without_known_urls_accepts_trajectory_urls(
     assert "skipped" not in gate(results, "citations_known").detail
 
 
+def test_live_researcher_url_fingerprints_repair_lossy_trajectory_gates(
+    live_case_for, researcher_target_output
+) -> None:
+    live_case = live_case_for("researcher")
+    discovered = "https://discovered.example.com/page"
+    fingerprint = sha256(
+        discovered.encode("utf-8")
+    ).hexdigest()
+    output = researcher_target_output.model_copy(
+        update={
+            "case_id": live_case.case_id,
+            "case_version": live_case.version,
+            "tier": "live",
+            "result": {"findings": [{"source_url": discovered}]},
+            "trajectory": [],
+            "evidence": EvidenceContext(),
+            "dependencies": DependencyLedger(
+                source_url_fingerprints=[fingerprint]
+            ),
+        }
+    )
+
+    general = evaluate_general_gates(output, live_case, secrets=())
+    agent = evaluate_agent_gates(output, live_case)
+
+    assert gate(general, "citations_known").passed is True
+    assert gate(agent, "no_invented_sources").passed is True
+    assert deterministic_metric_scores(
+        output, live_case, metric_functions=METRIC_FUNCTIONS
+    )[
+        "sources_are_real_urls"
+    ] == 1.0
+
+
+def test_incomplete_provenance_fails_closed_without_false_invention_detail(
+    live_case_for, researcher_target_output
+) -> None:
+    live_case = live_case_for("researcher")
+    discovered = "https://discovered.example.com/page"
+    output = researcher_target_output.model_copy(
+        update={
+            "case_id": live_case.case_id,
+            "case_version": live_case.version,
+            "tier": "live",
+            "result": {"findings": [{"source_url": discovered}]},
+            "trajectory": [],
+            "evidence": EvidenceContext(),
+            "dependencies": DependencyLedger(
+                source_url_fingerprints=[],
+                source_url_fingerprints_complete=False,
+            ),
+        }
+    )
+
+    general = evaluate_general_gates(output, live_case, secrets=())
+    agent = evaluate_agent_gates(output, live_case)
+    no_invented = gate(agent, "no_invented_sources")
+
+    assert gate(general, "citations_known").passed is False
+    assert "provenance incomplete" in gate(general, "citations_known").detail
+    assert no_invented.passed is False
+    assert "provenance incomplete" in no_invented.detail
+    assert "outside the known sources" not in no_invented.detail
+    assert deterministic_metric_scores(
+        output, live_case, metric_functions=METRIC_FUNCTIONS
+    )["sources_are_real_urls"] == 0.0
+
+
+def test_source_url_fingerprints_do_not_change_controlled_researcher_semantics(
+    live_case_for, researcher_target_output
+) -> None:
+    researcher_case = live_case_for("researcher").model_copy(
+        update={"tier": "controlled"}
+    )
+    discovered = "https://discovered.example.com/page"
+    output = researcher_target_output.model_copy(
+        update={
+            "case_id": researcher_case.case_id,
+            "case_version": researcher_case.version,
+            "tier": "controlled",
+            "result": {"findings": [{"source_url": discovered}]},
+            "evidence": EvidenceContext(),
+            "dependencies": DependencyLedger(
+                source_url_fingerprints=[
+                    sha256(discovered.encode("utf-8")).hexdigest()
+                ]
+            ),
+        }
+    )
+
+    general = evaluate_general_gates(output, researcher_case, secrets=())
+    agent = evaluate_agent_gates(output, researcher_case)
+
+    assert gate(general, "citations_known").passed is False
+    assert gate(agent, "no_invented_sources").passed is False
+    assert deterministic_metric_scores(
+        output, researcher_case, metric_functions=METRIC_FUNCTIONS
+    )[
+        "sources_are_real_urls"
+    ] == 0.0
+
+
 def test_a_live_case_accepts_urls_from_the_recorded_trajectory(
     researcher_case, researcher_target_output
 ) -> None:
@@ -357,6 +685,35 @@ def test_a_prohibited_call_fails_its_gate(
 ) -> None:
     ledger = clean_target_output.dependencies.model_copy(
         update={"prohibited_calls": ["tavily.search"]}
+    )
+    output = clean_target_output.model_copy(update={"dependencies": ledger})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "no_prohibited_calls").passed is False
+
+
+def test_a_scenario_miss_does_not_fail_the_prohibited_call_gate(
+    planner_case, clean_target_output
+) -> None:
+    ledger = clean_target_output.dependencies.model_copy(
+        update={"scenario_misses": ["web_search: unscripted"]}
+    )
+    output = clean_target_output.model_copy(update={"dependencies": ledger})
+
+    results = evaluate_general_gates(output, planner_case, secrets=())
+
+    assert gate(results, "no_prohibited_calls").passed is True
+
+
+def test_a_prohibited_call_still_fails_with_a_scenario_miss(
+    planner_case, clean_target_output
+) -> None:
+    ledger = clean_target_output.dependencies.model_copy(
+        update={
+            "scenario_misses": ["web_search: unscripted"],
+            "prohibited_calls": ["tavily.search"],
+        }
     )
     output = clean_target_output.model_copy(update={"dependencies": ledger})
 
@@ -540,6 +897,7 @@ def _golden_result(case: EvaluationCase, urls: list[str]) -> dict:
         return {
             "sub_topics": [
                 {
+                    "coverage_id": "topic-01",
                     "title": "Golden sub-topic",
                     "rationale": "A plausible rationale for this case.",
                     "search_queries": ["golden query"],
@@ -568,9 +926,9 @@ def _golden_result(case: EvaluationCase, urls: list[str]) -> dict:
                     "authority_score": 0.8,
                     "recency_score": 0.8,
                     "relevance_score": 0.8,
-                    "corroboration_score": 0.8,
                     "overall_score": 0.8,
                     "rationale": "Plausible, well-corroborated source.",
+                    "evaluation_status": "scored",
                     "low_confidence": False,
                 }
                 for url in urls
@@ -597,13 +955,20 @@ def _golden_result(case: EvaluationCase, urls: list[str]) -> dict:
                 f"A plausible, fully cited summary ({urls[0]}).\n\n"
                 "## Limitations\n\nThe evidence base is limited."
             )
+            evidence = f"## Evidence ledger\n\n[1] {urls[0]}"
         else:
             report = (
                 "## Summary\n\nA plausible summary with no external "
                 "sources to cite.\n\n## Limitations\n\nThe evidence base "
                 "is limited."
             )
-        return {"report": report}
+            evidence = "## Evidence ledger\n\nNo external sources were supplied."
+        return {
+            "markdown": report,
+            "path": None,
+            "evidence_markdown": evidence,
+            "evidence_path": "evidence.md",
+        }
     if case.agent_name == "critic":
         return {
             "critique": {
@@ -659,7 +1024,7 @@ def _build_golden_output(case: EvaluationCase) -> TargetOutput:
         react=ReActSummary(
             iterations=1,
             tool_calls=1 if trajectory else 0,
-            stop_reason="completed",
+            stop_reason="finished",
             max_iterations=case.expectations.max_iterations,
             tool_budget=case.expectations.max_tool_calls,
         ),
@@ -713,3 +1078,89 @@ def test_a_plausible_correct_output_passes_every_general_gate_for_every_register
     assert [item.gate_id for item in results] == list(GENERAL_GATE_IDS)
     failed = [item for item in results if not item.passed]
     assert not failed, [(item.gate_id, item.detail) for item in failed]
+
+
+def test_deterministic_metric_scores_returns_every_metric_as_a_unit_score(
+    planner_case, clean_target_output
+) -> None:
+    functions = {
+        metric.metric_id: (lambda output, case, value=value: value)
+        for metric, value in zip(
+            planner_case.expectations.deterministic_metrics,
+            [
+                index == 0
+                for index in range(len(planner_case.expectations.deterministic_metrics))
+            ],
+            strict=True,
+        )
+    }
+
+    scores = deterministic_metric_scores(
+        clean_target_output, planner_case, metric_functions=functions
+    )
+    assert list(scores) == [
+        metric.metric_id for metric in planner_case.expectations.deterministic_metrics
+    ]
+    assert list(scores.values()) == [1.0] + [0.0] * (len(scores) - 1)
+
+
+def test_deterministic_metric_scores_records_exceptions_as_zero(
+    planner_case, clean_target_output
+) -> None:
+    metrics = planner_case.expectations.deterministic_metrics
+
+    def broken(output, case):
+        raise RuntimeError("unsafe metric failure")
+
+    scores = deterministic_metric_scores(
+        clean_target_output,
+        planner_case,
+        metric_functions={
+            metrics[0].metric_id: broken,
+            **{metric.metric_id: (lambda output, case: True) for metric in metrics[1:]},
+        },
+    )
+
+    assert scores[metrics[0].metric_id] == 0.0
+    assert all(scores[metric.metric_id] == 1.0 for metric in metrics[1:])
+
+
+def test_deterministic_metric_scores_still_raises_for_missing_metrics(
+    planner_case, clean_target_output
+) -> None:
+    with pytest.raises(MissingMetricError):
+        deterministic_metric_scores(
+            clean_target_output, planner_case, metric_functions={}
+        )
+
+
+def test_combined_target_evaluation_calls_each_metric_once(
+    planner_case, clean_target_output
+) -> None:
+    calls = {
+        metric.metric_id: 0
+        for metric in planner_case.expectations.deterministic_metrics
+    }
+
+    def score(output, case, *, metric_id):
+        del output, case
+        calls[metric_id] += 1
+        return True
+
+    functions = {
+        metric_id: (lambda output, case, metric_id=metric_id: score(
+            output, case, metric_id=metric_id
+        ))
+        for metric_id in calls
+    }
+    gates, quality, scores = evaluate_target_with_metrics(
+        clean_target_output,
+        planner_case,
+        secrets=(),
+        metric_functions=functions,
+    )
+
+    assert gates.results
+    assert quality == pytest.approx(1.0)
+    assert scores == {metric_id: 1.0 for metric_id in calls}
+    assert calls == {metric_id: 1 for metric_id in calls}

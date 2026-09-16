@@ -5,13 +5,21 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from deep_research.agents.critic import route_decision
+from deep_research.agents.critic import fallback_critique, route_decision
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
+    CONTROLLED_SCENARIO_CONTRACT_VERSION,
     SCENARIOS,
     build_controlled_dependencies,
 )
+from deep_research.evaluation.evaluators import (
+    AGENT_GATE_IDS,
+    METRIC_FUNCTIONS,
+    deterministic_metric_scores,
+    evaluate_agent_gates,
+)
+from deep_research.evaluation.models import ReActSummary, TargetOutput
 from deep_research.utils.types import Critique
 
 CONTROLLED = (
@@ -47,14 +55,13 @@ _METRICS = {
     ),
 }
 
-# The scenario search keys are shared with the dependency scenarios: a
-# scripted client answers exactly one query per controlled case, so the
-# case tests pin the query literal on both sides. The gappy case's key is
-# also the participation subtopic's own search query, so the case file
-# carries it; the other two keys exist only in the scenario and here.
+# The scenario search keys are applicable planned queries from each
+# controlled case. The case tests pin that relationship on both sides so a
+# Critic spot check cannot miss merely because a scenario key drifted away
+# from the task context.
 
 _STRONG_SEARCH_KEY = (
-    "measured effect of urban tree canopy on summer surface temperature"
+    "urban tree canopy measured surface temperature reductions"
 )
 _GAPPY_SEARCH_KEY = "municipal composting mandates participation rates"
 _BUDGET_SEARCH_KEY = "congestion pricing particulate pollution evidence"
@@ -202,6 +209,196 @@ def _word_count(report: str) -> int:
     return len(report.split())
 
 
+def _live_critic_metric_output(gaps: list[str]) -> TargetOutput:
+    case = _case("critic-live-review")
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id="evaluation-critic-live-review-control",
+        experiment_name="critic-live-review-control",
+        trace_url="https://smith.langchain.com/o/x/r/critic-live-review-control",
+        completed=True,
+        result={
+            "critique": {
+                "score": 8,
+                "gaps": gaps,
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "should_continue": False,
+                "rationale": "The report's evidence and limitations are clear.",
+            }
+        },
+        react=ReActSummary(
+            iterations=1,
+            tool_calls=0,
+            stop_reason="finished",
+            max_iterations=case.expectations.max_iterations,
+            tool_budget=case.expectations.max_tool_calls,
+        ),
+        target_model_requested="deepseek-v4-flash",
+        target_model_returned="deepseek-v4-flash",
+        target_reasoning_effort="high",
+    )
+
+
+def test_rationale_metric_distinguishes_grounded_review_from_fallback() -> None:
+    case = _case("critic-live-review")
+    base = _live_critic_metric_output([])
+    normal = Critique(
+        score=8,
+        gaps=[],
+        unsupported_claims=[],
+        recommended_queries=[],
+        should_continue=False,
+        rationale=(
+            "The report covers commercial-scale deployment and durability "
+            "and long-term performance data."
+        ),
+    )
+    fallback, _ = fallback_critique(
+        reason="provider_unavailable",
+        iteration=case.state.iteration,
+        max_iterations=case.state.max_iterations,
+    )
+    fallback_errors = [
+        {
+            "error_type": "critic_review_provider_error",
+            "source": "agent.critic",
+            "message": "provider review fallback used",
+            "timestamp": "2026-08-01T00:00:00+00:00",
+            "recoverable": False,
+            "details": {
+                "operation": "critic_report_review",
+                "provider_failure": {
+                    "kind": "provider_failure",
+                    "type": "ProviderError",
+                    "retryable": False,
+                    "status_code": None,
+                },
+            },
+        }
+    ]
+
+    def production_output(
+        critique: Critique,
+        *,
+        errors: list[dict[str, object]] | None = None,
+    ) -> TargetOutput:
+        serialized = critique.model_dump(mode="json")
+        return base.model_copy(
+            update={
+                "result": serialized,
+                "state_update": {"critique": serialized},
+                "errors": errors or [],
+            }
+        )
+
+    normal_scores = deterministic_metric_scores(
+        production_output(normal),
+        case,
+        metric_functions=METRIC_FUNCTIONS,
+    )
+    fallback_scores = deterministic_metric_scores(
+        production_output(fallback, errors=fallback_errors),
+        case,
+        metric_functions=METRIC_FUNCTIONS,
+    )
+
+    assert normal_scores["rationale_present"] == 1.0
+    assert fallback_scores["rationale_present"] == 0.0
+    assert fallback_scores["score_bounded"] == 1.0
+    assert fallback_scores["route_consistent"] == 1.0
+    assert fallback_scores["no_spurious_gaps"] == 1.0
+
+
+def test_a_fallback_review_fails_a_hard_gate() -> None:
+    """A run with no critique must never be certifiable.
+
+    The fallback's placeholder score of 1 with empty lists satisfies
+    ``bounded_component_scores``, ``critique_actionable``, and
+    ``route_consistent``, and its favourable judge reading lifted a live
+    repetition's aggregate to 0.767, above the 0.75 threshold. Quality gates
+    are AND-conditions, so the review gate is what stops that.
+    """
+    case = _case("critic-live-review")
+    fallback, _ = fallback_critique(
+        reason="provider_unavailable",
+        iteration=case.state.iteration,
+        max_iterations=case.state.max_iterations,
+    )
+    output = _live_critic_metric_output([]).model_copy(
+        update={
+            "errors": [
+                {
+                    "error_type": "critic_review_provider_error",
+                    "source": "agent.critic",
+                    "message": "provider review fallback used",
+                    "timestamp": "2026-08-01T00:00:00+00:00",
+                    "recoverable": False,
+                    "details": {
+                        "operation": "critic_report_review",
+                        "provider_failure": {
+                            "kind": "schema_output",
+                            "exception_type": "StructuredOutputError",
+                        },
+                    },
+                }
+            ]
+        }
+    )
+    serialized = fallback.model_dump(mode="json")
+    output = output.model_copy(
+        update={"result": serialized, "state_update": {"critique": serialized}}
+    )
+
+    gates = {gate.gate_id: gate for gate in evaluate_agent_gates(output, case)}
+
+    assert gates["review_produced"].passed is False
+    assert "fell back" in gates["review_produced"].detail
+    # The other gates still pass, which is exactly why this one is required.
+    assert gates["bounded_component_scores"].passed is True
+    assert gates["critique_actionable"].passed is True
+    assert gates["route_consistent"].passed is True
+
+
+def test_a_grounded_review_passes_the_review_gate() -> None:
+    case = _case("critic-live-review")
+    critique = Critique(
+        score=8,
+        gaps=[],
+        unsupported_claims=[],
+        recommended_queries=[],
+        should_continue=False,
+        rationale="The report covers commercial-scale deployment.",
+    )
+    serialized = critique.model_dump(mode="json")
+    output = _live_critic_metric_output([]).model_copy(
+        update={"result": serialized, "state_update": {"critique": serialized}}
+    )
+
+    gates = {gate.gate_id: gate for gate in evaluate_agent_gates(output, case)}
+
+    assert gates["review_produced"].passed is True
+    assert gates["review_produced"].detail == ""
+
+
+def test_the_review_gate_is_registered_for_the_critic() -> None:
+    assert "review_produced" in AGENT_GATE_IDS["critic"]
+
+
+def _live_no_spurious_gaps_score(gap: str) -> float:
+    case = _case("critic-live-review")
+    scores = deterministic_metric_scores(
+        _live_critic_metric_output([gap]),
+        case,
+        metric_functions=METRIC_FUNCTIONS,
+    )
+    return scores["no_spurious_gaps"]
+
+
 def test_the_three_controlled_cases_are_registered() -> None:
     assert tuple(
         case.case_id for case in cases_for("critic", "controlled")
@@ -245,6 +442,37 @@ def test_every_case_names_its_scenario() -> None:
     assert _case("missing-evidence-or-budget-exhausted").dependency_scenario == (
         "critic-budget-exhausted"
     )
+
+
+@pytest.mark.parametrize(
+    ("case_id", "scenario_name"),
+    (
+        ("approve-strong-report", "critic-strong-report"),
+        ("request-more-research", "critic-gappy-report"),
+        (
+            "missing-evidence-or-budget-exhausted",
+            "critic-budget-exhausted",
+        ),
+    ),
+)
+def test_controlled_scenarios_match_planned_queries_and_contract_version(
+    case_id: str, scenario_name: str
+) -> None:
+    case = _case(case_id)
+    script = SCENARIOS[scenario_name]
+    planned_queries = {
+        query
+        for sub_topic in case.state.sub_topics
+        for query in sub_topic.search_queries
+    }
+
+    # The case/reference semantics remain v1; the controlled fake scenario
+    # contract is explicitly versioned so its repaired behavior is not
+    # mistaken for an old v1 run.
+    assert case.version == 1
+    assert script.contract_version == CONTROLLED_SCENARIO_CONTRACT_VERSION
+    assert script.search_responses
+    assert set(script.search_responses) <= planned_queries
 
 
 def test_the_live_case_uses_the_literal_live_scenario() -> None:
@@ -392,12 +620,16 @@ def test_the_strong_case_report_is_a_round_five_hundred_words() -> None:
 def test_the_gappy_case_plans_three_subtopics_and_covers_one() -> None:
     case = _case("request-more-research")
 
+    # ``evaluation_state`` orders a case's sub-topics by priority and stamps
+    # ``topic-NN`` on that order, exactly as the Planner does, so the
+    # covered, highest-priority sub-topic is listed first even though the
+    # fixture writes its tuple starting with the two gap sub-topics.
     assert tuple(
         topic.title for topic in case.state.sub_topics
     ) == (
+        "Measured methane reductions from composting mandates",
         "Participation in municipal composting mandates",
         "Landfill methane measurement methodology",
-        "Measured methane reductions from composting mandates",
     )
     covered = {finding.related_sub_topic for finding in case.state.raw_findings}
     assert covered == {"Measured methane reductions from composting mandates"}
@@ -601,7 +833,13 @@ def test_the_gappy_scenario_key_is_the_participation_subtopics_query() -> None:
     """The scripted search key and the case's own subtopic query are the
     same literal, pinned on both sides so the two spellings cannot drift."""
     case = _case("request-more-research")
-    participation = case.state.sub_topics[0]
+    # Found by title, not by position: a case's sub-topics are ordered by
+    # priority, and this one is not the first of the three.
+    participation = next(
+        sub_topic
+        for sub_topic in case.state.sub_topics
+        if sub_topic.title == "Participation in municipal composting mandates"
+    )
 
     assert _GAPPY_SEARCH_KEY in participation.search_queries
     assert _GAPPY_SEARCH_KEY in SCENARIOS["critic-gappy-report"].search_responses
@@ -674,6 +912,46 @@ def test_the_reference_themes_map_to_the_reports_actual_content() -> None:
             assert theme in report, (case_id, theme)
 
 
+def test_live_no_spurious_gaps_rejects_covered_commercial_deployment() -> None:
+    gap = (
+        "The report is missing commercial-scale deployment, although it "
+        "fully describes commercial-scale deployment."
+    )
+
+    assert _live_no_spurious_gaps_score(gap) == 0.0
+
+
+def test_live_no_spurious_gaps_accepts_acknowledged_durability_limitation() -> None:
+    gap = (
+        "The report acknowledges the absence of multi-decade field records "
+        "for newest formulations, and obtaining those records would resolve "
+        "durability and long-term performance under field exposure."
+    )
+
+    assert _live_no_spurious_gaps_score(gap) == 1.0
+
+
+def test_live_no_spurious_gaps_rejects_paraphrased_covered_deployment() -> None:
+    gap = "The report does not cover deployment at commercial scale."
+
+    assert _live_no_spurious_gaps_score(gap) == 0.0
+
+
+def test_live_no_spurious_gaps_accepts_full_theme_acknowledged_limitation() -> None:
+    gap = (
+        "Additional durability and long-term performance data under field "
+        "exposure are needed."
+    )
+
+    assert _live_no_spurious_gaps_score(gap) == 1.0
+
+
+def test_live_no_spurious_gaps_rejects_compressive_strength_covered_gap() -> None:
+    gap = "The report does not cover compressive strength standards."
+
+    assert _live_no_spurious_gaps_score(gap) == 0.0
+
+
 @pytest.mark.asyncio
 async def test_the_budget_double_fails_memory_and_serves_the_search(
     tracker, settings, tmp_path, runtime_config_for
@@ -705,7 +983,10 @@ async def test_the_budget_double_fails_memory_and_serves_the_search(
     assert memory_result.success is False
     assert memory_result.error is not None
     assert memory_result.error.type == "RuntimeError"
-    assert memory_result.error.message == "long-term memory is unavailable"
+    # A raw non-ToolExecutionError escaping a tool publishes static project
+    # text, never the raw exception text: the failure stays classifiable
+    # through the enumerated error.type asserted above.
+    assert memory_result.error.message == "the tool failed unexpectedly"
     assert memory_result.error.recoverable is True
 
     assert search_result.success, search_result.error

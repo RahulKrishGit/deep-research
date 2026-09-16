@@ -39,6 +39,7 @@ from deep_research.evaluation.models import (
     EvaluationTier,
     EvaluatorDiagnostic,
     FailureReason,
+    FallbackProviderDiagnostic,
     GateReport,
     JudgeFeedback,
     JudgeNotRunReason,
@@ -47,8 +48,9 @@ from deep_research.evaluation.models import (
     OutputLimitFailureDetails,
     SchemaFailureDetails,
     TargetOutput,
+    fallback_provider_diagnostic,
 )
-from deep_research.observability import Tracker
+from deep_research.observability import TokenUsageMetric, Tracker
 from deep_research.providers import ChatMessage
 from deep_research.utils.types import ContractModel, JsonValue
 
@@ -65,6 +67,82 @@ COMMON_DIMENSION_WEIGHTS: dict[str, float] = {
     "uncertainty_calibration": 0.10,
 }
 
+# What the prompt asks the judge for, and the limit it states as hard.
+#
+# The stated limit is deliberately HARDER than the enforced one:
+# ``JudgeVerdict.rationale`` accepts ``models.JUDGE_RATIONALE_SCHEMA_MAX``
+# characters. The two are different on purpose and neither should be reconciled
+# to the other. The statement is the steering device -- a credible hard limit is
+# what keeps the model inside the range in most cases -- while the wider schema
+# is the safety net, so the minority of runs that overshoot are still scored
+# instead of becoming an unscorable `string_too_long` failure.
+#
+# Measured: with both numbers at 2000, 5 of 30 production attempts exceeded it
+# and were rejected.
+#
+# The target sits below the stated maximum because the measured median (1,735
+# characters) sat against the limit rather than near the middle of the range.
+JUDGE_RATIONALE_GUIDANCE_MAX = 2000
+JUDGE_RATIONALE_GUIDANCE_TARGET = 1500
+
+_DIMENSION_COUNT = len(COMMON_DIMENSION_WEIGHTS)
+
+# The whole 0.0-1.0 range, so a judge has instruction in the middle of the scale
+# and not only at its endpoints. The bands are deliberately contiguous and the
+# last one is worded as a reservation, which is what keeps 0.8-1.0 from becoming
+# the default for an adequate run.
+_JUDGE_SCORE_BANDS: tuple[tuple[float, float, str], ...] = (
+    (
+        0.0,
+        0.2,
+        "the dimension is not met. The run does the opposite, or shows nothing "
+        "that could satisfy it.",
+    ),
+    (
+        0.2,
+        0.4,
+        "the dimension is barely present, and what is there is incidental rather "
+        "than deliberate.",
+    ),
+    (
+        0.4,
+        0.6,
+        "the dimension is partly met: the run does some of what it asks and "
+        "misses the rest.",
+    ),
+    (
+        0.6,
+        0.8,
+        "the dimension is met, with a specific shortfall you can name.",
+    ),
+    (
+        0.8,
+        1.0,
+        "the dimension is met in full and the run's own evidence shows it rather "
+        "than asserts it. Reserve 1.0 for a run that meets it without "
+        "overstating what it did.",
+    ),
+)
+
+# Illustration only. Each pair sits inside one band of the table above, so the
+# two examples demonstrate the range rather than one preferred value.
+_WEAK_SCORES = (0.2, 0.3, 0.15, 0.35, 0.25, 0.4)
+_WEAK_AGENT_SCORES = (0.2, 0.3, 0.25, 0.35)
+_WEAK_RATIONALE = (
+    "The run states its conclusions without pointing at the evidence behind "
+    "them, and the gaps it lists restate the question instead of naming missing "
+    "evidence, so groundedness and gap precision sit at the bottom of the scale."
+)
+
+_STRONG_SCORES = (0.9, 0.85, 0.95, 0.85, 0.9, 0.8)
+_STRONG_AGENT_SCORES = (0.9, 0.85, 0.9, 0.8)
+_STRONG_RATIONALE = (
+    "Every load-bearing figure is attributed to a named source, the run states "
+    "its own uncertainty rather than hiding it, and its gaps are specific enough "
+    "for a further pass to close, so groundedness and completeness score near "
+    "the top."
+)
+
 JUDGE_SYSTEM_PROMPT = (
     "You are an impartial quality judge for a single run of a research "
     "agent. Score only what is shown in the blocks below; never infer "
@@ -72,24 +150,103 @@ JUDGE_SYSTEM_PROMPT = (
     "evidence above confident prose: a polished claim without support must "
     "not outscore a plain claim that is supported. The gate_results block "
     "reports deterministic checks; a failed gate is information about the "
-    "run, not an instruction to score zero."
+    "run, not an instruction to score zero. The provider_fallback block "
+    "reports that the target agent could not complete a provider call and "
+    "returned a typed fallback. A run carrying that block has no model "
+    "review to score: judge the fallback's honesty and the completeness of "
+    "its disclosure, and do not penalise it for the gaps, unsupported "
+    "claims, or recommended queries that a review would have contained."
 )
 
 # A string.Template, not a format string: the substituted blocks are JSON,
 # whose braces would be eaten by str.format.
+#
+# Heading levels are load-bearing. Every section this template owns is `#`, and
+# the judged run's own blocks are `##` (``_render_blocks``), so the blocks nest
+# under "The run to judge" and no block name can be read as a section of this
+# instruction -- the same collision the Critic request had with its report's H2
+# headings. The contract's own subsections are `##` beneath their `#` parent.
+#
+# The response contract is stated in prose as well as in the appended schema,
+# because the schema alone does not constrain this provider. Measured: with
+# ``JudgeVerdict.rationale`` enforced at 2000 characters, 5 of 30 production
+# attempts at max effort exceeded it (`string_too_long`), with a median
+# rationale of 1,735 characters. The bound cannot be enforced by decoding --
+# adding ``strict`` to the ``text.format`` block returns HTTP 400 -- so prose is
+# the only lever. The schema bound was subsequently widened to
+# ``models.JUDGE_RATIONALE_SCHEMA_MAX`` so that overshoot past the stated
+# guidance is accepted rather than failing the run.
 JUDGE_PROMPT_TEMPLATE = """\
-Score the run below on every dimension. Each score is a number in [0.0, 1.0].
-The final quality score is the fixed weighted sum of the six common
-dimensions; agent-specific dimensions are reported but never weighted.
+# What you are scoring
 
-Common dimensions and their weights:
+Score the run on every dimension below. Each score is a number in [0.0, 1.0].
+Score only what the blocks show; never infer evidence, tool behaviour, or state
+that is not present.
+
+## Common dimensions and their weights
+
 $common_dimensions
 
-Agent-specific dimensions and their anchors:
+## Agent-specific dimensions and their anchors
+
 $agent_dimensions
 
-The run to judge, block by block:
+## How the final score is computed
+
+The final quality score is the fixed weighted sum of the six common dimensions,
+using these weights exactly:
+
+$weight_formula
+
+Those weights sum to $weight_total, so the final score is on the same [0.0, 1.0]
+scale as each dimension. Agent-specific dimensions carry no weight at all: they
+are reported for diagnosis and never enter the final score, so do not raise or
+lower a common score to compensate for one.
+
+# How to read the run
+
+If the provider_fallback block is present and not null, the target agent returned
+a typed fallback instead of a model judgement; score it as a fallback, not as the
+review it was unable to produce.
+
+# The run to judge, block by block
+
 $blocks
+
+# Response contract
+
+These three fields, and what each one means:
+
+- `scores`: every common dimension above, keyed by its exact dimension id, each a
+  number in [0.0, 1.0].
+- `agent_specific`: every agent-specific dimension above, keyed by its exact
+  dimension id. Use an empty object when the rubric lists none.
+- `rationale`: the reasoning behind the scores, in at most $rationale_max
+  characters. Aim for about $rationale_target. The limit is hard and a longer
+  answer is rejected outright.
+
+Do not add any other field. In particular, do not add a note, comment, summary,
+or explanation field: the reasoning behind every score belongs in `rationale`.
+
+## How to choose each score
+
+Choose each score from the evidence in front of you, not from the run's overall
+polish. A confident claim with no support behind it does not raise any dimension:
+
+$score_bands
+
+## Reply format
+
+Return exactly one JSON object carrying these three fields and no others. Return
+no text before or after it. Two complete examples follow, one for a weak run and
+one for a strong one, showing the scale in use. Their values are placeholders,
+not a target to match, and their rationales are shortened for brevity.
+
+Weak run:
+$weak_example
+
+Strong run:
+$strong_example
 """
 
 
@@ -116,6 +273,7 @@ class JudgeInput(ContractModel):
     evidence: dict[str, JsonValue]
     trajectory: list[dict[str, JsonValue]]
     gate_results: list[dict[str, JsonValue]]
+    provider_fallback: dict[str, JsonValue] | None = None
 
 
 def judge_quality(scores: JudgeScores) -> float:
@@ -146,6 +304,7 @@ def build_judge_input(
     gates: GateReport,
     *,
     secrets: Sequence[str],
+    fallback: FallbackProviderDiagnostic | None = None,
 ) -> JudgeInput:
     """Build the complete judge view of a run, sanitized block by block.
 
@@ -212,6 +371,14 @@ def build_judge_input(
                 secrets,
             ),
         ),
+        provider_fallback=(
+            None
+            if fallback is None
+            else cast(
+                dict,
+                redact_secrets(fallback.model_dump(mode="json"), secrets),
+            )
+        ),
     )
     payload = judge_input.model_dump(mode="json")
     leaked_paths = contains_secret(payload, secrets)
@@ -236,6 +403,7 @@ _BLOCK_ORDER = (
     "evidence",
     "trajectory",
     "gate_results",
+    "provider_fallback",
 )
 
 
@@ -268,15 +436,103 @@ def _render_blocks(payload: dict[str, JsonValue]) -> str:
     return "\n\n".join(sections)
 
 
+def _render_score_bands() -> str:
+    """The whole 0.0-1.0 scale, not just its endpoints.
+
+    A rubric's own anchors state only ``1.0`` and ``0.0``, which says nothing
+    about the middle: two judges can agree on the endpoints and still diverge by
+    0.3 on a middling run. These bands give every part of the range the same
+    kind of instruction the endpoints already had.
+    """
+    return "\n".join(
+        f"{low:.1f}-{high:.1f}: {text}" for low, high, text in _JUDGE_SCORE_BANDS
+    )
+
+
+def _render_weight_formula() -> str:
+    """The weighted sum written out, weight by weight.
+
+    Stated as arithmetic rather than described, because which dimension carries
+    which weight is a scoring decision: groundedness at 0.25 outweighs any
+    single agent dimension, and saying so explicitly is what stops a run from
+    being rewarded on prose.
+    """
+    lines = ["final = " + _weighted_term(0)]
+    lines.extend(
+        f"      + {_weighted_term(index)}" for index in range(1, _DIMENSION_COUNT)
+    )
+    return "\n".join(lines)
+
+
+def _weighted_term(index: int) -> str:
+    name, weight = list(COMMON_DIMENSION_WEIGHTS.items())[index]
+    return f"{weight:.2f} x {name}"
+
+
+def _render_examples(rubric: dict[str, JsonValue]) -> tuple[str, str]:
+    """A weak and a strong ``JudgeVerdict`` instance, both valid JSON.
+
+    Built from the rubric rather than hard-coded, because the agent-specific
+    dimension ids differ per agent: an invented id in an example is an invented
+    id in the answer. Two examples rather than one, and at opposite ends of the
+    scale, so the pair demonstrates the range instead of inviting the judge to
+    aim at a single illustrated value. Values are varied within each band for
+    the same reason.
+    """
+    agent_ids = _rubric_dimension_ids(rubric)
+    return (
+        _render_example(agent_ids, _WEAK_SCORES, _WEAK_AGENT_SCORES, _WEAK_RATIONALE),
+        _render_example(
+            agent_ids, _STRONG_SCORES, _STRONG_AGENT_SCORES, _STRONG_RATIONALE
+        ),
+    )
+
+
+def _rubric_dimension_ids(rubric: dict[str, JsonValue]) -> list[str]:
+    return [
+        str(cast(dict, dimension)["dimension_id"])
+        for dimension in cast(list, rubric["agent_dimensions"])
+    ]
+
+
+def _render_example(
+    agent_ids: list[str],
+    scores: tuple[float, ...],
+    agent_scores: tuple[float, ...],
+    rationale: str,
+) -> str:
+    common = {
+        name: scores[index % len(scores)]
+        for index, name in enumerate(COMMON_DIMENSION_WEIGHTS)
+    }
+    agent_specific = {
+        name: agent_scores[index % len(agent_scores)]
+        for index, name in enumerate(agent_ids)
+    }
+    payload = {
+        "scores": common,
+        "agent_specific": agent_specific,
+        "rationale": rationale,
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def render_judge_messages(judge_input: JudgeInput) -> list[ChatMessage]:
     """The judge's developer prompt plus one user message with the run."""
     payload = judge_input.model_dump(mode="json")
+    rubric = cast(dict, payload["rubric"])
+    weak, strong = _render_examples(rubric)
     body = Template(JUDGE_PROMPT_TEMPLATE).substitute(
         common_dimensions=_render_common_dimensions(),
-        agent_dimensions=_render_agent_dimensions(
-            cast(dict, payload["rubric"])
-        ),
+        agent_dimensions=_render_agent_dimensions(rubric),
+        weight_formula=_render_weight_formula(),
+        weight_total=f"{sum(COMMON_DIMENSION_WEIGHTS.values()):.2f}",
         blocks=_render_blocks(payload),
+        rationale_max=str(JUDGE_RATIONALE_GUIDANCE_MAX),
+        rationale_target=str(JUDGE_RATIONALE_GUIDANCE_TARGET),
+        score_bands=_render_score_bands(),
+        weak_example=weak,
+        strong_example=strong,
     )
     return [
         ChatMessage(role="developer", content=JUDGE_SYSTEM_PROMPT),
@@ -285,14 +541,23 @@ def render_judge_messages(judge_input: JudgeInput) -> list[ChatMessage]:
 
 
 async def _invoke_judge(
-    provider: StructuredCompleter, messages: list[ChatMessage]
+    provider: StructuredCompleter,
+    messages: list[ChatMessage],
+    *,
+    max_tokens: int | None = None,
 ) -> JudgeVerdict:
     """The one model-invocation step both ``run_judge`` and the LangSmith
     evaluator path use. ``JudgeEvaluator`` wraps this in its tracing
     decorator; ``run_judge`` calls it directly.
+
+    ``max_tokens`` carries the judge's operation-specific output budget. The
+    verdict is not a small reply — six common dimensions, the agent-specific
+    dimensions, and a rationale — and at the global cap the adapter returned
+    ``output_limit`` with no score at all, which is an infrastructure failure
+    rather than a quality result.
     """
     return await provider.complete_structured(
-        messages, JudgeVerdict, agent_name="judge"
+        messages, JudgeVerdict, agent_name="judge", max_tokens=max_tokens
     )
 
 
@@ -353,12 +618,15 @@ def _build_scored_feedback(
     *,
     trace_url: str | None = None,
     source_url: str | None = None,
+    structured_attempts: int | None = None,
 ) -> JudgeFeedback:
     """The scored ``JudgeFeedback``, shared by both call paths.
 
     ``trace_url``/``source_url`` are only ever URLs the evaluator
     integration directly exposed; a missing value stays ``None`` and is
-    never derived from anything.
+    never derived from anything. ``structured_attempts`` is the same kind
+    of directly observed scalar: the attempt depth the judge's own tracker
+    recorded, or ``None`` when no call was made.
     """
     return JudgeFeedback(
         status="scored",
@@ -373,6 +641,7 @@ def _build_scored_feedback(
         judge_configuration_fingerprint=runtime.judge_configuration_fingerprint,
         evaluator_trace_url=trace_url,
         evaluator_source_url=source_url,
+        structured_attempts=structured_attempts,
     )
 
 
@@ -417,10 +686,18 @@ async def run_judge(
     if not output.has_evaluable_output:
         return not_run("no_evaluable_output")
 
-    judge_input = build_judge_input(output, case, gates, secrets=secrets)
+    judge_input = build_judge_input(
+        output,
+        case,
+        gates,
+        secrets=secrets,
+        fallback=fallback_provider_diagnostic(output),
+    )
     messages = render_judge_messages(judge_input)
     try:
-        verdict = await _invoke_judge(provider, messages)
+        verdict = await _invoke_judge(
+            provider, messages, max_tokens=runtime.judge_max_tokens
+        )
     except Exception as error:
         return not_run(
             _judge_not_run_reason(error),
@@ -476,6 +753,53 @@ def judge_feedback_payload(feedback: JudgeFeedback) -> dict[str, JsonValue]:
         "judge_model": feedback.judge_model,
         "judge_configuration_fingerprint": feedback.judge_configuration_fingerprint,
     }
+
+
+def _structured_metric_count(tracker: Tracker | None) -> int:
+    """How many metrics the tracker has recorded so far.
+
+    A bookmark, not a measurement. ``Tracker.metrics`` is a snapshot of an
+    append-only list, so a count taken before the judge call indexes exactly
+    the records the judge call itself appends.
+    """
+    if tracker is None:
+        return 0
+    return len(getattr(tracker, "metrics", ()))
+
+
+def _max_structured_attempt(
+    tracker: Tracker | None, session_id: str, *, since: int = 0
+) -> int | None:
+    """The deepest structured attempt the judge's own call reached.
+
+    Reads only the bounded operation literal and attempt number the tracker
+    copied out of an llm span's already-safe inputs: ``1`` is a judge that
+    succeeded on its first request, ``2`` is a judge whose one schema repair
+    was used. ``None`` means the judge's call recorded no structured attempt --
+    including for a tracker-like object that records no metrics -- and is never
+    read as "no repair happened".
+
+    ``since`` is the metric count taken immediately before the awaited judge
+    call, and it is load-bearing rather than an optimization. The evaluator
+    does **not** get a tracker of its own in production: ``cli.py`` builds one
+    ``Tracker`` and hands the same instance to both the target and the judge,
+    and the judge opens its span on ``output.session_id`` -- the *target*
+    repetition's session. Filtering on the session id alone therefore cannot
+    separate a target's repair from the judge's, and would report a Judge
+    repair that never happened. Scoping to the records appended by the judge's
+    own call is what makes this ledger describe the judge.
+    """
+    if tracker is None:
+        return None
+    attempts = [
+        metric.structured_attempt
+        for metric in tuple(getattr(tracker, "metrics", ()))[since:]
+        if isinstance(metric, TokenUsageMetric)
+        and metric.session_id == session_id
+        and metric.operation == "structured_output"
+        and metric.structured_attempt is not None
+    ]
+    return max(attempts) if attempts else None
 
 
 def _run_tree_url(run_tree: object | None) -> str | None:
@@ -559,7 +883,9 @@ class JudgeEvaluator:
             if captured is not None:
                 _JUDGE_TRACE_URL.set(captured)
             messages = render_judge_messages(judge_input)
-            return await _invoke_judge(provider, messages)
+            return await _invoke_judge(
+                provider, messages, max_tokens=runtime.judge_max_tokens
+            )
 
         self._trace_judge = trace_factory(
             name=JUDGE_PROMPT_ID,
@@ -589,9 +915,17 @@ class JudgeEvaluator:
             return self._not_run("no gate report recorded for this run")
         if not output.has_evaluable_output:
             return self._not_run("no_evaluable_output")
+        # Taken before anything in this block can raise, so both handlers below
+        # can always reference it, and before the judge call so it marks the
+        # first record the judge call itself appends.
+        metrics_before = _structured_metric_count(self._tracker)
         try:
             judge_input = build_judge_input(
-                output, self._case, gates, secrets=self._secrets
+                output,
+                self._case,
+                gates,
+                secrets=self._secrets,
+                fallback=fallback_provider_diagnostic(output),
             )
             _JUDGE_TRACE_URL.set(None)
             if self._tracker is None:
@@ -602,12 +936,20 @@ class JudgeEvaluator:
                 ):
                     verdict = await self._trace_judge(judge_input=judge_input)
         except SecretLeakError as error:
-            return self._not_run(str(error))
+            return self._not_run(
+                str(error),
+                structured_attempts=_max_structured_attempt(
+                    self._tracker, output.session_id, since=metrics_before
+                ),
+            )
         except Exception as error:
             return self._not_run(
                 _judge_not_run_reason(error),
                 diagnostics=_judge_diagnostics(error),
                 trace_url=_JUDGE_TRACE_URL.get(),
+                structured_attempts=_max_structured_attempt(
+                    self._tracker, output.session_id, since=metrics_before
+                ),
             )
 
         feedback = _build_scored_feedback(
@@ -615,6 +957,9 @@ class JudgeEvaluator:
             self._runtime,
             trace_url=_JUDGE_TRACE_URL.get(),
             source_url=self._evaluator_source_url,
+            structured_attempts=_max_structured_attempt(
+                self._tracker, output.session_id, since=metrics_before
+            ),
         )
         return self._scored(verdict, feedback)
 
@@ -624,6 +969,7 @@ class JudgeEvaluator:
         *,
         diagnostics: Sequence[EvaluatorDiagnostic] = (),
         trace_url: str | None = None,
+        structured_attempts: int | None = None,
     ) -> dict[str, JsonValue]:
         """The ``judge_not_run`` result: status only, no fabricated score.
 
@@ -640,6 +986,8 @@ class JudgeEvaluator:
             metadata["evaluator_trace_url"] = trace_url
         if self._evaluator_source_url is not None:
             metadata["evaluator_source_url"] = self._evaluator_source_url
+        if structured_attempts is not None:
+            metadata["structured_attempts"] = structured_attempts
         if diagnostics:
             metadata["judge_diagnostics"] = [
                 item.model_dump(mode="json") for item in diagnostics
@@ -672,6 +1020,8 @@ class JudgeEvaluator:
             metadata["input_tokens"] = feedback.input_tokens
         if feedback.output_tokens is not None:
             metadata["output_tokens"] = feedback.output_tokens
+        if feedback.structured_attempts is not None:
+            metadata["structured_attempts"] = feedback.structured_attempts
 
         results: list[dict[str, JsonValue]] = [
             {

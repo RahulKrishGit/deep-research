@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from deep_research.agents.base import StructuredCompleter
+from deep_research.agents.base import AgentCompleter
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.source_evaluator import ReputationSource
 from deep_research.evaluation.config import EvaluationRuntimeConfig
@@ -35,7 +35,7 @@ class EvaluationAgentBuild:
 
     agent: Any
     tools: tuple[BaseTool, ...]
-    provider: StructuredCompleter
+    provider: AgentCompleter
     session_id: str
     settings: ConfigSettings
 
@@ -60,7 +60,7 @@ def build_evaluation_agent(
     settings: ConfigSettings,
     *,
     tracker: Tracker,
-    provider: StructuredCompleter,
+    provider: AgentCompleter,
     tools: Sequence[BaseTool],
     session_id: str,
     reputation: ReputationSource | None,

@@ -13,19 +13,29 @@ may override, so it is settled before anything the model said is read.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+import re
+from collections.abc import Collection, Sequence
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from deep_research.agents.base import AgentRun, BaseAgent, StructuredCompleter
-from deep_research.agents.errors import AgentConfigurationError, agent_error
+from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.errors import (
+    AgentConfigurationError,
+    agent_error,
+    agent_provider_failure_details,
+)
 from deep_research.agents.events import agent_event
+from deep_research.agents.identity import (
+    merge_claim_snapshot,
+    merge_source_snapshot,
+)
 from deep_research.agents.prompts import (
+    CRITIC_REVIEW_SYSTEM_PROMPT,
     CRITIC_SYSTEM_PROMPT,
     CRITIQUE_INSTRUCTION,
     AgentTask,
     render_claim_digest,
-    render_react_messages,
     render_source_quality,
 )
 from deep_research.agents.react import run_react_loop
@@ -40,11 +50,14 @@ from deep_research.utils.types import (
     Claim,
     ContractModel,
     Critique,
+    CritiqueGap,
+    ReportQualitySnapshot,
     ResearchError,
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
     ScoredSource,
+    SubTopic,
 )
 
 CRITIC_NAME = "critic"
@@ -59,6 +72,201 @@ CRITIC_REPORT_CHARS = 6000
 CRITIC_CLAIM_DIGEST = 40
 CRITIC_EVIDENCE_CHARS = 2000
 DEFAULT_MAX_NOTES = 10
+
+# ``_render_balanced_report_sections`` renders this for the identity block of
+# an empty report; a report that is present renders every reader section,
+# using ``_SECTION_NOT_PRESENT`` for the ones it does not carry.
+_NO_REPORT = "(no report)"
+_SECTION_NOT_PRESENT = "(reader-report section not present)"
+
+_READER_SECTION_ORDER = (
+    ("summary", "Summary"),
+    ("constraints", "Constraint ranking"),
+    ("findings", "Findings"),
+    ("uncertainty", "Uncertainty"),
+    ("methodology", "Methodology"),
+    ("references", "References"),
+)
+
+
+def _reader_section_key(heading: str) -> str | None:
+    """Map a reader H2 heading to its stable prompt section key."""
+    normalized = " ".join(re.sub(r"[^a-z0-9]+", " ", heading.casefold()).split())
+    if normalized.startswith(("summary", "executive summary")):
+        return "summary"
+    if "constraint" in normalized:
+        return "constraints"
+    if "finding" in normalized:
+        return "findings"
+    if any(word in normalized for word in ("uncertainty", "conflict", "gap")):
+        return "uncertainty"
+    if "method" in normalized:
+        return "methodology"
+    if any(word in normalized for word in ("reference", "citation")):
+        return "references"
+    return None
+
+
+def _split_reader_report(report: str) -> dict[str, str]:
+    """Split a rendered reader report into independent prompt sections.
+
+    The Critic receives each section separately.  This keeps a character cap
+    on one section from hiding all later sections in a combined prefix.
+    Unknown headings remain in the identity bucket so no report text is
+    silently discarded.
+    """
+    sections: dict[str, list[str]] = {key: [] for key, _ in _READER_SECTION_ORDER}
+    identity: list[str] = []
+    current: str | None = None
+    for line in report.strip().splitlines():
+        match = re.match(r"^##\s+(.+?)\s*$", line)
+        if match:
+            current = _reader_section_key(match.group(1))
+            if current is None:
+                identity.append(line)
+            continue
+        if current is None:
+            identity.append(line)
+        else:
+            sections[current].append(line)
+    return {
+        "identity": "\n".join(identity).strip(),
+        **{
+            key: "\n".join(lines).strip() for key, lines in sections.items()
+        },
+    }
+
+
+def _clamp_prompt_section(text: str, *, limit: int) -> str:
+    """Clamp one independent report section without combining sections."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    value = text.strip()
+    if not value:
+        return _SECTION_NOT_PRESENT
+    if len(value) <= limit:
+        return value
+    if limit <= 3:
+        return value[:limit]
+    return value[: limit - 3].rstrip() + "..."
+
+
+def _render_balanced_report_sections(
+    report: str,
+    *,
+    limit: int,
+    report_sections: dict[str, str] | None = None,
+) -> list[str]:
+    """Render the report identity and every reader section under its own cap."""
+    parsed = _split_reader_report(report)
+    for raw_key, content in (report_sections or {}).items():
+        key = raw_key if raw_key in parsed else _reader_section_key(raw_key)
+        if key is not None:
+            parsed[key] = content
+    has_reader_section = any(parsed[key] for key, _ in _READER_SECTION_ORDER)
+    identity = parsed["identity"]
+    identity_fence_info = "reader-identity"
+    if not report.strip():
+        identity = _NO_REPORT
+    elif not has_reader_section:
+        # Compatibility for short/non-structured fixtures. A real rendered
+        # report always has reader sections and follows the balanced path.
+        identity = report.strip()
+        identity_fence_info = _REPORT_FENCE_INFO
+    sections = [("identity", "Report identity and declarations", identity)]
+    sections.extend(
+        (key, label, parsed[key]) for key, label in _READER_SECTION_ORDER
+    )
+    rendered: list[str] = []
+    for key, label, content in sections:
+        clamped = _clamp_prompt_section(content, limit=limit)
+        fence = _report_fence(clamped)
+        info = identity_fence_info if key == "identity" else f"reader-{key}"
+        rendered.append(f"# {label}\n{fence}{info}\n{clamped}\n{fence}")
+    return rendered
+
+# The report is quoted inside a Markdown fence of its own: the opening fence is
+# the begin marker and the closing fence is the end marker. A fence is the one
+# Markdown construct that delimits a verbatim region, and its content is not
+# parsed as Markdown, so no report heading can be read as a request section. The
+# fence is made longer than any backtick run inside the report so the report
+# cannot close it early.
+_REPORT_FENCE_MIN = 3
+_REPORT_FENCE_INFO = "report"
+
+
+def _report_fence(report: str) -> str:
+    """Return a backtick fence that no run inside ``report`` can close."""
+    longest = max((len(run) for run in re.findall(r"`+", report)), default=0)
+    return "`" * max(_REPORT_FENCE_MIN, longest + 1)
+
+
+# This request's own sections are `#` (H1). The canonical report is H2 body
+# sections (`REPORT_SECTIONS`) with H3 sub-groups, plus one H1 title,
+# `# Research report: <question>`. Request sections were previously `##`, which
+# put them at the same visual level as the report's own sections — `## Recorded
+# problems` directly followed the report's `## Limitations` with nothing to
+# distinguish them but the markers. At H1 every request heading outranks the
+# report, so the report reads as content nested inside `# Report under review`.
+# This also matches the spot-check path, which already introduces the report
+# with the H1 title above.
+
+# Two concrete, valid JSON instances that bracket the scale. The earlier
+# skeleton used angle-bracket placeholders like `<integer 1-10>`, which is not
+# valid JSON, so the model was shown something that was neither a schema nor an
+# example. Two labelled examples demonstrate the range, and the band table below
+# tells the model how to choose between them, because examples without
+# calibration guidance invite it to split the difference. The provider already
+# supplies the schema in a trailing system message, so this section supplies the
+# examples the DeepSeek JSON Output guide asks for, and nothing that competes
+# with it.
+_LOW_EXAMPLE_SCORE = 3
+_HIGH_EXAMPLE_SCORE = 9
+
+_CRITIQUE_LOW_EXAMPLE_JSON = (
+    '{"score": 3, "gaps": [{"coverage_id": null, "problem": "The report '
+    'never states what share of cement emissions clinker substitution can '
+    'remove, which is the figure the question turns on.", '
+    '"recommended_queries": ["clinker substitution share of cement '
+    'emissions"]}, {"coverage_id": null, "problem": "It gives no cost '
+    'figures for the alternatives it recommends.", "recommended_queries": '
+    '["low-carbon cement cost premium per tonne"]}], '
+    '"unsupported_claims": ["The claim that commercial-scale '
+    'deployment is accelerating, which no cited source measures."], '
+    '"recommended_queries": ["clinker substitution share of cement emissions", '
+    '"low-carbon cement cost premium per tonne"], "rationale": "The report '
+    'names technologies and directions but supplies no measured figures, and '
+    'its central claim about deployment rests on no cited source at all, so '
+    'the question is answered only in generalities."}'
+)
+
+_CRITIQUE_HIGH_EXAMPLE_JSON = (
+    '{"score": 9, "gaps": [{"coverage_id": null, "problem": "The report '
+    'does not cover how durability data are expected to arrive.", '
+    '"recommended_queries": ["low-carbon cement durability field trial '
+    'results"]}], "unsupported_claims": [], "recommended_queries": '
+    '["low-carbon cement durability field trial results"], "rationale": "The '
+    'report answers the question completely, every load-bearing figure is '
+    'attributed to a strong and diverse set of named sources, and it states '
+    'its own durability uncertainty plainly instead of hiding it."}'
+)
+
+# How to choose a score. The thresholds themselves are not published to the
+# model: routing is computed locally, and `CRITIQUE_INSTRUCTION` tells the model
+# not to decide continuation. This table describes report quality, not policy.
+_CRITIQUE_SCORE_BANDS = (
+    "Choose the score from the report's weakest load-bearing element, not from "
+    "its overall polish:\n"
+    "1-3: the question is largely unanswered, or the central claims rest on no "
+    "cited source.\n"
+    "4-6: a partial answer whose key numbers, mechanisms, or trade-offs are "
+    "missing or unsupported.\n"
+    "7-8: the question is answered and every load-bearing claim is attributed, "
+    "with at most narrow gaps.\n"
+    "9-10: reserve for an answer that is complete, strongly and diversely "
+    "sourced, and explicit about its own uncertainty."
+)
+
 
 _RATIONALE_CHARS = 600
 
@@ -84,6 +292,48 @@ ROUTING_REASONS = {
 CRITIQUE_FALLBACK_REASONS = ("missing_report", "provider_unavailable")
 
 
+class CritiqueGapDraft(ContractModel):
+    """One provider-reported gap before local plan-ID validation."""
+
+    coverage_id: str | None = None
+    problem: str
+    recommended_queries: list[str]
+
+
+def normalize_gap_drafts(values: object) -> object:
+    """Coerce the pre-Task-7 free-text gap list into typed gap drafts.
+
+    The single place the legacy gap shape is understood *at a payload
+    boundary*. Both typed boundaries that carry gaps call this: the
+    provider-facing ``CritiqueDraft`` and the state-facing ``Critique``. Two
+    copies of this rule would drift the moment the gap shape changes — one
+    boundary would keep accepting a bare string and the other would start
+    rejecting the same input — so both call the one function.
+
+    ``normalize_gaps`` below holds a deliberate per-value copy of the same
+    mapping, because it works on an already-parsed sequence rather than on a
+    payload. That copy is documented there, and a change to the legacy shape
+    has to land in both places.
+
+    A non-dict or non-list value is returned untouched, leaving the error to
+    the field validator that owns it.
+    """
+    if not isinstance(values, dict) or not isinstance(values.get("gaps"), list):
+        return values
+    converted = dict(values)
+    converted["gaps"] = [
+        {
+            "coverage_id": None,
+            "problem": gap,
+            "recommended_queries": [],
+        }
+        if isinstance(gap, str)
+        else gap
+        for gap in values["gaps"]
+    ]
+    return converted
+
+
 class CritiqueDraft(ContractModel):
     """One model review, before domain validation.
 
@@ -93,10 +343,16 @@ class CritiqueDraft(ContractModel):
     """
 
     score: int
-    gaps: list[str]
+    gaps: list[CritiqueGapDraft]
     unsupported_claims: list[str]
     recommended_queries: list[str]
     rationale: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_gap_strings(cls, values: object) -> object:
+        """Keep pre-Task-7 fixtures readable while the provider schema is typed."""
+        return normalize_gap_drafts(values)
 
 
 class CritiqueTask(AgentTask):
@@ -105,6 +361,14 @@ class CritiqueTask(AgentTask):
     Carrying the report and the iteration bounds on the task is what lets
     ``finalize(task, run)`` route without the agent holding mutable state
     across await points — the same reason ``ClaimTask`` exists.
+
+    ``sub_topics`` holds the planner's own ``SubTopic`` objects rather than
+    parallel title and coverage-id lists. ``CRITIQUE_INSTRUCTION`` requires the
+    model to copy a ``coverage_id`` *exactly from a planned sub-topic* and
+    forbids inferring one from a title, so the two values have to travel
+    together out of one ordered sequence: a second list can drift out of step
+    with the first, and a title-only rendering leaves the contract pointing at
+    data the request never carried.
     """
 
     report: str = ""
@@ -112,8 +376,50 @@ class CritiqueTask(AgentTask):
     max_iterations: int = Field(default=1, ge=1)
     claims: list[Claim] = []
     sources: list[ScoredSource] = []
-    sub_topics: list[str] = []
+    sub_topics: list[SubTopic] = []
     error_count: int = Field(default=0, ge=0)
+    quality: ReportQualitySnapshot | None = None
+    report_sections: dict[str, str] = {}
+    errors: list[ResearchError] = []
+    error_groups: dict[str, list[ResearchError]] = {}
+
+
+def _render_planned_sub_topic(sub_topic: SubTopic) -> str:
+    """One planned sub-topic as ``- <coverage_id>: <title>``.
+
+    The single place either request builds that line. The id comes first so a
+    model copying ``coverage_id`` has one unambiguous token per topic, and the
+    title stays beside it so the gap it writes can be recognised by a reader.
+    """
+    return f"- {sub_topic.coverage_id}: {sub_topic.title}"
+
+
+def _render_spot_check_guidance(
+    report: str,
+    sub_topics: Sequence[SubTopic],
+    *,
+    report_chars: int,
+) -> str:
+    """Render the report and the planner's search context for the spot check.
+
+    The report is clamped with the same helper and budget the review prompt
+    uses, so the spot-check view can never be larger than the review view and
+    a long report is truncated identically in both.
+    """
+    lines: list[str] = []
+    if report.strip():
+        lines.append("Report under review:")
+        lines.extend(_render_balanced_report_sections(report, limit=report_chars))
+        lines.append("")
+    lines.append(
+        "When performing a spot check, use an applicable planned search "
+        "query verbatim."
+    )
+    lines.append("Planned sub-topics and search queries:")
+    for sub_topic in sub_topics:
+        lines.append(_render_planned_sub_topic(sub_topic))
+        lines.extend(f"  - {query}" for query in sub_topic.search_queries)
+    return "\n".join(lines)
 
 
 def clamp_score(value: int) -> int:
@@ -137,10 +443,64 @@ def normalize_notes(
     return notes[:limit]
 
 
+def normalize_gaps(
+    values: Sequence[str | CritiqueGapDraft],
+    *,
+    known_coverage_ids: Collection[str] = (),
+    limit: int = DEFAULT_MAX_NOTES,
+) -> list[CritiqueGap]:
+    """Normalize provider gaps and retain only plan-valid target IDs.
+
+    A blank or unknown provider ID is intentionally converted to a global
+    gap.  Titles and problem text are never consulted when deciding the
+    target, so a similarly named topic cannot receive another topic's gap.
+
+    The pre-Task-7 free-text shape is accepted here as well. This is a SECOND
+    COPY of that rule, not a call to ``normalize_gap_drafts``: the shared
+    normalizer rewrites a whole provider payload's ``gaps`` list, while this
+    loop already holds one parsed value at a time. The two must agree, so the
+    mapping below is the per-value spelling of the payload mapping above and
+    any change to the legacy shape has to land in both.
+    """
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    gaps: list[CritiqueGap] = []
+    seen: set[tuple[str | None, str, tuple[str, ...]]] = set()
+    for value in values:
+        draft = (
+            CritiqueGapDraft(
+                coverage_id=None, problem=value, recommended_queries=[]
+            )
+            if isinstance(value, str)
+            else value
+        )
+        problem = " ".join(draft.problem.split())
+        if not problem:
+            continue
+        coverage_id = draft.coverage_id or None
+        if coverage_id is not None:
+            coverage_id = coverage_id.strip() or None
+        if coverage_id not in known_coverage_ids:
+            coverage_id = None
+        queries = tuple(normalize_notes(draft.recommended_queries))
+        identity = (coverage_id, problem, queries)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        gaps.append(
+            CritiqueGap(
+                coverage_id=coverage_id,
+                problem=problem,
+                recommended_queries=list(queries),
+            )
+        )
+    return gaps[:limit]
+
+
 def route_decision(
     *,
     score: int,
-    gaps: Sequence[str],
+    gaps: Sequence[CritiqueGap],
     unsupported_claims: Sequence[str],
     iteration: int,
     max_iterations: int,
@@ -180,10 +540,13 @@ def build_critique(
     *,
     iteration: int,
     max_iterations: int,
+    known_coverage_ids: Collection[str] = (),
 ) -> tuple[Critique, str]:
     """Stamp one model review into a validated ``Critique`` and its route."""
     score = clamp_score(draft.score)
-    gaps = normalize_notes(draft.gaps)
+    gaps = normalize_gaps(
+        draft.gaps, known_coverage_ids=known_coverage_ids
+    )
     unsupported = normalize_notes(draft.unsupported_claims)
     queries = normalize_notes(draft.recommended_queries)
     should_continue, reason = route_decision(
@@ -229,7 +592,7 @@ def fallback_critique(
             if iteration >= max_iterations
             else reason
         )
-        gaps: list[str] = []
+        gaps: list[CritiqueGap] = []
     else:
         should_continue, route = route_decision(
             score=MIN_CRITIC_SCORE,
@@ -239,7 +602,13 @@ def fallback_critique(
             max_iterations=max_iterations,
             has_report=False,
         )
-        gaps = ["No report was available to review."]
+        gaps = [
+            CritiqueGap(
+                coverage_id=None,
+                problem="No report was available to review.",
+                recommended_queries=[],
+            )
+        ]
     sentences = [ROUTING_REASONS[reason]]
     if route != reason:
         sentences.append(ROUTING_REASONS[route])
@@ -256,18 +625,62 @@ def fallback_critique(
     )
 
 
-def _clamp_report(text: str, *, limit: int) -> str:
-    """Clamp the report for a prompt without flattening its headings.
+def _group_errors_by_agent_stage(
+    errors: Sequence[ResearchError],
+) -> dict[str, list[ResearchError]]:
+    """Group typed errors by their safe agent and operation identifiers."""
+    groups: dict[str, list[ResearchError]] = {}
+    for error in errors:
+        operation = error.details.get("operation")
+        stage = (
+            operation.strip()
+            if isinstance(operation, str) and operation.strip()
+            else error.error_type
+        )
+        key = f"{error.source} / {stage}"
+        groups.setdefault(key, []).append(error)
+    return groups
 
-    ``summarize_text`` is deliberately not used here: it joins on
-    whitespace, which would run every Markdown heading into one line.
-    """
-    report = text.strip()
-    if not report:
-        return "(no report)"
-    if len(report) <= limit:
-        return report
-    return report[: limit - 3].rstrip() + "..."
+
+def _render_quality_snapshot(
+    quality: ReportQualitySnapshot | None,
+) -> str:
+    """Render deterministic quality fields without reducing them to a score."""
+    if quality is None:
+        return "(no structured quality snapshot was recorded)"
+    return json.dumps(
+        quality.model_dump(mode="json"), ensure_ascii=False, sort_keys=True
+    )
+
+
+def _render_error_groups(task: CritiqueTask) -> str:
+    """Render all typed errors grouped by agent and operation/stage."""
+    groups = task.error_groups or _group_errors_by_agent_stage(task.errors)
+    if not groups:
+        return (
+            f"{task.error_count} error(s) were recorded during this pass; "
+            "no typed error details were supplied."
+        )
+    lines = [
+        f"{task.error_count or sum(len(rows) for rows in groups.values())} "
+        "error(s) were recorded during this pass."
+    ]
+    for group in sorted(groups):
+        rows = groups[group]
+        lines.append(f"- {group}: {len(rows)} error(s)")
+        for error in rows:
+            severity = "recoverable" if error.recoverable else "fatal"
+            coverage_id = error.details.get("coverage_id")
+            coverage = (
+                f" coverage_id={coverage_id}"
+                if isinstance(coverage_id, str) and coverage_id.strip()
+                else ""
+            )
+            lines.append(
+                f"  - {error.error_type} ({severity}){coverage}: "
+                f"{error.message}"
+            )
+    return "\n".join(lines)
 
 
 def critique_messages(
@@ -279,33 +692,68 @@ def critique_messages(
 ) -> list[ChatMessage]:
     """Build the messages that request one structured review."""
     sub_topics = (
-        "\n".join(f"- {title}" for title in task.sub_topics)
+        "\n".join(
+            _render_planned_sub_topic(sub_topic)
+            for sub_topic in task.sub_topics
+        )
         or "(none planned)"
     )
+    canonical_claims = merge_claim_snapshot([], task.claims)
+    canonical_sources = merge_source_snapshot([], task.sources)
     sections = [
-        f"## Research question\n{task.instruction}",
+        f"# Research question\n{task.instruction}",
         (
-            "## Report under review\n"
-            f"{_clamp_report(task.report, limit=report_chars)}"
+            "# Report under review\n"
+            "The reader report is split into independently bounded fenced "
+            "sections below. Review every section; a section cap must not hide "
+            "later sections; its own headings belong to the report rather than "
+            "to this request."
         ),
-        f"## Sub-topics planned\n{sub_topics}",
-        (
-            "## Claim verdicts\n"
-            f"{render_claim_digest(list(task.claims)[:claim_digest])}"
-        ),
-        f"## Source quality\n{render_source_quality(task.sources)}",
-        (
-            "## Recorded problems\n"
-            f"{task.error_count} error(s) were recorded during this pass."
+        *_render_balanced_report_sections(
+            task.report,
+            limit=report_chars,
+            report_sections=task.report_sections,
         ),
         (
-            "## Spot checks\n"
+            "# Sub-topics planned\n"
+            f"{sub_topics}"
+        ),
+        (
+            "# Deterministic quality snapshot\n"
+            f"{_render_quality_snapshot(task.quality)}"
+        ),
+        (
+            "# Claim verdicts — canonical checked claims\n"
+            f"{render_claim_digest(canonical_claims[:claim_digest])}"
+        ),
+        (
+            "# Source quality — cited-source assessments\n"
+            f"{render_source_quality(canonical_sources)}"
+        ),
+        (
+            "# Recorded problems by agent/stage\n"
+            f"{_render_error_groups(task)}"
+        ),
+        (
+            "# Spot checks\n"
             f"{render_evidence(run, limit=CRITIC_EVIDENCE_CHARS)}"
         ),
-        f"## Response contract\n{CRITIQUE_INSTRUCTION}",
+        f"# Response contract\n{CRITIQUE_INSTRUCTION}",
+        f"# How to choose the score\n{_CRITIQUE_SCORE_BANDS}",
+        (
+            "# Reply format\n"
+            "Return exactly one JSON object with these five fields and no "
+            "others, with no text before or after it. Two complete examples, "
+            "one for a weak report and one for a strong one, showing the scale "
+            "in use:\n"
+            f"Weak report, score {_LOW_EXAMPLE_SCORE}:\n"
+            f"{_CRITIQUE_LOW_EXAMPLE_JSON}\n"
+            f"Strong report, score {_HIGH_EXAMPLE_SCORE}:\n"
+            f"{_CRITIQUE_HIGH_EXAMPLE_JSON}"
+        ),
     ]
     return [
-        ChatMessage(role="developer", content=CRITIC_SYSTEM_PROMPT),
+        ChatMessage(role="developer", content=CRITIC_REVIEW_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
 
@@ -325,7 +773,7 @@ def critique_provider_error(error: Exception) -> ResearchError:
             "research pass was ended rather than repeated."
         ),
         recoverable=False,
-        details={"exception_type": type(error).__name__},
+        details=agent_provider_failure_details("critic_report_review", error),
     )
 
 
@@ -408,7 +856,7 @@ class CriticAgent(BaseAgent[Critique]):
     def __init__(
         self,
         *,
-        provider: StructuredCompleter,
+        provider: AgentCompleter,
         tracker: Tracker,
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),
@@ -447,15 +895,27 @@ class CriticAgent(BaseAgent[Critique]):
 
     def build_task(self, state: ResearchState) -> CritiqueTask:
         """Bind this review to the report and the remaining budget."""
+        claims = merge_claim_snapshot([], state.verified_claims)
+        sources = merge_source_snapshot([], state.evaluated_sources)
+        errors = list(state.errors)
         return CritiqueTask(
             instruction=state.original_question,
+            guidance=_render_spot_check_guidance(
+                state.report or "",
+                state.sub_topics,
+                report_chars=self._report_chars,
+            ),
             report=state.report or "",
             iteration=state.iteration,
             max_iterations=state.max_iterations,
-            claims=list(state.verified_claims),
-            sources=list(state.evaluated_sources),
-            sub_topics=[sub_topic.title for sub_topic in state.sub_topics],
-            error_count=len(state.errors),
+            claims=claims,
+            sources=sources,
+            sub_topics=list(state.sub_topics),
+            error_count=len(errors),
+            quality=state.quality,
+            report_sections=_split_reader_report(state.report or ""),
+            errors=errors,
+            error_groups=_group_errors_by_agent_stage(errors),
         )
 
     async def review(
@@ -487,6 +947,7 @@ class CriticAgent(BaseAgent[Critique]):
                 ),
                 CritiqueDraft,
                 agent_name=self.name,
+                max_tokens=self.config.critic_review_max_tokens,
             )
         except ProviderError as error:
             critique, reason = fallback_critique(
@@ -500,6 +961,9 @@ class CriticAgent(BaseAgent[Critique]):
             draft,
             iteration=task.iteration,
             max_iterations=task.max_iterations,
+            known_coverage_ids={
+                sub_topic.coverage_id for sub_topic in task.sub_topics
+            },
         )
         return critique, reason, [], False
 
@@ -545,20 +1009,7 @@ class CriticAgent(BaseAgent[Critique]):
             steps: Sequence[ReActStep],
         ) -> ReActDecision:
             del steps
-            return await self.provider.complete_structured(
-                render_react_messages(
-                    system_prompt=self.system_prompt(task),
-                    task=task,
-                    descriptors=toolset.descriptors(),
-                    scratchpad=self.scratchpad.recent(
-                        self.config.prompt_context_entries
-                    ),
-                    iteration=iteration,
-                    max_iterations=self.config.max_iterations,
-                ),
-                ReActDecision,
-                agent_name=self.name,
-            )
+            return await self._complete_react_decision(task, iteration=iteration)
 
         react = await run_react_loop(
             agent_name=self.name,
