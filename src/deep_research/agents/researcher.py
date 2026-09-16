@@ -105,6 +105,11 @@ RESEARCHER_SYSTEM_PROMPT = (
     "only one source states is recorded as unverified no matter how "
     "authoritative that source is. Prefer spending a remaining call on that "
     "second source over another query for the same one.\n"
+    "If a publisher refuses automated access to a page, do not try that page "
+    "or that host again. Read the same material as a document instead — "
+    "document_reader handles PDFs, spreadsheets and data files, and primary "
+    "reports are usually published that way — or find the same fact from a "
+    "different publisher.\n"
     "Finish once the sub-topic's success criteria are met, or once no "
     "further source is worth retrieving."
 )

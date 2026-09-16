@@ -941,6 +941,41 @@ def test_the_run_errors_block_publishes_bounded_tool_failure_details() -> None:
     assert "internal.example" not in errors
 
 
+def test_the_run_errors_block_names_why_a_sub_topic_was_skipped() -> None:
+    """A skipped sub-topic must publish *which* one and *why*.
+
+    It is the difference between a coverage gap and an acceptable skip: "cap"
+    and "provider_failure_stopped_processing" are losses, while
+    "interim_satisfaction" is a refinement pass correctly reusing a prior
+    finding. A run lost three planned sub-topics and the artifact could not say
+    which reason applied, so the reason is now published alongside the
+    locally-stamped coverage id.
+    """
+    ledger = render_evidence_ledger(
+        _composition(
+            errors=[
+                ResearchError(
+                    error_type="researcher_sub_topic_skipped",
+                    source="agent.researcher",
+                    message="A planned sub-topic was never researched.",
+                    recoverable=True,
+                    details={
+                        "sub_topic": "Interconnection queue reform",
+                        "coverage_id": "topic-04",
+                        "priority": 4,
+                        "reason": "provider_failure_stopped_processing",
+                    },
+                )
+            ]
+        )
+    )
+
+    errors = _section_body(ledger, "## Run errors")
+
+    assert "coverage_id=topic-04" in errors
+    assert "reason=provider_failure_stopped_processing" in errors
+
+
 # --- identity and citation helpers -------------------------------------------
 
 

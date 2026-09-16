@@ -377,6 +377,54 @@ async def test_scraper_http_status_classification_is_bounded(tracker) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 402, 403, 451])
+async def test_an_access_denial_says_to_re_source_not_to_retry(
+    tracker, status_code
+) -> None:
+    """A refusal is actionable, so it must not read as a generic HTTP failure.
+
+    Measured, not assumed: a live run spent seven ``web_scraper`` attempts on
+    ``emp.lbl.gov`` pages that all returned 403, while ``document_reader`` read
+    that same host's PDFs successfully in 28 of 30 attempts. The generic
+    "HTTP error status" sentence told the agent nothing about what to do next,
+    so it kept retrying the host. This sentence names the only useful move.
+    """
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        calls += 1
+        return httpx.Response(
+            status_code,
+            headers={"X-Hostile": _HOSTILE_RESPONSE_TEXT},
+            text=_HOSTILE_RESPONSE_TEXT,
+            request=request,
+        )
+
+    async with _client(handler) as client:
+        tool = WebScraperTool(tracker, client=client)
+        async with tracker.session_span("session-1", "question"):
+            result = await tool.execute(url="https://example.test/article")
+
+    _assert_failure_is_bounded(
+        result, (_HOSTILE_RESPONSE_TEXT, "example.test", "https://")
+    )
+    assert result.error is not None
+    assert result.error.type == "HTTPStatusError"
+    assert result.error.message == (
+        "the publisher refused automated access to this page; read the same "
+        "material from a document or another publisher"
+    )
+    assert result.error.details == {
+        "attempts": 1,
+        "retries": 0,
+        "status_code": status_code,
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status_code", [0, 600, 999])
 async def test_scraper_out_of_range_status_classification_is_bounded(
     tracker, status_code

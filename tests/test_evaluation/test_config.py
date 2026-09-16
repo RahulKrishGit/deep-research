@@ -315,10 +315,16 @@ CRITIC_PROMPT_FINGERPRINT = "bc6b1f23064c"
 #     were all graded insufficient evidence, and the critic scored the report
 #     3/10. The plan and the researcher now ask for a second source on a
 #     different site for every load-bearing fact. Wording only.
+#   researcher 016fc43c77eb -> 4a33c7153025: the prompt now says that a page a
+#     publisher refuses must not be retried — read the same material as a
+#     document, or find it from another publisher. Measured: a live run spent
+#     seven ``web_scraper`` attempts on ``emp.lbl.gov`` pages returning 403,
+#     while ``document_reader`` read that host's PDFs 28 times out of 30.
+#     Wording only.
 # No other agent's value moved.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "86c8ce19a676",
-    "researcher": "016fc43c77eb",
+    "researcher": "4a33c7153025",
     "source_evaluator": "6e127ffba9d4",
     "fact_checker": "5080d1810c7e",
     "synthesizer": "dd422429c34b",

@@ -28,6 +28,11 @@ _MEDIA_TYPE_MAX_LENGTH = 64
 _UNKNOWN_CONTENT_TYPE = "unknown"
 _MEDIA_TYPE_PATTERN = re.compile(r"[a-z0-9!#$%&'*+.^_`|~-]+/[a-z0-9!#$%&'*+.^_`|~-]+")
 
+# Statuses that mean "this client may not read this page", as opposed to a
+# transient or malformed-response failure. They get their own static sentence
+# because the useful next move differs: re-sourcing, not retrying.
+_ACCESS_DENIED_STATUSES = frozenset({401, 402, 403, 451})
+
 
 class AsyncHttpClient(Protocol):
     async def get(self, url: str, **kwargs: Any) -> httpx.Response: ...
@@ -288,7 +293,21 @@ def _tool_execution_error(error: BaseException, attempts: int) -> ToolExecutionE
     if isinstance(error, httpx.HTTPStatusError):
         status_code = error.response.status_code
         if 100 <= status_code <= 599:
-            message = "the page request failed with an HTTP error status"
+            if status_code in _ACCESS_DENIED_STATUSES:
+                # An access denial is actionable in a way the other HTTP
+                # failures are not: the page exists but this client may not
+                # read it, so the only useful next move is a *different*
+                # source. Measured, not assumed: one live run spent seven
+                # attempts on ``emp.lbl.gov`` pages that all returned 403,
+                # while ``document_reader`` read the same site's PDFs
+                # successfully 28 times out of 30. A generic "HTTP error
+                # status" told the agent nothing, so it retried the host.
+                message = (
+                    "the publisher refused automated access to this page; read "
+                    "the same material from a document or another publisher"
+                )
+            else:
+                message = "the page request failed with an HTTP error status"
             details["status_code"] = status_code
     else:
         message = "the page request timed out"

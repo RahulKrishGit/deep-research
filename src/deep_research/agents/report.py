@@ -174,9 +174,21 @@ _ERROR_MESSAGE_CHARS = 240
 _DETAILS_CHARS = 240
 #: The error types whose ``details`` may be published in the evidence ledger.
 #: Membership requires evidence that every value is bounded — a projection that
-#: revalidates what it copies — because the ledger is a public artifact and the
-#: default for an unvetted key is to withhold it. See ``_published_details``.
-_DETAILED_ERROR_TYPES = frozenset({"agent_tool_failed"})
+#: revalidates what it copies, or an enumerated builder — because the ledger is
+#: a public artifact and the default for an unvetted key is to withhold it.
+#: See ``_published_details``.
+#:
+#: ``researcher_sub_topic_skipped`` joined after a run lost three planned
+#: sub-topics and the ledger could not say why: its details are a locally
+#: stamped ``coverage_id`` (``topic-01``), an integer ``priority``, one of three
+#: enumerated ``reason`` strings, and a summarised sub-topic title — the same
+#: kind of content this artifact already prints for claims and sources. The
+#: reason is what distinguishes "truncated by the cap" from "a provider failure
+#: stopped the pass" from "already satisfied on a refinement pass", which is
+#: exactly the difference between a coverage gap and an acceptable skip.
+_DETAILED_ERROR_TYPES = frozenset(
+    {"agent_tool_failed", "researcher_sub_topic_skipped"}
+)
 _NO_DATED_EVIDENCE = "no dated evidence was recorded"
 _NO_SCOPE = "not stated"
 _CELL_EMPTY = "—"
