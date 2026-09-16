@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -6,7 +7,12 @@ import httpx
 import pytest
 
 from deep_research.observability import ToolMetric
-from deep_research.request_budget import RequestAttemptLimitError, RequestBudget
+from deep_research.request_budget import (
+    ProviderCategory,
+    RequestAttemptLimitError,
+    RequestBudget,
+    RequestBudgetSnapshot,
+)
 from deep_research.tools.base import ToolExecutionError, ToolResult
 from deep_research.tools.web_search import WebSearchTool
 from deep_research.utils.config import RequestBudgetConfig
@@ -592,6 +598,76 @@ async def test_search_request_budget_refuses_the_first_call_when_the_limit_is_ze
     metric = next(
         metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
     )
+    assert metric.error_type == "RequestAttemptLimitError"
+    assert metric.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_search_request_budget_refusal_survives_a_short_attempt_timeout(
+    tracker, monkeypatch
+) -> None:
+    """A reservation slower than ``timeout_s`` must still refuse, not time out.
+
+    The reservation belongs to the request, not to the cancellable transport
+    window. While it runs inside the work item handed to ``asyncio.to_thread``,
+    a timeout expiring during ``reserve`` cancels that future, so the refusal
+    lands on an already-cancelled future and is dropped: the caller receives a
+    timeout-shaped ``ToolExecutionError``, ``BaseTool.execute`` returns a failed
+    ``ToolResult``, and the ReAct loop records ``agent_tool_failed`` — the exact
+    degradation the run-wide ceiling exists to remove. Because a refusal is a
+    statement about the budget rather than a transport event, it must escape
+    every timeout on the path regardless of how long ``reserve`` takes.
+    """
+    # A zero effective limit (``floor(1 * 0.5)``): the very first call is refused.
+    budget = _tavily_budget(ceiling=1, stop_fraction=0.5)
+    refused_reserve = budget.reserve
+    reserves: list[ProviderCategory] = []
+
+    def slow_reserve(provider: ProviderCategory) -> RequestBudgetSnapshot:
+        """Reserve as the real one does, but slower than any attempt timeout."""
+        reserves.append(provider)
+        time.sleep(0.25)
+        return refused_reserve(provider)
+
+    monkeypatch.setattr(budget, "reserve", slow_reserve)
+    client = FakeSearchClient([_search_response()])
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    tool = WebSearchTool(
+        tracker,
+        client=client,
+        sleep=sleep,
+        request_budget=budget,
+        timeout_s=0.05,
+    )
+    returned: list[ToolResult] = []
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError) as refused:
+            returned.append(await tool.execute(query="topic"))
+
+    assert returned == []
+    assert type(refused.value) is RequestAttemptLimitError
+    # Not the timeout the short window would have published, and not any other
+    # tool failure: the refusal is not a status error and not a timeout.
+    assert not isinstance(refused.value, ToolExecutionError)
+    assert refused.value.snapshot.provider == "tavily"
+    assert refused.value.snapshot.attempts == 0
+    assert refused.value.snapshot.ceiling == 1
+    assert refused.value.snapshot.effective_limit == 0
+    # The refusal reached the budget before any client call, and it ended the
+    # request: nothing was charged, nothing was sent, no retry was scheduled.
+    assert reserves == ["tavily"]
+    assert client.calls == []
+    assert budget.snapshot("tavily").attempts == 0
+    assert delays == []
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert metric.success is False
     assert metric.error_type == "RequestAttemptLimitError"
     assert metric.retry_count == 0
 

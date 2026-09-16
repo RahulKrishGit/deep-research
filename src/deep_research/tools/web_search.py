@@ -128,18 +128,7 @@ class WebSearchTool(BaseTool):
         budget = self._request_budget
 
         def search_once() -> Mapping[str, Any]:
-            """One transport attempt: reserve its unit first, then make it.
-
-            The retry loop below calls this once per attempt, so the first call
-            and every retry of it each reserve their own unit rather than the
-            request reserving one for all of them. A refusal raised by
-            ``reserve`` is not a timeout and not a status error, so the handler
-            below does not catch it: it ends the request instead of being
-            retried, and it never counts as an attempt of its own, because the
-            budget refuses before it increments.
-            """
-            if budget is not None:
-                budget.reserve("tavily")
+            """The one transport attempt the loop already reserved a unit for."""
             return self._client.search(
                 query=query,
                 search_depth=self._search_depth,
@@ -148,6 +137,24 @@ class WebSearchTool(BaseTool):
 
         attempts = self._max_retries + 1
         for attempt in range(attempts):
+            # The reservation happens here rather than inside ``search_once``,
+            # so it stays outside the cancellable window below. ``reserve`` is
+            # synchronous and touches no network, but it is not instantaneous,
+            # and a reservation made inside a work item handed to
+            # ``asyncio.to_thread`` is cancelled the moment ``wait_for`` times
+            # out: the refusal then lands on an already-cancelled future, is
+            # dropped, and a spent ceiling is republished as an ordinary
+            # timeout — a failed ``ToolResult`` recorded as ``agent_tool_failed``
+            # instead of the run-ending refusal this ceiling exists to produce.
+            # Reserving in the loop body keeps the ordering the ceiling relies
+            # on: every real client call, the first and each retry, is preceded
+            # by exactly one reservation, and a refused attempt is neither
+            # charged nor sent. The refusal is not inside the caught tuple, so
+            # it ends the request instead of being retried, and it never counts
+            # as an attempt of its own, because the budget refuses before it
+            # increments.
+            if budget is not None:
+                budget.reserve("tavily")
             try:
                 return await asyncio.wait_for(
                     asyncio.to_thread(search_once),
