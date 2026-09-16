@@ -14,6 +14,7 @@ from deep_research.graph.errors import (
     provider_configuration_error,
     publication_unavailable_error,
     publication_write_error,
+    request_attempt_limit_error,
 )
 from deep_research.graph.events import (
     graph_event,
@@ -141,6 +142,7 @@ __all__ = [
     "refine_node",
     "refinement_started_event",
     "report_published_event",
+    "request_attempt_limit_error",
     "resume_research_graph",
     "route_after_critic",
     "route_decided_event",
