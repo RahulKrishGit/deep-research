@@ -33,7 +33,7 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
 )
 from deep_research.agents.react import run_react_loop
-from deep_research.agents.sources import normalize_source_url
+from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import (
     ReActDecision,
     ReActRun,
@@ -647,12 +647,18 @@ def bound_sub_topic_findings(
     sub-topic still gets its turn, and what a sub-topic could not keep is
     reported rather than silently discarded.
 
-    Selection is by confidence, but not by confidence alone. Sources are
-    ranked by their strongest finding and then taken round-robin, so one
-    verbose publisher cannot fill the whole allowance and push an independent
-    second source out of the report. Within a source the strongest findings
-    go first, duplicates keep their highest confidence, and the retained list
-    comes back strongest-first.
+    Selection is by confidence, but not by confidence alone. Findings are
+    grouped by *publisher* — not by URL — ranked by their strongest finding and
+    then taken round-robin, so one verbose publisher cannot fill the whole
+    allowance and push an independent second source out of the report. Within a
+    publisher the strongest findings go first, duplicates keep their highest
+    confidence, and the retained list comes back strongest-first.
+
+    Grouping by URL did not do that, whatever this docstring said: four pages
+    from one publisher were four groups, so they could take all four of
+    ``max_sources`` and leave a genuinely independent publisher out. That is a
+    corroboration problem, not a tidiness one — downstream, a claim can only be
+    verified by a publisher other than the ones that made it.
     """
     if max_findings < 1 or max_sources < 1:
         raise ValueError("max_findings and max_sources must be at least 1")
@@ -661,7 +667,7 @@ def bound_sub_topic_findings(
     groups: dict[str, list[Finding]] = {}
     for finding in deduplicated:
         groups.setdefault(
-            normalize_source_url(finding.source_url), []
+            publisher_identity(finding.source_url), []
         ).append(finding)
 
     by_source = sorted(

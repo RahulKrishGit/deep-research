@@ -128,6 +128,20 @@ FACT_CHECKER_SYSTEM_PROMPT = (
     "corroboration; look for a different organisation. Actively look for "
     "evidence that the claim is wrong, not only evidence that it is "
     "right.\n"
+    # Measured: the verification loops made 146 web_search calls against about
+    # 31 reads, and a claim whose loop read nothing independent is recorded
+    # ``insufficient_evidence`` with no verdict call at all — so searches spent
+    # without reading cost the claim its verdict. Same pathology the researcher
+    # had, and the same instruction fixes it.
+    "Spend your calls on reading, not on repeating searches. After a search, "
+    "read the most promising result before searching again, and keep "
+    "alternating: only a page or document you have actually read can settle "
+    "the claim, so a verdict is impossible without one. Prefer primary "
+    "documents — PDFs, filings, datasets and government or laboratory reports "
+    "— which are published to be read and are far likelier to load than a "
+    "publisher's article page. If a publisher refuses automated access to a "
+    "page, do not try that page or that host again; find the same material as "
+    "a document or from a different organisation.\n"
     "Finish once you have retrieved enough independent material to judge "
     "the claim, or once no further source is worth retrieving."
 )

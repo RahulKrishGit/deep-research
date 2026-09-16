@@ -153,8 +153,12 @@ from deep_research.utils.config import (
 # limitations list inline while ``compose_limitations`` computed it for the
 # artifacts; one computation now feeds both). No prompt string moved. Re-pinned
 # deliberately rather than silently invalidated, the same convention the
-# researcher's own module-source move used.
-CRITIC_PROMPT_FINGERPRINT = "bc6b1f23064c"
+# researcher's own module-source move used. The Critic then moved with the rest
+# of the six when ``CLAIM_VERIFICATION_SYSTEM_PROMPT`` gained read-before-search
+# guidance — the shared ``agents.prompts`` module is hashed for every agent, so
+# a change to any prompt in it moves all of them: ``bc6b1f23064c`` ->
+# ``97a2d10ad688``.
+CRITIC_PROMPT_FINGERPRINT = "97a2d10ad688"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -322,13 +326,35 @@ CRITIC_PROMPT_FINGERPRINT = "bc6b1f23064c"
 #     while ``document_reader`` read that host's PDFs 28 times out of 30.
 #     Wording only.
 # No other agent's value moved.
+# ALL SIX values moved together, deliberately, because the change was to the
+# SHARED ``agents.prompts`` module — which is exactly the "did a prompt edit
+# land" signal this alarm exists to give, and exactly why it cannot say whose
+# prompt moved. The edit added read-before-search guidance to
+# ``CLAIM_VERIFICATION_SYSTEM_PROMPT``: the fact checker's verification loops
+# made 146 ``web_search`` calls against roughly 31 reads, and a claim whose loop
+# read nothing independent is recorded ``insufficient_evidence`` with no verdict
+# call at all — so searches spent without reading cost the claim its verdict.
+# That is the same pathology the researcher had (183 searches, zero scrapes) and
+# the same instruction fixed it there. Wording only; no tool semantics, no
+# verification semantics, and no threshold changed.
+#   planner           86c8ce19a676 -> 1a29b6e63b2d
+#   researcher        4a33c7153025 -> efe153883c5b
+#     (the shared-prompts edit moved it to 8205d02968bf, then the
+#     publisher-grouping fix in ``bound_sub_topic_findings`` moved it again —
+#     that function groups by publisher rather than by URL, so one publisher
+#     can no longer take all four retention slots and push an independent
+#     source out of the report)
+#   source_evaluator  6e127ffba9d4 -> 4fdf95ddcc64
+#   fact_checker      5080d1810c7e -> f13fdde0e8bc
+#   synthesizer       dd422429c34b -> ad25c1b309b1
+#   critic            bc6b1f23064c -> 97a2d10ad688
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "86c8ce19a676",
-    "researcher": "4a33c7153025",
-    "source_evaluator": "6e127ffba9d4",
-    "fact_checker": "5080d1810c7e",
-    "synthesizer": "dd422429c34b",
-    "critic": "bc6b1f23064c",
+    "planner": "1a29b6e63b2d",
+    "researcher": "efe153883c5b",
+    "source_evaluator": "4fdf95ddcc64",
+    "fact_checker": "f13fdde0e8bc",
+    "synthesizer": "ad25c1b309b1",
+    "critic": "97a2d10ad688",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
