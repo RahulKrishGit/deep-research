@@ -10,6 +10,8 @@ from deep_research.utils.types import (
     INCOMPLETE_CONTENT_SHA256,
     MAX_CONSUMED_COVERAGE_IDS,
     MAX_CONSUMED_FINDING_FINGERPRINTS,
+    ORIGINAL_QUESTION_OMISSION_REFERENCE,
+    AnswerContract,
     BoundaryAudit,
     Claim,
     Critique,
@@ -20,9 +22,12 @@ from deep_research.utils.types import (
     ReadRecord,
     ResearchError,
     ResearchEvent,
+    ResearchState,
     ScoredSource,
     SourceEvaluationStatus,
     SubTopic,
+    counted_evidence_targets,
+    merge_research_state,
 )
 
 
@@ -68,6 +73,195 @@ def test_an_evidence_target_requires_its_obligation_and_support_policy() -> None
             critical=False,
             support_policy="probably fine",
         )
+
+
+def test_an_answer_contract_freezes_the_scope_form_and_as_of_date() -> None:
+    """The contract is the frozen half of Section 2.3.
+
+    Every field is required, including the two that may hold nothing: a
+    question with no stated geography still gets an explicit assumption
+    rather than an empty field a later stage could read as "anywhere".
+    """
+    contract = AnswerContract(
+        question="What are the current interconnection constraints?",
+        scope_statement="Answered for the United States as of 2026-09-16.",
+        geographic_scope="United States",
+        as_of_date="2026-09-16",
+        evidence_period_requirement=(
+            "Latest available evidence as of 2026-09-16."
+        ),
+        assumptions=["The question does not name a jurisdiction."],
+        answer_kind="constraints",
+        requested_word_limit=None,
+    )
+
+    assert contract.answer_kind == "constraints"
+    assert contract.as_of_date == "2026-09-16"
+    assert contract.requested_word_limit is None
+
+    with pytest.raises(ValidationError):
+        AnswerContract(
+            question="What are the current constraints?",
+            scope_statement="Answered for the United States.",
+            geographic_scope="United States",
+            as_of_date="2026-09-16",
+            evidence_period_requirement="Latest available evidence.",
+            assumptions=[],
+            answer_kind="maybe",
+            requested_word_limit=None,
+        )
+
+
+def test_a_legacy_sub_topic_without_targets_still_loads() -> None:
+    """Legacy plans load with an empty target list and require replanning.
+
+    A snapshot written before the target contract carries no obligations, so
+    nothing may be invented for it — but such a plan cannot be executed as
+    if it were complete, and the empty list is what says so.
+    """
+    sub_topic = SubTopic(
+        coverage_id="topic-01",
+        title="Alpha",
+        rationale="Alpha is load-bearing.",
+        search_queries=["alpha 2025"],
+        success_criteria=["A named source about Alpha."],
+        priority=1,
+    )
+
+    assert sub_topic.evidence_targets == []
+
+    target = EvidenceTarget(
+        target_id="target-01-01",
+        coverage_id="topic-01",
+        question="What does Alpha measure?",
+        required_dimensions=["fact", "time"],
+        required=True,
+        critical=True,
+        support_policy="independent_pair",
+    )
+    stamped = SubTopic.model_validate(
+        {**sub_topic.model_dump(), "evidence_targets": [target]}
+    )
+
+    assert stamped.evidence_targets == [target]
+
+
+def test_a_sub_topic_carries_at_most_four_targets() -> None:
+    def _target(index: int) -> EvidenceTarget:
+        return EvidenceTarget(
+            target_id=f"target-01-{index:02d}",
+            coverage_id="topic-01",
+            question=f"What does Alpha measure ({index})?",
+            required_dimensions=["fact"],
+            required=True,
+            critical=False,
+            support_policy="independent_pair",
+        )
+
+    with pytest.raises(ValidationError):
+        SubTopic(
+            coverage_id="topic-01",
+            title="Alpha",
+            rationale="Alpha is load-bearing.",
+            search_queries=["alpha 2025"],
+            success_criteria=["A named source about Alpha."],
+            priority=1,
+            evidence_targets=[_target(index) for index in range(1, 6)],
+        )
+
+
+def test_the_omission_reference_target_is_not_a_counted_target() -> None:
+    """A reserved-reference target records an omission; it is not evidence.
+
+    The planner uses it to say "the original question asks for something the
+    plan does not yet cover". Counting it as an evidence target would let the
+    plan pass a target count while the obligation it stands for is still
+    unanswered.
+    """
+    omission = EvidenceTarget(
+        target_id="target-01-01",
+        coverage_id="topic-01",
+        question=ORIGINAL_QUESTION_OMISSION_REFERENCE,
+        required_dimensions=["original question coverage"],
+        required=True,
+        critical=True,
+        support_policy="independent_pair",
+    )
+    real = EvidenceTarget(
+        target_id="target-01-02",
+        coverage_id="topic-01",
+        question="What does Alpha measure?",
+        required_dimensions=["fact"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+
+    assert counted_evidence_targets([omission, real]) == [real]
+    assert counted_evidence_targets([omission]) == []
+
+
+def test_the_initial_target_inventory_is_immutable_under_later_updates() -> None:
+    """Later planning may ADD a target and may never shrink the inventory.
+
+    An update that names a subset is the dangerous case: replacement
+    semantics would let a later pass drop a difficult critical target, which
+    is exactly the smaller-denominator failure Section 2.3 forbids.
+    """
+    state = ResearchState(session_id="session-1", original_question="Why?")
+    assert state.answer_contract is None
+    assert state.initial_target_ids == []
+    assert state.expanded_target_ids == []
+
+    contract = AnswerContract(
+        question="Why?",
+        scope_statement="Answered for the United States as of 2026-09-16.",
+        geographic_scope="United States",
+        as_of_date="2026-09-16",
+        evidence_period_requirement="Latest available evidence as of 2026-09-16.",
+        assumptions=["The question names no geography."],
+        answer_kind="explanation",
+        requested_word_limit=None,
+    )
+    first = merge_research_state(
+        state,
+        {
+            "answer_contract": contract,
+            "initial_target_ids": ["target-01-01", "target-01-02"],
+        },
+    )
+
+    assert first.answer_contract == contract
+    assert first.initial_target_ids == ["target-01-01", "target-01-02"]
+
+    added = merge_research_state(
+        first,
+        {"expanded_target_ids": ["target-03-01"]},
+    )
+    assert added.initial_target_ids == ["target-01-01", "target-01-02"]
+    assert added.expanded_target_ids == ["target-03-01"]
+
+    # A later update that names only one initial target adds nothing and
+    # removes nothing: the inventory is a union, never a replacement.
+    preserved = merge_research_state(
+        added,
+        {"initial_target_ids": ["target-01-01"]},
+    )
+    assert preserved.initial_target_ids == [
+        "target-01-01",
+        "target-01-02",
+    ]
+    assert preserved.expanded_target_ids == ["target-03-01"]
+
+    # Stating an already-known id twice does not duplicate it.
+    deduplicated = merge_research_state(
+        preserved,
+        {"expanded_target_ids": ["target-03-01", "target-04-01"]},
+    )
+    assert deduplicated.expanded_target_ids == [
+        "target-03-01",
+        "target-04-01",
+    ]
 
 
 def test_a_read_record_requires_a_full_hash_and_a_real_reader() -> None:

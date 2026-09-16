@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from datetime import datetime, timezone
 from math import isfinite
@@ -76,6 +77,67 @@ class ContractModel(BaseModel):
     )
 
 
+# The answer forms one research question can take. The form decides what a
+# satisfactory answer looks like — a comparison is not finished by two
+# unrelated measurements, and a historical question is not answered by today's
+# figures — so it is frozen before planning rather than inferred from
+# whatever the plan happened to produce.
+AnswerKind: TypeAlias = Literal[
+    "constraints",
+    "comparison",
+    "explanation",
+    "factual",
+    "historical",
+]
+
+# One sub-topic carries at most this many answerable obligations. The bound is
+# a feasibility rule, not a storage limit: a topic with eight required targets
+# cannot be finished by one research pass, and a plan that asks for it is
+# asking for a partially answered report.
+MAX_TARGETS_PER_TOPIC = 4
+
+
+class AnswerContract(ContractModel):
+    """What this run owes the reader, frozen before any evidence is gathered.
+
+    Section 2.3 freezes the original question, the scope and as-of date, and
+    the answer form. This contract is that freeze: every later stage reads the
+    question here rather than from a possibly refined copy, and a coverage
+    denominator can only ever grow from these values.
+
+    ``as_of_date`` is stamped from the run's injected clock, never from model
+    knowledge or memory — a September 2026 session that treated 2024 as
+    "current" produced stale anchors (baseline TR-04). When the question
+    itself names a date or period, that date is preserved instead: a question
+    about 2021 is answered as of 2021, and the contract says so.
+
+    ``geographic_scope`` is ``"unspecified"`` when the question names none,
+    and ``assumptions`` then carries the explicit assumption. An empty
+    assumptions list would let a regional sample support a global conclusion
+    silently; the field is required, so a caller has to say which it is.
+    """
+
+    question: str = Field(min_length=1)
+    """The original question, verbatim and frozen."""
+    scope_statement: str = Field(min_length=1)
+    """One sentence naming the scope, the as-of date, and the answer form."""
+    geographic_scope: str = Field(min_length=1)
+    as_of_date: str = Field(min_length=1)
+    """ISO ``YYYY-MM-DD``: the run clock's date, or the date asked for."""
+    evidence_period_requirement: str = Field(min_length=1)
+    """What period counts as current for this question.
+
+    Publication date, data period, forecast horizon, effective policy date
+    and retrieval date are different things; this names which one the
+    question is actually about.
+    """
+    assumptions: list[str]
+    """Every assumption the plan makes, said out loud."""
+    answer_kind: AnswerKind
+    requested_word_limit: int | None = Field(default=None, ge=1)
+    """The reader length the question asked for, or ``None`` for the default."""
+
+
 class SubTopic(ContractModel):
     coverage_id: str = Field(min_length=1)
     """The identity of one planned sub-topic, such as ``topic-01``.
@@ -91,6 +153,21 @@ class SubTopic(ContractModel):
     search_queries: list[str] = Field(min_length=1)
     success_criteria: list[str] = Field(min_length=1)
     priority: Priority
+    evidence_targets: list[EvidenceTarget] = Field(
+        default_factory=list,
+        max_length=MAX_TARGETS_PER_TOPIC,
+    )
+    """The answerable obligations this sub-topic must satisfy, 1-4 of them.
+
+    Stamped locally by ``PlannerAgent``: the draft proposes obligations, and
+    the planner assigns their ids, their required dimensions, and their
+    support policy before any verdict exists. An empty list is a *legacy*
+    plan — a snapshot written before this contract — and never means "nothing
+    is required": such a plan has to be replanned before it can be executed,
+    which is what ``planner.targets_requiring_replanning`` reports. The
+    ceiling of four keeps one sub-topic from becoming a batch no pass can
+    finish; a fifth obligation belongs to its own sub-topic.
+    """
 
 
 class Finding(ContractModel):
@@ -306,6 +383,32 @@ class EvidenceTarget(ContractModel):
         "independent_pair",
         "primary_attribution",
         "derivation",
+    ]
+
+
+# The reserved ``EvidenceTarget.question`` that records an original-question
+# omission. A target carrying it says "the question asks for something this
+# plan does not yet cover"; it is a marker for a reviewed omission, not an
+# evidence obligation, so ``counted_evidence_targets`` leaves it out of every
+# target count. Counting it would let a plan look complete while the omission
+# it stands for is still open.
+ORIGINAL_QUESTION_OMISSION_REFERENCE = (
+    "original question omission: not yet a counted evidence target"
+)
+
+
+def counted_evidence_targets(
+    targets: Sequence[EvidenceTarget],
+) -> list[EvidenceTarget]:
+    """The targets that count toward coverage, in their given order.
+
+    The one place the reserved omission reference is filtered, so a consumer
+    cannot accidentally count it by iterating the list itself.
+    """
+    return [
+        target
+        for target in targets
+        if target.question != ORIGINAL_QUESTION_OMISSION_REFERENCE
     ]
 
 
@@ -585,7 +688,30 @@ class ReportComposition(ContractModel):
 class ResearchState(ContractModel):
     session_id: str = Field(min_length=1)
     original_question: str = Field(min_length=1)
+    answer_contract: AnswerContract | None = None
+    """The frozen scope, as-of date, and answer form for this session.
+
+    ``None`` until a plan has been produced. Set once by the Planner and
+    replaced only by a later planning pass that freezes the *same* original
+    question; nothing downstream may rewrite ``question``, ``as_of_date``, or
+    ``geographic_scope`` to make a report look complete.
+    """
     sub_topics: list[SubTopic] = Field(default_factory=list)
+    initial_target_ids: list[str] = Field(default_factory=list)
+    """Every evidence target the first plan stamped, in plan order.
+
+    Appendix-only: a later planning pass may add to this list and can never
+    remove from it. ``merge_research_state`` unions these ids rather than
+    replacing them, so a refinement that names three of five original targets
+    cannot shrink the coverage denominator (Section 2.3).
+    """
+    expanded_target_ids: list[str] = Field(default_factory=list)
+    """Targets a later reviewed ``extend_plan`` pass added to the inventory.
+
+    Kept apart from ``initial_target_ids`` so a reviewer can tell what the
+    first plan owed from what later omissions added; the effective inventory
+    is the union of both, never a smaller denominator.
+    """
     raw_findings: list[Finding] = Field(default_factory=list)
     evaluated_sources: list[ScoredSource] = Field(default_factory=list)
     verified_claims: list[Claim] = Field(default_factory=list)
@@ -668,7 +794,10 @@ class ResearchState(ContractModel):
 class ResearchStateUpdate(TypedDict, total=False):
     session_id: str
     original_question: str
+    answer_contract: AnswerContract | None
     sub_topics: list[SubTopic]
+    initial_target_ids: list[str]
+    expanded_target_ids: list[str]
     raw_findings: list[Finding]
     evaluated_sources: list[ScoredSource]
     verified_claims: list[Claim]
@@ -707,6 +836,29 @@ _APPEND_STATE_FIELDS = frozenset(
     }
 )
 
+# Fields whose update adds ids to what the state already holds, in
+# first-seen order, and can never remove one. These are the target
+# inventories: Section 2.3 lets a later reviewed omission ADD a target and
+# never drop or weaken one, and an update that names a subset of the existing
+# ids is exactly how a smaller denominator would otherwise appear. Kept
+# distinct from ``_APPEND_STATE_FIELDS`` because a repeated id must not be
+# stored twice here — the inventory is a set with a stable order, not a log.
+_UNION_STATE_FIELDS = frozenset(
+    {
+        "initial_target_ids",
+        "expanded_target_ids",
+    }
+)
+
+
+def _union_ids(existing: Sequence[str], added: Sequence[str]) -> list[str]:
+    """``existing`` order first, then every id ``added`` brings that is new."""
+    merged = list(existing)
+    for item in added:
+        if item not in merged:
+            merged.append(item)
+    return merged
+
 
 def merge_research_state(
     state: ResearchState,
@@ -743,7 +895,11 @@ def merge_research_state(
 
     payload = state.model_dump(mode="python")
     for field_name, value in update.items():
-        if field_name in _APPEND_STATE_FIELDS:
+        if field_name in _UNION_STATE_FIELDS:
+            if not isinstance(value, list):
+                raise TypeError(f"{field_name} update must be a list")
+            payload[field_name] = _union_ids(payload[field_name], value)
+        elif field_name in _APPEND_STATE_FIELDS:
             if not isinstance(value, list):
                 raise TypeError(f"{field_name} update must be a list")
             payload[field_name] = [*payload[field_name], *deepcopy(value)]
