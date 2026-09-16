@@ -583,27 +583,6 @@ def test_evidence_reports_when_nothing_was_retrieved() -> None:
             {"source": "https://c.test/three.pdf", "chunks": ["chunk"]},
             ("https://c.test/three.pdf",),
         ),
-        (
-            "query_memory",
-            {
-                "matches": [
-                    {"content": "Recalled.", "source_url": "https://d.test/four"}
-                ]
-            },
-            ("https://d.test/four",),
-        ),
-        (
-            "query_memory",
-            {
-                "matches": [
-                    {
-                        "content": "Recalled.",
-                        "metadata": {"source_url": "https://e.test/five"},
-                    }
-                ]
-            },
-            ("https://e.test/five",),
-        ),
     ],
 )
 def test_retrieved_finding_urls_reads_every_read_bearing_tool(
@@ -649,6 +628,39 @@ def test_retrieved_finding_urls_reads_every_read_bearing_tool(
         ("query_memory", {"matches": []}, True),
         # A memory match with no readable content was never read either.
         ("query_memory", {"matches": [{"source_url": "https://g.test/seven"}]}, True),
+        # Nor is a memory match that carries text, a source URL (direct or
+        # nested), high confidence, and a previous "verified" label. Recall is
+        # discovery guidance; only a same-run read or a validated cache entry
+        # is evidence.
+        (
+            "query_memory",
+            {
+                "matches": [
+                    {
+                        "content": "A previous generated answer says 10 GW.",
+                        "source_url": "https://g.test/remembered",
+                        "confidence": 0.99,
+                        "verified": True,
+                    }
+                ]
+            },
+            True,
+        ),
+        (
+            "query_memory",
+            {
+                "matches": [
+                    {
+                        "content": "A previous generated answer says 10 GW.",
+                        "metadata": {
+                            "source_url": "https://g.test/remembered",
+                            "verified": True,
+                        },
+                    }
+                ]
+            },
+            True,
+        ),
         # A write is never evidence.
         ("save_to_memory", {"entry_id": "1", "url": "https://f.test/six"}, True),
         # Malformed entries contribute nothing rather than raising.
@@ -1227,6 +1239,69 @@ async def test_extraction_makes_no_provider_call_when_the_only_hit_is_empty(
     )
 
     findings, errors, provider_failed = await agent.extract_findings(task, run)
+
+    assert findings == []
+    assert errors == []
+    assert provider_failed is False
+    assert completer.calls == []
+
+
+def _recalled_fact_run(*, nested: bool = False) -> ReActRun:
+    """One successful query_memory carrying a highly confident "verified" fact."""
+    match: dict[str, object] = {"content": "Capacity is 10 GW, verified earlier."}
+    if nested:
+        match["metadata"] = {
+            "source_url": "https://remembered.example/report",
+            "verified": True,
+        }
+    else:
+        match["source_url"] = "https://remembered.example/report"
+        match["confidence"] = 0.99
+        match["verified"] = True
+    return ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "query_memory", {"matches": [match]})],
+        iterations=1,
+        tool_calls=1,
+    )
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_a_recalled_fact_retrieves_no_source(nested: bool) -> None:
+    """Recall is guidance: the URL it names was never read in this run."""
+    run = _recalled_fact_run(nested=nested)
+
+    assert retrieved_finding_urls(run) == ()
+    assert _loop_read_anything(run) is False
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_a_recalled_fact_never_reaches_the_extraction_prompt(nested: bool) -> None:
+    run = _recalled_fact_run(nested=nested)
+
+    rendered = render_evidence(run, limit=200, discovery_payloads=False)
+
+    assert "Capacity is 10 GW, verified earlier." not in rendered
+    assert "remembered.example" not in rendered
+    assert rendered == "(no evidence retrieved)"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", [False, True])
+async def test_extraction_makes_no_provider_call_for_a_recalled_fact(
+    tracker: Tracker, nested: bool
+) -> None:
+    """A recalled "verified" fact is not a read this run can extract from."""
+    completer = ScriptedCompleter(outputs=[_findings_draft()])
+    agent = _researcher(tracker, completer)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+
+    findings, errors, provider_failed = await agent.extract_findings(
+        task, _recalled_fact_run(nested=nested)
+    )
 
     assert findings == []
     assert errors == []

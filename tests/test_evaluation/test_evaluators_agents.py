@@ -400,12 +400,11 @@ def test_the_read_provenance_classifier_keeps_every_read_bearing_tool() -> None:
     fingerprints, complete = read_url_fingerprints(
         [SEARCH_STEP, SCRAPE_STEP, DOCUMENT_STEP, MEMORY_STEP]
     )
-    recorded, _ = bounded_url_fingerprints(
-        [SEARCH_RESULT_URL, DOCUMENT_URL, MEMORY_URL]
-    )
+    recorded, _ = bounded_url_fingerprints([SEARCH_RESULT_URL, DOCUMENT_URL])
 
     assert complete is True
     assert set(fingerprints) == set(recorded)
+    assert MEMORY_URL not in fingerprints
 
 
 def test_a_search_only_passage_url_fails_the_evidence_gate(
@@ -444,18 +443,21 @@ def test_a_document_read_passage_url_passes_the_evidence_gate(
     assert _evidence_gate(output, fact_checker_case).passed is True
 
 
-def test_a_memory_read_passage_url_passes_the_evidence_gate(
+def test_a_memory_read_passage_url_fails_the_evidence_gate(
     fact_checker_case, fact_checker_output
 ) -> None:
-    """A provenance-bearing ``query_memory`` match is a read, and counts."""
+    """A ``query_memory`` match is recall, not a read: it proves nothing.
+
+    The match carries text, a source URL, and a previous "verified" label.
+    None of that is a same-run read or a validated cache entry, so the
+    artifact cannot prove the passage's provenance and the gate fails closed.
+    """
     output = fact_checker_output.with_verification_passage_urls(
         [MEMORY_URL]
     ).with_read_steps([MEMORY_STEP])
 
-    assert read_url_fingerprints([MEMORY_STEP])[0] == list(
-        output.dependencies.read_url_fingerprints
-    )
-    assert _evidence_gate(output, fact_checker_case).passed is True
+    assert read_url_fingerprints([MEMORY_STEP])[0] == []
+    assert _evidence_gate(output, fact_checker_case).passed is False
 
 
 def test_an_artifact_that_cannot_prove_its_reads_fails_the_evidence_gate(

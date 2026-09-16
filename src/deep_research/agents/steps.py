@@ -237,25 +237,6 @@ def _read_payload_urls(tool_name: str, data: dict[str, JsonValue]) -> list[str]:
         if isinstance(source, str) and isinstance(chunks, list) and chunks:
             return [source]
         return []
-    if tool_name == "query_memory":
-        matches = data.get("matches")
-        if not isinstance(matches, list):
-            return []
-        urls: list[str] = []
-        for match in matches:
-            if not isinstance(match, dict) or not _has_text(match.get("content")):
-                continue
-            url = match.get("source_url")
-            if not isinstance(url, str):
-                metadata = match.get("metadata")
-                url = (
-                    metadata.get("source_url")
-                    if isinstance(metadata, dict)
-                    else None
-                )
-            if isinstance(url, str):
-                urls.append(url)
-        return urls
     return []
 
 
@@ -270,8 +251,13 @@ def read_evidence_urls(step: ReActStep) -> tuple[str, ...]:
 
     * ``web_scraper`` — only with a URL and non-blank ``text``;
     * ``document_reader`` — only with a source URL and non-empty ``chunks``;
-    * ``query_memory`` — only for a match carrying non-blank ``content`` and
-      a ``source_url``, which may also sit under the match's ``metadata``;
+    * ``query_memory`` — never: recall is discovery and procedural guidance,
+      even when the entry carries text, a source URL (direct or under its
+      metadata), high confidence, a previous "verified" label, or a claimed
+      read ID. Recalled prose is not a read, and its self-declared metadata is
+      not validation. A stored read is re-admitted only by resolving the
+      original artifact through the local read registry
+      (``agents.evidence.validate_cached_read``);
     * ``web_search`` — never: a result list is a set of candidates, and the
       model has not read any of them;
     * ``save_to_memory`` — never: a write is not evidence;

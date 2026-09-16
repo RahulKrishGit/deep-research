@@ -478,8 +478,63 @@ def test_retrieved_urls_are_pulled_from_every_evidence_carrying_tool() -> None:
     assert retrieved_source_urls(run) == [
         "https://third.test/x",
         "https://fourth.test/d.csv",
-        "https://fifth.test/m",
     ]
+
+
+def test_a_recalled_fact_is_never_an_independent_source() -> None:
+    """A memory match contributes no retrieved URL, so it cannot corroborate.
+
+    The recalled entry carries everything a naive classifier would accept —
+    text, a source URL under ``metadata``, high confidence, and a previous
+    "verified" label — and still contributes nothing to the evidence union.
+    """
+    run = ReActRun(
+        agent_name="fact_checker",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                1,
+                "query_memory",
+                {
+                    "matches": [
+                        {
+                            "content": "A remembered passage.",
+                            "metadata": {
+                                "source_url": "https://fifth.test/m",
+                                "verified": True,
+                            },
+                            "confidence": 0.99,
+                        }
+                    ]
+                },
+            )
+        ],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    assert retrieved_source_urls(run) == []
+    assert independent_domains(
+        retrieved_source_urls(run), claimed_domains=["example.org"]
+    ) == []
+    assert (
+        valid_verification_passages(
+            _verdict_draft(
+                passages=[
+                    EvidencePassageDraft(
+                        source_url="https://fifth.test/m",
+                        source_title="A remembered conversation",
+                        locator="p. 1",
+                        excerpt="A remembered passage.",
+                        stance="supports",
+                    )
+                ]
+            ),
+            retrieved_urls=retrieved_source_urls(run),
+            claimed_publishers=["example.org"],
+        )
+        == []
+    )
 
 
 def test_search_only_results_are_candidates_not_retrieved_evidence() -> None:

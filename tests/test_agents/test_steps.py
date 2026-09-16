@@ -462,12 +462,9 @@ def test_only_a_document_with_chunks_is_read(
 
 
 @pytest.mark.parametrize(
-    ("data", "expected"),
+    "data",
     [
-        (
-            {"matches": [{"content": "Recalled.", "source_url": "https://c.test/m"}]},
-            ("https://c.test/m",),
-        ),
+        ({"matches": [{"content": "Recalled.", "source_url": "https://c.test/m"}]}),
         (
             {
                 "matches": [
@@ -476,23 +473,56 @@ def test_only_a_document_with_chunks_is_read(
                         "metadata": {"source_url": "https://c.test/m"},
                     }
                 ]
-            },
-            ("https://c.test/m",),
+            }
         ),
-        # A match with no readable content was never read.
-        ({"matches": [{"source_url": "https://c.test/m"}]}, ()),
-        ({"matches": [{"content": "   ", "source_url": "https://c.test/m"}]}, ()),
-        # Content with no source is not a source.
-        ({"matches": [{"content": "Recalled."}]}, ()),
-        ({"matches": []}, ()),
-        ({"matches": ["not-a-dict"]}, ()),
-        ({"matches": [{"metadata": "not-a-dict"}]}, ()),
+        # Whatever a memory match claims about itself — a URL, high
+        # confidence, a previous "verified" label, a claimed read id — it is
+        # recalled prose, not a read of the source it names.
+        (
+            {
+                "matches": [
+                    {
+                        "content": "Recalled.",
+                        "source_url": "https://c.test/m",
+                        "confidence": 0.99,
+                        "verified": True,
+                        "read_id": "read-remembered",
+                        "metadata": {
+                            "source_url": "https://c.test/m",
+                            "verified": True,
+                        },
+                    }
+                ]
+            }
+        ),
+        ({"matches": [{"source_url": "https://c.test/m"}]}),
+        ({"matches": [{"content": "   ", "source_url": "https://c.test/m"}]}),
+        ({"matches": [{"content": "Recalled."}]}),
+        ({"matches": []}),
+        ({"matches": ["not-a-dict"]}),
+        ({"matches": [{"metadata": "not-a-dict"}]}),
     ],
 )
-def test_only_a_memory_match_with_content_and_a_source_is_read(
-    data: object, expected: tuple[str, ...]
-) -> None:
-    assert read_evidence_urls(_tool_step("query_memory", data)) == expected
+def test_a_memory_match_is_never_read_evidence(data: object) -> None:
+    assert read_evidence_urls(_tool_step("query_memory", data)) == ()
+
+
+def test_recalled_fact_is_not_a_source_read() -> None:
+    from deep_research.agents.steps import ReActStep, read_evidence_urls
+    from deep_research.tools.base import ToolResult
+
+    step = ReActStep(
+        iteration=1, thought="Test fixture.", action="use_tool",
+        tool_name="query_memory",
+        tool_result=ToolResult(
+            tool_name="query_memory", success=True, latency_ms=0,
+            data={"matches": [{
+                "content": "A previous generated answer says capacity is 10 GW.",
+                "source_url": "https://remembered.example/report",
+                "confidence": 0.99,
+            }]}),
+    )
+    assert read_evidence_urls(step) == ()
 
 
 def test_search_results_are_discovery_only() -> None:
@@ -548,20 +578,43 @@ def test_read_evidence_urls_normalizes_in_order_and_deduplicates_within_the_step
     None
 ):
     step = _tool_step(
-        "query_memory",
+        "document_reader",
         {
-            "matches": [
-                {"content": "One.", "source_url": "HTTPS://A.test/one/"},
-                {"content": "One again.", "source_url": "https://a.test/one"},
-                {"content": "Two.", "source_url": "https://www.b.test/two?x=1#frag"},
-            ]
+            "source": "HTTPS://A.test/one/",
+            "chunks": ["chunk"],
         },
     )
 
-    assert read_evidence_urls(step) == (
-        "https://a.test/one",
-        "https://b.test/two?x=1",
+    assert read_evidence_urls(step) == ("https://a.test/one",)
+
+
+def test_read_evidence_urls_normalizes_one_page_reported_two_ways() -> None:
+    """Two tools, one page: each step reports the same canonical URL.
+
+    The fold that collapses those repeats into one entry is
+    ``retrieved_finding_urls``; this is the per-step contract it folds.
+    """
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                "document_reader",
+                {"source": "https://www.b.test/two?x=1#frag", "chunks": ["chunk"]},
+            ),
+            _tool_step(
+                "web_scraper",
+                {"url": "https://b.test/two?x=1", "text": "Read body."},
+            ),
+        ],
+        iterations=2,
+        tool_calls=2,
     )
+
+    assert [read_evidence_urls(step) for step in run.steps] == [
+        ("https://b.test/two?x=1",),
+        ("https://b.test/two?x=1",),
+    ]
 
 
 def test_a_native_final_answer_becomes_an_internal_finish_decision() -> None:
