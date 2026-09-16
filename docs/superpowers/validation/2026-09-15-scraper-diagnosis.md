@@ -68,15 +68,34 @@ is closed, and this is the measurement that never existed before:
 The CLI's own words: *"Research completed with limitations: the refinement
 budget was exhausted before the critic accepted the report."*
 
-**This falsifies the simplest hypothesis for Q1's shortfall.** The leading
-explanation had been that Q1 failed because it ran out of budget: the researcher
-hit its per-loop tool budget repeatedly, so subtopics were cut off mid-gathering.
-This run had *more* headroom on every axis — 251 of 700 DeepSeek attempts, 352
-of 450 Tavily, three refinement passes, 749k tokens against 703k — and it covered
-**fewer** topics and scored **worse** with the critic. More searching and more
-passes did not buy coverage. Whatever limits coverage here, **budget quantity is
-not it**, and Task 18's "raise the tool budget" fix is therefore aimed at
-something this evidence does not support as the primary cause.
+**Correction to an over-claim I made when this run first reported: the leading
+hypothesis is NOT falsified — it was not tested.** I initially wrote that this run
+falsified the budget-starvation explanation because it had "more headroom on every
+axis". That conflated **two different budgets**, and only one of them changed:
+
+| Budget | Q1 | This run | Changed? |
+| --- | --- | --- | --- |
+| **Transport** attempts (`RequestBudget`) | not enforced, not observable | DeepSeek 251/700, Tavily 352/450 | **new** — and it never bound |
+| **Per-ReAct-loop tool budget** (`agents.tool_budget`) | 10 | **10** | **unchanged** |
+
+`config.yaml` is byte-identical to the base commit, so the per-loop tool budget
+that Task 18 proposes to raise was **exactly the same in both runs**. The extra
+headroom this run had was in the *transport* ceiling — a bound that was never
+approached, and was never the proposed fix. **So Task 18's hypothesis is neither
+confirmed nor refuted by this run; it remains live and untested.**
+
+What the run *does* show is that **per-loop exhaustion is still happening**: the
+finished log's summary carries many `agent_tool_budget_exhausted` warnings, several
+reporting 1-4 provider-requested tool calls dropped at once, across the researcher,
+fact-checker and critic. The provider keeps asking for more calls than one loop
+allows. With `web_scraper` at only 17 attempts against 352 searches, dropped calls
+are a plausible route by which reads never happen — which is precisely the
+mechanism Task 18 targets.
+
+The conclusion that survives is narrower and still useful: **the new transport
+ceiling was not the constraint** (it never bound), and the run produced *worse*
+coverage and a *worse* critic score than Q1 on identical agent configuration. The
+untested variable remains the per-loop tool budget.
 
 Tool activity: `web_search` 352 calls (8 failed); `web_scraper` **17 calls, 8
 failed (47%)** — improved from Q1's 14 of 24 (58%), still high; `document_reader`
@@ -176,10 +195,17 @@ five sources it did score are strong (IEA 0.84, LBNL 0.80, RFF 0.74) — **the p
 finds quality material and then cannot convert it into enough independently
 corroborated, citable sources to cover six topics.**
 
-**Actionable conclusion:** the two live-observed constraints are the Tavily plan
-quota and the fact that the Researcher read only ~17 pages while searching 352 times.
-Both point at sourcing and reading effort — not at `web_scraper`'s code, and not at
-the size of the tool budget.
+**Actionable conclusion.** Three things are live, in priority order:
+
+1. **The Tavily plan quota** is an operational constraint that must be treated as a
+   ceiling and checked before each run. It silently costs search capacity.
+2. **Per-loop tool-budget exhaustion is still occurring** and is the untested
+   variable. With only 17 reads against 352 searches and 1-4 provider-requested
+   calls dropped per exhaustion event, dropped *reads* are a plausible mechanism for
+   the coverage shortfall. This is exactly what Task 18 proposes to change, and the
+   next run is the first that would actually test it.
+3. **`web_scraper` needs no code change** — its 8 failures are host HTTP statuses,
+   i.e. legitimate outcomes (§4.2).
 
 ## 5. A correction to my own mid-run reading
 
