@@ -7,31 +7,48 @@
 > scoped review is performed in the dedicated regular ChatGPT
 > `GPT-5.6 Sol / High` review chat after the reviewed commit is pushed.
 
-**Goal:** Preserve the failed Q1 canary as durable evidence, expose safe
-diagnostics for the failures it revealed, and enforce run-scoped network
-attempt ceilings at the real DeepSeek, OpenAI, and Tavily transport boundaries
-before any separately authorized paid rerun.
+**Goal:** Make the CLI pipeline produce a report that clears every release
+criterion in the spec's §4 **in a single live run** — terminal `accepted`
+quality, coverage ≥ 0.80 with every planned topic accounted for, zero duplicate
+claims/source rows/unresolved citations, every cited source scored and every
+settled point claim-linked, all verification passages provenance-bearing and
+independently published, reader report ≤ 8,000 words, backmatter ≤ 35%, no
+unexplained agent error, whole-report judge ≥ 0.80, and the CLI summary exactly
+matching artifacts and state.
 
-**Architecture:** Add one thread-safe `RequestBudget` per production research
-runtime in a neutral top-level module. Inject that exact instance into the
-configured chat provider and Tavily search tool. Reserve an attempt immediately
-before each SDK/client call, including repo-owned retries and structured repair
-requests. A typed limit error bypasses recoverable tool handling and becomes an
-enumerated halting graph error. Provider-reported token usage is accumulated
-only after a response exists. The CLI receives a separate safe observer stream
-for live budget updates and carries immutable terminal snapshots in
-`ResearchOutcome`.
+**Architecture:** Three sequential phases on one branch.
+
+- **Phase 1 — Legibility and bounded spend (Tasks 1–11, unchanged).** Failures
+  carry safe, bounded, countable diagnostics; one thread-safe `RequestBudget` per
+  production runtime reserves every transport attempt at the real provider and
+  search boundaries, so spend cannot silently overrun; the CLI gains
+  request-scoped controls and safe observer output.
+- **Phase 2 — Evidence and reliability (Tasks 13–19, new).** Close the remaining
+  telemetry leaks, observe the real scraper failure classes, then fix
+  reliability, per-agent reasoning effort, agent tool budgets and evidence
+  volume — each guided by evidence rather than assumption.
+- **Phase 3 — Convergence (Tasks 20–21, new).** Iterate predeclared canaries,
+  each evaluated against all ten criteria, until one run clears them; any
+  shortfall yields a diagnosis and an amendment, never an ad-hoc tuning edit.
+
+Phase 1 is the foundation, not the goal: a run that is honest but partial is
+still partial. Phases 2 and 3 are where the report itself becomes good.
 
 **Tech stack:** Python 3.11+, asyncio, Pydantic v2, OpenAI-compatible provider
 SDKs, Tavily, httpx, LangGraph, argparse, pytest/pytest-asyncio, Ruff.
 
 **Authority:**
 
+- `docs/superpowers/specs/2026-09-15-production-ready-reports-design.md` — the
+  design this plan implements, and the binding authority for the goal, the
+  release criteria, the phase structure, the constraint changes and the
+  authorization below.
 - `docs/superpowers/specs/2026-09-15-cli-live-canary-amendment-design.md`
 - Amends `docs/superpowers/plans/2026-09-14-cli-report-quality-and-agent-output-integrity.md`
 - Starting branch: `codex/cross-agent-planner-fix-parity`
 - Starting local and remote HEAD: `ab79f7a8b309f5ffd4905f64d71583d28c412912`
 - Spent Q1 candidate: `7ef89ef057810464857413ea9078ff06b73814d9`
+- Current head at this amendment: `325c17f56087390c3728c3f3ff36b0f0921bb47e`
 
 The starting HEAD is the plan-authoring base. Committing and pushing this plan
 advances the branch before Task 1; Task 1 therefore requires local/remote
@@ -81,11 +98,22 @@ This tracked plan corrects these inconsistencies from that draft:
   rebase, or reset. Stage only the exact paths listed for the current task.
 - `output/` and `.superpowers/` remain ignored audit/scratch locations. Never
   force-add them.
-- No DeepSeek, OpenAI, Tavily, scraper/network, judge, LangSmith, or other live
-  external call is authorized by this plan. Tests use offline fakes only.
-- Do not change production reasoning effort (`high`), `agents.tool_budget`
-  (`10`), `llm.timeout` (`60.0`), scraper `timeout_s` (`10.0`), or scraper
-  retry policy.
+- **Live calls are permitted ONLY inside a predeclared canary task** — Tasks 15
+  and 20 — under that task's own declared request ceilings and within the
+  authorization recorded below. Every other task in this plan stays fully
+  offline and uses offline fakes only. No DeepSeek, OpenAI, Tavily,
+  scraper/network, judge, or LangSmith call is authorized anywhere else.
+- **Configuration changes are permitted where the task carries the evidence for
+  the specific change.** This replaces the earlier blanket freeze, which was
+  correct for a measurement-only plan and would now forbid this plan's own
+  success. Now in scope, for the named task only: production reasoning effort
+  (Task 17); `agents.tool_budget` (Task 18); `llm.timeout` and scraper
+  `timeout_s` (Task 16, and only if the Task 15 diagnosis implicates them); the
+  scraper retry policy (Task 16, and only if the diagnosis specifically
+  implicates it). Every such change must preserve fail-closed behaviour, the
+  provider retry and repair contracts, error translation, response clearing, and
+  traceback safety, and must be justified in the task report by the evidence
+  that motivated it.
 - Tool invocations and transport attempts are different units.
   `web_search=365` is a tool-invocation count, not a proven Tavily request
   count.
@@ -117,6 +145,29 @@ This tracked plan corrects these inconsistencies from that draft:
      re-review;
   6. when review is clean, push once more and record local/remote SHA equality.
 - Do not begin the next task with an unresolved Critical or Important finding.
+
+## Live authorization
+
+Granted 2026-09-15 by the human, and the only spend this plan may make:
+
+- **~10 live iteration runs inside a US$100 currency ceiling.**
+- **Each run is predeclared before it happens**, recording: candidate SHA, the
+  exact question, repetitions, the DeepSeek / OpenAI / Tavily request ceilings
+  and stop fraction, stop conditions, artifact locations, and credential source.
+  A run that was not predeclared does not happen.
+- **The provider-side spend cap is the enforced bound**; the per-run request
+  ceilings are the operational bound, enforced by the Task 5 `RequestBudget` at
+  the transport boundaries.
+- **LangSmith tracing stays ON** (`langsmith.tracing_enabled: true`, project
+  `deep-research-dev`), explicitly authorized. Traces carry report and prompt
+  content to the configured endpoint; credentials are never emitted.
+- **No criterion in the spec's §4 may be waived, no threshold lowered, and no
+  fixture adjusted to reduce spend or make a run appear to pass.** If the bar
+  cannot be cleared within this budget, the deliverable is an explicit partial
+  result naming the shortfall and the evidence for it.
+- The **provider configuration is fixed for the whole campaign** except where
+  Tasks 16–19 change it on evidence: model `deepseek-v4-flash`, thinking mode
+  enabled, and the per-agent reasoning effort Task 17 establishes.
 
 ## Fixed interfaces
 
@@ -184,6 +235,8 @@ attempts but never block.
 
 ### Task 1: Track the spent Q1 as a failed validation
 
+**Status:** complete — reviewed clean, pushed at `21df64c349093f65f8a8219222f7b198386c1689`.
+
 **Files:**
 
 - Create: `docs/superpowers/validation/2026-09-15-cli-q1-failed-validation.md`
@@ -241,6 +294,8 @@ attempts but never block.
 
 ### Task 2: Preserve safe `PlanningError.problems`
 
+**Status:** complete — reviewed clean, pushed at `e772966c70e2e88f37b71ad7c24455694bb54787`.
+
 **Files:**
 
 - Modify: `src/deep_research/graph/errors.py`
@@ -275,6 +330,8 @@ attempts but never block.
 ---
 
 ### Task 3: Classify scraper failures without changing transport behavior
+
+**Status:** complete — reviewed clean after one fix round, pushed at `9252263906eeba470e074c52d30c342f1e327328`. The fix round made the producer **omit** `status_code` when it falls outside `100..599`; Task 4 depends on that.
 
 **Files:**
 
@@ -643,51 +700,326 @@ attempts but never block.
   scoped review dispositions, offline suite/Ruff/compileall/diff results, and
   controlled campaign result.
 - [ ] **STOP.** Return this packet to the user for the user-owned whole-branch
-  review. Do not dispatch that broad review and do not start Task 12 yet.
+  review. Do not dispatch that broad review and do not start Task 20 yet.
 
 ---
 
-### Task 12: After a clean user-owned review, draft the next blocked canary
+### Task 12 — RETIRED (superseded by Task 20)
 
-**Precondition:** the user has returned or explicitly authorized a clean broad
-review of the exact pushed Task 11 head. Any code change after that review
-invalidates the precondition and requires affected gates/review again.
+The former Task 12 drafted a single next canary after one clean review. Under
+this plan's goal the canary is no longer a one-off to be drafted once: Task 20
+iterates predeclared canaries and re-drafts on every shortfall. Task 12 is
+retired rather than renumbered so that references inside Tasks 1–11, which are
+already reviewed, stay stable. Its content is preserved here for reference —
+the predeclaration shape it describes is reused by Tasks 15 and 20:
+
+- A draft predeclaration beginning exactly
+  `Status: DRAFT — BLOCKED — NO PAID RUN AUTHORIZED` recorded the reviewed parent
+  SHA, the then-frozen configuration, the separate tool-invocation/transport
+  units, the post-response token caveat, and a proposed request-scoped budget
+  (DeepSeek ceiling 240 / stop fraction 0.90 / effective 216; Tavily ceiling 330
+  / 0.90 / effective 297). That budget shape is superseded by the per-run
+  predeclarations Tasks 15 and 20 require, which must be derived from measured
+  actuals rather than from the arithmetic that produced the spent Q1 ceilings.
+
+---
+
+### Task 13: Close the `web_search` telemetry leak
 
 **Files:**
 
-- Create: `docs/superpowers/validation/2026-09-15-cli-live-canary-predeclaration-draft.md`
+- Modify: `src/deep_research/tools/web_search.py`
+- Modify: `tests/test_tools/test_web_search.py`
 
-- [ ] RED path assertion.
-- [ ] Write a draft beginning exactly:
+**Interfaces:** consumes the bounded-detail contract Task 3 established
+(`attempts` 1..3, `retries` 0..2, `status_code` 100..599 when in range and
+otherwise omitted, `content_type` a lower-case ASCII media type ≤ 64 characters
+or the literal `unknown`).
 
-  `Status: DRAFT — BLOCKED — NO PAID RUN AUTHORIZED`
+**Why:** `web_search.py:174-182` holds a helper **AST-verified byte-identical**
+to the pre-fix `web_scraper` helper. It publishes `str(error)` as the public
+failure message, and its details lack `retries`. Same defect class as Task 3,
+still live in a sibling module.
 
-- [ ] Record the reviewed parent SHA and results; unchanged production high
-  reasoning, tool budget 10, LLM timeout 60.0, scraper timeout 10.0/retry
-  policy; separate tool-invocation/transport units; post-response token caveat;
-  exact Q1 question/options from the spent audit; and this proposed future
-  request-scoped budget:
+- [ ] RED: a failed `web_search` whose underlying exception carries a hostile
+  sentinel must publish static project text, not the exception message, and its
+  details must contain only the bounded keys. Include a timeout, an HTTP status
+  (in range and out of range), and a malformed content type.
+- [ ] RED:
 
-  - DeepSeek ceiling 240, stop fraction 0.90, effective 216;
-  - OpenAI ceiling omitted because the Q1 provider is DeepSeek;
-  - Tavily ceiling 330, stop fraction 0.90, effective 297.
+  ```powershell
+  python -m pytest tests/test_tools/test_web_search.py -q -k "bounded or classification"
+  ```
 
-- [ ] Record—but do not execute—the future command with:
-  `--verbose --require-quality --deepseek-attempt-ceiling 240
-  --tavily-attempt-ceiling 330 --request-stop-fraction 0.90`.
-- [ ] State explicitly: Q1 blocked pending separate paid-run authorization;
-  Q2/Q3 blocked pending a separately authorized Q1 passing every declared
-  quality/integrity/judge gate. Implementation completion, review, or this
-  document is not authorization for any external call.
-- [ ] Commit `docs(validation): draft next CLI live canary`, push, obtain
-  action-time confirmation for its scoped Sol/High documentation review, fix
-  and re-review if needed, then push the clean reviewed commit again.
-- [ ] Assert local/remote SHA equality, both validation documents tracked, and
-  only the two known unrelated untracked paths remain.
-- [ ] Stop and return the reviewed implementation HEAD, all task-review
-  dispositions, offline gate/campaign results, and the predeclaration path.
+- [ ] Replace the pre-fix helper's message and detail construction with Task 3's
+  contract. Revalidate types and bounds at the producer rather than trusting the
+  caller. **Preserve every retry decision and call count.**
+- [ ] GREEN:
+
+  ```powershell
+  python -m pytest tests/test_tools/test_web_search.py tests/test_tools/test_base.py -q
+  python -m ruff check src/deep_research/tools/web_search.py tests/test_tools/test_web_search.py
+  git diff --check
+  ```
+
+- [ ] Commit: `fix(tools): bound web_search failure diagnostics`
+
+---
+
+### Task 14: Keep raw exception text out of public tool errors
+
+**Files:**
+
+- Modify: `src/deep_research/tools/base.py`
+- Modify: `tests/test_tools/test_base.py`
+
+**Why:** `base.py:119-127,134` builds
+`ToolExecutionError(str(error) or type(error).__name__, ...)` for **any**
+non-`ToolExecutionError` and publishes it. `agents/react.py:53` folds that
+message into the model-visible observation summary. So every tool that lets a
+raw exception escape leaks exception text — a per-tool fix in Tasks 3 and 13
+closes instances, this closes the **class**.
+
+- [ ] RED: a tool whose `execute` raises a hostile non-`ToolExecutionError`
+  must not publish its message; assert the public `ToolError.message` is static
+  project text, the failure stays classifiable via its enumerated type, and a
+  serialized `ToolResult` contains no sentinel. Cover an arbitrary custom tool,
+  not only the two real ones.
+- [ ] RED:
+
+  ```powershell
+  python -m pytest tests/test_tools/test_base.py -q -k "hostile or static"
+  ```
+
+- [ ] Publish static project text plus the existing enumerated error type. Keep
+  the failure typed and recoverable exactly as today; change only what carries
+  text into the public field.
+- [ ] GREEN:
+
+  ```powershell
+  python -m pytest tests/test_tools/test_base.py tests/test_tools/test_web_scraper.py tests/test_tools/test_web_search.py -q
+  python -m ruff check src/deep_research/tools/base.py tests/test_tools/test_base.py
+  git diff --check
+  ```
+
+- [ ] Commit: `fix(tools): keep raw exception text out of public errors`
+
+---
+
+### Task 15: Scraper-diagnosis canary — EVIDENCE ONLY, NO PRODUCTION CHANGE
+
+**Files:**
+
+- Create: `docs/superpowers/validation/2026-09-15-scraper-diagnosis-predeclaration.md`
+- Create: `docs/superpowers/validation/YYYY-MM-DD-scraper-diagnosis.md`
+
+**Why:** a live canary failed **14 of 24 `web_scraper` calls (58%)** and the
+cause is unknown, because the failure reason was never populated before Task 3
+shipped its classification and Task 4 projected it into agent records. This task
+buys that knowledge. **It changes no production code.** Its outcome decides
+Task 16's content.
+
+- [ ] Predeclare the run in the predeclaration file: candidate SHA, the exact
+  question (reuse the spent Q1 question for comparability), repetitions,
+  DeepSeek / OpenAI / Tavily attempt ceilings and stop fraction, stop
+  conditions, artifact locations, credential source. Verify the offline gate is
+  green at the candidate head first.
+- [ ] Run it **once**, under the predeclared ceilings enforced by the Task 5/9
+  `RequestBudget`. Do not rerun after a failed gate.
+- [ ] Extract the observed `web_scraper` failure classes with counts from the
+  run's agent records, and attribute them across the whole run rather than one
+  pass.
+- [ ] Write the diagnosis: each observed failure class, its count, and what it
+  implies. **State explicitly whether the failures are a defect at all.** Dead
+  links returning 404, or robots denials on sources the Researcher chose, are
+  legitimate outcomes rather than bugs, and reporting that is a valid result
+  that reduces Task 16 to its finding.
+- [ ] Record in the diagnosis the run's token and request actuals against its
+  declared ceilings, and whether any ceiling was approached.
+- [ ] Commit: `docs(validation): record scraper failure diagnosis`
+
+---
+
+### Task 16: Fix scraper reliability, guided by Task 15
+
+**Files:** determined by Task 15. Candidate shape:
+
+- Modify: `src/deep_research/tools/web_scraper.py` (transport timeouts, retry
+  policy — only if implicated)
+- Modify: `src/deep_research/agents/researcher.py` (only if the diagnosis shows
+  a sourcing problem rather than a scraper problem)
+- Test: `tests/test_tools/test_web_scraper.py`, plus the affected agent tests
+
+**Decision procedure — the diagnosis selects the branch, not preference:**
+
+| If Task 15 shows | Then fix | Where |
+| --- | --- | --- |
+| Per-request timeouts against slow hosts | `httpx` timeout configuration; **not** `scraper timeout_s` alone | `web_scraper.py` |
+| Robots denying the chosen sources | a **sourcing** problem: choose sources that permit reading | `researcher.py` |
+| Content-type rejections | source-classification problem | `web_scraper.py` / Researchers's source choice |
+| Failures are not a defect | no code change; the task's deliverable is that finding | — |
+
+- [ ] RED for whichever branch the diagnosis selects, with the failing assertion
+  naming the observed class.
+- [ ] Implement the minimal fix for that branch. **Preserve every retry decision
+  and call count unless Task 15 specifically implicates the retry policy**, and
+  state in the report which branch was taken and why.
+- [ ] GREEN plus re-characterization of the pre-existing retry/timeout tests, so
+  a transport change is provably not a behavioural accident.
+- [ ] Commit: `fix(tools): improve scraper reliability` (or
+  `fix(researcher): prefer readable sources` for the sourcing branch)
+
+---
+
+### Task 17: Per-agent reasoning effort in production
+
+**Files:**
+
+- Modify: `src/deep_research/utils/config.py`
+- Modify: `src/deep_research/runtime/assembly.py` (or the provider-construction
+  seam it uses)
+- Modify: `config.yaml`
+- Test: `tests/test_config.py`, plus the assembly/provider tests
+
+**Why:** production exposes one global `llm.reasoning_effort`. The approved
+cutover baseline is per-agent — `planner`, `fact_checker`, `synthesizer`,
+`critic` at `max`; `researcher`, `source_evaluator` at `high` — and today it
+exists only in `evaluation.target_reasoning_effort_overrides`, which applies to
+**evaluation targets**, not production.
+
+**⚠ Known risk, must be tested rather than assumed:** the controller's earlier
+*global* `max` override broke the planner outright, producing
+`graph_planning_failed` on every run. `high`-for-all works. Raising only some
+agents to `max` is therefore **untested** at that seam and must be validated
+per-agent, not assumed to be a strict improvement.
+
+- [ ] RED: each of the six agents resolves its own configured effort, and an
+  unset override falls back to the global value.
+- [ ] Implement per-agent overrides mirroring the evaluation config's shape,
+  applied where each agent's provider call is constructed.
+- [ ] Validate on evidence, not on default: if any agent regresses under `max`,
+  record it and keep that agent at `high` rather than shipping the split.
+- [ ] Commit: `feat(config): allow per-agent reasoning effort`
+
+---
+
+### Task 18: Right-size agent tool budgets
+
+**Files:**
+
+- Modify: `src/deep_research/utils/config.py`
+- Modify: `config.yaml`
+- Modify: the agent construction seam that reads the budget
+- Test: `tests/test_config.py` plus the affected agent tests
+
+**Why:** `agent_tool_budget_exhausted` fired **51 times in the researcher, 34 in
+the fact_checker and 8 in the critic**, repeatedly with up to five
+provider-requested calls dropped at once. The provider consistently wants more
+work than `agents.tool_budget: 10` allows per ReAct loop, and this is the most
+likely direct cause of the canary's 67% coverage.
+
+- [ ] Decide, on evidence and not preference, between a **global** increase and
+  **per-agent** budgets. The distribution is dominated by the researcher (51 of
+  93), which argues for per-agent; state the reasoning in the report.
+- [ ] RED: the configured budget is what each agent's loop actually enforces,
+  for both the global and the per-agent shape.
+- [ ] Implement, with the value(s) justified in the report by the Task 15
+  diagnosis plus the exhaustion distribution.
+- [ ] Commit: `feat(agents): right-size agent tool budgets`
+
+---
+
+### Task 19: Evidence-volume experiments
+
+**Files:** `config.yaml`, `src/deep_research/utils/config.py`, and the tests for
+whichever knob each experiment changes.
+
+**Why:** the canary produced only **4 cited sources and 2 verified claims**.
+Whichever of Tasks 16–18 do not close the coverage gap, these do.
+
+**One at a time.** Each experiment is its own predeclared canary, evaluated
+against its own acceptance criterion, then kept or reverted — never bundled, so
+a change can be attributed. The criteria are carried verbatim from the prior
+plan:
+
+| Experiment | Current | Candidate | Accept only if |
+| --- | --- | --- | --- |
+| Tavily search depth | `basic` | `advanced` | primary-source retrieval and coverage improve enough to justify latency/cost |
+| Tavily results | 5 | 8 | source quality/coverage improves without increasing unused-source noise |
+| Research observation summary | 200 chars | 600 chars | tool-loop completion and source-read selection improve without prompt overflow |
+| Graph refinement budget | 3 | unchanged first | increase only if targeted refinements close gaps and cost per accepted report stays acceptable |
+
+- [ ] For each experiment, in this order: predeclare the canary with its
+  ceilings; run it once; compare the measured result against that row's
+  acceptance criterion; **keep the change only if the criterion is met**,
+  otherwise revert it and record why.
+- [ ] After each accepted change, confirm the CLI summary still matches state
+  and that `--require-quality` still returns the correct exit code for that
+  run's terminal quality, before moving to the next experiment.
+- [ ] Commit per accepted change: `feat(config): <the accepted experiment>`
+
+---
+
+### Task 20: Iterate predeclared canaries to the bar
+
+**Files:**
+
+- Create: `docs/superpowers/validation/YYYY-MM-DD-cli-canary-<n>-predeclaration.md`
+- Create: `docs/superpowers/validation/YYYY-MM-DD-cli-canary-<n>-results.md`
+
+**Why:** this is the convergence loop. Everything before it makes a run honest,
+bounded, and well-informed; this is where one run finally clears all ten
+criteria.
+
+- [ ] Predeclare each iteration with its own ceilings, derived from the previous
+  run's **measured** actuals rather than from arithmetic.
+- [ ] Evaluate each run against **all ten** criteria in the spec's §4, recording
+  each criterion's measured value, not a pass/fail only.
+- [ ] Every shortfall produces a **diagnosis and an amendment** — never an
+  ad-hoc prompt edit, threshold change, or fixture adjustment to suit the gate.
+- [ ] **Stopping rules — the loop ends when any holds:**
+  1. one run clears all ten criteria;
+  2. the ~10-run / US$100 authorization is exhausted;
+  3. two consecutive runs fail the same criterion — then produce a documented
+     diagnosis and a proposed amendment instead of another run.
+- [ ] **Honest-failure path:** if coverage cannot reach 0.80 within budget, the
+  deliverable is an explicit partial result naming the shortfall and the
+  evidence for it. **No criterion may be relaxed, no threshold lowered, and no
+  fixture adjusted to make a run appear to pass.**
+- [ ] Commit each iteration's predeclaration and results:
+  `docs(validation): record canary iteration <n>`
+
+---
+
+### Task 21: Final validation record and review packet
+
+**Files:**
+
+- Create: `docs/superpowers/validation/YYYY-MM-DD-cli-report-quality-live-validation.md`
+- Update: `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`
+
+**Distinct from Task 11.** Task 11 gates the *amendment* phase: offline gate plus
+an exact-head packet for the user-owned broad review. This task is the **final**
+record for the **converged** SHA. Different SHAs, different scopes.
+
+- [ ] Write the validation record for the converged SHA: candidate SHA, the
+  winning run's session id, both artifact paths and their hashes, token and
+  request actuals against the declared ceilings, and each of the ten criteria
+  with its measured value.
+- [ ] **Attest only to criteria actually met.** If the loop ended on rule 2 or 3,
+  the record states which criteria were met, which were not, and the evidence
+  for each shortfall. A validation record that overstates is worse than none.
+- [ ] Run the complete offline gate at the recorded SHA and record exact counts.
+- [ ] Prepare the broad-review packet: base/head SHAs, commit list, diff stat,
+  every task-review disposition, the offline gate results, the controlled
+  campaign result, and the canary record.
+- [ ] Commit: `docs(validation): record production-ready report validation`
+- [ ] **STOP.** Return the packet to the user for the user-owned whole-branch
+  review. Do not dispatch that review.
 
 ## Final stop condition
 
-Do not run Q1, Q2, or Q3. A new paid Q1 requires a separate, explicit user
-authorization after Task 12's handoff.
+The live authorization in this plan is limited to the predeclared canaries of
+Tasks 15, 19 and 20, within ~10 runs and a US$100 currency ceiling. Nothing else
+in this plan may make an external call. When Task 21 stops, the plan is complete
+and any further paid run requires a new, explicit user authorization.
