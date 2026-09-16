@@ -201,11 +201,17 @@ async def run_research(
         settings, session_id=effective_session_id
     )
 
-    # The shared run budget belongs to the runtime assembly. Read it
-    # defensively, so a builder that carries none — an injected runtime from
-    # before the budget existed — still produces an outcome.
-    budget = getattr(runtime, "request_budget", None)
-    observing = budget is not None and request_budget_handler is not None
+    # The shared run budget belongs to the runtime assembly, where it is a
+    # required field: ``build_runtime`` always constructs exactly one so the
+    # provider transports and the search tool reserve against the same
+    # counters. It is therefore read as a required attribute rather than
+    # defensively. A ``getattr(..., None)`` fallback would let a builder that
+    # carries no budget — or one that names it differently — run with declared
+    # ceilings enforced while the summary reported no budget section at all,
+    # which is exactly the "the summary matches the run" property this
+    # reporting exists to guarantee. Failing loudly is the honest failure.
+    budget = runtime.request_budget
+    observing = request_budget_handler is not None
     if observing:
         budget.set_observer(request_budget_handler)
     try:
@@ -246,7 +252,7 @@ async def run_research(
                 memory_context=memory_context,
                 event_handler=event_handler,
             )
-        snapshots = () if budget is None else budget.snapshots()
+        snapshots = budget.snapshots()
     finally:
         if observing:
             budget.set_observer(None)

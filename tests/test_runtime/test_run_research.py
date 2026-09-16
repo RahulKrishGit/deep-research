@@ -621,3 +621,34 @@ async def test_run_research_applies_request_budget_config_overrides(
     )
 
     assert observed == {"tavily": 11, "deepseek": None, "stop_fraction": 0.5}
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_without_a_budget_fails_loudly(config_file, tracker) -> None:
+    """A builder that carries no budget is a defect, not a quiet degradation.
+
+    ``ResearchRuntime.request_budget`` is a required field, and every declared
+    ceiling is enforced through it. Reading it defensively would let a runtime
+    that carries no budget — or one that names it differently — complete a run
+    with its ceilings enforced while the terminal summary reported no budget
+    section at all, which is exactly the "the summary matches the run"
+    property the budget reporting exists to guarantee. Raising here keeps that
+    contradiction impossible instead of merely unlikely.
+    """
+
+    async def builder(settings, *, session_id, **_ignored):
+        stand_in = budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=RequestBudget(),
+        )
+        del stand_in.request_budget
+        return stand_in
+
+    with pytest.raises(AttributeError):
+        await run_research(
+            QUESTION,
+            config_path=config_file,
+            runtime_builder=builder,
+        )

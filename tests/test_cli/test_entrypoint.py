@@ -763,6 +763,41 @@ def test_the_request_budget_stream_serializes_worker_thread_writes() -> None:
     assert all(line.endswith(")") for line in lines)
 
 
+def test_the_request_budget_stream_renders_every_update_kind() -> None:
+    """Every kind the budget publishes has its own line, refusal included.
+
+    ``RequestBudget._notify`` catches ``Exception`` from an observer by design,
+    so a label that went missing would raise ``KeyError`` inside the handler
+    and be swallowed — the run would continue with that line silently absent
+    rather than failing. The line most worth protecting is the refusal, which
+    is the only place a ceiling is visible at the moment it bites. Asserting
+    all three kinds here means ``BUDGET_UPDATE_LABELS`` cannot lose an entry
+    without the suite noticing.
+    """
+    from deep_research.cli import BUDGET_UPDATE_LABELS, RequestBudgetStream
+
+    stream = io.StringIO()
+    handler = RequestBudgetStream(stream, verbose=True)
+    snapshot = budget_snapshot(
+        "tavily", attempts=11, ceiling=11, effective_limit=11
+    )
+
+    for kind in ("attempt_reserved", "tokens_reported", "attempt_blocked"):
+        handler(RequestBudgetUpdate(kind=kind, snapshot=snapshot))  # type: ignore[arg-type]
+
+    lines = [line for line in stream.getvalue().splitlines() if line]
+
+    assert set(BUDGET_UPDATE_LABELS) == {
+        "attempt_reserved",
+        "tokens_reported",
+        "attempt_blocked",
+    }
+    assert len(lines) == 3
+    assert all(line.startswith("  request budget: tavily") for line in lines)
+    assert "tokens reported post-response" in lines[1]
+    assert "attempt refused at the declared ceiling" in lines[2]
+
+
 def test_a_request_limit_graph_failure_exits_three_before_require_quality() -> None:
     """Exit 3 outranks the opt-in quality exit: the run did not finish."""
     runner = RecordingRunner(
