@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 import httpx
 import pdfplumber
 
+from deep_research.agents.evidence import normalized_content_sha256
 from deep_research.observability import Tracker
 from deep_research.tools.base import (
     BaseTool,
@@ -43,6 +44,13 @@ _CONTENT_TYPE_FORMATS = {
     "text/plain": "text",
 }
 
+# The published value of ``content_sha256`` when the reader cannot hash a
+# complete document. It is deliberately not a digest: a partial extraction
+# hashed as if it were the whole work would give two different documents one
+# identity, and every consumer of this payload must treat the marker as
+# "no usable content hash" instead.
+_INCOMPLETE_HASH = "incomplete"
+
 
 class DocumentReaderTool(BaseTool):
     """Read supported local documents or HTTP(S) document responses."""
@@ -53,9 +61,13 @@ class DocumentReaderTool(BaseTool):
     required_arguments = ("source",)
     output_schema = {
         "source": "string",
+        "requested_source": "string",
+        "resolved_source": "string",
         "format": "string",
         "chunks": "array",
         "failures": "array",
+        "content_sha256": "string",
+        "extraction_complete": "boolean",
     }
 
     def __init__(
@@ -114,8 +126,11 @@ class DocumentReaderTool(BaseTool):
             )
         source = source.strip()
         content_type = ""
+        resolved_source = source
         if _is_remote(source):
-            payload, content_type = await self._read_remote(context, source)
+            payload, content_type, resolved_source = await self._read_remote(
+                context, source
+            )
         else:
             payload = Path(source).read_bytes()
 
@@ -131,14 +146,18 @@ class DocumentReaderTool(BaseTool):
                 details={"suffix": suffix, "content_type": content_type},
             )
 
-        chunks, failures = _extract(
+        chunks, failures, extraction_complete = _extract(
             document_format, payload, self._chunk_chars, self._csv_rows_per_chunk
         )
         data = {
             "source": source,
+            "requested_source": source,
+            "resolved_source": resolved_source,
             "format": document_format,
             "chunks": chunks,
             "failures": failures,
+            "content_sha256": _document_sha256(chunks, extraction_complete),
+            "extraction_complete": extraction_complete,
         }
         if not chunks:
             raise ToolExecutionError(
@@ -157,13 +176,13 @@ class DocumentReaderTool(BaseTool):
             metadata={
                 "format": document_format,
                 "chunk_count": len(chunks),
-                "partial": bool(failures),
+                "partial": bool(failures) or not extraction_complete,
             },
         )
 
     async def _read_remote(
         self, context: ToolCallContext, source: str
-    ) -> tuple[bytes, str]:
+    ) -> tuple[bytes, str, str]:
         if self._client is not None:
             return await self._get_remote(context, self._client, source)
         async with httpx.AsyncClient(
@@ -173,14 +192,18 @@ class DocumentReaderTool(BaseTool):
 
     async def _get_remote(
         self, context: ToolCallContext, client: AsyncHttpClient, source: str
-    ) -> tuple[bytes, str]:
+    ) -> tuple[bytes, str, str]:
         for attempt in range(self._max_retries + 1):
             try:
                 response = await client.get(
                     source, timeout=self._timeout_s, follow_redirects=True
                 )
                 response.raise_for_status()
-                return response.content, response.headers.get("content-type", "")
+                return (
+                    response.content,
+                    response.headers.get("content-type", ""),
+                    _resolved_source(response, source),
+                )
             except (
                 asyncio.TimeoutError,
                 httpx.TimeoutException,
@@ -213,6 +236,40 @@ def _is_remote(source: str) -> bool:
     return urlsplit(source).scheme.lower() in {"http", "https"}
 
 
+def _resolved_source(response: httpx.Response, requested: str) -> str:
+    """The source the bytes actually came from, after any redirect.
+
+    A mirror or a redirect target must stay visible in the read's provenance;
+    a transport double with no request attached has no final URL to report,
+    so the requested source stands.
+    """
+    try:
+        resolved = str(response.url)
+    except RuntimeError:
+        return requested
+    return resolved or requested
+
+
+def _document_text(chunks: list[dict[str, Any]]) -> str:
+    """The complete extracted text of one document, in reading order."""
+    return "".join(str(chunk.get("text", "")) for chunk in chunks)
+
+
+def _document_sha256(
+    chunks: list[dict[str, Any]], extraction_complete: bool
+) -> str:
+    """The content hash of ``chunks``, or a placeholder when unusable.
+
+    A windowed extraction keeps only part of the document, and pages whose
+    text could not be read are missing from it entirely: neither may be
+    hashed as if it identified the complete work, so both report the same
+    explicit marker instead of a digest that would look authoritative.
+    """
+    if not chunks or not extraction_complete:
+        return _INCOMPLETE_HASH
+    return normalized_content_sha256(_document_text(chunks))
+
+
 def _source_suffix(source: str) -> str:
     return Path(urlsplit(source).path if _is_remote(source) else source).suffix.lower()
 
@@ -240,9 +297,15 @@ def _extract(
     payload: bytes,
     chunk_chars: int,
     csv_rows_per_chunk: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    """Return ``chunks``, ``failures``, and whether the extraction is complete.
+
+    Completeness is a property of the *document*, not of the transport: text,
+    JSON, and CSV payloads are extracted whole, while a PDF that lost a page —
+    to a parse failure or to having no extractable text at all — is not.
+    """
     if document_format in {"text", "markdown"}:
-        return _text_chunks(payload.decode("utf-8"), chunk_chars), []
+        return _text_chunks(payload.decode("utf-8"), chunk_chars), [], True
     if document_format == "json":
         value = json.loads(payload.decode("utf-8"))
         return (
@@ -251,9 +314,10 @@ def _extract(
                 chunk_chars,
             ),
             [],
+            True,
         )
     if document_format == "csv":
-        return _csv_chunks(payload, csv_rows_per_chunk), []
+        return _csv_chunks(payload, csv_rows_per_chunk), [], True
     return _pdf_chunks(payload, chunk_chars)
 
 
@@ -290,14 +354,23 @@ def _csv_chunks(payload: bytes, rows_per_chunk: int) -> list[dict[str, Any]]:
 
 def _pdf_chunks(
     payload: bytes, chunk_chars: int
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    """Return ``chunks``, per-page ``failures``, and completeness.
+
+    A page whose text could not be extracted is skipped rather than reported
+    as an empty page, and its loss makes the extraction incomplete: a scanned
+    page is missing text, and a hash over what remains would identify a
+    document that was never fully read.
+    """
     chunks: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    skipped_pages = 0
     with pdfplumber.open(io.BytesIO(payload)) as document:
         for page_number, page in enumerate(document.pages, start=1):
             try:
                 text = page.extract_text()
                 if not text:
+                    skipped_pages += 1
                     continue
                 for item in _text_chunks(text, chunk_chars):
                     item["chunk_index"] = len(chunks)
@@ -312,4 +385,4 @@ def _pdf_chunks(
                         "message": str(error),
                     }
                 )
-    return chunks, failures
+    return chunks, failures, not failures and skipped_pages == 0

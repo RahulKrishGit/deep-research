@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
+from deep_research.agents.evidence import normalized_content_sha256
 from deep_research.observability.tracker import SpanHandle
 from deep_research.tools.base import ToolResult
 from deep_research.tools.web_scraper import WebScraperTool
@@ -102,10 +103,16 @@ async def test_scraper_extracts_static_html_and_reports_observable_summary(
 
     assert result.data == {
         "url": "https://example.test/article",
+        "requested_url": "https://example.test/article",
+        "resolved_url": "https://example.test/article",
         "title": "Example Article",
         "text": "Example Article Navigation First paragraph. Second paragraph.",
         "status_code": 200,
         "content_type": "text/html; charset=utf-8",
+        "content_sha256": normalized_content_sha256(
+            "Example Article Navigation First paragraph. Second paragraph."
+        ),
+        "extraction_complete": True,
     }
     assert result.metadata == {"robots_checked": True, "retry_count": 0}
     assert tracker.span.outputs == {
@@ -114,6 +121,64 @@ async def test_scraper_extracts_static_html_and_reports_observable_summary(
         "robots_checked": True,
         "success": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_reports_the_url_the_content_came_from(tracker) -> None:
+    """The requested URL alone would misattribute everything read through it."""
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="", request=request)
+        if request.url.path == "/start":
+            return httpx.Response(
+                302,
+                headers={"Location": "https://example.test/moved"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            text="<html><body><p>Final page body.</p></body></html>",
+            request=request,
+        )
+
+    async with _client(handler) as client:
+        async with tracker.session_span("session-1", "question"):
+            result = await WebScraperTool(tracker, client=client).execute(
+                url="https://example.test/start"
+            )
+
+    assert result.success is True
+    assert result.data["url"] == "https://example.test/start"
+    assert result.data["requested_url"] == "https://example.test/start"
+    assert result.data["resolved_url"] == "https://example.test/moved"
+    assert result.data["text"] == "Final page body."
+
+
+@pytest.mark.asyncio
+async def test_an_empty_page_is_not_evidence(tracker) -> None:
+    """A 200 response with no readable text must not become a read."""
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="", request=request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            text="<html><head><title></title></head><body>   </body></html>",
+            request=request,
+        )
+
+    async with _client(handler) as client:
+        async with tracker.session_span("session-1", "question"):
+            result = await WebScraperTool(tracker, client=client).execute(
+                url="https://example.test/challenge"
+            )
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.type == "empty_page_content"
+    assert "text" in result.error.message
+    assert "challenge" not in result.model_dump_json()
 
 
 @pytest.mark.asyncio

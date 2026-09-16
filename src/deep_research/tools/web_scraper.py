@@ -12,6 +12,7 @@ from urllib.robotparser import RobotFileParser
 import httpx
 from bs4 import BeautifulSoup
 
+from deep_research.agents.evidence import normalized_content_sha256
 from deep_research.observability import Tracker
 from deep_research.tools.base import (
     BaseTool,
@@ -61,10 +62,14 @@ class WebScraperTool(BaseTool):
     required_arguments = ("url",)
     output_schema = {
         "url": "string",
+        "requested_url": "string",
+        "resolved_url": "string",
         "title": "string",
         "text": "string",
         "status_code": "integer",
         "content_type": "string",
+        "content_sha256": "string",
+        "extraction_complete": "boolean",
     }
 
     def __init__(
@@ -141,12 +146,26 @@ class WebScraperTool(BaseTool):
                 details={"content_type": _bounded_content_type(content_type)},
             )
         title, text = _extract_html(response.text)
+        if not text.strip():
+            # A 200 response with no readable text — an interstitial, a
+            # challenge page, a shell — read nothing. Returning it as a
+            # successful read is how an empty body becomes evidence.
+            raise ToolExecutionError(
+                "the page returned no readable text",
+                error_type="empty_page_content",
+                recoverable=True,
+            )
+        resolved_url = _resolved_url(response, url)
         data = {
             "url": url,
+            "requested_url": url,
+            "resolved_url": resolved_url,
             "title": title,
             "text": text,
             "status_code": response.status_code,
             "content_type": content_type,
+            "content_sha256": normalized_content_sha256(text),
+            "extraction_complete": True,
         }
         return ToolExecution(
             data=data,
@@ -218,6 +237,22 @@ def _validate_url(value: Any) -> str:
 def _is_html_content_type(content_type: str) -> bool:
     media_type = content_type.split(";", 1)[0].strip().lower()
     return media_type in {"text/html", "application/xhtml+xml"}
+
+
+def _resolved_url(response: httpx.Response, requested: str) -> str:
+    """The URL the response actually came from, after any redirect.
+
+    A redirect must not leave only the requested URL behind: attributing the
+    body to the URL that was asked for, rather than the one that served it,
+    is how a mirror or a redirect target disappears from the evidence. A
+    response object with no request attached (a transport double) has no
+    final URL to report, so the requested one stands.
+    """
+    try:
+        resolved = str(response.url)
+    except RuntimeError:
+        return requested
+    return resolved or requested
 
 
 def _bounded_content_type(content_type: str) -> str:

@@ -4,7 +4,58 @@ from pathlib import Path
 import httpx
 import pytest
 
+from deep_research.agents.evidence import (
+    normalized_content_sha256,
+    passages_from_chunks,
+)
 from deep_research.tools.document_reader import DocumentReaderTool
+
+
+@pytest.mark.asyncio
+async def test_a_read_reports_its_hash_completeness_and_locators(tracker) -> None:
+    """Everything a read registry needs, from the boundary that fetched it."""
+    original = Path("tests/fixtures/documents/sample.md").read_text(encoding="utf-8")
+
+    async with tracker.session_span("session-1", "question"):
+        result = await DocumentReaderTool(tracker, chunk_chars=32).execute(
+            source="tests/fixtures/documents/sample.md"
+        )
+
+    assert result.data is not None
+    assert result.data["requested_source"] == "tests/fixtures/documents/sample.md"
+    assert result.data["resolved_source"] == "tests/fixtures/documents/sample.md"
+    assert result.data["extraction_complete"] is True
+    assert result.data["content_sha256"] == normalized_content_sha256(original)
+    # The chunks carry the locators a passage can be cited and re-read by.
+    assert passages_from_chunks(result.data["chunks"]) == {
+        f"chunk-{index // 32}": original[index : index + 32]
+        for index in range(0, len(original), 32)
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_remote_redirect_reports_the_resolved_source(tracker) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "example.test":
+            return httpx.Response(
+                301,
+                headers={"Location": "https://cdn.example.test/report.txt"},
+                request=request,
+            )
+        return httpx.Response(200, content=b"remote document", request=request)
+
+    source = "https://example.test/report.txt"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker, client=client).execute(
+                source=source
+            )
+
+    assert result.data is not None
+    assert result.data["source"] == source
+    assert result.data["requested_source"] == source
+    assert result.data["resolved_source"] == "https://cdn.example.test/report.txt"
+    assert result.data["extraction_complete"] is True
 
 
 @pytest.mark.asyncio
@@ -140,6 +191,49 @@ async def test_reader_preserves_pdf_page_failures(monkeypatch, tracker) -> None:
             "message": "damaged page",
         }
     ]
+    # One page is missing from this extraction, so the text is incomplete and
+    # its content hash must never be treated as the identity of the document.
+    assert result.data["extraction_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_reader_marks_a_scanned_page_extraction_incomplete(
+    monkeypatch, tracker
+) -> None:
+    """A page with no extractable text is missing text, not empty text."""
+    class Page:
+        def __init__(self, value):
+            self.value = value
+
+        def extract_text(self):
+            return self.value
+
+    class Pdf:
+        pages = [Page("page one"), Page(""), Page("page three")]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "scanned.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.success is True
+    assert result.data is not None
+    assert [chunk["page"] for chunk in result.data["chunks"]] == [1, 3]
+    assert result.data["failures"] == []
+    assert result.data["extraction_complete"] is False
 
 
 @pytest.mark.asyncio
