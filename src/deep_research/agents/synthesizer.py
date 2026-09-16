@@ -63,7 +63,7 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool, ToolResult
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     Claim,
     ContractModel,
@@ -998,6 +998,7 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),
         config: AgentRuntimeConfig | None = None,
+        model_profile: EffectiveModelConfig | None = None,
         max_sections: int = DEFAULT_MAX_SECTIONS,
         finding_digest: int = SYNTHESIS_FINDING_DIGEST,
         claim_digest: int = SYNTHESIS_CLAIM_DIGEST,
@@ -1008,6 +1009,7 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
             scratchpad=scratchpad,
             tools=tools,
             config=config,
+            model_profile=model_profile,
         )
         if max_sections < 1:
             raise ValueError("max_sections must be at least 1")
@@ -1259,4 +1261,5 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
                 **self.state_update(report, react),
                 "events": events,
             },
+            call_fingerprints=dict(self._call_fingerprints),
         )

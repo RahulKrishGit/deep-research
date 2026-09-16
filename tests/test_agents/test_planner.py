@@ -2203,6 +2203,58 @@ def test_graph_budgets_let_the_planner_look_once_and_the_rest_work() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_plan_and_review_calls_carry_distinct_fingerprints(
+    tracker: Tracker,
+) -> None:
+    """Each planner call records the configuration it was made under."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_sorting_plan(), _review()],
+    )
+    agent = _planner(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            planner_final_max_tokens=8192,
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert set(outcome.call_fingerprints) == {
+        "ReactDecision",
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+    }
+    assert len(set(outcome.call_fingerprints.values())) == 3
+    assert agent.prompt_version == "planner-2"
+
+    tighter = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_sorting_plan(), _review()],
+    )
+    other = _planner(
+        tracker,
+        tighter,
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            planner_final_max_tokens=4096,
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        changed = await other.run(_state())
+
+    assert changed.call_fingerprints["ResearchPlanDraft"] != (
+        outcome.call_fingerprints["ResearchPlanDraft"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_an_extension_through_the_agent_keeps_both_inventories(
     tracker: Tracker,
 ) -> None:

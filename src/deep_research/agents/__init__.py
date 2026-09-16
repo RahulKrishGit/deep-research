@@ -5,6 +5,7 @@ from deep_research.agents.base import (
     AgentRun,
     BaseAgent,
     StructuredCompleter,
+    call_configuration_fingerprint,
 )
 from deep_research.agents.critic import (
     ACCEPTANCE_SCORE,
@@ -175,6 +176,7 @@ from deep_research.agents.prompts import (
     CRITIQUE_INSTRUCTION,
     FACT_CHECKER_SYSTEM_PROMPT,
     NATIVE_REACT_RESPONSE_CONTRACT,
+    PROMPT_VERSION,
     REPORT_INSTRUCTION,
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
@@ -417,6 +419,7 @@ __all__ = [
     "PLAN_INSTRUCTION",
     "PASSAGE_SELECTION_OPERATION",
     "NATIVE_REACT_RESPONSE_CONTRACT",
+    "PROMPT_VERSION",
     "PLANNER_PLAN_SYSTEM_PROMPT",
     "QUALITY_STATUS_NOT_GATED",
     "READ_ADMISSION_OPERATION",
@@ -448,6 +451,7 @@ __all__ = [
     "AgentTask",
     "AgentToolset",
     "BaseAgent",
+    "call_configuration_fingerprint",
     "BoundedFindings",
     "BROAD_PLAN_COVERAGE_THRESHOLD",
     "BROAD_PLAN_MIN_TOPICS",

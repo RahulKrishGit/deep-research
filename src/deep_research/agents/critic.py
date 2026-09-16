@@ -45,7 +45,7 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     Claim,
     ContractModel,
@@ -861,6 +861,7 @@ class CriticAgent(BaseAgent[Critique]):
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),
         config: AgentRuntimeConfig | None = None,
+        model_profile: EffectiveModelConfig | None = None,
         report_chars: int = CRITIC_REPORT_CHARS,
         claim_digest: int = CRITIC_CLAIM_DIGEST,
     ) -> None:
@@ -870,6 +871,7 @@ class CriticAgent(BaseAgent[Critique]):
             scratchpad=scratchpad,
             tools=tools,
             config=config,
+            model_profile=model_profile,
         )
         if report_chars < 1:
             raise ValueError("report_chars must be at least 1")
@@ -1090,4 +1092,5 @@ class CriticAgent(BaseAgent[Critique]):
                 **self.state_update(critique, react),
                 "events": events,
             },
+            call_fingerprints=dict(self._call_fingerprints),
         )

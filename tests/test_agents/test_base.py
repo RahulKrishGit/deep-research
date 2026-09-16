@@ -8,14 +8,14 @@ from contextlib import asynccontextmanager
 import pytest
 from pydantic import ConfigDict, Field
 
-from deep_research.agents.base import BaseAgent
+from deep_research.agents.base import BaseAgent, call_configuration_fingerprint
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActRun, ReActStep
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderTimeoutError
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import ContractModel, ResearchState
 from tests.agent_fakes import (
     BoomTool,
@@ -460,6 +460,126 @@ def test_an_agent_class_without_a_name_is_rejected(tracker: Tracker) -> None:
             scratchpad=_pad("nameless"),
             tools=[EchoTool(tracker)],
         )
+
+
+@pytest.mark.asyncio
+async def test_every_provider_call_carries_its_own_configuration_fingerprint(
+    tracker: Tracker,
+) -> None:
+    """A run says which configuration produced each of its requests.
+
+    The ReAct decision and the structured output are different calls with
+    different output budgets, so they cannot share one fingerprint — and both
+    move when the model profile does, which is why the profile is part of the
+    payload rather than only the agent's name.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing to look up.", "Rayleigh.")],
+        outputs=[Summary(headline="Rayleigh.")],
+    )
+    agent = SchemaAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=_pad(SchemaAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(max_iterations=3),
+        model_profile=EffectiveModelConfig(
+            model="deepseek-v4-flash",
+            thinking_mode="enabled",
+            reasoning_effort="max",
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    assert set(outcome.call_fingerprints) == {"ReactDecision", "Summary"}
+    assert len(set(outcome.call_fingerprints.values())) == 2
+
+    other = SchemaAgent(
+        provider=ScriptedCompleter(
+            decisions=[finish("Nothing to look up.", "Rayleigh.")],
+            outputs=[Summary(headline="Rayleigh.")],
+        ),
+        tracker=tracker,
+        scratchpad=_pad(SchemaAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(max_iterations=3),
+        model_profile=EffectiveModelConfig(
+            model="deepseek-v4-flash",
+            thinking_mode="enabled",
+            reasoning_effort="high",
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        cheaper = await other.run(_state())
+
+    assert cheaper.call_fingerprints != outcome.call_fingerprints
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "agent_name",
+        "model",
+        "thinking_mode",
+        "reasoning_effort",
+        "output_limit",
+        "context_limit",
+        "schema_name",
+        "prompt_version",
+    ],
+)
+def test_a_call_fingerprint_covers_every_configured_input(field: str) -> None:
+    """Changing any one input changes the fingerprint, and only that input."""
+    baseline = {
+        "agent_name": "planner",
+        "model": "deepseek-v4-flash",
+        "thinking_mode": "enabled",
+        "reasoning_effort": "max",
+        "output_limit": 32768,
+        "context_limit": 8,
+        "schema_name": "ResearchPlanDraft",
+        "prompt_version": "planner-2",
+    }
+    changed = dict(baseline)
+    changed[field] = "changed" if isinstance(baseline[field], str) else 4096
+
+    assert call_configuration_fingerprint(**baseline) == (
+        call_configuration_fingerprint(**baseline)
+    )
+    assert call_configuration_fingerprint(**changed) != (
+        call_configuration_fingerprint(**baseline)
+    )
+
+
+def test_an_unresolved_model_profile_is_recorded_rather_than_invented(
+    tracker: Tracker,
+) -> None:
+    """A hand-built agent fingerprints the field as unresolved."""
+    agent = SummaryAgent(
+        provider=ScriptedCompleter(),
+        tracker=tracker,
+        scratchpad=_pad(),
+        tools=[EchoTool(tracker)],
+    )
+
+    assert agent.model_profile is None
+    fingerprint = agent.fingerprint_call("Summary")
+    resolved = SummaryAgent(
+        provider=ScriptedCompleter(),
+        tracker=tracker,
+        scratchpad=_pad(),
+        tools=[EchoTool(tracker)],
+        model_profile=EffectiveModelConfig(
+            model="deepseek-v4-flash",
+            thinking_mode="enabled",
+            reasoning_effort="high",
+        ),
+    ).fingerprint_call("Summary")
+
+    assert fingerprint != resolved
 
 
 def test_the_default_config_bounds_the_loop(tracker: Tracker) -> None:

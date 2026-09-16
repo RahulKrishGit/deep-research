@@ -180,6 +180,10 @@ def build_agent(
         tracker=tracker,
         tools=tools,
         config=settings.agents,
+        # The resolved profile, not the raw ``llm`` mapping: every per-call
+        # configuration fingerprint then carries the model and effort this
+        # agent's requests actually run under, per-agent overrides included.
+        model_profile=settings.llm.resolve_for(name),
         scratchpad=_scratchpad(
             settings, session_id=session_id, agent_name=name
         ),

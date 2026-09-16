@@ -386,6 +386,45 @@ def test_build_agent_matches_production_build_agents_for_every_agent(
         assert single.scratchpad.max_entries == expected.scratchpad.max_entries
 
 
+def test_every_agent_carries_its_own_resolved_model_profile(tracker) -> None:
+    """A per-agent effort override reaches the agent that runs under it.
+
+    The profile is what a per-call configuration fingerprint is built from,
+    so an assembly that dropped it would make every planner request look like
+    a researcher request.
+    """
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={
+                "planner": {"reasoning_effort": "max"},
+                "researcher": {"reasoning_effort": "high"},
+            },
+        )
+    )
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+    agents = build_agents(
+        settings,
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    for name in AGENT_NAMES:
+        agent = getattr(agents, name)
+        assert agent.model_profile == settings.llm.resolve_for(name)
+    assert agents.planner.model_profile.reasoning_effort == "max"
+    assert agents.researcher.model_profile.reasoning_effort == "high"
+    assert agents.planner.prompt_version == "planner-2"
+
+
 def test_build_agent_gives_the_source_evaluator_the_reputation_source(
     tracker,
 ) -> None:

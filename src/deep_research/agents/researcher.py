@@ -47,7 +47,7 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool, ToolResult
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     ContractModel,
     CritiqueGap,
@@ -936,6 +936,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),
         config: AgentRuntimeConfig | None = None,
+        model_profile: EffectiveModelConfig | None = None,
         max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
         high_priority_threshold: int = HIGH_PRIORITY_THRESHOLD,
         evidence_chars: int = DEFAULT_EVIDENCE_CHARS,
@@ -947,6 +948,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             scratchpad=scratchpad,
             tools=tools,
             config=config,
+            model_profile=model_profile,
         )
         if max_sub_topics < 1:
             raise ValueError("max_sub_topics must be at least 1")
@@ -1274,4 +1276,5 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 **self.state_update(result, merged),
                 "events": events,
             },
+            call_fingerprints=dict(self._call_fingerprints),
         )

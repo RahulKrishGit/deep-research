@@ -48,7 +48,7 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     ContractModel,
     ResearchError,
@@ -505,6 +505,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),
         config: AgentRuntimeConfig | None = None,
+        model_profile: EffectiveModelConfig | None = None,
         reputation: ReputationSource | None = None,
         batch_size: int | None = None,
         max_total_sources: int | None = None,
@@ -538,6 +539,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             scratchpad=scratchpad,
             tools=tools,
             config=runtime_config,
+            model_profile=model_profile,
         )
         if resolved_batch_size < 1:
             raise ValueError("batch_size must be at least 1")
@@ -830,4 +832,5 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 **self.state_update(result, react),
                 "events": events,
             },
+            call_fingerprints=dict(self._call_fingerprints),
         )

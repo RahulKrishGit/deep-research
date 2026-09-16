@@ -162,7 +162,7 @@ from deep_research.utils.config import (
 # ``60ffff5a3558``, when the Critic's own ``run_react_loop`` call site began
 # resolving its per-agent tool budget through ``tool_budget_for`` — a
 # module-source move with no prompt edit.
-CRITIC_PROMPT_FINGERPRINT = "60ffff5a3558"
+CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -366,25 +366,28 @@ CRITIC_PROMPT_FINGERPRINT = "60ffff5a3558"
 # The upstream-evidence pooling change moved the Fact Checker's value once
 # more, ``1f52e702839d`` -> ``04582f1aaed1``: a fact_checker.py
 # module-source change, not a prompt edit — no prompt string moved.
-# Task 2 moved four of the six again — planner ``8cc4d32e20f4`` ->
-# ``222dbd5609bf``, researcher ``efe153883c5b`` -> ``2417681b57d9``,
-# fact_checker ``04582f1aaed1`` -> ``a9e15c0de776``, critic
-# ``97a2d10ad688`` -> ``60ffff5a3558`` — and the Source Evaluator and
-# Synthesizer pins are unchanged. Three of those are module-source-only moves
-# (`tool_budget_for(self.name)` replacing `self.config.tool_budget` at each
-# agent's own `run_react_loop` call site: no prompt string moved). The
-# planner's is a real prompt change: its plan request now prints the frozen
-# answer contract and asks for 1-4 atomic evidence targets, it makes one
-# tool-free semantic review call, and its loop prompt states that the
-# session's startup recall already supplied the one procedural lookup. The
-# Judge pin is unchanged.
+# Task 2 moved four of the six (planner, researcher, fact_checker, critic)
+# when ``tool_budget_for(self.name)`` replaced ``self.config.tool_budget`` at
+# each agent's own ``run_react_loop`` call site, and the planner's prompt
+# contract changed: its plan request now prints the frozen answer contract and
+# asks for 1-4 atomic evidence targets, it makes one tool-free semantic review
+# call, and its loop prompt states that the session's startup recall already
+# supplied the one procedural lookup. Task 2 then moved all six together
+# twice more: once for ``PROMPT_VERSION`` in the shared ``agents.prompts``
+# module, and once for the per-call configuration fingerprint added to each
+# agent's ``AgentRun``. Both are the documented false positive of hashing
+# module source rather than prompt text — any module edit moves the value.
+# Final Task 2 pins: planner ``88026ce6be52``, researcher ``711b4d414515``,
+# source_evaluator ``c50282e1dd42``, fact_checker ``675fa5aea904``,
+# synthesizer ``a7fe09fe50c7``, critic ``7e0d97508b00``. The Judge pin is
+# unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "222dbd5609bf",
-    "researcher": "2417681b57d9",
-    "source_evaluator": "4fdf95ddcc64",
-    "fact_checker": "a9e15c0de776",
-    "synthesizer": "ad25c1b309b1",
-    "critic": "60ffff5a3558",
+    "planner": "88026ce6be52",
+    "researcher": "711b4d414515",
+    "source_evaluator": "c50282e1dd42",
+    "fact_checker": "675fa5aea904",
+    "synthesizer": "a7fe09fe50c7",
+    "critic": "7e0d97508b00",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

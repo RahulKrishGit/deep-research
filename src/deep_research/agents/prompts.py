@@ -25,6 +25,13 @@ from deep_research.utils.types import (
     ScoredSource,
 )
 
+# The version of this prompt library. Every per-call configuration
+# fingerprint records it, so an artifact says which instructions produced it
+# without anyone diffing prompt text. Bump it when a prompt in this module
+# changes meaning; an agent whose own prompt contract changed sets its own
+# value on the class (``BaseAgent.prompt_version``).
+PROMPT_VERSION = "1"
+
 # The request itself carries the tools as provider-native function
 # definitions, so this text must never advertise a catalogue or ask for an
 # action envelope. Asking for one in text is what produced DeepSeek's DSML

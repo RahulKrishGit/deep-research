@@ -40,7 +40,7 @@ from deep_research.providers import (
     StructuredOutputError,
 )
 from deep_research.tools.base import BaseTool
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     MAX_TARGETS_PER_TOPIC,
     AnswerContract,
@@ -1565,6 +1565,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     description = "Turn a research question into a validated research plan."
     allowed_tools = ("query_memory", "web_search")
     preserve_provider_errors = True
+    # The planner's prompt contract changed in Task 2: the plan request prints
+    # the frozen answer contract and asks for atomic evidence targets, and a
+    # tool-free plan review runs after it. An artifact therefore says which
+    # planner instructions produced it.
+    prompt_version = "planner-2"
 
     def __init__(
         self,
@@ -1574,6 +1579,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),
         config: AgentRuntimeConfig | None = None,
+        model_profile: EffectiveModelConfig | None = None,
         clock: Clock = utc_now,
     ) -> None:
         super().__init__(
@@ -1582,6 +1588,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             scratchpad=scratchpad,
             tools=tools,
             config=config,
+            model_profile=model_profile,
         )
         probe = clock()
         if probe.tzinfo is None or probe.utcoffset() is None:
@@ -1654,6 +1661,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             react=outcome.react,
             errors=outcome.errors,
             state_update={**outcome.state_update, "events": events},
+            call_fingerprints=dict(outcome.call_fingerprints),
         )
 
     def answer_contract_for(self, question: str) -> AnswerContract:
@@ -1669,6 +1677,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         repair: str | None = None,
     ) -> tuple[list[SubTopic], list[str]]:
         try:
+            self.fingerprint_call(
+                ResearchPlanDraft.__name__,
+                output_limit=self.config.planner_final_max_tokens,
+            )
             draft = await self.provider.complete_structured(
                 plan_messages(task, run, contract=contract, repair=repair),
                 ResearchPlanDraft,
@@ -1708,6 +1720,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         here is reported the same way a failed plan draft is.
         """
         try:
+            self.fingerprint_call(
+                PlanReviewDraft.__name__,
+                output_limit=self.config.planner_final_max_tokens,
+            )
             return await self.provider.complete_structured(
                 plan_review_messages(
                     contract, sub_topics, repair=already_requested
@@ -1842,6 +1858,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         contract = state.answer_contract
         messages = extension_messages(contract, state.sub_topics, omission)
         try:
+            self.fingerprint_call(
+                PlanExtensionDraft.__name__,
+                output_limit=self.config.planner_final_max_tokens,
+            )
             draft = await self.provider.complete_structured(
                 messages,
                 PlanExtensionDraft,
