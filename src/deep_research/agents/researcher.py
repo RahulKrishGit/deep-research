@@ -99,6 +99,12 @@ RESEARCHER_SYSTEM_PROMPT = (
     "data file — and keep alternating until the sub-topic's success criteria "
     "are met. If a search returned nothing worth reading, search again instead. "
     "One page you have read is worth more than several more queries.\n"
+    "Verification needs independence, so a sub-topic is not finished when its "
+    "key facts come from a single publisher. Find a second source on a "
+    "different site that states each load-bearing number or finding: a fact "
+    "only one source states is recorded as unverified no matter how "
+    "authoritative that source is. Prefer spending a remaining call on that "
+    "second source over another query for the same one.\n"
     "Finish once the sub-topic's success criteria are met, or once no "
     "further source is worth retrieving."
 )

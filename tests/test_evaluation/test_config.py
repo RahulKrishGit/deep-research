@@ -304,10 +304,21 @@ CRITIC_PROMPT_FINGERPRINT = "bc6b1f23064c"
 #     that a search returning nothing worth reading should be followed by
 #     another search rather than a forced read; that wording is included in this
 #     value. Wording only; no tool semantics changed.
+#   planner 2e357f4a04c4 -> 86c8ce19a676 and researcher d48583bcb01f ->
+#     016fc43c77eb: both prompts now require independent corroboration. The fact
+#     checker refuses to corroborate a claim with a page on the claim's own
+#     publisher's domain (``independent_domains``) and records a claim with no
+#     independent source as ``insufficient_evidence`` — yet the plan asked only
+#     for "at least one success criterion describing what evidence would settle
+#     it" and never for a second, independent source. A live run showed exactly
+#     the consequence: claims drawn from the IEA outlook (source score 0.82)
+#     were all graded insufficient evidence, and the critic scored the report
+#     3/10. The plan and the researcher now ask for a second source on a
+#     different site for every load-bearing fact. Wording only.
 # No other agent's value moved.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "2e357f4a04c4",
-    "researcher": "d48583bcb01f",
+    "planner": "86c8ce19a676",
+    "researcher": "016fc43c77eb",
     "source_evaluator": "6e127ffba9d4",
     "fact_checker": "5080d1810c7e",
     "synthesizer": "dd422429c34b",

@@ -92,9 +92,20 @@ PLAN_INSTRUCTION = (
     "bundling them.\n"
     "Each success criterion must name the evidence type, geography, and "
     "measurement or decision needed to consider the sub-topic answered.\n"
+    # Verification needs a source independent of the one that produced a claim:
+    # ``fact_checker.independent_domains`` refuses to corroborate a claim with a
+    # page on the claim's own publisher's domain, and a claim with no independent
+    # source is recorded as ``insufficient_evidence``. A live run showed high
+    # scoring sources (IEA 0.82, PNNL 0.88) producing claims that were all
+    # graded insufficient for exactly this reason, so the plan — which sets what
+    # the researcher goes looking for — has to ask for corroboration up front.
+    "Every load-bearing number or finding in a sub-topic needs a second source "
+    "from a different publisher that states it: a fact only one source states "
+    "cannot be verified, however authoritative that source is.\n"
     "Aim the queries at primary sources — regulations, standards, filings, "
     "and datasets that state the facts directly — and say which class of "
-    "source each query should reach.\n"
+    "source each query should reach. Include, for each sub-topic, a query "
+    "aimed at an independent second source for its key facts.\n"
     "State the as-of date and the geographic scope the plan assumes, and "
     "write both into the queries or success criteria; the plan has no field "
     "of its own for either.\n"
