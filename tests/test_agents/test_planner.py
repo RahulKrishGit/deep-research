@@ -28,6 +28,8 @@ from deep_research.providers import (
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
     ProviderTimeoutError,
+    StructuredOutputError,
+    StructuredValidationDiagnostic,
 )
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -947,6 +949,181 @@ async def test_a_provider_failure_during_the_repair_call_raises_planning_error(
         "ResearchPlanDraft",
     ]
     assert len(completer.react_calls) == 1
+
+
+def _schema_failure(
+    *diagnostics: StructuredValidationDiagnostic,
+) -> StructuredOutputError:
+    """A structured failure whose message is hostile and must never surface."""
+    return StructuredOutputError(
+        "PROVIDER_SECRET_SENTINEL", diagnostics=diagnostics
+    )
+
+
+_PLAN_DRAFT_STATIC_PROBLEM = (
+    "the planner provider failed while requesting the final plan draft"
+)
+
+
+@pytest.mark.asyncio
+async def test_the_plan_draft_schema_diagnostic_reaches_the_planning_error(
+    tracker: Tracker,
+) -> None:
+    """Both structured attempts stay diagnosable after the run has failed.
+
+    The provider discards the validation diagnostic one frame above this
+    catch, so the planner error is the last artifact that can carry it.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _schema_failure(
+                StructuredValidationDiagnostic(
+                    attempt=1,
+                    field_paths=("sub_topics.0.title",),
+                    category="missing",
+                ),
+                StructuredValidationDiagnostic(
+                    attempt=2,
+                    field_paths=("sub_topics.1.priority", "sub_topics.2.title"),
+                    category="type_mismatch",
+                ),
+            )
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        _PLAN_DRAFT_STATIC_PROBLEM,
+        "the plan draft failed schema validation on attempt 1 at "
+        "sub_topics.0.title (missing)",
+        "the plan draft failed schema validation on attempt 2 at "
+        "sub_topics.1.priority, sub_topics.2.title (type_mismatch)",
+    )
+    assert "PROVIDER_SECRET_SENTINEL" not in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_a_diagnostic_without_a_category_uses_the_documented_fallback(
+    tracker: Tracker,
+) -> None:
+    """``category`` is optional on the contract, so the line needs a word."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _schema_failure(
+                StructuredValidationDiagnostic(
+                    attempt=2,
+                    field_paths=("sub_topics",),
+                    category=None,
+                )
+            )
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        _PLAN_DRAFT_STATIC_PROBLEM,
+        "the plan draft failed schema validation on attempt 2 at "
+        "sub_topics (unclassified)",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_hostile_field_path_never_reaches_the_planning_error(
+    tracker: Tracker,
+) -> None:
+    """Only the contract's normalized ``$`` placeholder may be published."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _schema_failure(
+                StructuredValidationDiagnostic(
+                    attempt=1,
+                    field_paths=("<script>alert(1)</script>",),
+                    category="other_schema",
+                )
+            )
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        _PLAN_DRAFT_STATIC_PROBLEM,
+        "the plan draft failed schema validation on attempt 1 at "
+        "$ (other_schema)",
+    )
+    assert "<script>" not in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_a_third_diagnostic_is_not_carried_into_extra_lines(
+    tracker: Tracker,
+) -> None:
+    """The provider bounds its diagnostics at two, so the lines stay bounded."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _schema_failure(
+                *(
+                    StructuredValidationDiagnostic(
+                        attempt=index,
+                        field_paths=(f"sub_topics.{index}",),
+                        category="missing",
+                    )
+                    for index in range(1, 4)
+                )
+            )
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        _PLAN_DRAFT_STATIC_PROBLEM,
+        "the plan draft failed schema validation on attempt 1 at "
+        "sub_topics.1 (missing)",
+        "the plan draft failed schema validation on attempt 2 at "
+        "sub_topics.2 (missing)",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_structured_failure_without_diagnostics_keeps_the_static_error(
+    tracker: Tracker,
+) -> None:
+    """No diagnostics means no extra lines: the static pair is untouched."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_schema_failure()],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert str(failure.value) == (
+        "The planner could not produce the requested plan draft because "
+        "the model provider operation failed."
+    )
+    assert failure.value.problems == (_PLAN_DRAFT_STATIC_PROBLEM,)
+    assert failure.value.operation == "plan_draft"
 
 
 @pytest.mark.asyncio

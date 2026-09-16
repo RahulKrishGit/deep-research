@@ -24,7 +24,11 @@ from deep_research.agents.prompts import (
 )
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.validation import _invalid_fields
-from deep_research.providers import ChatMessage, ProviderError
+from deep_research.providers import (
+    ChatMessage,
+    ProviderError,
+    StructuredOutputError,
+)
 from deep_research.utils.types import (
     ContractModel,
     MemorySnapshot,
@@ -349,6 +353,31 @@ def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent
     )
 
 
+_UNCATEGORIZED = "unclassified"
+
+
+def structured_output_problems(error: StructuredOutputError) -> tuple[str, ...]:
+    """Render each structured-validation diagnostic as one project-authored line.
+
+    The provider throws its diagnostic away one frame above the catch that
+    turns a failed plan request into a ``PlanningError``, so these lines are
+    the last artifact that can explain a ``graph_planning_failed`` run.
+
+    Only ``attempt``, ``field_paths`` and ``category`` are read: never the
+    exception message, provider text, or the rejected model output. The
+    contract already normalizes every field path, replacing anything that is
+    not a plain schema path with ``"$"``, and already keeps at most two
+    diagnostics — so this returns at most two short lines. A diagnostic that
+    recorded no ``category`` renders as ``unclassified``.
+    """
+    return tuple(
+        "the plan draft failed schema validation on attempt "
+        f"{diagnostic.attempt} at {', '.join(diagnostic.field_paths)} "
+        f"({diagnostic.category or _UNCATEGORIZED})"
+        for diagnostic in error.diagnostics
+    )
+
+
 class PlannerAgent(BaseAgent[ResearchPlan]):
     """Convert ``original_question`` into 3-7 distinct, prioritized sub-topics.
 
@@ -397,6 +426,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 agent_name=self.name,
                 max_tokens=self.config.planner_final_max_tokens,
             )
+        except StructuredOutputError as error:
+            raise planning_provider_error(
+                "plan_draft", problems=structured_output_problems(error)
+            ) from error
         except ProviderError as error:
             raise planning_provider_error("plan_draft") from error
         return validate_plan_draft(draft)

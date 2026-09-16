@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,6 +12,7 @@ from deep_research.agents.errors import (
     AgentError,
     agent_error,
     agent_provider_failure_details,
+    planning_provider_error,
 )
 from deep_research.observability import TokenUsage
 from deep_research.providers import (
@@ -241,3 +244,57 @@ def test_planning_error_defaults_to_no_problems() -> None:
     from deep_research.agents.errors import PlanningError
 
     assert PlanningError("no plan").problems == ()
+
+
+def test_planning_provider_error_appends_caller_supplied_problems() -> None:
+    """Caller problems extend the static tuple; they never replace it."""
+    assert "problems" in inspect.signature(planning_provider_error).parameters
+
+    error = planning_provider_error(
+        "plan_draft",
+        problems=("the plan draft failed schema validation on attempt 1",),
+    )
+
+    assert error.operation == "plan_draft"
+    assert error.problems == (
+        "the planner provider failed while requesting the final plan draft",
+        "the plan draft failed schema validation on attempt 1",
+    )
+    assert str(error) == (
+        "The planner could not produce the requested plan draft because "
+        "the model provider operation failed."
+    )
+
+
+@pytest.mark.parametrize(
+    ("operation", "message", "static_problem"),
+    [
+        (
+            "react_decision",
+            "The planner could not produce a scoping decision because the "
+            "model provider operation failed.",
+            "the planner provider failed during a ReAct decision",
+        ),
+        (
+            "plan_draft",
+            "The planner could not produce the requested plan draft because "
+            "the model provider operation failed.",
+            "the planner provider failed while requesting the final plan draft",
+        ),
+        (
+            "react_loop",
+            "The planner scoping phase stopped before a decision was available.",
+            "the planner scoping phase stopped before a decision",
+        ),
+    ],
+)
+def test_planning_provider_error_keeps_its_static_text_when_nothing_is_added(
+    operation: str,
+    message: str,
+    static_problem: str,
+) -> None:
+    error = planning_provider_error(operation)  # type: ignore[arg-type]
+
+    assert str(error) == message
+    assert error.problems == (static_problem,)
+    assert error.operation == operation

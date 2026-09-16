@@ -41,13 +41,27 @@ class PlanningError(AgentError):
 PlanningOperation = Literal["react_decision", "plan_draft", "react_loop"]
 
 
-def planning_provider_error(operation: PlanningOperation) -> PlanningError:
-    """Return static operation context for a provider failure."""
+def planning_provider_error(
+    operation: PlanningOperation,
+    *,
+    problems: Sequence[str] = (),
+) -> PlanningError:
+    """Return static operation context for a provider failure.
+
+    ``problems`` appends caller-supplied lines to the static one. Callers
+    pass only project-authored strings — the bounded validation diagnostic,
+    never provider text — so the whole tuple stays safe to log and publish.
+    Both the message and the static problem are byte-identical to the
+    no-argument form.
+    """
     if operation == "react_decision":
         return PlanningError(
             "The planner could not produce a scoping decision because the "
             "model provider operation failed.",
-            problems=("the planner provider failed during a ReAct decision",),
+            problems=(
+                "the planner provider failed during a ReAct decision",
+                *problems,
+            ),
             operation=operation,
         )
     if operation == "plan_draft":
@@ -56,12 +70,16 @@ def planning_provider_error(operation: PlanningOperation) -> PlanningError:
             "the model provider operation failed.",
             problems=(
                 "the planner provider failed while requesting the final plan draft",
+                *problems,
             ),
             operation=operation,
         )
     return PlanningError(
         "The planner scoping phase stopped before a decision was available.",
-        problems=("the planner scoping phase stopped before a decision",),
+        problems=(
+            "the planner scoping phase stopped before a decision",
+            *problems,
+        ),
         operation=operation,
     )
 
