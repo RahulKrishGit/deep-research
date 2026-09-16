@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
-**Plan date / amendment:** 2026-09-16. Astra-authored review of plan commit dd1b93f, at the user's explicit request. This replaces that revision in place; it is the single execution plan, not another parallel proposal.
+**Plan date / amendment:** 2026-09-16. Astra-authored review of dd1b93f, cross-run amendment e2cbb8f, and the last run's 1,079 LangSmith spans. Rebased onto merged main b2fa96b at the user's explicit request. This is the single execution plan, amended in place, not another parallel proposal.
 
 **Goal:** Make all six agents cooperate to produce accurate, substantive, current, well-supported, readable CLI reports, and demonstrate that quality through real-agent tests and independently reviewed end-to-end outputs.
 
@@ -12,12 +12,13 @@
 
 ## Global constraints and execution decisions
 
-- Work only in the existing codex/cross-agent-planner-fix-parity worktree. Baseline application SHA: 2bc6665de59d0cec3d76f0bd0cdc5bd92ba3b180; baseline documentation SHA: 935cc9e09dc4f5659d0c3acd44f40236e76bab79; previous plan SHA: dd1b93f68ee873da4a7dddb4dbe8082fc62c09c0. Check branch/current diff before every task; preserve worker progress.
-- Preserve the root checkout's unrelated changes and the target worktree's untracked .deepseek-runs/ and tools/. Stage exact task paths only.
+- Work in .worktrees/agent-cli-quality-trace-plan on codex/agent-cli-quality-trace-plan, created from freshly fetched origin/main at b2fa96bd1121bafd3775374e032cf5a817c0814d. The prior branch is merged. Historical run application SHA remains 2bc6665de59d0cec3d76f0bd0cdc5bd92ba3b180 and trace/docs SHA 935cc9e09dc4f5659d0c3acd44f40236e76bab79; those identify evidence, not the new execution base. Check branch/current diff before every task.
+- Preserve the root checkout's unrelated files and all old worktrees, ignored outputs, and memories. Historical output artifacts remain in .worktrees/cross-agent-planner-fix-parity; locate/hash them explicitly, do not fabricate missing copies in the new worktree. Stage exact task paths only.
+- Preserve merged-main behavior, including removal of Streamlit and reduced public trace payloads. Review the existing latest_claims/latest_scored_sources helpers before adding canonical projections; define one effective projection per contract. Do not reintroduce UI code, duplicate conflicting projection rules, or full thought/prompt logging.
 - This amendment is planning only. Execution starts at Task 0 when requested. Do not implement application code while reviewing this document.
 - Quality is the scope. Do not add unrelated security, deployment, authentication, monitoring, or operational-hardening projects. Preserve existing secret handling, access controls, request ceilings, and interrupts without expanding them.
 - Preserve critic acceptance >=7/10, substantive broad coverage >=0.80, whole-report semantic review >=0.80, zero false settled claims, zero fabricated/unresolved citations, reader length <=8,000 words unless explicitly requested otherwise, and backmatter <=35%. Structural cleanliness is necessary, not sufficient.
-- Author/review this plan directly as requested; no browser relay. During execution use the user's Luna Max implementation/review routing and available fast/priority mode. Record effective dispatch settings; do not claim a fast-mode toggle was enabled if the interface cannot confirm it.
+- Astra is the sole plan author and plan reviewer, as explicitly requested; no Sol/High browser relay or delegated planning. During implementation retain the user's Luna Max code dispatches and available fast/priority execution, with fresh task reviews. Record effective dispatch settings; do not claim a fast-mode toggle was enabled if the interface cannot confirm it.
 - Execute sequentially because contracts/state are shared. Require fresh task reviews for specification compliance and code quality. Resolve important/critical findings, rerun gates, then push reviewed commits. Do not merge; final whole-branch review remains user-owned.
 - Use RED → GREEN → REFACTOR. Test excerpts specify minimum regressions, not the complete inventory. Add each named adversarial case separately. Split multi-action implementation steps into small test/change/test commits.
 - Through Task 12, tests are offline with scripted provider responses and fake external clients. Replace external boundaries, not production agents, handoffs, renderers, or gates.
@@ -33,10 +34,15 @@
 
 Latest local evidence: output/report-417fa9338e10450784b459f89af98b1c-3.md, its -3-evidence.md ledger, and output/cli-canary-20260915-223507-evidencepooling.log. Outcome: partial, critic 5/10, coverage 4/6, 16 checked claims, 5 provisionally verified, approximately 815,664 tokens. The report repeats queue/PJM/report-cutoff facts; every ranked deployment mechanism says “not stated”; internal C001/C011 IDs leak; current constraints rely largely on old statistics and a future cost projection; wholesale-market and technical-performance questions are unanswered.
 
-The earlier diagnosis/plan records 157 Researcher searches versus 20 reads, 121 Fact Checker searches versus 58 reads, and 29 Critic searches without read capability. These are historical trace-derived measurements, not freshly queried LangSmith counts. Task 0 reconciles their trace/export provenance. Document access often succeeded while HTML failed; this is not evidence that all retrieval failed.
+The last-run trace was freshly queried in this amendment: 157 Researcher searches versus 20 HTML/PDF read calls, 121 Fact Checker searches versus 58 read calls, and 29 Critic searches without page-read capability. These counts exclude 64 memory queries. The code wrongly admits ordinary memory as read-bearing evidence, so historical independent_sources and admitted-URL counts cannot be treated as validated fresh-publisher counts. Document reads succeeded 44/45 and HTML reads 15/33. Access denial is real but is not the whole failure.
+
+The bounded, source-anchored review is [Last-run agent trace review](../validation/2026-09-16-last-run-agent-trace-review.md). It records exact trace IDs, artifact hashes, per-agent measurements, code-confirmed defects, and unavailable payloads. Full historical LLM prompts/drafts and document bodies were not present; this plan does not invent them.
 
 | Inspected evidence / code | Defensible conclusion | Unsupported inference to avoid |
 | --- | --- | --- |
+| Last-run trace, initial state; agents/steps.py:_read_payload_urls; runtime/memory_bridge.py; tests/test_agents/test_steps.py | Ordinary recalled text plus a URL is admitted as a source read, extraction evidence, and a candidate independent publisher. An offline reproduction confirms all three; previous-session duplicate facts were present in this run. | That all "read-backed" claims were based on freshly opened sources, or that historical memory counts establish independent corroboration. |
+| agents/react.py:_tool_observation; agents/base.py:_record_step; config.yaml | Next-action feedback is a 200-character payload prefix; extraction separately uses 4,000-character prefixes. Decision context and extraction selection both require repair. | That increasing final extraction size alone fixes candidate selection or repeated reads. |
+| Last-run Researcher spans; researcher.py:_refinement_satisfied_sub_topics | Eleven of twenty passes emitted no findings; wholesale produced zero across four passes; any prior finding plus no Critic gap can suppress further topic research. | That a raw finding or an omitted Critic gap proves the topic answered. |
 | docs/superpowers/validation/2026-09-15-verification-boundary-diagnosis.md; agents/fact_checker.py:valid_verification_passages, claim_verification_messages, verify_claim | Upstream URLs are admitted, but upstream excerpts are absent from the adjudication prompt; a new-independent-retrieval precondition remains. | That this explains every failure. One URL per claim cannot distinguish missing acquisition from extraction loss. |
 | agents/researcher.py:render_evidence, build_findings, bound_sub_topic_findings | Extraction relies on bounded payload prefixes and URL admission, not exact excerpt validation. Retention does not reserve each target's support. | That prompt instructions or more aggregate reads establish corroboration. |
 | agents/fact_checker.py:DEFAULT_MAX_CLAIMS and the accepted-claims slice | A default five-claim prefix can starve later topics. | That a six-topic plan fits a fixed five-claim extraction prefix. |
@@ -70,7 +76,22 @@ A local sweep during this amendment inventoried all 13 top-level non-evaluation 
 
 Report paths in this table are under output/. The agent-fixes result document is under docs/superpowers/validation/. Word counts use whitespace splitting and are structural diagnostics, not semantic scores. “Available but unused” identifies a boundary to test; it does not imply every old finding is current, relevant, or already independently verified.
 
-The trace-based tool counts above remain marked historical. Missing original provider/read payloads must be recorded as not_diagnosable in Task 0. Each fix has both a positive control (use valid evidence to answer) and a negative control (reject or qualify inadequate evidence); neither universal abstention nor blanket verification can pass.
+The latest trace counts above are freshly reconciled; older trace claims remain historical. Missing original provider/read payloads must be recorded as not_diagnosable in Task 0. Each fix has both a positive control (use valid evidence to answer) and a negative control (reject or qualify inadequate evidence); neither universal abstention nor blanket verification can pass.
+
+### Last-run trace additions that change implementation priorities
+
+| Trace finding | Specific implementation requirement | Owner tasks |
+| --- | --- | --- |
+| TR-01: generated memory masquerades as read evidence; old duplicate queue facts already present | Close the ordinary-memory admission path before trusting acquisition/independence metrics; preserve validated document-cache reuse separately | 1, 2, 3, 6, 12, 13 |
+| TR-02: 200-character next-decision feedback and separate 4,000-character extraction prefixes | Give actual decision requests a target-aware candidate/read/passage manifest; do not merely enlarge logs | 3, 6 |
+| TR-03: LBNL 2025 URL read 21 times overall; USGS/CAISO successful reads sometimes produce no findings | Reuse content/versioned reads; select late substantive passages and measure yield; keep unknown historical passage loss explicitly unresolved | 3, 5, 9 |
+| TR-04: stale date anchors, invented numerical tolerances, compound success criteria | Runtime as-of, atomic obligations, source-appropriate support policy; no invented agreement tolerance | 2 |
+| TR-05/06: source warnings do not constrain settlement; exact five-claim batches and duplicate atoms | Enforce typed fitness/dependence; fair claim continuation; exact support union and stable semantic IDs | 4, 5, 6 |
+| TR-07: interim_satisfaction is inferred from one raw finding and Critic silence | Outstanding required targets drive repairs independently of Critic gap completeness | 9, 10, 11 |
+| TR-08: unchecked numbers can appear inside caveats; metadata asserts stronger linkage than actual prose | Review every reader statement, including exclusions, scope, and generated methodology, not only Findings bullets | 7, 10, 11 |
+| TR-09: two recovered schema failures with normal stop reason; Critic still search-only | Preserve schema repair context; record categorical field errors without inventing historical causes; make Critic tool-free | 6, 8, 12 |
+
+The source evaluator successfully reused assessments and the synthesizer correctly distinguished future cost projections from present costs. Preserve those strengths. The Critic's low score is consistent with missing answers; do not treat raising its score as the root repair.
 
 
 ### Agent-specific output requirements
@@ -96,7 +117,9 @@ These definitions replace conflicting wording in the previous plan revision. App
 ### 2.1 Read provenance, attribution, corroboration, and truth
 
 - Search results, snippets, memory recalls, URLs, and source scores are not read-bearing evidence.
+- query_memory is always discovery/procedural guidance, even when its entry has a URL, high confidence, a previous "verified" label, or a claimed read ID. The current steps.py rule that treats recalled content as a read must change, along with tests that codify it. No synthetic current retrieved_at or publisher vote may be created from remembered prose.
 - Evidence is an exact excerpt from a successful same-run read, or a provenance-validated cache entry whose version is checked for time-sensitive claims. It has a stable read ID, content version, locator, and target association.
+- Cache validation resolves an actual stored ReadRecord and original extracted content independently of the model/memory match, validates the content hash and temporal/version eligibility, then admits that artifact to the run registry. A memory record's self-declared metadata is not validation. A bare legacy memory becomes a lead needing retrieval; no destructive memory migration is required.
 - **Verified** retains the strict independent-corroboration badge: two selected passages each support the complete atomic claim; their known canonical publishers and works differ; their claim-specific evidence origins are independent; no unresolved material contradiction defeats settlement. Qualifying upstream A+B needs no new retrieval. URL counts never auto-verify.
 - **Source-supported** is not verified. A primary report can support “Report X estimates Y for population P in year T” without another publisher reproducing X's measurement. Preserve the legacy insufficient_evidence verdict when corroboration is absent, add evidence_status=source_supported, and explain “primary-source attribution; independent corroboration not established,” not “probably false.”
 - This deliberately corrects the previous blanket requirement that every reader fact have two independent works. It does not allow an unqualified settled assertion without the strict pair. Adding “according to” cannot earn verified: check the exact narrowed proposition and its attribution.
@@ -134,6 +157,7 @@ Persist boundary IDs: read registry → selected prompt passages → findings/di
 
 | Audit class | Reproducible predicate |
 | --- | --- |
+| evidence_admission | A proposed read/support URL has no matching validated same-run or cache ReadRecord and exact excerpt. Includes generated-memory-only, forged/absent cache provenance, and empty/boilerplate payload. Reject before computing publisher counts. |
 | acquisition | A required obligation has no acquired readable candidate after the declared attempts; record denied/not-found/malformed/no-candidate/bound outcomes. Means “not acquired in this run,” not “does not exist.” |
 | evidence_handoff | An accepted ID disappears at a required later boundary without disposition, or a selected successful read has neither extraction result nor disposition. Record first missing set difference/boundary. |
 | publisher_identity | Candidate support reached adjudication but identity/dependence collapses it, or ambiguity prevents the required pair. Subreasons: same_work, same_publisher, shared_origin, identity_unknown. |
@@ -142,7 +166,7 @@ Persist boundary IDs: read registry → selected prompt passages → findings/di
 
 Flags may coexist; a display reason is not causal proof. An explicit no_relevant_passage disposition is the extractor's judgment, not established truth: known-support replay tests must catch wrongly discarded evidence.
 
-For F1, first inspect raw successful reads and extraction input/output for the exact atom (value/unit/period/population). If A+B contain it but B never reaches the claim, identify the first loss. If only A is present, acquisition did not supply B. If payloads were not saved, mark the historical case unresolvable and use replay; do not infer from URL lengths.
+For F1, first audit evidence admission: a "read" may actually be generated memory. Then inspect raw successful reads and extraction input/output for the exact atom (value/unit/period/population). If A+B contain it but B never reaches the claim, identify the first loss. If only A is present, acquisition did not supply B. If payloads were not saved, mark the historical case unresolvable and use replay; do not infer from URL lengths or source/publisher counts.
 
 ### 2.5 Retention and effort
 
@@ -151,6 +175,14 @@ Four publishers is the existing per-packet diversity cap, not four URLs or a glo
 Keep valid units in the registry. Packet selection reserves critical/uncovered targets, required independent support, and contradictions; then within-publisher target diversity; then relevance/authority/freshness, with confidence only a tie-breaker. More than four required publishers or a full packet creates a continuation, not deletion. Deferred IDs must resume.
 
 The ten-tool-call loop cannot guarantee four multi-source targets fit. Schedule feasible batches, reserve reads before discovery spends the allowance, and persist unfinished work. Do not silently slice claims, mark unreviewed findings consumed, or spend everything on the first topic.
+
+### 2.6 Decision context, memory modes, and diagnosis
+
+Public progress summaries and model decision packets have different purposes. Keep the former compact. The latter must contain the active target, exact queued candidate URLs/IDs, reasons to read them, attempted/denied/read status, selected evidence IDs/locators, pending work, remaining tool/model-turn capacity, and the next required support type. No prefix-only serialization of a whole search/PDF response is an acceptable decision packet.
+
+Record boundary manifests in the evidence/quality artifact: operation/job ID, target/claim IDs, input/selected/output/accepted/deferred IDs, dispositions, packet fingerprint, configuration/schema version, and execution status. Count an entire native batch, not only the last observation stored on its iteration span. Normal telemetry does not need raw prompts, complete pages, credentials, or chain-of-thought.
+
+Release repetitions use independently empty, isolated long-term and procedural research memory plus explicit source-cache state; a new session ID alone is insufficient. Test realistic warm memory separately: repeated incorrect claims must not outweigh a freshly supported correction, and valid cached original evidence must remain reusable. Neither memory deletion nor disabling useful evidence reuse is the product fix.
 
 ## 3. Shared contracts and ownership
 
@@ -241,6 +273,8 @@ Additional fields:
 - Claim: cluster_id, member_claim_ids, proposition (nullable only for legacy), evidence_ids, target_ids, evidence_status (corroborated/source_supported/derived/contested/unsupported/unassessed), support_assessments, assessment_fingerprint. Preserve legacy verdict enum.
 - ScoredSource: publisher/work/serving-host, transport_relation (original/mirror/syndication/unknown), evidenced metadata, assessment revision. Passage-specific dependence belongs in SupportAssessment, not blanket document exclusion.
 - ResearchState/ResearchStateUpdate: read_records keyed by read_id, evidence_units keyed by evidence_id, evidence_dispositions, cluster_aliases, quality_contract_version. ID conflicts are errors, not last-write-wins. Claims/sources remain canonical snapshots; events/errors append. Tasks 9–10 add progress/review.
+- ReadRecord adds acquisition_kind (network/cache, default network), origin_session_id, and version_validated_at (nullable for ordinary same-run reads). Cache import fills these locally only after validation. Ordinary query_memory never creates ReadRecord.
+- BoundaryAudit (types.py): audit_id, job_id, agent_name, operation, target_ids, claim_cluster_ids, input_ids, selected_ids, returned_ids, accepted_ids, deferred_ids, disposition_ids, packet_fingerprint, schema_version, configuration_fingerprint, status (completed/deferred/provider_failed/schema_failed). All ID lists default empty; required scalar IDs/fingerprints are nonempty. Persist boundary_audits by audit_id with conflict-detecting merges; export them in quality JSON, not public progress messages.
 
 Evidence IDs exclude mutable identity/quality scores. Full extracted text stays in the bounded session read registry/cache for locators/replay, not normal logs/prompts. Cache eviction requires a disposition or preserved replay artifact; never silently lose unprocessed text. Audit exports contain selected excerpts, hashes, all accepted/deferred IDs, and dispositions.
 
@@ -257,6 +291,7 @@ Evidence IDs exclude mutable identity/quality scores. Full extracted text stays 
 - [ ] Reconcile the latest 5/10, 4/6, 815,664-token result and prior resource/publisher/corroboration runs. Separate local measurements, trace-derived historical counts, missing fields, and interpretations.
 - [ ] Inventory per-agent results.json by case version, target configuration, status, gate failures, judge status, and substantive reviewer findings. REVIEW REQUIRED is not release approval; infrastructure failures are not agent-quality successes.
 - [ ] For three repeated live atoms (queue totals, report cutoff, PJM cycle), perform the cheaper F1 payload comparison where raw data exists. Record exact first missing boundary or not_diagnosable. Do not invent B from two similar URLs.
+- [ ] Incorporate the last-run trace review TR-01–TR-09, including memory admission, 21 reads of the same LBNL URL, cold/warm state, and the absence of full request/read payloads. Store reference IDs and distinguish verified code reproduction from historical causal inference. Do not overwrite the prior baseline with newer source content.
 - [ ] Record deficiencies named in Section 1 and current source/prose weaknesses without claiming the external facts have been independently rechecked.
 - [ ] Update the release-status “current run” pointer while retaining historical entries; NOT READY remains.
 - [ ] Verify every reported number against its cited artifact, check hashes and absence of secrets, inspect the documentation diff, then commit, independently review, and push.
@@ -276,13 +311,19 @@ git diff --check
 **Files:**
 
 - Create src/deep_research/agents/evidence.py and tests/test_agents/test_evidence.py.
-- Modify src/deep_research/utils/types.py, src/deep_research/agents/sources.py, src/deep_research/tools/document_reader.py, src/deep_research/tools/web_scraper.py, src/deep_research/graph/state.py.
-- Tests: tests/test_types.py, tests/test_state.py, tests/test_graph/test_state.py, tests/test_agents/test_sources.py, tests/test_tools/test_document_reader.py, tests/test_tools/test_web_scraper.py.
+- Modify src/deep_research/utils/types.py, src/deep_research/agents/sources.py, src/deep_research/agents/steps.py, src/deep_research/tools/document_reader.py, src/deep_research/tools/web_scraper.py, src/deep_research/graph/state.py.
+- Tests: tests/test_types.py, tests/test_state.py, tests/test_graph/test_state.py, tests/test_agents/test_steps.py, tests/test_agents/test_sources.py, tests/test_agents/test_researcher.py, tests/test_agents/test_fact_checker.py, tests/test_tools/test_document_reader.py, tests/test_tools/test_web_scraper.py.
 
 **Interfaces:** Section 3 contracts. evidence.py produces normalized_content_sha256(text: str) -> str; excerpt_matches(text: str, excerpt: str) -> bool; resolve_work_identities(metadata: Sequence[Mapping[str, object]]) -> dict[str, WorkIdentity] (input rows keyed by source_id); canonical_publisher_id(metadata: Mapping[str, object]) -> str | None. eligible_independent_pair is added in Task 6. Source metadata fields are DOI, report_number, issuer, title, year, complete_content_sha256, edition, identity_links; every field has read-derived provenance.
 
+Cache admission is owned by evidence.py, not memory_tools.py: validate_cached_read(record: ReadRecord, canonical_text: str, *, expected_content_sha256: str, version_eligible: bool, validated_at: str) -> ReadRecord | None. Its caller resolves the stored original artifact and determines version eligibility locally; these arguments never come directly from model/memory metadata. Require nonempty complete canonical text, matching stored/expected/recomputed hashes, valid locators/excerpts, and version eligibility. Return a locally stamped cache ReadRecord or None plus a caller-recorded disposition; query_memory itself still yields no read URLs. Task 3 owns cache lookup/revalidation scheduling.
+
 - [ ] **RED:** Test DOI/report normalization, original-with-DOI plus identical mirror-without-DOI, unknown identity, conflicting identifiers, different editions, generic-title collision, empty/error/partial extraction hashes, and issuer versus CDN host.
 - [ ] **RED:** Test round-trip persisted registries, stable IDs after stronger identity arrives, conflicting content for one ID, and legacy state loading without fabricated provenance.
+- [ ] **RED:** A query_memory result containing text, source_url (direct or nested metadata), high confidence, and a previous verified label contributes zero read_evidence_urls. Test this through both Researcher extraction and Fact Checker independent-source eligibility; current tests expecting a memory URL to count as a read must be deliberately corrected, not preserved as the target behavior.
+- [ ] **RED:** Reject a forged/missing cache read ID, incorrect content hash, stale time-sensitive cached content, and a previous generated summary substituted for original source text. Positive control: a validated immutable original read is admitted without another body download and retains its publisher/work/original observation period.
+- [ ] Remove ordinary-memory admission from steps.py. Keep query_memory usable for leads/procedural guidance; valid cached source text enters only via the local read-registry validation path. Do not erase historical memory or automatically recertify legacy claims.
+- [ ] Persist Section 2.6 boundary manifests at read admission/selection and extend them as later tasks add handoffs. Historical missing IDs remain unknown. A missing manifest must fail a new-contract replay assertion, never silently look like zero loss.
 - [ ] **RED:** Require requested/resolved URL, extraction completeness, content hash, and locator text on successful reads. A redirect must not silently leave only the requested URL. A 200 challenge/empty document must not become evidence.
 - [ ] Implement deterministic canonical text normalization and exact excerpt membership. Normalize whitespace/Unicode consistently while preserving numbers, minus signs, units, and negation. Preserve the raw locator text as well as normalized match text; no fuzzy excerpt acceptance.
 - [ ] Implement alias-based work grouping with strong-ID conflict checks. A normalized hash is only an equality edge when extraction is complete and nonempty. Different hashes are never independence proof. Preserve ambiguity explicitly.
@@ -315,6 +356,33 @@ def excerpt_matches(text: str, excerpt: str) -> bool:
 
 Run: python -m pytest tests/test_agents/test_evidence.py tests/test_types.py tests/test_state.py tests/test_graph/test_state.py tests/test_agents/test_sources.py tests/test_tools/test_document_reader.py tests/test_tools/test_web_scraper.py -q
 
+Also run the shared read-classifier and affected agent regressions:
+
+~~~powershell
+python -m pytest tests/test_agents/test_steps.py tests/test_agents/test_researcher.py tests/test_agents/test_fact_checker.py -q
+~~~
+
+Memory-admission minimum RED (use the production classes, not a fake classifier):
+
+~~~python
+def test_recalled_fact_is_not_a_source_read():
+    from deep_research.agents.steps import ReActStep, read_evidence_urls
+    from deep_research.tools.base import ToolResult
+
+    step = ReActStep(
+        iteration=1, thought="Test fixture.", action="use_tool",
+        tool_name="query_memory",
+        tool_result=ToolResult(
+            tool_name="query_memory", success=True, latency_ms=0,
+            data={"matches": [{
+                "content": "A previous generated answer says capacity is 10 GW.",
+                "source_url": "https://remembered.example/report",
+                "confidence": 0.99,
+            }]}),
+    )
+    assert read_evidence_urls(step) == ()
+~~~
+
 **Commit:** feat(evidence): persist read provenance and canonical identities
 
 ### Task 2: Make Planner targets answer-shaped, scoped, feasible, and production-configured
@@ -323,16 +391,22 @@ Run: python -m pytest tests/test_agents/test_evidence.py tests/test_types.py tes
 
 - Modify src/deep_research/agents/planner.py, src/deep_research/agents/prompts.py, src/deep_research/agents/base.py, src/deep_research/utils/types.py, src/deep_research/utils/config.py, src/deep_research/runtime/assembly.py, config.yaml.
 - Modify src/deep_research/evaluation/config.py and src/deep_research/evaluation/dependencies.py for explicit production-parity resolution.
+- Modify src/deep_research/runtime/recall.py and src/deep_research/main.py for the initial planning-only recall path; retain full legacy memory storage and bounded Researcher lead lookup.
 - Tests: tests/test_agents/test_planner.py, tests/test_agents/test_base.py, tests/test_types.py, tests/test_config.py, tests/test_runtime/test_assembly.py, tests/test_evaluation/test_config.py, tests/test_evaluation/test_dependencies_controlled.py.
+- Tests for startup recall: tests/test_runtime/test_recall.py, tests/test_runtime/test_memory_bridge.py, tests/test_cli/test_entrypoint.py.
 
 **Interfaces:** Add AnswerContract to types.py: question, scope_statement, geographic_scope, as_of_date, evidence_period_requirement, assumptions, answer_kind (constraints/comparison/explanation/factual/historical), requested_word_limit. Persist ResearchState.answer_contract and ResearchStateUpdate.answer_contract, plus the immutable initial_target_ids. SubTopic.evidence_targets carries 1–4 new targets; legacy empty lists load but require replanning. The reserved target reference question denotes an original-question omission and is not a counted evidence target. AgentRuntimeConfig.tool_budget_for(agent_name: str) -> int uses validated tool_budget_overrides. Production-parity evaluation resolves from LLMConfig.resolve_for instead of silently using evaluation-only overrides.
 
 - [ ] **RED:** Unqualified broad, jurisdiction-specific, latest-policy, comparison, historical, and narrow-factual plans must preserve the question and produce matching answer forms. No invented dates/URLs/settled premises.
 - [ ] **RED:** Include a seemingly diverse plan that omits a critical question dimension, a compound evidence target, biased queries assuming an answer, scope expansion, and an infeasible target batch. Structural validation catches IDs/fields; a structured plan-review call checks semantic atomicity and original-question coverage. Do not pretend regex can prove these properties.
 - [ ] Add the answer contract and locally stamped topic/target IDs. Request unknowns as questions, not asserted facts. Explicitly mark assumptions for unspecified geography; a regional sample cannot support a global conclusion.
+- [ ] Stamp as_of_date from the injected run clock, not from model knowledge or memory. With a 2026 clock, regression fixtures proposing "2024 is current" must become a latest-available evidence obligation, not a hard-coded old-year limit. Preserve requested historical dates when the user explicitly supplies them.
+- [ ] Reject invented cross-publisher matching tolerances (the last plan used 10%, 5 percentage points, 15%, and 3 percentage points) and split criteria combining multiple measures/rule dates/jurisdictions. Tolerances require an explicit question or documented measurement/method basis; numerical proximity alone never establishes the same atomic fact. Official rule dates use primary-attribution policy, not a requirement for another organization's independent model of that date.
 - [ ] Add one bounded tool-free plan-review/repair call for semantic defects, with named missing dimensions and an unchanged original question. If it cannot produce a sound plan, report the exact planning failure; no quiet denominator shrink.
 - [ ] Support extend_plan refinement for a later original-question omission: return only additional targets/topics with new locally assigned IDs, keep existing IDs/scope/as-of/critical obligations, and preserve both inventories. Existing targets cannot be made optional. A capacity conflict is explicit, not permission to delete a difficult topic. Test this with an initially missing siting/permitting dimension.
 - [ ] Planner uses at most one procedural-memory query; cached facts never become evidence. Set tool overrides planner=1, researcher=10, fact_checker=10, source_evaluator=0, synthesizer=0; Task 8 sets critic=0.
+- [ ] Include automatic initial memory recall in this limit: avoid a hidden bridge recall plus one tool lookup. Provide only deduplicated procedural guidance to planning; recalled findings may supply optional acquisition leads, never settled premises or target priority. Test duplicate/high-confidence/obsolete memory and inspect the actual planning request.
+- [ ] Add purpose: Literal["research","planning"] = "research" to recall_memory_context for backward-compatible callers. Startup in main.py passes purpose="planning": use available procedural guidance without querying long-term finding/reputation records or populating similar_findings. Keep any optional Planner tool lookup within the one-call limit and constrained to procedural material. The Researcher may discover prior source leads separately under its own recorded budget; it must re-admit their evidence.
 - [ ] Wire resolved budgets through both BaseAgent and direct run_react_loop call sites. Implement per-call configuration fingerprints including model, thinking/effort, output/context limits, schema and prompt version.
 - [ ] Use the already-supported llm.model_overrides to align quality-sensitive production calls with the measured configuration: planner/fact_checker/synthesizer/critic max; researcher/source_evaluator high as the initial candidate. This is a testable candidate, not proof max is always better. Validate provider support locally; incompatible settings fail preflight, not silently fall back.
 - [ ] Add evaluation production-parity resolution (the CLI flag is exposed in Task 12) and label any experiment-only override as non-release evidence. Review tests prove the target settings match CLI settings.
@@ -363,6 +437,8 @@ This snippet amends the existing llm mapping, not replaces other fields. Resolve
 
 Run: python -m pytest tests/test_agents/test_planner.py tests/test_agents/test_base.py tests/test_types.py tests/test_config.py tests/test_runtime/test_assembly.py tests/test_evaluation/test_config.py tests/test_evaluation/test_dependencies_controlled.py -q
 
+Also run python -m pytest tests/test_runtime/test_recall.py tests/test_runtime/test_memory_bridge.py tests/test_cli/test_entrypoint.py -q for startup memory isolation and compatibility.
+
 **Commit:** feat(planner): define scoped answer obligations and configuration parity
 
 ### Task 3: Make acquisition produce useful read evidence instead of search churn
@@ -370,22 +446,33 @@ Run: python -m pytest tests/test_agents/test_planner.py tests/test_agents/test_b
 **Files:**
 
 - Create src/deep_research/agents/acquisition.py, src/deep_research/tools/passage_selection.py, tests/test_agents/test_acquisition.py, tests/test_tools/test_passage_selection.py.
-- Modify src/deep_research/agents/react.py, src/deep_research/agents/steps.py, src/deep_research/agents/researcher.py, src/deep_research/agents/prompts.py, src/deep_research/agents/events.py, src/deep_research/tools/document_reader.py, src/deep_research/tools/web_scraper.py, src/deep_research/utils/config.py, src/deep_research/runtime/assembly.py, config.yaml.
+- Modify src/deep_research/agents/react.py, src/deep_research/agents/steps.py, src/deep_research/agents/base.py, src/deep_research/agents/researcher.py, src/deep_research/agents/prompts.py, src/deep_research/agents/events.py, src/deep_research/tools/document_reader.py, src/deep_research/tools/web_scraper.py, src/deep_research/utils/config.py, src/deep_research/runtime/assembly.py, config.yaml.
 - Modify src/deep_research/utils/types.py and src/deep_research/graph/state.py for persisted acquisition state and pending IDs.
-- Tests: tests/test_agents/test_react.py, tests/test_agents/test_steps.py, tests/test_agents/test_researcher.py, tests/test_agents/test_native_react_boundary.py, tests/test_agents/test_planner_researcher_seam.py, tests/test_tools/test_document_reader.py, tests/test_tools/test_web_scraper.py, tests/test_config.py, tests/test_runtime/test_assembly.py.
+- Tests: tests/test_agents/test_base.py, tests/test_agents/test_react.py, tests/test_agents/test_steps.py, tests/test_agents/test_researcher.py, tests/test_agents/test_native_react_boundary.py, tests/test_agents/test_planner_researcher_seam.py, tests/test_tools/test_document_reader.py, tests/test_tools/test_web_scraper.py, tests/test_config.py, tests/test_runtime/test_assembly.py.
 
 **Interfaces:** AcquisitionState is defined in utils/types.py and has candidate_urls, attempted_urls, read_urls, denied_urls, pending_passage_ids, pending_extraction_ids (list[str], empty defaults), target_id (str | None, default None), remaining_calls (int >=0), consecutive_searches (int >=0, default 0), and empty_searches (int >=0, default 0). Persist acquisition_state_by_target in ResearchState/ResearchStateUpdate with ID-aware merges. All queued URLs are canonicalized. next_acquisition_action(state) -> Literal["search","read","extract","finish"] is pure. Optional tool_policy in run_react_loop validates each requested action immediately before execution, including each call in a native multi-call batch. select_relevant_passages(passages: Mapping[str,str], query: str, limit: int) -> list[str] returns locator IDs.
 
+Add CandidateRecord in types.py: candidate_id, url, title, target_ids, selection_reason, discovered_via (search/memory/document_link), status (queued/read/denied/unusable/deferred), and read_id (nullable). AcquisitionState.candidate_records maps canonical URL to CandidateRecord, default empty; remaining_model_turns is an integer >=0 stamped from effective loop settings. The queue and record states are updated together, and the decision packet reads this manifest, not undisclosed global mutable state.
+
+Add build_acquisition_context(state: AcquisitionState, reads: Mapping[str,ReadRecord], evidence: Mapping[str,EvidenceUnit], *, limit: int) -> str in acquisition.py. It renders complete candidate/read/selected-passage records plus explicit pending IDs, never a sliced serialized response. Add decision_context: str = "" to render_react_messages. BaseAgent and Researcher callbacks rebuild it from their current job state before each provider call; Task 6 wires the same hook for Fact Checker. Acquisition policy updates state after every native call. Preserve the public 200-character summary separately.
+
 - [ ] **RED:** After at most two discovery calls, a queued readable candidate must be read. A failed read must allow another candidate or a bounded targeted fallback search, not deadlock waiting for a successful read. Two empty searches may end no_candidate. Repeated identical queries/denied URLs never consume the whole loop.
-- [ ] **RED:** Test a native batch [search, search, search, read], last-slot read reservation, policy rejections not charging external tools, and maximum model-turn bounds. Every native call ID gets its corresponding result/rejection observation.
+- [ ] **RED:** Test a native batch [search, search, search, read], last-slot read reservation, policy rejections not charging external tools, and maximum model-turn bounds. Every proposal gets its corresponding result/rejection observation. NativeToolCall intentionally has no vendor call ID: assign local proposal_id from job_id/turn_index/batch_index in run_react_loop and persist it additively on ReActStep. Do not invent provider IDs or replace the native provider boundary.
+- [ ] **RED:** The needed source is the third search result after a long first URL; after the actual search, inspect the next complete_react request and require the exact candidate URL plus read/denied states. A relevant PDF section beyond character 4,000 must appear in the selection/extraction packet. Keep observation_summary_chars=200 in this test so accidentally changing log size cannot make it pass.
+- [ ] **RED:** The same URL is proposed seven times across Researcher and Fact Checker and several targets. At unchanged content/version, reuse one acquired body and select new target-relevant passages locally; cache hits do not increase acquired-work counts or imply new corroboration. A changed version invalidates only affected evidence/claims.
+- [ ] Task 3 proves this cache contract through two independent acquisition consumers and the Researcher; Task 6 adds the real FactCheckerAgent cross-agent assertion. Do not mark that later integration proved by a mocked agent.
 - [ ] **RED:** Test denied HTML → discovered official PDF; same-host working PDF remains allowed. Reject guessed PDF URLs and retries of the exact denied page. No publisher-wide HTML circuit: current evidence does not justify blanket host blocking.
 - [ ] **RED:** Relevant material on a late PDF page, late HTML paragraph, CSV row, and table with headers/units/footnotes must reach extraction. Test paraphrased query terms, not only exact numeric matches. Scanned/empty/unparseable documents produce an explicit extraction limitation, not fabricated text.
 - [ ] Implement the candidate queue, shared successful-read cache, and deterministic loop policy. Prefer sources needed by an uncovered target or missing independent origin; use snippets only to select candidates. Keep document/API/official repository discovery generic, not hard-coded to battery sites.
+- [ ] Replace prefix-only next-decision feedback with build_acquisition_context. Retain complete records within the packet budget, use explicit continuation IDs for overflow, and prioritize unread relevant candidates/new independent origins over repeated query variants. Do not append every memory/search result into extraction prompts.
+- [ ] Treat every ordinary memory hit as an optional deduplicated lead requiring Task 1 read admission. Returning memory findings without an actual original read/cache artifact cannot satisfy extraction or target completion.
 - [ ] Route explicit PDFs/documents to document_reader; HTML to web_scraper. Honor MIME/redirect outcomes, preserve title/issuer metadata, and avoid retrying a blocked landing page as a document. Reuse legitimate already-readable content.
 - [ ] Add query-aware selection over all extracted chunks, retaining adjoining context, table labels, negative qualifiers, and locators. Start with deterministic lexical selection plus target query variants, tested against late/paraphrased material; selection misses create a second bounded passage batch, not a claim of no evidence.
 - [ ] Default selected_passages_per_read=4 and evidence_packet_chars=24000; fields validated in config and assembly. These are per-packet bounds. If all required passages do not fit, create continuation packets with explicit omitted IDs; never insist every read fits in one packet.
 - [ ] Extract findings by read_id/locator/excerpt/target ID, with exact membership checks against the registry. The provider does not invent source URL/title/hash. Reject altered numbers, missing negation, and excerpts absent from the specified locator.
 - [ ] Every read and selected passage receives accepted findings, an explicit relevance/discard reason, or deferred_capacity. Deferred items remain pending; a mistaken discard is detectable by known-support replay.
+- [ ] Distinguish transport success, usable extracted content, and substantive target yield. A 200-response short shell/consent/error page does not establish usable content; retain its categorical disposition and try a legitimate alternative. Never classify a short authoritative factual page as unusable by length alone. The historical Federal Register 1,122-character response remains unclassified because its body is absent.
+- [ ] Use USGS/CAISO-shaped offline documents with cover/contents followed by relevant tables; positive cases must extract actual findings, while a contents-only version must not invent findings. Zero-yield retry uses another passage batch or a new candidate for the same obligation, not another download of the same cover.
 - [ ] Apply Section 2.5 retention: reserve target support/contradictions; four-publisher packet diversity; no registry deletion; distinct publisher/URL/work/finding counters. Emit successful reads and useful evidence yield separately.
 - [ ] **GREEN:** Run acquisition, real native-loop, extraction, and tool regressions. Commit, review, fix, push.
 
@@ -423,6 +510,8 @@ return "read" if state.candidate_urls else "search"
 
 Run: python -m pytest tests/test_agents/test_acquisition.py tests/test_agents/test_react.py tests/test_agents/test_steps.py tests/test_agents/test_researcher.py tests/test_agents/test_native_react_boundary.py tests/test_agents/test_planner_researcher_seam.py tests/test_tools/test_passage_selection.py tests/test_tools/test_document_reader.py tests/test_tools/test_web_scraper.py tests/test_config.py tests/test_runtime/test_assembly.py -q
 
+Also run python -m pytest tests/test_agents/test_base.py -q to verify the actual next-decision request hook.
+
 **Commit:** feat(researcher): acquire and preserve target-bearing passages
 
 ### Task 4: Assess source fitness without confusing mirrors, freshness, and independence
@@ -439,6 +528,7 @@ Run: python -m pytest tests/test_agents/test_acquisition.py tests/test_agents/te
 - [ ] **RED:** Unsupported model-proposed issuer/DOI/year is rejected. A real alias evidenced in document metadata resolves; the title's mention of another organization does not transfer ownership.
 - [ ] Implement source fitness and transport/identity fields with rationale linked to read metadata. Keep source quality scores separate from claim-specific independence; a high authority score cannot override unsupported content.
 - [ ] Overlay assessments onto evidence projections without mutating raw reads or stable evidence IDs. Reassess only new/changed content/metadata; preserve the cumulative snapshot.
+- [ ] Preserve the last run's working assessment reuse (7→9→10→10 sources, no final extra model call). Test that a reuse hit depends on content/metadata/temporal fingerprint, not just URL. Propagate derivative role, self-interest, observation date, and target relevance as typed constraints; a high overall score must not wash them away.
 - [ ] Extract the shared assessment service so Fact Checker retrievals are assessed before use. No verification-source bypass and no circular graph trip just to score a new document.
 - [ ] On provider/schema failure, retain deterministic identity metadata and explicit unscored status. Do not accept unscored sources behind reader conclusions; target the missing assessment in refinement.
 - [ ] **GREEN:** Run source/evidence/tool-free tests. Commit, review, fix, push.
@@ -516,24 +606,30 @@ Run: python -m pytest tests/test_agents/test_claim_clusters.py tests/test_agents
 **Files:**
 
 - Modify src/deep_research/agents/fact_checker.py, src/deep_research/agents/evidence.py, src/deep_research/agents/acquisition.py, src/deep_research/agents/source_evaluator.py, src/deep_research/agents/prompts.py, src/deep_research/agents/events.py, src/deep_research/utils/types.py.
+- Modify src/deep_research/providers/deepseek_provider.py and src/deep_research/providers/contracts.py only for additive bounded successful-repair diagnostics; reuse existing retry behavior.
 - Tests: tests/test_agents/test_fact_checker.py, tests/test_agents/test_evidence.py, tests/test_agents/test_evidence_quality_seam.py, tests/test_agents/test_events.py, tests/test_agents/test_native_react_boundary.py.
+- Test provider repair context and categorical diagnostics in tests/test_deepseek_provider.py.
 
 **Interfaces:** claim_evidence_pool(state: ResearchState, claim: Claim) -> list[EvidenceUnit] resolves only claim-linked IDs and explicit target candidate links; validate_adjudication(draft, packet, assessments) -> Claim validates evidence selections and derives status. ClaimVerdictDraft contains a verdict proposal, per-ID SupportAssessment rows, selected support/contradiction IDs, and rationale. No free-form citation URLs or newly invented excerpts.
 
 Add EvidenceEligibility to evidence.py with publisher_id/work_id/origin_group_id (nullable strings), complete_support/read_valid/corroboration_eligible (booleans). eligible_independent_pair(a: EvidenceEligibility, b: EvidenceEligibility) -> bool checks the strict pair after grounded semantic assessment.
 
 - [ ] **RED:** Real FactCheckerAgent receives upstream A+B, both exact passages appear in its adjudication request, zero retrieval tools run, selected IDs produce verified. Same result whether the claim's source_urls lists A, B, or both.
+- [ ] **RED:** A+B are only remembered generated findings: no adjudication packet may present them as read evidence or increment eligible publisher counts. If a current original read corrects a repeated high-confidence memory claim, the verified/source-supported reader follows the read, not repetition. All independent_sources diagnostics must derive from validated read support, with memory candidates counted separately.
 - [ ] **RED:** A+B were read, but B is missing from extraction/cluster/prompt: each boundary yields the exact missing ID and cannot falsely pass. Conversely two readable unrelated documents are not a proven handoff loss.
 - [ ] **RED:** Same work/mirror, same publisher/different works, different publishers/shared statistic, unknown origin, and a search-only second URL cannot verify. A primary mirror remains usable first support.
 - [ ] **RED:** Two passages with mismatched period/unit/scope, a compound claim only partially supported, wrong causal direction, quoted speculation, and stale/future/current confusion must fail full entailment.
 - [ ] **RED:** Faithful scoped primary attribution is source_supported, not verified; company claim remains attributed; derived arithmetic is not independent observation. Contradictory evidence is retained. Different-period facts are not automatically contradictions.
 - [ ] **RED:** If an upstream candidate pair fails semantic support, allow bounded targeted retrieval and re-adjudication; do not stop just because two identities exist. A sufficient pool bypasses a failed or unnecessary retrieval loop.
+- [ ] **RED:** A malformed ClaimVerdictDraft followed by a valid response preserves the exact claim/evidence packet and counts both requests; exhausting repair leaves pending adjudication, not consumed evidence or a fabricated verdict. Record bounded schema field paths/error categories and the packet fingerprint, not raw rejected text. The historical trace's normal finish reason does not identify the malformed field.
+- [ ] Reuse the provider's existing bounded StructuredValidationDiagnostic/one-repair behavior; do not add another nested retry loop. Add tests/test_deepseek_provider.py to the focused regression run. If the successful-repair return does not expose diagnostic categories, record them through an additive bounded diagnostic hook in src/deep_research/providers/deepseek_provider.py and its contract in src/deep_research/providers/contracts.py; never infer a field path from the schema name.
 - [ ] Replace global upstream-URL admission and the new-independent-domain early return with the actual claim-specific union. Resolve aliases, include relevant counterevidence, and select packets preserving both members of candidate pairs and contradictions.
 - [ ] Require the provider to assess only IDs it was shown, complete support, scope/time compatibility, and dependence. Validate ID coverage/uniqueness and exact read membership locally. Semantic decisions remain fallible and are tested/reviewed; local URL checks do not prove entailment.
 - [ ] Assess verifier-acquired sources through Task 4's shared service before they may carry a report statement. Persist their reads/evidence/assessments for synthesis and later refinement.
+- [ ] Wire Task 3's decision-context hook and shared read cache into real claim acquisition. Prove a Researcher-acquired unchanged PDF is reused for a new Fact Checker target without another body download; an added independent passage or changed content/version invalidates the relevant adjudication fingerprint.
 - [ ] Add ConflictAssessment rows (claim_cluster_id, evidence_ids, same_scope: bool, material: bool, resolution: resolved/unresolved/not_comparable, rationale) for conflicting candidates. Missing conflict assessment is unresolved, not an implicit dismissal. Preserve rejected counterevidence with an explicit reason.
 - [ ] Apply Section 2 status semantics. Material unresolved contradictions preclude settled verified wording. A disputed claim gets a reasoned conflict analysis, not a forced “false” verdict merely because one weak source disagrees.
-- [ ] Populate every insufficient claim with a nonempty local reason: handoff_loss, packet_incomplete, acquisition_failed, no_candidate, capacity_deferred, identity_unknown, same_work, same_publisher, shared_origin, no_complete_support, single_primary_only, provider_unavailable, or model_disagreement. Keep multiple audit flags. Provider failure is not an evidence verdict.
+- [ ] Populate every insufficient claim with a nonempty local reason: evidence_not_admitted, handoff_loss, packet_incomplete, acquisition_failed, no_candidate, capacity_deferred, identity_unknown, same_work, same_publisher, shared_origin, no_complete_support, single_primary_only, provider_unavailable, schema_failed, or model_disagreement. Keep multiple audit flags. Provider/schema failure is not an evidence verdict.
 - [ ] Record registry/selected/findings/cluster/prompt/assessed/support/contradiction ID sets, explicit dispositions, identity collapse, and failure class. Full details go to the ledger/quality JSON; events contain bounded IDs/counts, not entire excerpts.
 - [ ] **GREEN:** Run union/seam/native-boundary tests; prove no duplicate adjudication at the same fingerprint. Commit, review, fix, push.
 
@@ -576,6 +672,7 @@ Run: python -m pytest tests/test_agents/test_fact_checker.py tests/test_agents/t
 **Interfaces:** Add ReportStatement: statement_id, text, mode (settled/attributed/inference/contested/context), claim_cluster_ids, evidence_ids, target_ids, answered_dimensions, basis (nullable derivation/explanation). Extend ReportPoint/ReportConstraint compatibly to these fields. Reader sections, summary, tables, captions, uncertainty, and limitations must use statement records; factual prose outside that mapping is invalid. Citation URLs are derived locally from selected evidence.
 
 - [ ] **RED:** Correctly cited but unsupported mechanism, made-up recommendation, wrong geographic extrapolation, invented truncation limitation, and uncited factual table cell must be rejected or repaired.
+- [ ] **RED:** An uncertainty sentence says an unchecked number is "not reported" but includes the number (the last reader did this with 890 GW). Reject that leak or route it to support checking; express the missing topic without the unsupported figure. Also verify scope/methodology's assertions about complete claim linkage, duplicate handling, and limitations against the actual rendered content.
 - [ ] **RED:** Same fact repeated as multiple independent findings cannot inflate report length or quality; a brief summary restatement plus detailed evidence discussion is allowed but counted once. Do not ban every cluster appearing in both summary and body.
 - [ ] **RED:** A verified cluster uses its actual selected verification sources in references, not only origin URLs. Attributed/contested points cite the appropriate source/contradiction. One work with two mirrors produces one reader reference with accessible canonical copy.
 - [ ] **RED:** Constraint, comparison, explanatory, factual, and historical questions generate appropriate structures. No mandatory empty constraint table for every question.
@@ -622,6 +719,7 @@ Run: python -m pytest tests/test_agents/test_synthesizer.py tests/test_agents/te
 - [ ] **RED:** Critic has no tools and performs no ReAct/discovery calls. A search snippet cannot appear as verification evidence.
 - [ ] **RED:** A major contradiction, fabricated limitation, and citation near the report's end remain visible beyond old prefix boundaries. Oversized evidence is batched without omitting report statements.
 - [ ] **RED:** Calibration cases: strong answer; same answer with one minor gap; missing critical topic; unsupported central assertion; appropriately attributed primary fact; false independent-pair claim; polished verbose non-answer; honest but substantively incomplete answer.
+- [ ] **RED:** A malformed CritiqueDraft can be repaired only against the same complete report/evidence fingerprint. Exhausted repair returns an explicit failed review, never a guessed score or empty-gap acceptance. Record schema field paths/categories and attempt count without restoring raw provider payload logging.
 - [ ] Remove search/memory spot-check loops and set critic tool budget to zero. Review the exact candidate, not an abridged earlier draft.
 - [ ] Keep >=7 as the editorial acceptance threshold. Score whole answer quality against the question; deterministic gates can block acceptance but cannot script a high score. Attribution and corroboration are judged according to Section 2, not penalized or rewarded indiscriminately.
 - [ ] Require every major defect to identify affected statements/targets, what would fix it, and which action can do so. Queries only for acquisition. “Improve quality” and vague “more sources” are not actionable gaps.
@@ -659,6 +757,7 @@ Run: python -m pytest tests/test_agents/test_critic.py tests/test_agents/test_to
 **Interfaces:** RefinementTarget carries gap_id, target_ids, claim_cluster_ids, statement_ids, action, requested_dimension, queries. ResearchProgress carries completed_target_ids, assessed_support_fingerprints, resolved_gap_ids, pending_work_ids, unresolved_major_gap_ids, and composition_fingerprint. Persist refinement_targets and progress_history on ResearchState/ResearchStateUpdate; history is bounded by the existing macro-iteration ceiling plus the initial checkpoint. route_refinement(target) -> node name uses typed actions; progress_improved(before, after) -> bool compares substantive repairs, not raw event volume or critic wording.
 
 - [ ] **RED:** Missing B routes only its affected target/claim; source assessment failure routes to evaluator; already-present but omitted mechanism routes to synthesis; absent mechanism evidence routes to acquisition; contradiction routes to adjudication.
+- [ ] **RED:** A topic has one raw metadata finding and is absent from Critic gaps, but its required economics/safety target remains unanswered. It must be eligible for repair. Replace _has_prior_finding-based interim satisfaction with validated required-target completion; union mechanically unmet targets with Critic-requested defects rather than letting Critic silence suppress them.
 - [ ] **RED:** A critical original-question dimension absent from the plan routes to Planner extension, preserves existing obligations/IDs, increases rather than shrinks the coverage inventory, and then researches the new target. Merely adding the target is not answered-target progress.
 - [ ] **RED:** A new independent supporting passage counts as progress before the final verdict changes; irrelevant extra searches/pages do not. Fixing a duplicated paragraph counts as presentation progress.
 - [ ] **RED:** Identical fingerprints after a fully processed targeted repair stop before a second unchanged pass. Pending deferred evidence must be processed or explicitly capacity-limited, not mislabeled no_progress.
@@ -781,6 +880,7 @@ Run: python -m pytest tests/test_agents/test_report_review.py tests/test_agents/
 - [ ] **RED:** Normal output distinguishes “corroborated,” “primary-attributed,” “contested,” and “not established.” It never calls 16 claims verified just because they were checked.
 - [ ] Render a compact outcome: direct answer/artifact paths, accepted/partial status and specific reason, substantive topic/critical-target completion, distinct corroborated claims and independent works, semantic review result, significant unresolved questions, elapsed time.
 - [ ] Aggregate repeated errors by agent/type/cause, keeping affected target IDs in detail. A resolved 403 fallback is not an unresolved report defect; an unrecovered access problem names the missing question. No generic-only limitation when a concrete cause is recorded.
+- [ ] Distinguish per-job attempts from final canonical claims; physical read calls from unique validated works/cache reuse; and all assessed sources from cited assessed sources (the last run had 10 assessed, 8 cited). A previously researched topic omitted from a refinement pass must not say "never researched." Emit no independent-publisher count derived from ordinary memory.
 - [ ] Add --debug-events for complete bounded events. Normal output summarizes phases/outcomes; --verbose includes tool/request totals. Neither floods budget-event rows. Label model requests, searches, reads, retries, dropped proposals, and tokens separately.
 - [ ] Publish reader Markdown, evidence Markdown, and quality JSON from one frozen composition. Stage writes through the existing publisher; expose artifact paths only after the set is complete. Retain a truthful failure record if a write fails. No claim that multiple file renames form one atomic filesystem operation.
 - [ ] Compute semantic fingerprint excluding only generated presentation status/badge fields; content/ref/target changes require review. Artifact byte hashes are calculated on the actual final bytes and stored without self-referential hashing of the quality JSON.
@@ -822,6 +922,8 @@ Run: python -m pytest tests/test_cli tests/test_runtime/test_outcome.py tests/te
 - [ ] Replace agent substitutions in the production-quality matrix with real agents and scripted provider/tool boundaries. Keep old ScriptedGraphAgent cases explicitly labeled graph-only historical regression tests.
 - [ ] Scripted completions assert the actual incoming schema/target/evidence packet before returning. They cannot populate missing state themselves or return a preassembled final ResearchState. Fake read content must actually entail the scripted claim.
 - [ ] Add a network-denial guard for sockets/HTTP/provider/tracker transports. Tests must not load secrets or create external LangSmith runs.
+- [ ] Test both cold and warm memory through the production memory bridge/tool/read classifier, not a memory-disabled fake that hides TR-01. Warm fixtures include repeated obsolete high-confidence generated claims, a known valid original cache artifact, forged cache metadata, and a fresh changed source. Reset isolated storage between repetitions and assert the initial memory/cache manifest.
+- [ ] Assert next-decision packets retain the required late search candidate and document locator despite 200-character public summaries. A mutation restoring query_memory-as-read or prefix-only decision context must fail the positive/negative cases, just like dropping B does.
 - [ ] Implement the matrix below. Each case has three offline repetitions for deterministic order/identity and state-isolation checks; they are not claims of model reliability.
 - [ ] Use expected negative outcomes: partial/exit 4 may mean the test passed. Do not require every intentionally unsupported case to be accepted. Positive fixtures require nonzero useful claims and all named critical targets, preventing vacuous abstention.
 - [ ] Preserve existing case IDs where meaningful and version their semantics. Derive the exact suite inventory from the versioned manifest, not a hard-coded “exactly three/seven cases” count.
@@ -847,6 +949,10 @@ Run: python -m pytest tests/test_cli tests/test_runtime/test_outcome.py tests/te
 | non-constraint-answer | accepted / 0 | Factual/explanatory answer has suitable structure without meaningless rankings |
 | late-contradiction | partial / 4 | Material conflicting passage/statement past prefix limits remains visible and blocks false settlement |
 | empty-but-clean | partial / 4 | Zero findings, clean headings, and “should” never constitute a high-quality answer |
+| memory-is-not-read | partial / 4 | Two remembered generated claims with different source URLs cannot establish a read or independent support; legacy memory remains a lead |
+| validated-cache-reuse | accepted / 0 | Validated original evidence is reused without repeated body downloads; stale/changed/forged cache provenance cannot silently pass |
+| decision-context-late-candidate | accepted / 0 | A needed third search result and late document section reach actual subsequent decision/extraction requests despite short public summaries |
+| reopen-unanswered-target | accepted / 0 | Required topic work resumes despite one prior metadata finding and no matching Critic gap; completion comes from a substantive supported reader answer |
 
 Case examples use reserved .example URLs with literal locally authored passages. Freeze reference facts/qualifiers before generating scripted responses; reviewers must compare fake content to every expected entailment.
 
@@ -894,6 +1000,8 @@ These commands must use fake external boundaries for the controlled end-to-end c
 - [ ] Review LangSmith per-agent traces before full CLI runs. Source Evaluator/Synthesizer/Critic remain tool-free; Researcher/Fact Checker use exact read evidence; Planner scope and per-agent effective settings match the CLI. Include direct experiment/trace links and missing-link explanations.
 - [ ] Run each versioned per-agent live case at the same target configuration. A canned successful A+B fixture is a controlled contract test, not proof that live acquisition found A+B.
 - [ ] Then run the narrow document-rich smoke question and the five release questions below. Use actual CLI strict mode, clean per-run state, and unseeded research prompts. Repeat each release question twice at the unchanged candidate/configuration; no best-of-run selection.
+- [ ] "Clean" means independently empty long-term/procedural research memory and an explicitly declared source-cache namespace for each release repetition. Record these before the run. Changing session_id alone is insufficient; the baseline entered with five duplicated prior findings. Use temporary isolated stores, never clear the user's working memory.
+- [ ] After a passing cold broad regression, run one separately declared warm-memory challenge at the same candidate: repeated obsolete generated claims plus a genuine cached original document must not distort the fresh supported answer. Prescribed challenge content is diagnostic seeding, not another unseeded release success. Predeclare the expected correction and allowed cache behavior; review all load-bearing statements normally.
 - [ ] The previously tuned battery/heat-pump topics are development regressions, not blind holdouts. Reserve two additional held-out questions selected and frozen by an independent reviewer after the implementation/prompt freeze, within declared categories below. The execution worker sees them only at run time; no fixtures, prompts, memory seeds, or prescribed source URLs derived from their answer keys.
 - [ ] Freeze each held-out question's must-answer dimensions and source-review method before running, not an exact canned prose answer. If no independent question custodian is available, use the reserved questions as unseeded regressions and explicitly report that blind generalization remains unvalidated; do not call the release blind-ready.
 - [ ] Store the live rubric/expectations outside runtime inputs: the research agents and terminal reviewer cannot read reference answers, held-out source lists, expected scores, or acceptance coaching. Per-agent judged outcomes are quality evidence only when no provider/schema failure masks an incomplete target output.
@@ -931,7 +1039,7 @@ Task 12 must register those exact high-risk IDs. Use the existing per-agent live
 | Held-out release 4, two runs | Reviewer chooses a document-rich, time-sensitive policy/infrastructure question outside batteries/heat pumps, with identifiable currently effective primary documents | Temporal correctness and generalization beyond tuned topics |
 | Held-out release 5, two runs | Reviewer chooses a non-energy explanatory/comparative question with at least one genuine methodological disagreement and enough readable evidence to answer conditionally | Generalization of reasoning, contradiction handling, suitable answer form |
 
-This is one smoke plus ten release runs, plus per-agent evaluations; it may exceed remaining historical authorization. Obtain a suitable stage allocation rather than silently shrinking repetitions and still claiming the same readiness evidence.
+This is one smoke plus ten release runs plus one separately labeled warm-memory diagnostic, plus per-agent evaluations; it may exceed remaining historical authorization. Obtain a suitable stage allocation rather than silently shrinking repetitions and still claiming the same readiness evidence.
 
 Literal CLI invocation for the existing broad regression:
 
@@ -949,7 +1057,7 @@ Use the same flags with each exact frozen question. Capture the program's exit c
 
 **Interface:** Every defect row contains defect ID, observed artifact/statement, expected behavior, root-cause boundary, owner task/agent, smallest failing reproduction, fix SHA, review disposition, offline result, and revalidation run IDs.
 
-- [ ] Classify failures by acquisition, extraction/handoff, identity, entailment/claim handling, synthesis/editorial quality, critic/reviewer calibration, orchestration, or configuration. Use source evidence, not the lowest agent score alone, to assign ownership.
+- [ ] Classify failures by evidence admission/memory contamination, acquisition, decision context, extraction/handoff, identity, entailment/claim handling, synthesis/editorial quality, critic/reviewer calibration, orchestration, or configuration. Use source evidence, not the lowest agent score alone, to assign ownership.
 - [ ] Write a focused RED regression for every critical/major defect before fixing its owner module. Use the existing task's contract; this plan explicitly authorizes the implementation repair loop once execution is requested. Do not create another speculative plan for an already-defined defect.
 - [ ] A prompt fix is acceptable only with a demonstrated semantic failure and paired positive/negative regression. Do not increase score examples, loosen verdict rules, remove failing cases, seed holdout answers, or inflate budgets as a substitute.
 - [ ] Run focused tests, relevant seam tests, full offline suite, and fresh specification/code review. Commit and push only after clean review.
@@ -977,16 +1085,16 @@ All rows require evidence at the final candidate. Passing unit contracts alone i
 | Surface | Release condition |
 | --- | --- |
 | Planner | Schema-valid, scoped, time-aware, answer-shaped plans; all original-question critical dimensions present; feasible target batches; no invented sources; at most one memory call; production/evaluation settings match |
-| Researcher | Every accepted finding exact-read-backed; every selected/read item accounted for; no search starvation/deadlock; positive fixtures yield required evidence; zero unexplained handoff loss; useful source diversity by obligation |
+| Researcher | Every accepted finding exact-read-backed, never bare-memory-backed; actual decision packets expose required candidates/locators; no repeated body download at unchanged validated version; every selected/read item accounted for; no search starvation/deadlock; positive fixtures yield required evidence; zero unexplained handoff loss |
 | Source Evaluator | Every cited source assessed; metadata grounded; mirrors stay usable but never add independent origin; claim-specific derivative/shared-data handling; relevance and date fitness visible |
 | Fact Checker | A+B union works without C; stable atomic claims; complete support/contradiction checks; zero false independence; no fifth-claim starvation; all insufficiency reasons and lineage recorded; positive fixtures actually answer |
 | Synthesizer | Correct direct answer; justified mechanisms/comparisons/prioritization; all substantive statements mapped; correct citations including verification sources; honest useful uncertainty; no invented limitations, internal IDs, or redundant claim inflation |
 | Critic | Tool-free; full packet; paired calibration catches severe defects without punishing sound attribution; typed repairs; >=7 only for a substantively sound candidate |
 | Terminal report review | Actual semantic review, not keyword/length proxy; all statements/evidence assessed; >=0.80; no unresolved critical/major defect; exact candidate fingerprint |
-| Graph | Targeted evidence/editorial repair; changed support invalidates checks; unfinished work remains visible; no repeated unchanged pass; consistent final status/publication |
+| Graph | Targeted evidence/editorial repair; required unanswered targets reopen even if Critic omits them; changed support invalidates checks; unfinished work remains visible; no repeated unchanged pass; consistent final status/publication |
 | CLI / API | One coherent answer/report/ledger/JSON; strict exit 4 for non-acceptance; truthful evidence and date labels; concise summary with detailed drill-down; counts/paths/hashes match |
-| Offline matrix | All 14 declared cases satisfy their positive or negative expectations in three isolated repetitions, through real agents and CLI; mutation controls fail as intended; no network |
-| Live / independent review | Per-agent tests at production settings, then both repetitions of all five release questions pass; two genuine held-outs remain unseeded; no false settled statement/fabricated citation/major omission; no unassessed claimed success |
+| Offline matrix | All 18 declared cases satisfy their positive or negative expectations in three isolated repetitions, through real agents and CLI; memory/decision-context mutations fail as intended; no network |
+| Live / independent review | Per-agent tests at production settings, then both independently cold repetitions of all five release questions pass; two genuine held-outs remain unseeded; separate warm-memory challenge passes; no false settled statement/fabricated citation/major omission; no unassessed claimed success |
 | Evidence and ownership | Every important defect closed with regression and review; no rewritten failures; reviewed commits pushed; user retains final branch review |
 
 ## 5. Self-review and execution handoff
@@ -1012,8 +1120,12 @@ The amendment specifically removes or corrects these inconsistencies from dd1b93
 17. Production/evaluation effort could differ despite shared agent construction.
 18. Failed validation lacked a complete in-plan defect closure path.
 
+The last-run trace review adds nine binding corrections (TR-01–TR-09): ordinary memory is not a source read; model decision context is not a log summary; successful reads need substantive yield and reuse; current plans need runtime date anchoring and defensible criteria; source assessments must constrain settlement; verification counts require valid original evidence; Critic silence cannot complete a target; caveats/methodology cannot introduce unchecked facts; schema retries must preserve the actual evidence packet. All have owner tasks, positive/negative regressions, and release checks above.
+
 Execution order: Tasks 0–12 offline and reviewed; Task 13 authorized live evidence; Task 14 targeted repairs and final closure, repeating relevant validation as needed. This is one final implementation program with a built-in repair loop, not a promise that one attempt will pass.
 
-Before each task, read its exact file list, interfaces, binding semantics, test expectations, and prior task outputs. Do not dispatch an implementer with only the task heading. The default requested route is sequential Luna Max implementation and fresh reviews with available fast/priority execution, then push after review. If dispatch capability differs, report the limitation rather than silently changing it.
+Before each task, read its exact file list, interfaces, binding semantics, test expectations, trace-review findings, and prior task outputs. Do not dispatch an implementer with only the task heading. Astra owns this plan and its amendments; implementation uses sequential Luna Max code dispatches and fresh reviews with available fast/priority execution, then pushes after review. There is no Sol/High browser planning handoff. If dispatch capability differs, report the limitation rather than silently changing it.
 
-**Plan amendment verification:** Reconciled latest code paths and artifacts; checked source/target/status semantics, task dependencies, file ownership, positive/negative expectations, and release evidence requirements. This statement describes plan review, not application correctness. The implementation checkboxes remain unchecked.
+**Plan amendment verification:** Reconciled freshly fetched merged-main code, all 1,079 last-run spans, local report/ledger/log hashes, and the offline memory-admission reproduction. Checked source/target/status semantics, task dependencies, file ownership, positive/negative expectations, and release evidence requirements. Merged-main baseline: 3,100 offline tests passed, one live test deselected. This is plan review and baseline verification, not proof the proposed repairs are implemented. The implementation checkboxes remain unchecked.
+
+Documentation checks for this amendment: fifteen numbered tasks, eighteen offline matrix cases, seventeen Python snippets parsed for syntax, balanced fences, no unresolved plan placeholders, and a clean whitespace diff. These checks do not execute the proposed test snippets or certify semantic correctness.
