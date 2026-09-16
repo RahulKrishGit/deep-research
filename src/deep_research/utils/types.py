@@ -153,6 +153,166 @@ class EvidencePassage(ContractModel):
     stance: Literal["supports", "contradicts"]
 
 
+# The versioned evidence contract this build writes, and the value a snapshot
+# written before it carries. Legacy snapshots keep reading: they load with the
+# legacy version and empty registries, so no read provenance is ever
+# synthesized for a run that recorded none, and a consumer can tell a
+# pre-contract snapshot from a current-contract one instead of assuming.
+QUALITY_CONTRACT_VERSION = "1"
+LEGACY_QUALITY_CONTRACT_VERSION = "0"
+
+
+class _VerbatimContractModel(ContractModel):
+    """Contract model that keeps extracted source text exactly as read.
+
+    ``ContractModel`` strips whitespace from every string recursively, and
+    pydantic applies that to nested values too. A read registry stores
+    extracted document text and the excerpt locators taken from it, so
+    stripping would silently rewrite the evidence — the same reason
+    ``tools.base.ToolResult`` sets no strip policy. Only these models opt out.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=False,
+        validate_default=True,
+    )
+
+
+class WorkIdentity(ContractModel):
+    """The identity of one intellectual work, or an explicit ambiguity.
+
+    ``key`` is ``None`` whenever the work is not established — either because
+    the evidence is missing (``unknown``) or because it contradicts itself
+    (``conflicting``). Consumers must treat a ``None`` key as "cannot
+    establish this is the same work", never as a new work: unknown identity
+    cannot establish independence either. ``aliases`` keeps every alias that
+    was considered, so an unresolved ambiguity stays auditable instead of
+    being flattened into one key.
+    """
+
+    key: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    basis: str = Field(min_length=1)
+    """The project-generated sentence naming what established the identity."""
+    issuer_id: str | None = None
+    derives_from_work_ids: list[str] = Field(default_factory=list)
+    """Evidenced version/derivation relationships, which never merge works."""
+    identity_status: Literal["known", "unknown", "conflicting"]
+
+
+class ReadRecord(_VerbatimContractModel):
+    """One successful read of one source, complete enough to be replayed.
+
+    The record is the unit of read provenance: a read ID, both URLs the
+    transport actually used, the hash of the complete extracted text, the
+    locator-keyed text itself, and the session that read it. Nothing mutable —
+    no score, no verdict, no assessment — is stored here, so a later pass
+    cannot silently re-identify evidence by rewriting its assessment.
+    """
+
+    read_id: str = Field(min_length=1)
+    requested_url: str = Field(min_length=1)
+    resolved_url: str = Field(min_length=1)
+    """The URL the content was served from, after any redirect."""
+    title: str = Field(min_length=1)
+    reader: Literal["web_scraper", "document_reader"]
+    retrieved_at: AwareISOString
+    """When this body was observed — preserved across cache admission."""
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    """SHA-256 of the normalized complete text; never an empty or partial hash."""
+    extraction_complete: bool
+    passages: dict[str, str] = Field(min_length=1)
+    """Locator -> the extracted text at that locator, verbatim."""
+    target_ids: list[str] = Field(default_factory=list)
+    acquisition_kind: Literal["network", "cache"] = "network"
+    """``cache`` only for a record this session validated locally."""
+    origin_session_id: str = Field(min_length=1)
+    """The session that read the bytes; never the session that imported them."""
+    version_validated_at: AwareISOString | None = None
+    """When a time-sensitive cached version was last validated locally."""
+
+
+class EvidenceUnit(_VerbatimContractModel):
+    """One exact passage of one read, tied to the targets it may support."""
+
+    evidence_id: str = Field(min_length=1)
+    read_id: str = Field(min_length=1)
+    source_url: str = Field(min_length=1)
+    source_title: str = Field(min_length=1)
+    locator: str = Field(min_length=1)
+    excerpt: str = Field(min_length=1)
+    target_ids: list[str] = Field(default_factory=list)
+    origin: Literal["researcher", "fact_checker"]
+
+
+class EvidenceTarget(ContractModel):
+    """One answerable obligation a planned topic must satisfy.
+
+    Which support policy applies is decided before verdicts are assigned, and
+    the planner stamps it here so no later stage can downgrade an obligation
+    to pass a coverage gate.
+    """
+
+    target_id: str = Field(min_length=1)
+    coverage_id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    required_dimensions: list[str] = Field(min_length=1)
+    required: bool
+    critical: bool
+    support_policy: Literal[
+        "independent_pair",
+        "primary_attribution",
+        "derivation",
+    ]
+
+
+class EvidenceDisposition(ContractModel):
+    """Why one item was not admitted, retained, or handed on.
+
+    ``stage`` and ``reason`` are plain strings, deliberately: the enumerated
+    vocabularies live beside the producers (``agents.evidence``), so a
+    snapshot written by a later release that names a stage this one does not
+    know stays readable rather than failing validation — the same reasoning
+    as ``Claim.insufficient_reason``.
+    """
+
+    item_id: str = Field(min_length=1)
+    stage: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    target_ids: list[str] = Field(default_factory=list)
+    retained_equivalent_id: str | None = None
+    """The retained evidence an omitted duplicate is equivalent to."""
+
+
+class BoundaryAudit(ContractModel):
+    """One Section 2.6 boundary manifest: what crossed one handoff.
+
+    Persisted per boundary — read admission, passage selection, and the later
+    handoffs tasks 5-10 add — so a replay can name the exact first missing
+    boundary instead of reporting "not recorded". A missing manifest must
+    fail a replay assertion (``evidence.require_boundary_manifest``); it must
+    never be read as zero loss.
+    """
+
+    audit_id: str = Field(min_length=1)
+    job_id: str = Field(min_length=1)
+    agent_name: str = Field(min_length=1)
+    operation: str = Field(min_length=1)
+    target_ids: list[str] = Field(default_factory=list)
+    claim_cluster_ids: list[str] = Field(default_factory=list)
+    input_ids: list[str] = Field(default_factory=list)
+    selected_ids: list[str] = Field(default_factory=list)
+    returned_ids: list[str] = Field(default_factory=list)
+    accepted_ids: list[str] = Field(default_factory=list)
+    deferred_ids: list[str] = Field(default_factory=list)
+    disposition_ids: list[str] = Field(default_factory=list)
+    packet_fingerprint: str = Field(min_length=1)
+    schema_version: str = Field(min_length=1)
+    configuration_fingerprint: str = Field(min_length=1)
+    status: Literal["completed", "deferred", "provider_failed", "schema_failed"]
+
+
 # Task 5 provenance bounds. ``consumed_finding_fingerprints`` and
 # ``consumed_coverage_ids`` record what one claim already consumed so a later
 # pass can tell unchanged evidence from new evidence. They are bounded so a
@@ -426,6 +586,29 @@ class ResearchState(ContractModel):
     """Canonical reviewed sources behind ``report`` — one per source URL."""
     unique_claim_count: int = Field(default=0, ge=0)
     """Canonical checked claims behind ``report`` — one per claim identity."""
+    read_records: dict[str, ReadRecord] = Field(default_factory=dict)
+    """Every successful read of this run so far, keyed by ``read_id``.
+
+    Carried in state so a later pass, agent, or replay can resolve the exact
+    body a passage came from instead of re-fetching it. A snapshot written
+    before the versioned evidence contract carries none, and none is
+    invented for it: the empty registry and the legacy
+    ``quality_contract_version`` are what a consumer refuses strict
+    acceptance on.
+    """
+    evidence_units: dict[str, EvidenceUnit] = Field(default_factory=dict)
+    """Every exact passage admitted as evidence, keyed by ``evidence_id``."""
+    evidence_dispositions: list[EvidenceDisposition] = Field(default_factory=list)
+    """Why each non-admitted item was not admitted; never silently dropped."""
+    boundary_audits: dict[str, BoundaryAudit] = Field(default_factory=dict)
+    """Section 2.6 boundary manifests, keyed by ``audit_id``."""
+    quality_contract_version: str = LEGACY_QUALITY_CONTRACT_VERSION
+    """Which evidence/quality contract wrote this snapshot.
+
+    ``LEGACY_QUALITY_CONTRACT_VERSION`` for every snapshot written before the
+    versioned contract existed — the honest value, because such a snapshot
+    cannot prove its reads. New runs stamp ``QUALITY_CONTRACT_VERSION``.
+    """
     critique: Critique | None = None
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=3, ge=1)
@@ -455,6 +638,11 @@ class ResearchStateUpdate(TypedDict, total=False):
     quality: ReportQualitySnapshot | None
     unique_source_count: int
     unique_claim_count: int
+    read_records: dict[str, ReadRecord]
+    evidence_units: dict[str, EvidenceUnit]
+    evidence_dispositions: list[EvidenceDisposition]
+    boundary_audits: dict[str, BoundaryAudit]
+    quality_contract_version: str
     critique: Critique | None
     max_iterations: int
     memory_context: MemorySnapshot
@@ -477,6 +665,20 @@ _APPEND_STATE_FIELDS = frozenset(
     }
 )
 
+# Registries whose update folds into what the state already holds, through the
+# conflict-detecting reducers in ``agents.evidence``. An update supplies only
+# the records it produced; the reducer keeps the rest, and one ID carrying two
+# different bodies raises instead of overwriting. Imported at call time
+# because ``agents.evidence`` imports this module.
+_MERGED_STATE_FIELDS = frozenset(
+    {
+        "read_records",
+        "evidence_units",
+        "evidence_dispositions",
+        "boundary_audits",
+    }
+)
+
 
 def merge_research_state(
     state: ResearchState,
@@ -489,12 +691,33 @@ def merge_research_state(
     if "iteration" in update:
         raise ValueError("use advance_research_iteration to change iteration")
 
+    from deep_research.agents.evidence import (  # noqa: PLC0415
+        merge_boundary_audits,
+        merge_evidence_dispositions,
+        merge_evidence_units,
+        merge_read_records,
+    )
+
+    reducers = {
+        "read_records": merge_read_records,
+        "evidence_units": merge_evidence_units,
+        "evidence_dispositions": merge_evidence_dispositions,
+        "boundary_audits": merge_boundary_audits,
+    }
+
     payload = state.model_dump(mode="python")
     for field_name, value in update.items():
         if field_name in _APPEND_STATE_FIELDS:
             if not isinstance(value, list):
                 raise TypeError(f"{field_name} update must be a list")
             payload[field_name] = [*payload[field_name], *deepcopy(value)]
+        elif field_name in _MERGED_STATE_FIELDS:
+            # Folded from the state's own records rather than from its dump:
+            # the dump has already turned them into plain mappings, and the
+            # reducers compare record fields. The result is deep-copied so the
+            # merged state shares nothing mutable with the state it came from.
+            merged = reducers[field_name](getattr(state, field_name), value)
+            payload[field_name] = deepcopy(merged)
         else:
             payload[field_name] = deepcopy(value)
 

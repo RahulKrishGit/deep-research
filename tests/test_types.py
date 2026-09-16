@@ -9,17 +9,142 @@ from deep_research.agents.identity import claim_fingerprint
 from deep_research.utils.types import (
     MAX_CONSUMED_COVERAGE_IDS,
     MAX_CONSUMED_FINDING_FINGERPRINTS,
+    BoundaryAudit,
     Claim,
     Critique,
     EvidencePassage,
+    EvidenceTarget,
     Finding,
     MemorySnapshot,
+    ReadRecord,
     ResearchError,
     ResearchEvent,
     ScoredSource,
     SourceEvaluationStatus,
     SubTopic,
 )
+
+
+def test_an_evidence_target_requires_its_obligation_and_support_policy() -> None:
+    target = EvidenceTarget(
+        target_id="target-1",
+        coverage_id="topic-01",
+        question="How much interconnection capacity was withheld in 2025?",
+        required_dimensions=["fact", "time", "magnitude"],
+        required=True,
+        critical=True,
+        support_policy="primary_attribution",
+    )
+
+    assert target.critical is True
+    assert target.support_policy == "primary_attribution"
+
+    with pytest.raises(ValidationError):
+        EvidenceTarget(
+            target_id="target-1",
+            coverage_id="topic-01",
+            question="How much?",
+            required_dimensions=["fact"],
+            support_policy="primary_attribution",
+        )
+    with pytest.raises(ValidationError):
+        EvidenceTarget(
+            target_id="target-1",
+            coverage_id="topic-01",
+            question="How much?",
+            required_dimensions=[],
+            required=True,
+            critical=False,
+            support_policy="primary_attribution",
+        )
+    with pytest.raises(ValidationError):
+        EvidenceTarget(
+            target_id="target-1",
+            coverage_id="topic-01",
+            question="How much?",
+            required_dimensions=["fact"],
+            required=True,
+            critical=False,
+            support_policy="probably fine",
+        )
+
+
+def test_a_read_record_requires_a_full_hash_and_a_real_reader() -> None:
+    values: dict[str, object] = {
+        "read_id": "read-1",
+        "requested_url": "https://lab.example/queue",
+        "resolved_url": "https://lab.example/queue",
+        "title": "Queue Study",
+        "reader": "web_scraper",
+        "retrieved_at": "2026-09-16T10:00:00+00:00",
+        "content_sha256": "a" * 64,
+        "extraction_complete": True,
+        "passages": {"p-1": "Example Lab measured that capacity was withheld."},
+        "origin_session_id": "session-1",
+    }
+
+    assert ReadRecord.model_validate(values).acquisition_kind == "network"
+
+    for replacement in (
+        {"content_sha256": ""},
+        {"content_sha256": "a" * 63},
+        {"content_sha256": "z" * 64},
+        {"reader": "web_search"},
+        {"retrieved_at": "2026-09-16T10:00:00"},
+        {"passages": {}},
+        {"origin_session_id": ""},
+    ):
+        with pytest.raises(ValidationError):
+            ReadRecord.model_validate({**values, **replacement})
+
+
+def test_a_read_record_keeps_extracted_passage_text_verbatim() -> None:
+    """Passage text is evidence, so it is stored exactly as extracted."""
+    passage = "Example Lab measured that   1,200 MW\nof capacity was withheld"
+    record = ReadRecord(
+        read_id="read-1",
+        requested_url="https://lab.example/queue",
+        resolved_url="https://lab.example/queue",
+        title="Queue Study",
+        reader="document_reader",
+        retrieved_at="2026-09-16T10:00:00+00:00",
+        content_sha256="a" * 64,
+        extraction_complete=True,
+        passages={"p-1": passage},
+        origin_session_id="session-1",
+    )
+
+    assert record.passages["p-1"] == passage
+
+
+def test_a_boundary_audit_requires_its_scalars_and_opens_every_id_list() -> None:
+    values: dict[str, object] = {
+        "audit_id": "audit-1",
+        "job_id": "job-7",
+        "agent_name": "researcher",
+        "operation": "read_admission",
+        "packet_fingerprint": "sha256:packet-1",
+        "schema_version": "1",
+        "configuration_fingerprint": "sha256:config-1",
+        "status": "completed",
+    }
+
+    audit = BoundaryAudit.model_validate(values)
+
+    assert audit.input_ids == []
+    assert audit.deferred_ids == []
+    assert audit.target_ids == []
+    for replacement in (
+        {"audit_id": ""},
+        {"job_id": " "},
+        {"operation": ""},
+        {"packet_fingerprint": ""},
+        {"configuration_fingerprint": ""},
+        {"schema_version": ""},
+        {"status": "finished"},
+    ):
+        with pytest.raises(ValidationError):
+            BoundaryAudit.model_validate({**values, **replacement})
 
 
 def unscored_source(*, status: SourceEvaluationStatus = "unscored_cap") -> ScoredSource:

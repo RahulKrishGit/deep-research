@@ -127,6 +127,25 @@ def test_publisher_identity_uses_the_registrable_domain() -> None:
     )
 
 
+def test_publisher_identity_treats_a_bare_host_like_a_url_to_it() -> None:
+    """A serving host read out of metadata resolves as its URL would.
+
+    Otherwise one publisher has two identities depending on which field
+    carried it, and a mirror's registrable publisher cannot be compared with
+    the mirror's own URL identity.
+    """
+    assert publisher_identity("news.example.co.uk") == publisher_identity(
+        "https://news.example.co.uk/story"
+    )
+    assert publisher_identity("news.example.co.uk") == "example.co.uk"
+    # A host outside the public suffix list keeps its full host either way.
+    assert publisher_identity("cdn.example.test") == publisher_identity(
+        "https://cdn.example.test/a"
+    )
+    # An opaque string is still not a host.
+    assert publisher_identity("opaque source") == "opaque source"
+
+
 def test_findings_group_by_normalized_url_in_first_seen_order() -> None:
     groups = group_findings_by_url(
         [

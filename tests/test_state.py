@@ -3,12 +3,23 @@
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents.evidence import (
+    READ_ADMISSION_OPERATION,
+    EvidenceIdentityConflict,
+    build_boundary_audit,
+    build_evidence_unit,
+    build_read_record,
+)
 from deep_research.agents.identity import claim_fingerprint
 from deep_research.utils.types import (
+    LEGACY_QUALITY_CONTRACT_VERSION,
+    QUALITY_CONTRACT_VERSION,
     Claim,
     Critique,
+    EvidenceDisposition,
     Finding,
     MemorySnapshot,
+    ReadRecord,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -17,6 +28,29 @@ from deep_research.utils.types import (
     advance_research_iteration,
     merge_research_state,
 )
+
+PASSAGE = "Example Lab measured that 1,200 MW of interconnection capacity was withheld"
+TEXT = (
+    "Queue Study. Example Lab measured that 1,200 MW of interconnection "
+    "capacity was withheld in 2025."
+)
+
+
+def _read_record(
+    *,
+    requested_url: str = "https://lab.example/queue",
+    resolved_url: str = "https://lab.example/queue",
+) -> ReadRecord:
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=requested_url,
+        resolved_url=resolved_url,
+        title="Queue Study",
+        retrieved_at="2026-09-16T10:00:00+00:00",
+        text=TEXT,
+        passages={"p-1": PASSAGE},
+    )
 
 
 def sub_topic(title: str = "Adoption", priority: int = 1) -> SubTopic:
@@ -243,6 +277,131 @@ def test_merge_preserves_multi_item_append_order() -> None:
         "First",
         "Second",
     ]
+
+
+def test_a_pre_contract_snapshot_loads_without_fabricated_provenance() -> None:
+    """An old snapshot has no reads, and none are invented for its findings."""
+    legacy = {
+        "session_id": "session-1",
+        "original_question": "How is enterprise AI adoption changing?",
+        "raw_findings": [finding().model_dump(mode="json")],
+        "report": "# Research report",
+    }
+
+    state = ResearchState.model_validate(legacy)
+
+    assert state.quality_contract_version == LEGACY_QUALITY_CONTRACT_VERSION
+    assert state.read_records == {}
+    assert state.evidence_units == {}
+    assert state.evidence_dispositions == []
+    assert state.boundary_audits == {}
+    # The finding keeps its URL and title; no read ID is minted for it.
+    assert state.raw_findings[0].source_url == finding().source_url
+
+
+def test_state_round_trips_the_evidence_registries_as_json() -> None:
+    read = _read_record()
+    unit = build_evidence_unit(
+        read=read, locator="p-1", excerpt=PASSAGE, origin="researcher"
+    )
+    disposition = EvidenceDisposition(
+        item_id="https://lab.example/other.pdf",
+        stage="read-selection",
+        reason="deferred_capacity",
+        target_ids=["target-1"],
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        read_records={read.read_id: read},
+        evidence_units={unit.evidence_id: unit},
+        evidence_dispositions=[disposition],
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+    )
+
+    payload = state.model_dump(mode="json")
+    restored = ResearchState.model_validate(payload)
+
+    assert restored == state
+    assert restored.read_records[read.read_id].passages == read.passages
+    assert restored.evidence_dispositions == [disposition]
+
+
+def test_merge_folds_new_reads_into_the_registry() -> None:
+    first = _read_record()
+    second = _read_record(
+        resolved_url="https://other.example/report",
+        requested_url="https://other.example/report",
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        read_records={first.read_id: first},
+    )
+
+    merged = merge_research_state(
+        state, {"read_records": {second.read_id: second}}
+    )
+
+    assert set(merged.read_records) == {first.read_id, second.read_id}
+    assert merged.read_records[first.read_id] == first
+    assert set(state.read_records) == {first.read_id}
+
+
+def test_merge_refuses_one_read_id_carrying_two_bodies() -> None:
+    """Last-write-wins would silently re-point every passage at that read."""
+    stored = _read_record()
+    conflicting = stored.model_copy(update={"content_sha256": "b" * 64})
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        read_records={stored.read_id: stored},
+    )
+
+    with pytest.raises(EvidenceIdentityConflict):
+        merge_research_state(
+            state, {"read_records": {stored.read_id: conflicting}}
+        )
+
+
+def test_merge_folds_dispositions_and_manifests_by_id() -> None:
+    disposition = EvidenceDisposition(
+        item_id="read-1",
+        stage="read-selection",
+        reason="stale_for_target",
+    )
+    audit = build_boundary_audit(
+        operation=READ_ADMISSION_OPERATION,
+        job_id="job-7",
+        agent_name="researcher",
+        sequence=0,
+        input_ids=("https://lab.example/queue",),
+        packet_fingerprint="sha256:packet-1",
+        configuration_fingerprint="sha256:config-1",
+    )
+    state = ResearchState(session_id="session-1", original_question="A question?")
+
+    merged = merge_research_state(
+        state,
+        {
+            "evidence_dispositions": [disposition],
+            "boundary_audits": {audit.audit_id: audit},
+        },
+    )
+
+    assert merged.evidence_dispositions == [disposition]
+    assert merged.boundary_audits == {audit.audit_id: audit}
+    assert state.evidence_dispositions == []
+    assert state.boundary_audits == {}
+    with pytest.raises(EvidenceIdentityConflict):
+        merge_research_state(
+            merged,
+            {
+                "evidence_dispositions": [
+                    disposition.model_copy(update={"reason": "irrelevant"})
+                ]
+            },
+        )
 
 
 def test_merge_isolates_supplied_append_items() -> None:

@@ -82,6 +82,9 @@ def publisher_identity(url: str) -> str:
     """Return the registrable publisher identity for ``url``.
 
     Subdomains from one organisation are one publisher for corroboration.
+    A bare host (``news.example.co.uk``) resolves exactly as the URL built
+    from it does, so a publisher read out of document metadata and the same
+    publisher read out of a link cannot disagree about who it is.
     Malformed or opaque source strings remain deterministic fallback keys,
     matching :func:`normalize_source_url`'s total contract.
     """
@@ -90,18 +93,33 @@ def publisher_identity(url: str) -> str:
         host = urlsplit(normalized).hostname
     except ValueError:
         host = None
-    if host is None:
+    candidate = host if host is not None else _bare_host(normalized)
+    if candidate is None:
         return normalized.casefold()
-    parts = _EXTRACT(host.casefold())
+    parts = _EXTRACT(candidate.casefold())
     if not parts.domain or not parts.suffix:
         # ``.test`` and other private/reserved hosts are not in the public
-        # suffix list. Keep their full host as the deterministic identity so
+        # suffix list. Keep the full host as the deterministic identity so
         # independent test publishers do not collapse to the bare label.
-        return host.casefold()
+        return candidate.casefold()
     identity = ".".join(
         part for part in (parts.domain, parts.suffix) if part
     )
-    return identity or host.casefold()
+    return identity or candidate.casefold()
+
+
+def _bare_host(value: str) -> str | None:
+    """Return ``value`` when it is a host without a scheme, else ``None``.
+
+    Only a single whitespace-free token with a dot qualifies: ``lab.example``
+    is a host, while ``opaque source`` and ``a book title`` are not, and keep
+    their existing whole-string fallback identity.
+    """
+    if not value or any(char.isspace() for char in value):
+        return None
+    if "." not in value or "/" in value or "@" in value:
+        return None
+    return value
 
 
 class SourceGroup(ContractModel):

@@ -25,6 +25,7 @@ from typing import TypedDict
 from pydantic import JsonValue
 
 from deep_research.utils.types import (
+    QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     MemorySnapshot,
@@ -145,6 +146,11 @@ def initial_graph_state(
     ``memory_context`` is supplied by the caller. The graph performs no
     recall of its own: that touches ChromaDB and an embedding provider,
     which orchestration has no business owning.
+
+    A new run stamps the current evidence contract. The read and evidence
+    registries start empty on purpose: this session has read nothing yet, and
+    a snapshot loaded without the stamp keeps the legacy version rather than
+    claiming provenance it cannot prove.
     """
     return dump_state(
         ResearchState(
@@ -152,6 +158,7 @@ def initial_graph_state(
             original_question=question,
             max_iterations=max_iterations,
             memory_context=memory_context or MemorySnapshot(),
+            quality_contract_version=QUALITY_CONTRACT_VERSION,
         )
     )
 

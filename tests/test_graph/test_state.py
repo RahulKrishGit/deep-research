@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.evidence import (
+    READ_ADMISSION_OPERATION,
+    build_boundary_audit,
+    build_evidence_unit,
+    build_read_record,
+    require_boundary_manifest,
+)
 from deep_research.graph.state import (
     DEFAULT_MAX_ITERATIONS,
     FINALIZE_NODE,
@@ -24,6 +31,8 @@ from deep_research.graph.state import (
     load_state,
 )
 from deep_research.utils.types import (
+    LEGACY_QUALITY_CONTRACT_VERSION,
+    QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     MemorySnapshot,
@@ -35,6 +44,15 @@ from tests.graph_fakes import (
     fake_quality,
     fake_research_state,
     halting_error,
+)
+
+QUEUE_TEXT = (
+    "Queue Study. Example Lab measured that 1,200 MW of interconnection "
+    "capacity was withheld in 2025."
+)
+QUEUE_PASSAGE = (
+    "Example Lab measured that 1,200 MW of interconnection capacity was "
+    "withheld"
 )
 
 
@@ -53,6 +71,76 @@ def test_the_initial_channel_carries_the_question_and_the_budget() -> None:
     assert state.max_iterations == 2
     assert state.iteration == 0
     assert state.memory_context.suggested_strategies == ["start broad"]
+
+
+def test_a_new_session_stamps_the_current_evidence_contract() -> None:
+    state = load_state(initial_graph_state(session_id="session-1", question="Why?"))
+
+    assert state.quality_contract_version == QUALITY_CONTRACT_VERSION
+    assert state.read_records == {}
+    assert state.evidence_units == {}
+    assert state.evidence_dispositions == []
+    assert state.boundary_audits == {}
+
+
+def test_a_pre_contract_snapshot_loads_as_legacy_not_as_provenance() -> None:
+    """An old channel has no read registry and must not be given one."""
+    channel = initial_graph_state(session_id="session-1", question="Why?")
+    del channel["state"]["quality_contract_version"]
+    del channel["state"]["read_records"]
+    del channel["state"]["evidence_units"]
+    del channel["state"]["evidence_dispositions"]
+    del channel["state"]["boundary_audits"]
+
+    state = load_state(channel)
+
+    assert state.quality_contract_version == LEGACY_QUALITY_CONTRACT_VERSION
+    assert state.read_records == {}
+    assert state.boundary_audits == {}
+
+
+def test_the_channel_round_trips_reads_and_boundary_manifests() -> None:
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url="https://lab.example/queue",
+        resolved_url="https://lab.example/queue",
+        title="Queue Study",
+        retrieved_at="2026-09-16T10:00:00+00:00",
+        text=QUEUE_TEXT,
+        passages={"p-1": QUEUE_PASSAGE},
+    )
+    unit = build_evidence_unit(
+        read=read, locator="p-1", excerpt=QUEUE_PASSAGE, origin="researcher"
+    )
+    audit = build_boundary_audit(
+        operation=READ_ADMISSION_OPERATION,
+        job_id="job-7",
+        agent_name="researcher",
+        sequence=0,
+        input_ids=(read.requested_url,),
+        accepted_ids=(read.read_id,),
+        packet_fingerprint="sha256:packet-1",
+        configuration_fingerprint="sha256:config-1",
+    )
+    state = fake_research_state(
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+        read_records={read.read_id: read},
+        evidence_units={unit.evidence_id: unit},
+        boundary_audits={audit.audit_id: audit},
+    )
+
+    channel = dump_state(state)
+
+    assert isinstance(channel["state"]["read_records"], dict)
+    assert isinstance(channel["state"]["read_records"][read.read_id], dict)
+    assert isinstance(channel["state"]["boundary_audits"][audit.audit_id], dict)
+    reloaded = load_state(channel)
+    assert reloaded.read_records == {read.read_id: read}
+    assert reloaded.evidence_units == {unit.evidence_id: unit}
+    assert reloaded.boundary_audits == {audit.audit_id: audit}
+    # The manifest a replay looks for is resolvable after the round trip.
+    assert require_boundary_manifest(reloaded.boundary_audits, audit.audit_id) == audit
 
 
 def test_the_initial_channel_defaults_to_an_empty_memory_snapshot() -> None:
