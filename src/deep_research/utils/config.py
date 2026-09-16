@@ -315,6 +315,31 @@ class EvaluationConfig(BaseModel):
         return self
 
 
+class RequestBudgetConfig(BaseModel):
+    """Declared transport-attempt ceilings for one run.
+
+    Each ceiling is ``None`` by default: an undeclared ceiling still counts
+    attempts but never blocks them. A declared ceiling ``C`` permits
+    ``floor(C * stop_fraction)`` attempts and refuses the next one before any
+    network I/O; ``stop_fraction`` below ``1 / C`` therefore yields a valid
+    zero limit that refuses the very first attempt.
+
+    These values are deliberately request-scoped. They are not read from the
+    environment and have no ``config.yaml`` leaf, because a second way to set
+    a spend ceiling is the exact failure this bound exists to remove: a live
+    canary breached its declared ceiling while nothing enforced it. A canary
+    supplies its limits through ``config_overrides["request_budget"]`` for the
+    one run that declares them.
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    deepseek_attempt_ceiling: int | None = Field(default=None, ge=1)
+    openai_attempt_ceiling: int | None = Field(default=None, ge=1)
+    tavily_attempt_ceiling: int | None = Field(default=None, ge=1)
+    stop_fraction: float = Field(default=1.0, gt=0.0, le=1.0)
+
+
 class ConfigSettings(BaseModel):
     """All non-secret application configuration."""
 
@@ -328,6 +353,7 @@ class ConfigSettings(BaseModel):
     graph: GraphConfig = GraphConfig()
     output: OutputConfig = OutputConfig()
     evaluation: EvaluationConfig = EvaluationConfig()
+    request_budget: RequestBudgetConfig = RequestBudgetConfig()
 
 
 _ENVIRONMENT_OVERRIDES = {

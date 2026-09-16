@@ -15,6 +15,7 @@ from deep_research.utils.config import (
     EvaluationConfig,
     LLMConfig,
     MissingSecretsError,
+    RequestBudgetConfig,
     apply_config_overrides,
     load_config,
 )
@@ -1002,3 +1003,85 @@ def test_strict_mode_requires_the_openai_key_only_for_openai_embeddings(
 
     with pytest.raises(MissingSecretsError, match="OPENAI_API_KEY"):
         load_config(str(config_path), strict=True)
+
+
+def test_request_budget_defaults_to_counted_but_uncapped_attempts() -> None:
+    """An undeclared ceiling still counts attempts; it just never blocks one."""
+    budget = RequestBudgetConfig()
+
+    assert budget.deepseek_attempt_ceiling is None
+    assert budget.openai_attempt_ceiling is None
+    assert budget.tavily_attempt_ceiling is None
+    assert budget.stop_fraction == 1.0
+    assert ConfigSettings().request_budget == budget
+
+
+def test_request_budget_rejects_unknown_keys() -> None:
+    """A misspelled ceiling must fail loudly rather than silently uncap a run."""
+    with pytest.raises(ValidationError):
+        RequestBudgetConfig(tavily_attempt_ceiling=1, tavily_attempt_ceilings=2)
+    with pytest.raises(ValidationError):
+        RequestBudgetConfig(deepseek_max_attempts=1)
+
+
+@pytest.mark.parametrize("stop_fraction", [0.0, 1.01, -0.5, 2.0])
+def test_request_budget_rejects_a_stop_fraction_outside_the_unit_interval(
+    stop_fraction: float,
+) -> None:
+    """``stop_fraction`` is exclusive of zero and inclusive of one."""
+    with pytest.raises(ValidationError):
+        RequestBudgetConfig(stop_fraction=stop_fraction)
+
+
+@pytest.mark.parametrize("ceiling", [0, -1])
+def test_request_budget_rejects_a_non_positive_ceiling(ceiling: int) -> None:
+    """``None`` means uncapped; a declared ceiling is a positive count."""
+    with pytest.raises(ValidationError):
+        RequestBudgetConfig(deepseek_attempt_ceiling=ceiling)
+
+
+def test_no_environment_variable_can_set_a_request_budget_ceiling(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """A spend ceiling has exactly one source: the run that declares it.
+
+    The environment table is where a silent second way to set a ceiling would
+    appear, and a ceiling that the environment can change is a ceiling no
+    canary can honestly claim. Limits arrive through request-scoped CLI
+    overrides only.
+    """
+    from deep_research.utils import config as config_module
+
+    for environment_name in (
+        "DEEPSEEK_ATTEMPT_CEILING",
+        "OPENAI_ATTEMPT_CEILING",
+        "TAVILY_ATTEMPT_CEILING",
+        "REQUEST_BUDGET_STOP_FRACTION",
+    ):
+        monkeypatch.setenv(environment_name, "3")
+
+    settings = load_config(str(config_path))
+
+    assert settings.request_budget == RequestBudgetConfig()
+    assert not [
+        path
+        for path in config_module._ENVIRONMENT_OVERRIDES.values()
+        if "request_budget" in path
+    ]
+
+
+def test_a_request_budget_ceiling_reaches_settings_only_through_an_override() -> None:
+    """The shipped YAML carries no ceiling, and overrides are a copy."""
+    shipped = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    settings = ConfigSettings()
+
+    canary = apply_config_overrides(
+        settings,
+        {"request_budget": {"tavily_attempt_ceiling": 4, "stop_fraction": 0.9}},
+    )
+
+    assert "request_budget" not in shipped
+    assert canary.request_budget.tavily_attempt_ceiling == 4
+    assert canary.request_budget.stop_fraction == 0.9
+    assert canary.request_budget.openai_attempt_ceiling is None
+    assert settings.request_budget == RequestBudgetConfig()
