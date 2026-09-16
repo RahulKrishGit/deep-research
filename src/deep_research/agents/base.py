@@ -152,11 +152,14 @@ class AgentRun(Generic[ResultT]):
     errors: list[ResearchError]
     state_update: ResearchStateUpdate
     call_fingerprints: dict[str, str] = field(default_factory=dict)
-    """One configuration fingerprint per provider call this run made.
+    """One configuration fingerprint per kind of provider call this run made.
 
     Keyed by the call label — the response schema's name for a structured
     call, ``"ReactDecision"`` for a model-directed turn — so a run says which
-    configuration produced each request rather than only which agent ran.
+    configuration produced each kind of request rather than only which agent
+    ran. Repeating a call kind within one run does not add an entry: the
+    agent's configuration does not change between its own calls, so the label
+    is the right key and a loop of five decisions stays one line.
     """
 
 

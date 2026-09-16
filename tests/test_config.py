@@ -884,6 +884,49 @@ def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
     assert raw["llm"]["reasoning_effort"] == "high"
 
 
+def test_the_shipped_per_agent_efforts_are_supported_by_the_provider() -> None:
+    """The measured effort candidate is validated locally before any run.
+
+    The per-agent profile is only useful if the provider accepts it; the
+    capability table is checked here rather than discovered at the first
+    request of a paid run.
+    """
+    from deep_research.providers import validate_agent_model_configs
+    from deep_research.utils.config import PRODUCTION_AGENT_NAMES
+
+    settings = load_config("config.yaml")
+    resolved = validate_agent_model_configs(
+        settings.llm, PRODUCTION_AGENT_NAMES
+    )
+
+    assert {
+        name: value.reasoning_effort for name, value in resolved.items()
+    } == {
+        "planner": "max",
+        "researcher": "high",
+        "source_evaluator": "high",
+        "fact_checker": "max",
+        "synthesizer": "max",
+        "critic": "max",
+    }
+
+
+def test_an_unsupported_agent_effort_fails_before_any_run() -> None:
+    """Fail closed: no silent fallback to a supported effort."""
+    from deep_research.providers import (
+        ProviderConfigurationError,
+        validate_agent_model_configs,
+    )
+    from deep_research.utils.config import PRODUCTION_AGENT_NAMES
+
+    settings = LLMConfig(
+        model_overrides={"planner": {"reasoning_effort": "low"}}
+    )
+
+    with pytest.raises(ProviderConfigurationError, match="planner"):
+        validate_agent_model_configs(settings, PRODUCTION_AGENT_NAMES)
+
+
 def test_graph_settings_default_to_a_bounded_uncheckpointed_run() -> None:
     settings = ConfigSettings()
 
