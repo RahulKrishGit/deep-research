@@ -360,7 +360,7 @@ CRITIC_PROMPT_FINGERPRINT = "97a2d10ad688"
 # recorded for A-4/A-6 and P4 above, and the reason the alarm is checked as a
 # matrix rather than per file.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "1a29b6e63b2d",
+    "planner": "8cc4d32e20f4",
     "researcher": "efe153883c5b",
     "source_evaluator": "4fdf95ddcc64",
     "fact_checker": "1f52e702839d",

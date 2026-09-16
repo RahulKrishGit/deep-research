@@ -95,13 +95,19 @@ PLAN_INSTRUCTION = (
     # Verification needs a source independent of the one that produced a claim:
     # ``fact_checker.independent_domains`` refuses to corroborate a claim with a
     # page on the claim's own publisher's domain, and a claim with no independent
-    # source is recorded as ``insufficient_evidence``. A live run showed high
-    # scoring sources (IEA 0.82, PNNL 0.88) producing claims that were all
-    # graded insufficient for exactly this reason, so the plan — which sets what
-    # the researcher goes looking for — has to ask for corroboration up front.
-    "Every load-bearing number or finding in a sub-topic needs a second source "
-    "from a different publisher that states it: a fact only one source states "
-    "cannot be verified, however authoritative that source is.\n"
+    # source is recorded as ``insufficient_evidence``. Measured twice: the
+    # pipeline now reads plenty — 64 document reads and 11 scored sources in one
+    # run — and still produced ZERO claims with a second independent publisher,
+    # because a sub-topic is finished as soon as a single source answers it. The
+    # earlier wording asked for corroboration *beside* the criteria, which was
+    # advice the Researcher could satisfy and then stop anyway. The demand now
+    # belongs to the criterion it stops on.
+    "Every success criterion must require independent corroboration as part of "
+    "what settles the sub-topic: state that at least two sources from different "
+    "publishers must state each load-bearing number or finding, and say how a "
+    "reader would recognise the second one. A fact only one source states is "
+    "recorded as unverified no matter how authoritative that source is, so a "
+    "sub-topic is not answered while a single publisher states it.\n"
     "Aim the queries at primary sources — regulations, standards, filings, "
     "and datasets that state the facts directly — and say which class of "
     "source each query should reach. Include, for each sub-topic, a query "
