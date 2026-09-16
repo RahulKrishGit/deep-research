@@ -34,6 +34,7 @@ from deep_research.utils.config import (
     ConfigSettings,
     EvaluationConfig,
     LLMConfig,
+    load_config,
 )
 
 # The Critic's recorded ``target_prompt_fingerprint`` after the
@@ -857,6 +858,136 @@ def test_the_target_llm_config_carries_the_frozen_effort_and_model() -> None:
     assert llm.reasoning_effort == "max"
     assert llm.thinking_mode == "enabled"
     assert llm.model_overrides == {}
+
+
+def test_production_parity_resolves_the_target_from_the_production_llm() -> None:
+    """The measured divergence this closes (baseline §6.2, D-10).
+
+    The evaluation corpus ran the researcher and source evaluator at ``high``
+    under one configuration fingerprint while the planner and fact checker ran
+    at ``max`` under another, because production could express only one effort
+    for all six agents. With the per-agent profile now in ``llm``, an
+    evaluation target resolves the same value the CLI runs.
+    """
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={
+                "planner": {"reasoning_effort": "max"},
+                "researcher": {"reasoning_effort": "high"},
+            },
+        )
+    )
+
+    planner = build(settings=settings, agent_name="planner")
+    researcher = build(settings=settings, agent_name="researcher")
+
+    assert planner.target_reasoning_effort == "max"
+    assert planner.target_profile_source == "production"
+    assert planner.release_evidence is True
+    assert planner.experiment_only is False
+    assert researcher.target_reasoning_effort == "high"
+    assert researcher.target_profile_source == "production"
+    # And the resolved target config equals what the CLI would run.
+    for runtime, agent_name in ((planner, "planner"), (researcher, "researcher")):
+        target = target_llm_config(runtime, settings.llm)
+        assert target.resolve_for(None).reasoning_effort == (
+            settings.llm.resolve_for(agent_name).reasoning_effort
+        )
+
+
+def test_an_evaluation_only_profile_is_labelled_non_release_evidence() -> None:
+    """Production declares nothing for this agent, so the profile is the
+    experiment's own and the record says so."""
+    settings = ConfigSettings(llm=LLMConfig(reasoning_effort="high"))
+
+    runtime = build(settings=settings, agent_name="planner")
+
+    assert runtime.target_reasoning_effort == "max"
+    assert runtime.target_profile_source == "evaluation"
+    assert runtime.experiment_only is True
+    assert runtime.release_evidence is False
+
+
+def test_a_cli_runtime_override_is_an_experiment_not_release_evidence() -> None:
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={"planner": {"reasoning_effort": "max"}},
+        )
+    )
+
+    runtime = build(
+        settings=settings, agent_name="planner", reasoning_effort="low"
+    )
+
+    assert runtime.target_reasoning_effort == "low"
+    assert runtime.target_profile_source == "invocation"
+    assert runtime.release_evidence is False
+
+
+def test_the_shipped_config_resolves_targets_and_cli_to_one_profile() -> None:
+    """Review evidence: the shipped YAML is production-parity by construction."""
+    settings = load_config("config.yaml")
+
+    for agent_name in AGENT_NAMES:
+        runtime = build(settings=settings, agent_name=agent_name)
+        cli = settings.llm.resolve_for(agent_name)
+        assert runtime.target_profile_source == "production"
+        assert runtime.target_reasoning_effort == cli.reasoning_effort
+        assert runtime.release_evidence is True
+        assert runtime.target_model == cli.model
+
+
+def test_a_frozen_production_profile_that_no_longer_matches_is_refused() -> None:
+    """Fail preflight, never silently fall back to another effort."""
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={"planner": {"reasoning_effort": "max"}},
+        )
+    )
+    runtime = build(settings=settings, agent_name="planner")
+    edited = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={"planner": {"reasoning_effort": "high"}},
+        )
+    )
+
+    with pytest.raises(ValueError, match="production"):
+        target_llm_config(runtime, edited.llm)
+
+
+def test_experiment_metadata_records_the_profile_source() -> None:
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={"planner": {"reasoning_effort": "max"}},
+        )
+    )
+    metadata = experiment_metadata(
+        build(settings=settings, agent_name="planner"), settings
+    )
+
+    assert metadata["target_profile_source"] == "production"
+    assert metadata["production_parity"] is True
+    assert metadata["release_evidence"] is True
+
+
+def test_experiment_metadata_marks_an_experiment_only_profile() -> None:
+    settings = ConfigSettings(llm=LLMConfig(reasoning_effort="high"))
+    metadata = experiment_metadata(
+        build(settings=settings, agent_name="planner"), settings
+    )
+
+    assert metadata["target_profile_source"] == "evaluation"
+    assert metadata["release_evidence"] is False
+
+
+def test_evaluation_config_defaults_to_production_parity() -> None:
+    """The CLI flag Task 12 exposes turns it off; off is not the default."""
+    assert EvaluationConfig().production_parity is True
 
 
 def test_the_target_llm_config_is_accepted_by_the_capability_registry() -> None:

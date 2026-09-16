@@ -332,6 +332,18 @@ class EvaluationConfig(BaseModel):
     target_reasoning_effort_overrides: dict[str, ReasoningEffort] = Field(
         default_factory=lambda: dict(_DEFAULT_TARGET_EFFORTS)
     )
+    production_parity: bool = True
+    """Resolve the target from ``llm`` rather than from this profile.
+
+    On by default: an evaluation run measures the configuration the CLI
+    actually runs, so when production declares a per-agent profile in
+    ``llm.model_overrides`` that declaration wins and the record says so.
+    ``target_reasoning_effort`` and its overrides then describe the profile
+    an *experiment* would use — for an agent production does not name, or for
+    a run that turns parity off deliberately. Task 12 exposes the CLI flag;
+    a run that resolves an evaluation-only profile is labelled non-release
+    evidence rather than silently reported as a measurement of production.
+    """
     judge_model: str = Field(default="deepseek-v4-flash", min_length=1)
     judge_reasoning_effort: ReasoningEffort = "max"
     # ``None`` means inherit ``llm.embedding_provider`` / ``llm.embedding_model``:

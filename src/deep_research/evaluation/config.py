@@ -95,13 +95,88 @@ def resolve_target_effort(
     *,
     override: ReasoningEffort | None,
 ) -> ReasoningEffort:
-    """Precedence: invocation override, per-agent override, global default."""
+    """The evaluation profile's own effort: override, per-agent, then global.
+
+    This is the *experiment-only* profile. Production parity resolves the
+    target from ``LLMConfig.resolve_for`` instead (see
+    ``resolve_target_profile``); this function stays the definition of what an
+    evaluation-only run would use, and of the fallback for an agent that
+    production does not name.
+    """
     if override is not None:
         return _validated_effort(override)
     per_agent = config.target_reasoning_effort_overrides.get(agent_name)
     if per_agent is not None:
         return _validated_effort(per_agent)
     return _validated_effort(config.target_reasoning_effort)
+
+
+# Where one evaluation target's model/effort came from. ``production`` is the
+# only source that may be counted as release evidence: it is the profile the
+# CLI runs. ``evaluation`` is the harness's own profile and ``invocation`` is
+# a per-run CLI override, and both are experiments about a configuration
+# rather than a measurement of the shipped one.
+TargetProfileSource = Literal["production", "evaluation", "invocation"]
+
+
+@dataclass(frozen=True, slots=True)
+class TargetProfile:
+    """One evaluation target's resolved model and reasoning effort."""
+
+    model: str
+    reasoning_effort: ReasoningEffort
+    source: TargetProfileSource
+
+    @property
+    def release_evidence(self) -> bool:
+        return self.source == "production"
+
+
+def resolve_target_profile(
+    base: LLMConfig,
+    evaluation: EvaluationConfig,
+    agent_name: AgentName,
+    *,
+    override: ReasoningEffort | None,
+) -> TargetProfile:
+    """Resolve one target's profile, preferring the production declaration.
+
+    Precedence, and why:
+
+    1. an explicit per-run override — an experiment the caller declared;
+    2. production's own per-agent declaration (``llm.model_overrides``) when
+       ``evaluation.production_parity`` is on, because that is what the CLI
+       actually runs, and a measurement of the shipped configuration is what
+       the harness exists to produce;
+    3. the evaluation profile — used when production declares nothing for
+       this agent, and labelled an experiment rather than release evidence.
+
+    Before this, an evaluation run always used the evaluation-only profile
+    while the CLI could express only one effort for all six agents, so the
+    two resolved different reasoning and the corpus measured a configuration
+    no release could reproduce (baseline §6.2, D-10).
+    """
+    if override is not None:
+        return TargetProfile(
+            model=base.resolve_for(agent_name).model,
+            reasoning_effort=_validated_effort(override),
+            source="invocation",
+        )
+    declared = base.model_overrides.get(agent_name)
+    if evaluation.production_parity and declared is not None:
+        resolved = base.resolve_for(agent_name)
+        return TargetProfile(
+            model=resolved.model,
+            reasoning_effort=resolved.reasoning_effort,
+            source="production",
+        )
+    return TargetProfile(
+        model=evaluation.target_model,
+        reasoning_effort=resolve_target_effort(
+            evaluation, agent_name, override=None
+        ),
+        source="evaluation",
+    )
 
 
 def resolve_judge_effort(
@@ -237,6 +312,17 @@ class EvaluationRuntimeConfig(ContractModel):
     max_concurrency: int
     target_model: str
     target_reasoning_effort: ReasoningEffort
+    target_profile_source: TargetProfileSource
+    """Where the target's model and effort came from.
+
+    ``"production"`` alone means this run measured the configuration the CLI
+    runs; ``"evaluation"`` and ``"invocation"`` are experiments about a
+    configuration.
+    """
+    production_parity: bool
+    """Whether production's own declaration was consulted for this run."""
+    experiment_only: bool
+    """True when the resolved profile is not the one production runs."""
     judge_model: str
     judge_reasoning_effort: ReasoningEffort
     judge_temperature: float | None
@@ -263,6 +349,11 @@ class EvaluationRuntimeConfig(ContractModel):
     prompt_fingerprint: str
     package_version: str
 
+    @property
+    def release_evidence(self) -> bool:
+        """Whether this run's target profile is the one production runs."""
+        return not self.experiment_only
+
 
 def build_runtime_config(
     settings: ConfigSettings,
@@ -279,11 +370,20 @@ def build_runtime_config(
 ) -> EvaluationRuntimeConfig:
     """Resolve settings plus CLI overrides into one frozen runtime config."""
     evaluation = settings.evaluation
-    target_effort = resolve_target_effort(
-        evaluation, agent_name, override=reasoning_effort
+    profile = resolve_target_profile(
+        settings.llm, evaluation, agent_name, override=reasoning_effort
     )
     judge_effort = resolve_judge_effort(
         evaluation, override=judge_reasoning_effort
+    )
+    # An evaluation-only profile is non-release evidence exactly when it
+    # disagrees with what production would run for this agent. Agreement means
+    # the experiment is still measuring the shipped configuration even though
+    # the value came from the evaluation block.
+    production = settings.llm.resolve_for(agent_name)
+    experiment_only = profile.source != "production" and (
+        profile.model != production.model
+        or profile.reasoning_effort != production.reasoning_effort
     )
     resolved_dataset_name = dataset_name(
         agent_name, tier, evaluation.dataset_version
@@ -314,8 +414,9 @@ def build_runtime_config(
     configuration_fingerprint = fingerprint(
         {
             "application": settings.model_dump(mode="json"),
-            "target_model": evaluation.target_model,
-            "target_reasoning_effort": target_effort,
+            "target_model": profile.model,
+            "target_reasoning_effort": profile.reasoning_effort,
+            "target_profile_source": profile.source,
             "target_react_transport": target_react_transport(
                 settings.llm.provider
             ),
@@ -349,8 +450,11 @@ def build_runtime_config(
             else evaluation.live_repetitions
         ),
         max_concurrency=evaluation.max_concurrency,
-        target_model=evaluation.target_model,
-        target_reasoning_effort=target_effort,
+        target_model=profile.model,
+        target_reasoning_effort=profile.reasoning_effort,
+        target_profile_source=profile.source,
+        production_parity=evaluation.production_parity,
+        experiment_only=experiment_only,
         judge_model=evaluation.judge_model,
         judge_reasoning_effort=judge_effort,
         judge_temperature=evaluation.judge_temperature,
@@ -381,12 +485,31 @@ def target_llm_config(
 ) -> LLMConfig:
     """The LLM config the target agent actually runs under.
 
-    ``provider`` is inherited from the application config, so an
-    evaluation run always talks to the same vendor production does.
-    ``model_overrides`` is cleared on purpose: the spec enables no
-    agent-specific model overrides in the baseline, and an inherited
-    production override would silently change the target model.
+    ``provider`` is inherited from the application config, so an evaluation
+    run always talks to the same vendor production does. ``model_overrides``
+    is cleared on purpose: the profile is frozen on the runtime config before
+    any repetition starts, and a live override table would let a later edit
+    change the effort mid-experiment.
+
+    When the frozen profile came from production, this re-resolves it against
+    ``base`` and refuses a disagreement. A configuration edited between the
+    runtime config being built and the provider being constructed is exactly
+    the case a silent fallback would hide — the run would then be reported
+    under a fingerprint it no longer matches.
     """
+    if runtime.target_profile_source == "production":
+        resolved = base.resolve_for(runtime.agent_name)
+        if (
+            resolved.model != runtime.target_model
+            or resolved.reasoning_effort != runtime.target_reasoning_effort
+        ):
+            raise ValueError(
+                "the frozen production profile no longer matches the "
+                f"configured llm for {runtime.agent_name}: this run was "
+                f"frozen at {runtime.target_model}/"
+                f"{runtime.target_reasoning_effort} and production now "
+                f"resolves {resolved.model}/{resolved.reasoning_effort}"
+            )
     return base.model_copy(
         update={
             "provider": base.provider,
@@ -494,6 +617,9 @@ def experiment_metadata(
         "git_dirty": runtime.git.dirty,
         "target_model": runtime.target_model,
         "target_reasoning_effort": runtime.target_reasoning_effort,
+        "target_profile_source": runtime.target_profile_source,
+        "production_parity": runtime.production_parity,
+        "release_evidence": runtime.release_evidence,
         "target_react_transport": target_react_transport(
             settings.llm.provider
         ),

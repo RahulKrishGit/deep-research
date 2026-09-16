@@ -45,7 +45,10 @@ from deep_research.agents.source_evaluator import (
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.agents.steps import ReActStep, read_evidence_urls
 from deep_research.agents.synthesizer import SynthesizerAgent
-from deep_research.evaluation.config import EvaluationRuntimeConfig
+from deep_research.evaluation.config import (
+    EvaluationRuntimeConfig,
+    target_llm_config,
+)
 from deep_research.evaluation.factory import evaluation_session_id
 from deep_research.evaluation.models import (
     AGENT_NAMES,
@@ -839,8 +842,15 @@ def isolated_settings(
             "directory": str(root / "documents" / f"{case_id}-r{repetition}")
         },
     )
+    # Production parity is applied to the isolated copy as well as to the
+    # provider: everything inside the bundle that reads ``settings.llm`` — a
+    # preflight check, a tool, a second provider — then sees the exact profile
+    # the target runs under instead of a production mapping that may name a
+    # different effort for this agent.
+    llm = target_llm_config(runtime, settings.llm)
     return settings.model_copy(
-        deep=True, update={"memory": memory, "output": output}
+        deep=True,
+        update={"memory": memory, "output": output, "llm": llm},
     )
 
 
