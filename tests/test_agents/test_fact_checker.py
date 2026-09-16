@@ -612,6 +612,102 @@ def test_passages_require_read_urls_and_keep_bounded_independent_provenance() ->
     assert len(passages[0].excerpt) <= MAX_PASSAGE_EXCERPT_CHARS
 
 
+def _upstream_passage_draft(
+    url: str = "https://upstream.test/report",
+) -> ClaimVerdictDraft:
+    return _verdict_draft(
+        passages=[
+            EvidencePassageDraft(
+                source_url=url,
+                source_title="Independent study",
+                locator="p. 3",
+                excerpt="An independent study reports the same reduction.",
+                stance="supports",
+            )
+        ]
+    )
+
+
+def test_an_upstream_read_url_widens_the_admissible_evidence_pool() -> None:
+    """Evidence the run already read upstream is admissible as a passage.
+
+    Only the verification loop's OWN reads used to be kept, so a cited URL
+    the researcher had already read in the same run was discarded here.
+    """
+    passages = valid_verification_passages(
+        _upstream_passage_draft(),
+        retrieved_urls=[],
+        upstream_read_urls=["https://upstream.test/report"],
+        claimed_publishers=["example.org"],
+    )
+
+    assert [passage.source_url for passage in passages] == [
+        "https://upstream.test/report"
+    ]
+
+
+def test_an_upstream_read_passage_yields_the_models_verdict() -> None:
+    """The union of reads turns an unjudged claim into a judged one.
+
+    Before pooling, ``resolve_verdict`` saw no passage at all and answered
+    ``insufficient_evidence`` with confidence 0 — no judgment was made.
+    """
+    claim = build_claim(
+        _claim_draft(),
+        _upstream_passage_draft(),
+        independent=["upstream.test"],
+        retrieved_urls=[],
+        upstream_read_urls=["https://upstream.test/report"],
+    )
+
+    assert claim.verdict == "verified"
+    assert claim.confidence == pytest.approx(0.9)
+    assert claim.evidence == ["An independent study reports the same reduction."]
+
+
+def test_a_url_read_nowhere_is_still_rejected() -> None:
+    """Neither read set carries the cited URL, so the passage is invented."""
+    claim = build_claim(
+        _claim_draft(),
+        _upstream_passage_draft("https://never-read.test/report"),
+        independent=["upstream.test"],
+        retrieved_urls=["https://third.test/x"],
+        upstream_read_urls=["https://upstream.test/report"],
+    )
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.confidence == pytest.approx(0.0)
+    assert claim.verification_evidence == []
+
+
+def test_a_same_publisher_passage_is_rejected_even_if_read_upstream() -> None:
+    """Widening which reads count must not widen the independence rule."""
+    claim = build_claim(
+        _claim_draft(),
+        _upstream_passage_draft("https://example.org/b"),
+        independent=["upstream.test"],
+        retrieved_urls=["https://third.test/x"],
+        upstream_read_urls=["https://example.org/b"],
+    )
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.verification_evidence == []
+
+
+def test_no_passages_is_still_insufficient_with_upstream_reads() -> None:
+    """A non-empty read set never manufactures a judgment of its own."""
+    claim = build_claim(
+        _claim_draft(),
+        _verdict_draft(passages=[]),
+        independent=["upstream.test"],
+        retrieved_urls=["https://third.test/x"],
+        upstream_read_urls=["https://upstream.test/report"],
+    )
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.confidence == pytest.approx(0.0)
+
+
 def test_reported_contradictions_downgrade_a_verified_verdict() -> None:
     draft = _verdict_draft(
         verdict="verified", contradictions=["A regulator disputes it."]
@@ -978,6 +1074,49 @@ async def test_independent_evidence_produces_a_model_verdict(
     assert reason is None
     assert errors == []
     assert provider_failed is False
+
+
+@pytest.mark.asyncio
+async def test_the_agent_pools_evidence_the_researcher_read_upstream(
+    tracker: Tracker,
+) -> None:
+    """The run's own upstream findings reach the verification pool.
+
+    The loop reads one independent page, so a verdict call happens at all,
+    but the model's supporting passage cites a URL the researcher had
+    already read upstream in this same run.
+    """
+    completer = ScriptedCompleter(
+        decisions=list(_check_decisions()),
+        outputs=[
+            ClaimsDraft(claims=[_claim_draft()]),
+            _upstream_passage_draft(),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+    )
+    state = _check_state(
+        [
+            _check_finding("https://example.org/a"),
+            _check_finding("https://upstream.test/report"),
+        ],
+        [_scored("https://example.org/a")],
+    )
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    claims = outcome.state_update["verified_claims"]
+    assert [claim.verdict for claim in claims] == ["verified"]
+    assert [claim.confidence for claim in claims] == [pytest.approx(0.9)]
 
 
 @pytest.mark.asyncio

@@ -359,11 +359,14 @@ CRITIC_PROMPT_FINGERPRINT = "97a2d10ad688"
 # and the Judge pin are unchanged: this is the module-source false positive
 # recorded for A-4/A-6 and P4 above, and the reason the alarm is checked as a
 # matrix rather than per file.
+# The upstream-evidence pooling change moved the Fact Checker's value once
+# more, ``1f52e702839d`` -> ``04582f1aaed1``: a fact_checker.py
+# module-source change, not a prompt edit — no prompt string moved.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "8cc4d32e20f4",
     "researcher": "efe153883c5b",
     "source_evaluator": "4fdf95ddcc64",
-    "fact_checker": "1f52e702839d",
+    "fact_checker": "04582f1aaed1",
     "synthesizer": "ad25c1b309b1",
     "critic": "97a2d10ad688",
 }

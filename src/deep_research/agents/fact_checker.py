@@ -628,10 +628,24 @@ def valid_verification_passages(
     draft: ClaimVerdictDraft,
     *,
     retrieved_urls: Sequence[str],
+    upstream_read_urls: Sequence[str] = (),
     claimed_publishers: Sequence[str],
 ) -> list[EvidencePassage]:
-    """Keep only bounded passages backed by read-bearing independent URLs."""
-    retrieved = {normalize_source_url(url) for url in retrieved_urls}
+    """Keep only bounded passages backed by read-bearing independent URLs.
+
+    The admissible read set is the UNION of the verification loop's own
+    reads and the URLs this run's findings came from: the evidence pool is
+    the run's supporting upstream findings plus the verifier's own
+    retrievals. Admitting only the second half discarded evidence the
+    researcher had already read in the same run, and a discarded passage
+    left ``resolve_verdict`` with nothing to judge — it answered
+    ``insufficient_evidence`` with confidence 0. That was 9 of 12 failures
+    in the last run. Only *which* read URLs are admissible widens here: the
+    independence rule, the copied-example rejection, and the bounds are
+    untouched.
+    """
+    reads = [*retrieved_urls, *upstream_read_urls]
+    retrieved = {normalize_source_url(url) for url in reads}
     claimed = {publisher.casefold() for publisher in claimed_publishers}
     valid: list[EvidencePassage] = []
     seen: set[tuple[str, str, str, str]] = set()
@@ -694,11 +708,17 @@ def build_claim(
     *,
     independent: Sequence[str] = (),
     retrieved_urls: Sequence[str] = (),
+    upstream_read_urls: Sequence[str] = (),
     claimed_publishers: Sequence[str] | None = None,
     consumed_finding_fingerprints: Sequence[str] = (),
     consumed_coverage_ids: Sequence[str] = (),
 ) -> Claim:
-    """Stamp one model verdict into a validated ``Claim`` record."""
+    """Stamp one model verdict into a validated ``Claim`` record.
+
+    ``retrieved_urls`` is the verification loop's own read set and
+    ``upstream_read_urls`` the URLs this run's findings came from; the
+    passages the verdict is resolved from may cite either.
+    """
     claimed = list(
         claimed_publishers
         if claimed_publishers is not None
@@ -707,6 +727,7 @@ def build_claim(
     passages = valid_verification_passages(
         draft,
         retrieved_urls=retrieved_urls,
+        upstream_read_urls=upstream_read_urls,
         claimed_publishers=claimed,
     )
     verdict, confidence = resolve_verdict(
@@ -1051,6 +1072,13 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # ``run`` so ``state_update`` can merge into it. Empty until a run
         # starts, which keeps a directly-invoked ``state_update`` total.
         self._prior_claims: list[Claim] = []
+        # The canonical URLs the run's findings came from — evidence the
+        # researcher already read upstream, which the claim's verification
+        # pool admits alongside the loop's own reads. Captured by ``run``
+        # from the state it was handed, like ``_prior_claims``; empty until
+        # a run starts, which keeps a directly-invoked ``verify_claim``
+        # total.
+        self._upstream_read_urls: list[str] = []
         # What the last extraction pass attributed to each accepted draft,
         # keyed by claim fingerprint. ``claim_task`` reads it so a verified
         # claim records the evidence it consumed; it is per-run state and is
@@ -1277,6 +1305,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 draft,
                 independent=independent,
                 retrieved_urls=retrieved_urls,
+                upstream_read_urls=self._upstream_read_urls,
                 claimed_publishers=task.claimed_domains,
                 consumed_finding_fingerprints=(
                     task.consumed_finding_fingerprints
@@ -1364,6 +1393,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         """Extract claims, then verify each in its own bounded loop."""
         base_task = self.build_task(state)
         self._prior_claims = list(state.verified_claims)
+        # What the researcher read upstream travels on the agent's state the
+        # same way the prior snapshot does, because ``verify_claim`` is
+        # handed only the claim's loop. The claims to verify are the
+        # findings' own, so the findings' URLs are exactly the upstream read
+        # set.
+        self._upstream_read_urls = known_source_urls(state)
         # Provenance belongs to the extraction pass about to run; anything
         # left from an earlier run on this instance must not leak into it.
         self._pending_provenance = {}
