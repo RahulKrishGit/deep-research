@@ -468,6 +468,134 @@ def test_the_plan_request_never_asks_the_model_for_a_coverage_id() -> None:
     )
 
 
+# The two ``list[str]`` fields the provider is asked for. A plan request
+# sampled 11 times returned ``success_criteria`` with exactly one element
+# every time, and the live failure was that lone criterion arriving as a
+# bare string instead of a one-element list.
+_SCALAR_LIST_FIELDS = ("search_queries", "success_criteria")
+
+_LONE_CRITERION = "A benchmark with a named source."
+
+
+def _raw_draft(**overrides: object) -> dict[str, object]:
+    """One sub-topic payload exactly as a provider would send it."""
+    payload: dict[str, object] = {
+        "title": "Error correction",
+        "rationale": "Error correction is load-bearing for the answer.",
+        "search_queries": ["qec benchmarks 2025"],
+        "success_criteria": [_LONE_CRITERION],
+        "priority": 1,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize("field", _SCALAR_LIST_FIELDS)
+def test_a_lone_string_is_read_as_a_one_element_list(field: str) -> None:
+    """The model's one-bracket wobble must not kill the whole session."""
+    draft = ResearchPlanDraft.model_validate(
+        {"sub_topics": [_raw_draft(**{field: _LONE_CRITERION})]}
+    )
+
+    assert getattr(draft.sub_topics[0], field) == [_LONE_CRITERION]
+
+
+@pytest.mark.parametrize("field", _SCALAR_LIST_FIELDS)
+def test_a_list_of_strings_is_read_unchanged(field: str) -> None:
+    """The tolerance widens nothing that already worked."""
+    values = ["qec benchmarks 2025", "surface code threshold 2026"]
+
+    draft = ResearchPlanDraft.model_validate(
+        {"sub_topics": [_raw_draft(**{field: values})]}
+    )
+
+    assert getattr(draft.sub_topics[0], field) == values
+
+
+@pytest.mark.parametrize("field", _SCALAR_LIST_FIELDS)
+@pytest.mark.parametrize(
+    "wrong",
+    [
+        5,
+        3.5,
+        True,
+        None,
+        {"a": 1},
+        [5],
+        ["ok", 5],
+        [["nested"]],
+    ],
+    ids=["int", "float", "bool", "null", "dict", "list-of-int", "mixed", "nested"],
+)
+def test_a_non_string_wrong_type_is_still_rejected(
+    field: str, wrong: object
+) -> None:
+    """Only a bare ``str`` is tolerated; nothing else becomes valid."""
+    with pytest.raises(ValidationError):
+        ResearchPlanDraft.model_validate(
+            {"sub_topics": [_raw_draft(**{field: wrong})]}
+        )
+
+
+@pytest.mark.parametrize("field", _SCALAR_LIST_FIELDS)
+def test_the_field_schema_still_asks_the_model_for_an_array_of_strings(
+    field: str,
+) -> None:
+    """The model is asked for a list, so the fix must add no schema keyword."""
+    properties = SubTopicDraft.model_json_schema()["properties"]
+
+    assert properties[field] == {
+        "items": {"type": "string"},
+        "title": field.replace("_", " ").title(),
+        "type": "array",
+    }
+
+
+# ``SubTopicDraft.model_json_schema()`` captured before the tolerance was
+# added, minus the ``description`` that the class docstring renders into.
+_PLAN_SCHEMA_BEFORE_THE_FIX: dict[str, object] = {
+    "additionalProperties": False,
+    "properties": {
+        "priority": {"title": "Priority", "type": "integer"},
+        "rationale": {"title": "Rationale", "type": "string"},
+        "search_queries": {
+            "items": {"type": "string"},
+            "title": "Search Queries",
+            "type": "array",
+        },
+        "success_criteria": {
+            "items": {"type": "string"},
+            "title": "Success Criteria",
+            "type": "array",
+        },
+        "title": {"title": "Title", "type": "string"},
+    },
+    "required": [
+        "title",
+        "rationale",
+        "search_queries",
+        "success_criteria",
+        "priority",
+    ],
+    "title": "SubTopicDraft",
+    "type": "object",
+}
+
+
+def test_the_plan_schema_the_model_is_handed_is_unchanged() -> None:
+    """A validator is not a schema keyword, so the request cannot shift.
+
+    The draft model is converted to a strict JSON schema and sent to the
+    provider, so anything that leaked into that schema would change what the
+    model is asked for. This pins the whole schema but the human-readable
+    docstring.
+    """
+    schema = dict(SubTopicDraft.model_json_schema())
+    schema.pop("description", None)
+
+    assert schema == _PLAN_SCHEMA_BEFORE_THE_FIX
+
+
 def _plan_text(sub_topic: SubTopic) -> str:
     """Everything about one planned sub-topic that a reader or search sees."""
     return " ".join(

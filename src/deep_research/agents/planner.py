@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 
 from deep_research.agents.base import AgentRun, BaseAgent
 from deep_research.agents.errors import PlanningError, planning_provider_error
@@ -147,6 +147,31 @@ class SubTopicDraft(ContractModel):
     search_queries: list[str]
     success_criteria: list[str]
     priority: int
+
+    @field_validator("search_queries", "success_criteria", mode="before")
+    @classmethod
+    def _accept_a_lone_string(cls, value: object) -> object:
+        """Read a bare string as a one-element list, and nothing else.
+
+        A plan request sampled 11 times returned ``success_criteria`` with
+        exactly one element every time, and two of the last four live CLI
+        runs died at the planner with ``graph_planning_failed`` after 22,593
+        and 17,433 tokens because both structured attempts reported
+        ``type_mismatch`` on ``sub_topics.success_criteria`` for every
+        sub-topic: the model wrote that one criterion as a bare string where
+        the schema declares ``list[str]``. The value was always otherwise
+        usable, so the whole session was lost to a missing pair of brackets.
+
+        A ``mode="before"`` validator adds no JSON schema keyword — Pydantic
+        renders constraints, not validators — so the schema the provider is
+        handed stays byte-identical and the model is still asked for an
+        array of strings. Only a ``str`` is wrapped; a dict, a number, or a
+        list holding non-strings keeps failing exactly as before, where the
+        repair prompt and ``PlanningError.problems`` can report it.
+        """
+        if isinstance(value, str):
+            return [value]
+        return value
 
 
 class ResearchPlanDraft(ContractModel):
