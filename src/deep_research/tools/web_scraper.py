@@ -34,7 +34,12 @@ class AsyncHttpClient(Protocol):
 
 
 class WebScraperTool(BaseTool):
-    """Fetch an allowed static HTML page and extract its visible text."""
+    """Read a web page and extract its visible text.
+
+    The robots policy, the HTML content-type check and the URL validation are
+    all still enforced by this tool; only the model-facing ``description``
+    below is worded as a capability rather than as a restriction.
+    """
 
     name = "web_scraper"
     # Capability-first wording, deliberately. The previous description led with

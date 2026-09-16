@@ -296,15 +296,18 @@ CRITIC_PROMPT_FINGERPRINT = "bc6b1f23064c"
 #     where the schema declares ``list[str]``. The JSON schema handed to the
 #     model is byte-identical before and after (verified by hashing
 #     ``model_json_schema()``), so the model is still asked for an array.
-#   researcher 96907685a382 -> 58ec2371ccc7: the researcher's system prompt
-#     gained an ordering rule — read the most promising result before searching
-#     again — after a per-agent trace analysis showed 183 ``web_search`` calls,
-#     zero ``web_scraper`` calls, and every ReAct loop ending at exactly its
-#     10-call tool budget. Wording only; no tool semantics changed.
+#   researcher 96907685a382 -> d48583bcb01f: the researcher's system prompt
+#     gained an ordering rule — read the most promising result a search returned
+#     before searching again — after a per-agent trace analysis showed 183
+#     ``web_search`` calls, zero ``web_scraper`` calls, and every ReAct loop
+#     ending at exactly its 10-call tool budget. Review asked for the qualifier
+#     that a search returning nothing worth reading should be followed by
+#     another search rather than a forced read; that wording is included in this
+#     value. Wording only; no tool semantics changed.
 # No other agent's value moved.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "2e357f4a04c4",
-    "researcher": "58ec2371ccc7",
+    "researcher": "d48583bcb01f",
     "source_evaluator": "6e127ffba9d4",
     "fact_checker": "5080d1810c7e",
     "synthesizer": "dd422429c34b",
