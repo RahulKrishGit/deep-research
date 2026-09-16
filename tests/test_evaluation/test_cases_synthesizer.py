@@ -1,56 +1,71 @@
-"""Synthesizer evaluation cases: citations, conflict, and write recovery."""
+"""Synthesizer evaluation cases: claim-linked composition and uncertainty."""
 
 from __future__ import annotations
 
-import httpx
 import pytest
 
+from deep_research.agents.report import (
+    REPORT_TITLE_PREFIX,
+    build_citation_index,
+)
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
     SCENARIOS,
     build_controlled_dependencies,
 )
+from deep_research.evaluation.evaluators import (
+    METRIC_FUNCTIONS,
+    deterministic_metric_scores,
+)
+from deep_research.evaluation.models import TargetOutput
 
 CONTROLLED = (
     "complete-cited-report",
     "conflict-and-limitations",
-    "write-or-memory-failure",
+    "composition-no-publication",
 )
 
 _METRICS = {
     "complete-cited-report": (
-        ("report_present", 0.20),
-        ("citations_known", 0.30),
-        ("coverage", 0.25),
+        ("reader_markdown_present", 0.15),
+        ("evidence_markdown_present", 0.15),
+        ("citations_known", 0.20),
+        ("coverage", 0.20),
         ("limitations_present", 0.15),
-        ("persistence_truthful", 0.10),
+        ("no_persistence_calls", 0.10),
+        ("no_false_publication_claim", 0.05),
     ),
     "conflict-and-limitations": (
-        ("conflict_represented", 0.35),
-        ("no_overstatement", 0.25),
-        ("limitations_present", 0.20),
-        ("citations_known", 0.20),
-    ),
-    "write-or-memory-failure": (
-        ("report_present_in_state", 0.35),
-        ("failure_recorded", 0.30),
-        ("no_false_persistence_claim", 0.25),
+        ("conflict_represented", 0.20),
+        ("no_overstatement", 0.15),
+        ("limitations_present", 0.10),
         ("citations_known", 0.10),
+        ("reader_markdown_present", 0.15),
+        ("evidence_markdown_present", 0.15),
+        ("no_persistence_calls", 0.10),
+        ("no_false_publication_claim", 0.05),
+    ),
+    "composition-no-publication": (
+        ("reader_markdown_present", 0.20),
+        ("evidence_markdown_present", 0.20),
+        ("no_persistence_calls", 0.25),
+        ("no_false_publication_claim", 0.20),
+        ("citations_known", 0.15),
     ),
     "synthesizer-live-report": (
-        ("report_present", 0.20),
-        ("citations_known", 0.30),
-        ("coverage", 0.25),
+        ("reader_markdown_present", 0.15),
+        ("evidence_markdown_present", 0.15),
+        ("citations_known", 0.20),
+        ("coverage", 0.20),
         ("limitations_present", 0.15),
-        ("persistence_truthful", 0.10),
+        ("no_persistence_calls", 0.10),
+        ("no_false_publication_claim", 0.05),
     ),
 }
 
-# The claim texts are shared with the dependency scenarios only where the
-# case pins them: the conflicted case's reference names its two contradicted
-# claim texts, and the write-failure case's reference names the two failing
-# tool names. The case tests pin both sides to the same literals.
+# The claim texts are shared with the case references only where the
+# conflicted case pins its two contradicted claim texts.
 
 _LONDON_CLAIM = (
     "Congestion pricing reduced average travel times in the central London "
@@ -154,20 +169,42 @@ _REFERENCES = {
         "known_citation_urls": list(_MIXED_URLS),
         "required_sections": ["summary", "findings", "limitations"],
         "minimum_cited_sources": 4,
+        "forbidden_publication_claims": [
+            "saved to",
+            "written to",
+            "stored at",
+            "published to",
+        ],
     },
     "conflict-and-limitations": {
         "conflicting_claim_texts": [_MANDATE_VACANCY_CLAIM, _MANDATE_DRIVER_CLAIM],
         "required_caveat_signals": ["conflict", "mixed", "uncertain", "limited"],
         "forbidden_overstatement": ["proves", "conclusively", "definitively"],
+        "forbidden_publication_claims": [
+            "saved to",
+            "written to",
+            "stored at",
+            "published to",
+        ],
     },
-    "write-or-memory-failure": {
-        "expected_error_sources": ["write_document", "save_to_memory"],
-        "forbidden_persistence_claims": ["saved to", "written to", "stored at"],
+    "composition-no-publication": {
+        "forbidden_publication_claims": [
+            "saved to",
+            "written to",
+            "stored at",
+            "published to",
+        ],
     },
     "synthesizer-live-report": {
         "known_citation_urls": list(_LIVE_URLS),
         "required_sections": ["summary", "findings", "limitations"],
         "minimum_cited_sources": 3,
+        "forbidden_publication_claims": [
+            "saved to",
+            "written to",
+            "stored at",
+            "published to",
+        ],
     },
 }
 
@@ -183,10 +220,11 @@ _RUBRIC_DIMENSIONS = {
         "limitations_honesty",
         "uncertainty_representation",
     },
-    "write-or-memory-failure": {
+    "composition-no-publication": {
         "evidence_fidelity",
         "limitations_honesty",
-        "persistence_honesty",
+        "citation_faithfulness",
+        "structure_quality",
     },
     "synthesizer-live-report": {
         "evidence_fidelity",
@@ -227,9 +265,28 @@ def test_the_single_live_case_is_registered() -> None:
     assert live[0].case_id == "synthesizer-live-report"
 
 
-def test_every_case_expects_the_report_output() -> None:
+def test_every_case_expects_both_composed_report_artifacts() -> None:
     for case in _all_synthesizer_cases():
-        assert case.expectations.required_output_fields == ["report"]
+        assert case.expectations.required_output_fields == [
+            "markdown",
+            "evidence_markdown",
+        ]
+
+
+def test_the_controlled_catalog_replaces_publication_failure_with_composition() -> None:
+    assert tuple(
+        case.case_id for case in cases_for("synthesizer", "controlled")
+    ) == (
+        "complete-cited-report",
+        "conflict-and-limitations",
+        "composition-no-publication",
+    )
+
+
+def test_the_live_case_declares_no_publication_dependencies() -> None:
+    live = cases_for("synthesizer", "live")[0]
+
+    assert live.expectations.required_live_dependencies == []
 
 
 def test_every_scenario_is_scripted() -> None:
@@ -244,8 +301,8 @@ def test_every_case_names_its_scenario() -> None:
     assert _case("conflict-and-limitations").dependency_scenario == (
         "synthesizer-conflicted"
     )
-    assert _case("write-or-memory-failure").dependency_scenario == (
-        "synthesizer-write-failure"
+    assert _case("composition-no-publication").dependency_scenario == (
+        "synthesizer-composition"
     )
 
 
@@ -272,35 +329,17 @@ def test_each_case_declares_weighted_metrics(case_id: str) -> None:
     )
 
 
-def test_the_failure_case_requires_a_recorded_recoverable_error() -> None:
-    case = _case("write-or-memory-failure")
-
-    assert case.expectations.must_record_recoverable_error is True
-
-
 def test_each_case_pins_its_finding_and_claim_counts() -> None:
     expected = {
         "complete-cited-report": (6, 4),
         "conflict-and-limitations": (5, 3),
-        "write-or-memory-failure": (4, 3),
+        "composition-no-publication": (4, 3),
         "synthesizer-live-report": (3, 2),
     }
     for case_id, (findings, claims) in expected.items():
         case = _case(case_id)
         assert len(case.state.raw_findings) == findings, case_id
         assert len(case.state.verified_claims) == claims, case_id
-
-
-def test_the_live_case_declares_the_dependencies_it_needs() -> None:
-    """The live Synthesizer performs a real document write and real memory
-    saves — the one agent whose live case writes documents — and declares
-    no search or HTTP tools."""
-    live = cases_for("synthesizer", "live")[0]
-
-    assert live.expectations.required_live_dependencies == [
-        "documents",
-        "memory",
-    ]
 
 
 @pytest.mark.parametrize("case_id", sorted(_METRICS))
@@ -358,8 +397,8 @@ def test_the_conflict_case_cites_exactly_its_five_urls() -> None:
     ) == _CONFLICT_URLS
 
 
-def test_the_failure_case_cites_exactly_its_four_urls() -> None:
-    case = _case("write-or-memory-failure")
+def test_the_composition_case_cites_exactly_its_four_urls() -> None:
+    case = _case("composition-no-publication")
 
     assert tuple(
         finding.source_url for finding in case.state.raw_findings
@@ -382,6 +421,229 @@ def test_the_live_case_cites_three_real_stable_domains() -> None:
         source_domain(finding.source_url)
         for finding in case.state.raw_findings
     } == _LIVE_DOMAINS
+
+
+def test_the_live_case_carries_evidence_for_every_declared_subtopic() -> None:
+    case = _case("synthesizer-live-report")
+
+    subtopic_titles = {topic.title for topic in case.state.sub_topics}
+    finding_topics = {
+        finding.related_sub_topic for finding in case.state.raw_findings
+    }
+
+    assert subtopic_titles
+    assert finding_topics
+    assert subtopic_titles == finding_topics
+
+
+_PARAPHRASED_LIVE_HEADINGS = {
+    "Heat-pump retrofit cost benchmarks": (
+        "Installed cost benchmarks in temperate climates"
+    ),
+    "Incentives and payback periods": "Payback periods",
+    "Cost comparisons with incumbent systems": (
+        "How incentives shift the comparison with incumbent heating"
+    ),
+}
+
+
+def _live_coverage_output(case, report: str) -> TargetOutput:
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id="evaluation-synthesizer-live-coverage",
+        experiment_name="synthesizer-live-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/synthesizer-live-coverage",
+        completed=True,
+        result={"report": report},
+        state_update={"report": report},
+        target_model_requested="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+
+def _live_findings_text(
+    case,
+    *,
+    included_topics: set[str] | None = None,
+    exact_titles: bool = False,
+) -> str:
+    citation_index = build_citation_index(
+        case.state.evaluated_sources, case.state.verified_claims
+    )
+    citation_numbers = {
+        normalize_source_url(citation.url): citation.number
+        for citation in citation_index
+    }
+    findings_by_topic = {
+        finding.related_sub_topic: finding for finding in case.state.raw_findings
+    }
+    blocks = []
+    for topic in case.state.sub_topics:
+        if included_topics is not None and topic.title not in included_topics:
+            continue
+        finding = findings_by_topic[topic.title]
+        heading = (
+            topic.title
+            if exact_titles
+            else _PARAPHRASED_LIVE_HEADINGS[topic.title]
+        )
+        marker = citation_numbers[normalize_source_url(finding.source_url)]
+        blocks.append(
+            f"### {heading}\n\n{finding.content} Sources: [{marker}]"
+        )
+    return "\n\n".join(blocks)
+
+
+def _live_report(case, findings: str, *, references: str | None = None) -> str:
+    """The reader report's shape: references hold only the cited sources."""
+    citation_index = build_citation_index(
+        case.state.evaluated_sources, case.state.verified_claims
+    )
+    cited = "\n".join(
+        f"{citation.number}. {citation.title} — {citation.url}"
+        for citation in citation_index
+    )
+    listed = references or cited
+    return (
+        f"{REPORT_TITLE_PREFIX}What does recent evidence say about heat-pump "
+        "retrofit costs in temperate climates?\n\n"
+        "**As of:** 2026-08-01T12:00:00+00:00\n\n"
+        "**Scope:** 3 planned sub-topics.\n\n"
+        "**Quality status:** not yet quality-gated\n\n"
+        "## Executive summary\n\n"
+        "The evidence describes current heat-pump retrofit economics.\n\n"
+        "## Constraint ranking\n\n"
+        "(no constraint was ranked for this pass)\n\n"
+        f"## Findings\n\n{findings}\n\n"
+        "## Uncertainty and conflicting evidence\n\n"
+        "The evidence base remains limited. Limitations: it is thin.\n\n"
+        "## Methodology\n\n- Locally generated run summary.\n\n"
+        f"## References\n\n{listed}"
+    )
+
+
+def _coverage_score(case, report: str) -> float:
+    output = _live_coverage_output(case, report)
+    return deterministic_metric_scores(
+        output, case, metric_functions=METRIC_FUNCTIONS
+    )["coverage"]
+
+
+def test_coverage_accepts_paraphrased_findings_with_source_markers() -> None:
+    case = _case("synthesizer-live-report")
+    report = _live_report(case, _live_findings_text(case))
+
+    assert all(
+        _normalized_title not in report.casefold()
+        for _normalized_title in (
+            topic.title.casefold() for topic in case.state.sub_topics
+        )
+    )
+    assert _coverage_score(case, report) == 1.0
+
+
+def test_coverage_rejects_report_missing_one_topics_narrative_evidence() -> None:
+    case = _case("synthesizer-live-report")
+    included_topics = {
+        topic.title for topic in case.state.sub_topics[:-1]
+    }
+    report = _live_report(
+        case,
+        _live_findings_text(case, included_topics=included_topics),
+    )
+
+    assert _coverage_score(case, report) == 0.0
+
+
+def test_coverage_rejects_exact_titles_in_a_reference_list() -> None:
+    case = _case("synthesizer-live-report")
+    listed = "\n".join(
+        f"{index}. {topic.title}"
+        for index, topic in enumerate(case.state.sub_topics, start=1)
+    )
+    report = _live_report(case, "(no findings were reported)", references=listed)
+
+    assert _coverage_score(case, report) == 0.0
+
+
+def test_coverage_accepts_explicit_titles_in_findings() -> None:
+    case = _case("synthesizer-live-report")
+    report = _live_report(
+        case,
+        _live_findings_text(case, exact_titles=True),
+    )
+
+    assert _coverage_score(case, report) == 1.0
+
+
+@pytest.mark.parametrize(
+    "report_builder",
+    (
+        lambda case: "## Findings\n\n"
+        + _live_findings_text(case, exact_titles=True),
+        lambda case: "### Findings\n\n"
+        + _live_findings_text(case, exact_titles=True)
+        + "\n\n## Uncertainty and conflicting evidence\n\n(no claims)",
+        lambda case: _live_report(case, _live_findings_text(case, exact_titles=True))
+        .replace(
+            "## Uncertainty and conflicting evidence",
+            "## Uncertainty And Conflicting Evidence",
+        ),
+    ),
+)
+def test_coverage_fails_closed_for_missing_or_malformed_findings_boundaries(
+    report_builder,
+) -> None:
+    case = _case("synthesizer-live-report")
+
+    assert _coverage_score(case, report_builder(case)) == 0.0
+
+
+def test_coverage_rejects_shared_source_associations() -> None:
+    original_case = _case("synthesizer-live-report")
+    case = original_case.model_copy(deep=True)
+    case.state.raw_findings.append(
+        case.state.raw_findings[0].model_copy(
+            update={
+                "related_sub_topic": case.state.sub_topics[1].title,
+            }
+        )
+    )
+    report = _live_report(
+        original_case,
+        _live_findings_text(original_case),
+    )
+
+    assert _coverage_score(case, report) == 0.0
+
+
+def test_coverage_rejects_missing_findings() -> None:
+    original_case = _case("synthesizer-live-report")
+    case = original_case.model_copy(deep=True)
+    case.state.raw_findings = []
+    report = _live_report(
+        original_case,
+        _live_findings_text(original_case),
+    )
+
+    assert _coverage_score(case, report) == 0.0
+
+
+def test_coverage_rejects_a_missing_citation_index() -> None:
+    original_case = _case("synthesizer-live-report")
+    case = original_case.model_copy(deep=True)
+    case.state.evaluated_sources = []
+    case.state.verified_claims = []
+    report = _live_report(
+        original_case,
+        _live_findings_text(original_case),
+    )
+
+    assert _coverage_score(case, report) == 0.0
 
 
 def test_the_complete_case_carries_matching_evaluated_sources() -> None:
@@ -504,8 +766,8 @@ def test_the_conflict_case_reference_pins_the_contradicted_claims() -> None:
         assert len(claim.contradictions) >= 2, claim.text
 
 
-def test_the_failure_case_carries_sources_and_verified_claims() -> None:
-    case = _case("write-or-memory-failure")
+def test_the_composition_case_carries_sources_and_verified_claims() -> None:
+    case = _case("composition-no-publication")
 
     assert tuple(
         source.url for source in case.state.evaluated_sources
@@ -516,8 +778,8 @@ def test_the_failure_case_carries_sources_and_verified_claims() -> None:
         if claim.verdict == "verified"
     ]
     assert len(verified) == 3
-    # Verified and confident enough that the Synthesizer would attempt a
-    # memory save for every one of them — the save is what fails.
+    # The checked claims are sufficient input for composition; publication is
+    # outside this Task 6 case.
     assert all(claim.confidence >= 0.7 for claim in verified)
 
 
@@ -549,8 +811,8 @@ def test_the_live_case_reuses_the_complete_cases_metrics() -> None:
     )
 
 
-def test_the_complete_and_conflict_scenarios_script_no_failures() -> None:
-    for case_id in ("complete-cited-report", "conflict-and-limitations"):
+def test_all_controlled_scenarios_script_no_failures() -> None:
+    for case_id in CONTROLLED:
         script = SCENARIOS[_case(case_id).dependency_scenario]
 
         assert script.failures == {}
@@ -558,36 +820,19 @@ def test_the_complete_and_conflict_scenarios_script_no_failures() -> None:
         assert script.http_pages == {}
 
 
-def test_the_write_failure_scenario_fails_exactly_the_reference_tools() -> None:
-    """The write-or-memory case scripts both persistence tools to fail when
-    called: a read-only filesystem for the document write and an unavailable
-    memory backend for the save."""
-    script = SCENARIOS["synthesizer-write-failure"]
-    case = _case("write-or-memory-failure")
+def test_the_composition_scenario_has_no_scripted_failures() -> None:
+    script = SCENARIOS["synthesizer-composition"]
 
-    assert set(script.failures) == set(
-        case.expectations.reference["expected_error_sources"]
-    ) == {"write_document", "save_to_memory"}
-
-    write_failure = script.failures["write_document"]
-    save_failure = script.failures["save_to_memory"]
-    assert isinstance(write_failure, OSError)
-    assert "read-only file system" in str(write_failure)
-    assert isinstance(save_failure, RuntimeError)
-    assert "long-term memory is unavailable" in str(save_failure)
-
-    # Non-httpx, non-retryable: the real tools retry httpx timeouts and
-    # status errors (three attempts each), which would triple-count a
-    # scripted failure in the call ledger.
-    assert not isinstance(write_failure, httpx.HTTPError)
-    assert not isinstance(save_failure, httpx.HTTPError)
+    assert script.failures == {}
+    assert script.search_responses == {}
+    assert script.http_pages == {}
 
 
 def test_every_case_declares_its_known_source_urls() -> None:
     expected: dict[str, set[str]] = {
         "complete-cited-report": set(_MIXED_URLS),
         "conflict-and-limitations": set(_CONFLICT_URLS),
-        "write-or-memory-failure": set(_FAILURE_URLS),
+        "composition-no-publication": set(_FAILURE_URLS),
         "synthesizer-live-report": set(_LIVE_URLS),
     }
     for case_id, declared in expected.items():
@@ -603,12 +848,11 @@ def test_every_case_declares_its_known_source_urls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_complete_double_writes_and_saves(
+async def test_the_composition_bundle_starts_with_zero_persistence_activity(
     tracker, settings, tmp_path, runtime_config_for
 ) -> None:
-    """The complete scenario's tools both succeed, land their artifacts, and
-    record their outcomes in the repetition ledger."""
-    case = _case("complete-cited-report")
+    """The controlled harness starts Task 6 with no publication activity."""
+    case = _case("composition-no-publication")
     bundle = build_controlled_dependencies(
         runtime_config_for("synthesizer"),
         case,
@@ -616,91 +860,8 @@ async def test_the_complete_double_writes_and_saves(
         settings=settings,
         root=tmp_path,
     )
-    writer = next(tool for tool in bundle.tools if tool.name == "write_document")
-    saver = next(
-        tool for tool in bundle.tools if tool.name == "save_to_memory"
-    )
-
-    async with tracker.session_span("evaluation-1", "q"):
-        written = await writer.execute(
-            filename="report-1.md", content="# Report\n\nBody."
-        )
-        saved = await saver.execute(
-            content="A verified finding worth keeping.",
-            metadata={"entry_type": "finding", "confidence": 0.8},
-        )
-
-    assert written.success, written.error
-    assert written.data == {"path": "report-1.md", "bytes_written": 15}
-    assert (bundle.document_directory / "report-1.md").is_file()
-
-    assert saved.success, saved.error
-    assert saved.data["entry_id"]
-
     ledger = bundle.recorder.ledger()
-    summaries = {summary.tool_name: summary for summary in ledger.tool_calls}
-    assert summaries["write_document"].calls == 1
-    assert summaries["write_document"].failures == 0
-    assert summaries["save_to_memory"].calls == 1
-    assert summaries["save_to_memory"].failures == 0
-    assert ledger.document_writes == 1
-    assert ledger.memory_writes == 1
-    assert ledger.prohibited_calls == []
-
-
-@pytest.mark.asyncio
-async def test_the_write_failure_double_fails_both_tools(
-    tracker, settings, tmp_path, runtime_config_for
-) -> None:
-    """Both persistence tools are present and both fail when called: the
-    document write hits a read-only filesystem and the memory save raises.
-    The failure is the case's point, so the ledger records both as one
-    failed call each — never retried, never triple-counted."""
-    case = _case("write-or-memory-failure")
-    bundle = build_controlled_dependencies(
-        runtime_config_for("synthesizer"),
-        case,
-        tracker=tracker,
-        settings=settings,
-        root=tmp_path,
-    )
-    writer = next(tool for tool in bundle.tools if tool.name == "write_document")
-    saver = next(
-        tool for tool in bundle.tools if tool.name == "save_to_memory"
-    )
-
-    # The output directory was replaced by a plain file, so the write fails
-    # deterministically on every platform — the case must never depend on
-    # read-only permissions that a CI user can bypass.
-    assert bundle.document_directory.is_file()
-
-    async with tracker.session_span("evaluation-1", "q"):
-        written = await writer.execute(
-            filename="report-1.md", content="# Report\n\nBody."
-        )
-        saved = await saver.execute(
-            content="A verified finding worth keeping.",
-            metadata={"entry_type": "finding", "confidence": 0.8},
-        )
-
-    assert written.success is False
-    assert written.error is not None
-    assert written.error.type == "FileExistsError"
-    assert written.error.recoverable is True
-
-    assert saved.success is False
-    assert saved.error is not None
-    assert saved.error.type == "RuntimeError"
-    assert saved.error.message == "long-term memory is unavailable"
-    assert saved.error.recoverable is True
-
-    ledger = bundle.recorder.ledger()
-    summaries = {summary.tool_name: summary for summary in ledger.tool_calls}
-    assert summaries["write_document"].calls == 1
-    assert summaries["write_document"].failures == 1
-    assert summaries["save_to_memory"].calls == 1
-    assert summaries["save_to_memory"].failures == 1
+    assert ledger.tool_calls == []
     assert ledger.document_writes == 0
     assert ledger.memory_writes == 0
     assert ledger.prohibited_calls == []
-    assert not (bundle.document_directory / "report-1.md").exists()

@@ -6,10 +6,11 @@ document sink, and a per-repetition ledger. Nothing in the controlled half
 can construct a real Tavily client, a real httpx client, a ChromaDB
 collection, or an OpenAI embedding call — the scripted collaborators are
 always injected and ``tavily_api_key=""`` is always passed, so even an
-accidentally constructed client could not authenticate. Unscripted search
-queries and HTTP fetches raise ``ProhibitedDependencyError``, which
-``BaseTool.execute`` converts into a failed ``ToolResult`` the agent can
-see and the gates can count.
+accidentally constructed client could not authenticate. An unscripted search
+query raises ``ScenarioMissError`` and an unscripted HTTP fetch raises
+``ProhibitedDependencyError``; ``BaseTool.execute`` converts either into a
+failed ``ToolResult`` the agent can see, while the controlled security gate
+counts only the latter.
 
 The live half builds production-parity bundles: real Chroma-backed
 ``LongTermMemory`` under a per-repetition persist path, real document
@@ -27,6 +28,7 @@ from hashlib import sha256
 from math import sqrt
 from pathlib import Path
 from typing import Any
+from unicodedata import category as unicode_category
 from urllib.parse import urlsplit
 
 import httpx
@@ -40,7 +42,8 @@ from deep_research.agents.source_evaluator import (
     ReputationSource,
     SourceEvaluatorAgent,
 )
-from deep_research.agents.sources import source_domain
+from deep_research.agents.sources import normalize_source_url, source_domain
+from deep_research.agents.steps import ReActStep, read_evidence_urls
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.evaluation.config import EvaluationRuntimeConfig
 from deep_research.evaluation.factory import evaluation_session_id
@@ -84,6 +87,93 @@ _ENTRY_FIELD_KEYS = frozenset(
 )
 
 _EMBEDDING_DIMENSION = 8
+_MAX_SOURCE_URL_FINGERPRINTS = 128
+# Bounded read-bearing provenance (Task 5). Smaller than the source-URL bound
+# because a run reads far fewer pages than it searches, and because exceeding
+# it makes the artifact report itself incomplete — which the read-provenance
+# gate treats as "cannot prove the read".
+_MAX_READ_URL_FINGERPRINTS = 64
+
+# Additive controlled-harness contract marker. Existing v1 case identities
+# and artifacts stay unchanged; new controlled outputs identify this repaired
+# fake-dependency behavior through ``DependencyLedger``.
+CONTROLLED_SCENARIO_CONTRACT_VERSION = 2
+
+
+def _is_valid_http_source_url(value: str) -> bool:
+    """Admit only absolute HTTP(S) URLs with a safely parsed authority."""
+    if any(
+        character.isspace() or unicode_category(character) == "Cc"
+        for character in value
+    ):
+        return False
+    try:
+        parts = urlsplit(value)
+        if (
+            parts.scheme.casefold() not in {"http", "https"}
+            or not parts.netloc
+            or not parts.hostname
+            or any(character.isspace() for character in parts.netloc)
+        ):
+            return False
+        # Accessing ``port`` validates malformed and out-of-range ports.
+        parts.port
+    except (UnicodeError, ValueError):
+        return False
+    return True
+
+
+def source_url_fingerprint(url: str) -> str | None:
+    """The canonical, content-free identity of one URL, or ``None``.
+
+    ``None`` means this URL cannot carry an identity at all: it is not an
+    absolute HTTP(S) URL, or its normalized form is unparseable. Callers
+    skip those rather than inventing an identity for them.
+    """
+    if not isinstance(url, str) or not _is_valid_http_source_url(url):
+        return None
+    try:
+        normalized = normalize_source_url(url)
+    except (UnicodeError, ValueError):
+        return None
+    return sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def bounded_url_fingerprints(
+    urls: Sequence[str],
+    *,
+    limit: int = _MAX_READ_URL_FINGERPRINTS,
+) -> tuple[list[str], bool]:
+    """Bounded, content-free identities of ``urls``, plus completeness.
+
+    ``complete`` is ``False`` as soon as a valid identity does not fit. That
+    is the fail-closed direction: a consumer must treat an incomplete set as
+    unable to prove anything about the identities it does not hold.
+    """
+    fingerprints: list[str] = []
+    for url in urls:
+        fingerprint = source_url_fingerprint(url)
+        if fingerprint is None or fingerprint in fingerprints:
+            continue
+        if len(fingerprints) >= limit:
+            return fingerprints, False
+        fingerprints.append(fingerprint)
+    return fingerprints, True
+
+
+def read_url_fingerprints(
+    steps: Sequence[ReActStep],
+) -> tuple[list[str], bool]:
+    """Identities of the URLs a run actually READ, from its typed steps.
+
+    Uses ``agents.steps.read_evidence_urls`` — the one authoritative
+    read-bearing classifier — rather than re-deriving the rule or parsing
+    truncated ``observation_summary`` prose. A discovery-only ``web_search``
+    result list therefore contributes nothing: a search hit is a candidate,
+    and a verification passage may never rest on one.
+    """
+    urls = [url for step in steps for url in read_evidence_urls(step)]
+    return bounded_url_fingerprints(urls)
 
 
 class ProhibitedDependencyError(RuntimeError):
@@ -93,6 +183,15 @@ class ProhibitedDependencyError(RuntimeError):
         super().__init__(
             f"{service}.{operation} is prohibited in controlled evaluation"
         )
+
+
+class ScenarioMissError(RuntimeError):
+    """A controlled fake received a request with no scripted response."""
+
+    def __init__(self) -> None:
+        # Keep the tool-facing error static; the bounded query identity lives
+        # in the dependency ledger rather than in an exception message.
+        super().__init__("controlled scenario has no scripted response")
 
 
 class MissingCredentialError(RuntimeError):
@@ -206,9 +305,13 @@ class DependencyRecorder:
     with one ``ToolCallSummary`` per invoked tool name.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, scenario_contract_version: int = 1) -> None:
+        self._scenario_contract_version = scenario_contract_version
         self._outcomes: dict[str, list[bool]] = {}
         self._prohibited: list[str] = []
+        self._scenario_misses: list[str] = []
+        self._source_url_fingerprints: list[str] = []
+        self._source_url_fingerprints_complete = True
         self._real_services: list[str] = []
         self._memory_reads = 0
         self._memory_writes = 0
@@ -219,6 +322,61 @@ class DependencyRecorder:
 
     def record_prohibited(self, description: str) -> None:
         self._prohibited.append(description)
+
+    def record_scenario_miss(self, tool_name: str, query: str) -> None:
+        """Record one bounded, provider-content-free fake-query identity."""
+        if len(self._scenario_misses) >= 16:
+            return
+        normalized_query = " ".join(query.split())
+        summary = f"{tool_name}: {normalized_query}"
+        if len(summary) > 256:
+            digest = sha256(normalized_query.encode("utf-8")).hexdigest()[:16]
+            suffix = f"…#{digest}"
+            summary = f"{summary[:256 - len(suffix)]}{suffix}"
+        self._scenario_misses.append(summary)
+
+    def record_source_url_fingerprints(self, urls: Sequence[str]) -> None:
+        """Record bounded, normalized URL identities without retaining URLs."""
+        for url in urls:
+            fingerprint = source_url_fingerprint(url)
+            if fingerprint is None or fingerprint in self._source_url_fingerprints:
+                continue
+            if len(self._source_url_fingerprints) >= _MAX_SOURCE_URL_FINGERPRINTS:
+                self._source_url_fingerprints_complete = False
+                return
+            self._source_url_fingerprints.append(fingerprint)
+
+    def record_source_url_payload(self, tool_name: str, payload: object) -> None:
+        """Extract source identities from a successful source-tool payload."""
+        if not isinstance(payload, Mapping):
+            return
+        urls: list[str] = []
+        if tool_name == "web_search":
+            results = payload.get("results")
+            if isinstance(results, list):
+                urls.extend(
+                    item["url"]
+                    for item in results
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("url"), str)
+                )
+        elif tool_name == "web_scraper":
+            url = payload.get("url")
+            if isinstance(url, str):
+                urls.append(url)
+        elif tool_name == "document_reader":
+            source = payload.get("source")
+            if isinstance(source, str):
+                try:
+                    is_remote = urlsplit(source).scheme.lower() in {
+                        "http",
+                        "https",
+                    }
+                except (UnicodeError, ValueError):
+                    is_remote = False
+                if is_remote:
+                    urls.append(source)
+        self.record_source_url_fingerprints(urls)
 
     def record_real_service(self, name: str) -> None:
         self._real_services.append(name)
@@ -234,6 +392,7 @@ class DependencyRecorder:
 
     def ledger(self) -> DependencyLedger:
         return DependencyLedger(
+            scenario_contract_version=self._scenario_contract_version,
             tool_calls=[
                 ToolCallSummary(
                     tool_name=name,
@@ -243,6 +402,9 @@ class DependencyRecorder:
                 for name, outcomes in sorted(self._outcomes.items())
             ],
             prohibited_calls=list(self._prohibited),
+            scenario_misses=list(self._scenario_misses),
+            source_url_fingerprints=list(self._source_url_fingerprints),
+            source_url_fingerprints_complete=self._source_url_fingerprints_complete,
             real_services_used=list(self._real_services),
             memory_reads=self._memory_reads,
             memory_writes=self._memory_writes,
@@ -276,6 +438,7 @@ class ScenarioScript:
     reputation_failures: Mapping[str, Exception] = field(default_factory=dict)
     failures: dict[str, Exception] = field(default_factory=dict)
     scripted_search_urls: Sequence[str] = field(default_factory=tuple)
+    contract_version: int = CONTROLLED_SCENARIO_CONTRACT_VERSION
 
 
 @dataclass(frozen=True)
@@ -408,7 +571,7 @@ class _InMemoryCollection:
 
 
 class _ScriptedSearchClient:
-    """Serves scripted Tavily responses; any unscripted query is prohibited."""
+    """Serves scripted responses; an unknown query is a scenario miss."""
 
     def __init__(
         self, script: ScenarioScript, *, recorder: DependencyRecorder
@@ -426,9 +589,9 @@ class _ScriptedSearchClient:
         del search_depth, max_results
         response = self._responses.get(query)
         if response is None:
-            self._recorder.record_prohibited(f"tavily.search({query!r})")
+            self._recorder.record_scenario_miss("web_search", query)
             self._recorder.record_tool_call("web_search", success=False)
-            raise ProhibitedDependencyError("tavily", "search")
+            raise ScenarioMissError()
         if isinstance(response, Exception):
             self._recorder.record_tool_call("web_search", success=False)
             raise response
@@ -712,6 +875,41 @@ class _RecordingDocumentWriter(WriteDocumentTool):
         return result
 
 
+class _FingerprintingTool(BaseTool):
+    """Proxy a live source tool and retain only URL fingerprints."""
+
+    def __init__(
+        self,
+        wrapped: BaseTool,
+        tracker: Tracker,
+        *,
+        recorder: DependencyRecorder,
+    ) -> None:
+        super().__init__(tracker)
+        self._wrapped = wrapped
+        self._recorder = recorder
+        self.name = wrapped.name
+        self.description = wrapped.description
+        self.input_schema = dict(wrapped.input_schema)
+        self.output_schema = dict(wrapped.output_schema)
+        # Copied like every other piece of metadata: the proxy is the tool the
+        # evaluation agent actually holds, so a dropped attribute here would
+        # quietly advertise an empty required list to the provider.
+        self.required_arguments = tuple(wrapped.required_arguments)
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        result = await self._wrapped.execute(**kwargs)
+        if result.success:
+            self._recorder.record_source_url_payload(
+                self.name, result.data
+            )
+        return result
+
+    async def _execute(self, context: Any, **kwargs: Any) -> Any:
+        del context, kwargs
+        raise NotImplementedError("the proxy delegates to its wrapped tool")
+
+
 def build_controlled_dependencies(
     runtime: EvaluationRuntimeConfig,
     case: Any,
@@ -763,7 +961,9 @@ def build_controlled_dependencies(
         runtime, case_id=case.case_id, repetition=repetition
     )
 
-    recorder = DependencyRecorder()
+    recorder = DependencyRecorder(
+        scenario_contract_version=script.contract_version
+    )
     collection = _InMemoryCollection()
     embeddings = _DeterministicEmbeddings()
     long_term = LongTermMemory(
@@ -894,6 +1094,16 @@ def build_live_dependencies(
         search_client=search_client,
         http_client=http_client,
     )
+    if runtime.agent_name == "researcher":
+        tools = [
+            (
+                _FingerprintingTool(tool, tracker, recorder=recorder)
+                if tool.name
+                in {"web_search", "web_scraper", "document_reader"}
+                else tool
+            )
+            for tool in tools
+        ]
     procedural = ProceduralMemory.from_config(
         isolated.memory.procedural, tracker=tracker
     )
@@ -911,9 +1121,9 @@ def build_live_dependencies(
     )
 
 
-# Sample scenarios. Each agent gets exactly one scenario here so the Task 7
-# bundle tests have something real to drive; the per-agent task (10-15)
-# replaces the helper with the full three-scenario script.
+# Controlled scenarios mirror the registered case catalog. Each agent has
+# three deterministic scripts, and every script carries the current
+# controlled-harness contract version.
 
 # The scripted URLs mirror cases/researcher.py's known_source_urls: the
 # gates check every finding's source_url against the case's declared list,
@@ -1277,6 +1487,26 @@ def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
                     "results": [],
                 },
             },
+            http_pages={
+                "https://nrc.gov/smr-licensing-framework": (
+                    "SMR designs undergo the same safety assessment and "
+                    "licensing requirements as large reactors."
+                ),
+                "https://ans.org/smr-safety-assessment": (
+                    "International safety standards apply equally to SMR "
+                    "designs."
+                ),
+                "https://nei.org/pevek-floating-plant": (
+                    "The Akademik Lomonosov floating plant has operated "
+                    "commercially at Pevek since 2020, powered by two "
+                    "small modular reactor units."
+                ),
+            },
+            scripted_search_urls=(
+                "https://nrc.gov/smr-licensing-framework",
+                "https://ans.org/smr-safety-assessment",
+                "https://nei.org/pevek-floating-plant",
+            ),
         ),
         "fact-checker-dependent-domains": ScenarioScript(
             search_responses={
@@ -1304,6 +1534,20 @@ def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
                     ]
                 },
             },
+            http_pages={
+                "https://news.example.com/outage-minutes-fall": (
+                    "A follow-up confirms outage minutes fell 40 percent "
+                    "after the 2025 grid upgrade."
+                ),
+                "https://syndication.news.example.com/outage-minutes-fall": (
+                    "The same 40 percent figure appears in syndicated "
+                    "outage statistics."
+                ),
+            },
+            scripted_search_urls=(
+                "https://news.example.com/outage-minutes-fall",
+                "https://syndication.news.example.com/outage-minutes-fall",
+            ),
         ),
         "fact-checker-search-failure": ScenarioScript(
             search_responses={
@@ -1336,31 +1580,33 @@ def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
                     ]
                 },
             },
+            http_pages={
+                "https://agu.org/ocean-heat-attribution": (
+                    "An AGU study attributes the post-2020 ocean heat "
+                    "acceleration primarily to greenhouse gas forcing."
+                ),
+                "https://gcos.wmo.int/ocean-heat-bulletin": (
+                    "The GCOS bulletin reports greenhouse gas forcing as "
+                    "the dominant driver of the recent ocean heat increase."
+                ),
+            },
+            scripted_search_urls=(
+                "https://agu.org/ocean-heat-attribution",
+                "https://gcos.wmo.int/ocean-heat-bulletin",
+            ),
         ),
     }
 
 
 def _synthesizer_scenarios() -> dict[str, ScenarioScript]:
-    # The Synthesizer never queries memory and never queries reputation:
-    # its only declared tools are write_document and save_to_memory. The
-    # two happy scenarios therefore script nothing at all, and the
-    # failure scenario scripts exactly the two tools that must fail —
-    # write_document via the document-directory hook in
-    # ``build_controlled_dependencies``, save_to_memory via the memory
-    # double. Both tools stay *present*; they just fail when called,
-    # which is the case's point (the agent's ``_require_tool`` raises on
-    # a missing declared tool).
+    # The Synthesizer composes both Markdown artifacts and never calls a
+    # persistence tool. Keep every controlled scenario empty: publication is
+    # a later terminal concern and Task 6 must not encode write/memory
+    # failures as evaluation dependencies.
     return {
         "synthesizer-complete": ScenarioScript(),
         "synthesizer-conflicted": ScenarioScript(),
-        "synthesizer-write-failure": ScenarioScript(
-            failures={
-                "write_document": OSError("read-only file system"),
-                "save_to_memory": RuntimeError(
-                    "long-term memory is unavailable"
-                ),
-            }
-        ),
+        "synthesizer-composition": ScenarioScript(),
     }
 
 
@@ -1372,8 +1618,7 @@ def _critic_scenarios() -> dict[str, ScenarioScript]:
     return {
         "critic-strong-report": ScenarioScript(
             search_responses={
-                "measured effect of urban tree canopy on summer surface "
-                "temperature": {
+                "urban tree canopy measured surface temperature reductions": {
                     "results": [
                         {
                             "url": (

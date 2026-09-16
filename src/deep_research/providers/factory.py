@@ -18,7 +18,10 @@ from deep_research.providers.capabilities import (
     resolve_request_settings,
 )
 from deep_research.providers.contracts import ProviderConfigurationError
-from deep_research.providers.deepseek_provider import DeepSeekChatProvider
+from deep_research.providers.deepseek_provider import (
+    DeepSeekJudgeProvider,
+    DeepSeekSchemaChatProvider,
+)
 from deep_research.providers.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     LOCAL_EMBEDDING_PROVIDER,
@@ -26,14 +29,20 @@ from deep_research.providers.embeddings import (
     OpenAIEmbeddingProvider,
 )
 from deep_research.providers.openai_provider import OpenAIChatProvider
+from deep_research.request_budget import RequestBudget
 from deep_research.utils.config import EmbeddingProviderName, LLMConfig
 
-ChatAdapter: TypeAlias = OpenAIChatProvider | DeepSeekChatProvider
+ChatAdapter: TypeAlias = OpenAIChatProvider | DeepSeekSchemaChatProvider
+JudgeAdapter: TypeAlias = OpenAIChatProvider | DeepSeekJudgeProvider
 EmbeddingAdapter: TypeAlias = LocalEmbeddingProvider | OpenAIEmbeddingProvider
 
 
 def build_chat_provider(
-    config: LLMConfig, tracker: Tracker, *, api_key: str | None = None
+    config: LLMConfig,
+    tracker: Tracker,
+    *,
+    api_key: str | None = None,
+    request_budget: RequestBudget | None = None,
 ) -> ChatAdapter:
     """Select the chat adapter by configured name; never infer, never fall back.
 
@@ -41,11 +50,54 @@ def build_chat_provider(
     evaluation harness passes its own ``environ`` mapping — supply the key
     explicitly. ``None`` keeps the adapters' default behaviour of reading
     the process environment, which is what production wiring relies on.
+
+    ``request_budget`` is the run's attempt budget. It reaches both chat
+    adapters, each of whose transports reserves one attempt before every SDK
+    call; ``None`` means uncounted, which is what every existing caller gets.
+    An adapter that could not honour a budget would refuse it here rather than
+    accepting and dropping it: a budget that silently goes nowhere is exactly
+    the decorative ceiling this machinery exists to replace.
+
+    The DeepSeek target adapter is ``DeepSeekSchemaChatProvider``: plain
+    completions still use Chat Completions, but structured output is asked
+    for through the provider's native schema, because JSON mode alone left
+    target structured calls returning non-JSON text in live canaries.
     """
     if config.provider == "deepseek":
-        return DeepSeekChatProvider(config, tracker, api_key=api_key)
+        return DeepSeekSchemaChatProvider(
+            config, tracker, api_key=api_key, request_budget=request_budget
+        )
     if config.provider == "openai":
-        return OpenAIChatProvider(config, tracker, api_key=api_key)
+        return OpenAIChatProvider(
+            config, tracker, api_key=api_key, request_budget=request_budget
+        )
+    raise ProviderConfigurationError(
+        f"Unsupported chat provider {config.provider!r}; "
+        "accepted values: deepseek, openai"
+    )
+
+
+def build_judge_provider(
+    config: LLMConfig,
+    tracker: Tracker,
+    *,
+    api_key: str | None = None,
+    request_budget: RequestBudget | None = None,
+) -> JudgeAdapter:
+    """Select the judge adapter by configured provider name.
+
+    ``request_budget`` follows the same rule as in
+    :func:`build_chat_provider`: both judge transports reserve against it, and
+    ``None`` means uncounted.
+    """
+    if config.provider == "deepseek":
+        return DeepSeekJudgeProvider(
+            config, tracker, api_key=api_key, request_budget=request_budget
+        )
+    if config.provider == "openai":
+        return OpenAIChatProvider(
+            config, tracker, api_key=api_key, request_budget=request_budget
+        )
     raise ProviderConfigurationError(
         f"Unsupported chat provider {config.provider!r}; "
         "accepted values: deepseek, openai"

@@ -74,7 +74,7 @@ from deep_research.evaluation.runner import (
     run_suite_evaluation,
 )
 from deep_research.observability import Tracker
-from deep_research.providers import build_chat_provider
+from deep_research.providers import build_chat_provider, build_judge_provider
 from deep_research.utils.config import load_config
 
 PROGRAM_NAME = "python -m deep_research.evaluation"
@@ -324,11 +324,8 @@ async def _run_agent_pipeline(
     langsmith_client = LangSmithClient()
     tracker = Tracker.from_config(settings.langsmith, environ=environ)
     chat_key = environ.get(CHAT_PROVIDER_CREDENTIALS[settings.llm.provider])
-    target_provider = build_chat_provider(
-        target_llm_config(runtime, settings.llm), tracker, api_key=chat_key
-    )
-    judge_provider = build_chat_provider(
-        judge_llm_config(runtime, settings.llm), tracker, api_key=chat_key
+    target_provider, judge_provider = _build_pipeline_providers(
+        settings, runtime, tracker, chat_key=chat_key
     )
     dependency_factory = (
         build_controlled_dependencies
@@ -360,6 +357,23 @@ async def _run_agent_pipeline(
         secrets=known_secret_values(environ),
         root=root,
         langsmith_client=langsmith_client,
+    )
+
+
+def _build_pipeline_providers(
+    settings: Any, runtime: Any, tracker: Tracker, *, chat_key: str | None
+) -> tuple[Any, Any]:
+    return (
+        build_chat_provider(
+            target_llm_config(runtime, settings.llm),
+            tracker,
+            api_key=chat_key,
+        ),
+        build_judge_provider(
+            judge_llm_config(runtime, settings.llm),
+            tracker,
+            api_key=chat_key,
+        ),
     )
 
 

@@ -15,9 +15,28 @@ from deep_research.utils.config import (
     EvaluationConfig,
     LLMConfig,
     MissingSecretsError,
+    RequestBudgetConfig,
     apply_config_overrides,
     load_config,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test in this file its own ``os.environ`` mapping.
+
+    ``load_config`` calls ``load_dotenv(dotenv_path=..., override=False)``,
+    which writes into ``os.environ`` itself. ``monkeypatch.delenv(name,
+    raising=False)`` records **no undo** when the name was absent, so those
+    writes were never removed and the five dummy credentials this file's
+    ``.env`` supplies leaked into the process for the rest of the session:
+    they satisfied the evaluation harness's credential preflight in
+    ``tests/test_evaluation/test_suite.py`` (which is why that file only
+    passed when this one had already run) and they left a developer's real
+    keys in the environment. Replacing the mapping gives the same isolation
+    for ``delenv`` and for dotenv's writes alike.
+    """
+    monkeypatch.setattr(os, "environ", dict(os.environ))
 
 
 @pytest.fixture
@@ -37,7 +56,7 @@ def config_path(tmp_path: Path) -> Path:
                     "timeout": 45.0,
                     "retry_count": 2,
                     "temperature": 0.7,
-                    "max_tokens": 4096,
+                    "max_tokens": 32768,
                 },
                 "langsmith": {"tracing_enabled": False, "project": "yaml-project"},
                 "tavily": {"search_depth": "basic", "max_results": 5},
@@ -102,6 +121,63 @@ def test_load_config_loads_sibling_dotenv_before_strict_validation(
     assert settings.langsmith.project == "dotenv-project"
     assert os.environ["OPENAI_API_KEY"] == "dotenv-openai"
     assert os.environ["TAVILY_API_KEY"] == "dotenv-tavily"
+
+
+# The five dummy credentials a sibling ``.env`` supplies in this file. The
+# two tests below are a deliberate pair: the property under test is that one
+# test's ``.env`` load cannot reach the next one, so the pair *is* the
+# assertion.
+_DOTENV_DUMMIES = {
+    "OPENAI_API_KEY": "dotenv-openai",
+    "DEEPSEEK_API_KEY": "dotenv-deepseek",
+    "TAVILY_API_KEY": "dotenv-tavily",
+    "LANGSMITH_API_KEY": "dotenv-langsmith",
+    "LANGSMITH_PROJECT": "dotenv-project",
+}
+
+
+def _write_sibling_dotenv(config_path: Path) -> None:
+    (config_path.parent / ".env").write_text(
+        "\n".join(f"{name}={value}" for name, value in _DOTENV_DUMMIES.items()),
+        encoding="utf-8",
+    )
+
+
+def test_a_sibling_dotenv_load_populates_the_environment_it_runs_in(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """``load_dotenv`` writes into ``os.environ`` — that is the production path.
+
+    The values must therefore be visible to the load that read them, and the
+    test after this one proves they are not visible to anything else.
+    """
+    for environment_name in _DOTENV_DUMMIES:
+        monkeypatch.delenv(environment_name, raising=False)
+    _write_sibling_dotenv(config_path)
+
+    settings = load_config(str(config_path), strict=True)
+
+    assert settings.langsmith.project == "dotenv-project"
+    assert os.environ["OPENAI_API_KEY"] == "dotenv-openai"
+
+
+def test_the_dotenv_load_in_the_previous_test_left_nothing_behind() -> None:
+    """Nothing a previous test's ``.env`` wrote may still be in the process.
+
+    This is the consequence the missing isolation actually had: five dummy
+    credentials outlived the test that created them, satisfied the evaluation
+    harness's credential preflight in ``tests/test_evaluation/test_suite.py``
+    (which is why that file only passed when this one had already run), and
+    left a developer's real keys in the environment. Checked by *value*, so a
+    developer who really has these variables set is unaffected.
+    """
+    persisted = {
+        name: value
+        for name, value in _DOTENV_DUMMIES.items()
+        if os.environ.get(name) == value
+    }
+
+    assert persisted == {}
 
 
 def test_process_environment_takes_precedence_over_sibling_dotenv(
@@ -353,6 +429,7 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
         ),
         ("AGENTS_MAX_ITERATIONS", ("agents", "max_iterations"), "9", 9),
         ("AGENTS_TOOL_BUDGET", ("agents", "tool_budget"), "3", 3),
+        ("AGENTS_MAX_SUB_TOPICS", ("agents", "max_sub_topics"), "5", 5),
         (
             "AGENTS_PROMPT_CONTEXT_ENTRIES",
             ("agents", "prompt_context_entries"),
@@ -370,6 +447,18 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             ("agents", "planner_final_max_tokens"),
             "8192",
             8192,
+        ),
+        (
+            "AGENTS_CRITIC_REVIEW_MAX_TOKENS",
+            ("agents", "critic_review_max_tokens"),
+            "16384",
+            16384,
+        ),
+        (
+            "AGENTS_JUDGE_MAX_TOKENS",
+            ("agents", "judge_max_tokens"),
+            "12288",
+            12288,
         ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
@@ -612,9 +701,77 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
 
     assert settings.agents.max_iterations == 5
     assert settings.agents.tool_budget == 10
+    assert settings.agents.max_sub_topics == 7
     assert settings.agents.prompt_context_entries == 8
     assert settings.agents.observation_summary_chars == 200
-    assert settings.agents.planner_final_max_tokens == 4096
+    assert settings.agents.planner_final_max_tokens == 32768
+    assert settings.agents.critic_review_max_tokens == 32768
+
+
+def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
+    config_path: Path,
+) -> None:
+    settings = load_config(str(config_path))
+
+    assert settings.agents.source_evaluator.batch_size == 12
+    assert settings.agents.source_evaluator.max_total_sources == 36
+
+
+def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:
+    """The shipped YAML attempts the whole plan, not a truncated one.
+
+    ``agents.max_sub_topics`` is the production half of the Planner's own
+    seven-sub-topic ceiling; a smaller value here silently drops planned
+    sub-topics from every production run.
+    """
+    from deep_research.agents.planner import MAX_SUB_TOPICS
+
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["max_sub_topics"] == 7
+    assert raw["agents"]["max_sub_topics"] == MAX_SUB_TOPICS
+
+
+def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
+    """Every output budget is generous, and none is clamped below the global.
+
+    A previous revision set the global cap to 4096 and let only a few
+    operations exceed it. Truncation then produced a different failure mode per
+    operation: the Critic's review returned non-JSON text twice per repetition,
+    the judge returned ``judge_output_limit`` with no score at all, and a ReAct
+    decision returned ``{kind: output_limit, operation: react_decision}`` while
+    silently degrading the spot-check phase. A budget that is never used costs
+    nothing; a budget that truncates costs the whole repetition, so the uniform
+    value is the safe default and any per-operation speed concern belongs in
+    that operation's prompt instead.
+    """
+    settings = load_config(str(config_path))
+    budgets = {
+        "llm.max_tokens": settings.llm.max_tokens,
+        "planner_final_max_tokens": settings.agents.planner_final_max_tokens,
+        "critic_review_max_tokens": settings.agents.critic_review_max_tokens,
+        "judge_max_tokens": settings.agents.judge_max_tokens,
+        "react_decision_max_tokens": settings.agents.react_decision_max_tokens,
+    }
+
+    for name, value in budgets.items():
+        assert value >= 32768, f"{name} is still pinned at {value}"
+
+
+def test_the_shipped_config_file_carries_the_critic_review_budget() -> None:
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["critic_review_max_tokens"] == 32768
+
+
+def test_the_shipped_config_file_carries_the_uniform_token_budget() -> None:
+    """The shipped YAML raises the global cap and every operation with it."""
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["llm"]["max_tokens"] == 32768
+    assert raw["agents"]["planner_final_max_tokens"] == 32768
+    assert raw["agents"]["judge_max_tokens"] == 32768
+    assert raw["agents"]["react_decision_max_tokens"] == 32768
 
 
 def test_the_planner_final_budget_defaults_to_the_global_cap(
@@ -623,13 +780,13 @@ def test_the_planner_final_budget_defaults_to_the_global_cap(
     """The operation-specific planner-final budget defaults to the global cap."""
     settings = load_config(str(config_path))
 
-    assert settings.agents.planner_final_max_tokens == 4096
+    assert settings.agents.planner_final_max_tokens == 32768
 
 
 def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["agents"]["planner_final_max_tokens"] == 4096
+    assert raw["agents"]["planner_final_max_tokens"] == 32768
 
 
 @pytest.mark.parametrize(
@@ -637,9 +794,12 @@ def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
     [
         ("max_iterations", 0),
         ("tool_budget", -1),
+        ("max_sub_topics", 0),
         ("prompt_context_entries", -1),
         ("observation_summary_chars", 0),
         ("planner_final_max_tokens", 0),
+        ("critic_review_max_tokens", 0),
+        ("judge_max_tokens", 0),
     ],
 )
 def test_agent_runtime_config_rejects_unbounded_values(
@@ -843,3 +1003,85 @@ def test_strict_mode_requires_the_openai_key_only_for_openai_embeddings(
 
     with pytest.raises(MissingSecretsError, match="OPENAI_API_KEY"):
         load_config(str(config_path), strict=True)
+
+
+def test_request_budget_defaults_to_counted_but_uncapped_attempts() -> None:
+    """An undeclared ceiling still counts attempts; it just never blocks one."""
+    budget = RequestBudgetConfig()
+
+    assert budget.deepseek_attempt_ceiling is None
+    assert budget.openai_attempt_ceiling is None
+    assert budget.tavily_attempt_ceiling is None
+    assert budget.stop_fraction == 1.0
+    assert ConfigSettings().request_budget == budget
+
+
+def test_request_budget_rejects_unknown_keys() -> None:
+    """A misspelled ceiling must fail loudly rather than silently uncap a run."""
+    with pytest.raises(ValidationError):
+        RequestBudgetConfig(tavily_attempt_ceiling=1, tavily_attempt_ceilings=2)
+    with pytest.raises(ValidationError):
+        RequestBudgetConfig(deepseek_max_attempts=1)
+
+
+@pytest.mark.parametrize("stop_fraction", [0.0, 1.01, -0.5, 2.0])
+def test_request_budget_rejects_a_stop_fraction_outside_the_unit_interval(
+    stop_fraction: float,
+) -> None:
+    """``stop_fraction`` is exclusive of zero and inclusive of one."""
+    with pytest.raises(ValidationError):
+        RequestBudgetConfig(stop_fraction=stop_fraction)
+
+
+@pytest.mark.parametrize("ceiling", [0, -1])
+def test_request_budget_rejects_a_non_positive_ceiling(ceiling: int) -> None:
+    """``None`` means uncapped; a declared ceiling is a positive count."""
+    with pytest.raises(ValidationError):
+        RequestBudgetConfig(deepseek_attempt_ceiling=ceiling)
+
+
+def test_no_environment_variable_can_set_a_request_budget_ceiling(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path
+) -> None:
+    """A spend ceiling has exactly one source: the run that declares it.
+
+    The environment table is where a silent second way to set a ceiling would
+    appear, and a ceiling that the environment can change is a ceiling no
+    canary can honestly claim. Limits arrive through request-scoped CLI
+    overrides only.
+    """
+    from deep_research.utils import config as config_module
+
+    for environment_name in (
+        "DEEPSEEK_ATTEMPT_CEILING",
+        "OPENAI_ATTEMPT_CEILING",
+        "TAVILY_ATTEMPT_CEILING",
+        "REQUEST_BUDGET_STOP_FRACTION",
+    ):
+        monkeypatch.setenv(environment_name, "3")
+
+    settings = load_config(str(config_path))
+
+    assert settings.request_budget == RequestBudgetConfig()
+    assert not [
+        path
+        for path in config_module._ENVIRONMENT_OVERRIDES.values()
+        if "request_budget" in path
+    ]
+
+
+def test_a_request_budget_ceiling_reaches_settings_only_through_an_override() -> None:
+    """The shipped YAML carries no ceiling, and overrides are a copy."""
+    shipped = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    settings = ConfigSettings()
+
+    canary = apply_config_overrides(
+        settings,
+        {"request_budget": {"tavily_attempt_ceiling": 4, "stop_fraction": 0.9}},
+    )
+
+    assert "request_budget" not in shipped
+    assert canary.request_budget.tavily_attempt_ceiling == 4
+    assert canary.request_budget.stop_fraction == 0.9
+    assert canary.request_budget.openai_attempt_ceiling is None
+    assert settings.request_budget == RequestBudgetConfig()

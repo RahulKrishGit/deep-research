@@ -1,11 +1,16 @@
 """What one finished research session produced, in one object.
 
 ``GraphRun`` already carries the session id, the state, the status, and the
-trace URL. Two things every front-end needs are recorded somewhere less
-convenient: the report's path lives only in the Synthesizer's completion
-event, and token totals live only in the tracker's metric records. Deriving
-both once here keeps the CLI, the API, and the UI from re-implementing the
-same archaeology three times.
+trace URL. Three things every front-end needs are recorded somewhere less
+convenient: where the two artifacts were published, whether the terminal
+quality gates accepted the report, and token totals — which live only in the
+tracker's metric records. Deriving them once here keeps the CLI, the API, and
+the UI from re-implementing the same archaeology three times.
+
+Every field is read from typed state or a typed terminal event. Nothing here
+parses the report Markdown, and nothing here reads report prose: the quality
+verdict is ``graph.state.graph_quality_status``, the same pure decision the
+router used, and the artifact paths come from the finalizer's own record.
 """
 
 from __future__ import annotations
@@ -14,17 +19,31 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from deep_research.graph.orchestrator import GraphRun
+from deep_research.graph.state import graph_quality_status
 from deep_research.observability import (
     MetricRecord,
     TokenUsage,
     TokenUsageMetric,
     ToolMetric,
 )
-from deep_research.utils.types import ResearchError, ResearchState
+from deep_research.request_budget import RequestBudgetSnapshot
+from deep_research.utils.types import (
+    QUALITY_STATUS_ACCEPTED,
+    ReportQualitySnapshot,
+    ResearchError,
+    ResearchEvent,
+    ResearchState,
+)
 
-# The only event that records where a report was written. Emitted by
-# ``agents.synthesizer.synthesis_completed_event``.
-REPORT_WRITTEN_EVENT = "synthesizer.synthesis.completed"
+# The terminal event the finalizer emits, and the only record of where the
+# session's final artifacts were written. It carries *both* paths, each
+# ``None`` for a write that failed, so a reader is never pointed at an
+# earlier refinement pass's file. Emitted by
+# ``graph.events.report_published_event``.
+REPORT_WRITTEN_EVENT = "graph.report.published"
+
+REPORT_PATH_METADATA_KEY = "report_path"
+EVIDENCE_PATH_METADATA_KEY = "evidence_path"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,23 +55,58 @@ class ToolCallSummary:
     failures: int
 
 
-def report_path_from_state(state: ResearchState) -> str | None:
-    """The path of the most recently written report, if one was written.
+def _terminal_artifact_path(
+    stamped: str | None,
+    events: Sequence[ResearchEvent],
+    *,
+    metadata_key: str,
+) -> str | None:
+    """One terminal artifact's path, from the state stamp and its own event.
 
-    The *last* synthesis event wins: a refinement pass rewrites the report
-    under a new filename, and the newest file is the one that matches
-    ``state.report``. Every matching event sets the current value — one that
-    records no ``output_path`` (a failed refinement write) clears the
-    previous one, so the CLI never advertises a file that is not the
-    session's final report.
+    ``stamped`` is the value the finalizer wrote into state from the write
+    that actually succeeded, so a state with no events still names its file.
+    The *last* terminal publication record wins over it: a resumed run can
+    publish more than once, and a record that carries no path (a failed write)
+    clears the previous one — a caller must never be pointed at an earlier
+    refinement pass's artifact.
     """
-    path: str | None = None
-    for event in state.events:
+    path = stamped if isinstance(stamped, str) and stamped else None
+    for event in events:
         if event.event_type != REPORT_WRITTEN_EVENT:
             continue
-        candidate = event.metadata.get("output_path")
+        candidate = event.metadata.get(metadata_key)
         path = candidate if isinstance(candidate, str) and candidate else None
     return path
+
+
+def report_path_from_state(state: ResearchState) -> str | None:
+    """The path of the session's final reader report, if one was published.
+
+    A refinement pass writes nothing: only the terminal finalizer publishes,
+    so the newest ``graph.report.published`` record is the session's own. A
+    None value means the Markdown in ``state.report`` was never written to
+    disk, whatever an earlier pass managed to save.
+    """
+    return _terminal_artifact_path(
+        state.report_path,
+        state.events,
+        metadata_key=REPORT_PATH_METADATA_KEY,
+    )
+
+
+def evidence_path_from_state(state: ResearchState) -> str | None:
+    """The path of the session's final evidence ledger, if one was published.
+
+    The ledger and the reader report are written by two independent terminal
+    writes, so this is ``None`` when the ledger write failed — never the path
+    of an earlier pass's ledger. The ledger Markdown in
+    ``state.report_evidence`` is authoritative either way.
+    """
+    return _terminal_artifact_path(
+        state.evidence_path,
+        state.events,
+        metadata_key=EVIDENCE_PATH_METADATA_KEY,
+    )
 
 
 def tool_call_summaries(
@@ -118,6 +172,22 @@ class ResearchOutcome:
     report_path: str | None
     token_usage: TokenUsage
     tool_calls: tuple[ToolCallSummary, ...]
+    evidence_path: str | None = None
+    """The file the evidence ledger was published under, or ``None``.
+
+    Derived with ``report_path`` from the terminal publication, so a failed
+    ledger write is ``None`` rather than an earlier pass's file.
+    """
+
+    request_budget_snapshots: tuple[RequestBudgetSnapshot, ...] = ()
+    """The run's terminal per-provider attempt and token counts.
+
+    The budget's own immutable snapshots, in its fixed ``deepseek``,
+    ``openai``, ``tavily`` order, and empty when no budget was observed at
+    all — an injected outcome, or a runtime that carries none. Never
+    ``None``: a front-end renders "not recorded" rather than inventing a
+    limit, and an absent ceiling stays absent instead of becoming a zero.
+    """
 
     @property
     def report(self) -> str | None:
@@ -134,13 +204,34 @@ class ResearchOutcome:
         """True when the graph halted on a non-recoverable failure."""
         return self.status == "failed"
 
+    @property
+    def quality(self) -> ReportQualitySnapshot | None:
+        """The quality snapshot the terminal gates judged, if one was taken."""
+        return self.state.quality
+
+    @property
+    def quality_status(self) -> str:
+        """The terminal quality verdict, from the decision the router used."""
+        return graph_quality_status(self.state)
+
+    @property
+    def accepted(self) -> bool:
+        """True when the terminal quality status accepted the report."""
+        return self.quality_status == QUALITY_STATUS_ACCEPTED
+
 
 def build_outcome(
     run: GraphRun,
     *,
     metrics: Sequence[MetricRecord],
+    request_budget_snapshots: Sequence[RequestBudgetSnapshot] = (),
 ) -> ResearchOutcome:
-    """Fold one graph run and the tracker's metrics into an outcome."""
+    """Fold one graph run and the tracker's metrics into an outcome.
+
+    ``request_budget_snapshots`` defaults to the empty tuple so every existing
+    injected and unit caller stays source-compatible: an outcome built without
+    a budget simply records none.
+    """
     return ResearchOutcome(
         session_id=run.session_id,
         question=run.state.original_question,
@@ -152,4 +243,6 @@ def build_outcome(
         tool_calls=tuple(
             tool_call_summaries(metrics, session_id=run.session_id)
         ),
+        evidence_path=evidence_path_from_state(run.state),
+        request_budget_snapshots=tuple(request_budget_snapshots),
     )

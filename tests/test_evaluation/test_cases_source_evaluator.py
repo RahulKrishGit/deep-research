@@ -176,6 +176,12 @@ def test_the_live_case_uses_the_literal_live_scenario() -> None:
     assert live.dependency_scenario == "live"
 
 
+def test_the_registered_live_case_uses_the_corrected_fixture_version() -> None:
+    live = cases_for("source_evaluator", "live")[0]
+
+    assert live.version == 2
+
+
 @pytest.mark.parametrize("case_id", CONTROLLED)
 def test_each_case_declares_weighted_metrics(case_id: str) -> None:
     case = _case(case_id)

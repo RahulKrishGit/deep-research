@@ -24,7 +24,12 @@ from typing import TypedDict
 
 from pydantic import JsonValue
 
-from deep_research.utils.types import MemorySnapshot, ResearchState
+from deep_research.utils.types import (
+    QUALITY_STATUS_ACCEPTED,
+    QUALITY_STATUS_PARTIAL,
+    MemorySnapshot,
+    ResearchState,
+)
 
 GRAPH_SOURCE = "graph"
 
@@ -35,9 +40,11 @@ FACT_CHECKER_NODE = "fact_checker"
 SYNTHESIZER_NODE = "synthesizer"
 CRITIC_NODE = "critic"
 REFINE_NODE = "refine"
+FINALIZE_NODE = "finalize_report"
 
-# Execution order, with the refinement hop last. Node names deliberately
-# equal agent names so a LangSmith trace reads the same as this tuple.
+# Execution order, with the refinement hop and the terminal publication step
+# last. Node names deliberately equal agent names so a LangSmith trace reads
+# the same as this tuple; ``finalize_report`` is the one node with no agent.
 NODE_NAMES = (
     PLANNER_NODE,
     RESEARCHER_NODE,
@@ -46,9 +53,11 @@ NODE_NAMES = (
     SYNTHESIZER_NODE,
     CRITIC_NODE,
     REFINE_NODE,
+    FINALIZE_NODE,
 )
 
 ROUTE_REFINE = "refine"
+ROUTE_FINALIZE = "finalize"
 ROUTE_END = "end"
 
 # Enumerated, project-generated routing reasons. Never provider text: these
@@ -56,6 +65,10 @@ ROUTE_END = "end"
 GRAPH_ROUTES = {
     "refinement_requested": (
         "The critic asked for another research pass and budget remains."
+    ),
+    "quality_gate_failed": (
+        "The deterministic quality gates found a hard failure and budget "
+        "remains, so the report was sent back for one more research pass."
     ),
     "critique_satisfied": "The critic accepted the report.",
     "max_iterations_reached": (
@@ -74,6 +87,7 @@ _STATUS_BY_ROUTE_REASON = {
     "max_iterations_reached": "max_iterations",
     "missing_critique": "incomplete",
     "refinement_requested": "incomplete",
+    "quality_gate_failed": "incomplete",
     "halted": "failed",
 }
 
@@ -88,6 +102,7 @@ HALTING_ERROR_TYPES = frozenset(
         "graph_provider_configuration_error",
         "graph_invalid_agent_state",
         "graph_invalid_route",
+        "graph_request_attempt_limit_exceeded",
     }
 )
 
@@ -151,26 +166,58 @@ def is_halted(state: ResearchState) -> bool:
 def graph_route(state: ResearchState) -> tuple[str, str]:
     """Decide where the graph goes after the Critic, and why.
 
-    Pure, so the conditional edge, the recorded route event, and the final
-    status all read the same decision. ``Critique.should_continue`` is the
-    critic's recommendation; the iteration bound is the graph's law and is
-    checked here regardless of what the model said.
+    Pure, so the conditional edge, the recorded route event, the final status,
+    and the terminal quality status all read the same decision.
+    ``Critique.should_continue`` is the critic's recommendation and the
+    deterministic quality gate is the graph's own verdict; the iteration bound
+    is the graph's law and is checked here regardless of what either said.
+
+    There are three destinations. ``ROUTE_REFINE`` buys another research pass.
+    ``ROUTE_FINALIZE`` publishes and stops — the Critic's acceptance when the
+    gates agree, or the best report a spent budget allows. ``ROUTE_END`` skips
+    publication entirely, and is reached only by a halted run: a failed run
+    publishes nothing rather than a stale earlier pass's artifact.
     """
     if is_halted(state):
         return ROUTE_END, "halted"
     critique = state.critique
     if critique is None:
-        return ROUTE_END, "missing_critique"
-    if not critique.should_continue:
-        return ROUTE_END, "critique_satisfied"
+        return ROUTE_FINALIZE, "missing_critique"
     if state.iteration >= state.max_iterations:
-        return ROUTE_END, "max_iterations_reached"
-    return ROUTE_REFINE, "refinement_requested"
+        return ROUTE_FINALIZE, "max_iterations_reached"
+    if critique.should_continue:
+        return ROUTE_REFINE, "refinement_requested"
+    if state.quality is not None and state.quality.hard_failures:
+        # A model score cannot override a deterministic hard failure: while
+        # budget remains, the gate sends the report back for another pass.
+        return ROUTE_REFINE, "quality_gate_failed"
+    return ROUTE_FINALIZE, "critique_satisfied"
 
 
 def graph_status(state: ResearchState) -> str:
     """Name how this run ended, from the same decision the router used."""
     return _STATUS_BY_ROUTE_REASON[graph_route(state)[1]]
+
+
+def graph_quality_status(state: ResearchState) -> str:
+    """The terminal quality status the finalizer stamps on both artifacts.
+
+    Read from the same pure decision the router used, so the status a reader
+    sees and the edge the graph took cannot disagree. Only a report the gates
+    cleared *and* the Critic accepted is ``accepted``: ``critique_satisfied``
+    is itself reachable only once the gates found no hard failure while budget
+    remained, so a run that exhausted its budget with failures ends
+    ``partial``. A run no quality pass ever judged is ``partial`` too —
+    nothing unjudged may be called accepted, and the finalizer saves no claim
+    to memory for a partial run.
+    """
+    if state.quality is None:
+        return QUALITY_STATUS_PARTIAL
+    return (
+        QUALITY_STATUS_ACCEPTED
+        if graph_route(state)[1] == "critique_satisfied"
+        else QUALITY_STATUS_PARTIAL
+    )
 
 
 def graph_recursion_limit(max_iterations: int) -> int:

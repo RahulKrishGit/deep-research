@@ -35,6 +35,7 @@ from deep_research.observability.context import (
 from deep_research.observability.metrics import (
     AgentMetric,
     ApiMetric,
+    LLMOperation,
     MemoryLayer,
     MemoryMetric,
     MetricRecord,
@@ -105,6 +106,10 @@ _JSON_MAPPING_ADAPTER = TypeAdapter(dict[str, JsonValue])
 _RETRY_COUNT_ADAPTER = TypeAdapter(NonNegativeInt)
 _TOP_K_ADAPTER = TypeAdapter(Annotated[int, Field(ge=1)])
 _MEMORY_LAYER_ADAPTER = TypeAdapter(MemoryLayer)
+_LLM_OPERATION_ADAPTER = TypeAdapter(LLMOperation)
+# The provider's own structured attempt number: 1 is the first request, 2 is
+# the single repair. Anything else is not an attempt this system can produce.
+_STRUCTURED_ATTEMPT_ADAPTER = TypeAdapter(Annotated[int, Field(ge=1, le=2)])
 
 
 class RunLike(Protocol):
@@ -444,6 +449,8 @@ class Tracker:
         parent = self._require_context()
         context = _validated_context(parent, model=model, tool_name=None)
         inputs = _validate_json_mapping(inputs)
+        operation = _validate_llm_operation(inputs.get("operation"))
+        structured_attempt = _validate_structured_attempt(inputs.get("attempt"))
 
         def metric_factory(
             ctx: TraceContext,
@@ -464,6 +471,8 @@ class Tracker:
                 latency_ms=latency,
                 success=success,
                 error_type=error_type,
+                operation=operation,
+                structured_attempt=structured_attempt,
             )
 
         return self._span(
@@ -937,6 +946,11 @@ class Tracker:
         if error is None:
             return None
         redacted = self._redact(str(error))
+        # Imported here because ``providers.contracts`` imports this package.
+        from deep_research.providers.contracts import ProviderError
+
+        if isinstance(error, ProviderError):
+            return error.redacted_copy(redacted)
         try:
             return type(error)(redacted)
         except Exception:
@@ -1016,6 +1030,25 @@ def _validate_non_empty_string(value: Any) -> str:
 
 def _validate_memory_layer(value: Any) -> MemoryLayer:
     return _MEMORY_LAYER_ADAPTER.validate_python(value)
+
+
+def _validate_llm_operation(value: Any) -> LLMOperation | None:
+    """The one finite operation literal a span declared, or ``None``.
+
+    ``None`` covers every span recorded before the ledger existed and every
+    caller that declares no operation; anything outside the closed literal
+    set is rejected rather than copied into a metric.
+    """
+    if value is None:
+        return None
+    return _LLM_OPERATION_ADAPTER.validate_python(value, strict=True)
+
+
+def _validate_structured_attempt(value: Any) -> int | None:
+    """The provider's structured attempt number: 1, 2, or nothing."""
+    if value is None:
+        return None
+    return _STRUCTURED_ATTEMPT_ADAPTER.validate_python(value, strict=True)
 
 
 def _validate_optional_entry_type(value: str | None) -> str | None:

@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import re
+from types import SimpleNamespace
+
 import pytest
 
 from deep_research.evaluation.judging import (
+    _BLOCK_ORDER,
+    _JUDGE_SCORE_BANDS,
     COMMON_DIMENSION_WEIGHTS,
     JUDGE_PROMPT_ID,
+    JUDGE_RATIONALE_GUIDANCE_MAX,
+    JUDGE_RATIONALE_GUIDANCE_TARGET,
+    JUDGE_SYSTEM_PROMPT,
+    JudgeInput,
+    build_judge_evaluator,
     build_judge_input,
     judge_prompt_fingerprint,
     judge_quality,
@@ -14,12 +26,18 @@ from deep_research.evaluation.judging import (
     run_judge,
 )
 from deep_research.evaluation.models import (
+    JUDGE_RATIONALE_SCHEMA_MAX,
     EvaluatorDiagnostic,
+    GateReport,
     JudgeScores,
     JudgeVerdict,
+    ReActSummary,
+    TargetOutput,
+    fallback_provider_diagnostic,
 )
-from deep_research.observability import TokenUsage
+from deep_research.observability import LangSmithRuntimeConfig, TokenUsage, Tracker
 from deep_research.providers import (
+    DeepSeekJudgeProvider,
     OpenAIProviderError,
     ProviderOutputLimitError,
     ProviderResponseError,
@@ -28,7 +46,84 @@ from deep_research.providers import (
     StructuredOutputError,
     StructuredValidationDiagnostic,
 )
-from tests.evaluation_fakes import FakeStructuredProvider
+from deep_research.utils.config import LLMConfig
+from tests.evaluation_fakes import FakeRun, FakeStructuredProvider
+
+# The judge prompt fingerprint after the response contract was added. Judge
+# scores recorded before this value are not comparable with scores after it.
+# Superseded: 77a0898f4267 (pre-contract), 93edb1729cbb (pre-fallback).
+_CONTRACT_FINGERPRINT = "74b9cddfbbee"
+
+
+class _RecordingResponses:
+    def __init__(self, *outcomes: object) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, object]] = []
+
+    async def create(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class _FakeDeepSeekClient:
+    def __init__(self, responses: _RecordingResponses) -> None:
+        self.responses = responses
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(calls=[]),
+        )
+
+
+def _responses_response(
+    *,
+    output_text: object,
+    status: str = "completed",
+    incomplete_reason: str | None = None,
+    input_tokens: int = 8,
+    output_tokens: int = 3,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="deepseek-response",
+        status=status,
+        incomplete_details=(
+            None
+            if incomplete_reason is None
+            else SimpleNamespace(reason=incomplete_reason)
+        ),
+        output_text=output_text,
+        model="deepseek-v4-flash",
+        usage=SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+        ),
+    )
+
+
+def _deepseek_judge_config() -> LLMConfig:
+    return LLMConfig.model_validate(
+        {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking_mode": "enabled",
+            "reasoning_effort": "high",
+        }
+    )
+
+
+def _offline_deepseek_judge_provider(
+    responses: _RecordingResponses,
+) -> tuple[DeepSeekJudgeProvider, _FakeDeepSeekClient, Tracker]:
+    client = _FakeDeepSeekClient(responses)
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    provider = DeepSeekJudgeProvider(
+        _deepseek_judge_config(),
+        tracker,
+        client=client,
+    )
+    return provider, client, tracker
 
 
 def test_the_common_weights_match_the_approved_table() -> None:
@@ -176,9 +271,145 @@ async def test_a_successful_judge_produces_scored_feedback(
     assert feedback.prompt_id == JUDGE_PROMPT_ID
     assert feedback.rubric_version == 1
     assert feedback.judge_model == "deepseek-v4-flash"
-    # The judge call never carries the planner-final budget: only the final
-    # ResearchPlanDraft request may use the operation-specific value.
-    assert provider.budgets == [None]
+    # The judge carries its own operation-specific budget, not the planner's
+    # and not the global cap. The verdict holds six common dimensions, the
+    # agent-specific dimensions, and a rationale; at the global cap the
+    # adapter returned output_limit with no score at all.
+    assert provider.budgets == [runtime_config_for("planner").judge_max_tokens]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_adapter_produces_scored_feedback(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    verdict = JudgeVerdict(
+        scores=JudgeScores(
+            role_adherence=1.0,
+            completeness=0.5,
+            groundedness=0.75,
+            reasoning_quality=0.25,
+            usefulness=0.9,
+            uncertainty_calibration=0.1,
+        ),
+        agent_specific={"decomposition_quality": 0.8},
+        rationale="Grounded judge rationale.",
+    )
+    responses = _RecordingResponses(
+        _responses_response(output_text=verdict.model_dump_json())
+    )
+    provider, client, tracker = _offline_deepseek_judge_provider(responses)
+
+    async with tracker.session_span("session-1", "judge integration"):
+        feedback = await run_judge(
+            provider,
+            clean_target_output,
+            planner_case,
+            clean_gate_report,
+            runtime=runtime_config_for("planner"),
+            secrets=(),
+        )
+
+    assert feedback.status == "scored"
+    assert feedback.judge_quality == pytest.approx(judge_quality(verdict.scores))
+    assert feedback.verdict == verdict
+    assert feedback.diagnostics == ()
+    assert len(responses.calls) == 1
+    assert client.chat.completions.calls == []
+    assert feedback.prompt_fingerprint == judge_prompt_fingerprint(
+        rubric_version=1
+    )
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_adapter_schema_failures_stay_typed(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    verdict = JudgeVerdict(
+        scores=JudgeScores(**{name: 0.6 for name in COMMON_DIMENSION_WEIGHTS}),
+        agent_specific={},
+        rationale="A valid baseline rationale.",
+    )
+    # The first attempt fails by omission, not by an added key: JudgeVerdict now
+    # tolerates additive noise, so an extra property would be accepted and this
+    # test would no longer exercise the failure taxonomy at all.
+    first_payload = {
+        name: value
+        for name, value in verdict.model_dump(mode="json").items()
+        if name != "rationale"
+    }
+    second_payload = {
+        **verdict.model_dump(mode="json"),
+        "rationale": "",
+    }
+    responses = _RecordingResponses(
+        _responses_response(output_text=json.dumps(first_payload)),
+        _responses_response(output_text=json.dumps(second_payload)),
+    )
+    provider, client, tracker = _offline_deepseek_judge_provider(responses)
+
+    async with tracker.session_span("session-1", "judge integration"):
+        feedback = await run_judge(
+            provider,
+            clean_target_output,
+            planner_case,
+            clean_gate_report,
+            runtime=runtime_config_for("planner"),
+            secrets=(),
+        )
+
+    assert feedback.status == "judge_not_run"
+    assert feedback.not_run_reason == "judge_schema_failure"
+    assert feedback.judge_quality is None
+    assert feedback.verdict is None
+    assert len(feedback.diagnostics) == 2
+    assert [item.attempt for item in feedback.diagnostics] == [1, 2]
+    assert [item.category for item in feedback.diagnostics] == [
+        "missing",
+        "string_bounds",
+    ]
+    assert all(item.kind == "schema_output" for item in feedback.diagnostics)
+    assert all(
+        len(path) <= 128
+        for item in feedback.diagnostics
+        for path in item.field_paths
+    )
+    assert len(responses.calls) == 2
+    assert client.chat.completions.calls == []
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_adapter_output_limit_stays_typed(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    responses = _RecordingResponses(
+        _responses_response(
+            output_text="partial",
+            status="incomplete",
+            incomplete_reason="max_output_tokens",
+            output_tokens=4096,
+        )
+    )
+    provider, client, tracker = _offline_deepseek_judge_provider(responses)
+
+    async with tracker.session_span("session-1", "judge integration"):
+        feedback = await run_judge(
+            provider,
+            clean_target_output,
+            planner_case,
+            clean_gate_report,
+            runtime=runtime_config_for("planner"),
+            secrets=(),
+        )
+
+    assert feedback.status == "judge_not_run"
+    assert feedback.not_run_reason == "judge_output_limit"
+    assert feedback.judge_quality is None
+    assert feedback.diagnostics == (
+        EvaluatorDiagnostic(kind="output_limit", attempt=1),
+    )
+    assert all(item.kind != "schema_output" for item in feedback.diagnostics)
+    assert len(responses.calls) == 1
+    assert client.chat.completions.calls == []
 
 
 @pytest.mark.asyncio
@@ -229,8 +460,23 @@ async def test_no_evaluable_output_is_judge_not_run_with_a_typed_reason(
 async def test_a_judge_provider_failure_is_typed_and_never_scored(
     planner_case, clean_target_output, clean_gate_report, runtime_config_for
 ) -> None:
+    error = StructuredOutputError(
+        "schema failed after one repair",
+        diagnostics=[
+            StructuredValidationDiagnostic(
+                attempt=1,
+                field_paths=("$",),
+                category="extra_forbidden",
+            ),
+            StructuredValidationDiagnostic(
+                attempt=2,
+                field_paths=("rationale",),
+                category="string_bounds",
+            ),
+        ],
+    )
     provider = FakeStructuredProvider(
-        responses=[StructuredOutputError("schema failed after one repair")]
+        responses=[error]
     )
 
     feedback = await run_judge(
@@ -245,6 +491,21 @@ async def test_a_judge_provider_failure_is_typed_and_never_scored(
     assert feedback.status == "judge_not_run"
     assert feedback.not_run_reason == "judge_schema_failure"
     assert feedback.judge_quality is None
+    assert len(provider.calls) == 1
+    assert feedback.diagnostics == (
+        EvaluatorDiagnostic(
+            kind="schema_output",
+            attempt=1,
+            category="extra_forbidden",
+            field_paths=("$",),
+        ),
+        EvaluatorDiagnostic(
+            kind="schema_output",
+            attempt=2,
+            category="string_bounds",
+            field_paths=("rationale",),
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -289,7 +550,7 @@ async def test_an_overlong_rationale_is_a_schema_failure_not_a_truncation(
         JudgeVerdict(
             scores=JudgeScores(**{n: 0.5 for n in COMMON_DIMENSION_WEIGHTS}),
             agent_specific={},
-            rationale="x" * 3000,
+            rationale="x" * (JUDGE_RATIONALE_SCHEMA_MAX + 1),
         )
 
 
@@ -418,7 +679,9 @@ async def test_judge_provider_failure_and_schema_reasons_are_distinct(
         (ProviderTimeoutError("judge timed out"), "judge_transport"),
         (
             ProviderResponseError(
-                "connection reset", failure_category="transport"
+                "connection reset",
+                failure_category="transport",
+                failure_origin="sdk",
             ),
             "judge_transport",
         ),
@@ -427,12 +690,15 @@ async def test_judge_provider_failure_and_schema_reasons_are_distinct(
                 "status 503",
                 failure_category="http",
                 http_status_code=503,
+                failure_origin="sdk",
             ),
             "judge_http",
         ),
         (
             ProviderResponseError(
-                "unusable response", failure_category="response"
+                "unusable response",
+                failure_category="response",
+                failure_origin="local_response",
             ),
             "judge_provider_failure",
         ),
@@ -451,3 +717,944 @@ async def test_judge_provider_failure_and_schema_reasons_are_distinct(
         assert feedback.not_run_reason == expected
         assert feedback.judge_quality is None
         assert feedback.diagnostics == ()
+
+
+def _fallback_error() -> dict[str, object]:
+    return {
+        "error_type": "critic_review_provider_error",
+        "source": "agent.critic",
+        "message": "provider review fallback used",
+        "recoverable": False,
+        "details": {
+            "operation": "critic_report_review",
+            "provider_failure": {
+                "kind": "schema_output",
+                "exception_type": "StructuredOutputError",
+                "diagnostics": [
+                    {
+                        "attempt": 1,
+                        "field_paths": ["$"],
+                        "category": "json_invalid",
+                    }
+                ],
+            },
+        },
+    }
+
+
+def critic_live_case_output(case) -> TargetOutput:
+    """A completed, healthy critic repetition for the live case."""
+    critique = {
+        "score": 8,
+        "gaps": [],
+        "unsupported_claims": [],
+        "recommended_queries": [],
+        "should_continue": False,
+        "rationale": "The report covers commercial-scale deployment.",
+    }
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id="evaluation-critic-live-review",
+        experiment_name="critic-live-review-control",
+        completed=True,
+        result={"critique": critique},
+        state_update={"critique": critique},
+        errors=[],
+        react=ReActSummary(
+            iterations=1,
+            tool_calls=0,
+            stop_reason="finished",
+            max_iterations=case.expectations.max_iterations,
+            tool_budget=case.expectations.max_tool_calls,
+        ),
+        target_model_requested="deepseek-v4-flash",
+        target_model_returned="deepseek-v4-flash",
+        target_reasoning_effort="max",
+    )
+
+
+def _judge_input_for(output, case, *, fallback=None):
+    return build_judge_input(
+        output, case, GateReport(), secrets=(), fallback=fallback
+    )
+
+
+def test_the_judge_input_names_a_provider_fallback(critic_live_case) -> None:
+    output = critic_live_case_output(critic_live_case).model_copy(
+        update={"errors": [_fallback_error()]}
+    )
+
+    judge_input = _judge_input_for(
+        output,
+        critic_live_case,
+        fallback=fallback_provider_diagnostic(output),
+    )
+
+    assert judge_input.provider_fallback is not None
+    assert judge_input.provider_fallback["kind"] == "schema_output"
+    assert judge_input.provider_fallback["operation"] == "critic_report_review"
+    assert judge_input.provider_fallback["diagnostics"][0]["category"] == (
+        "json_invalid"
+    )
+
+
+def test_the_judge_input_omits_the_fallback_block_for_a_healthy_run(
+    critic_live_case,
+) -> None:
+    output = critic_live_case_output(critic_live_case)
+
+    judge_input = _judge_input_for(
+        output,
+        critic_live_case,
+        fallback=fallback_provider_diagnostic(output),
+    )
+
+    assert judge_input.provider_fallback is None
+
+
+def test_every_judge_input_field_is_rendered_as_a_block() -> None:
+    """A field absent from _BLOCK_ORDER would be invisible to the judge."""
+    assert set(JudgeInput.model_fields) == set(_BLOCK_ORDER)
+
+
+def test_the_fallback_block_is_rendered_in_the_judge_prompt(
+    critic_live_case,
+) -> None:
+    output = critic_live_case_output(critic_live_case).model_copy(
+        update={"errors": [_fallback_error()]}
+    )
+
+    messages = render_judge_messages(
+        _judge_input_for(
+            output,
+            critic_live_case,
+            fallback=fallback_provider_diagnostic(output),
+        )
+    )
+
+    assert "## provider_fallback" in messages[1].content
+    assert "critic_report_review" in messages[1].content
+
+
+def test_the_judge_is_told_how_to_read_a_fallback() -> None:
+    assert "provider_fallback" in JUDGE_SYSTEM_PROMPT
+    assert "no model review" in JUDGE_SYSTEM_PROMPT
+
+
+def test_the_judge_prompt_fingerprint_supersedes_the_pre_fallback_value() -> None:
+    """The judge prompt identity changed deliberately.
+
+    The asserted value is the fingerprint produced after the ``provider_fallback``
+    block was added. The superseded value was ``93edb1729cbb``; judge scores taken
+    before and after that change are not comparable, so this pin makes the next
+    prompt edit a conscious act rather than a silent invalidation of recorded
+    scores.
+
+    Superseded again by the response contract below: the value before that edit
+    was ``77a0898f4267``, which is the fingerprint recorded on the ``035d3c5``
+    live artifacts. This is the prompt-identity change, not an incidental one.
+
+    The fingerprint also covers ``JudgeVerdict.model_json_schema()``, so widening
+    the enforced rationale bound moves it as well, even though that bound cannot
+    affect a score: ``judge_quality`` reads ``scores`` alone and the rationale is
+    a recorded comment. Marking the identity as changed is the safe direction.
+    """
+    assert judge_prompt_fingerprint(rubric_version=1) == _CONTRACT_FINGERPRINT
+    assert judge_prompt_fingerprint(rubric_version=1) != "77a0898f4267"
+    assert judge_prompt_fingerprint(rubric_version=1) != "93edb1729cbb"
+
+
+def _critic_live_judge_body(critic_live_case) -> str:
+    """The rendered judge request body for the registered live critic case."""
+    judge_input = build_judge_input(
+        critic_live_case_output(critic_live_case),
+        critic_live_case,
+        GateReport(),
+        secrets=(),
+    )
+    return "\n".join(
+        message.content for message in render_judge_messages(judge_input)
+    )
+
+
+def _example_instances(body: str) -> list[dict]:
+    """Every example JSON instance the judge request carries, in order."""
+    lines = [line for line in body.splitlines() if line.startswith('{"scores"')]
+    return [json.loads(line) for line in lines]
+
+
+def _prose(body: str) -> str:
+    """The request with whitespace runs collapsed to single spaces.
+
+    The template is wrapped to satisfy the line-length limit, so a phrase can
+    straddle a newline. Asserting on raw text would make these tests break on a
+    rewrap that changes no meaning; normalising removes that failure mode
+    without weakening the assertion.
+    """
+    return " ".join(body.split())
+
+
+def test_the_judge_prompt_states_the_response_contract(critic_live_case) -> None:
+    """The prose must state the object's fields, not leave it to the schema.
+
+    Measured: the judge schema bounds ``rationale`` at 2000 characters, but the
+    prose named none of ``rationale``, ``json``, ``example``, ``field``,
+    ``character``, ``object``, or ``keys``. In 30 production attempts at max
+    effort, 5 first attempts exceeded the bound, with a median rationale of 1,735
+    characters — 265 short of the cap. The constraint is unenforceable by the
+    transport: adding ``strict`` to the request returns HTTP 400.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+    prose = _prose(body)
+
+    assert "exactly one JSON object" in prose
+    assert "no text before or after" in prose
+    for field in ("scores", "agent_specific", "rationale"):
+        assert field in prose, field
+    # The bound lives in the schema; it has to be stated in prose as well.
+    assert "2000" in prose
+    assert "and no others" in prose
+    assert "dimension id" in prose
+
+
+def test_the_contract_forbids_the_extra_fields_the_model_actually_added(
+    critic_live_case,
+) -> None:
+    """Naming the fields invited elaboration, so the ban has to be explicit.
+
+    Measured after the contract first described the three fields: 4 of 5 first
+    attempts added a fourth top-level key, ``agent_specific_note`` or
+    ``final_note``, and one run failed terminally because the repair added it
+    again. With no field named at all, the same probe recorded 0 extra keys in 30
+    attempts. The prohibition therefore names the shapes actually observed.
+    """
+    prose = _prose(_critic_live_judge_body(critic_live_case))
+
+    assert "Do not add any other field" in prose
+    for temptation in ("note", "comment", "summary", "explanation"):
+        assert temptation in prose, temptation
+    assert "belongs in `rationale`" in prose
+
+
+def test_the_request_uses_markdown_heading_levels_not_a_flat_list(
+    critic_live_case,
+) -> None:
+    """This instruction owns H1; the judged run's blocks stay H2 beneath it.
+
+    The blocks are rendered as ``## <name>`` by ``_render_blocks``, sixteen of
+    them. With a flat heading list a block named ``## rubric`` reads as a
+    section of this instruction rather than as part of the material being
+    judged — the same collision the Critic request had with its report.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+    lines = body.splitlines()
+    envelope = [line for line in lines if line.startswith("# ")]
+    blocks = [line for line in lines if line.startswith("## ")]
+    block_heads = {f"## {name}" for name in _BLOCK_ORDER}
+    subsection_heads = {
+        "## Common dimensions and their weights",
+        "## Agent-specific dimensions and their anchors",
+        "## How the final score is computed",
+        "## How to choose each score",
+        "## Reply format",
+    }
+
+    for section in (
+        "# What you are scoring",
+        "# How to read the run",
+        "# The run to judge, block by block",
+        "# Response contract",
+    ):
+        assert section in envelope, section
+    # Every H2 is either a block of the judged run or a contract subsection, and
+    # every block of the run appears exactly once.
+    for line in blocks:
+        assert line in block_heads or line in subsection_heads, line
+    assert len([line for line in blocks if line in block_heads]) == len(_BLOCK_ORDER)
+    # The run section must precede the blocks it introduces.
+    assert body.index("# The run to judge, block by block") < body.index("## prompt_id")
+
+
+def test_the_judge_prompt_gives_guidance_across_the_whole_scale(
+    critic_live_case,
+) -> None:
+    """Not just the endpoints: a rubric anchors 1.0 and 0.0 and nothing between.
+
+    Two judges can agree on the endpoints and still differ by 0.3 on a middling
+    run, which is why the middle of the range needs instruction of its own.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+    prose = _prose(body)
+
+    assert "## How to choose each score" in body
+    for band in ("0.0-0.2:", "0.2-0.4:", "0.4-0.6:", "0.6-0.8:", "0.8-1.0:"):
+        assert band in body, band
+    # The rule must be anchored on evidence, not on prose quality.
+    assert "not from the run's overall polish" in prose
+    assert "A confident claim with no support behind it" in prose
+
+
+def test_the_judge_bands_cover_the_whole_declared_range_without_overlap_or_gaps(
+    critic_live_case,
+) -> None:
+    """Step 3: [0.0, 1.0] with no hole and no score claimed twice.
+
+    Contiguity is asserted as exact adjacency of endpoints: one band closes where
+    the next opens, so every score in the declared range has exactly one band's
+    instruction and none is left unstated. The top band is worded as a
+    reservation, which is what keeps the best scores from becoming the default.
+    """
+    bands = _JUDGE_SCORE_BANDS
+    body = _critic_live_judge_body(critic_live_case)
+
+    assert bands[0][0] == 0.0
+    assert bands[-1][1] == 1.0
+    assert all(low < high for low, high, _ in bands)
+    for (_, previous_high, _), (low, _, _) in zip(bands, bands[1:]):
+        assert low == previous_high
+    assert "Reserve 1.0" in bands[-1][2]
+    for low, high, guidance in bands:
+        # Contradictory endpoint language: no band names a score it does not own.
+        for value in (float(item) for item in re.findall(r"\d+(?:\.\d+)?", guidance)):
+            assert low <= value <= high, (low, high, guidance)
+        # And the rendered prompt states each band's own row.
+        assert f"{low:.1f}-{high:.1f}: {guidance}" in body
+
+
+def test_every_example_score_sits_inside_its_band_and_brackets_the_threshold(
+    critic_live_case,
+    runtime_config_for,
+) -> None:
+    """Step 3: the labelled pair straddles the threshold the release gate uses.
+
+    Both examples must be complete, schema-valid verdicts whose scores fall in
+    the band their own label claims, and the pair must straddle the live
+    threshold: one profile below it and one clearly above.
+    """
+    weak, strong = _example_instances(_critic_live_judge_body(critic_live_case))
+    threshold = runtime_config_for("planner").live_threshold
+
+    def band_index(value: float) -> int:
+        for index, (low, high, _) in enumerate(_JUDGE_SCORE_BANDS):
+            if low <= value <= high:
+                return index
+        raise AssertionError(f"{value} falls outside every score band")
+
+    def scores_of(example: dict) -> list[float]:
+        return [*example["scores"].values(), *example["agent_specific"].values()]
+
+    weak_bands = {band_index(value) for value in scores_of(weak)}
+    strong_bands = {band_index(value) for value in scores_of(strong)}
+
+    assert max(weak_bands) < min(strong_bands)
+    assert max(scores_of(weak)) < threshold <= min(scores_of(strong))
+    for example in (weak, strong):
+        JudgeVerdict.model_validate(example)
+    # Labelled illustrative, never a target to copy.
+    prose = _prose(_critic_live_judge_body(critic_live_case))
+    assert "Weak run:" in _critic_live_judge_body(critic_live_case)
+    assert "Strong run:" in _critic_live_judge_body(critic_live_case)
+    assert "placeholders" in prose
+    assert "not a target to match" in prose
+
+
+def test_the_weighted_formula_matches_the_frozen_table_exactly(
+    critic_live_case,
+) -> None:
+    """Step 3: the stated formula is the weight table, term for term.
+
+    Which dimension carries which weight is a scoring decision, so the prompt
+    states it as arithmetic. Every common dimension must appear exactly once
+    with its frozen weight, and no agent-specific dimension may appear at all:
+    those are reported for diagnosis and never enter the final score.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+    section = body[
+        body.index("## How the final score is computed") : body.index(
+            "# How to read the run"
+        )
+    ]
+    terms = re.findall(r"(\d\.\d\d) x ([a-z_]+)", section)
+
+    assert len(terms) == len(COMMON_DIMENSION_WEIGHTS)
+    assert {name: float(weight) for weight, name in terms} == COMMON_DIMENSION_WEIGHTS
+    # Rendered in the frozen table's own order, so the arithmetic reads top down.
+    assert [name for _, name in terms] == list(COMMON_DIMENSION_WEIGHTS)
+    for dimension in critic_live_case.judge_rubric.agent_dimensions:
+        assert dimension.dimension_id not in section
+    assert "carry no weight at all" in _prose(section)
+
+
+def test_the_weighting_is_stated_as_explicit_arithmetic(critic_live_case) -> None:
+    """Which dimension carries which weight must be readable, not implied.
+
+    Groundedness at 0.25 outweighs any single agent dimension, and agent
+    dimensions carry no weight at all. Stating that as a formula is what stops a
+    run being rewarded for prose.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+
+    assert "## How the final score is computed" in body
+    for name, weight in COMMON_DIMENSION_WEIGHTS.items():
+        assert f"{weight:.2f} x {name}" in body, name
+    assert f"sum to {sum(COMMON_DIMENSION_WEIGHTS.values()):.2f}" in body
+    assert "carry no weight at all" in body
+
+
+def test_the_stated_limit_is_harder_than_the_enforced_one(critic_live_case) -> None:
+    """The prompt states a stricter rule than the system enforces, on purpose.
+
+    The statement is the steering device: a credible hard limit is what keeps the
+    model inside the range in most cases. Enforcement is local and wider, so the
+    minority of runs which overshoot are still scored rather than becoming an
+    unscorable ``string_too_long`` failure — measured at 5 of 30 production
+    attempts when the limit was declared at 2000.
+
+    Neither number may be reconciled to the other. Softening the prose loses the
+    compliance pressure; tightening enforcement restores the failures this change
+    exists to remove. Both are pinned here so that edit has to be deliberate.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+    prose = _prose(body)
+    contract = _prose(body.partition("# Response contract")[2])
+    schema_property = JudgeVerdict.model_json_schema()["properties"]["rationale"]
+
+    assert JUDGE_RATIONALE_SCHEMA_MAX == 20000
+    assert JUDGE_RATIONALE_GUIDANCE_MAX == 2000
+    assert JUDGE_RATIONALE_GUIDANCE_TARGET == 1500
+    assert JUDGE_RATIONALE_GUIDANCE_TARGET < JUDGE_RATIONALE_GUIDANCE_MAX
+    assert JUDGE_RATIONALE_GUIDANCE_MAX < JUDGE_RATIONALE_SCHEMA_MAX
+
+    # The steering statement is kept, including the claim of rejection.
+    assert str(JUDGE_RATIONALE_GUIDANCE_MAX) in contract
+    assert "The limit is hard" in prose
+    assert "rejected outright" in prose
+    # The model is given one number, not two: the enforcement bound is neither
+    # declared in the schema nor stated in the prose.
+    assert "maxLength" not in schema_property
+    assert str(JUDGE_RATIONALE_SCHEMA_MAX) not in prose
+
+
+def test_the_transmitted_schema_states_no_rationale_length(
+    critic_live_case,
+) -> None:
+    """The request must carry exactly one length signal, not two.
+
+    The prose states a hard 2000. If the schema appended by the provider also
+    declared a length, it would present a second, different number for the same
+    field -- measured at 20000 while the prose said 2000 -- and the model would
+    have to guess which to obey. So the declared constraint is only ``minLength``
+    and the maximum is enforced locally, after the response returns.
+    """
+    schema_property = JudgeVerdict.model_json_schema()["properties"]["rationale"]
+
+    assert schema_property["minLength"] == 1
+    assert "maxLength" not in schema_property
+    # And the number the prose states is the only length the model is shown.
+    body = _critic_live_judge_body(critic_live_case)
+    assert str(JUDGE_RATIONALE_SCHEMA_MAX) not in _prose(body)
+
+
+def test_the_rationale_bound_is_still_enforced_outside_the_schema() -> None:
+    """Removing the declaration must not remove the check.
+
+    The bound is a backstop against pathological output, enforced by a validator
+    so that an over-long rationale stays a *validation* failure the attempt loop
+    repairs, rather than a truncated response it never sees.
+    """
+    from pydantic import ValidationError
+
+    lengths = (
+        2263,
+        2500,
+        JUDGE_RATIONALE_GUIDANCE_MAX,
+        JUDGE_RATIONALE_SCHEMA_MAX,
+    )
+    for length in lengths:
+        verdict = JudgeVerdict.model_validate(
+            {
+                "scores": {name: 0.8 for name in JudgeScores.model_fields},
+                "rationale": "x" * length,
+            }
+        )
+        assert len(verdict.rationale) == length
+
+    with pytest.raises(ValidationError) as raised:
+        JudgeVerdict.model_validate(
+            {
+                "scores": {name: 0.8 for name in JudgeScores.model_fields},
+                "rationale": "x" * (JUDGE_RATIONALE_SCHEMA_MAX + 1),
+            }
+        )
+    # Classified as a string bound, so the shared repair guidance still applies.
+    assert {item["type"] for item in raised.value.errors()} == {"string_too_long"}
+    assert raised.value.errors()[0]["loc"] == ("rationale",)
+
+
+def test_an_empty_rationale_is_still_rejected() -> None:
+    """``minLength`` stays declared: an empty rationale is a useless verdict."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        JudgeVerdict.model_validate(
+            {
+                "scores": {name: 0.8 for name in JudgeScores.model_fields},
+                "rationale": "",
+            }
+        )
+
+
+def test_an_added_note_field_is_dropped_rather_than_fatal() -> None:
+    """An additive note must not cost a whole evaluation repetition.
+
+    Measured with the fields named in the prompt: 11 of 30 probe attempts added
+    ``agent_specific_note``, ``agent_specific_notes``, ``rationale_note`` or
+    ``final_note``, the repair sometimes invented another, and 3 of 30 runs were
+    lost as unscorable. Nothing reads an added key, so it is dropped.
+    """
+    verdict = JudgeVerdict.model_validate(
+        {
+            "scores": {name: 0.8 for name in JudgeScores.model_fields},
+            "rationale": "Grounded in the cited sources.",
+            "agent_specific_note": "Explains the agent-specific scores.",
+            "final_note": "One more remark.",
+        }
+    )
+
+    assert set(verdict.model_dump()) == {"scores", "agent_specific", "rationale"}
+    assert verdict.rationale == "Grounded in the cited sources."
+
+
+def test_drift_in_a_required_field_is_still_fatal() -> None:
+    """Tolerating additions must not tolerate a rename or an omission.
+
+    ``scores`` and ``rationale`` stay required, so the drift that matters is
+    still caught: relaxing ``extra`` only stops additions from failing.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as renamed:
+        JudgeVerdict.model_validate(
+            {"score": {name: 0.8 for name in JudgeScores.model_fields},
+             "rationale": "text"}
+        )
+    assert {item["type"] for item in renamed.value.errors()} == {"missing"}
+
+    with pytest.raises(ValidationError) as omitted:
+        JudgeVerdict.model_validate(
+            {"scores": {name: 0.8 for name in JudgeScores.model_fields}}
+        )
+    assert {item["type"] for item in omitted.value.errors()} == {"missing"}
+
+
+def test_the_relaxation_is_scoped_to_the_verdict() -> None:
+    """Other contracts still forbid extras; only this one model relaxes.
+
+    The nested scores object keeps the project default, so an invented dimension
+    inside it is still rejected.
+    """
+    from pydantic import ValidationError
+
+    assert JudgeVerdict.model_config["extra"] == "ignore"
+    assert JudgeScores.model_config.get("extra", "forbid") == "forbid"
+    with pytest.raises(ValidationError):
+        JudgeScores.model_validate(
+            {**{name: 0.8 for name in JudgeScores.model_fields}, "notes": "extra"}
+        )
+
+
+def test_the_judge_prompt_shows_valid_json_examples(critic_live_case) -> None:
+    """The examples must be real instances, not placeholder skeletons.
+
+    Angle-bracket placeholders are not valid JSON, so they show the model
+    something that is neither a schema nor an example. The provider supplies the
+    schema in a trailing system message; these supply instances.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+    examples = _example_instances(body)
+
+    assert len(examples) == 2
+    for example in examples:
+        assert sorted(example) == ["agent_specific", "rationale", "scores"]
+        assert sorted(example["scores"]) == sorted(JudgeScores.model_fields)
+        for value in example["scores"].values():
+            assert isinstance(value, (int, float))
+            assert 0.0 <= value <= 1.0
+        for value in example["agent_specific"].values():
+            assert 0.0 <= value <= 1.0
+        assert 0 < len(example["rationale"]) <= JUDGE_RATIONALE_GUIDANCE_MAX
+    for line in body.splitlines():
+        if line.startswith('{"scores"'):
+            assert "<" not in line
+
+
+def test_the_two_examples_demonstrate_opposite_ends_of_the_scale(
+    critic_live_case,
+) -> None:
+    """One weak and one strong, so no single value reads as the target.
+
+    A single mid-scale example is the anchoring failure the Critic prompt hit
+    first: the model aims at the illustrated number instead of judging. The pair
+    must actually straddle the scale, and each must sit inside one named band.
+    """
+    weak, strong = _example_instances(_critic_live_judge_body(critic_live_case))
+
+    assert max(weak["scores"].values()) <= 0.4
+    assert min(strong["scores"].values()) >= 0.8
+    assert "Weak run:" in _critic_live_judge_body(critic_live_case)
+    assert "Strong run:" in _critic_live_judge_body(critic_live_case)
+    # Values vary within each example, so no single number is the apparent answer.
+    assert len(set(weak["scores"].values())) > 1
+    assert len(set(strong["scores"].values())) > 1
+
+
+def test_the_examples_score_every_rubric_dimension_by_its_real_id(
+    critic_live_case,
+) -> None:
+    """Agent-specific keys must be the rubric's own ids, not invented ones.
+
+    The dimensions differ per agent, so the examples are generated from the
+    rubric in hand. A hard-coded id would be wrong for every other agent, and a
+    wrong id in an example is a wrong id in the answer.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+    rubric_ids = [
+        dimension.dimension_id
+        for dimension in critic_live_case.judge_rubric.agent_dimensions
+    ]
+
+    assert rubric_ids, "the live critic rubric must carry agent dimensions"
+    for example in _example_instances(body):
+        assert sorted(example["agent_specific"]) == sorted(rubric_ids)
+
+
+def test_the_examples_are_labelled_as_illustrative(critic_live_case) -> None:
+    """Illustrative values must not read as a target score.
+
+    The examples introduce numbers the prompt did not carry before, so the
+    prompt has to say the values are placeholders; otherwise a judge could
+    anchor on them the way the Critic's single example invited splitting the
+    difference.
+    """
+    body = _critic_live_judge_body(critic_live_case)
+
+    assert "placeholders" in _prose(body)
+    assert "not a target to match" in _prose(body)
+
+
+@pytest.mark.asyncio
+async def test_the_judge_never_requests_a_native_tool_turn(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    """Judge isolation is by non-invocation, and that is now asserted.
+
+    ``DeepSeekJudgeProvider`` inherits ``complete_react`` from the target
+    adapter, so capability removal is not what keeps the judge out of the
+    native tool boundary — the judge is simply never asked to select a tool.
+    A provider that refuses a native turn outright proves that.
+    """
+
+    class ReactForbiddenProvider(FakeStructuredProvider):
+        async def complete_react(self, messages, tools, **kwargs):
+            # Recorded before refusing, so the ``react_calls == []`` assertion
+            # below can actually fail if the judge ever asks for a native turn.
+            self.react_calls.append(
+                (list(messages), tuple(tools), kwargs.get("agent_name"))
+            )
+            raise AssertionError("the judge must never request a native tool turn")
+
+    verdict = JudgeVerdict(
+        scores=JudgeScores(**{n: 0.8 for n in COMMON_DIMENSION_WEIGHTS}),
+        agent_specific={"decomposition_quality": 0.9},
+        rationale="Distinct, prioritized subtopics with usable queries.",
+    )
+    provider = ReactForbiddenProvider(responses=[verdict])
+
+    feedback = await run_judge(
+        provider,
+        clean_target_output,
+        planner_case,
+        clean_gate_report,
+        runtime=runtime_config_for("planner"),
+        secrets=(),
+    )
+
+    assert feedback.status == "scored"
+    assert provider.react_calls == []
+
+
+# --- The content-free structured-attempt ledger for the judge ----------------
+
+
+def _entry(payload: dict, key: str) -> dict:
+    return next(item for item in payload["results"] if item["key"] == key)
+
+
+def _judge_verdict(value: float = 0.8) -> JudgeVerdict:
+    return JudgeVerdict(
+        scores=JudgeScores(**{name: value for name in COMMON_DIMENSION_WEIGHTS}),
+        agent_specific={},
+        rationale="Grounded and concise.",
+    )
+
+
+def _judge_provider_on(
+    tracker, responses: _RecordingResponses
+) -> DeepSeekJudgeProvider:
+    """The real judge adapter over a fake client, on a chosen tracker."""
+    return DeepSeekJudgeProvider(
+        _deepseek_judge_config(),
+        tracker,
+        client=_FakeDeepSeekClient(responses),
+    )
+
+
+def _judge_evaluator(planner_case, runtime, tracker, provider, gates):
+    return build_judge_evaluator(
+        provider,
+        planner_case,
+        runtime=runtime,
+        secrets=(),
+        gate_lookup=lambda output: gates,
+        tracker=tracker,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_judge_reports_the_attempt_its_repair_needed(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    sentinel = "sentinel-judge-provider-payload"
+    responses = _RecordingResponses(
+        _responses_response(output_text=json.dumps({"scores": sentinel})),
+        _responses_response(output_text=_judge_verdict().model_dump_json()),
+    )
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    evaluator = _judge_evaluator(
+        planner_case,
+        runtime_config_for("planner"),
+        tracker,
+        _judge_provider_on(tracker, responses),
+        clean_gate_report,
+    )
+
+    payload = await evaluator(
+        FakeRun(outputs=clean_target_output.model_dump(mode="json")), None
+    )
+
+    assert _entry(payload, "judge_status")["value"] == "scored"
+    assert _entry(payload, "judge_quality")["metadata"]["structured_attempts"] == 2
+    assert len(responses.calls) == 2
+    assert sentinel not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_judge_that_still_fails_reports_both_attempts(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    sentinel = "sentinel-judge-provider-payload"
+    invalid = json.dumps({"scores": {"role_adherence": sentinel}})
+    responses = _RecordingResponses(
+        _responses_response(output_text=invalid),
+        _responses_response(output_text=invalid),
+    )
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    evaluator = _judge_evaluator(
+        planner_case,
+        runtime_config_for("planner"),
+        tracker,
+        _judge_provider_on(tracker, responses),
+        clean_gate_report,
+    )
+
+    payload = await evaluator(
+        FakeRun(outputs=clean_target_output.model_dump(mode="json")), None
+    )
+
+    status = _entry(payload, "judge_status")
+    assert status["value"] == "judge_not_run"
+    assert status["comment"] == "judge_schema_failure"
+    assert status["metadata"]["structured_attempts"] == 2
+    assert sentinel not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_a_judge_that_never_ran_reports_no_attempt(
+    planner_case, clean_target_output, runtime_config_for
+) -> None:
+    """No judge call means no attempt recorded, never a fabricated one."""
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    evaluator = _judge_evaluator(
+        planner_case,
+        runtime_config_for("planner"),
+        tracker,
+        _judge_provider_on(tracker, _RecordingResponses()),
+        None,
+    )
+    output = clean_target_output.model_copy(update={"result": None})
+    # A target attempt already sits in this session, so an implementation
+    # that reads the session without checking that the judge ran would
+    # report it here.
+    async with tracker.session_span(output.session_id, "target attempt"):
+        async with tracker.llm_span(
+            "deepseek-v4-flash",
+            {"operation": "structured_output", "attempt": 2},
+        ):
+            pass
+
+    payload = await evaluator(
+        FakeRun(outputs=output.model_dump(mode="json")), None
+    )
+
+    status = _entry(payload, "judge_status")
+    assert status["value"] == "judge_not_run"
+    assert "structured_attempts" not in status["metadata"]
+
+
+class _JudgeBarrier:
+    """Parks each concurrent judge request until all parties have arrived.
+
+    Two gathered evaluator calls would otherwise be free to run back to
+    back. Forcing a genuine interleaving proves the attempt ledger is read
+    from the session each row owns, not from whichever call finished last.
+    """
+
+    def __init__(self, parties: int = 2) -> None:
+        self._parties = parties
+        self._arrived = 0
+        self._release = asyncio.Event()
+        self._lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        async with self._lock:
+            self._arrived += 1
+            if self._arrived >= self._parties:
+                self._release.set()
+        await self._release.wait()
+
+
+class _BarrierResponses(_RecordingResponses):
+    def __init__(self, *outcomes: object, barrier: _JudgeBarrier) -> None:
+        super().__init__(*outcomes)
+        self._barrier = barrier
+
+    async def create(self, **kwargs: object) -> object:
+        await self._barrier.wait()
+        return await super().create(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_judge_rows_read_only_their_own_attempts(
+    planner_case, clean_target_output, clean_gate_report, runtime_config_for
+) -> None:
+    """One shared tracker, two live sessions, different attempt depths."""
+    barrier = _JudgeBarrier()
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    repairing = _judge_provider_on(
+        tracker,
+        _BarrierResponses(
+            _responses_response(output_text=json.dumps({"scores": "invalid"})),
+            _responses_response(output_text=_judge_verdict().model_dump_json()),
+            barrier=barrier,
+        ),
+    )
+    first_try = _judge_provider_on(
+        tracker,
+        _BarrierResponses(
+            _responses_response(output_text=_judge_verdict().model_dump_json()),
+            barrier=barrier,
+        ),
+    )
+    rows = [
+        clean_target_output.model_copy(update={"session_id": "evaluation-row-a"}),
+        clean_target_output.model_copy(update={"session_id": "evaluation-row-b"}),
+    ]
+    evaluators = [
+        _judge_evaluator(
+            planner_case,
+            runtime_config_for("planner"),
+            tracker,
+            provider,
+            clean_gate_report,
+        )
+        for provider in (repairing, first_try)
+    ]
+
+    payloads = await asyncio.gather(
+        *(
+            evaluator(FakeRun(outputs=row.model_dump(mode="json")), None)
+            for evaluator, row in zip(evaluators, rows)
+        )
+    )
+
+    attempts = [
+        _entry(payload, "judge_quality")["metadata"]["structured_attempts"]
+        for payload in payloads
+    ]
+    # A session-blind maximum would report an attempt of 2 for both rows.
+    assert attempts == [2, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_target_repair_is_never_reported_as_a_judge_repair(
+    planner_case,
+    clean_target_output,
+    clean_gate_report,
+    runtime_config_for,
+) -> None:
+    """The judge and the target share one tracker *and* one session id.
+
+    The concurrency test above separates two *different* session ids, which is
+    necessary but not sufficient: ``cli.py`` builds a single ``Tracker`` and
+    hands the same instance to both ``build_target`` and the judge evaluator
+    (``tracker_factory=lambda: tracker``), and the judge then opens its span on
+    ``output.session_id`` -- the target repetition's own session. Filtering the
+    attempt ledger by session id alone therefore cannot separate the two, and a
+    target that used its one repair would be reported as a Judge repair, which
+    is precisely the condition the per-agent acceptance rule forbids. The
+    ledger must read the judge's own call, not the session it happens to share.
+    """
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+    row = clean_target_output.model_copy(
+        update={"session_id": "evaluation-row-shared"}
+    )
+
+    # The target's own structured calls, opened exactly as the real provider
+    # opens them: a failed first attempt and the one repair that follows it,
+    # under the row's session id and on the tracker production shares with the
+    # judge evaluator.
+    async with tracker.session_span(row.session_id, "target attempt"):
+        async with tracker.llm_span(
+            "deepseek-v4-flash",
+            {"operation": "structured_output", "attempt": 1},
+        ):
+            pass
+        async with tracker.llm_span(
+            "deepseek-v4-flash",
+            {"operation": "structured_output", "attempt": 2},
+        ):
+            pass
+
+    responses = _RecordingResponses(
+        _responses_response(output_text=_judge_verdict().model_dump_json())
+    )
+    evaluator = _judge_evaluator(
+        planner_case,
+        runtime_config_for("planner"),
+        tracker,
+        _judge_provider_on(tracker, responses),
+        clean_gate_report,
+    )
+
+    payload = await evaluator(FakeRun(outputs=row.model_dump(mode="json")), None)
+
+    # The judge answered on its first request, so the judge never repaired and
+    # the target's repair must not be attributed to it.
+    assert len(responses.calls) == 1
+    assert (
+        _entry(payload, "judge_quality")["metadata"]["structured_attempts"] == 1
+    )

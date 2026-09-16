@@ -5,16 +5,34 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.utils.types import (
+    MAX_CONSUMED_COVERAGE_IDS,
+    MAX_CONSUMED_FINDING_FINGERPRINTS,
     Claim,
     Critique,
+    EvidencePassage,
     Finding,
     MemorySnapshot,
     ResearchError,
     ResearchEvent,
     ScoredSource,
+    SourceEvaluationStatus,
     SubTopic,
 )
+
+
+def unscored_source(*, status: SourceEvaluationStatus = "unscored_cap") -> ScoredSource:
+    return ScoredSource(
+        url="https://example.com/unscored",
+        title="Unscored source",
+        authority_score=None,
+        recency_score=None,
+        relevance_score=None,
+        overall_score=None,
+        rationale="This source was not scored.",
+        evaluation_status=status,
+    )
 
 
 def scored_source(**overrides: object) -> ScoredSource:
@@ -24,7 +42,6 @@ def scored_source(**overrides: object) -> ScoredSource:
         "authority_score": 0.8,
         "recency_score": 0.7,
         "relevance_score": 0.9,
-        "corroboration_score": 0.6,
         "overall_score": 0.75,
         "rationale": "Relevant and independently supported.",
     }
@@ -47,6 +64,7 @@ def critique(**overrides: object) -> Critique:
 
 def test_domain_models_preserve_required_fields() -> None:
     topic = SubTopic(
+        coverage_id="topic-01",
         title="Adoption",
         rationale="Measure current adoption patterns.",
         search_queries=["enterprise AI adoption 2026"],
@@ -62,12 +80,22 @@ def test_domain_models_preserve_required_fields() -> None:
         related_sub_topic="Adoption",
     )
     claim = Claim(
+        claim_id=claim_fingerprint("Adoption increased year over year."),
         text="Adoption increased year over year.",
         source_urls=["https://example.com/a", "https://example.org/b"],
         verdict="verified",
         confidence=0.9,
         evidence=["Two independent surveys report an increase."],
         contradictions=["One regional survey reported flat adoption."],
+        verification_evidence=[
+            EvidencePassage(
+                source_url="https://independent.org/survey",
+                source_title="Independent survey",
+                locator="p. 3",
+                excerpt="Two independent surveys report an increase.",
+                stance="supports",
+            )
+        ],
     )
     memory = MemorySnapshot(
         similar_findings=[finding],
@@ -79,6 +107,122 @@ def test_domain_models_preserve_required_fields() -> None:
     assert finding.source_url == "not-validated-at-this-boundary"
     assert claim.contradictions == ["One regional survey reported flat adoption."]
     assert memory.similar_findings == [finding]
+
+
+def test_a_claim_identity_is_the_canonical_fingerprint_of_its_text() -> None:
+    """Task 5, Minor 1: a ``Claim`` fixture must not invent an id.
+
+    ``merge_claim_snapshot`` recomputes the fingerprint from ``text``, so an
+    arbitrary id passes every merge test while guarding nothing about the
+    public identity field. Fixtures therefore derive it, and this asserts the
+    contract they derive it against.
+    """
+    text = "Adoption increased year over year."
+    fixture = Claim(
+        claim_id=claim_fingerprint(text),
+        text=text,
+        source_urls=["https://example.com/a"],
+        verdict="verified",
+        confidence=0.9,
+        evidence=["An independent survey reports an increase."],
+        contradictions=[],
+        verification_evidence=[
+            EvidencePassage(
+                source_url="https://independent.org/survey",
+                source_title="Independent survey",
+                locator="p. 3",
+                excerpt="An independent survey reports an increase.",
+                stance="supports",
+            )
+        ],
+    )
+
+    assert fixture.claim_id == claim_fingerprint(fixture.text)
+    # Provenance is additive: a fixture that carries none claims none, which
+    # suppresses nothing and therefore costs extra work rather than skipping
+    # evidence.
+    assert fixture.consumed_finding_fingerprints == []
+    assert fixture.consumed_coverage_ids == []
+
+
+def test_claim_provenance_is_bounded() -> None:
+    """Both provenance lists are bounded, so a claim cannot grow forever."""
+    with pytest.raises(ValidationError):
+        Claim(
+            claim_id="fingerprint",
+            text="A claim.",
+            source_urls=["https://example.com/a"],
+            verdict="insufficient_evidence",
+            confidence=0.0,
+            evidence=[],
+            contradictions=[],
+            verification_evidence=[],
+            consumed_finding_fingerprints=[
+                f"fingerprint-{index}"
+                for index in range(MAX_CONSUMED_FINDING_FINGERPRINTS + 1)
+            ],
+        )
+
+    with pytest.raises(ValidationError):
+        Claim(
+            claim_id="fingerprint",
+            text="A claim.",
+            source_urls=["https://example.com/a"],
+            verdict="insufficient_evidence",
+            confidence=0.0,
+            evidence=[],
+            contradictions=[],
+            verification_evidence=[],
+            consumed_coverage_ids=[
+                f"topic-{index}"
+                for index in range(MAX_CONSUMED_COVERAGE_IDS + 1)
+            ],
+        )
+
+
+def _claim_snapshot() -> dict[str, object]:
+    """One persisted claim record, in the shape a snapshot serialises to."""
+    text = "Logical error rates fell below break-even in 2025."
+    return {
+        "claim_id": claim_fingerprint(text),
+        "text": text,
+        "source_urls": ["https://example.com/a"],
+        "verdict": "insufficient_evidence",
+        "confidence": 0.0,
+        "evidence": [],
+        "contradictions": [],
+        "verification_evidence": [],
+        "consumed_finding_fingerprints": [],
+        "consumed_coverage_ids": [],
+    }
+
+
+def test_a_claim_snapshot_without_an_insufficient_reason_still_validates() -> None:
+    """The new field is additive, so a snapshot written before it validates.
+
+    ``Claim`` is a shared contract read back from persisted state, so a field
+    added for one agent's audit cannot make an older record unreadable. The
+    omission has to mean the same thing it means on the record: no reason was
+    recorded, which is not the same as a reason of "unknown".
+    """
+    claim = Claim.model_validate(_claim_snapshot())
+
+    assert claim.insufficient_reason is None
+
+
+def test_a_claim_snapshot_keeps_an_unenumerated_insufficient_reason() -> None:
+    """The field is a bounded string, not a closed enumeration.
+
+    ``Claim`` must not import the fact checker's ``INSUFFICIENT_REASONS`` to
+    constrain this value: the contract layer cannot depend on an agent, and a
+    reason coined by a later release than the reader's would otherwise turn a
+    readable snapshot into a validation failure.
+    """
+    snapshot = {**_claim_snapshot(), "insufficient_reason": "a_later_reason"}
+
+    claim = Claim.model_validate(snapshot)
+
+    assert claim.insufficient_reason == "a_later_reason"
 
 
 @pytest.mark.parametrize("value", [-0.01, 1.01])
@@ -213,7 +357,6 @@ def test_scored_source_defaults_to_not_low_confidence() -> None:
         authority_score=0.8,
         recency_score=0.7,
         relevance_score=0.9,
-        corroboration_score=0.5,
         overall_score=0.76,
         rationale="Peer-reviewed and corroborated.",
     )
@@ -228,10 +371,19 @@ def test_scored_source_records_an_explicit_low_confidence_flag() -> None:
         authority_score=0.1,
         recency_score=0.0,
         relevance_score=0.2,
-        corroboration_score=0.0,
         overall_score=0.095,
         rationale="Anonymous blog with no corroboration.",
         low_confidence=True,
     )
 
     assert source.low_confidence is True
+
+
+def test_unscored_source_accepts_null_quality_scores_and_explicit_status() -> None:
+    source = unscored_source(status="unscored_cap")
+
+    assert source.overall_score is None
+    assert source.authority_score is None
+    assert source.recency_score is None
+    assert source.relevance_score is None
+    assert source.evaluation_status == "unscored_cap"

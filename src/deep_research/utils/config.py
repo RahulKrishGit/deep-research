@@ -70,7 +70,7 @@ class LLMConfig(BaseModel):
     retry_initial_delay: float = Field(default=1.0, ge=0)
     retry_max_delay: float = Field(default=16.0, ge=0)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=4096, ge=1)
+    max_tokens: int = Field(default=32768, ge=1)
 
     def resolve_for(self, agent_name: str | None) -> EffectiveModelConfig:
         override = None if agent_name is None else self.model_overrides.get(agent_name)
@@ -155,6 +155,15 @@ class MemoryConfig(BaseModel):
     procedural: ProceduralMemoryConfig = ProceduralMemoryConfig()
 
 
+class SourceEvaluatorConfig(BaseModel):
+    """Bounds for source-evaluation provider requests and source coverage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    batch_size: int = Field(default=12, ge=1)
+    max_total_sources: int = Field(default=36, ge=1)
+
+
 class AgentRuntimeConfig(BaseModel):
     """Bounds every ReAct agent runs under.
 
@@ -164,15 +173,48 @@ class AgentRuntimeConfig(BaseModel):
     ``planner_final_max_tokens`` is the operation-specific output budget for
     the planner's final ``ResearchPlanDraft`` request only; ReAct decisions
     and judge calls keep the global ``llm.max_tokens`` cap.
+
+    ``critic_review_max_tokens`` is the same kind of budget for the Critic's
+    ``critique_report_review`` request. That call renders the whole report,
+    the claim digest, the source quality signals (a score when available or
+    an explicit evaluation status), and the spot-check evidence, then
+    asks for a score, three lists, and a rationale in one JSON object. At the
+    global cap it returned non-JSON text on both the initial attempt and the
+    single repair in three consecutive live canaries. ReAct decisions keep
+    the global cap.
+
+    ``judge_max_tokens`` is the budget for the judge's ``JudgeVerdict``
+    request. Once the Critic began producing a real critique, the judge hit
+    the global cap scoring it and returned ``judge_output_limit`` with no
+    quality score at all. The verdict carries six common dimensions, the
+    agent-specific dimensions, and a rationale, so it is not a small reply.
+
+    ``react_decision_max_tokens`` is the budget for every ReAct decision
+    request. A live Critic repetition recorded ``{kind: output_limit,
+    operation: react_decision}``: the spot-check decision hit the global cap
+    and was truncated, which silently degrades the spot-check phase instead of
+    failing the run. A decision is not a small reply either — it must carry the
+    agent's reasoning, one tool call, and that call's arguments.
+
+    ``max_sub_topics`` is how many planned sub-topics one Researcher pass
+    attempts. It defaults to the Planner's own ceiling of seven, so the
+    production default attempts the whole plan: a cap below the plan size
+    silently drops planned sub-topics, and the ones it drops are the least
+    important by priority, which is exactly where a thin report comes from.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    source_evaluator: SourceEvaluatorConfig = SourceEvaluatorConfig()
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
+    max_sub_topics: int = Field(default=7, ge=1)
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
-    planner_final_max_tokens: int = Field(default=4096, ge=1)
+    planner_final_max_tokens: int = Field(default=32768, ge=1)
+    critic_review_max_tokens: int = Field(default=32768, ge=1)
+    judge_max_tokens: int = Field(default=32768, ge=1)
+    react_decision_max_tokens: int = Field(default=32768, ge=1)
 
 
 class GraphConfig(BaseModel):
@@ -273,6 +315,31 @@ class EvaluationConfig(BaseModel):
         return self
 
 
+class RequestBudgetConfig(BaseModel):
+    """Declared transport-attempt ceilings for one run.
+
+    Each ceiling is ``None`` by default: an undeclared ceiling still counts
+    attempts but never blocks them. A declared ceiling ``C`` permits
+    ``floor(C * stop_fraction)`` attempts and refuses the next one before any
+    network I/O; ``stop_fraction`` below ``1 / C`` therefore yields a valid
+    zero limit that refuses the very first attempt.
+
+    These values are deliberately request-scoped. They are not read from the
+    environment and have no ``config.yaml`` leaf, because a second way to set
+    a spend ceiling is the exact failure this bound exists to remove: a live
+    canary breached its declared ceiling while nothing enforced it. A canary
+    supplies its limits through ``config_overrides["request_budget"]`` for the
+    one run that declares them.
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    deepseek_attempt_ceiling: int | None = Field(default=None, ge=1)
+    openai_attempt_ceiling: int | None = Field(default=None, ge=1)
+    tavily_attempt_ceiling: int | None = Field(default=None, ge=1)
+    stop_fraction: float = Field(default=1.0, gt=0.0, le=1.0)
+
+
 class ConfigSettings(BaseModel):
     """All non-secret application configuration."""
 
@@ -286,6 +353,7 @@ class ConfigSettings(BaseModel):
     graph: GraphConfig = GraphConfig()
     output: OutputConfig = OutputConfig()
     evaluation: EvaluationConfig = EvaluationConfig()
+    request_budget: RequestBudgetConfig = RequestBudgetConfig()
 
 
 _ENVIRONMENT_OVERRIDES = {
@@ -315,11 +383,34 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "AGENTS_MAX_ITERATIONS": ("agents", "max_iterations"),
     "AGENTS_TOOL_BUDGET": ("agents", "tool_budget"),
+    "AGENTS_MAX_SUB_TOPICS": ("agents", "max_sub_topics"),
+    "AGENTS_SOURCE_EVALUATOR_BATCH_SIZE": (
+        "agents",
+        "source_evaluator",
+        "batch_size",
+    ),
+    "AGENTS_SOURCE_EVALUATOR_MAX_TOTAL_SOURCES": (
+        "agents",
+        "source_evaluator",
+        "max_total_sources",
+    ),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
     "AGENTS_PLANNER_FINAL_MAX_TOKENS": (
         "agents",
         "planner_final_max_tokens",
+    ),
+    "AGENTS_CRITIC_REVIEW_MAX_TOKENS": (
+        "agents",
+        "critic_review_max_tokens",
+    ),
+    "AGENTS_JUDGE_MAX_TOKENS": (
+        "agents",
+        "judge_max_tokens",
+    ),
+    "AGENTS_REACT_DECISION_MAX_TOKENS": (
+        "agents",
+        "react_decision_max_tokens",
     ),
     "GRAPH_MAX_ITERATIONS": ("graph", "max_iterations"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),

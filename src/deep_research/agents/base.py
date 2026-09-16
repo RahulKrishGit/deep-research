@@ -16,18 +16,23 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Generic, Protocol, TypeVar
+from typing import ClassVar, Generic, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
 
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.prompts import AgentTask, render_react_messages
 from deep_research.agents.react import run_react_loop
-from deep_research.agents.steps import ReActDecision, ReActRun, ReActStep
+from deep_research.agents.steps import (
+    ReActDecision,
+    ReActRun,
+    ReActStep,
+    react_decision_from_native_turn,
+)
 from deep_research.agents.toolset import AgentToolset
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import ChatMessage
+from deep_research.providers import ChatMessage, NativeToolTurn, ToolDefinition
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -41,12 +46,13 @@ _SchemaT = TypeVar("_SchemaT", bound=BaseModel)
 
 
 class StructuredCompleter(Protocol):
-    """The one provider capability the agent runtime needs.
+    """The structured-output capability the agent runtime needs.
 
     ``OpenAIChatProvider`` and ``DeepSeekChatProvider`` satisfy it. Keeping
-    the protocol to a single method keeps test doubles small; agents that
-    also need free-text completion may type their own constructor against
-    the concrete provider.
+    the protocol to a single method keeps test doubles small, and it is the
+    only capability the evaluation judge needs — the judge is typed against
+    this protocol and never against ``AgentCompleter``, so judge wiring cannot
+    require or invoke native tool calling.
     """
 
     async def complete_structured(
@@ -62,6 +68,28 @@ class StructuredCompleter(Protocol):
         ``max_tokens`` is a per-call output-budget override for this request
         only; ``None`` means the provider's configured global cap.
         """
+        raise NotImplementedError
+
+
+@runtime_checkable
+class AgentCompleter(StructuredCompleter, Protocol):
+    """Every capability a production agent's provider must offer.
+
+    Both halves are required: tool-free finalization/extraction/review calls
+    use ``complete_structured``, and every model-directed ReAct iteration uses
+    ``complete_react``. Declaring them together is what lets construction fail
+    loudly when a provider implements only one.
+    """
+
+    async def complete_react(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> NativeToolTurn:
+        """Return one native tool call or one final answer."""
         raise NotImplementedError
 
 
@@ -89,7 +117,7 @@ class BaseAgent(ABC, Generic[ResultT]):
     def __init__(
         self,
         *,
-        provider: StructuredCompleter,
+        provider: AgentCompleter,
         tracker: Tracker,
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),
@@ -103,6 +131,13 @@ class BaseAgent(ABC, Generic[ResultT]):
         if scratchpad.agent_name != name.strip():
             raise AgentConfigurationError(
                 "scratchpad agent_name must match the agent name"
+            )
+        # A provider missing either capability is a wiring mistake that would
+        # otherwise surface as an AttributeError mid-loop, after paid calls.
+        if not isinstance(provider, AgentCompleter):
+            raise AgentConfigurationError(
+                "agent provider must implement structured and native ReAct "
+                "completion"
             )
         self._name = name.strip()
         self._provider = provider
@@ -118,8 +153,8 @@ class BaseAgent(ABC, Generic[ResultT]):
         return self._config
 
     @property
-    def provider(self) -> StructuredCompleter:
-        """The structured-output provider, for agents that drive their own loop."""
+    def provider(self) -> AgentCompleter:
+        """The provider, for agents that drive their own loop."""
         return self._provider
 
     @property
@@ -194,6 +229,36 @@ class BaseAgent(ABC, Generic[ResultT]):
             agent_name=self._name,
         )
 
+    async def _complete_react_decision(
+        self,
+        task: AgentTask,
+        *,
+        iteration: int,
+    ) -> tuple[ReActDecision, ...]:
+        """Ask the provider for one native ReAct turn, adapted to loop state.
+
+        The sole bridge between the provider-native tool boundary and
+        ``run_react_loop``. Every model-directed agent inherits this path, so
+        no agent can reintroduce a prompt-encoded tool protocol of its own.
+        One turn may select several tools at once, so a tuple of decisions
+        comes back rather than a single one.
+        """
+        turn = await self._provider.complete_react(
+            render_react_messages(
+                system_prompt=self.system_prompt(task),
+                task=task,
+                scratchpad=self._scratchpad.recent(
+                    self._config.prompt_context_entries
+                ),
+                iteration=iteration,
+                max_iterations=self._config.max_iterations,
+            ),
+            self._toolset.provider_definitions(),
+            agent_name=self._name,
+            max_tokens=self._config.react_decision_max_tokens,
+        )
+        return react_decision_from_native_turn(turn)
+
     async def run(self, state: ResearchState) -> AgentRun[ResultT]:
         """Run one bounded ReAct loop and finalize its result."""
         task = self.build_task(state)
@@ -202,23 +267,9 @@ class BaseAgent(ABC, Generic[ResultT]):
         async def decide(
             iteration: int,
             steps: Sequence[ReActStep],
-        ) -> ReActDecision:
+        ) -> tuple[ReActDecision, ...]:
             del steps
-            messages = render_react_messages(
-                system_prompt=self.system_prompt(task),
-                task=task,
-                descriptors=toolset.descriptors(),
-                scratchpad=self._scratchpad.recent(
-                    self._config.prompt_context_entries
-                ),
-                iteration=iteration,
-                max_iterations=self._config.max_iterations,
-            )
-            return await self._provider.complete_structured(
-                messages,
-                ReActDecision,
-                agent_name=self._name,
-            )
+            return await self._complete_react_decision(task, iteration=iteration)
 
         async with self._tracker.agent_span(self._name) as span:
             react = await run_react_loop(

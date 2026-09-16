@@ -233,8 +233,15 @@ def test_every_controlled_case_populates_raw_findings() -> None:
 
 
 def test_the_live_case_declares_the_dependencies_it_needs() -> None:
-    """The live case verifies with live web search and memory recall; it
-    does not require HTTP page fetches (search snippets suffice)."""
+    """The live case searches and recalls memory; it declares no HTTP
+    dependency because search is discovery only.
+
+    Task 5 review, Minor 2: search is discovery-only and a search hit is
+    never verdict evidence — verdict passages must come from read-bearing
+    scraper, document, or memory reads. Whether a particular live repetition
+    is *required* to make an HTTP fetch is a separate question about this
+    case's declared dependencies, not a statement that snippets suffice.
+    """
     live = cases_for("fact_checker", "live")[0]
 
     assert live.expectations.required_live_dependencies == ["tavily", "memory"]
@@ -453,6 +460,26 @@ def test_the_search_failure_case_lets_the_second_claim_succeed() -> None:
     }
 
 
+def test_every_successful_verification_hit_has_a_read_fixture() -> None:
+    """Search candidates must be readable before they can become evidence."""
+    for scenario_name in (
+        "fact-checker-mixed",
+        "fact-checker-dependent-domains",
+        "fact-checker-search-failure",
+    ):
+        script = SCENARIOS[scenario_name]
+        read_urls = {
+            normalize_source_url(page_url) for page_url in script.http_pages
+        }
+        for response in script.search_responses.values():
+            if not isinstance(response, dict):
+                continue
+            for result in response.get("results", []):
+                url = result.get("url") if isinstance(result, dict) else None
+                if isinstance(url, str):
+                    assert normalize_source_url(url) in read_urls
+
+
 def test_every_controlled_case_declares_its_scripted_urls() -> None:
     """known_source_urls must equal the normalized findings plus the
     normalized scripted result URLs: the Fact Checker normalizes every URL
@@ -507,8 +534,8 @@ async def test_the_mixed_double_serves_all_three_scripted_searches(
 ) -> None:
     """The scripted search double serves the three claim-keyed searches:
     corroboration for the supported claim, one contradicting result for the
-    refuted claim, nothing for the thin claim — and an unscripted query is
-    prohibited."""
+    refuted claim, nothing for the thin claim — and an unscripted query is a
+    recorded scenario miss."""
     case = _case("mixed-verdicts")
     bundle = build_controlled_dependencies(
         runtime_config_for("fact_checker"),
@@ -534,17 +561,18 @@ async def test_the_mixed_double_serves_all_three_scripted_searches(
     assert thin.success, thin.error
     assert thin.data["results"] == []
 
-    # An unscripted query is prohibited: it surfaces as a failed tool result
-    # (BaseTool.execute converts every client exception into a ToolResult)
-    # and is recorded in the ledger as a prohibited call.
+    # An unscripted query is a scenario miss: it still surfaces as a failed
+    # tool result (BaseTool.execute converts every client exception into a
+    # ToolResult), but it is not evidence of a real-service access.
     async with tracker.session_span("evaluation-1", "q"):
-        prohibited = await search.execute(query="something nobody scripted")
+        miss = await search.execute(query="something nobody scripted")
 
-    assert prohibited.success is False
-    assert prohibited.error is not None
-    assert prohibited.error.type == "ProhibitedDependencyError"
-    assert bundle.recorder.ledger().prohibited_calls == [
-        "tavily.search('something nobody scripted')"
+    assert miss.success is False
+    assert miss.error is not None
+    assert miss.error.type == "ScenarioMissError"
+    assert bundle.recorder.ledger().prohibited_calls == []
+    assert bundle.recorder.ledger().scenario_misses == [
+        "web_search: something nobody scripted"
     ]
 
 
@@ -571,7 +599,10 @@ async def test_the_search_failure_double_raises_once_and_is_recorded(
     assert failed.success is False
     assert failed.error is not None
     assert failed.error.type == "RuntimeError"
-    assert failed.error.message == "search backend unavailable"
+    # A raw non-ToolExecutionError escaping a tool publishes static project
+    # text, never the raw exception text: the failure stays classifiable
+    # through the enumerated error.type asserted above.
+    assert failed.error.message == "the tool failed unexpectedly"
 
     assert succeeded.success, succeeded.error
     assert [result["url"] for result in succeeded.data["results"]] == [

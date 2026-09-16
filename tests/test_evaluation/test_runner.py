@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from uuid import UUID
 
 import pytest
 
+from deep_research.evaluation import runner as runner_module
+from deep_research.evaluation.cases import case_by_id
 from deep_research.evaluation.cli import _focused_dataset_examples
+from deep_research.evaluation.dependencies import build_controlled_dependencies
 from deep_research.evaluation.models import (
     EvaluationFailure,
     EvaluatorDiagnostic,
@@ -20,7 +25,9 @@ from deep_research.evaluation.runner import (
     build_case_result,
     build_evaluation_status_values,
     build_evaluation_summary_feedback,
+    build_repetition_result,
     decide_status,
+    evaluation_failure_reason,
     run_agent_evaluation,
 )
 from tests.evaluation_fakes import (
@@ -38,6 +45,174 @@ def test_the_aggregate_formula_matches_the_spec_exactly() -> None:
     assert aggregate_quality(0.0, 1.0) == pytest.approx(0.60)
     assert aggregate_quality(0.5, 0.5) == pytest.approx(0.50)
     assert aggregate_quality(0.9, 0.8) == pytest.approx(0.84)
+
+
+def test_repetition_result_projects_only_safe_typed_telemetry(
+    clean_target_output,
+) -> None:
+    output = clean_target_output.model_copy(
+        update={
+            "dependencies": clean_target_output.dependencies.model_copy(
+                update={"prohibited_calls": ["tool-a", "tool-b"]}
+            ),
+            "react": clean_target_output.react.model_copy(
+                update={"stop_reason": "provider_error"}
+            ),
+            "errors": [
+                {
+                    "details": {
+                        "operation": "react_decision",
+                        "provider_failure": {"kind": "output_limit"},
+                        "raw_provider_output": "do not persist",
+                    },
+                    "message": "do not persist",
+                },
+                {
+                    "details": {
+                        "operation": "later_operation",
+                        "provider_failure": {"kind": "provider_timeout"},
+                    }
+                },
+            ],
+        }
+    )
+
+    result = build_repetition_result(
+        output,
+        GateReport(),
+        0.5,
+        None,
+        deterministic_metrics={"coverage": 1.0, "ordering": 0.0},
+    )
+
+    assert result.deterministic_quality == 0.5
+    assert result.deterministic_metrics == {"coverage": 1.0, "ordering": 0.0}
+    assert result.prohibited_call_count == 2
+    assert result.react_stop_reason == "provider_error"
+    assert result.fallback_provider_diagnostic is not None
+    assert result.fallback_provider_diagnostic.model_dump(mode="json") == {
+        "kind": "output_limit",
+        "operation": "react_decision",
+        "diagnostics": [],
+    }
+    assert "raw_provider_output" not in result.model_dump_json()
+    assert "do not persist" not in result.model_dump_json()
+
+
+def test_repetition_result_retains_structured_diagnostics(
+    clean_target_output,
+) -> None:
+    output = clean_target_output.model_copy(
+        update={
+            "errors": [
+                {
+                    "details": {
+                        "operation": "critic_report_review",
+                        "provider_failure": {
+                            "kind": "schema_output",
+                            "exception_type": "StructuredOutputError",
+                            "diagnostics": [
+                                {
+                                    "attempt": 1,
+                                    "field_paths": ["rationale"],
+                                    "category": "json_invalid",
+                                },
+                                {
+                                    "attempt": 2,
+                                    "field_paths": ["gaps", "score"],
+                                    "category": "type_mismatch",
+                                },
+                            ],
+                        },
+                    },
+                }
+            ]
+        }
+    )
+
+    result = build_repetition_result(output, GateReport(), 0.5, None)
+
+    diagnostic = result.fallback_provider_diagnostic
+    assert diagnostic is not None
+    assert diagnostic.kind == "schema_output"
+    assert diagnostic.operation == "critic_report_review"
+    assert [item.attempt for item in diagnostic.diagnostics] == [1, 2]
+    assert [item.category for item in diagnostic.diagnostics] == [
+        "json_invalid",
+        "type_mismatch",
+    ]
+    assert [item.field_paths for item in diagnostic.diagnostics] == [
+        ("rationale",),
+        ("gaps", "score"),
+    ]
+
+
+def test_repetition_result_normalizes_an_unsafe_diagnostic_path(
+    clean_target_output,
+) -> None:
+    output = clean_target_output.model_copy(
+        update={
+            "errors": [
+                {
+                    "details": {
+                        "operation": "critic_report_review",
+                        "provider_failure": {
+                            "kind": "schema_output",
+                            "diagnostics": [
+                                {
+                                    "attempt": 1,
+                                    "field_paths": ["../../etc/passwd"],
+                                    "category": "other_schema",
+                                }
+                            ],
+                        },
+                    },
+                }
+            ]
+        }
+    )
+
+    result = build_repetition_result(output, GateReport(), 0.5, None)
+
+    diagnostic = result.fallback_provider_diagnostic
+    assert diagnostic is not None
+    assert [item.field_paths for item in diagnostic.diagnostics] == [("$",)]
+    assert "passwd" not in result.model_dump_json()
+
+
+def test_repetition_result_keeps_a_fallback_with_no_diagnostics(
+    clean_target_output,
+) -> None:
+    output = clean_target_output.model_copy(
+        update={
+            "errors": [
+                {
+                    "details": {
+                        "operation": "react_decision",
+                        "provider_failure": {"kind": "provider_timeout"},
+                    }
+                }
+            ]
+        }
+    )
+
+    result = build_repetition_result(output, GateReport(), 0.5, None)
+
+    diagnostic = result.fallback_provider_diagnostic
+    assert diagnostic is not None
+    assert diagnostic.kind == "provider_timeout"
+    assert diagnostic.diagnostics == ()
+
+
+@pytest.mark.parametrize("agent_name", ["source_evaluator", "synthesizer"])
+def test_non_react_agents_project_no_stop_reason(
+    clean_target_output, agent_name
+) -> None:
+    output = clean_target_output.model_copy(update={"agent_name": agent_name})
+
+    result = build_repetition_result(output, GateReport(), 0.5, None)
+
+    assert result.react_stop_reason is None
 
 
 def test_the_aggregate_is_not_rounded_before_thresholding() -> None:
@@ -168,6 +343,165 @@ def test_controlled_status_is_failed_when_one_repetition_fails(
     )
 
     assert status == "FAILED"
+
+
+@pytest.mark.parametrize(
+    "judge_reason",
+    [
+        "judge_schema_failure",
+        "judge_output_limit",
+        "judge_transport",
+        "judge_http",
+        "judge_provider_failure",
+    ],
+)
+def test_judge_only_infrastructure_failure_precedes_quality_failure(
+    repetition_without_judge, runtime_config_for, judge_reason
+) -> None:
+    judge = repetition_without_judge.judge
+    assert judge is not None
+    repetition = repetition_without_judge.model_copy(
+        update={
+            "judge": judge.model_copy(update={"not_run_reason": judge_reason})
+        }
+    )
+    case = build_case_result(None, [repetition], threshold=0.80)
+    runtime = runtime_config_for("planner")
+
+    assert case.passed is False
+    assert decide_status([case], tier="controlled", runtime=runtime) == (
+        "INFRASTRUCTURE FAILURE"
+    )
+    assert evaluation_failure_reason(
+        [case],
+        status="INFRASTRUCTURE FAILURE",
+        runtime=runtime,
+    ) == f"focused-decomposition repetition 99 failed {judge_reason}"
+
+
+@pytest.mark.parametrize(
+    "judge_reason",
+    [
+        "judge_schema_failure",
+        "judge_output_limit",
+        "judge_transport",
+        "judge_provider_failure",
+    ],
+)
+def test_judge_infrastructure_reason_precedes_scored_floor_failure(
+    repetition_without_judge, repetitions_at, runtime_config_for, judge_reason
+) -> None:
+    judge = repetition_without_judge.judge
+    assert judge is not None
+    scored_floor_failure = repetitions_at([0.64])[0]
+    judge_failure = repetition_without_judge.model_copy(
+        update={
+            "repetition": 2,
+            "judge": judge.model_copy(update={"not_run_reason": judge_reason}),
+        }
+    )
+    case = build_case_result(
+        None,
+        [scored_floor_failure, judge_failure],
+        threshold=0.80,
+        floor=0.65,
+    )
+    runtime = runtime_config_for("planner")
+
+    status = decide_status([case], tier="controlled", runtime=runtime)
+    reason = evaluation_failure_reason(
+        [case], status=status, runtime=runtime
+    )
+
+    assert status == "INFRASTRUCTURE FAILURE"
+    assert reason == f"focused-decomposition repetition 2 failed {judge_reason}"
+
+
+def test_mixed_deterministic_and_judge_failure_remains_quality_failed(
+    repetition_with_failed_gate, repetition_without_judge, runtime_config_for
+) -> None:
+    judge = repetition_without_judge.judge
+    assert judge is not None
+    mixed_repetition = repetition_with_failed_gate.model_copy(
+        update={
+            "judge": judge.model_copy(
+                update={"not_run_reason": "judge_schema_failure"}
+            ),
+            "aggregate_quality": None,
+        }
+    )
+    case = build_case_result(None, [mixed_repetition], threshold=0.80)
+
+    assert decide_status(
+        [case], tier="controlled", runtime=runtime_config_for("planner")
+    ) == "FAILED"
+    assert evaluation_failure_reason(
+        [case],
+        status="FAILED",
+        runtime=runtime_config_for("planner"),
+    ) == "focused-decomposition repetition 98 failed no_prohibited_calls"
+
+
+def test_deterministic_gate_reason_precedes_judge_failure_in_another_repetition(
+    repetition_with_failed_gate, repetition_without_judge, runtime_config_for
+) -> None:
+    judge = repetition_without_judge.judge
+    assert judge is not None
+    judge_failure = repetition_without_judge.model_copy(
+        update={
+            "repetition": 99,
+            "judge": judge.model_copy(
+                update={"not_run_reason": "judge_schema_failure"}
+            ),
+        }
+    )
+    case = build_case_result(
+        None, [repetition_with_failed_gate, judge_failure], threshold=0.80
+    )
+    runtime = runtime_config_for("planner")
+
+    status = decide_status([case], tier="controlled", runtime=runtime)
+
+    assert status == "FAILED"
+    assert evaluation_failure_reason(
+        [case], status=status, runtime=runtime
+    ) == "focused-decomposition repetition 98 failed no_prohibited_calls"
+
+
+@pytest.mark.parametrize("stage", ["setup", "trace"])
+def test_setup_and_trace_failures_remain_infrastructure_failures(
+    runtime_config_for, stage
+) -> None:
+    failure = EvaluationFailure(
+        stage=stage,
+        reason="safe_infrastructure_failure",
+        message="safe message",
+    )
+
+    assert decide_status(
+        [],
+        tier="controlled",
+        runtime=runtime_config_for("planner"),
+        errors=[failure],
+    ) == "INFRASTRUCTURE FAILURE"
+
+
+def test_deterministic_target_failure_remains_quality_failed(
+    judge_not_run_experiment_result, runtime_config_for
+) -> None:
+    case = judge_not_run_experiment_result.cases[0]
+
+    assert decide_status(
+        [case], tier="controlled", runtime=runtime_config_for("planner")
+    ) == "FAILED"
+
+
+def test_scored_threshold_failure_remains_quality_failed(
+    failing_case, runtime_config_for
+) -> None:
+    assert decide_status(
+        [failing_case], tier="controlled", runtime=runtime_config_for("planner")
+    ) == "FAILED"
 
 
 def _summary_values(payload) -> dict[str, str]:
@@ -318,6 +652,48 @@ async def test_a_controlled_experiment_requests_three_repetitions(
 
 
 @pytest.mark.asyncio
+async def test_runner_evaluates_each_metric_once_per_repetition(
+    settings, runtime_config_for, tmp_path, evaluation_harness, monkeypatch
+) -> None:
+    import deep_research.evaluation.evaluators as evaluators_module
+    import deep_research.evaluation.runner as runner_module
+
+    focused = evaluation_harness.for_case("focused-decomposition")
+    calls = {
+        metric.metric_id: 0
+        for metric in focused.cases[0].expectations.deterministic_metrics
+    }
+    original_functions = evaluators_module.METRIC_FUNCTIONS
+
+    def counted(output, case, *, metric_id, function):
+        calls[metric_id] += 1
+        return function(output, case)
+
+    functions = dict(original_functions)
+    for metric_id in calls:
+        function = original_functions[metric_id]
+
+        def counted_function(
+            output, case, *, metric_id=metric_id, function=function
+        ):
+            return counted(output, case, metric_id=metric_id, function=function)
+
+        functions[metric_id] = counted_function
+    monkeypatch.setattr(evaluators_module, "METRIC_FUNCTIONS", functions)
+    monkeypatch.setattr(runner_module, "METRIC_FUNCTIONS", functions)
+
+    await run_agent_evaluation(
+        settings,
+        runtime_config_for("planner", case_id="focused-decomposition"),
+        cases=focused.cases,
+        evaluate=FakeEvaluateRunner(examples=focused.examples),
+        **focused.kwargs(tmp_path),
+    )
+
+    assert calls == {metric_id: 3 for metric_id in calls}
+
+
+@pytest.mark.asyncio
 async def test_the_langsmith_experiment_url_is_preserved(
     settings, runtime_config_for, tmp_path, evaluation_harness
 ) -> None:
@@ -385,10 +761,12 @@ async def test_the_summary_observes_every_completed_row_before_it_runs(
 ) -> None:
     import deep_research.evaluation.runner as runner_module
 
-    original_evaluate_target = runner_module.evaluate_target
+    original_evaluate_target = runner_module.evaluate_target_with_metrics
 
     def evaluate_with_available_trace(output, case, *, secrets):
-        gates, quality = original_evaluate_target(output, case, secrets=secrets)
+        gates, quality, metrics = original_evaluate_target(
+            output, case, secrets=secrets
+        )
         return (
             GateReport(
                 results=[
@@ -399,10 +777,11 @@ async def test_the_summary_observes_every_completed_row_before_it_runs(
                 ]
             ),
             quality,
+            metrics,
         )
 
     monkeypatch.setattr(
-        runner_module, "evaluate_target", evaluate_with_available_trace
+        runner_module, "evaluate_target_with_metrics", evaluate_with_available_trace
     )
     runner = FakeEvaluateRunner(examples=partially_failing_harness.examples)
 
@@ -804,7 +1183,7 @@ async def test_a_gate_evaluation_exception_is_recorded_not_dropped(
 ) -> None:
     """Finding 16's defense in depth: even though the root-cause fix makes
     ``normalize_source_url`` total, ``_dispatch_code``'s ``try`` around
-    ``evaluate_target`` must widen past ``ValidationError`` so that ANY
+    ``evaluate_target_with_metrics`` must widen past ``ValidationError`` so that ANY
     unexpected exception from gate evaluation is caught, rather than
     relying solely on ``normalize_source_url`` never raising again.
 
@@ -821,7 +1200,7 @@ async def test_a_gate_evaluation_exception_is_recorded_not_dropped(
     def _boom(output, case, *, secrets):
         raise ValueError("simulated: Port out of range 0-65535")
 
-    monkeypatch.setattr(runner_module, "evaluate_target", _boom)
+    monkeypatch.setattr(runner_module, "evaluate_target_with_metrics", _boom)
 
     focused = evaluation_harness.for_case("focused-decomposition")
     runner = FakeEvaluateRunner(examples=focused.examples)
@@ -1001,6 +1380,106 @@ async def test_the_artifact_is_written_and_revalidates(
     )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows long-path regression")
+@pytest.mark.asyncio
+async def test_runner_uses_runtime_output_root_for_every_offline_descendant(
+    settings, runtime_config_for, tmp_path, evaluation_harness, monkeypatch
+) -> None:
+    base = tmp_path
+    for name in (
+        "task10-runner-output-root-" + "a" * 64,
+        "windows-long-path-" + "b" * 64,
+        "normal-repetition-" + "c" * 64,
+        "legal-component-" + "d" * 64,
+    ):
+        base /= name
+    assert len(str(base)) >= 260
+
+    harness = evaluation_harness.for_case("focused-decomposition")
+    case = case_by_id("planner", "controlled", "focused-decomposition")
+    runtime = runtime_config_for(
+        "planner",
+        case_id=case.case_id,
+        output_directory=str(base),
+        experiment_prefix="task10-runner-output-root",
+    )
+    preflight_dependency_roots: list[Path] = []
+    real_preflight_dependencies = runner_module.build_controlled_dependencies
+
+    def recording_preflight_dependencies(
+        runtime_arg, case_arg, *, root, **kwargs
+    ):
+        preflight_dependency_roots.append(root)
+        return real_preflight_dependencies(
+            runtime_arg, case_arg, root=root, **kwargs
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "build_controlled_dependencies",
+        recording_preflight_dependencies,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "build_chat_provider",
+        lambda *args, **kwargs: harness.factory_kwargs["target_provider_factory"](),
+    )
+    monkeypatch.setattr(runner_module, "build_agent", lambda *args, **kwargs: object())
+
+    await runner_module.preflight(
+        settings,
+        runtime,
+        cases=[case],
+        environ={
+            "DEEPSEEK_API_KEY": "sk-deepseek-abcdefgh",
+            "LANGSMITH_API_KEY": "ls-abcdefghijklmnop",
+        },
+        langsmith_client=FakeLangSmithClient(),
+        root=runtime.output_root,
+    )
+
+    repetition_roots: list[Path] = []
+
+    def recording_repetition_dependencies(runtime_arg, case_arg, *, root, **kwargs):
+        repetition_roots.append(root)
+        return build_controlled_dependencies(
+            runtime_arg,
+            case_arg,
+            root=(
+                tmp_path
+                / "offline-dependencies"
+                / case_arg.case_id
+                / f"r{kwargs['repetition']}"
+            ),
+            **kwargs,
+        )
+
+    runner = FakeEvaluateRunner(examples=harness.examples)
+    result = await run_agent_evaluation(
+        settings,
+        runtime,
+        cases=[case],
+        evaluate=runner,
+        target_provider_factory=harness.factory_kwargs["target_provider_factory"],
+        judge_provider_factory=harness.factory_kwargs["judge_provider_factory"],
+        tracker_factory=harness.factory_kwargs["tracker_factory"],
+        dependency_factory=recording_repetition_dependencies,
+        secrets=(),
+        root=runtime.output_root,
+        langsmith_client=FakeLangSmithClient(),
+    )
+
+    assert str(runtime.output_root).startswith("\\\\?\\")
+    assert preflight_dependency_roots == [runtime.output_root / "_preflight"]
+    assert repetition_roots == [
+        runtime.output_root / case.case_id / f"r{repetition}"
+        for repetition in range(1, 4)
+    ]
+    assert all(root.is_relative_to(runtime.output_root) for root in repetition_roots)
+    assert (runtime.output_root / "results.json").is_file()
+    assert result.experiment_name == runtime.experiment_name
+
+
 def _judge_not_run_payload(
     *,
     reason: str,
@@ -1127,3 +1606,38 @@ def test_judge_feedback_from_result_drops_malformed_diagnostics(
     assert feedback.diagnostics == (
         EvaluatorDiagnostic(kind="schema_output", attempt=1),
     )
+
+
+def test_judge_feedback_from_result_carries_the_structured_attempt(
+    runtime_config_for,
+) -> None:
+    """The evaluator's attempt ledger survives the artifact reconstruction."""
+    payload = _judge_not_run_payload(
+        reason="judge_schema_failure",
+        metadata={"structured_attempts": 2},
+    )
+
+    feedback = _judge_feedback_from_result(
+        payload, runtime=runtime_config_for("planner")
+    )
+
+    assert feedback.structured_attempts == 2
+
+
+@pytest.mark.parametrize(
+    "value", [None, 0, 3, "2", True, {"attempt": 2}, [2]]
+)
+def test_judge_feedback_from_result_drops_an_unusable_structured_attempt(
+    runtime_config_for, value: object
+) -> None:
+    """A malformed ledger value is dropped, never allowed to break the row."""
+    payload = _judge_not_run_payload(
+        reason="judge_schema_failure",
+        metadata={"structured_attempts": value},
+    )
+
+    feedback = _judge_feedback_from_result(
+        payload, runtime=runtime_config_for("planner")
+    )
+
+    assert feedback.structured_attempts is None

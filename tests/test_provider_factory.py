@@ -5,10 +5,13 @@ import pytest
 import deep_research.providers.factory as factory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import (
-    DeepSeekChatProvider,
     OpenAIChatProvider,
     ProviderConfigurationError,
     build_chat_provider,
+)
+from deep_research.providers.deepseek_provider import (
+    DeepSeekJudgeProvider,
+    DeepSeekSchemaChatProvider,
 )
 from deep_research.utils.config import LLMConfig
 
@@ -27,7 +30,7 @@ def tracker() -> Tracker:
 @pytest.mark.parametrize(
     ("provider_name", "model", "expected"),
     [
-        ("deepseek", "deepseek-v4-flash", DeepSeekChatProvider),
+        ("deepseek", "deepseek-v4-flash", DeepSeekSchemaChatProvider),
         ("openai", "gpt-4o", OpenAIChatProvider),
     ],
 )
@@ -37,11 +40,16 @@ def test_factory_builds_exactly_the_selected_adapter(
     built: list[type[object]] = []
 
     class RecordingAdapter:
-        def __init__(self, config, received_tracker, *, api_key=None):
+        def __init__(
+            self, config, received_tracker, *, api_key=None, request_budget=None
+        ):
             built.append(expected)
             assert config.provider == provider_name
             assert received_tracker is tracker
             assert api_key is None
+            # No budget was supplied by this caller, so the adapter's own
+            # uncounted default applies unchanged.
+            assert request_budget is None
 
     monkeypatch.setattr(factory, expected.__name__, RecordingAdapter)
     config = LLMConfig(
@@ -55,6 +63,59 @@ def test_factory_builds_exactly_the_selected_adapter(
 
     assert isinstance(result, RecordingAdapter)
     assert built == [expected]
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "model", "expected"),
+    [
+        ("deepseek", "deepseek-v4-flash", DeepSeekJudgeProvider),
+        ("openai", "gpt-4o", OpenAIChatProvider),
+    ],
+)
+def test_judge_factory_builds_the_selected_judge_adapter(
+    provider_name, model, expected, tracker, monkeypatch
+) -> None:
+    built: list[tuple[str, str | None]] = []
+    recorders: dict[str, type[object]] = {}
+
+    def make_recording_adapter(adapter_name: str):
+        class RecordingAdapter:
+            def __init__(
+                self, config, received_tracker, *, api_key=None, request_budget=None
+            ):
+                assert config.provider == provider_name
+                assert received_tracker is tracker
+                assert request_budget is None
+                built.append((adapter_name, api_key))
+
+        recorders[adapter_name] = RecordingAdapter
+        return RecordingAdapter
+
+    monkeypatch.setattr(
+        factory,
+        "DeepSeekJudgeProvider",
+        make_recording_adapter("DeepSeekJudgeProvider"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        factory,
+        "OpenAIChatProvider",
+        make_recording_adapter("OpenAIChatProvider"),
+    )
+    config = LLMConfig(
+        provider=provider_name,
+        model=model,
+        thinking_mode="disabled" if provider_name == "openai" else "enabled",
+        reasoning_effort="none" if provider_name == "openai" else "high",
+    )
+
+    result = factory.build_judge_provider(
+        config, tracker, api_key="explicit-judge-key"
+    )
+
+    expected_name = expected.__name__
+    assert isinstance(result, recorders[expected_name])
+    assert built == [(expected_name, "explicit-judge-key")]
 
 
 class MinimalLLMConfig:
@@ -72,6 +133,51 @@ def test_unknown_provider_is_rejected_without_fallback(tracker) -> None:
     assert "other" in message
     assert "deepseek" in message
     assert "openai" in message
+
+
+def test_judge_factory_rejects_unknown_provider_without_fallback(
+    tracker, monkeypatch
+) -> None:
+    built: list[str] = []
+
+    class UnexpectedAdapter:
+        def __init__(self, *args, **kwargs):
+            built.append("constructed")
+
+    monkeypatch.setattr(
+        factory, "DeepSeekJudgeProvider", UnexpectedAdapter, raising=False
+    )
+    monkeypatch.setattr(factory, "OpenAIChatProvider", UnexpectedAdapter)
+
+    with pytest.raises(ProviderConfigurationError) as caught:
+        factory.build_judge_provider(
+            MinimalLLMConfig("other"),
+            tracker,
+            api_key="explicit-judge-key",
+        )
+
+    message = str(caught.value)
+    assert "other" in message
+    assert "deepseek" in message
+    assert "openai" in message
+    assert built == []
+
+
+def test_public_judge_symbols_are_reexported() -> None:
+    import deep_research.providers as providers
+
+    assert providers.DeepSeekJudgeProvider is DeepSeekJudgeProvider
+    assert providers.JudgeAdapter is factory.JudgeAdapter
+    assert providers.build_judge_provider is factory.build_judge_provider
+
+
+def test_public_target_schema_symbol_is_reexported() -> None:
+    import deep_research.providers as providers
+
+    assert (
+        providers.DeepSeekSchemaChatProvider is DeepSeekSchemaChatProvider
+    )
+    assert providers.ChatAdapter is factory.ChatAdapter
 
 
 def test_build_embedding_provider_selects_the_local_model() -> None:
@@ -128,7 +234,7 @@ def test_build_chat_provider_passes_an_explicit_key_through(tracker) -> None:
         if previous is not None:
             os.environ["DEEPSEEK_API_KEY"] = previous
 
-    assert isinstance(provider, DeepSeekChatProvider)
+    assert isinstance(provider, DeepSeekSchemaChatProvider)
     # the key came from the argument, not the (popped) environment
     #
     # DeepSeekChatProvider does not keep the raw string on an ``_api_key``
@@ -140,3 +246,108 @@ def test_build_chat_provider_passes_an_explicit_key_through(tracker) -> None:
     # proves the explicit key -- and not the popped environment variable --
     # reached the adapter.
     assert provider._client.api_key == "sk-deepseek-abcdefgh"
+
+
+# ---------------------------------------------------------------------------
+# Request-budget plumbing: the factory is the only place a chat or judge
+# adapter is selected, so it is also the only place a run's attempt budget can
+# reach the adapter that has to reserve against it.
+# ---------------------------------------------------------------------------
+
+
+def test_request_budget_reaches_the_deepseek_chat_adapter(tracker) -> None:
+    from deep_research.request_budget import RequestBudget
+    from deep_research.utils.config import LLMConfig
+
+    budget = RequestBudget()
+
+    provider = build_chat_provider(
+        LLMConfig(), tracker, api_key="sk-deepseek-abcdefgh", request_budget=budget
+    )
+
+    assert provider._request_budget is budget
+
+
+def test_request_budget_reaches_the_deepseek_judge_adapter(tracker) -> None:
+    from deep_research.request_budget import RequestBudget
+    from deep_research.utils.config import LLMConfig
+
+    budget = RequestBudget()
+
+    provider = factory.build_judge_provider(
+        LLMConfig(), tracker, api_key="sk-deepseek-abcdefgh", request_budget=budget
+    )
+
+    assert provider._request_budget is budget
+
+
+def test_request_budget_defaults_to_none_in_both_deepseek_factories(tracker) -> None:
+    """Every existing caller keeps exactly today's uncounted behaviour."""
+    from deep_research.utils.config import LLMConfig
+
+    chat = build_chat_provider(
+        LLMConfig(), tracker, api_key="sk-deepseek-abcdefgh"
+    )
+    judge = factory.build_judge_provider(
+        LLMConfig(), tracker, api_key="sk-deepseek-abcdefgh"
+    )
+
+    assert chat._request_budget is None
+    assert judge._request_budget is None
+
+
+def _openai_config() -> LLMConfig:
+    return LLMConfig(
+        provider="openai",
+        model="gpt-4o",
+        thinking_mode="disabled",
+        reasoning_effort="none",
+    )
+
+
+def test_request_budget_reaches_the_openai_chat_adapter(tracker) -> None:
+    """The OpenAI transport reserves against the run budget, so the factory
+    hands it over instead of refusing it: a refused budget would leave the
+    OpenAI half of a run uncounted."""
+    from deep_research.request_budget import RequestBudget
+
+    budget = RequestBudget()
+
+    provider = build_chat_provider(
+        _openai_config(),
+        tracker,
+        api_key="sk-openai-abcdefgh",
+        request_budget=budget,
+    )
+
+    assert isinstance(provider, OpenAIChatProvider)
+    assert provider._request_budget is budget
+
+
+def test_request_budget_reaches_the_openai_judge_adapter(tracker) -> None:
+    from deep_research.request_budget import RequestBudget
+
+    budget = RequestBudget()
+
+    provider = factory.build_judge_provider(
+        _openai_config(),
+        tracker,
+        api_key="sk-openai-abcdefgh",
+        request_budget=budget,
+    )
+
+    assert isinstance(provider, OpenAIChatProvider)
+    assert provider._request_budget is budget
+
+
+def test_request_budget_defaults_to_none_in_both_openai_factories(tracker) -> None:
+    """A ``None`` budget stays exactly today's uncounted behaviour."""
+    chat = build_chat_provider(
+        _openai_config(), tracker, api_key="sk-openai-abcdefgh"
+    )
+    judge = factory.build_judge_provider(
+        _openai_config(), tracker, api_key="sk-openai-abcdefgh"
+    )
+
+    assert chat._request_budget is None
+    assert judge._request_budget is None

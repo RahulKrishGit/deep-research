@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+from hashlib import sha256
+
 import pytest
 
 from deep_research.agents.errors import PlanningError
-from deep_research.evaluation.models import TargetOutput
+from deep_research.agents.planner import ResearchPlanDraft, SubTopicDraft
+from deep_research.agents.steps import ReActDecision
+from deep_research.evaluation.dependencies import (
+    bounded_url_fingerprints,
+    build_controlled_dependencies,
+)
+from deep_research.evaluation.models import StructuredCallSummary, TargetOutput
 from deep_research.evaluation.targets import (
     TRACE_TAG,
     RepetitionCounter,
     _classify_failure,
-    build_target,  # noqa: F401 - imported to assert the module's public surface
+    build_target,
     correlation_metadata,
     trace_tags,
 )
@@ -18,7 +28,9 @@ from deep_research.observability import TokenUsage
 from deep_research.providers import (
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
+    StructuredOutputError,
 )
+from tests.evaluation_fakes import FakeStructuredProvider
 
 
 def test_the_counter_refuses_concurrency_above_one() -> None:
@@ -199,6 +211,54 @@ async def test_a_provider_failure_is_captured_not_raised(
 
 
 @pytest.mark.asyncio
+async def test_a_non_planner_fallback_preserves_typed_provider_diagnostics(
+    tmp_path, tracker, settings, runtime_config_for, controlled_case_for_id
+) -> None:
+    case = controlled_case_for_id(
+        "source_evaluator", "strong-and-weak-sources"
+    )
+    runtime = runtime_config_for("source_evaluator", case_id=case.case_id)
+    cause = ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=4, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
+    target = build_target(
+        runtime,
+        settings,
+        tracker_factory=lambda: tracker,
+        dependency_factory=build_controlled_dependencies,
+        provider_factory=lambda: FakeStructuredProvider([cause]),
+        counter=RepetitionCounter(max_concurrency=1),
+        secrets=(),
+        root=tmp_path,
+    )
+
+    payload = await target(
+        {
+            "case_id": case.case_id,
+            "case_version": case.version,
+            "agent": "source_evaluator",
+            "tier": "controlled",
+        }
+    )
+    output = TargetOutput.model_validate(payload)
+
+    assert output.completed is True
+    assert output.failure is None
+    assert output.result is not None
+    assert output.errors[0]["details"]["provider_failure"]["kind"] == (
+        "output_limit"
+    )
+    assert output.errors[0]["details"]["provider_failure"][
+        "configured_max_tokens"
+    ] == 4096
+
+
+@pytest.mark.asyncio
 async def test_the_target_output_never_contains_a_secret(
     runtime_config_for, planner_case, leaking_target_harness
 ) -> None:
@@ -235,6 +295,116 @@ async def test_the_ledger_records_real_services_for_a_live_run(
 
 
 @pytest.mark.asyncio
+async def test_a_live_researcher_records_only_source_url_fingerprints(
+    runtime_config_for, live_case_for, live_target_harness
+) -> None:
+    case = live_case_for("researcher")
+    target = live_target_harness(case, runtime_config_for("researcher", tier="live"))
+
+    output = TargetOutput.model_validate(
+        await target(
+            {
+                "case_id": case.case_id,
+                "case_version": case.version,
+                "agent": "researcher",
+                "tier": "live",
+            }
+        )
+    )
+
+    expected = sha256(
+        "https://example.com/sodium-ion-energy-density".encode("utf-8")
+    ).hexdigest()
+    assert output.dependencies.source_url_fingerprints == [expected]
+    assert all(
+        len(step.observation_summary) <= 200 for step in output.trajectory
+    )
+    assert "https://example.com/sodium-ion-energy-density" not in " ".join(
+        step.observation_summary for step in output.trajectory
+    )
+    assert "example.com" not in repr(output.dependencies)
+
+
+@pytest.mark.asyncio
+async def test_live_researcher_artifact_marks_complete_source_provenance(
+    runtime_config_for, live_case_for, live_target_harness
+) -> None:
+    case = live_case_for("researcher")
+    target = live_target_harness(case, runtime_config_for("researcher", tier="live"))
+
+    payload = await target(
+        {
+            "case_id": case.case_id,
+            "case_version": case.version,
+            "agent": "researcher",
+            "tier": "live",
+        }
+    )
+
+    assert payload["dependencies"]["source_url_fingerprints_complete"] is True
+    assert (
+        TargetOutput.model_validate(payload)
+        .dependencies.source_url_fingerprints_complete
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_artifact_separates_discovery_from_read_provenance(
+    runtime_config_for, live_case_for, live_target_harness
+) -> None:
+    """Task 5, R5/R6: the artifact proves a READ, not a search.
+
+    This scripted live run only ever searches, so its discovery ledger holds
+    the URL's identity while its read ledger — the one a verification-passage
+    gate may trust — is empty AND explicitly complete. That is exactly why
+    ``source_url_fingerprints`` cannot serve as read-bearing proof: it records
+    ``web_search`` result URLs too.
+    """
+    case = live_case_for("researcher")
+    target = live_target_harness(
+        case, runtime_config_for("researcher", tier="live")
+    )
+
+    output = TargetOutput.model_validate(
+        await target(
+            {
+                "case_id": case.case_id,
+                "case_version": case.version,
+                "agent": "researcher",
+                "tier": "live",
+            }
+        )
+    )
+
+    expected = sha256(
+        "https://example.com/sodium-ion-energy-density".encode("utf-8")
+    ).hexdigest()
+    assert output.dependencies.source_url_fingerprints == [expected]
+    assert output.dependencies.read_url_fingerprints == []
+    assert output.dependencies.read_url_fingerprints_complete is True
+
+
+def test_read_provenance_is_bounded_and_reports_itself_incomplete() -> None:
+    """An identity that does not fit is dropped, never silently implied."""
+    urls = [f"https://example.test/page-{index}" for index in range(5)]
+
+    bounded, complete = bounded_url_fingerprints(urls, limit=3)
+    exact, exact_complete = bounded_url_fingerprints(urls, limit=5)
+
+    assert complete is False
+    assert len(bounded) == 3
+    assert (len(exact), exact_complete) == (5, True)
+
+
+def test_read_provenance_skips_urls_that_cannot_carry_an_identity() -> None:
+    """A non-HTTP or malformed URL contributes nothing rather than a hash."""
+    assert bounded_url_fingerprints(
+        ["not-a-url", "file:///tmp/x", "https://example.test/page"]
+    )[0] == [sha256("https://example.test/page".encode("utf-8")).hexdigest()]
+
+
+@pytest.mark.asyncio
 async def test_the_output_records_both_model_identifiers(
     runtime_config_for, planner_case, target_harness
 ) -> None:
@@ -247,3 +417,190 @@ async def test_the_output_records_both_model_identifiers(
 
     assert output.target_model_requested == "deepseek-v4-flash"
     assert output.target_model_returned == "deepseek-v4-flash-fake"
+
+
+# --- The content-free structured-repair ledger --------------------------------
+
+_LEDGER_SENTINEL = "sentinel-provider-payload"
+
+
+def _planner_script() -> list[object]:
+    """The script a real planner agent accepts: one finish, one valid plan.
+
+    The plan carries the three sub-topics the planner's own validation
+    requires, so exactly one structured call is made for it; a plan the
+    planner rejected would be re-requested and the ledger would count two
+    logical calls instead of one.
+    """
+    return [
+        ReActDecision(
+            thought="I have enough context to proceed.",
+            action="finish",
+            tool_input_json="{}",
+            final_answer="Scoping complete.",
+        ),
+        ResearchPlanDraft(
+            sub_topics=[
+                SubTopicDraft(
+                    title=title,
+                    rationale=f"Rationale for {title}.",
+                    search_queries=[f"query about {title}"],
+                    success_criteria=[f"evidence about {title}"],
+                    priority=index,
+                )
+                for index, title in enumerate(
+                    (
+                        "Solid-state electrolyte degradation",
+                        "Cathode interface resistance",
+                        "Mechanical stress and cracking",
+                    ),
+                    start=1,
+                )
+            ]
+        ),
+    ]
+
+
+class _LedgerProvider(FakeStructuredProvider):
+    """A fake provider that opens the spans the real adapter opens.
+
+    With ``repair`` set it performs the provider's own single structured
+    repair: attempt 1 fails with a payload-bearing error, attempt 2
+    succeeds. Both attempts are real tracker spans, so the ledger the
+    target summarizes is the one the production path would produce. The
+    sentinel rides both the span inputs and the failed attempt's error, so
+    any path that copied span content into the artifact would show it.
+    """
+
+    def __init__(self, tracker, responses, *, repair: bool = False) -> None:
+        super().__init__(responses=responses)
+        self._tracker = tracker
+        self._repair = repair
+
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None
+    ):
+        attempts = (1, 2) if self._repair else (1,)
+        for attempt in attempts:
+            try:
+                async with self._tracker.llm_span(
+                    "deepseek-v4-flash",
+                    {
+                        "operation": "structured_output",
+                        "attempt": attempt,
+                        "prompt": _LEDGER_SENTINEL,
+                    },
+                ):
+                    if self._repair and attempt == 1:
+                        raise StructuredOutputError(
+                            f"invalid JSON {_LEDGER_SENTINEL}"
+                        )
+                    return await super().complete_structured(
+                        messages,
+                        schema,
+                        agent_name=agent_name,
+                        max_tokens=max_tokens,
+                    )
+            except StructuredOutputError:
+                if attempt == len(attempts):
+                    raise
+        raise AssertionError("the ledger provider never returned")
+
+
+def _ledger_target(tracker, settings, runtime, tmp_path, *, repair: bool):
+    return build_target(
+        runtime,
+        settings,
+        tracker_factory=lambda: tracker,
+        dependency_factory=build_controlled_dependencies,
+        provider_factory=lambda: _LedgerProvider(
+            tracker, _planner_script(), repair=repair
+        ),
+        counter=RepetitionCounter(max_concurrency=1),
+        secrets=(),
+        root=tmp_path,
+    )
+
+
+def _planner_inputs(case) -> dict[str, object]:
+    return {
+        "case_id": case.case_id,
+        "case_version": case.version,
+        "agent": "planner",
+        "tier": "controlled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_structured_call_is_counted_without_its_content(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    target = _ledger_target(
+        tracker,
+        settings,
+        runtime_config_for("planner"),
+        tmp_path,
+        repair=True,
+    )
+
+    payload = await target(_planner_inputs(planner_case))
+    output = TargetOutput.model_validate(payload)
+
+    assert output.completed is True, output.failure
+    assert output.structured_calls == StructuredCallSummary(
+        calls=1, repaired_calls=1, failed_attempts=1
+    )
+    assert output.model_dump(mode="json")["structured_calls"] == {
+        "calls": 1,
+        "repaired_calls": 1,
+        "failed_attempts": 1,
+    }
+    serialized = json.dumps(payload)
+    assert _LEDGER_SENTINEL not in serialized
+
+
+@pytest.mark.asyncio
+async def test_a_first_try_structured_call_is_not_counted_as_repaired(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    target = _ledger_target(
+        tracker,
+        settings,
+        runtime_config_for("planner"),
+        tmp_path,
+        repair=False,
+    )
+
+    payload = await target(_planner_inputs(planner_case))
+    output = TargetOutput.model_validate(payload)
+
+    assert output.completed is True
+    assert output.structured_calls == StructuredCallSummary(
+        calls=1, repaired_calls=0, failed_attempts=0
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_repetitions_count_only_their_own_attempts(
+    tracker, settings, tmp_path, runtime_config_for, planner_case
+) -> None:
+    """Two live sessions on one tracker must not merge into one ledger."""
+    target = _ledger_target(
+        tracker,
+        settings,
+        runtime_config_for("planner"),
+        tmp_path,
+        repair=True,
+    )
+    inputs = _planner_inputs(planner_case)
+
+    first, second = await asyncio.gather(target(inputs), target(inputs))
+    outputs = [TargetOutput.model_validate(payload) for payload in (first, second)]
+
+    assert len({output.session_id for output in outputs}) == 2
+    for output in outputs:
+        assert output.completed is True
+        # A session-blind count would report two calls and two repairs here.
+        assert output.structured_calls == StructuredCallSummary(
+            calls=1, repaired_calls=1, failed_attempts=1
+        )

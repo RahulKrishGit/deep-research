@@ -6,13 +6,16 @@ import pytest
 
 from deep_research.graph.state import (
     DEFAULT_MAX_ITERATIONS,
+    FINALIZE_NODE,
     GRAPH_ROUTES,
     GRAPH_STATUSES,
     HALTING_ERROR_TYPES,
     NODE_NAMES,
     ROUTE_END,
+    ROUTE_FINALIZE,
     ROUTE_REFINE,
     dump_state,
+    graph_quality_status,
     graph_recursion_limit,
     graph_route,
     graph_status,
@@ -20,8 +23,19 @@ from deep_research.graph.state import (
     is_halted,
     load_state,
 )
-from deep_research.utils.types import MemorySnapshot, ResearchError, SubTopic
-from tests.graph_fakes import fake_critique, fake_research_state, halting_error
+from deep_research.utils.types import (
+    QUALITY_STATUS_ACCEPTED,
+    QUALITY_STATUS_PARTIAL,
+    MemorySnapshot,
+    ResearchError,
+    SubTopic,
+)
+from tests.graph_fakes import (
+    fake_critique,
+    fake_quality,
+    fake_research_state,
+    halting_error,
+)
 
 
 def test_the_initial_channel_carries_the_question_and_the_budget() -> None:
@@ -54,6 +68,7 @@ def test_the_channel_round_trips_a_populated_state_as_plain_json() -> None:
     state = fake_research_state(
         sub_topics=[
             SubTopic(
+                coverage_id="topic-01",
                 title="Error correction",
                 rationale="It is the bottleneck.",
                 search_queries=["qec 2025"],
@@ -97,14 +112,20 @@ def test_a_halted_run_ends_whatever_the_critic_recommended() -> None:
 
 
 def test_a_run_with_no_critique_ends_as_incomplete() -> None:
-    assert graph_route(fake_research_state()) == (ROUTE_END, "missing_critique")
+    assert graph_route(fake_research_state()) == (
+        ROUTE_FINALIZE,
+        "missing_critique",
+    )
     assert graph_status(fake_research_state()) == "incomplete"
 
 
 def test_a_satisfied_critic_ends_the_run() -> None:
-    state = fake_research_state(critique=fake_critique(should_continue=False, score=9))
+    state = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(),
+    )
 
-    assert graph_route(state) == (ROUTE_END, "critique_satisfied")
+    assert graph_route(state) == (ROUTE_FINALIZE, "critique_satisfied")
     assert graph_status(state) == "completed"
 
 
@@ -125,7 +146,7 @@ def test_the_iteration_bound_beats_the_critics_recommendation() -> None:
         max_iterations=2,
     )
 
-    assert graph_route(state) == (ROUTE_END, "max_iterations_reached")
+    assert graph_route(state) == (ROUTE_FINALIZE, "max_iterations_reached")
     assert graph_status(state) == "max_iterations"
 
 
@@ -145,12 +166,81 @@ def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
                 iteration=1,
                 max_iterations=1,
             ),
+            fake_research_state(
+                critique=fake_critique(should_continue=False),
+                quality=fake_quality(hard_failures=["duplicate_claims"]),
+                max_iterations=3,
+            ),
         )
     }
 
     assert reasons == set(GRAPH_ROUTES)
     for reason in GRAPH_ROUTES:
         assert GRAPH_ROUTES[reason].strip()
+
+
+def test_a_hard_quality_failure_forces_a_pass_the_critic_did_not_ask_for() -> None:
+    """Step 2: the deterministic gate outranks the model's own acceptance.
+
+    A report the Critic scored 9 can still carry duplicate claims or an
+    uncited settled point. While the budget remains, the gate sends it back
+    rather than publishing it.
+    """
+    state = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(hard_failures=["duplicate_claims"]),
+        iteration=0,
+        max_iterations=3,
+    )
+
+    assert graph_route(state) == (ROUTE_REFINE, "quality_gate_failed")
+
+
+def test_a_hard_quality_failure_with_no_budget_left_is_partial_not_accepted() -> None:
+    state = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(hard_failures=["uncited_settled_points"]),
+        iteration=2,
+        max_iterations=2,
+    )
+
+    assert graph_route(state) == (ROUTE_FINALIZE, "max_iterations_reached")
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+    assert graph_status(state) == "max_iterations"
+
+
+def test_only_a_clean_gate_the_critic_accepted_is_accepted() -> None:
+    state = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(hard_failures=[]),
+        iteration=0,
+        max_iterations=3,
+    )
+
+    assert graph_route(state) == (ROUTE_FINALIZE, "critique_satisfied")
+    assert graph_quality_status(state) == QUALITY_STATUS_ACCEPTED
+
+
+def test_a_run_no_quality_pass_judged_is_never_accepted() -> None:
+    state = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9)
+    )
+
+    assert state.quality is None
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+
+
+def test_a_critic_still_asking_for_a_pass_is_never_accepted() -> None:
+    """A clean gate cannot accept a report the reviewer sent back."""
+    state = fake_research_state(
+        critique=fake_critique(should_continue=True, score=4),
+        quality=fake_quality(hard_failures=[]),
+        iteration=2,
+        max_iterations=2,
+    )
+
+    assert graph_route(state) == (ROUTE_FINALIZE, "max_iterations_reached")
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
 
 
 def test_the_status_vocabulary_is_closed() -> None:
@@ -172,9 +262,37 @@ def test_the_recursion_limit_covers_every_planned_pass() -> None:
 def test_the_node_names_are_unique_and_ordered() -> None:
     assert len(set(NODE_NAMES)) == len(NODE_NAMES)
     assert NODE_NAMES[0] == "planner"
-    assert NODE_NAMES[-1] == "refine"
+    # The refinement hop is no longer last: the terminal finalizer publishes
+    # both artifacts and must be the last node the graph runs.
+    assert NODE_NAMES[-2] == "refine"
+    assert NODE_NAMES[-1] == FINALIZE_NODE == "finalize_report"
 
 
 def test_the_halting_error_types_are_all_graph_owned() -> None:
     assert HALTING_ERROR_TYPES
     assert all(name.startswith("graph_") for name in HALTING_ERROR_TYPES)
+
+
+def test_the_request_attempt_limit_error_type_halts_a_run() -> None:
+    """A spent request budget stops the run; it is never merely recoverable."""
+    error_type = "graph_request_attempt_limit_exceeded"
+
+    assert error_type in HALTING_ERROR_TYPES
+
+    state = fake_research_state(
+        errors=[
+            ResearchError(
+                error_type=error_type,
+                source="graph.researcher",
+                message=(
+                    "The request attempt budget for this run was exhausted, "
+                    "so the research run stopped."
+                ),
+                recoverable=False,
+            )
+        ]
+    )
+
+    assert is_halted(state)
+    assert graph_route(state) == (ROUTE_END, "halted")
+    assert graph_status(state) == "failed"

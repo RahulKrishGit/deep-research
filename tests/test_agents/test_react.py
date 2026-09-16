@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
+from typing import Any
 
 import pytest
 
+from deep_research.agents import react as react_module
 from deep_research.agents.react import run_react_loop
-from deep_research.agents.steps import ReActDecision, ReActStep
+from deep_research.agents.steps import ReActDecision, ReActRun, ReActStep
 from deep_research.agents.toolset import AgentToolset
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -17,6 +20,19 @@ from deep_research.providers import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
+from deep_research.request_budget import (
+    RequestAttemptLimitError,
+    RequestBudget,
+)
+from deep_research.tools import web_scraper as web_scraper_module
+from deep_research.tools.base import (
+    BaseTool,
+    ToolCallContext,
+    ToolError,
+    ToolExecution,
+    ToolResult,
+)
+from deep_research.utils.config import RequestBudgetConfig
 from tests.agent_fakes import (
     BoomTool,
     EchoTool,
@@ -54,8 +70,25 @@ def _decider(decisions: Sequence[ReActDecision]):
 
     async def decide(
         iteration: int, steps: Sequence[ReActStep]
-    ) -> ReActDecision:
+    ) -> tuple[ReActDecision, ...]:
         assert iteration == len(steps) + 1
+        return (queue.pop(0),)
+
+    return decide
+
+
+def _batch_decider(turns: Sequence[Sequence[ReActDecision]]):
+    """Serve one whole model turn — a sequence of decisions — per call.
+
+    ``decide`` returns every decision the provider made in a single turn, so a
+    turn that carried several parallel tool calls is replayed as one turn.
+    """
+    queue = [tuple(turn) for turn in turns]
+
+    async def decide(
+        iteration: int, steps: Sequence[ReActStep]
+    ) -> tuple[ReActDecision, ...]:
+        del iteration, steps
         return queue.pop(0)
 
     return decide
@@ -64,7 +97,7 @@ def _decider(decisions: Sequence[ReActDecision]):
 def _raiser(error: BaseException):
     async def decide(
         iteration: int, steps: Sequence[ReActStep]
-    ) -> ReActDecision:
+    ) -> tuple[ReActDecision, ...]:
         raise error
 
     return decide
@@ -75,6 +108,116 @@ def _toolset(tracker: Tracker, *names: str) -> AgentToolset:
         [EchoTool(tracker), BoomTool(tracker), StrictEchoTool(tracker)],
         allowed=list(names),
     )
+
+
+# Sentinels standing in for attacker-controlled text a failed scrape can
+# carry. The ``agent_tool_failed`` record publishes counting values, so none
+# of these markers may reach it; the failure message keeps travelling through
+# the observation, exactly as it did before the record carried any of them.
+_HOSTILE_EXCEPTION_TEXT = "ATTACKER-EXCEPTION-TEXT-<script>alert(1)</script>"
+_HOSTILE_PAGE_TEXT = "ATTACKER-PAGE-CONTENT-<script>alert(2)</script>"
+_HOSTILE_CONTENT_TYPE = "ATTACKER-CONTENT-TYPE-<script>alert(3)</script>"
+_HOSTILE_URL = "https://example.test/private/ATTACKER-URL-SENTINEL?key=secret"
+_FORBIDDEN_MARKERS = (
+    _HOSTILE_EXCEPTION_TEXT,
+    _HOSTILE_PAGE_TEXT,
+    _HOSTILE_CONTENT_TYPE,
+    _HOSTILE_URL,
+)
+
+
+class _ScriptedFailureTool(BaseTool):
+    """Hand the loop one exact failed ``ToolResult`` and nothing else.
+
+    The loop records whatever result a tool returns, and ``BaseTool.execute``
+    would rebuild that result from a ``ToolExecutionError`` — normalizing away
+    exactly the unexpected keys, hostile values, and out-of-bound counts a
+    projection test has to feed. Overriding ``execute`` is the only way to put
+    the result itself under test; ``_execute`` stays unreachable.
+    """
+
+    name = "scripted_failure"
+    description = "Return a scripted failure."
+    input_schema: dict[str, Any] = {}
+    output_schema: dict[str, Any] = {}
+
+    def __init__(self, tracker: Tracker, result: ToolResult) -> None:
+        super().__init__(tracker)
+        self._result = result
+
+    async def execute(self, **_kwargs: Any) -> ToolResult:
+        return self._result
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: Any
+    ) -> ToolExecution:
+        raise AssertionError("this fake returns a result without executing")
+
+
+class _ScraperFailureTool(_ScriptedFailureTool):
+    name = "web_scraper"
+
+
+class _OtherFailureTool(_ScriptedFailureTool):
+    name = "other_tool"
+
+
+def _hostile_scraper_failure() -> ToolResult:
+    """A failed scrape carrying the published keys and every forbidden one."""
+    return ToolResult(
+        tool_name="web_scraper",
+        success=False,
+        error=ToolError(
+            type="unsupported_content_type",
+            message=f"the page request failed: {_HOSTILE_EXCEPTION_TEXT}",
+            recoverable=False,
+            details={
+                "attempts": 3,
+                "retries": 2,
+                "status_code": 503,
+                "content_type": "text/html",
+                "message": _HOSTILE_EXCEPTION_TEXT,
+                "url": _HOSTILE_URL,
+                "text": _HOSTILE_PAGE_TEXT,
+                "body": _HOSTILE_PAGE_TEXT,
+                "content": _HOSTILE_CONTENT_TYPE,
+            },
+        ),
+        latency_ms=12.5,
+        metadata={"retry_count": 2, "url": _HOSTILE_URL},
+    )
+
+
+def _scraper_failure(**details: Any) -> ToolResult:
+    """A failed scrape whose error details are exactly ``details``."""
+    return ToolResult(
+        tool_name="web_scraper",
+        success=False,
+        error=ToolError(
+            type="HTTPStatusError",
+            message="the page request failed",
+            details=details,
+        ),
+        latency_ms=3.0,
+    )
+
+
+async def _run_one_tool_failure(tracker: Tracker, tool: BaseTool) -> ReActRun:
+    """Run a two-turn loop in which ``tool`` fails and the agent moves on."""
+    async with agent_scope(tracker):
+        return await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset([tool], allowed=[tool.name]),
+            decide=_decider(
+                [
+                    use_tool("Try the tool.", tool.name),
+                    finish("Move on.", "Partial answer."),
+                ]
+            ),
+            max_iterations=4,
+            tool_budget=5,
+        )
 
 
 @pytest.mark.asyncio
@@ -131,6 +274,59 @@ async def test_multi_step_loop_calls_a_tool_then_finishes(tracker: Tracker) -> N
 
 
 @pytest.mark.asyncio
+async def test_finish_decision_normalizes_empty_unused_tool_name(
+    tracker: Tracker,
+) -> None:
+    decision = ReActDecision(
+        thought="Enough evidence.",
+        action="finish",
+        tool_name="",
+        tool_input_json="{}",
+        final_answer="Done.",
+    )
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker),
+            decide=_decider([decision]),
+            max_iterations=2,
+            tool_budget=0,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.steps[0].tool_name is None
+    assert run.steps[0].final_answer == "Done."
+
+
+@pytest.mark.asyncio
+async def test_tool_decision_normalizes_empty_unused_final_answer(
+    tracker: Tracker,
+) -> None:
+    decision = ReActDecision(
+        thought="Check one source.",
+        action="use_tool",
+        tool_name="echo",
+        tool_input_json='{"value": "x"}',
+        final_answer="",
+    )
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [decision, finish("Enough.", "Done.")]
+            ),
+            max_iterations=2,
+            tool_budget=1,
+        )
+
+    assert run.steps[0].tool_name == "echo"
+    assert run.steps[0].final_answer is None
+
+
+@pytest.mark.asyncio
 async def test_loop_stops_at_max_iterations(tracker: Tracker) -> None:
     async with agent_scope(tracker):
         run = await run_react_loop(
@@ -174,6 +370,14 @@ async def test_sufficiency_hook_stops_the_loop_early(tracker: Tracker) -> None:
 async def test_tool_budget_stops_the_loop_before_the_extra_call(
     tracker: Tracker,
 ) -> None:
+    """The budget is spent on the first call, so the second one never runs.
+
+    The record gained one entry when a native turn learned to carry several
+    calls: the call the budget refused and the calls behind it are now counted
+    explicitly, so a budget stop states how much of what the provider asked for
+    did not execute instead of dropping it silently. The loop itself still
+    stops on the same call it always did.
+    """
     async with agent_scope(tracker):
         run = await run_react_loop(
             agent_name="researcher",
@@ -193,10 +397,212 @@ async def test_tool_budget_stops_the_loop_before_the_extra_call(
     assert last.observation is not None
     assert last.observation.success is False
     assert last.observation.error_type == "agent_tool_budget_exhausted"
-    assert [error.error_type for error in run.errors] == [
-        "agent_tool_budget_exhausted"
-    ]
+    assert all(
+        error.error_type == "agent_tool_budget_exhausted" for error in run.errors
+    )
+    assert len(run.errors) == 2
     assert run.errors[0].recoverable is True
+    assert run.errors[0].details["tool"] == "echo"
+    # The refused call is the whole of this turn's unexecuted work: one call was
+    # requested, none of it ran, and the count says so.
+    assert run.errors[1].details["unexecuted_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_one_turn_with_two_calls_records_two_steps_in_one_iteration(
+    tracker: Tracker,
+) -> None:
+    """A parallel-call turn is one model turn, so it is one iteration.
+
+    ``max_iterations`` still counts model turns: the two calls the provider
+    made together produce two ``ReActStep`` records that share iteration 1, and
+    the whole turn stays inside the single ``react_iteration_span`` opened for
+    that turn.
+    """
+    captured = _capture_iteration_outputs(tracker)
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_batch_decider(
+                [
+                    (
+                        use_tool("Look up A.", "echo", '{"value": "a"}'),
+                        use_tool("Look up B.", "echo", '{"value": "b"}'),
+                    ),
+                    (finish("Enough.", "Both answers came back."),),
+                ]
+            ),
+            max_iterations=5,
+            tool_budget=10,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.iterations == 2
+    assert run.tool_calls == 2
+    assert len(run.steps) == 3
+    first, second, third = run.steps
+    assert first.iteration == 1
+    assert second.iteration == 1
+    assert third.iteration == 2
+    assert [first.tool_input, second.tool_input] == [
+        {"value": "a"},
+        {"value": "b"},
+    ]
+    assert [step.observation.success for step in (first, second)] == [True, True]
+    assert third.action == "finish"
+    # One model turn is one traced turn.
+    assert len(captured) == 2
+
+
+@pytest.mark.asyncio
+async def test_every_call_in_a_batch_keeps_its_own_outcome(tracker: Tracker) -> None:
+    """One bad call must not cancel the rest of the provider's batch.
+
+    An unavailable tool, undecodable arguments, and a failing tool each record
+    their own failed observation and ``agent_error``, and the loop continues to
+    the next call in the same turn. Only executed calls count against the
+    budget.
+    """
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo", "boom"),
+            decide=_batch_decider(
+                [
+                    (
+                        use_tool("Reach for a tool I do not have.", "web_search"),
+                        use_tool("Send bad arguments.", "echo", "{not json}"),
+                        use_tool("Try the flaky tool.", "boom"),
+                        use_tool("Now a good one.", "echo", '{"value": "ok"}'),
+                    ),
+                    (finish("Enough.", "Three of four failed."),),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=10,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.iterations == 2
+    assert run.tool_calls == 2
+    assert [step.iteration for step in run.steps] == [1, 1, 1, 1, 2]
+    assert [step.observation.error_type for step in run.steps[:4]] == [
+        "agent_unknown_tool",
+        "agent_invalid_tool_input",
+        "TimeoutError",
+        None,
+    ]
+    assert [step.observation.success for step in run.steps[:4]] == [
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert [error.error_type for error in run.errors] == [
+        "agent_unknown_tool",
+        "agent_invalid_tool_input",
+        "agent_tool_failed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_tool_budget_records_the_unexecuted_remainder_of_a_batch(
+    tracker: Tracker,
+) -> None:
+    """Nothing the provider asked for may vanish when the budget stops a batch.
+
+    With a budget of one, the first call of a two-call turn executes, the
+    second call records the budget-exhausted observation, and the calls that
+    were never reached are recorded as one step naming *how many* were dropped
+    — a count, never provider text.
+    """
+    sentinel = "TOOL_BUDGET_REMAINDER_SENTINEL_9F2B"
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_batch_decider(
+                [
+                    (
+                        use_tool("First.", "echo", '{"value": "a"}'),
+                        use_tool(
+                            "Second.",
+                            "echo",
+                            json.dumps({"value": sentinel}),
+                        ),
+                    ),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=1,
+        )
+
+    assert run.stop_reason == "tool_budget_exhausted"
+    assert run.tool_calls == 1
+    assert run.iterations == 1
+    assert len(run.steps) == 3
+    assert [step.iteration for step in run.steps] == [1, 1, 1]
+
+    executed, exhausted, remainder = run.steps
+    assert executed.observation.success is True
+    assert exhausted.observation.error_type == "agent_tool_budget_exhausted"
+    assert exhausted.observation.success is False
+
+    remainder_observation = remainder.observation
+    assert remainder_observation is not None
+    assert remainder_observation.success is False
+    assert remainder_observation.error_type == "agent_tool_budget_exhausted"
+    assert remainder_observation.summary == (
+        "1 further tool call(s) requested by the provider were not executed "
+        "because the tool budget of 1 calls is exhausted."
+    )
+    assert remainder.final_answer is None
+    assert remainder.tool_result is None
+
+    budget_errors = [
+        error
+        for error in run.errors
+        if "unexecuted_calls" in error.details
+    ]
+    assert len(budget_errors) == 1
+    assert budget_errors[0].error_type == "agent_tool_budget_exhausted"
+    assert budget_errors[0].details["unexecuted_calls"] == 1
+    assert isinstance(budget_errors[0].details["unexecuted_calls"], int)
+    assert sentinel not in repr(run.steps)
+    assert sentinel not in repr(run.errors)
+
+
+@pytest.mark.asyncio
+async def test_a_batch_that_exhausts_the_budget_exactly_records_no_remainder(
+    tracker: Tracker,
+) -> None:
+    """A batch the budget covers exactly has nothing left to report."""
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_batch_decider(
+                [
+                    (
+                        use_tool("First.", "echo", '{"value": "a"}'),
+                        use_tool("Second.", "echo", '{"value": "b"}'),
+                    ),
+                    (finish("Enough.", "Both calls ran."),),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=2,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.tool_calls == 2
+    assert len(run.steps) == 3
+    assert run.errors == []
 
 
 @pytest.mark.asyncio
@@ -255,6 +661,247 @@ async def test_tool_failure_becomes_an_observation_and_the_loop_continues(
         "tool": "boom",
         "iteration": 1,
         "tool_error_type": "TimeoutError",
+    }
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_failed_keeps_the_bounded_safe_scraper_diagnostics(
+    tracker: Tracker,
+) -> None:
+    """A failed scrape publishes countable classes, never the page or the URL.
+
+    The record is what the canary counts ``web_scraper`` failures by, so it
+    carries the four bounded values the scraper publishes and nothing else.
+    The hostile message, URL, and page content the same result carries stay
+    where they already travelled — the observation — and are not copied here.
+    """
+    result = _hostile_scraper_failure()
+    run = await _run_one_tool_failure(tracker, _ScraperFailureTool(tracker, result))
+
+    assert run.stop_reason == "finished"
+    assert len(run.errors) == 1
+    error = run.errors[0]
+    assert error.error_type == "agent_tool_failed"
+    assert error.details == {
+        "tool": "web_scraper",
+        "iteration": 1,
+        "tool_error_type": "unsupported_content_type",
+        "attempts": 3,
+        "retries": 2,
+        "status_code": 503,
+        "content_type": "text/html",
+    }
+
+    # The bounded record is a second home for the diagnosis, not a sanitizer
+    # for the observation: the failure message still reaches the model.
+    observation = run.steps[0].observation
+    assert observation is not None
+    assert observation.error_type == "unsupported_content_type"
+    assert observation.summary == (
+        f"web_scraper failed (unsupported_content_type): {result.error.message}"
+    )
+
+    serialized = error.model_dump_json()
+    assert _HOSTILE_EXCEPTION_TEXT in observation.summary
+    for marker in _FORBIDDEN_MARKERS:
+        assert marker not in serialized
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_failed_drops_scraper_details_that_fail_revalidation(
+    tracker: Tracker,
+) -> None:
+    """Every published value is revalidated, not trusted, before it is copied.
+
+    A result whose counts and status do not satisfy the published bounds, and
+    which carries forbidden keys beside them, contributes only the value that
+    does hold up: an out-of-range count, a wrong type, and unexpected keys are
+    dropped instead of being copied into public state.
+    """
+    result = ToolResult(
+        tool_name="web_scraper",
+        success=False,
+        error=ToolError(
+            type="unsupported_content_type",
+            message=f"the page request failed: {_HOSTILE_EXCEPTION_TEXT}",
+            recoverable=False,
+            details={
+                "attempts": 9,
+                "retries": -1,
+                "status_code": _HOSTILE_URL,
+                "content_type": "text/html",
+                "url": _HOSTILE_URL,
+                "text": _HOSTILE_PAGE_TEXT,
+                "retry_after": _HOSTILE_CONTENT_TYPE,
+            },
+        ),
+        latency_ms=1.0,
+    )
+    run = await _run_one_tool_failure(tracker, _ScraperFailureTool(tracker, result))
+
+    error = run.errors[0]
+    assert error.error_type == "agent_tool_failed"
+    assert error.details == {
+        "tool": "web_scraper",
+        "iteration": 1,
+        "tool_error_type": "unsupported_content_type",
+        "content_type": "text/html",
+    }
+    serialized = error.model_dump_json()
+    for marker in _FORBIDDEN_MARKERS:
+        assert marker not in serialized
+
+
+@pytest.mark.asyncio
+async def test_the_scraper_projection_omits_an_absent_status_code(
+    tracker: Tracker,
+) -> None:
+    """An unpublished status stays absent instead of becoming ``None``.
+
+    ``raise_for_status()`` raises for any non-success response, including a
+    code outside ``100..599`` that a nonconforming peer can send, and the
+    scraper then publishes no ``status_code`` at all. The record mirrors that
+    omission: a null bucket is a bucket no response ever produced, and the
+    failure counts are the whole point of the record.
+    """
+    run = await _run_one_tool_failure(
+        tracker, _ScraperFailureTool(tracker, _scraper_failure(attempts=1, retries=0))
+    )
+
+    error = run.errors[0]
+    assert error.details == {
+        "tool": "web_scraper",
+        "iteration": 1,
+        "tool_error_type": "HTTPStatusError",
+        "attempts": 1,
+        "retries": 0,
+    }
+    assert "status_code" not in error.details
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("details", "projected"),
+    [
+        ({"attempts": 1, "retries": 0}, {"attempts": 1, "retries": 0}),
+        ({"attempts": 3, "retries": 2}, {"attempts": 3, "retries": 2}),
+        # A bool is an int subclass, so it is rejected by type and not just by
+        # range: a published count of ``True`` is a type error, not a one.
+        ({"attempts": True}, {}),
+        ({"attempts": 0}, {}),
+        ({"attempts": 4}, {}),
+        ({"attempts": "2"}, {}),
+        ({"retries": -1}, {}),
+        ({"retries": 3}, {}),
+        ({"retries": 2.0}, {}),
+        ({"status_code": 100}, {"status_code": 100}),
+        ({"status_code": 599}, {"status_code": 599}),
+        ({"status_code": 99}, {}),
+        ({"status_code": 600}, {}),
+        ({"status_code": 503.0}, {}),
+        ({"status_code": _HOSTILE_URL}, {}),
+        ({"content_type": "text/html"}, {"content_type": "text/html"}),
+        # The producer's static marker for a header it could not read is
+        # published *in place of* a media type, so it is projected verbatim:
+        # an unparseable content type is a class to count, not a value to drop.
+        ({"content_type": "unknown"}, {"content_type": "unknown"}),
+        ({"content_type": _HOSTILE_CONTENT_TYPE}, {}),
+        ({"content_type": "TEXT/HTML"}, {}),
+        ({"content_type": "a" * 100 + "/b"}, {}),
+        ({"content_type": "\u212a/x"}, {}),
+        ({"content_type": "text/plain; charset=utf-8"}, {}),
+        ({}, {}),
+    ],
+)
+async def test_the_scraper_projection_revalidates_every_published_value(
+    tracker: Tracker, details: dict[str, Any], projected: dict[str, Any]
+) -> None:
+    """Only values inside the published bounds are copied into the record."""
+    run = await _run_one_tool_failure(
+        tracker, _ScraperFailureTool(tracker, _scraper_failure(**details))
+    )
+
+    error = run.errors[0]
+    assert error.details == {
+        "tool": "web_scraper",
+        "iteration": 1,
+        "tool_error_type": "HTTPStatusError",
+        **projected,
+    }
+
+
+def test_the_projection_and_the_producer_share_one_media_type_bound() -> None:
+    """The duplicated bound is pinned to the producer's here, in tests only.
+
+    ``agents/react.py`` must not import a concrete tool module — and a shared
+    validator would let one producer bug hide the other — so the suite is what
+    keeps the two copies honest. A change to the producer's pattern, length, or
+    static marker fails here instead of silently narrowing what a failure
+    record can publish, which is how the marker came to be dropped once.
+    """
+    assert (
+        react_module._MEDIA_TYPE_PATTERN.pattern
+        == web_scraper_module._MEDIA_TYPE_PATTERN.pattern
+    )
+    assert (
+        react_module._MAX_MEDIA_TYPE_LENGTH
+        == web_scraper_module._MEDIA_TYPE_MAX_LENGTH
+    )
+    assert (
+        react_module._UNKNOWN_CONTENT_TYPE
+        == web_scraper_module._UNKNOWN_CONTENT_TYPE
+    )
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "",
+        "application/pdf",
+        "APPLICATION/PDF; charset=binary",
+        _HOSTILE_CONTENT_TYPE,
+        "application/pdf<script>alert(4)</script>",
+        "a" * 100 + "/b",
+        "\u212a/x",
+        "\u00a0application/pdf",
+        "text/plain; name=h\u00e9llo",
+    ],
+)
+def test_every_content_type_the_producer_publishes_survives_the_projection(
+    header: str,
+) -> None:
+    """Nothing the producer chose to publish is dropped on the way to a record.
+
+    A malformed, non-ASCII, over-long, or absent header becomes the producer's
+    own static marker, and the unparseable-content-type branch publishes
+    neither ``attempts``, ``retries``, nor ``status_code`` — so dropping that
+    marker would leave that whole failure class with no diagnostic to count it
+    by, indistinguishable from a scrape that published no content type at all.
+    """
+    published = web_scraper_module._bounded_content_type(header)
+    assert react_module._bounded_media_type(published) == published
+
+
+@pytest.mark.asyncio
+async def test_an_arbitrary_tool_does_not_gain_the_scraper_projection(
+    tracker: Tracker,
+) -> None:
+    """The projection belongs to the scraper the loop executed, and no other.
+
+    The result here even claims to be ``web_scraper`` while the executed tool
+    is not, so the gate is the name the toolset resolved rather than a name a
+    result can assert: every other tool keeps the existing three-key record.
+    """
+    run = await _run_one_tool_failure(
+        tracker, _OtherFailureTool(tracker, _hostile_scraper_failure())
+    )
+
+    error = run.errors[0]
+    assert error.error_type == "agent_tool_failed"
+    assert error.details == {
+        "tool": "other_tool",
+        "iteration": 1,
+        "tool_error_type": "unsupported_content_type",
     }
 
 
@@ -545,6 +1192,44 @@ async def test_provider_decision_records_safe_event_and_reraises_original_error(
 
 
 @pytest.mark.asyncio
+async def test_compatibility_provider_failure_records_safe_details_without_raising(
+    tracker: Tracker,
+) -> None:
+    provider_error = ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=4, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_raiser(provider_error),
+            max_iterations=4,
+            tool_budget=5,
+            propagate_provider_errors=False,
+        )
+
+    assert run.stop_reason == "provider_error"
+    assert run.succeeded is False
+    assert len(run.errors) == 1
+    error = run.errors[0]
+    assert error.error_type == "agent_provider_error"
+    assert error.recoverable is False
+    assert error.details["operation"] == "react_decision"
+    provider = error.details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
+    assert "Provider response reached" not in str(error.details)
+
+
+@pytest.mark.asyncio
 async def test_programming_errors_propagate(tracker: Tracker) -> None:
     with pytest.raises(AttributeError):
         async with agent_scope(tracker):
@@ -728,3 +1413,118 @@ async def test_the_loop_rejects_unbounded_arguments(
 
     with pytest.raises(ValueError, match=match):
         await run_react_loop(**payload)  # type: ignore[arg-type]
+
+
+# A spent run-wide attempt ceiling is not a tool failure the loop may absorb.
+# Converting it into a failed ``ToolResult`` would record an
+# ``agent_tool_failed`` error and let the run continue, which is exactly the
+# behaviour the ceiling exists to remove: the refusal has to end the run. The
+# loop catches provider failures only, so nothing here has to change for that —
+# these tests pin it, because the conversion ``BaseTool.execute`` used to
+# perform is one edit away from coming back.
+
+
+def _refused_tavily_budget() -> tuple[RequestBudget, RequestAttemptLimitError]:
+    """A real budget that has spent its one unit and now refuses the next."""
+    budget = RequestBudget(
+        RequestBudgetConfig(
+            deepseek_attempt_ceiling=None,
+            openai_attempt_ceiling=None,
+            tavily_attempt_ceiling=1,
+            stop_fraction=1.0,
+        )
+    )
+    budget.reserve("tavily")
+    with pytest.raises(RequestAttemptLimitError) as refusal:
+        budget.reserve("tavily")
+    return budget, refusal.value
+
+
+def _recorded_forms(tracker: Tracker) -> list[str]:
+    """Every event and error this tracker recorded, serialized for inspection."""
+    return [
+        json.dumps(record.model_dump(mode="json"), sort_keys=True)
+        for record in (*tracker.events, *tracker.errors)
+    ]
+
+
+class _RequestLimitTool(BaseTool):
+    """Raise one exact ``RequestAttemptLimitError`` out of ``_execute``."""
+
+    name = "request_limit"
+    description = "Raise the run-wide attempt ceiling refusal."
+    input_schema: dict[str, Any] = {}
+    output_schema: dict[str, Any] = {}
+
+    def __init__(self, tracker: Tracker, error: RequestAttemptLimitError) -> None:
+        super().__init__(tracker)
+        self._error = error
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: Any
+    ) -> ToolExecution:
+        raise self._error
+
+
+@pytest.mark.asyncio
+async def test_request_attempt_limit_error_escapes_the_react_loop(
+    tracker: Tracker,
+) -> None:
+    budget, refusal = _refused_tavily_budget()
+    tool = _RequestLimitTool(tracker, refusal)
+    run: ReActRun | None = None
+
+    with pytest.raises(RequestAttemptLimitError) as escaped:
+        async with agent_scope(tracker):
+            run = await run_react_loop(
+                agent_name="researcher",
+                tracker=tracker,
+                tools=AgentToolset([tool], allowed=[tool.name]),
+                decide=_decider(
+                    [
+                        use_tool("Search the web.", tool.name),
+                        finish("Move on.", "Partial answer."),
+                    ]
+                ),
+                max_iterations=4,
+                tool_budget=5,
+            )
+
+    assert escaped.value is refusal
+    assert escaped.value.snapshot is refusal.snapshot
+    # The loop returned no run at all, so it recorded no tool-failure error:
+    # a refused attempt is not a failed tool call and must not be counted as
+    # one by whatever reads the records.
+    assert run is None
+    assert budget.snapshot("tavily").attempts == 1
+    assert [
+        form for form in _recorded_forms(tracker) if "agent_tool_failed" in form
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_the_request_attempt_limit_escape_leaves_ordinary_failures_recorded(
+    tracker: Tracker,
+) -> None:
+    """Control for the escape above: an ordinary failure still records and runs on."""
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "boom"),
+            decide=_decider(
+                [
+                    use_tool("Try the flaky tool.", "boom"),
+                    finish("Fall back.", "Partial answer."),
+                ]
+            ),
+            max_iterations=4,
+            tool_budget=5,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.tool_calls == 1
+    step = run.steps[0]
+    assert step.tool_result is not None
+    assert step.tool_result.success is False
+    assert [error.error_type for error in run.errors] == ["agent_tool_failed"]

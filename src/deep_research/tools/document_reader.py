@@ -50,6 +50,7 @@ class DocumentReaderTool(BaseTool):
     name = "document_reader"
     description = "Extract structured text chunks from local or remote documents."
     input_schema = {"source": "string"}
+    required_arguments = ("source",)
     output_schema = {
         "source": "string",
         "format": "string",

@@ -14,7 +14,9 @@ from collections.abc import Mapping
 
 from pydantic import JsonValue
 
+from deep_research.agents.errors import PlanningError
 from deep_research.graph.state import GRAPH_SOURCE, HALTING_ERROR_TYPES
+from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.utils.types import ResearchError
 
 # Enumerated, project-generated failure messages. Never provider text and
@@ -40,7 +42,22 @@ GRAPH_ERROR_REASONS = {
         "The graph attempted a refinement pass with no budget left, so the "
         "research run stopped."
     ),
+    "graph_request_attempt_limit_exceeded": (
+        "The request attempt budget declared for this run was exhausted, so "
+        "the research run stopped."
+    ),
+    "graph_publication_unavailable": (
+        "No report publisher was configured, so the composed artifacts were "
+        "not written to disk."
+    ),
+    "graph_publication_failed": (
+        "The report publisher could not complete one of the terminal writes."
+    ),
 }
+
+# The terminal writes that fail independently of one another. Enumerated so a
+# reader — or a CLI — can tell which artifact is missing its file.
+PUBLICATION_ARTIFACTS = ("reader", "evidence", "memory")
 
 
 class GraphError(Exception):
@@ -100,9 +117,16 @@ def agent_configuration_error(error: Exception, *, node: str) -> ResearchError:
     return _from_exception("graph_agent_configuration_error", error, node=node)
 
 
-def planning_failed_error(error: Exception, *, node: str) -> ResearchError:
+def planning_failed_error(error: PlanningError, *, node: str) -> ResearchError:
     """Record that the planner could not produce a plan."""
-    return _from_exception("graph_planning_failed", error, node=node)
+    return graph_error(
+        error_type="graph_planning_failed",
+        node=node,
+        details={
+            "exception_type": type(error).__name__,
+            "problems": list(error.problems),
+        },
+    )
 
 
 def provider_configuration_error(
@@ -137,4 +161,70 @@ def invalid_route_error(
         error_type="graph_invalid_route",
         node=node,
         details={"iteration": iteration, "max_iterations": max_iterations},
+    )
+
+
+def request_attempt_limit_error(
+    error: RequestAttemptLimitError,
+    *,
+    node: str,
+) -> ResearchError:
+    """Record that a provider refused an attempt past the run's ceiling.
+
+    The refusal already carries its machine-readable reason: the snapshot's
+    provider category and bounded integers. Those, plus the enumerated
+    exception class name, are the whole record — exactly five keys. The
+    exception's own message is deliberately *not* copied, even though it is
+    static project text: the enumerated message above is the one this project
+    renders, and a second copy is a second place for a ceiling or a count to
+    be interpolated later. Token totals are not details either; they are
+    reported through the budget's own snapshots, not through a failure.
+    """
+    snapshot = error.snapshot
+    return graph_error(
+        error_type="graph_request_attempt_limit_exceeded",
+        node=node,
+        details={
+            "exception_type": type(error).__name__,
+            "provider": snapshot.provider,
+            "attempts": snapshot.attempts,
+            "ceiling": snapshot.ceiling,
+            "effective_limit": snapshot.effective_limit,
+        },
+    )
+
+
+def publication_unavailable_error(*, node: str) -> ResearchError:
+    """Record that the composed artifacts had no writer configured.
+
+    Recoverable on purpose: the Markdown in state is authoritative and
+    complete, so the run is not a failure — it simply published nothing.
+    """
+    return graph_error(error_type="graph_publication_unavailable", node=node)
+
+
+def publication_write_error(
+    *,
+    node: str,
+    artifact: str,
+    tool: str,
+    failure_type: str,
+) -> ResearchError:
+    """Record that one terminal write did not complete.
+
+    ``artifact`` is one of ``PUBLICATION_ARTIFACTS`` and ``tool`` is the tool
+    asked to write it; ``failure_type`` is a tool error class name. All three
+    are enumerated or project-generated — never provider text, never a
+    filesystem message, and never the content that failed to write.
+    """
+    if artifact not in PUBLICATION_ARTIFACTS:
+        raise ValueError(f"unknown publication artifact: {artifact}")
+    return graph_error(
+        error_type="graph_publication_failed",
+        node=node,
+        details={
+            "artifact": artifact,
+            "tool": tool,
+            "failure_type": failure_type,
+        },
     )

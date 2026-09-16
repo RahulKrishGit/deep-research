@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from deep_research.agents.base import StructuredCompleter
+from deep_research.agents.base import AgentCompleter
 from deep_research.agents.critic import CriticAgent
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.fact_checker import FactCheckerAgent
@@ -39,6 +39,7 @@ from deep_research.providers import (
     build_embedding_provider,
     validate_agent_model_configs,
 )
+from deep_research.request_budget import RequestBudget
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
 from deep_research.tools.base import BaseTool
@@ -60,6 +61,7 @@ def build_tools(
     tavily_api_key: str | None = None,
     search_client: Any | None = None,
     http_client: Any | None = None,
+    request_budget: RequestBudget | None = None,
 ) -> list[BaseTool]:
     """Build every tool any agent declares, in one shared registry.
 
@@ -68,6 +70,13 @@ def build_tools(
     ignores the rest, and it raises ``AgentConfigurationError`` when a
     declared tool was never injected — so the wiring guard is kept without
     six lists to keep in step.
+
+    ``request_budget`` goes to ``WebSearchTool`` and nowhere else. Tavily is
+    the only transport behind these six tools, and the remaining five make no
+    request at all, so handing any of them a budget would create the
+    impression of a bound that does not exist. The budget is shared, never
+    copied: ``RequestBudget`` holds mutable counters, and a copy per tool
+    would spend a second set of them.
     """
     return [
         WebSearchTool(
@@ -80,6 +89,7 @@ def build_tools(
             client=search_client,
             search_depth=settings.tavily.search_depth,
             max_results=settings.tavily.max_results,
+            request_budget=request_budget,
         ),
         WebScraperTool(tracker, client=http_client),
         DocumentReaderTool(tracker, client=http_client),
@@ -118,9 +128,17 @@ def _scratchpad(
 # shared kwargs; only the Source Evaluator consumes ``reputation``. Bodies
 # name the agent classes rather than capturing them, so a test that patches
 # a class on this module still sees its own class constructed.
+#
+# The Researcher is the one agent with a cap on how much of the plan one pass
+# attempts, and it reads that bound off the very ``AgentRuntimeConfig`` every
+# constructor already receives rather than through a second, Researcher-only
+# kwarg. Keeping it there means ``agents.max_sub_topics`` cannot reach five
+# agents and silently skip the sixth.
 _AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
     "planner": lambda reputation, **shared: PlannerAgent(**shared),
-    "researcher": lambda reputation, **shared: ResearcherAgent(**shared),
+    "researcher": lambda reputation, **shared: ResearcherAgent(
+        max_sub_topics=shared["config"].max_sub_topics, **shared
+    ),
     "source_evaluator": lambda reputation, **shared: SourceEvaluatorAgent(
         reputation=reputation, **shared
     ),
@@ -135,7 +153,7 @@ def build_agent(
     settings: ConfigSettings,
     *,
     tracker: Tracker,
-    provider: StructuredCompleter,
+    provider: AgentCompleter,
     tools: Sequence[BaseTool],
     session_id: str,
     reputation: ReputationSource | None,
@@ -172,7 +190,7 @@ def build_agents(
     settings: ConfigSettings,
     *,
     tracker: Tracker,
-    provider: StructuredCompleter,
+    provider: AgentCompleter,
     tools: Sequence[BaseTool],
     session_id: str,
     reputation: ReputationSource | None,
@@ -214,6 +232,7 @@ class ResearchRuntime:
     session_id: str
     settings: ConfigSettings
     tracker: Tracker
+    request_budget: RequestBudget
     graph: Any
     long_term: LongTermMemory | None
     procedural: ProceduralMemory | None
@@ -224,7 +243,7 @@ async def build_runtime(
     *,
     session_id: str,
     tracker: Tracker | None = None,
-    chat_provider: StructuredCompleter | None = None,
+    chat_provider: AgentCompleter | None = None,
     long_term: LongTermMemory | None = None,
     procedural: ProceduralMemory | None = None,
     tavily_api_key: str | None = None,
@@ -287,8 +306,16 @@ async def build_runtime(
             message=f"Memory could not be initialized: {error}",
         ) from error
 
+    # Exactly one budget for the whole run. The chat transports and the Tavily
+    # search tool reserve against this same object, so ``settings.request_budget``
+    # bounds the run rather than a single collaborator; a second budget would
+    # double every declared ceiling while each half looked correct on its own.
+    request_budget = RequestBudget(settings.request_budget)
+
     try:
-        provider = chat_provider or build_chat_provider(settings.llm, tracker)
+        provider = chat_provider or build_chat_provider(
+            settings.llm, tracker, request_budget=request_budget
+        )
     except ProviderConfigurationError as error:
         raise configuration_error(
             reason="provider_unconfigured",
@@ -306,6 +333,7 @@ async def build_runtime(
         tavily_api_key=tavily_api_key,
         search_client=search_client,
         http_client=http_client,
+        request_budget=request_budget,
     )
     agents = build_agents(
         settings,
@@ -325,6 +353,7 @@ async def build_runtime(
         session_id=session_id,
         settings=settings,
         tracker=tracker,
+        request_budget=request_budget,
         graph=graph,
         long_term=long_term,
         procedural=procedural,

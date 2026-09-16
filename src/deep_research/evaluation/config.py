@@ -12,6 +12,8 @@ import hashlib
 import importlib
 import inspect
 import json
+import ntpath
+import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -31,6 +33,7 @@ from deep_research.utils.config import (
     EmbeddingProviderName,
     EvaluationConfig,
     LLMConfig,
+    ProviderName,
     ReasoningEffort,
 )
 from deep_research.utils.types import ContractModel, JsonValue
@@ -52,6 +55,27 @@ _SECRET_ENVIRONMENT_VARIABLES = (
 )
 
 _EFFORT_ADAPTER = TypeAdapter(ReasoningEffort)
+
+_JUDGE_STRUCTURED_TRANSPORT = {
+    "deepseek": "deepseek_responses_json_schema_v1",
+    "openai": "openai_responses_parse_v1",
+}
+
+# How the *target* agents select tools. Distinct from the judge's structured
+# transport above: the target ReAct turn now uses provider-native tool calls,
+# so an artifact recorded before this change is not comparable to one after it.
+_TARGET_REACT_TRANSPORT = {
+    "deepseek": "deepseek_chat_tools_auto_v1",
+    "openai": "openai_responses_tools_auto_v1",
+}
+
+
+def judge_structured_transport(provider: ProviderName) -> str:
+    return _JUDGE_STRUCTURED_TRANSPORT[provider]
+
+
+def target_react_transport(provider: ProviderName) -> str:
+    return _TARGET_REACT_TRANSPORT[provider]
 
 
 def _validated_effort(value: str) -> ReasoningEffort:
@@ -175,6 +199,22 @@ def experiment_name(
     return base
 
 
+def _extended_windows_path(path: Path) -> Path:
+    """Return a normalized extended path on Windows only."""
+    if os.name != "nt":
+        return Path(path)
+
+    value = os.fspath(path)
+    if value.startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[len("\\\\?\\UNC\\") :]
+    elif value.startswith("\\\\?\\"):
+        value = value[len("\\\\?\\") :]
+    value = ntpath.abspath(ntpath.normpath(value))
+    if value.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + value[2:])
+    return Path("\\\\?\\" + value)
+
+
 class EvaluationRuntimeConfig(ContractModel):
     """The frozen, resolved configuration of one evaluation experiment.
 
@@ -216,6 +256,10 @@ class EvaluationRuntimeConfig(ContractModel):
     git: GitMetadata
     configuration_fingerprint: str
     judge_configuration_fingerprint: str
+    # The judge's own operation-specific output budget. The verdict carries
+    # six common dimensions, the agent-specific dimensions, and a rationale;
+    # at the global cap the adapter returned judge_output_limit and no score.
+    judge_max_tokens: int
     prompt_fingerprint: str
     package_version: str
 
@@ -272,6 +316,9 @@ def build_runtime_config(
             "application": settings.model_dump(mode="json"),
             "target_model": evaluation.target_model,
             "target_reasoning_effort": target_effort,
+            "target_react_transport": target_react_transport(
+                settings.llm.provider
+            ),
             "thinking_mode": "enabled",
             "dataset_version": evaluation.dataset_version,
             "rubric_version": evaluation.rubric_version,
@@ -280,6 +327,10 @@ def build_runtime_config(
     )
     judge_configuration_fingerprint = fingerprint(
         {
+            "provider": settings.llm.provider,
+            "structured_transport": judge_structured_transport(
+                settings.llm.provider
+            ),
             "judge_model": evaluation.judge_model,
             "judge_reasoning_effort": judge_effort,
             "judge_temperature": evaluation.judge_temperature,
@@ -310,13 +361,16 @@ def build_runtime_config(
         dataset_version=evaluation.dataset_version,
         rubric_version=evaluation.rubric_version,
         experiment_name=resolved_experiment_name,
-        output_root=root / cli_agent_name(agent_name) / resolved_experiment_name,
+        output_root=_extended_windows_path(
+            root / cli_agent_name(agent_name) / resolved_experiment_name
+        ),
         repetition_floor=evaluation.controlled_repetition_floor,
         case_average_threshold=evaluation.controlled_case_average_threshold,
         live_threshold=evaluation.live_threshold,
         git=git,
         configuration_fingerprint=configuration_fingerprint,
         judge_configuration_fingerprint=judge_configuration_fingerprint,
+        judge_max_tokens=settings.agents.judge_max_tokens,
         prompt_fingerprint=agent_prompt_fingerprint(agent_name),
         package_version=EVALUATION_PACKAGE_VERSION,
     )
@@ -440,11 +494,18 @@ def experiment_metadata(
         "git_dirty": runtime.git.dirty,
         "target_model": runtime.target_model,
         "target_reasoning_effort": runtime.target_reasoning_effort,
+        "target_react_transport": target_react_transport(
+            settings.llm.provider
+        ),
         "thinking_mode": runtime.thinking_mode,
         "target_model_configuration": target_llm_config(
             runtime, settings.llm
         ).model_dump(mode="json"),
         "configuration_fingerprint": runtime.configuration_fingerprint,
+        "judge_provider": settings.llm.provider,
+        "judge_structured_transport": judge_structured_transport(
+            settings.llm.provider
+        ),
         "judge_model": runtime.judge_model,
         "judge_reasoning_effort": runtime.judge_reasoning_effort,
         "judge_temperature": runtime.judge_temperature,

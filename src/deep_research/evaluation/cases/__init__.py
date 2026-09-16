@@ -12,6 +12,12 @@ from collections.abc import Sequence
 
 from pydantic import JsonValue
 
+from deep_research.agents.fact_checker import (
+    claimed_domains_for,
+)
+from deep_research.agents.identity import claim_fingerprint
+from deep_research.agents.planner import coverage_id_for
+from deep_research.agents.sources import publisher_identity
 from deep_research.evaluation.models import (
     AGENT_NAMES,
     AgentName,
@@ -26,6 +32,7 @@ from deep_research.evaluation.models import (
 from deep_research.utils.types import (
     Claim,
     Critique,
+    EvidencePassage,
     Finding,
     MemorySnapshot,
     ResearchState,
@@ -39,6 +46,13 @@ CASE_REGISTRY_VERSION = 1
 # dataset example never changes just because the clock moved.
 FIXED_TIMESTAMP = "2026-08-01T00:00:00+00:00"
 
+# ``SubTopic.coverage_id`` belongs to the Planner, which stamps ``topic-NN``
+# in priority order after validation — a case author must not invent one.
+# ``sub_topic`` therefore builds a curated sub-topic unstamped, and
+# ``evaluation_state`` stamps the real, position-based id for every state it
+# assembles, so this value never reaches a case.
+UNSTAMPED_COVERAGE_ID = "topic-unstamped"
+
 
 class CaseRegistryError(ValueError):
     """The local case registry is invalid; nothing may be executed."""
@@ -51,8 +65,10 @@ def sub_topic(
     queries: Sequence[str],
     criteria: Sequence[str],
     priority: int,
+    coverage_id: str = UNSTAMPED_COVERAGE_ID,
 ) -> SubTopic:
     return SubTopic(
+        coverage_id=coverage_id,
         title=title,
         rationale=rationale,
         search_queries=list(queries),
@@ -86,7 +102,6 @@ def scored_source(
     authority: float,
     recency: float,
     relevance: float,
-    corroboration: float,
     overall: float,
     rationale: str,
     low_confidence: bool = False,
@@ -97,11 +112,18 @@ def scored_source(
         authority_score=authority,
         recency_score=recency,
         relevance_score=relevance,
-        corroboration_score=corroboration,
         overall_score=overall,
         rationale=rationale,
         low_confidence=low_confidence,
     )
+
+
+# Verdicts that assert independent evidence. An ``insufficient_evidence``
+# claim carries no passage at all — that is what makes it insufficient — so
+# only these three require independent verification sources.
+EVIDENCE_BEARING_VERDICTS = frozenset(
+    {"verified", "unverified", "contradicted"}
+)
 
 
 def claim(
@@ -112,14 +134,88 @@ def claim(
     confidence: float,
     evidence: Sequence[str] = (),
     contradictions: Sequence[str] = (),
+    verification_urls: Sequence[str] = (),
 ) -> Claim:
+    """One curated claim fixture.
+
+    ``urls`` are the ORIGIN sources that made the claim, exactly as
+    ``Claim.source_urls`` means in production. ``verification_urls`` are the
+    independent sources whose passages judged it, and they are required by
+    every claim that builds a passage — not only by every evidence-bearing
+    verdict: Task 5 review found this builder cycling origin URLs into
+    ``EvidencePassage.source_url``, which produced verified snapshots
+    production could not legitimately emit. Origin URLs are never cycled into
+    a passage here, and a non-independent verification URL is rejected
+    outright rather than left for a downstream gate to notice.
+
+    Passages are built by cycling ``verification_urls`` over the given
+    ``evidence`` (``supports``) and ``contradictions`` (``contradicts``)
+    excerpts, so the excerpts and the URLs that carry them are supplied
+    together.
+    """
+    source_urls = list(urls)
+    verification = list(verification_urls)
+    support_texts = list(evidence)
+    contradiction_texts = list(contradictions)
+    if verdict in {"verified", "unverified"} and not support_texts:
+        support_texts = ["Case fixture evidence."]
+    # The guard belongs to building a passage, not to the verdict's class:
+    # both loops below cycle ``verification_urls`` with ``index % len(...)``,
+    # so a claim of ANY verdict that carries an excerpt and no verification URL
+    # raises ``ZeroDivisionError`` at import time. That is a collection error,
+    # so the verdict and passage invariants that would have caught the
+    # malformed fixture never get to run, and a typo'd verdict is the
+    # realistic trigger.
+    if (support_texts or contradiction_texts) and not verification:
+        raise CaseRegistryError(
+            f"a {verdict!r} claim fixture must supply explicit "
+            "verification_urls; its origin source_urls are not "
+            "independent verification"
+        )
+    if verdict in EVIDENCE_BEARING_VERDICTS:
+        claimed = {
+            publisher.casefold() for publisher in claimed_domains_for(source_urls)
+        }
+        shared = [
+            url
+            for url in verification
+            if publisher_identity(url).casefold() in claimed
+        ]
+        if shared:
+            raise CaseRegistryError(
+                "a claim's verification passage cites one of its own "
+                f"publishers: {', '.join(shared)}"
+            )
+    passages: list[EvidencePassage] = []
+    for index, excerpt in enumerate(support_texts):
+        passages.append(
+            EvidencePassage(
+                source_url=verification[index % len(verification)],
+                source_title="Case fixture evidence",
+                locator=f"support-{index + 1}",
+                excerpt=excerpt,
+                stance="supports",
+            )
+        )
+    for index, excerpt in enumerate(contradiction_texts):
+        passages.append(
+            EvidencePassage(
+                source_url=verification[index % len(verification)],
+                source_title="Case fixture evidence",
+                locator=f"contradiction-{index + 1}",
+                excerpt=excerpt,
+                stance="contradicts",
+            )
+        )
     return Claim(
+        claim_id=claim_fingerprint(text),
         text=text,
-        source_urls=list(urls),
+        source_urls=source_urls,
         verdict=verdict,
         confidence=confidence,
-        evidence=list(evidence),
-        contradictions=list(contradictions),
+        evidence=support_texts,
+        contradictions=contradiction_texts,
+        verification_evidence=passages,
     )
 
 
@@ -152,7 +248,20 @@ def evaluation_state(
     return ResearchState(
         session_id=f"evaluation-{case_id}",
         original_question=question,
-        sub_topics=list(sub_topics),
+        # A curated plain tuple of sub-topics with duplicate titles would
+        # collide in a coverage report, so the planner ids are stamped here,
+        # exactly as ``PlannerAgent`` stamps the ids it plans: ordered by
+        # priority first, ``topic-01`` on the most important sub-topic, so an
+        # id always carries a priority position rather than the position the
+        # case author happened to write. ``sorted`` is stable, so equal
+        # priorities keep the order the author supplied.
+        sub_topics=[
+            item.model_copy(update={"coverage_id": coverage_id_for(position)})
+            for position, item in enumerate(
+                sorted(sub_topics, key=lambda sub_topic: sub_topic.priority),
+                start=1,
+            )
+        ],
         raw_findings=list(findings),
         evaluated_sources=list(sources),
         verified_claims=list(claims),

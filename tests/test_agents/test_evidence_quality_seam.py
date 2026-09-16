@@ -16,6 +16,7 @@ from deep_research.agents.fact_checker import (
     ClaimDraft,
     ClaimsDraft,
     ClaimVerdictDraft,
+    EvidencePassageDraft,
     FactCheckerAgent,
 )
 from deep_research.agents.researcher import (
@@ -56,6 +57,7 @@ def _state() -> ResearchState:
         original_question="How mature is quantum error correction?",
         sub_topics=[
             SubTopic(
+                coverage_id="topic-01",
                 title="Alpha",
                 rationale="Alpha is load-bearing.",
                 search_queries=["alpha 2025"],
@@ -140,7 +142,8 @@ async def test_findings_flow_through_scoring_into_verified_claims(
         outcome = await evaluator.run(state)
     state = merge_research_state(state, outcome.state_update)
 
-    # Every source behind a finding is scored, keyed by its canonical URL.
+    # Every source behind a finding has a scored assessment or explicit status,
+    # keyed by its canonical URL.
     assert [source.url for source in state.evaluated_sources] == [SOURCE_URL]
     assert state.evaluated_sources[0].low_confidence is False
     assert 0.0 <= state.evaluated_sources[0].overall_score <= 1.0
@@ -152,6 +155,11 @@ async def test_findings_flow_through_scoring_into_verified_claims(
                     "Find an independent source.",
                     "web_search",
                     '{"query": "break-even 2025"}',
+                ),
+                use_tool(
+                    "Read the independent source before judging the claim.",
+                    "web_scraper",
+                    f'{{"url": "{INDEPENDENT_URL}"}}',
                 ),
                 finish("I have independent material.", "Checked."),
             ],
@@ -167,8 +175,17 @@ async def test_findings_flow_through_scoring_into_verified_claims(
                 ClaimVerdictDraft(
                     verdict="verified",
                     confidence=0.85,
-                    evidence=["An unrelated review reports the same result."],
-                    contradictions=[],
+                    passages=[
+                        EvidencePassageDraft(
+                            source_url=INDEPENDENT_URL,
+                            source_title="Independent review",
+                            locator="p. 2",
+                            excerpt=(
+                                "An unrelated review reports the same result."
+                            ),
+                            stance="supports",
+                        )
+                    ],
                 ),
             ],
         ),

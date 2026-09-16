@@ -22,7 +22,12 @@ from deep_research.observability.metrics import (
     TokenUsageMetric,
     ToolMetric,
 )
-from deep_research.observability.tracker import Tracker
+from deep_research.observability.tracker import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseError,
+    ProviderResponseTelemetry,
+)
 from deep_research.tools.base import ToolExecutionError
 from deep_research.utils.types import ResearchEvent
 
@@ -120,6 +125,69 @@ async def test_remote_tool_span_completion_preserves_structured_error_type() -> 
         and event.metadata["span_kind"] == "tool"
     )
     assert completed_tool_event.metadata["error_type"] == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_remote_span_exit_keeps_the_redacted_provider_error_type() -> None:
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=trace_factory,
+    )
+
+    with pytest.raises(ProviderResponseError):
+        async with tracker.session_span("session-1", "question"):
+            raise ProviderResponseError(
+                "Provider request failed for key secret-key",
+                failure_origin="sdk",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+            )
+
+    exc_type, exc_value, _ = trace_factory.managers[0].exit_calls[-1]
+    assert exc_type is ProviderResponseError
+    assert isinstance(exc_value, ProviderResponseError)
+    assert exc_value.failure_origin == "sdk"
+    assert exc_value.retryable is True
+    assert exc_value.http_status_code == 503
+    assert "secret-key" not in str(exc_value)
+    assert "[REDACTED]" in str(exc_value)
+
+
+@pytest.mark.asyncio
+async def test_remote_span_exit_keeps_the_redacted_output_limit_type() -> None:
+    trace_factory = RecordingTraceFactory()
+    tracker = Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=True,
+            project="deep-research-tests",
+            api_key="secret-key",
+        ),
+        client_factory=lambda **kwargs: object(),
+        trace_factory=trace_factory,
+    )
+    telemetry = ProviderResponseTelemetry(
+        finish_reason_category="length",
+        configured_max_tokens=512,
+        usage=TokenUsage(input_tokens=40, output_tokens=512),
+        request_attempt=1,
+    )
+
+    with pytest.raises(ProviderOutputLimitError):
+        async with tracker.session_span("session-1", "question"):
+            raise ProviderOutputLimitError(telemetry)
+
+    exc_type, exc_value, _ = trace_factory.managers[0].exit_calls[-1]
+    assert exc_type is ProviderOutputLimitError
+    assert isinstance(exc_value, ProviderOutputLimitError)
+    assert exc_value.telemetry == telemetry
+    assert str(exc_value) == ProviderOutputLimitError.SAFE_MESSAGE
 
 
 @pytest.mark.asyncio
@@ -1434,3 +1502,81 @@ async def test_memory_span_rejects_invalid_memory_layer_before_entering_body() -
 
     assert body_entered is False
     assert not any(metric.metric_type == "memory" for metric in tracker.metrics)
+
+
+def _only_token_metric(tracker: Tracker) -> TokenUsageMetric:
+    metrics = [
+        metric for metric in tracker.metrics if isinstance(metric, TokenUsageMetric)
+    ]
+    assert len(metrics) == 1
+    return metrics[0]
+
+
+@pytest.mark.asyncio
+async def test_llm_span_copies_only_the_attempt_ledger_into_its_metric() -> None:
+    """The metric carries the two ledger scalars and none of the span text."""
+    sentinel = "sentinel-provider-payload"
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+
+    async with tracker.session_span("session-1", "question"):
+        async with tracker.llm_span(
+            "gpt-4o",
+            {
+                "operation": "structured_output",
+                "attempt": 2,
+                "prompt": sentinel,
+                "arguments": {"tool_input": sentinel},
+            },
+        ) as llm:
+            llm.set_token_usage(input_tokens=3, output_tokens=2)
+            llm.set_outputs({"response": sentinel})
+
+    metric = _only_token_metric(tracker)
+    assert metric.operation == "structured_output"
+    assert metric.structured_attempt == 2
+    serialized = metric.model_dump_json()
+    assert sentinel not in serialized
+    assert "prompt" not in serialized
+    assert "arguments" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_llm_span_without_a_ledger_records_no_attempt() -> None:
+    tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False))
+
+    async with tracker.session_span("session-1", "question"):
+        async with tracker.llm_span("gpt-4o", {"prompt": "plan"}):
+            pass
+
+    metric = _only_token_metric(tracker)
+    assert metric.operation is None
+    assert metric.structured_attempt is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        {"operation": "judge"},
+        {"operation": "structured_output", "attempt": 0},
+        {"operation": "structured_output", "attempt": 3},
+        {"operation": "structured_output", "attempt": "1"},
+    ],
+)
+async def test_llm_span_rejects_an_unusable_attempt_ledger(
+    inputs: dict[str, Any],
+) -> None:
+    tracker = Tracker(
+        LangSmithRuntimeConfig(tracing_enabled=False),
+        client_factory=ForbiddenClientFactory(),
+        trace_factory=ForbiddenTraceFactory(),
+    )
+    body_entered = False
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ValidationError):
+            async with tracker.llm_span("gpt-4o", inputs):
+                body_entered = True
+
+    assert body_entered is False
+    assert not any(isinstance(metric, TokenUsageMetric) for metric in tracker.metrics)

@@ -19,20 +19,28 @@ from deep_research.providers.capabilities import resolve_request_settings
 from deep_research.providers.contracts import (
     ChatMessage,
     ChatResult,
+    NativeToolCall,
+    NativeToolTurn,
     OpenAIProviderError,
     ProviderConfigurationError,
+    ProviderError,
+    ProviderOutputLimitError,
     ProviderRateLimitError,
     ProviderResponseError,
+    ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
     StructuredValidationDiagnostic,
+    ToolDefinition,
 )
+from deep_research.providers.native_output import native_text_violation
 from deep_research.providers.retry import with_retries
 from deep_research.providers.validation import (
     validation_diagnostic,
     validation_diagnostic_from_text,
     validation_summary,
 )
+from deep_research.request_budget import RequestBudget
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -115,7 +123,10 @@ def _usage_from_response(response: Any) -> TokenUsage:
         or not isinstance(output_tokens, int)
         or output_tokens < 0
     ):
-        raise ProviderResponseError("OpenAI response contained malformed usage")
+        raise ProviderResponseError(
+     "OpenAI response contained malformed usage",
+     failure_origin="local_response",
+ )
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -138,27 +149,187 @@ def _set_span_result(span: Any, response: Any, usage: TokenUsage) -> None:
     )
 
 
-def _raise_provider_error(error: Exception) -> None:
+def _translate_provider_error(error: Exception) -> ProviderError:
+    """Translate SDK operational failures to safe typed provider errors.
+
+    Returns a fresh project error instead of raising it, so this frame never
+    lands on the new error's traceback holding the SDK exception as a
+    parameter local -- a disclosure path that survives ``with_retries``
+    clearing ``__cause__`` and ``__context__``.
+    """
     sdk = _openai_errors()
     if isinstance(error, sdk.APITimeoutError):
-        raise ProviderTimeoutError("OpenAI request timed out") from error
+        return ProviderTimeoutError("OpenAI request timed out")
     if isinstance(error, sdk.RateLimitError):
-        raise ProviderRateLimitError("OpenAI rate limit exceeded") from error
+        return ProviderRateLimitError("OpenAI rate limit exceeded")
     if isinstance(error, sdk.APIConnectionError):
-        raise ProviderResponseError(
+        return ProviderResponseError(
             "OpenAI connection failed",
+            failure_origin="sdk",
             retryable=True,
             failure_category="transport",
-        ) from error
+        )
     if isinstance(error, sdk.APIStatusError):
         status = error.status_code
-        raise ProviderResponseError(
+        return ProviderResponseError(
             f"OpenAI request failed with status {status}",
+            failure_origin="sdk",
             retryable=status >= 500 or status in (408, 409),
             failure_category="http",
             http_status_code=status,
-        ) from error
-    raise error
+        )
+    # Unreachable while every call site catches exactly the four SDK types
+    # handled above. Fail loudly rather than invent a category for a type
+    # whose public semantics nobody has decided.
+    raise AssertionError("untranslated OpenAI SDK error type")
+
+
+def _fresh_provider_error(error: ProviderResponseError) -> ProviderResponseError:
+    """A copy of a typed rejection carrying no traceback and no chain.
+
+    Re-raising the caught object would keep its original traceback, whose
+    frames still reference the raw response. A new instance carries only the
+    static project-authored message.
+    """
+    return ProviderResponseError(
+        str(error),
+        failure_origin=error.failure_origin,
+        retryable=error.retryable,
+        failure_category=error.failure_category,
+        http_status_code=error.http_status_code,
+    )
+
+
+# The only Responses output item types this boundary understands. Reasoning is
+# stepped over, ``function_call`` may select a tool, and ``message`` is the
+# ordinary final-answer envelope. Anything else -- a server-side tool call, a
+# function-call result, an image, a file search -- is a shape whose execution
+# semantics this provider cannot see and must therefore refuse rather than
+# ignore.
+ALLOWED_OUTPUT_ITEM_TYPES = frozenset({"reasoning", "function_call", "message"})
+
+
+def _native_response_outcome(
+    response: Any,
+    *,
+    allowed: set[str],
+    usage: TokenUsage,
+    configured_max_tokens: int,
+    request_attempt: int,
+) -> tuple[tuple[NativeToolCall, ...], str | None, ProviderError | None]:
+    """Read every Responses function call, or one non-blank final answer.
+
+    Returns ``(tool_calls, final_answer, failure)`` with at most one of the last
+    two set. This never raises, so the caller can clear its own
+    provider-adjacent locals before a rejection becomes a public error whose
+    traceback would otherwise retain the raw response.
+
+    Reasoning items are stepped over by type and never read, retained, or
+    traced. Only a typed ``function_call`` item can select a tool, so tool
+    markup in ordinary text cannot request execution -- and, because
+    ``output_text`` is shape-checked, it cannot pass as a final answer either.
+
+    Only three item types are understood: ``reasoning``, ``function_call``, and
+    ``message``. Every other type is rejected rather than filtered away,
+    because silently dropping an item would answer a question this boundary
+    cannot see -- a server-side tool execution would look exactly like a plain
+    function call.
+
+    Several ``function_call`` items in one response are accepted, and each is
+    validated exactly as a lone call is. Requiring exactly one discarded whole
+    turns in live traffic; the DeepSeek transport carried the identical rule
+    and the same defect.
+    """
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        incomplete = getattr(response, "incomplete_details", None)
+        reason = (
+            getattr(incomplete, "reason", None) if incomplete is not None else None
+        )
+        if reason == "max_output_tokens":
+            return (
+                (),
+                None,
+                ProviderOutputLimitError(
+                    ProviderResponseTelemetry(
+                        finish_reason_category="length",
+                        configured_max_tokens=configured_max_tokens,
+                        usage=usage,
+                        request_attempt=request_attempt,
+                    )
+                ),
+            )
+        return (), None, ProviderResponseError(
+            "OpenAI response did not complete",
+            failure_origin="local_response",
+        )
+    if status != "completed":
+        return (), None, ProviderResponseError(
+            "OpenAI response did not complete",
+            failure_origin="local_response",
+        )
+
+    output = getattr(response, "output", None)
+    if output is None:
+        items: Sequence[Any] = ()
+    elif isinstance(output, (list, tuple)):
+        items = output
+    else:
+        return (), None, ProviderResponseError(
+            "OpenAI response contained malformed output",
+            failure_origin="local_response",
+        )
+    for item in items:
+        if getattr(item, "type", None) not in ALLOWED_OUTPUT_ITEM_TYPES:
+            return (), None, ProviderResponseError(
+                "OpenAI response contained an unknown output item",
+                failure_origin="local_response",
+            )
+    calls = [item for item in items if getattr(item, "type", None) == "function_call"]
+    answers = [item for item in items if getattr(item, "type", None) == "message"]
+    output_text = getattr(response, "output_text", None)
+    text = output_text.strip() if isinstance(output_text, str) else ""
+
+    if calls:
+        # A call beside an answer item is incoherent even when ``output_text``
+        # is empty: one of the two would have to be silently discarded.
+        if text or answers:
+            return (), None, ProviderResponseError(
+                "OpenAI native tool response mixed a final answer with a tool call",
+                failure_origin="local_response",
+            )
+        selected: list[NativeToolCall] = []
+        for call in calls:
+            name = getattr(call, "name", None)
+            if not isinstance(name, str) or name not in allowed:
+                return (), None, ProviderResponseError(
+                    "OpenAI native tool response named an unavailable tool",
+                    failure_origin="local_response",
+                )
+            arguments = getattr(call, "arguments", None)
+            if not isinstance(arguments, str) or not arguments.strip():
+                return (), None, ProviderResponseError(
+                    "OpenAI native tool response carried malformed arguments",
+                    failure_origin="local_response",
+                )
+            selected.append(
+                NativeToolCall(tool_name=name, arguments_json=arguments)
+            )
+        return tuple(selected), None, None
+
+    if not text:
+        return (), None, ProviderResponseError(
+            "OpenAI native tool response carried no usable final answer",
+            failure_origin="local_response",
+        )
+    violation = native_text_violation(text)
+    if violation is not None:
+        return (), None, ProviderResponseError(
+            "OpenAI native tool response carried tool protocol text as its "
+            f"final answer ({violation})",
+            failure_origin="local_response",
+        )
+    return (), text, None
 
 
 class _StructuredValidationFailure(RuntimeError):
@@ -181,11 +352,51 @@ class OpenAIChatProvider:
         *,
         api_key: str | None = None,
         client: Any | None = None,
+        request_budget: RequestBudget | None = None,
     ) -> None:
         self._config = config
         self._tracker = tracker
         self._client = _build_client(config, api_key=api_key, client=client)
+        self._request_budget = request_budget
         self._last_model_returned: str | None = None
+
+    def _reserve_attempt(self) -> None:
+        """Reserve one OpenAI transport attempt before any network I/O.
+
+        Called from *inside* the retried operation, because each retry is a
+        real outbound request: reserving once outside the retry wrapper would
+        under-count a run's attempts by up to its retry count. The refusal
+        therefore also sits outside SDK exception translation, so a
+        :class:`~deep_research.request_budget.RequestAttemptLimitError` -- a
+        hard run boundary -- escapes instead of being rewritten into an
+        ordinary, retryable provider error.
+
+        A ``None`` budget reserves nothing: this is today's uncounted
+        behaviour, and every existing caller keeps it.
+        """
+        budget = self._request_budget
+        if budget is None:
+            return
+        budget.reserve("openai")
+
+    def _record_tokens(self, usage: TokenUsage) -> None:
+        """Record reported usage, and only for a response that arrived.
+
+        Never called for a transport failure, and never for a response whose
+        usage failed to parse: a token figure invented after a failed call
+        would report spend that did not happen and hide spend that did. An SDK
+        ``responses.parse`` validation exception returns no response at all,
+        so it consumes an attempt and reports no tokens -- there is nothing to
+        measure, and zero is only honest because nothing is added.
+        """
+        budget = self._request_budget
+        if budget is None:
+            return
+        budget.record_tokens(
+            "openai",
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+        )
 
     @property
     def last_model_returned(self) -> str | None:
@@ -250,6 +461,7 @@ class OpenAIChatProvider:
                 _sdk = _openai_errors()
 
                 async def _request() -> Any:
+                    self._reserve_attempt()
                     try:
                         return await self._client.responses.create(
                             **{**request, "input": payload}
@@ -260,10 +472,11 @@ class OpenAIChatProvider:
                         _sdk.APIConnectionError,
                         _sdk.APIStatusError,
                     ) as error:
-                        _raise_provider_error(error)
+                        raise _translate_provider_error(error)
                     except _sdk.OpenAIError as error:
                         raise ProviderResponseError(
-                            "OpenAI chat request failed"
+                            "OpenAI chat request failed",
+                            failure_origin="sdk",
                         ) from error
 
                 response = await with_retries(
@@ -272,17 +485,23 @@ class OpenAIChatProvider:
                     initial_delay=self._config.retry_initial_delay,
                     max_delay=self._config.retry_max_delay,
                 )
+                # Usage is parsed and recorded as soon as a response exists, so
+                # spend the provider really reported is counted even when the
+                # response is then rejected locally for its output.
+                usage = _usage_from_response(response)
+                self._record_tokens(usage)
                 output_text = getattr(response, "output_text", None)
                 if not isinstance(output_text, str):
                     raise ProviderResponseError(
-                        "OpenAI response did not contain text output"
+                        "OpenAI response did not contain text output",
+                        failure_origin="local_response",
                     )
                 text = output_text.strip()
                 if not text:
                     raise ProviderResponseError(
-                        "OpenAI response did not contain text output"
+                        "OpenAI response did not contain text output",
+                        failure_origin="local_response",
                     )
-                usage = _usage_from_response(response)
                 _set_span_result(span, response, usage)
                 self._last_model_returned = (
                     getattr(response, "model", None) or effective.model
@@ -314,6 +533,7 @@ class OpenAIChatProvider:
             _sdk = _openai_errors()
 
             async def _request() -> Any:
+                self._reserve_attempt()
                 try:
                     return await self._client.responses.parse(
                         **{**request, "input": payload, "text_format": schema}
@@ -324,10 +544,11 @@ class OpenAIChatProvider:
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
                 ) as error:
-                    _raise_provider_error(error)
+                    raise _translate_provider_error(error)
                 except _sdk.OpenAIError as error:
                     raise ProviderResponseError(
-                        "OpenAI structured output request failed"
+                        "OpenAI structured output request failed",
+                        failure_origin="sdk",
                     ) from error
                 except ValidationError as error:
                     raise _StructuredValidationFailure(
@@ -344,6 +565,7 @@ class OpenAIChatProvider:
                 max_delay=self._config.retry_max_delay,
             )
             usage = _usage_from_response(response)
+            self._record_tokens(usage)
             _set_span_result(span, response, usage)
             parsed = getattr(response, "output_parsed", None)
             if not isinstance(parsed, schema):
@@ -357,6 +579,138 @@ class OpenAIChatProvider:
                 ) from None
             self._last_model_returned = getattr(response, "model", None) or model
             return parsed
+
+    async def complete_react(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> NativeToolTurn:
+        """One native ReAct turn: a provider tool call or a final answer.
+
+        Offline parity with the DeepSeek boundary, on Responses' native
+        function-tool representation. Reasoning output items are ignored and
+        never retained; only a typed ``function_call`` item can select a tool.
+        There is no structured output and no repair here.
+        """
+        if not messages:
+            raise ValueError("messages must contain at least one item")
+        if not tools:
+            raise ValueError("tools must contain at least one item")
+        resolved_max_tokens = _resolve_max_tokens(
+            self._config.max_tokens, max_tokens
+        )
+        effective, request, metadata = self._request_options(agent_name)
+        request = {**request, "max_output_tokens": resolved_max_tokens}
+        payload = [message.model_dump(mode="json") for message in messages]
+        allowed = {definition.name for definition in tools}
+        request_attempt = 0
+        async with self._tracker.llm_span(
+            effective.model,
+            {
+                **metadata,
+                "operation": "react_tool_turn",
+                "message_count": len(payload),
+                "tool_count": len(tools),
+            },
+        ) as span:
+            _sdk = _openai_errors()
+
+            async def _request() -> Any:
+                nonlocal request_attempt
+                # The reservation comes first so this existing local counter --
+                # the one the telemetry reports -- counts only attempts the
+                # budget actually permitted, rather than attempts requested.
+                self._reserve_attempt()
+                request_attempt += 1
+                try:
+                    return await self._client.responses.create(
+                        **{
+                            **request,
+                            "input": payload,
+                            "tools": [
+                                {
+                                    "type": "function",
+                                    "name": definition.name,
+                                    "description": definition.description,
+                                    "parameters": definition.parameters,
+                                }
+                                for definition in tools
+                            ],
+                            "tool_choice": "auto",
+                        }
+                    )
+                except (
+                    _sdk.APITimeoutError,
+                    _sdk.RateLimitError,
+                    _sdk.APIConnectionError,
+                    _sdk.APIStatusError,
+                ) as error:
+                    raise _translate_provider_error(error)
+                except _sdk.OpenAIError as error:
+                    raise ProviderResponseError(
+                        "OpenAI native tool request failed",
+                        failure_origin="sdk",
+                    ) from error
+
+            response = await with_retries(
+                _request,
+                retry_count=self._config.retry_count,
+                initial_delay=self._config.retry_initial_delay,
+                max_delay=self._config.retry_max_delay,
+            )
+            usage: TokenUsage | None = None
+            tool_calls: tuple[NativeToolCall, ...] = ()
+            final_answer: str | None = None
+            failure: ProviderError | None = None
+            try:
+                usage = _usage_from_response(response)
+            except ProviderResponseError as error:
+                # A malformed usage shape is rejected *before* the clearing
+                # block below, so the rejection has to be replaced with a
+                # traceback-free copy: re-raising the caught object would keep
+                # the frames that still hold the raw response.
+                failure = _fresh_provider_error(error)
+            if failure is None:
+                self._record_tokens(usage)
+                _set_span_result(span, response, usage)
+                tool_calls, final_answer, failure = _native_response_outcome(
+                    response,
+                    allowed=allowed,
+                    usage=usage,
+                    configured_max_tokens=resolved_max_tokens,
+                    request_attempt=request_attempt,
+                )
+            if failure is None:
+                self._last_model_returned = (
+                    getattr(response, "model", None) or effective.model
+                )
+                return NativeToolTurn(
+                    model=effective.model,
+                    usage=usage,
+                    tool_calls=tool_calls,
+                    final_answer=final_answer,
+                )
+
+            # Do not raise while holding provider-adjacent locals: the public
+            # error's traceback would otherwise retain the raw response,
+            # including reasoning items. ``complete_structured`` clears its
+            # locals for the same reason.
+            response = None
+            payload = []
+            request = {}
+            metadata = {}
+            messages = ()
+            tools = ()
+            allowed = set()
+            effective = None
+            agent_name = None
+            usage = TokenUsage()
+            tool_calls = ()
+            final_answer = None
+            raise failure
 
     async def complete_structured(
         self,
@@ -410,8 +764,10 @@ class OpenAIChatProvider:
         if final_error is None:
             raise AssertionError("structured output attempt loop did not return")
 
-        # Raise outside the validation handler so the public error cannot retain
-        # provider-bearing exception context or prompt-bearing locals.
+        # Do not raise while handling the internal validation failure: that
+        # would retain it through ``__context__``/``__cause__``. Clear all
+        # provider-adjacent locals before the public error's traceback is
+        # captured, leaving only the bounded typed diagnostics.
         self = None
         messages = ()
         current_messages = []

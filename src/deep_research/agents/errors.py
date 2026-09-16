@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import JsonValue
 
+from deep_research.providers import ProviderError, provider_failure_snapshot
 from deep_research.utils.types import ResearchError
 
 
@@ -40,13 +41,27 @@ class PlanningError(AgentError):
 PlanningOperation = Literal["react_decision", "plan_draft", "react_loop"]
 
 
-def planning_provider_error(operation: PlanningOperation) -> PlanningError:
-    """Return static operation context for a provider failure."""
+def planning_provider_error(
+    operation: PlanningOperation,
+    *,
+    problems: Sequence[str] = (),
+) -> PlanningError:
+    """Return static operation context for a provider failure.
+
+    ``problems`` appends caller-supplied lines to the static one. Callers
+    pass only project-authored strings — the bounded validation diagnostic,
+    never provider text — so the whole tuple stays safe to log and publish.
+    Both the message and the static problem are byte-identical to the
+    no-argument form.
+    """
     if operation == "react_decision":
         return PlanningError(
             "The planner could not produce a scoping decision because the "
             "model provider operation failed.",
-            problems=("the planner provider failed during a ReAct decision",),
+            problems=(
+                "the planner provider failed during a ReAct decision",
+                *problems,
+            ),
             operation=operation,
         )
     if operation == "plan_draft":
@@ -55,12 +70,16 @@ def planning_provider_error(operation: PlanningOperation) -> PlanningError:
             "the model provider operation failed.",
             problems=(
                 "the planner provider failed while requesting the final plan draft",
+                *problems,
             ),
             operation=operation,
         )
     return PlanningError(
         "The planner scoping phase stopped before a decision was available.",
-        problems=("the planner scoping phase stopped before a decision",),
+        problems=(
+            "the planner scoping phase stopped before a decision",
+            *problems,
+        ),
         operation=operation,
     )
 
@@ -88,3 +107,21 @@ def agent_error(
         recoverable=recoverable,
         details=dict(details or {}),
     )
+
+
+def agent_provider_failure_details(
+    operation: str,
+    error: ProviderError,
+    **extra: JsonValue,
+) -> dict[str, JsonValue]:
+    """Build safe JSON details for a provider failure caught by an agent."""
+    if not operation.strip():
+        raise ValueError("operation must not be blank")
+    if {"provider_failure", "exception_type"}.intersection(extra):
+        raise ValueError("extra contains reserved provider failure detail keys")
+    snapshot = provider_failure_snapshot(error)
+    return {
+        "operation": operation.strip(),
+        "provider_failure": snapshot.model_dump(mode="json"),
+        **extra,
+    }

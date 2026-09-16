@@ -15,6 +15,72 @@
 - `docs/superpowers/plans/2026-08-24-planner-controlled-evaluation-improvement.md`
 - Current `obra/superpowers` `brainstorming`, `writing-plans`, and `subagent-driven-development` skills as of 2026-09-08.
 
+## Current Execution Status (Updated 2026-09-10)
+
+This table is the authoritative task bookkeeping for the remote branch `codex/cross-agent-planner-fix-parity`. “Complete” requires implementation evidence plus the required task-scoped review; “not complete” means the task must not be represented as finished merely because its brief or offline preparation exists.
+
+| Task | Status | Evidence / remaining work |
+| --- | --- | --- |
+| 1. Isolated SDD campaign and known-good base | **Complete** | Worktree/ledger initialized; editable-install provenance and offline baseline recorded. |
+| 2. Shared ReAct boundary normalization | **Complete** | Commit `66340a4`; RED/GREEN focused tests, neighboring tests, Ruff, and diff checks; Luna Max review approved. |
+| 3. Planner wrapper removal and cross-agent ReAct parity | **Complete** | Commit `45178ab`; parity/provider-identity regressions and task review approved. |
+| 4. Safe provider-failure snapshot | **Complete** | Commits `c4e3fee` through `9349166`, plus export fix `808cfba`; two reviewed fix rounds resolved the Important findings. |
+| 5. Non-Planner fallback diagnostic wiring | **Complete** | Commit `0c9c0ec`; focused, agent, evaluation, Ruff, and diff checks; Luna Max review approved. |
+| 6. Evaluation artifact-boundary preservation | **Complete** | Commit `2fbf6be`; test-only boundary guard; Luna Max review approved. |
+| 7. Source Evaluator/Synthesizer non-ReAct characterization | **Complete** | Commit `91d817b`; characterization tests; Luna Max review approved. |
+| 8. Offline integration gate | **Complete** | Candidate `808cfba`; focused `690` passed and full offline `1,895` passed; task review approved. |
+| 9. Offline typed evaluation telemetry contract | **Complete** | Commit `a763cda`; focused/evaluation/full-offline tests, exact local inventory acceptance/rejection proof, lint/diff checks, and fresh Luna-max review approved. |
+| 10. Immutable controlled baselines | **Complete — five agents terminal-blocked after confirmation** | At candidate `d6a082c`, all five agents completed immutable 3-case × 3-repetition baselines and same-SHA confirmations. Windows preflight passed; typed judge/provider failures persisted, so each agent has `INFRASTRUCTURE_BLOCKED`, `repair_attempts: 0`, safe inventories, and a terminal record. |
+| 11. Evidence-gated output-budget repair | **Not started / not applicable** | Requires typed Task 10 target-side `output_limit` evidence; none exists. |
+| 12. Evidence-gated agent quality/trajectory repair | **Complete — repairs and integration correction; judge no-change decision** | Commits `7c58abc`, `12f9ebe`, `b7c2500`, and `8271dbc` repair cross-channel `required_fields_present`, typed Critic provider-fallback routing, Critic ReAct context wiring, and the package export-surface regression. Typed judge diagnostics split between `$` and `rationale`, so no judge/provider repair is justified without a repeatable contract failure. |
+| 13. Full controlled validation | **Complete — five repaired agents terminal-blocked after confirmation** | Candidate `1f790b0` completed fresh baseline/confirmation pairs for all five agents in `infrastructure-remediation/1f790b0-v1/`; all 90 repetitions completed, repaired hard gates held where applicable, and shared judge/provider failures remained typed. No live or suite command ran. |
+| 14. Permanent cross-agent fix log | **Complete — post-repair evidence recorded** | Fix log section 23 records all five fresh result hashes, gate counts, typed failures, provenance-capture errors/fixes, terminal states, and the no-budget/no-new-repair decisions. |
+| 15. Final offline verification and whole-branch review | **Complete — current packaging follow-ups open** | Post-a95262f recorded full offline suite `1,980 passed, 1 deselected, 2 warnings`, Ruff passed, and `git diff --check` passed. The later scoped Sol High review at `77bfd3d` found no Critical finding, but the package remains not ready until the tracked scratch reports are removed and the supported Critic evaluator candidate is repaired and re-verified. |
+| 16. Controlled scenario-miss contract repair | **Complete — reviewed** | Commits `d1ee97d` through `b99e88f`; separated scenario misses from prohibited dependency access, preserved fail-closed isolation and v1 evidence, and passed the Luna-max task review. |
+| 17. Judge telemetry and status-precedence repair | **Complete — reviewed** | Commits `b4d3704` through `2806c34`, plus OpenAI traceback fix `a95262f`; finite typed diagnostics, judge-only precedence, deterministic mixed-failure preservation, and DeepSeek/OpenAI traceback scrubbing passed focused/offline verification and current-HEAD Sol High review. |
+| 18. Judge boundary diagnosis | **Complete — no-change decision** | Candidate `c368849`; preserved artifacts show mixed judge field paths and intermittent judge-side output limits without a repeatable contract defect or target-side output-limit evidence. |
+| 19. Sequential live-agent diagnosis and repair loop | **Paused — Fact Checker diagnosis complete; repair wave reviewed; serialized Critic evaluator repair next** | The user-authorized Fact Checker evidence remains target-contract green (`15/15` hard gates, deterministic `1.00`) with a scorable below-threshold judge and fallback `react_decision` `output_limit`; Sol's review supports no Fact Checker production or budget change. Source Evaluator remains target-green but judge-blocked. Do not start another live run until the evaluator repair and offline gate are complete. |
+| 20. Researcher live provenance repair | **Confirmation complete — target gates pass; judge infrastructure blocked** | The post-repair Researcher repetition passed all 14 target hard gates and deterministic checks, while the judge failed typed structured-output validation twice at `rationale`. The result is preserved as infrastructure-blocked evidence, not a quality score; no Researcher prompt, budget, or provider change is justified. |
+| 21. Parallel evidence-driven repair wave | **Complete — Critic fix confirmed; judge/provider no-change; next live run paused** | Stream J completed the narrowly scoped DeepSeek adaptive repair with TDD. Streams F and S produced characterization-only evidence with no demonstrated target defect. Stream C's first repair was reviewed as too literal because it missed ordinary paraphrases; later Sol reviews found and corrected false positives for acknowledged durability language and sentence-level marker borrowing. Fix round 3 scopes unresolved evidence to comma/semicolon/colon-delimited clauses, with five production-path controls green. Sol High returned `PASS WITH FOLLOW-UP` for `c9f31ee..a08dbbd`, with no Critical or Important findings; the one-token-theme sensitivity remains deferred. J/F/S/C are integrated at `5763f8a`; the targeted offline gate is green. The post-fix Critic confirmation held `no_spurious_gaps=1.00` and all 14 gates; Sol classified `rationale_present=0.00` as the intentional Critic provider fallback and the judge failure as independent shared judge/provider instability. No target/evaluator repair, budget change, retry, or next-agent run is justified from this artifact. |
+| 22. Critic rationale-grounding characterization | **Complete — test-only; Sol High PASS; no live confirmation** | Parallel J-D/C-R/F-Q diagnosis found no repeatable judge/provider contract defect, confirmed normal Critic grounding `1.0` versus intentional provider fallback `0.0`, and found Fact Checker target-contract green with no independent deterministic defect. Commit `726cfe0` adds one production-shaped evaluator characterization test only. Focused `125` and full offline `2,006` tests passed; Ruff and diff checks passed. Sol High returned PASS for spec compliance and task quality with no findings. |
+| 23. Judge observability follow-up | **Complete — STOP / NO-CHANGE** | Fresh offline audit and Sol High architecture review confirmed that `JudgeFeedback` already preserves typed status, bounded diagnostics, prompt/schema fingerprint, model, rubric, configuration fingerprint, and trace metadata through artifact projection. No operation/fingerprint field is missing in a way that blocks diagnosis; adding duplicate telemetry would change the persisted artifact contract without resolving the observed failures. No source, test, budget, or live-run change is authorized. |
+
+The following boundaries remain active: the implementation-era `--tier live` prohibition was explicitly overridden for the two documented one-repetition evidence waves and the user-authorized sequential Task 19 loop; Task 9 remains network-zero; controlled calls require immediate per-command human authorization; no Task 10–13 result may be inferred from the absence of a Task 9 artifact; and no suite, prompt, or budget tuning is authorized without typed evidence and the per-agent Sol High review gate. The whole-branch review is complete at `6a01175` with a Ready-with-follow-ups assessment.
+
+### User-authorized live-evaluation amendment (2026-09-10)
+
+The user explicitly overrode the plan's implementation-era live prohibition after Task 17's offline review and requested the two documented live evidence waves for all six registered agents. Their typed diagnoses, LangSmith links, artifact paths, and SHA-256 values are recorded in the two live-evaluation reports and the permanent fix log. These amendments add evidence only; they do not authorize a live suite, a token-budget increase, prompt tuning, or a new repair. The whole-branch review was subsequently completed at `6a01175`.
+
+### User-authorized sequential live-agent repair amendment (2026-09-10)
+
+The user authorized a sequential follow-up loop after the two one-repetition live waves. The controller must process one agent completely before advancing: run one live repetition; preserve the repository-relative artifact path, hash, typed gates, judge status, diagnostics, and LangSmith link; classify target-agent defects separately from shared judge/provider failures; provide the exact current-branch evidence to Sol High in the existing browser session; implement only the smallest Sol-reviewed, typed-evidence-backed repair (or record a no-change decision); run the required offline tests and lint; then run one focused live confirmation for that same agent. A confirmation may not be treated as success if the judge is unscorable, and no later agent may start while the current agent's diagnosis, review, fix/no-change decision, verification, and evidence ledger are incomplete. No global or operation-specific token increase, prompt tuning, rubric/threshold/weight change, suite run, or retry is implied without a separate typed-evidence decision.
+
+### Sol High parallel repair amendment (2026-09-10)
+
+Sol High approved four parallel offline streams from the verified branch tip:
+
+- Stream J: implement the adaptive DeepSeek structured-output repair
+  instruction in the provider and its provider/judge TDD tests.
+- Stream F: diagnose the Fact Checker fallback/quality trajectory; the
+  `react_decision` fallback remains distinct from target-side output-limit
+  evidence and cannot authorize a budget change.
+- Stream S: identify and reproduce the exact typed Synthesizer metric before
+  any target change.
+- Stream C: identify and reproduce the exact typed Critic metric before any
+  target/evaluator change; the older `critic_report_review` fallback is not
+  projected onto the latest rerun.
+
+The stream briefs define exclusive writable surfaces. Workers must not edit
+shared evaluators, prompts, configuration, cases/rubrics/weights, or
+documentation. The coordinator integrates only reviewed work, runs one
+offline gate, obtains a scoped Sol High review, and only then considers one
+live confirmation per affected agent. Planner, Researcher, and Source Evaluator
+receive no new code stream in this wave.
+
+## Documentation and Error/Fix Ledger Requirement (Added 2026-09-10)
+
+Every repair wave must leave an auditable, secret-safe record of the errors and fixes used to restore the agents. Before and after each implementation or review attempt, update the ignored SDD ledger and the tracked permanent fix log with: the candidate SHA; the exact repository-relative files and tests involved; the observed typed error or failed gate; the classification and ruled-out alternatives; the smallest repair; the resulting commit; verification commands and counts; reviewer disposition; and any remaining blocker or next action. Preserve earlier failed artifacts and reports as immutable evidence; never overwrite, relabel, or delete them to make a later candidate appear successful. Do not record prompts, provider responses, evaluator inputs, hidden reasoning, raw exception messages, credentials, or environment dumps. A task cannot be marked complete until its error diagnosis, fix, review, and verification are recorded in both ledgers where applicable.
+
 ## Brainstorming Outcome
 
 This is an **architectural** change, not a bounded patch: the confirmed bug sits on a shared runtime boundary used by multiple agents, while provider-diagnostic and token-budget behavior crosses provider, runtime, evaluation, and agent-specific fallback interfaces.
@@ -55,6 +121,9 @@ The campaign is complete only when all of the following are true:
 - Every agent-specific source/prompt change is tied to one root-cause ID, has RED/GREEN offline evidence, a focused three-repetition controlled retest, and a reviewer gate before a full nine-repetition validation.
 - No controlled case, gate, rubric, evaluator, threshold, judge prompt, dependency script, or weight is changed to make an agent pass. A demonstrated harness defect stops agent tuning and moves to a separate approved harness plan.
 - The final full tracked offline suite and Ruff are green, and the final whole-branch review has no unresolved load-bearing findings.
+- Each of `researcher`, `source_evaluator`, `fact_checker`, `synthesizer`, and `critic` has either an immutable nine-repetition controlled result, an explicitly reused immutable passing baseline, or a documented terminal state of `INFRASTRUCTURE_BLOCKED`, `HARNESS_DEFECT_BLOCKED`, or `ESCALATED`; no agent is silently omitted.
+- Each non-Planner agent has a safe baseline-provenance record, a typed failure/quality diagnosis, stable root-cause IDs, reviewer-gated repair history, and a final terminal-state record even when no source repair is authorized.
+- The permanent fix log contains one evidence-only section for each of the five non-Planner agents, including environment/retry rulings, output-budget decisions, review resolutions, deferred/parked findings, immutable artifact paths, and the final terminal state.
 
 ## Global Constraints
 
@@ -70,7 +139,7 @@ The campaign is complete only when all of the following are true:
 - One implementer task gets a spec-compliance + code-quality review before the next task. Use a fresh reviewer. After all tasks, perform one broad whole-branch review with the most capable available model.
 - Batch only truly same-shape test additions. Do not batch tasks whose failures require different architectural judgment.
 - `pytest` and Ruff are offline. Controlled evaluation intentionally makes paid target-model, judge-model, and LangSmith calls.
-- Do not run any controlled provider command without immediate human authorization at the paid-call gate in the execution session. Do not run `--tier live` anywhere in this plan.
+- Do not run any controlled provider command without immediate human authorization at the paid-call gate in the execution session. The implementation-era plan prohibited `--tier live`; the later user-authorized live-evidence amendments are recorded separately and remain limited to the documented one-repetition waves.
 - Never run `python -m deep_research.evaluation suite` until each non-Planner agent has independently passed its own full controlled campaign or has a documented infrastructure-blocked terminal state.
 - Never print, commit, upload, or quote credentials, hidden chain-of-thought, raw provider payloads, unredacted exception strings, prompts, evaluator inputs, or provider reasoning content.
 - Use only typed artifacts, bounded trajectory summaries, safe events, safe provider diagnostics, gate IDs/details that are already allowed, concise judge rationale, and trace URLs directly supplied by LangSmith.
@@ -89,6 +158,9 @@ The campaign is complete only when all of the following are true:
 | `src/deep_research/agents/planner.py` | Remove `_DecisionNormalizingCompleter` and the temporary provider swap after the shared boundary is proven equivalent; retain Planner's operation-specific provider wrapping and final-plan budget. |
 | `src/deep_research/providers/contracts.py` | Define one finite, immutable, provider-content-free runtime snapshot for caught provider failures, built only from already-safe typed provider fields. |
 | `src/deep_research/agents/errors.py` | Convert a caught `ProviderError` plus a static operation name into JSON-safe `ResearchError.details` without `str(error)`. |
+| `src/deep_research/evaluation/models.py` | Own the additive bounded artifact-side telemetry types and `RepetitionResult` fields for Task 9. |
+| `src/deep_research/evaluation/evaluators.py` | Expose bounded deterministic metric details while preserving the existing scalar quality API and weighting. |
+| `src/deep_research/evaluation/runner.py` | Carry typed metric details and project the four safe telemetry fields into each repetition artifact. |
 
 ### Agent production files consuming the shared provider diagnostic
 
@@ -115,6 +187,10 @@ The campaign is complete only when all of the following are true:
 | `tests/test_deepseek_provider.py` | Provider snapshot compatibility with output-limit/schema telemetry if the snapshot is defined in provider contracts. |
 | `tests/test_openai_provider.py` | Generic provider-response/timeout/HTTP compatibility; no unsupported output-limit inference. |
 | `tests/test_evaluation/test_targets.py` | Prove fallback-producing agents remain `completed=True` when designed to return a result, while their `errors` retain safe typed diagnosis; Planner raised failures remain target `failure` records. |
+| `tests/test_evaluation/test_models.py` | Bounds, finite vocabulary, strict counts, and allow-listed fallback diagnostic contract tests for Task 9. |
+| `tests/test_evaluation/test_evaluators_general.py` | Deterministic metric-detail and scalar-compatibility tests for Task 9. |
+| `tests/test_evaluation/test_runner.py` | End-to-end local `TargetOutput` to `RepetitionResult` telemetry projection and leakage tests. |
+| `tests/test_evaluation/test_reporting.py` | Local artifact round-trip coverage for the additive telemetry fields. |
 | `tests/test_evaluation/test_factory.py` and `tests/test_runtime/test_assembly.py` | Preserve exact provider identity/parity after Planner-local wrapper removal. |
 | `tests/test_config.py` and `tests/test_evaluation/test_config.py` | Conditional only: operation-specific budget field + environment override + fingerprint when a controlled output-limit amendment authorizes one. |
 
@@ -124,7 +200,150 @@ The campaign is complete only when all of the following are true:
 | --- | --- |
 | `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/progress.md` | Ignored SDD recovery ledger, task completion, rulings, review findings, exact commits, provider-run gates, artifact paths, and next action. |
 | `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md` | Tracked final permanent record created only after implementation begins: confirmed transferable causes, changes, RED/GREEN commands, controlled evidence, and terminal state for each agent. |
-| `output/evaluations/<agent>/*/results.json` | Immutable per-agent controlled evidence; ignored, never committed. |
+| `output/evaluations/researcher/*/results.json` | Immutable Researcher controlled evidence; ignored, never committed. The other literal roots are `output/evaluations/source-evaluator/*/results.json`, `output/evaluations/fact-checker/*/results.json`, `output/evaluations/synthesizer/*/results.json`, and `output/evaluations/critic/*/results.json`; the experiment directory is resolved from the returned `experiment_name`. |
+
+### Post-gate per-agent campaign packets
+
+These ignored paths are created only after the Task 9 artifact gate and before Task 10. They are operational evidence, not source changes, and must never contain prompts, provider responses, evaluator inputs, secrets, hidden reasoning, or unredacted exception strings:
+
+| Path | Required contents and mutability rule |
+| --- | --- |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_provenance.py` | Offline-only helper that writes safe effective configuration, retry, environment-source, import, Python, branch, worktree, and Git provenance; it never prints or serializes credential values. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_inventory.py` | Offline-only helper that validates one `results.json`, extracts only the bounded inventory schema below, and refuses to overwrite an existing inventory file. It never copies prompts, provider output, evaluator input, or exception text. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/` | Exact packet root for Researcher evidence. The same packet filenames are used under the four other literal roots: `agents/source-evaluator/`, `agents/fact-checker/`, `agents/synthesizer/`, and `agents/critic/`. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-provenance.json` | One immutable record made before the Researcher baseline command. Do not overwrite it; a later same-SHA confirmation uses `confirmation-provenance.json`, and a shared-change rerun uses `invalidation-provenance.json`. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-inventory.json` | One strictly validated, typed, bounded three-case × three-repetition inventory for the Researcher baseline. Write once after the authoritative `results.json` is resolved; use the analogous filename under each other agent root. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/confirmation-provenance.json` | Immutable provenance for the one permitted same-SHA, same-effective-config infrastructure confirmation. Create it before that paid command and never reuse it for another command. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/confirmation-inventory.json` | Immutable safe inventory for a confirmation artifact when the confirmation completes enough to validate. It is supplemental evidence and never overwrites `baseline-inventory.json`. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/invalidation-provenance.json` | Immutable provenance for a rerun required because a shared production path changed after a prior agent result. It names the invalidating commit and affected path; it is not a replacement baseline. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/invalidation-inventory.json` | Immutable safe inventory for the shared-change invalidation run. The prior inventory remains preserved and is never relabeled as current evidence. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/root-causes/*.md` | One immutable Markdown record per literal root-cause ID. Each record contains counterevidence, typed failure class, exact operation, repair-attempt count, permitted files, focused case, predicted non-target invariants, rollback, and reviewer disposition. A new hypothesis gets a new filename. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/repairs/*/attempt-*-amendment.md` | One immutable literal repair amendment per root-cause attempt. It is written before any source edit and contains the exact RED test, GREEN command, candidate command, review gate, rollback condition, and expected status transition. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/reviews/*.md` | Fresh reviewer records with only these finding dispositions: `approved`, `needs-change`, `deferred-non-load-bearing`, or `blocked-infrastructure`; each finding has a resolution or an explicit stop. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/escalation.md` | Created only after the third unsuccessful focused attempt for the same root-cause ID. It contains all three hypotheses, commits, focused artifacts, deltas, evidence, and the human escalation decision; it is never created to disguise an infrastructure or harness block. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/terminal-state.md` | One final control-plane record naming the exact terminal state, harness status/exit code, authoritative artifact or reused baseline path, final candidate SHA, invalidations, deferred/parked findings, and next action. Use the same literal record under `source-evaluator`, `fact-checker`, `synthesizer`, and `critic`. |
+| `output/evaluations/researcher/*/results.json` | Immutable Researcher controlled artifacts written by the harness. The four other exact roots are `output/evaluations/source-evaluator/`, `output/evaluations/fact-checker/`, `output/evaluations/synthesizer/`, and `output/evaluations/critic/`; resolve the experiment directory from the literal `experiment_name` and never overwrite an existing `results.json`. |
+| `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/final-whole-branch-review-handoff.md` | Created only after all five agents have terminal-state records and final offline verification is green; the handoff package for the deferred broad review. It is not a review result. |
+
+Every packet path above is write-once. Before writing any file, run `Test-Path -LiteralPath` and stop if it already exists unless the step explicitly names that file as the current append target. The five literal packet roots are `researcher`, `source-evaluator`, `fact-checker`, `synthesizer`, and `critic`; no Planner packet is created by this campaign.
+
+The inventory helper must emit this exact field contract and no additional fields. The type words below are schema types, not values to copy into an inventory:
+
+```text
+Top level:
+  schema_version: integer
+  agent: internal AgentName
+  cli_agent: literal kebab-case CLI name
+  baseline_candidate_sha: 40-character lowercase Git SHA
+  results_path: absolute path to the resolved results.json
+  results_sha256: 64-character lowercase SHA-256
+  experiment_name: harness experiment name
+  experiment_url: direct URL or null
+  dataset_name: harness dataset name
+  dataset_url: direct URL or null
+  configuration_fingerprint: harness fingerprint
+  judge_configuration_fingerprint: harness fingerprint
+  prompt_fingerprint: harness fingerprint
+  target_model: effective target model
+  target_reasoning_effort: effective target effort
+  judge_model: effective judge model
+  judge_reasoning_effort: effective judge effort
+  controlled_repetitions: integer equal to 3
+  cases: array of exactly three case records
+
+Case record:
+  case_id: one frozen case ID for this agent
+  repetitions: array of exactly three repetition records
+
+Repetition record:
+  repetition: integer in the range 1 through 3
+  completed: boolean
+  failed_gate_ids: array of gate IDs
+  failed_gate_details: array of safe typed gate details
+  deterministic_metrics: map of exact metric ID to numeric result
+  deterministic_quality: numeric result or null
+  judge_status: scored, judge_not_run, or the harness-declared typed status
+  judge_not_run_reason: safe typed reason or null
+  judge_dimensions: map of exact dimension ID to numeric result
+  judge_quality: numeric result or null
+  aggregate_quality: numeric result or null
+  target_failure_stage: provider, trace, artifact, setup, or null
+  target_failure_reason: safe typed reason or null
+  target_failure_details_kind: safe typed details.kind or null
+  fallback_provider_failure_kinds: safe typed provider kinds
+  fallback_provider_operations: exact safe operation names or unavailable markers
+  judge_diagnostic_kinds: safe typed evaluator/provider diagnostics
+  react_stop_reason: safe stop-reason enum or null
+  prohibited_call_count: integer
+  target_trace_url: direct URL or null
+  evaluator_trace_url: direct URL or null
+  evaluator_source_url: direct URL or null
+```
+
+The values are produced from the validated artifact or a directly supplied, sanitized target trace; no worker may substitute a sample score, status, path, SHA, URL, or completion value. Preserve `null` when a URL or typed field is unavailable, and omit no case or repetition. `fallback_provider_failure_kinds` and `fallback_provider_operations` are read only from safe `ResearchError.details.provider_failure` records; a missing operation is recorded as an unavailable diagnostic and cannot justify a budget amendment.
+
+### Five non-Planner campaign contracts
+
+The CLI uses kebab-case; internal `AgentName` values and source paths use underscores. The listed case IDs are the three frozen controlled cases for each agent. The listed operation names are the only target operations eligible for typed diagnosis or an operation-specific budget amendment; `react_decision` remains at the global `llm.max_tokens=4096` cap.
+
+| Agent | Controlled cases and deterministic metric IDs | Target operations | Offline repair surface and invariants |
+| --- | --- | --- | --- |
+| Researcher (`researcher`) | `multi-source-coverage` (`sub_topic_coverage`, `source_grounding`, `source_diversity`, `budget_respected`); `conflicting-evidence` (`uncertainty_preserved`, `no_false_consensus`, `source_grounding`, `budget_respected`); `partial-search-failure` (`partial_results_present`, `failure_recorded`, `no_invented_sources`, `budget_respected`) | `react_decision`; `researcher_finding_extraction` | `src/deep_research/agents/researcher.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_researcher.py`; preserve prior findings, stop later subtopics after a provider failure, retain recoverable errors, and never invent source URLs. |
+| Source Evaluator (`source-evaluator`) | `strong-and-weak-sources` (`one_evaluation_per_source`, `score_ordering`, `bounded_scores`, `low_confidence_flagged`); `corroboration-recency-reputation` (`balanced_scoring`, `one_evaluation_per_source`, `bounded_scores`, `rationale_mentions_multiple_signals`); `reputation-provider-failure` (`all_sources_still_scored`, `fallback_scores_bounded`, `failure_recorded`, `no_fabricated_reputation`) | `source_evaluator_scoring` | `src/deep_research/agents/source_evaluator.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_source_evaluator.py`; preserve one row per source, bounded fallback scores, low-confidence semantics, and explicit reputation-failure recording. This agent is non-ReAct. |
+| Fact Checker (`fact-checker`) | `mixed-verdicts` (`verdict_correctness`, `evidence_linked`, `confidence_calibrated`, `sources_known`); `independent-domain-evidence` (`independence_enforced`, `evidence_linked`, `sources_known`, `budget_respected`); `verification-search-failure` (`conservative_on_failure`, `partial_verification_present`, `failure_recorded`, `budget_respected`) | `react_decision`; `fact_checker_claim_extraction`; `fact_checker_claim_verification` | `src/deep_research/agents/fact_checker.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_fact_checker.py`; preserve completed claims, use `insufficient_evidence`/`unverified` as designed after failed verification, retain independent-domain rules, and record recoverable failures. |
+| Synthesizer (`synthesizer`) | `complete-cited-report` (`report_present`, `citations_known`, `coverage`, `limitations_present`, `persistence_truthful`); `conflict-and-limitations` (`conflict_represented`, `no_overstatement`, `limitations_present`, `citations_known`); `write-or-memory-failure` (`report_present_in_state`, `failure_recorded`, `no_false_persistence_claim`, `citations_known`) | `synthesizer_report_draft` | `src/deep_research/agents/synthesizer.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_synthesizer.py`; preserve the locally assembled evidence-only skeleton, truthful persistence claims, known citations, and write/memory fallback errors. This agent is non-ReAct. |
+| Critic (`critic`) | `approve-strong-report` (`score_bounded`, `route_consistent`, `rationale_present`, `no_spurious_gaps`); `request-more-research` (`route_consistent`, `gaps_actionable`, `gaps_identified`, `score_bounded`); `missing-evidence-or-budget-exhausted` (`route_discipline`, `conservative_score`, `failure_recorded`, `score_bounded`) | `react_decision`; `critic_report_review` | `src/deep_research/agents/critic.py`, `src/deep_research/agents/prompts.py`, `tests/test_agents/test_critic.py`; preserve score bounds, concrete gap/routing behavior, macro-iteration limits, and the existing fallback critique/routing decision. |
+
+### Controlled status and terminal-state contract
+
+The harness status and process exit code are not interchangeable with the ignored ledger's workflow state. Record both exactly:
+
+| Harness result | Exit | Required ledger routing |
+| --- | ---: | --- |
+| `REVIEW REQUIRED` | `0` | The nine-repetition result is eligible for a reviewer gate. If no later shared change invalidates it, record `terminal_state: REVIEW_REQUIRED` for a repaired agent or `terminal_state: UNCHANGED_BASELINE_REUSED` for an untouched passing baseline. |
+| `FAILED` | `1` | Keep the complete artifact immutable. Route to `DIAGNOSING`; do not call the agent repaired. A quality failure and a typed target/provider failure must be separated before any edit. |
+| `INFRASTRUCTURE FAILURE` | `3` | Perform one same-SHA, same-config confirmation. If the typed infrastructure/trace/artifact failure persists, record `INFRASTRUCTURE_BLOCKED` and stop that agent without counting a repair attempt. |
+| Invalid usage or case/agent selection | `2` | Stop for a command correction; do not treat it as an evaluation result or spend another provider call. |
+
+Use these exact control-plane terminal values in each `terminal-state.md`: `REVIEW_REQUIRED`, `UNCHANGED_BASELINE_REUSED`, `INFRASTRUCTURE_BLOCKED`, `HARNESS_DEFECT_BLOCKED`, or `ESCALATED`. `DEFERRED_NON_LOAD_BEARING` and `PARKED_INFRASTRUCTURE` are finding dispositions, not substitutes for an agent terminal state. Never add a new value to the harness `EvaluationStatus` type.
+
+### Post-gate producer/consumer and status interface
+
+Tasks 9–15 are one sequential control-plane. A later task may consume only the
+artifact named by the preceding task and may not infer a missing status from a
+score or a process exit code:
+
+| Producer | Required output | Consumer and allowed transition |
+| --- | --- | --- |
+| Task 9 typed telemetry contract | Reviewed additive artifact contract; bounded deterministic metric map; exact prohibited-call count; typed nullable ReAct stop reason; narrow nullable fallback `{kind, operation}` projection; focused/evaluation/full-offline tests; offline inventory proof; Luna-max approval | Task 10 only. No controlled baseline is eligible before this row is complete. |
+| Task 10 baseline acquisition | One immutable provenance record, one strictly validated three-case × three-repetition inventory, a typed failure inventory, and one per-agent routing decision | Task 11 may consume only exact target-side `output_limit` evidence; Task 12 may consume only typed quality/trajectory or non-budget provider/schema evidence; Task 13 may consume a passing immutable baseline or reviewed candidate. |
+| Task 11 budget amendment | A reviewed operation-specific config/call-site candidate, offline RED/GREEN evidence, and a focused three-repetition result | Task 13 consumes the candidate only when the focused gate passes; persistent/reclassified failure returns to Task 10 diagnosis or Task 12, never directly to full validation. |
+| Task 12 agent repair loop | A root-cause record, literal amendment, fresh review record, candidate commit, offline RED/GREEN evidence, and focused three-repetition result | Task 13 consumes the candidate only when the focused gate passes; three unsuccessful focused attempts for one root-cause ID produce `ESCALATED` and stop. |
+| Task 13 full validation | One immutable nine-repetition artifact or explicit infrastructure/harness/escalation terminal record | Task 14 consumes the terminal record; an unchanged passing baseline is consumed without another paid run. |
+| Task 14 fix log | One tracked safe section per non-Planner agent and a terminal-state table covering all five agents, updated for Tasks 10–13 evidence | Task 15 consumes the log, terminal records, and tracked source state. |
+| Task 15 final offline verification | Final offline pytest/Ruff/diff evidence plus a branch-review handoff state | Whole-branch review may be dispatched only after the user explicitly asks for it. |
+
+The ledger uses the workflow states already defined by the approved workflow:
+`BASELINE_REQUIRED`, `DIAGNOSING`, `REPAIRING`, `FOCUSED_RETEST`,
+`FULL_VALIDATION`, `REVIEW_REQUIRED`, `ESCALATED`, and
+`INFRASTRUCTURE_BLOCKED`. The campaign phase label left by Task 8,
+`CONTROLLED_BASELINES_REQUIRED`, is retained as the parent phase; each agent
+gets its own workflow state and terminal-state value under that phase. Harness
+status values remain exactly `REVIEW REQUIRED`, `FAILED`, and
+`INFRASTRUCTURE FAILURE`, with exit codes `0`, `1`, and `3`; exit `2` is
+invalid usage and is never an evaluation result.
+
+For a baseline or candidate to receive `REVIEW_REQUIRED`, all of the following
+must be explicit in its inventory: 3 cases, 3 repetitions per case, every
+repetition complete, every hard gate passing, every aggregate score at least
+`0.65`, every case average at least `0.80`, every expected judge result
+`status == "scored"`, no judge-not-run reason, no unexplained target or
+fallback provider failure, no trace/artifact/secret failure, and no prohibited
+call. A case's deliberately scripted recovery behavior may produce a safe
+non-provider error (for example, a search, reputation, write, or budget
+failure in the named failure case); it must be the exact expected case
+behavior and must pass the corresponding frozen `failure_recorded` or
+conservative-output gate. It is not a target output-limit candidate.
 
 ### Frozen evaluation inputs during agent repair loops
 
@@ -145,11 +364,11 @@ src/deep_research/evaluation/dependencies.py
 src/deep_research/evaluation/models.py
 ```
 
-`src/deep_research/evaluation/targets.py` may change only in the explicit offline artifact-visibility task below, not during any later agent quality repair.
+`src/deep_research/evaluation/targets.py` may change only in the explicit offline artifact-visibility portion of Task 9, not during any later agent quality repair. Task 9 may also modify `src/deep_research/evaluation/models.py`, `src/deep_research/evaluation/evaluators.py`, and `src/deep_research/evaluation/runner.py` only for the bounded artifact contract described below; after Task 9's Luna-max approval these evaluation files are frozen again for Tasks 10–13 except through a separately approved harness change.
 
 ---
 
-### Task 1: Create the Isolated SDD Campaign and Freeze the Known-Good Base
+### Task 1: Create the Isolated SDD Campaign and Freeze the Known-Good Base — COMPLETE
 
 **Files:**
 - Create, ignored: this plan's `.superpowers/sdd/.../progress.md` workspace ledger
@@ -161,7 +380,7 @@ src/deep_research/evaluation/models.py
 - Consumes: `main` containing merge commit `bc67620666bbc41c516556d45602de6dd00d7102` and this plan.
 - Produces: isolated branch/worktree, exact approved-base SHA, clean offline baseline, and a recovery ledger that survives context compaction.
 
-- [ ] **Step 1: Resolve the repository and verify the Planner remediation is in the base**
+- [x] **Step 1: Resolve the repository and verify the Planner remediation is in the base**
 
 ```powershell
 $Repository = (git rev-parse --show-toplevel).Trim()
@@ -179,7 +398,7 @@ if ($LASTEXITCODE -ne 0) { throw 'approved base does not contain this plan' }
 
 Expected: both checks exit 0 and `$ApprovedBase` is a literal 40-character SHA.
 
-- [ ] **Step 2: Create or verify the worktree without deleting anything unexpected**
+- [x] **Step 2: Create or verify the worktree without deleting anything unexpected**
 
 ```powershell
 if (Test-Path -LiteralPath $Worktree) {
@@ -198,7 +417,7 @@ if (git status --porcelain) { throw 'campaign worktree is dirty before execution
 
 Expected: clean `codex/cross-agent-planner-fix-parity` at `$ApprovedBase`.
 
-- [ ] **Step 3: Initialize the SDD workspace and ledger**
+- [x] **Step 3: Initialize the SDD workspace and ledger**
 
 Use the current Superpowers `subagent-driven-development` workspace helper if installed. The ledger's first line must identify this plan exactly:
 
@@ -220,7 +439,7 @@ Then record these literal values beneath it:
 
 Do not save the angle-bracket text; replace it with the actual SHA.
 
-- [ ] **Step 4: Verify interpreter/editable-install provenance**
+- [x] **Step 4: Verify interpreter/editable-install provenance**
 
 ```powershell
 python -m pip install -e ".[dev]"
@@ -229,7 +448,7 @@ python -c "import pathlib, deep_research; print(pathlib.Path(deep_research.__fil
 
 Expected: the printed module path resolves under this campaign worktree's `src`.
 
-- [ ] **Step 5: Run the complete tracked offline baseline**
+- [x] **Step 5: Run the complete tracked offline baseline**
 
 ```powershell
 python -m pytest -q -p no:cacheprovider
@@ -239,13 +458,13 @@ git diff --check
 
 Expected: pytest matches or improves the merged Planner-remediation baseline (PR #19 recorded 1881 passed, 1 deselected, 2 known dependency warnings), Ruff is clean, and `git diff --check` exits 0. If the local Windows temp-root reproduces the documented path-length issue, use a short `--basetemp` and record that exact ruling in the ledger; do not change tracked code to fix the environment.
 
-- [ ] **Step 6: Commit no code in this task**
+- [x] **Step 6: Commit no code in this task**
 
 The task ends with a clean baseline and ledger only. Record `Task 1: complete` in the ignored ledger. No tracked commit is required.
 
 ---
 
-### Task 2: Move RC-A Normalization to the Shared ReAct Boundary
+### Task 2: Move RC-A Normalization to the Shared ReAct Boundary — COMPLETE
 
 **Files:**
 - Modify: `src/deep_research/agents/react.py`
@@ -256,7 +475,7 @@ The task ends with a clean baseline and ledger only. Record `Task 1: complete` i
 - Produces: every `ReActStep` stores `tool_name=None` on finish decisions and `final_answer=None` on tool decisions; meaningful non-empty values are unchanged.
 - Does not change: `ReActDecision` schema, `ReActStep` schema, provider contracts, stop reasons, tool-budget behavior, or provider-error propagation mode.
 
-- [ ] **Step 1: Add the two direct failing shared-loop regression tests**
+- [x] **Step 1: Add the two direct failing shared-loop regression tests**
 
 Append tests beside `test_one_step_loop_finishes_immediately` / `test_multi_step_loop_calls_a_tool_then_finishes` in `tests/test_agents/test_react.py`:
 
@@ -314,7 +533,7 @@ async def test_tool_decision_normalizes_empty_unused_final_answer(
     assert run.steps[0].final_answer is None
 ```
 
-- [ ] **Step 2: Run them and verify RED**
+- [x] **Step 2: Run them and verify RED**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_react.py -k "normalizes_empty_unused"
@@ -322,7 +541,7 @@ python -m pytest -q tests/test_agents/test_react.py -k "normalizes_empty_unused"
 
 Expected before the fix: both tests fail at `ReActStep(...)` validation because the unused value is an empty string.
 
-- [ ] **Step 3: Apply the minimal shared-boundary fix**
+- [x] **Step 3: Apply the minimal shared-boundary fix**
 
 In the existing `ReActStep(...)` construction in `run_react_loop`, change only the two optional values:
 
@@ -341,7 +560,7 @@ step = ReActStep(
 
 Do not weaken `ReActStep`'s `min_length=1` contract. Do not add a second provider wrapper. `ContractModel` already strips whitespace, so `field or None` also handles whitespace-only unused strings after model validation.
 
-- [ ] **Step 4: Verify focused and neighboring GREEN**
+- [x] **Step 4: Verify focused and neighboring GREEN**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_react.py -k "normalizes_empty_unused"
@@ -352,7 +571,7 @@ git diff --check
 
 Expected: all commands pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/deep_research/agents/react.py tests/test_agents/test_react.py
@@ -363,7 +582,7 @@ Record commit SHA and `Task 2: complete` in the ledger.
 
 ---
 
-### Task 3: Remove the Planner-Local RC-A Workaround and Prove Cross-Agent ReAct Parity
+### Task 3: Remove the Planner-Local RC-A Workaround and Prove Cross-Agent ReAct Parity — COMPLETE
 
 **Files:**
 - Modify: `src/deep_research/agents/planner.py`
@@ -379,7 +598,7 @@ Record commit SHA and `Task 2: complete` in the ledger.
 - Produces: Planner no longer swaps/wraps its provider for RC-A; Researcher, Fact Checker, and Critic all complete a scripted ReAct path containing an empty unused optional field.
 - Preserves: Planner's `preserve_provider_errors=True`, `planning_provider_error("react_decision")` cause wrapping, and `planner_final_max_tokens` only on `ResearchPlanDraft`.
 
-- [ ] **Step 1: Add/retain parity tests before deleting Planner code**
+- [x] **Step 1: Add/retain parity tests before deleting Planner code**
 
 Keep the existing Planner RC-A regression tests unchanged. Add one agent-level regression to each custom ReAct agent using its existing test constructors/fakes. Each test must queue a valid decision whose *unused* optional field is `""` and assert the agent does not raise `ValidationError`.
 
@@ -393,7 +612,7 @@ Critic: the spot-check loop completes and the stored step has final_answer is No
 
 Use the existing `ScriptedCompleter` and each test module's current state/tool fixtures rather than introducing a second fake framework.
 
-- [ ] **Step 2: Verify the new sibling tests are already GREEN on Task 2**
+- [x] **Step 2: Verify the new sibling tests are already GREEN on Task 2**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_researcher.py -k "empty_unused"
@@ -403,7 +622,7 @@ python -m pytest -q tests/test_agents/test_critic.py -k "empty_unused"
 
 Expected: all pass because Task 2 fixed the shared boundary. If any fails for a different reason, record the exact failure as a separate root-cause candidate; do not weaken the test or copy the Planner wrapper into that agent.
 
-- [ ] **Step 3: Delete only the Planner-local normalization wrapper**
+- [x] **Step 3: Delete only the Planner-local normalization wrapper**
 
 In `planner.py`:
 - remove `_DecisionNormalizingCompleter` completely;
@@ -420,7 +639,7 @@ except ProviderError as error:
 
 Do not change `_request_plan()` or its `max_tokens=self.config.planner_final_max_tokens` argument.
 
-- [ ] **Step 4: Run the Planner and provider-identity regression set**
+- [x] **Step 4: Run the Planner and provider-identity regression set**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_planner.py -k "planner_regression or provider"
@@ -431,7 +650,7 @@ python -m ruff check src/deep_research/agents tests/test_agents
 
 Expected: the Planner's known-good RC-A tests remain green and exact provider identity/parity tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/deep_research/agents/planner.py `
@@ -446,7 +665,7 @@ Record commit SHA and `Task 3: complete`.
 
 ---
 
-### Task 4: Add a Shared Safe Snapshot for Provider Failures Caught by Fallbacking Agents
+### Task 4: Add a Shared Safe Snapshot for Provider Failures Caught by Fallbacking Agents — COMPLETE
 
 **Files:**
 - Modify: `src/deep_research/providers/contracts.py`
@@ -461,7 +680,7 @@ Record commit SHA and `Task 3: complete`.
 - Produces: one immutable, finite `ProviderFailureSnapshot` and `provider_failure_snapshot(error)` helper that never renders exception messages or provider content; one `agent_provider_failure_details(operation, error, **extra)` helper returning JSON-safe details.
 - The snapshot is runtime/provider infrastructure, not an evaluation model; agents must not import from `deep_research.evaluation`.
 
-- [ ] **Step 1: Write RED tests for the safe finite projection**
+- [x] **Step 1: Write RED tests for the safe finite projection**
 
 Add tests that construct:
 - `ProviderOutputLimitError` with `finish_reason_category="length"`, `configured_max_tokens=4096`, typed usage, request attempt 2, structured attempt 1;
@@ -487,7 +706,7 @@ For output-limit, assert configured cap, usage, request attempt, and structured 
 
 Add an adversarial error whose message contains `PROVIDER_SECRET_SENTINEL` and assert that sentinel is absent from both `snapshot.model_dump(mode="json")` and `repr(snapshot.model_dump(mode="json"))`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_errors.py tests/test_deepseek_provider.py tests/test_openai_provider.py -k "provider_failure_snapshot or agent_provider_failure_details"
@@ -495,7 +714,7 @@ python -m pytest -q tests/test_agents/test_errors.py tests/test_deepseek_provide
 
 Expected: collection/assertions fail because the shared snapshot/helper do not exist.
 
-- [ ] **Step 3: Implement `ProviderFailureSnapshot` in provider contracts**
+- [x] **Step 3: Implement `ProviderFailureSnapshot` in provider contracts**
 
 Define an immutable model with only these fields:
 
@@ -531,7 +750,7 @@ class ProviderFailureSnapshot(ProviderContract):
 
 Implement `provider_failure_snapshot(error: ProviderError) -> ProviderFailureSnapshot` by type, most specific first. Do not inspect `str(error)`. Map `ProviderResponseError.failure_category="output_limit"` to `provider_response` unless the concrete type is `ProviderOutputLimitError`, matching the evaluation taxonomy's existing conservative rule.
 
-- [ ] **Step 4: Implement the agent JSON helper**
+- [x] **Step 4: Implement the agent JSON helper**
 
 In `agents/errors.py`, add:
 
@@ -553,7 +772,7 @@ def agent_provider_failure_details(
 
 Do not retain a second `exception_type` outside the snapshot. Export the provider snapshot/helper from `providers.__init__` using the package's existing explicit-export style.
 
-- [ ] **Step 5: Run GREEN and neighboring provider tests**
+- [x] **Step 5: Run GREEN and neighboring provider tests**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_errors.py tests/test_deepseek_provider.py tests/test_openai_provider.py -k "provider_failure_snapshot or agent_provider_failure_details"
@@ -563,7 +782,7 @@ python -m ruff check src/deep_research/providers src/deep_research/agents/errors
 
 Expected: all pass; existing evaluation taxonomy behavior remains unchanged.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/deep_research/providers/contracts.py `
@@ -579,7 +798,7 @@ Record commit SHA and `Task 4: complete`.
 
 ---
 
-### Task 5: Wire Safe Provider Diagnostics into Every Non-Planner Fallback Path
+### Task 5: Wire Safe Provider Diagnostics into Every Non-Planner Fallback Path — COMPLETE
 
 **Files:**
 - Modify: `src/deep_research/agents/react.py`
@@ -606,7 +825,7 @@ synthesizer_report_draft
 critic_report_review
 ```
 
-- [ ] **Step 1: Add RED assertions to each existing provider-failure test**
+- [x] **Step 1: Add RED assertions to each existing provider-failure test**
 
 For each path, replace assertions that only expect `{"exception_type": ...}` with assertions on:
 
@@ -628,7 +847,7 @@ Also keep/extend each test's semantic assertions:
 - Critic: fallback critique/routing remains unchanged.
 - ReAct compatibility mode: `stop_reason == "provider_error"`, nonrecoverable ResearchError, no raised provider exception when `propagate_provider_errors=False`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 python -m pytest -q `
@@ -643,7 +862,7 @@ python -m pytest -q `
 
 Expected: new detail assertions fail because the current code records only generic exception type/counts.
 
-- [ ] **Step 3: Replace only provider-error `details` construction**
+- [x] **Step 3: Replace only provider-error `details` construction**
 
 Use `agent_provider_failure_details(...)` in each provider catch. Preserve every existing `error_type`, static user-facing message, `recoverable` value, stop reason, fallback object, and loop-break rule.
 
@@ -680,7 +899,7 @@ errors.append(
 
 Do not change Planner's raised cause-chain behavior; when `propagate_provider_errors=True`, the shared loop still re-raises the original provider exception after recording its safe event.
 
-- [ ] **Step 4: Run focused and full agent tests**
+- [x] **Step 4: Run focused and full agent tests**
 
 ```powershell
 python -m pytest -q tests/test_agents
@@ -690,7 +909,7 @@ python -m ruff check src/deep_research/agents tests/test_agents
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/deep_research/agents/react.py `
@@ -712,7 +931,7 @@ Record commit SHA and `Task 5: complete`.
 
 ---
 
-### Task 6: Prove Typed Fallback Diagnostics Survive the Evaluation Artifact Boundary
+### Task 6: Prove Typed Fallback Diagnostics Survive the Evaluation Artifact Boundary — COMPLETE
 
 **Files:**
 - Modify: `tests/test_evaluation/test_targets.py`
@@ -722,7 +941,7 @@ Record commit SHA and `Task 5: complete`.
 - Consumes: a non-Planner agent that intentionally returns a fallback `AgentRun.result` plus `run.errors` containing Task 5 provider snapshots.
 - Produces: `TargetOutput.completed=True`, `TargetOutput.failure=None`, and the safe typed provider snapshot preserved in `TargetOutput.errors` for fallback-producing agents; Planner exceptions continue to produce `completed=False` with top-level typed `failure` via the cause-chain taxonomy.
 
-- [ ] **Step 1: Add a target-level fallback test**
+- [x] **Step 1: Add a target-level fallback test**
 
 Extend the target harness/fakes using the existing fixture style so one non-Planner agent returns a valid fallback result and one `ResearchError` whose `details.provider_failure.kind == "output_limit"`. Assert:
 
@@ -737,7 +956,7 @@ assert output.errors[0]["details"]["provider_failure"]["configured_max_tokens"] 
 
 Also retain the existing Planner test that a raised output-limit cause becomes top-level `failure.reason == "output_limit"`.
 
-- [ ] **Step 2: Run the target tests**
+- [x] **Step 2: Run the target tests**
 
 ```powershell
 python -m pytest -q tests/test_evaluation/test_targets.py -k "provider or fallback or output_limit"
@@ -745,14 +964,14 @@ python -m pytest -q tests/test_evaluation/test_targets.py -k "provider or fallba
 
 Expected: this should already be GREEN because `_success_output` serializes `run.errors`. If it is green, make no production target change; the test is the regression guard. If it fails because typed safe fields are dropped, fix only the serialization boundary required by the failing assertion, then rerun the complete target suite.
 
-- [ ] **Step 3: Run neighboring evaluation tests**
+- [x] **Step 3: Run neighboring evaluation tests**
 
 ```powershell
 python -m pytest -q tests/test_evaluation/test_targets.py tests/test_evaluation/test_models.py tests/test_evaluation/test_failure_taxonomy.py tests/test_evaluation/test_runner.py
 python -m ruff check src/deep_research/evaluation tests/test_evaluation/test_targets.py
 ```
 
-- [ ] **Step 4: Commit the test (and only a demonstrated minimal production fix if needed)**
+- [x] **Step 4: Commit the test (and only a demonstrated minimal production fix if needed)**
 
 ```powershell
 git add tests/test_evaluation/test_targets.py
@@ -766,7 +985,7 @@ Record commit SHA and `Task 6: complete`.
 
 ---
 
-### Task 7: Characterize Source Evaluator and Synthesizer as Non-ReAct Agents
+### Task 7: Characterize Source Evaluator and Synthesizer as Non-ReAct Agents — COMPLETE
 
 **Files:**
 - Modify: `tests/test_agents/test_source_evaluator.py`
@@ -776,7 +995,7 @@ Record commit SHA and `Task 6: complete`.
 **Interfaces:**
 - Produces a regression guard for the audit conclusion that RC-A does not apply to these two agents on current `main`.
 
-- [ ] **Step 1: Add test assertions that their normal provider calls never request `ReActDecision`**
+- [x] **Step 1: Add test assertions that their normal provider calls never request `ReActDecision`**
 
 Use `ScriptedCompleter.calls` / each module's existing recording provider. After a representative successful run, assert the requested schema sequence contains:
 
@@ -787,7 +1006,7 @@ Synthesizer: ReportDraft only
 
 and does not contain `ReActDecision`.
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 ```powershell
 python -m pytest -q tests/test_agents/test_source_evaluator.py tests/test_agents/test_synthesizer.py -k "react or schema or provider"
@@ -795,7 +1014,7 @@ python -m pytest -q tests/test_agents/test_source_evaluator.py tests/test_agents
 
 Expected: GREEN with no production edit. If a current code path unexpectedly requests `ReActDecision`, stop and record the architecture drift before proceeding; RC-A applicability must be reclassified.
 
-- [ ] **Step 3: Commit characterization tests**
+- [x] **Step 3: Commit characterization tests**
 
 ```powershell
 git add tests/test_agents/test_source_evaluator.py tests/test_agents/test_synthesizer.py
@@ -806,7 +1025,7 @@ Record commit SHA and `Task 7: complete`.
 
 ---
 
-### Task 8: Run the Offline Integration Gate Before Any Paid Evaluation
+### Task 8: Run the Offline Integration Gate Before Any Paid Evaluation — COMPLETE
 
 **Files:**
 - No production files
@@ -816,7 +1035,7 @@ Record commit SHA and `Task 7: complete`.
 - Consumes: Tasks 2-7.
 - Produces: one reviewed offline candidate SHA eligible for controlled evaluation.
 
-- [ ] **Step 1: Run focused integration suites**
+- [x] **Step 1: Run focused integration suites**
 
 ```powershell
 python -m pytest -q `
@@ -831,7 +1050,7 @@ python -m pytest -q `
   tests/test_runtime/test_assembly.py
 ```
 
-- [ ] **Step 2: Run full tracked offline verification**
+- [x] **Step 2: Run full tracked offline verification**
 
 ```powershell
 python -m pytest -q -p no:cacheprovider
@@ -842,7 +1061,7 @@ git status --short
 
 Expected: full suite green, Ruff clean, whitespace clean, tracked worktree clean.
 
-- [ ] **Step 3: Run the task review gate**
+- [x] **Step 3: Run the task review gate**
 
 Dispatch a fresh reviewer on the complete diff from `$ApprovedBase` through current HEAD. Required review questions:
 
@@ -857,7 +1076,7 @@ Dispatch a fresh reviewer on the complete diff from `$ApprovedBase` through curr
 
 Fix Critical/Important findings with TDD and scoped re-review before proceeding. Record review report path and rulings in the SDD ledger.
 
-- [ ] **Step 4: Freeze candidate SHA**
+- [x] **Step 4: Freeze candidate SHA**
 
 ```powershell
 $CandidateSha = (git rev-parse HEAD).Trim()
@@ -868,112 +1087,385 @@ Expected: clean worktree. Record literal `$CandidateSha` in the ledger as `Offli
 
 ---
 
-### Task 9: Run Immutable Controlled Baselines for Each Non-Planner Agent
+### Task 9: Repair the Evaluation Artifact Typed Telemetry Contract — COMPLETE (OFFLINE; LUNA-MAX REVIEW APPROVED)
+
+**Purpose:** Repair only the evaluation artifact projection boundary so the already-required controlled-baseline telemetry survives into `RepetitionResult` and `results.json`. This task must not change agent behavior, frozen evaluation semantics, provider behavior, prompts, gates, thresholds, cases, rubrics, judges, model budgets, retry policy, or dependency scenarios.
+
+**Execution model:** GPT-5.6 Luna, high reasoning.
+
+**Required task-scoped reviewer:** one fresh GPT-5.6 Luna, max reasoning, after implementation and offline verification. Task 9 is not complete until that review approves the task. A load-bearing finding returns to Luna high, followed by offline verification and Luna-max scoped re-review.
+
+**Network boundary:** Task 9 is network-zero. No provider, LangSmith, controlled evaluation, live evaluation, remote dataset, model, embedding, or credential-dependent call is permitted. Do not run the evaluation CLI in this task.
+
+**Files:**
+
+Modify only:
+
+- `src/deep_research/evaluation/models.py`
+- `src/deep_research/evaluation/evaluators.py`
+- `src/deep_research/evaluation/runner.py`
+- `tests/test_evaluation/test_models.py`
+- `tests/test_evaluation/test_evaluators_general.py`
+- `tests/test_evaluation/test_runner.py`
+- `tests/test_evaluation/test_targets.py`
+- `tests/test_evaluation/test_reporting.py`
+- `.superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_inventory.py` (ignored campaign helper; update only to project the new bounded typed fields and retain fail-closed validation)
+
+Verify first; modify `src/deep_research/evaluation/targets.py` or `src/deep_research/evaluation/reporting.py` only if a focused RED test proves the existing typed source or normal model serialization is insufficient. The ignored inventory helper may be updated only to consume the new typed artifact fields and reject missing/unsafe telemetry. Do not change controlled cases, judges, prompts, agents, providers, configuration budgets, retry policy, or dependency scenarios.
+
+**Consumes:** Task 8's reviewed offline candidate; typed `TargetOutput` fields for `dependencies.prohibited_calls`, `react.stop_reason`, and safe fallback errors containing `details.operation` and `details.provider_failure.kind`; the existing metric definitions, weights, and runtime vocabularies.
+
+**Produces:** an additive backward-compatible `RepetitionResult` contract preserving the existing scalar fields and additionally preserving `deterministic_metrics`, `prohibited_call_count`, `react_stop_reason`, and `fallback_provider_diagnostic`; a local synthetic artifact proof; a fail-closed inventory proof; offline test evidence; and Luna-max approval.
+
+#### Exact typed artifact contract
+
+Keep `ARTIFACT_SCHEMA_VERSION` unchanged. Existing model consumers must still parse older result objects; newly generated Task 10 artifacts must physically contain the new telemetry keys.
+
+Add bounded artifact-side vocabulary in `src/deep_research/evaluation/models.py`:
+
+```python
+_MAX_ARTIFACT_DETERMINISTIC_METRICS = 16
+_MAX_ARTIFACT_METRIC_ID_LENGTH = 64
+_MAX_ARTIFACT_OPERATION_LENGTH = 96
+_MAX_ARTIFACT_PROHIBITED_CALL_COUNT = 10_000
+
+ReActStopReason: TypeAlias = Literal[
+    "finished",
+    "sufficient",
+    "max_iterations",
+    "tool_budget_exhausted",
+    "provider_error",
+]
+
+class FallbackProviderDiagnostic(ContractModel):
+    kind: ProviderFailureKind
+    operation: str = Field(
+        min_length=1,
+        max_length=_MAX_ARTIFACT_OPERATION_LENGTH,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )
+```
+
+The stop-reason vocabulary must match the current runtime vocabulary exactly. `ReActSummary.stop_reason` must use the bounded alias rather than an unbounded string.
+
+Add these fields to `RepetitionResult` without removing or renaming existing fields:
+
+```python
+deterministic_metrics: dict[str, UnitScore] = Field(
+    default_factory=dict,
+    max_length=_MAX_ARTIFACT_DETERMINISTIC_METRICS,
+)
+prohibited_call_count: int = Field(
+    default=0,
+    ge=0,
+    le=_MAX_ARTIFACT_PROHIBITED_CALL_COUNT,
+    strict=True,
+)
+react_stop_reason: ReActStopReason | None = None
+fallback_provider_diagnostic: FallbackProviderDiagnostic | None = None
+```
+
+Metric IDs must be non-empty lower snake case matching `^[a-z][a-z0-9_]{0,63}$`; values must be finite `UnitScore` values in `[0.0, 1.0]`; oversized or malformed maps fail closed rather than being truncated. `prohibited_call_count` is exactly `len(output.dependencies.prohibited_calls)`, never a gate-string inference or clamp. ReAct agents preserve the exact typed stop reason; Source Evaluator and Synthesizer explicitly serialize `None`. The fallback projection is the first valid safe record in `output.errors` order and contains only `{kind, operation}`. Never copy and redact arbitrary error details.
+
+#### Deterministic metric-detail compatibility
+
+Add a bounded helper in `src/deep_research/evaluation/evaluators.py` that evaluates every declared metric and returns an exact metric-ID-to-`UnitScore` map. Boolean pass/fail becomes `1.0`/`0.0`; a metric implementation exception records `0.0` and continues; a missing metric implementation still raises `MissingMetricError`. Preserve the current metric definitions, weights, failure semantics, scalar `deterministic_quality`, thresholds, and public evaluator APIs. The runner must carry both the unchanged scalar and the new map.
+
+#### Runner projection and safety
+
+Update `build_repetition_result(...)` and its existing bookkeeping to set the four new fields from typed source values only. Preserve the meaning of all existing fields. The allow-list must exclude raw exception text, provider/model output, prompts, evaluator inputs, hidden reasoning, credentials, request payloads, arbitrary details, unbounded paths/lists/text, and raw prohibited tool names.
+
+#### Required TDD sequence
+
+- [x] Add RED model tests for valid metrics, metric bounds/IDs/values, strict prohibited-call counts, valid/unknown stop reasons, and the exact two-field fallback diagnostic with rejection of unsafe extra fields.
+- [x] Add RED evaluator tests proving complete metric maps, Boolean conversion, exception-to-zero behavior, missing-metric failure, and unchanged weighted scalar quality.
+- [x] Add RED runner tests using a local `TargetOutput` with two prohibited calls, a valid stop reason, pass/fail metrics, and a safe fallback error plus sentinel unsafe values. Prove only the four typed projections survive serialization; add Source Evaluator and Synthesizer `None` cases.
+- [x] Add target characterization tests for the typed source fields and reporting round-trip tests for local `ExperimentResult` serialization. Do not force already-green characterization tests to fail.
+- [x] Run the focused offline evaluation tests with `-p no:cacheprovider`; no evaluation CLI command is permitted.
+- [x] Implement the smallest typed-contract change with Luna high.
+- [x] Run the focused tests, `python -m pytest -q tests/test_evaluation -p no:cacheprovider`, the full offline suite, Ruff lint/targeted formatting, `git diff --check`, and an allowed-file diff review. Repository-wide format-only deviations remain documented pre-existing baseline.
+- [x] Build a local synthetic three-case × three-repetition artifact and prove `record_eval_inventory.py` accepts complete typed telemetry and fails closed when empty, incomplete, extra, or malformed metric maps are supplied. Do not run a provider or LangSmith command.
+- [x] Write the Task 9 ledger evidence, commit the scoped change, and obtain one fresh Luna-max task review. Record `Task 9 review: APPROVED` and `Task 9: complete` only after approval.
+
+**Hard stop:** Task 10 cannot begin until every Task 9 offline test, inventory proof, diff check, commit, and Luna-max review gate passes. The previous 1,895-test result does not certify this new task.
+
+---
+
+### Infrastructure Repair Amendment: Windows Evaluation Output-Root Boundary — COMPLETE
+
+The first Task 10 baseline attempt was run at candidate `e05ff277db4b60456be93a2e03bd55e742eb0f82`. All five agents failed during Windows preflight before producing `results.json`; the same-SHA confirmation attempts reproduced the infrastructure failure. The typed evidence identifies the failure boundary as the long local output-root path, not target quality or provider behavior.
+
+The repair was executed as a new candidate and reviewed before resuming Task 10:
+
+- Task 2 RED coverage: `92afc9c972677f5d39f454e42316254a9121b345`.
+- Task 2 review-fix commits: `5fff3b906d7037b84d31309b2e84735ee727d2ed`, `3ca4ccdaec7c69559331e1dea0d747f98e4fc5c9`.
+- Task 2 Luna-max review: approved; exact six Task 10 prefixes, host-independent path cases, real production preflight seam, repetition descendants, and `results.json` coverage accepted.
+- Task 3 implementation: `d7ff281acdfac9394db75c25eb3c6fa2cafe1b41`.
+- Task 3 Luna-max review: approved; only `src/deep_research/evaluation/config.py` changed, with a private `_extended_windows_path` boundary applied after the complete logical output root is assembled.
+- New controlled-run source candidate: `d7ff281acdfac9394db75c25eb3c6fa2cafe1b41`; current bookkeeping descendant used for all controlled runs: `d6a082c9260e5d9f2f7c061833b4734ec9990f1f`.
+
+The historical failed artifacts remain immutable. Task 10 may resume only from the new candidate, with fresh per-agent namespaces and the existing immediate per-command human authorization requirement.
+
+---
+
+### Task 10: Run Immutable Controlled Baselines for Each Non-Planner Agent — COMPLETE (FIVE AGENTS INFRASTRUCTURE-BLOCKED AFTER CONFIRMATION)
+
+**Hard paid-call precondition:** Do not execute any provider, LangSmith, controlled-evaluation, dataset-sync, judge, or credential-dependent command until the ledger contains all of these exact lines: `Task 9 focused tests: PASS`, `Task 9 evaluation tests: PASS`, `Task 9 full offline suite: PASS`, `Task 9 inventory contract check: PASS`, `Task 9 review: APPROVED`, and `Task 9: complete`. This local-only check does not replace immediate human authorization for each paid command.
 
 **Files:**
 - No tracked production/test changes during baseline acquisition
 - Update ignored ledger
-- Create ignored `output/evaluations/<agent>/...` artifacts through existing harness
+- Create ignored provenance, inventory, and packet files under the five exact agent roots in the post-gate artifact table
+- Create immutable `output/evaluations/researcher/*/results.json`, `output/evaluations/source-evaluator/*/results.json`, `output/evaluations/fact-checker/*/results.json`, `output/evaluations/synthesizer/*/results.json`, and `output/evaluations/critic/*/results.json` artifacts through the existing harness
 
 **Interfaces:**
 - Consumes: Task 8 candidate SHA and the existing frozen controlled datasets.
-- Produces: one immutable full controlled baseline per non-Planner agent at the same candidate SHA.
+- Produces: one immutable three-case × three-repetition baseline attempt per non-Planner agent at the same candidate SHA; a safe effective-configuration/provenance record; a bounded baseline inventory; a typed failure inventory; and one explicit routing decision for each agent. No source edit is permitted in this task.
 
-**Run order:** `researcher`, `fact_checker`, `critic`, `synthesizer`, `source_evaluator`.
+**Run order:** `researcher`, `source_evaluator`, `fact_checker`, `synthesizer`, `critic`.
 
-This order checks the three RC-A-exposed agents first, then the long-output non-ReAct agent, then the bounded scoring agent.
+The execution map is fixed before any provider command. The internal name is used in artifacts and Python; the CLI name is used in commands and output directories.
+
+| Internal name | CLI name | Target effort | Frozen controlled cases | Exact target operations eligible for diagnosis |
+| --- | --- | --- | --- | --- |
+| `researcher` | `researcher` | `high` | `multi-source-coverage`, `conflicting-evidence`, `partial-search-failure` | `react_decision`, `researcher_finding_extraction` |
+| `source_evaluator` | `source-evaluator` | `high` | `strong-and-weak-sources`, `corroboration-recency-reputation`, `reputation-provider-failure` | `source_evaluator_scoring` |
+| `fact_checker` | `fact-checker` | `max` | `mixed-verdicts`, `independent-domain-evidence`, `verification-search-failure` | `react_decision`, `fact_checker_claim_extraction`, `fact_checker_claim_verification` |
+| `synthesizer` | `synthesizer` | `max` | `complete-cited-report`, `conflict-and-limitations`, `write-or-memory-failure` | `synthesizer_report_draft` |
+| `critic` | `critic` | `max` | `approve-strong-report`, `request-more-research`, `missing-evidence-or-budget-exhausted` | `react_decision`, `critic_report_review` |
 
 - [ ] **Step 1: Preflight effective model/retry/budget configuration without printing secrets**
 
-Through the repo's secret-safe launcher or inherited environment, print only non-secret values:
-
-```python
-settings.llm.model
-settings.llm.max_tokens
-settings.llm.retry_count
-settings.llm.retry_initial_delay
-settings.llm.retry_max_delay
-settings.agents.planner_final_max_tokens
-```
-
-Required baseline values:
-
-```text
-llm.max_tokens = 4096
-planner_final_max_tokens = 4096 unless a Planner-specific shell override is intentionally present (clear it for this campaign)
-retry policy = the repository's intended controlled-evaluation policy; if `.env` changes it, set the approved process override before the launcher and record the effective non-secret value
-```
-
-Never print API keys or the full environment.
-
-- [ ] **Step 2: Immediately before each paid command, obtain human confirmation**
-
-The controller states the agent, candidate SHA, exact command, controlled-only scope, expected 3 cases × 3 repetitions, target/judge model, global 4096 cap, and that the run makes paid provider/LangSmith calls. Do not reuse an old confirmation for a later agent.
-
-- [ ] **Step 3: Run each full controlled baseline separately**
-
-For each `$Agent` in the fixed run order:
+Run this offline from the campaign worktree. Do not create a second worktree, reset the branch, or remove any existing ignored packet. The command must print only the candidate SHA and path/state facts:
 
 ```powershell
-python -m deep_research.evaluation agent $Agent `
-  --config config.yaml `
-  --experiment-prefix cross-agent-planner-fix-parity-baseline `
-  --verbose
+$CampaignRoot = (git rev-parse --show-toplevel).Trim()
+$LedgerPath = Join-Path $CampaignRoot '.superpowers\sdd\2026-09-08-cross-agent-planner-fix-parity\progress.md'
+$PacketRoot = Join-Path $CampaignRoot '.superpowers\sdd\2026-09-08-cross-agent-planner-fix-parity'
+$RunWithEnv = Join-Path $PacketRoot 'run_with_repo_env.py'
+$RepoEnv = Join-Path $CampaignRoot '.env'
+$EnvSource = if (Test-Path -LiteralPath $RepoEnv) { $RepoEnv } else { '-' }
+$CandidateSha = (git rev-parse HEAD).Trim()
+if ($CandidateSha -notmatch '^[0-9a-f]{40}$') { throw 'Task 8 candidate is not a literal 40-character SHA' }
+if (git status --porcelain) { throw 'tracked worktree is dirty at the Task 10 gate' }
+if (-not (Test-Path -LiteralPath $LedgerPath)) { throw 'Task 8 ledger is missing' }
+if (-not (Select-String -LiteralPath $LedgerPath -SimpleMatch 'Workflow state: CONTROLLED_BASELINES_REQUIRED')) {
+    throw 'Task 8 did not leave the campaign at CONTROLLED_BASELINES_REQUIRED'
+}
+New-Item -ItemType Directory -Force -Path $PacketRoot | Out-Null
+foreach ($CliAgent in @('researcher', 'source-evaluator', 'fact-checker', 'synthesizer', 'critic')) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $PacketRoot "agents\$CliAgent") | Out-Null
+}
+Write-Output "candidate_sha=$CandidateSha"
+Write-Output "campaign_root=$CampaignRoot"
+Write-Output "packet_root=$PacketRoot"
+Write-Output "env_source_present=$([bool](Test-Path -LiteralPath $RepoEnv))"
 ```
 
-Do not use `--tier live` and do not run the suite command.
+Expected: the candidate SHA is the clean Task 8 SHA; all five literal packet roots exist; no credential value is printed; and no provider or LangSmith call occurs.
 
-- [ ] **Step 4: Strictly validate and inventory each artifact**
+- [ ] **Step 2: Create the two offline-only packet helpers before any paid command**
 
-For each `results.json`, record in the ledger:
+Create these ignored files with `apply_patch`; do not add them to Git. The helpers must refuse to overwrite an existing output path, must use UTF-8 JSON, and must return a nonzero exit code on validation failure.
+
+`record_eval_provenance.py` has this exact interface:
 
 ```text
-agent
-experiment name / artifact path / experiment URL
-candidate SHA and configuration fingerprint
-cases completed / repetitions completed / hard gates
-status and mean score
-all target failure stages/reasons
-all safe provider_failure.kind values found under successful fallback output.errors
-judge status/not-run reasons and safe evaluator diagnostics
-per-case deterministic score / judge score / aggregate
-all prohibited-call gate failures
-all trajectory stop reasons
+python .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_provenance.py \
+  --config config.yaml \
+  --agent researcher \
+  --output .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-provenance.json
 ```
 
-Never record provider exception messages or prompt/provider content.
+It loads `config.yaml` with the repository's existing `load_config(..., strict=False)` behavior, snapshots only environment-variable names and presence/source (`process`, `repo_dotenv`, or `absent`), and writes these safe fields: `schema_version`, UTC creation time, internal/CLI agent name, candidate Git SHA/short SHA/branch/dirty bit, absolute worktree path, Python executable/version, resolved `deep_research` import path, config path, effective target/judge model and effort, `llm.max_tokens`, `agents.planner_final_max_tokens`, `llm.retry_count`, `llm.retry_initial_delay`, `llm.retry_max_delay`, controlled repetitions/floor/case-average threshold/max concurrency, dataset/rubric versions, LangSmith endpoint, configuration/judge/prompt fingerprints, and boolean presence for `DEEPSEEK_API_KEY`, `TAVILY_API_KEY`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, and `OPENAI_API_KEY`. It must never write any environment value, `.env` value, prompt, request, response, exception text, or full environment dump.
 
-- [ ] **Step 5: Assign root-cause IDs**
-
-Use these prefixes:
+`record_eval_inventory.py` has this exact interface:
 
 ```text
-researcher-...
-source-evaluator-...
-fact-checker-...
-synthesizer-...
-critic-...
+python .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/record_eval_inventory.py \
+  --agent researcher \
+  --results $ResultsPath \
+  --provenance .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-provenance.json \
+  --output .superpowers/sdd/2026-09-08-cross-agent-planner-fix-parity/agents/researcher/baseline-inventory.json
 ```
 
-A root cause must be falsifiable and evidence-backed. Do not call every low judge score a prompt problem. Separate infrastructure/provider failures from deterministic quality failures.
+`$ResultsPath` must be the one literal path resolved by Step 7; it must not contain a wildcard, an ellipsis, or a guessed experiment directory. The helper strictly validates `ExperimentResult`, the agent/tier/case identities, three repetitions per case, the provenance SHA, and the results SHA-256. It writes only the bounded fields named by the inventory contract in the post-gate section: case/repetition IDs, completion, failed gate IDs/details, deterministic metric maps, judge dimensions, aggregate scores, typed target failure stage/reason/detail kind, safe fallback provider kinds/operations, typed judge status/reason/diagnostic kinds, ReAct stop reason, prohibited-call count, direct trace/evaluator/experiment URLs, configuration/prompt/judge fingerprints, model/effort values, and no raw messages. If a successful fallback `TargetOutput` is visible only in a target trace, the worker first writes a `target-output-projection.json` containing only its typed `operation` and provider snapshot fields; if the trace does not expose a safe projection, the inventory records `fallback_diagnostic_visibility: unavailable` and the agent cannot be promoted on that evidence.
 
-- [ ] **Step 6: Determine terminal routing per agent**
+Expected: `python ... --help` for both helpers is offline; the helpers have no provider imports or network calls; and a secret scan over either helper's output finds no known secret.
 
-For each agent:
+- [ ] **Step 3: Resolve effective configuration and retry/environment provenance**
+
+Use the existing launcher or inherited environment to print only the following JSON object; do not print `os.environ`, `.env`, or any secret value:
+
+```powershell
+$env:CAMPAIGN_AGENT = 'researcher'
+python $RunWithEnv $EnvSource python -c "import json, os; from deep_research.utils.config import load_config; s=load_config('config.yaml', strict=False); print(json.dumps({'agent':os.environ['CAMPAIGN_AGENT'],'llm_model':s.llm.model,'llm_max_tokens':s.llm.max_tokens,'retry_count':s.llm.retry_count,'retry_initial_delay':s.llm.retry_initial_delay,'retry_max_delay':s.llm.retry_max_delay,'planner_final_max_tokens':s.agents.planner_final_max_tokens,'target_model':s.evaluation.target_model,'target_effort':s.evaluation.target_reasoning_effort_overrides.get(os.environ['CAMPAIGN_AGENT'], s.evaluation.target_reasoning_effort),'judge_model':s.evaluation.judge_model,'judge_effort':s.evaluation.judge_reasoning_effort,'controlled_repetitions':s.evaluation.controlled_repetitions,'repetition_floor':s.evaluation.controlled_repetition_floor,'case_average_threshold':s.evaluation.controlled_case_average_threshold,'max_concurrency':s.evaluation.max_concurrency,'dataset_version':s.evaluation.dataset_version,'rubric_version':s.evaluation.rubric_version}, sort_keys=True))"
+Remove-Item Env:CAMPAIGN_AGENT
+```
+
+Repeat the probe with `source_evaluator`, `fact_checker`, `synthesizer`, and `critic` before their own provenance files. The required effective values are: `target_model=deepseek-v4-flash`; target effort `high` for Researcher and Source Evaluator and `max` for Fact Checker, Synthesizer, and Critic; `judge_model=deepseek-v4-flash`; `judge_effort=max`; `llm.max_tokens=4096`; `agents.planner_final_max_tokens=4096`; controlled repetitions `3`; repetition floor `0.65`; case-average threshold `0.80`; maximum concurrency `1`; dataset version `1`; and rubric version `1`.
+
+The retry ruling is exact: `retry_count=5`, `retry_initial_delay=1.0`, and `retry_max_delay=16.0`, producing the repository-owned 1/2/4/8/16-second backoff for retryable failures. If the repository `.env` changes any of these values, set only the non-secret process overrides below before the next provenance helper and record the ruling in the ledger; never edit `.env` in this campaign:
+
+```powershell
+$env:LLM_RETRY_COUNT = '5'
+$env:LLM_RETRY_INITIAL_DELAY = '1.0'
+$env:LLM_RETRY_MAX_DELAY = '16.0'
+$env:AGENTS_PLANNER_FINAL_MAX_TOKENS = '4096'
+```
+
+If model, target/judge effort, global max tokens, repetition, threshold, concurrency, dataset, or rubric values differ after the process overrides, stop with `INFRASTRUCTURE_BLOCKED` for the affected agent and do not spend a baseline call. A configuration mismatch is not a quality failure and is not repaired by a prompt edit.
+
+- [ ] **Step 4: Write one immutable baseline-provenance record per agent**
+
+Run the provenance helper once per literal agent, before that agent's first baseline command. Do not reuse one agent's file for another agent and do not overwrite a file that already exists:
+
+```powershell
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent researcher --output $PacketRoot\agents\researcher\baseline-provenance.json
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent source_evaluator --output $PacketRoot\agents\source-evaluator\baseline-provenance.json
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent fact_checker --output $PacketRoot\agents\fact-checker\baseline-provenance.json
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent synthesizer --output $PacketRoot\agents\synthesizer\baseline-provenance.json
+python $PacketRoot\record_eval_provenance.py --config config.yaml --agent critic --output $PacketRoot\agents\critic\baseline-provenance.json
+```
+
+Expected: five files, each naming the same clean Task 8 candidate SHA and its own effective target effort; each file contains only safe non-secret provenance; and each file's SHA-256 is recorded in the ignored ledger. If a file exists, inspect its safe fields and reuse it only when its candidate SHA, effective configuration, and file hash match the current gate; otherwise stop and create no replacement until the discrepancy is ruled on.
+
+- [ ] **Step 5: Obtain immediate human authorization before each baseline command**
+
+The controller must ask immediately before each command: “Authorize this paid controlled command for the named agent at the recorded candidate SHA? It runs the three frozen controlled cases with three repetitions each against `deepseek-v4-flash`, the recorded target effort, judge effort `max`, global `4096` tokens, the configured retry policy, and LangSmith controlled tracing; it does not use `--tier live`.” The controller must state the literal command and expected artifact path. One authorization covers one command only; do not pre-authorize the five-command sequence or reuse authorization for a confirmation, focused retest, or full validation.
+
+- [ ] **Step 6: Run each immutable full controlled baseline separately**
+
+Run exactly one command after the matching authorization. These commands intentionally omit `--case`, so each requests all three frozen cases and the harness's configured three repetitions:
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent researcher --tier controlled --config config.yaml --reasoning-effort high --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-researcher --verbose
+$ResearcherBaselineExit = $LASTEXITCODE
+if ($ResearcherBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Researcher exit code: $ResearcherBaselineExit" }
+```
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent source-evaluator --tier controlled --config config.yaml --reasoning-effort high --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-source-evaluator --verbose
+$SourceEvaluatorBaselineExit = $LASTEXITCODE
+if ($SourceEvaluatorBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Source Evaluator exit code: $SourceEvaluatorBaselineExit" }
+```
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent fact-checker --tier controlled --config config.yaml --reasoning-effort max --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-fact-checker --verbose
+$FactCheckerBaselineExit = $LASTEXITCODE
+if ($FactCheckerBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Fact Checker exit code: $FactCheckerBaselineExit" }
+```
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent synthesizer --tier controlled --config config.yaml --reasoning-effort max --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-synthesizer --verbose
+$SynthesizerBaselineExit = $LASTEXITCODE
+if ($SynthesizerBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Synthesizer exit code: $SynthesizerBaselineExit" }
+```
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent critic --tier controlled --config config.yaml --reasoning-effort max --judge-reasoning-effort max --experiment-prefix cross-agent-planner-fix-parity-baseline-critic --verbose
+$CriticBaselineExit = $LASTEXITCODE
+if ($CriticBaselineExit -notin 0, 1, 2, 3) { throw "Unexpected Critic exit code: $CriticBaselineExit" }
+```
+
+Do not run `python -m deep_research.evaluation suite`, do not add `--tier live`, and do not edit source/config/evaluation inputs when a command returns `1`, `2`, or `3`. Exit `2` is a command/case correction with no evaluation result; exit `3` is an infrastructure/preflight result; exit `1` is completed-but-not-passing and requires typed diagnosis.
+
+- [ ] **Step 7: Resolve, hash, and strictly validate each baseline artifact**
+
+Immediately before each paid command, capture the existing matching result paths in a variable named for that literal agent. The resolver must compare its post-command result list with that pre-command list; never select an older artifact. For Researcher, use this exact pattern and repeat it with the literal values for the other four agents and prefixes:
+
+```powershell
+$BeforeResearcherResults = @(
+    Get-ChildItem -LiteralPath 'output\evaluations\researcher' -Filter 'results.json' -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.FullName }
+)
+$ResearcherResults = @(
+    Get-ChildItem -LiteralPath 'output\evaluations\researcher' -Filter 'results.json' -Recurse -ErrorAction Stop |
+        Where-Object {
+            $_.Directory.Name -like 'cross-agent-planner-fix-parity-baseline-researcher-researcher-controlled-*' -and
+            $_.FullName -notin $BeforeResearcherResults
+        } |
+        Sort-Object LastWriteTimeUtc -Descending
+)
+if ($ResearcherResults.Count -ne 1) { throw 'Researcher baseline did not produce exactly one new results.json' }
+$ResearcherResultsPath = $ResearcherResults[0].FullName
+$env:RESULTS_PATH = $ResearcherResultsPath
+$env:EXPECTED_AGENT = 'researcher'
+$env:EXPECTED_SHA = $CandidateSha
+python -c "import json, os; from pathlib import Path; from deep_research.evaluation.models import ExperimentResult; r=ExperimentResult.model_validate_json(Path(os.environ['RESULTS_PATH']).read_text(encoding='utf-8')); expected={'multi-source-coverage','conflicting-evidence','partial-search-failure'}; assert r.agent_name == os.environ['EXPECTED_AGENT']; assert r.tier == 'controlled'; assert {c.case_id for c in r.cases} == expected; assert all(len(c.repetitions) == 3 for c in r.cases); assert r.metadata.get('git_commit') == os.environ['EXPECTED_SHA']; print(json.dumps({'status':r.status,'experiment_name':r.experiment_name,'cases':len(r.cases),'repetitions':sum(len(c.repetitions) for c in r.cases),'configuration_fingerprint':r.metadata.get('configuration_fingerprint')}, sort_keys=True))"
+Remove-Item Env:RESULTS_PATH
+Remove-Item Env:EXPECTED_AGENT
+Remove-Item Env:EXPECTED_SHA
+Get-FileHash -Algorithm SHA256 -LiteralPath $ResearcherResultsPath
+```
+
+The Source Evaluator, Fact Checker, Synthesizer, and Critic validations use the same command with these exact case sets and roots: `strong-and-weak-sources|corroboration-recency-reputation|reputation-provider-failure` under `output/evaluations/source-evaluator`; `mixed-verdicts|independent-domain-evidence|verification-search-failure` under `output/evaluations/fact-checker`; `complete-cited-report|conflict-and-limitations|write-or-memory-failure` under `output/evaluations/synthesizer`; and `approve-strong-report|request-more-research|missing-evidence-or-budget-exhausted` under `output/evaluations/critic`. The validator must print only status, experiment name, counts, and fingerprints. A valid `FAILED` artifact with all 9 repetitions remains immutable evidence; it is not overwritten or relabeled.
+
+- [ ] **Step 8: Write one immutable bounded inventory per valid baseline**
+
+Invoke `record_eval_inventory.py` with the resolved literal path, matching provenance file, and matching output path:
+
+```powershell
+python $PacketRoot\record_eval_inventory.py --agent researcher --results $ResearcherResultsPath --provenance $PacketRoot\agents\researcher\baseline-provenance.json --output $PacketRoot\agents\researcher\baseline-inventory.json
+```
+
+Repeat for the other four agents with their own resolved path and packet root. The helper must reject a result whose candidate SHA, agent, tier, case set, repetition count, configuration fingerprint, or prompt/judge fingerprint disagrees with provenance. Preserve direct experiment, dataset, target-trace, evaluator-trace, and evaluator-source URLs exactly when the harness supplies them; retain `null` when the integration supplies none. Never derive a URL from a prompt, case input, exception, environment value, or another trace.
+
+For every repetition, extract the complete typed row before diagnosing: all gate IDs/details, deterministic metrics, judge status and all common/agent-specific dimensions, unrounded aggregate, target failure stage/reason/details kind, fallback provider kind/operation, judge not-run reason/diagnostics, ReAct stop reason, prohibited-call count, latency/token counts when already typed, and direct trace URLs. Do not copy a provider exception message, response fragment, prompt, evaluator input, hidden reasoning, or raw trajectory into the inventory.
+
+- [ ] **Step 9: Separate provider/infrastructure, harness, and quality/trajectory evidence**
+
+Apply this precedence to every failed or suspicious row; record the selected class and the evidence that ruled out the other classes in the ledger before writing a source amendment:
+
+| Evidence | Required class and action |
+| --- | --- |
+| `TargetOutput.failure.stage` is `provider`, `trace`, `artifact`, or `setup`; a safe `details.kind` is `output_limit`, `schema_output`, `provider_timeout`, `provider_rate_limit`, `provider_transport`, `provider_http`, `provider_response`, or `provider_failure`; a fallback error carries a safe `provider_failure.kind`; or a judge is `judge_not_run` with a typed provider/transport/output-limit reason | Provider/infrastructure. Preserve the artifact, identify the exact target/judge operation if visible, perform the one same-SHA confirmation in Step 11, and do not edit prompts or add a budget field. A `judge_output_limit` is a judge-side infrastructure finding, not a target operation budget candidate. |
+| Offline evidence proves that a frozen case, deterministic evaluator, gate, judge adapter, artifact projection, or status calculation contradicts its declared contract | Harness/evaluator defect. Do not tune the agent. Record the offline reproduction, affected artifact paths, and `HARNESS_DEFECT_BLOCKED`; request a separate approved harness plan and a new baseline. |
+| The target completed with no unexplained typed provider/infrastructure failure, the required traces and judges are valid, and a hard gate, deterministic metric, visible trajectory, state update, or judge dimension shows an agent behavior defect | Deterministic quality/trajectory. Create one agent+operation root-cause record and route to Task 11 only if the exact target operation is a typed output-limit; otherwise route to Task 12. |
+| A known failure case records its expected scripted search/reputation/write/memory/budget recovery and passes its frozen recovery gate | Expected case behavior. Keep it in evidence, do not classify it as an LLM provider failure, and do not create a repair solely because the safe recovery error exists. |
+
+`provider_failure.kind` is never inferred from `str(error)`, a judge score, a timeout-looking duration, or a completed HTTP request. If the operation or typed class cannot be established from safe evidence, record `diagnostic_visibility: unavailable`, do not add a token budget, and route the agent to the infrastructure confirmation/blocked path.
+
+- [ ] **Step 10: Create separate operation-scoped diagnoses and route each agent**
+
+For every observed failure, create a new file under the exact agent root, for example `agents/researcher/root-causes/researcher-react-decision-001.md` or `agents/source-evaluator/root-causes/source-evaluator-scoring-001.md`. The stable ID is formed from the literal CLI name, the operation in kebab case, and a three-digit sequence, such as `researcher-react-decision-001`; record the exact snake-case operation separately. Use these operation spellings only: `react_decision`, `researcher_finding_extraction`, `source_evaluator_scoring`, `fact_checker_claim_extraction`, `fact_checker_claim_verification`, `synthesizer_report_draft`, and `critic_report_review`. A single agent may therefore have multiple independent records; never combine extraction and verification, ReAct and final review, or two agents under one ID.
+
+Each root-cause file must contain literal values for: agent/internal name, CLI name, exact operation, case ID, repetition numbers, immutable baseline inventory path and SHA-256, direct trace/experiment URLs, typed class and safe details, failed gates/metrics/judge dimensions, visible trajectory/state evidence, at least one counterexample or counterevidence item, falsifiable hypothesis, why transport/schema/harness alternatives are ruled out, smallest permitted repair surface, predicted target and non-target invariants, current focused-attempt count, rollback commit, reviewer disposition, and next action. A passing agent receives an explicit `baseline-pass-no-repair.md` record with `diagnosis: no repair required` and an empty root-cause-ID list; do not manufacture a defect ID for a passing baseline.
+
+Route each agent exactly once after its baseline inventory:
 
 ```text
-A. PASS: full controlled status REVIEW REQUIRED, all expected reps complete, no unexplained target/fallback provider failure, no judge infrastructure failure that invalidates quality.
-B. PROVIDER OUTPUT-LIMIT CANDIDATE: typed output_limit observed in a specific target operation; route to Task 10.
-C. OTHER PROVIDER/SCHEMA CANDIDATE: typed schema/transport/http/etc.; diagnose typed cause before any prompt/budget edit; use Task 11 amendment process.
-D. QUALITY/TRAJECTORY CANDIDATE: target completed but gate/deterministic/judge evidence identifies one behavior defect; use Task 11 amendment process.
-E. HARNESS DEFECT: frozen harness/evaluator is demonstrably wrong; stop tuning that agent and open a separate harness plan.
+REVIEW REQUIRED + all nine rows valid + no unexplained target/judge/provider issue -> write no-repair record; Task 13 may reuse the immutable baseline.
+Typed target-side output_limit + exact eligible non-ReAct operation -> Task 11.
+Typed target-side schema/provider/transport/HTTP failure, typed fallback issue, or deterministic quality/trajectory failure -> Task 12 after diagnosis.
+Persistent provider/trace/artifact/setup failure after the one confirmation -> terminal_state INFRASTRUCTURE_BLOCKED; stop that agent.
+Offline-proven harness/evaluator defect -> terminal_state HARNESS_DEFECT_BLOCKED; stop that agent and request a separate plan.
+Three unsuccessful focused repairs for one unchanged root-cause ID -> terminal_state ESCALATED; write escalation.md and stop that root cause.
 ```
 
-No source edit occurs in Task 9.
+- [x] **Step 11: Make the one allowed same-SHA infrastructure confirmation**
+
+If a baseline command exits `3`, produces an incomplete artifact, lacks required trace/artifact evidence, or contains an unclassified/persistent provider or judge failure that prevents a valid quality verdict, write the matching `confirmation-provenance.json` before a new command. Obtain a new immediate human authorization, then rerun the exact same agent command with the exact same candidate SHA, case set, model/effort, effective retry values, global `4096`, and configuration fingerprints, changing only the experiment prefix to `cross-agent-planner-fix-parity-confirmation-$CliAgent`, where `$CliAgent` is set to one literal value from the five-agent execution map.
+
+If the same typed infrastructure/trace/artifact failure persists, preserve both immutable results/provenance records, write `terminal-state.md` with `terminal_state: INFRASTRUCTURE_BLOCKED`, `harness_status: INFRASTRUCTURE FAILURE` when that is the harness status, the actual exit code, and `repair_attempts: 0`, and stop that agent. If the confirmation produces a valid 3×3 artifact, write `confirmation-inventory.json`, keep the first attempt immutable, and use the valid evidence for diagnosis; the confirmation is not a repair attempt. A transient provider failure that disappears is recorded as provider evidence, not silently erased.
+
+- [x] **Step 12: Close Task 10 without editing source or running a suite**
+
+Task 10 closed at candidate `d6a082c` after all five agents produced valid baseline and confirmation inventories. The confirmation results preserved typed judge/provider failures and no Windows path preflight failure. Each agent's terminal record is `INFRASTRUCTURE_BLOCKED` with `repair_attempts: 0`; no target-side output-limit evidence exists, so Tasks 11 and 12 remain not applicable and no paid suite/live run is authorized by this plan.
+
+Before advancing, verify that every agent has a baseline provenance file, a valid baseline or explicit infrastructure confirmation record, a safe inventory or a documented artifact-unavailable stop, a no-repair or operation-scoped diagnosis, and a ledger entry naming the next task. Run:
+
+```powershell
+git diff --name-only
+git status --short
+if (git diff --name-only | Where-Object { $_ -notlike '.superpowers/*' -and $_ -notlike 'output/*' }) { throw 'Task 10 changed tracked source/test/config/evaluation files' }
+```
+
+Expected: no tracked changes beyond the already reviewed Task 9 candidate; no `suite` command has run; and no agent is silently omitted. Do not begin Task 11 or Task 12 until the required Task 10 baseline decision exists for that agent.
 
 ---
 
-### Task 10: Evidence-Gated Operation-Specific Output-Budget Repair
+### Task 11: Evidence-Gated Operation-Specific Output-Budget Repair — NOT STARTED / NOT APPLICABLE
 
 **Files:** conditional; modify only for an agent/operation that produced a typed target-side `output_limit`
 - `src/deep_research/utils/config.py`
@@ -985,7 +1477,7 @@ No source edit occurs in Task 9.
 - provider tests only if the existing `max_tokens` override contract itself is broken (not expected)
 
 **Interfaces:**
-- Consumes: one Task 9 artifact proving target-side `output_limit`, including exact operation name and configured cap 4096.
+- Consumes: one Task 10 artifact proving target-side `output_limit`, including exact operation name and configured cap 4096.
 - Produces: a single agent-operation-specific budget field; only that request passes it to `complete_structured(max_tokens=...)`; ReAct and judge calls remain `None`/global 4096.
 
 Candidate field names are fixed by operation:
@@ -1036,118 +1528,81 @@ Do not modify `llm.max_tokens` or any judge/ReAct call.
 
 Run the affected agent tests, config tests, provider max-token tests, evaluation fingerprint tests, then the full offline suite and Ruff.
 
-- [ ] **Step 5: Review before any paid retest**
+- [ ] **Step 5: Fresh review before any paid retest**
 
-Fresh reviewer must explicitly verify isolation: affected operation gets 8192 only when process override is set; all other target operations, ReAct decisions, and judge calls retain global 4096.
+Write `agents/<cli-agent>/reviews/budget-attempt-<attempt>.md` with a fresh reviewer disposition. The reviewer must confirm the exact operation field, default `4096`, process override `8192`, unchanged global/ReAct/judge `4096`, unchanged retry policy, unchanged frozen inputs, and the RED/GREEN evidence. `needs-change` blocks the paid command; `approved` is required. Allow at most five review/fix loops for the campaign, then stop and record the unresolved finding.
 
-- [ ] **Step 6: Human-confirmed focused 8192 experiment**
+- [ ] **Step 7: Human-confirmed focused three-repetition budget test**
 
-Set only the new operation-specific env override to 8192 in the launching shell, verify effective config/fingerprint without secrets, then run exactly the failing controlled case with three repetitions via:
+Use the literal row for the diagnosed agent and operation. Set `$CliAgent`, `$CaseId`, `$ReasoningEffort`, `$BudgetEnv`, `$RootCauseId`, and `$Attempt` to the recorded literal values; set only `$BudgetEnv` to `8192`; run the safe config probe; and obtain immediate authorization for this one command:
 
 ```powershell
-python -m deep_research.evaluation agent <agent> `
-  --config config.yaml `
-  --case <failing-case-id> `
-  --experiment-prefix cross-agent-<agent>-8192 `
-  --verbose
+[Environment]::SetEnvironmentVariable($BudgetEnv, '8192', 'Process')
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent $CliAgent --tier controlled --config config.yaml --case $CaseId --reasoning-effort $ReasoningEffort --judge-reasoning-effort max --experiment-prefix ("cross-agent-planner-fix-parity-focused-{0}-{1}-attempt-{2}" -f $CliAgent, $RootCauseId, $Attempt) --verbose
+$FocusedExit = $LASTEXITCODE
+[Environment]::SetEnvironmentVariable($BudgetEnv, $null, 'Process')
+if ($FocusedExit -notin 0, 1, 2, 3) { throw "Unexpected focused exit code: $FocusedExit" }
 ```
 
-Clear the process override after evidence is recorded.
+There is no ReAct budget variable. Resolve exactly one new `results.json` with the pre-command artifact list and inventory it under the exact packet root. A focused pass requires three repetitions, all hard gates, every aggregate at least `0.65`, case average at least `0.80`, scored judges, no target-side output-limit, no prohibited call, and no new non-target failure. If output-limit persists at `8192`, create a new diagnosis, remove unsupported changes, and do not try `16384` automatically.
 
-Focused gate passes only if all three target repetitions complete, the target-side output-limit disappears, hard gates pass, and all expected judges score without evaluator failure. If output-limit persists at 8192, stop and write a new diagnosis; do not automatically jump to 16384.
+- [ ] **Step 8: Commit only evidence-supported budget repair**
 
-- [ ] **Step 7: Commit only after focused evidence justifies keeping the field**
-
-Use commit subject:
-
-```text
-fix(<agent>): isolate <operation> output budget
-```
-
-If focused evidence disproves the hypothesis, revert the unneeded config/call-site change and retain the artifact/ledger evidence; do not keep speculative knobs.
+After the focused inventory passes and the fresh review is approved, commit only the exact config field, call site, tests, and ledger reference with `fix(<literal-cli-agent>): isolate <literal-operation> output budget`; record SHA and artifact paths. Three unsuccessful focused attempts for the same root-cause ID produce `escalation.md` and `terminal_state: ESCALATED`; a provider/trace failure uses the one confirmation and `INFRASTRUCTURE_BLOCKED`, not a repair attempt. Never modify ReAct, judge, global `llm.max_tokens`, or an unrelated agent.
 
 ---
 
-### Task 11: Evidence-Gated Agent-Specific Quality / Trajectory Repair Loop
+### Task 12: Evidence-Gated Agent-Specific Quality / Trajectory Repair Loop — COMPLETE
 
-**Files:** conditional per diagnosed root cause; never edit frozen evaluation inputs
+**Files:** conditional per diagnosed root cause; never edit frozen evaluation inputs, evaluators, judges, or the SDD ledger's source-of-truth definitions.
 
-**Interfaces:**
-- Consumes: one Task 9 or Task 10 focused failure with a falsifiable non-harness root cause.
-- Produces: one cohesive repair, one focused three-repetition validation, and at most one full controlled validation before moving to the next root cause.
+**Allowed agent-specific surfaces:** Researcher `src/deep_research/agents/researcher.py`, its prompt in `src/deep_research/agents/prompts.py`, and `tests/test_agents/test_researcher.py`; Source Evaluator uses `source_evaluator.py` and `test_source_evaluator.py`; Fact Checker uses `fact_checker.py` and `test_fact_checker.py`; Synthesizer uses `synthesizer.py` and `test_synthesizer.py`; Critic uses `critic.py` and `test_critic.py`. A shared runtime/prompt change invalidates every affected agent's evidence and requires new baselines. No Planner tuning is allowed.
 
-- [ ] **Step 1: Route the failure before editing**
+**Interfaces:** consumes one typed Task 10/11 diagnosis; produces one minimal agent-specific repair, offline RED/GREEN evidence, fresh review approval, and one focused three-repetition result. Permitted quality categories are `agent_prompt`, `agent_local_validation`, `agent_tool_policy`, and `agent_fallback_state`. Provider/infrastructure, schema-output, harness, and output-limit findings remain on their typed routes.
 
-Classify the root cause into exactly one category:
+- [ ] **Step 1: Record the operation-scoped amendment before editing**
 
-```text
-shared runtime contract (should already be solved by Tasks 2-3)
-agent prompt/instruction ambiguity
-agent local validation/normalization
-agent tool policy/trajectory control
-agent fallback/state-update logic
-structured provider output limit (Task 10 instead)
-provider transport/rate/HTTP reliability (do not tune prompt)
-schema-output failure
-harness/evaluator defect (separate plan)
+Write `agents/$CliAgent/repairs/$RootCauseId/attempt-$Attempt-amendment.md` with literal agent/CLI/operation, cases and repetitions, immutable inventory and trace paths, typed class, falsifiable hypothesis, counterevidence, ruled-out alternatives, exact allowed files, RED test node, smallest change, target/non-target invariants, focused command, rollback, and expected status. Never combine ReAct with extraction/verification/review or two agents.
+
+- [ ] **Step 2: TDD one minimal repair**
+
+Set `$TestNode` to the literal mapped agent test file and run `python -m pytest -q $TestNode -p no:cacheprovider`; the root-cause test must fail for the recorded defect. Make the smallest prompt, behavior, or state change for that operation only. Preserve: Researcher prior findings/no invented URLs; Source Evaluator one row/source, bounded fallback, and low-confidence semantics; Fact Checker prior claims, independent domains, and `insufficient_evidence`/`unverified`; Synthesizer evidence-only assembly, truthful persistence, and known citations; Critic bounded scores, actionable gaps, routing, and macro limits.
+
+- [ ] **Step 3: Run offline GREEN and isolation checks**
+
+Run `python -m pytest -q $TestNode -p no:cacheprovider`, the complete literal agent test module, `python -m pytest -q -p no:cacheprovider`, `python -m ruff check src tests`, and `git diff --check`. Confirm no frozen input, evaluator, judge, retry, global budget, Planner path, or unrelated agent changed. If RED is not reproduced or GREEN changes a non-target invariant, revert the candidate and return to diagnosis.
+
+- [ ] **Step 4: Fresh review and one authorized focused retest**
+
+Write `agents/$CliAgent/reviews/attempt-$Attempt.md`; a fresh reviewer must resolve Critical/Important findings and approve the exact diff before any paid command. Obtain immediate authorization for one command, set `$CliAgent`, `$CaseId`, `$ReasoningEffort`, `$RootCauseId`, and `$Attempt` to their literal recorded values, then run:
+
+```powershell
+python $RunWithEnv $EnvSource python -m deep_research.evaluation agent $CliAgent --tier controlled --config config.yaml --case $CaseId --reasoning-effort $ReasoningEffort --judge-reasoning-effort max --experiment-prefix ("cross-agent-planner-fix-parity-focused-{0}-{1}-attempt-{2}" -f $CliAgent, $RootCauseId, $Attempt) --verbose
 ```
 
-- [ ] **Step 2: Write a literal repair amendment**
+Resolve one new result path and inventory every gate, deterministic metric, judge dimension/status, trajectory stop reason, typed provider/fallback kind and operation, prohibited-call count, and safe URL. The focused gate requires three repetitions, all hard gates, aggregate floor `0.65`, case average `0.80`, scored judges, no infrastructure/harness failure, target improvement, and no non-target regression.
 
-Mirror the Planner campaign discipline. Before source edits, record:
+- [ ] **Step 5: Enforce routing and the attempt limit**
 
-```text
-root-cause ID and mechanism
-artifact/trace evidence
-why neighboring hypotheses are ruled out
-exact file(s) allowed to change
-literal failing offline test
-minimal implementation text
-focused command and expected delta
-non-target regression expectations
-rollback condition
-```
+Typed provider/trace/artifact/setup failure gets the one same-SHA confirmation and then `INFRASTRUCTURE_BLOCKED`; an offline harness contradiction gets `HARNESS_DEFECT_BLOCKED`; a target-side `output_limit` gets Task 11; a failed quality hypothesis gets a new root-cause ID. After three unsuccessful focused attempts for one unchanged ID, write `escalation.md`, set `terminal_state: ESCALATED`, and stop. Infrastructure and harness blocks do not consume repair attempts; unrelated causes are never bundled.
 
-- [ ] **Step 3: TDD the repair**
+- [ ] **Step 6: Commit only a passing cohesive repair**
 
-Write the test, run RED, make the minimal change, run GREEN, run neighboring tests, Ruff, and `git diff --check`.
-
-Prompt-repair rule: copy a *principle* from Planner only if the sibling's evidence proves the same ambiguity. Examples:
-- unnecessary/prohibited search: tell that agent when existing evidence is sufficient or how to prioritize provided queries; do not tell Researcher/Fact Checker never to search, because search is part of their role;
-- ordering/coverage: state the exact agent contract that failed, not Planner's priority/benefit-risk rubric;
-- invented constraints/citations: enforce only the sibling's own output/evidence contract.
-
-- [ ] **Step 4: Review the diagnosis and diff before provider calls**
-
-Use a fresh reviewer. Fix Critical/Important findings before proceeding.
-
-- [ ] **Step 5: Human-confirmed focused controlled retest**
-
-Run the exact failing case for three repetitions. Record gates, deterministic/judge score, trajectory, typed provider/fallback diagnostics, and prohibited calls. The repair advances only if the targeted metric/failure improves without a new non-target regression.
-
-- [ ] **Step 6: Attempt limit**
-
-After three unsuccessful focused repairs for the same root-cause ID, stop that root-cause loop and write an escalation entry. Do not keep prompt-tuning indefinitely.
-
-- [ ] **Step 7: Commit a successful cohesive repair**
-
-Use an agent-specific commit subject and record SHA/evidence in the ledger.
-
-Repeat Task 11 only for another independently diagnosed root cause; never bundle unrelated causes in one repair.
+After focused approval, commit only the agent-specific files with `fix($CliAgent): repair $Operation behavior`, record SHA and evidence, and route to Task 13. A failed or deferred attempt remains immutable evidence and is not called repaired.
 
 ---
 
-### Task 12: Full Controlled Validation for Every Repaired Agent
+### Task 13: Full Controlled Validation for Every Repaired Agent — COMPLETE WITH INFRASTRUCTURE BLOCKS
 
 **Files:**
 - No tracked changes during validation
 - Update ignored ledger and ignored artifacts
 
 **Interfaces:**
-- Consumes: the final candidate commit for one agent after Tasks 10/11.
+- Consumes: the final candidate commit for one agent after Tasks 11/12.
 - Produces: one authoritative nine-repetition full controlled artifact at that commit.
 
-- [ ] **Step 1: Re-run the full offline suite and verify clean Git state**
+- [x] **Step 1: Re-run the full offline suite and verify clean Git state**
 
 ```powershell
 python -m pytest -q -p no:cacheprovider
@@ -1156,11 +1611,13 @@ git diff --check
 if (git status --porcelain) { throw 'tracked worktree must be clean before controlled validation' }
 ```
 
-- [ ] **Step 2: Obtain immediate human confirmation for this agent's full controlled run**
+Result: final post-documentation verification passed with `1,944 passed, 1 deselected, 2 warnings`; Ruff and `git diff --check` passed. The tracked documentation changes were then prepared for commit; ignored evaluation evidence remains outside Git.
+
+- [x] **Step 2: Obtain immediate human confirmation for this agent's full controlled run**
 
 State exact candidate SHA, agent, command, model/reasoning configuration, effective non-secret budgets, and cost/network scope.
 
-- [ ] **Step 3: Run the full controlled dataset**
+- [x] **Step 3: Run the full controlled dataset**
 
 ```powershell
 python -m deep_research.evaluation agent <agent> `
@@ -1169,7 +1626,7 @@ python -m deep_research.evaluation agent <agent> `
   --verbose
 ```
 
-- [ ] **Step 4: Validate terminal state**
+- [x] **Step 4: Validate terminal state**
 
 A repaired agent is green only when:
 
@@ -1185,13 +1642,13 @@ no prohibited-call regression appeared
 
 If a typed provider infrastructure failure prevents a valid quality verdict after the approved retry policy, record `INFRASTRUCTURE_BLOCKED` for that run; do not disguise it as an agent-quality failure.
 
-- [ ] **Step 5: Record unchanged agents too**
+- [x] **Step 5: Record unchanged agents too**
 
-If an agent passed its Task 9 baseline and required no repair, its immutable baseline artifact is its authoritative validation; do not spend money rerunning it merely for symmetry unless later shared code changes touched its execution path. If later shared code did touch it, rerun only after immediate human confirmation.
+If an agent passed its Task 10 baseline and required no repair, its immutable baseline artifact is its authoritative validation; do not spend money rerunning it merely for symmetry unless later shared code changes touched its execution path. If later shared code did touch it, rerun only after immediate human confirmation.
 
 ---
 
-### Task 13: Create the Permanent Cross-Agent Fix Log
+### Task 14: Create the Permanent Cross-Agent Fix Log — COMPLETE WITH POST-REPAIR EVIDENCE
 
 **Files:**
 - Create: `docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md`
@@ -1200,7 +1657,7 @@ If an agent passed its Task 9 baseline and required no repair, its immutable bas
 - Consumes: SDD ledger, git history, reviewed diffs, and validated controlled artifacts.
 - Produces: a tracked, secret-safe permanent record analogous to the Planner fix log.
 
-- [ ] **Step 1: Write the log with these exact sections**
+- [x] **Step 1: Write the log with these exact sections**
 
 ```markdown
 # Cross-Agent Planner-Fix Parity Fix Log (2026-09-08)
@@ -1210,11 +1667,8 @@ If an agent passed its Task 9 baseline and required no repair, its immutable bas
 ## 3. Transferability Matrix
 ## 4. Shared RC-A ReAct Boundary Fix
 ## 5. Planner Local-Wrapper Removal / Regression Evidence
-## 6. Researcher Findings and Repairs
-## 7. Source Evaluator Findings and Repairs
-## 8. Fact Checker Findings and Repairs
-## 9. Synthesizer Findings and Repairs
-## 10. Critic Findings and Repairs
+## 6. Controlled Baseline and Confirmation Findings
+## 7. Agent-Specific Repair Decision
 ## 11. Safe Provider Diagnostic Projection
 ## 12. Operation-Specific Budget Decisions
 ## 13. Controlled Evaluation Evidence
@@ -1226,22 +1680,22 @@ If an agent passed its Task 9 baseline and required no repair, its immutable bas
 
 For an agent that needed no change, say so and cite the exact controlled artifact/gates that justified no change. Do not manufacture a repair section.
 
-- [ ] **Step 2: Secret/data-leakage scan**
+- [x] **Step 2: Secret/data-leakage scan**
 
 The fix log may contain commit SHAs, case IDs, gate IDs, finite typed reasons, non-secret config values/fingerprints, counts, scores, experiment URLs directly supplied by LangSmith, and static error messages. It must not contain prompts, provider responses, evaluator inputs, secrets, hidden reasoning, raw exception strings, or raw environment dumps.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git add docs/superpowers/2026-09-08-cross-agent-planner-fix-parity-fix-log.md
 git commit -m "docs: record cross-agent planner-fix parity evidence"
 ```
 
-Record `Task 13: complete`.
+Record `Task 14: complete` only after the log is updated with the final controlled evidence.
 
 ---
 
-### Task 14: Final Offline Verification and Whole-Branch Review
+### Task 15: Final Offline Verification; Whole-Branch Review Deferred
 
 **Files:**
 - No new production scope
@@ -1250,7 +1704,7 @@ Record `Task 13: complete`.
 **Interfaces:**
 - Produces: review-clean branch and final execution handoff; no merge/push.
 
-- [ ] **Step 1: Run authoritative full verification**
+- [x] **Step 1: Run authoritative full verification after the final Task 13/14 documentation update**
 
 ```powershell
 python -m pytest -q -p no:cacheprovider
@@ -1262,7 +1716,9 @@ git log --oneline --decorate --max-count=30
 
 Expected: full suite green; Ruff/whitespace green; clean tracked worktree.
 
-- [ ] **Step 2: Run reserved-data leakage checks over changed tracked files**
+Result: `1,944 passed, 1 deselected, 2 warnings` in `30.23s`; Ruff passed; `git diff --check` passed. The warnings are third-party deprecations from LangSmith/FastAPI/httpx and are unrelated to this branch.
+
+- [x] **Step 2: Run reserved-data leakage checks over changed tracked files**
 
 Inspect the diff from `$ApprovedBase` and verify no added production/logging path contains:
 
@@ -1277,6 +1733,8 @@ unbounded validation input values
 ```
 
 Legitimate test assertions may mention these strings only to prove they are absent.
+
+Result: the added tracked documentation contains only bounded typed failure names, counts, hashes, repository-relative artifact paths, and explicit statements that raw provider content and secrets are excluded. No raw exception, prompt, evaluator input, environment dump, or secret value was added.
 
 - [ ] **Step 3: Dispatch the final whole-branch reviewer**
 
@@ -1316,6 +1774,357 @@ Do not merge, push, open a PR, deploy, or begin live evaluation as part of this 
 
 ---
 
+### Task 16: Repair Controlled Scenario-Miss Semantics — COMPLETE (REVIEWED)
+
+Sol High's re-review identified a harness contract defect: an injected in-memory search double currently records every query absent from the exact scenario map as `prohibited_calls`, even though this is a scenario miss rather than an attempted real-service access. This task must preserve fail-closed controlled isolation while separating `scenario_misses`/`unscripted_queries` from true prohibited dependency/tool access.
+
+- Keep `real_services_used` empty and do not re-enable Tavily, HTTP, Chroma, or any other live dependency in controlled mode.
+- Preserve the existing `no_prohibited_calls` security/isolation gate for actual forbidden dependency access; scenario misses must not be promoted to that gate.
+- Add bounded typed telemetry for scenario misses, including the tool and query identity needed to diagnose cases but excluding secrets, prompts, raw provider responses, and unbounded payloads.
+- Introduce a versioned evaluator/case contract for any changed controlled scenario. Preserve all v1 cases, v1 inputs, v1 inventories, and v1 results as immutable evidence; never silently rewrite v1.
+- Register tests against the real case registry and scenario definitions, including the Critic strong case's planned-query-to-scripted-query relationship. Correct the stale Critic test comment and remove duplicated provider-failure vocabulary only if the implementation surface already exposes a safe shared constant.
+- Do not alter target prompts, agent budgets, global `llm.max_tokens == 4096`, thresholds, scoring weights, or live dependencies in this task.
+- Required evidence: RED tests showing the current classification, GREEN tests for the separated classification and versioned case contract, focused evaluator/case/dependency tests, full offline gate, Luna-max implementation report, and Luna-max task review.
+
+### Task 17: Improve Judge Diagnostics and Status Precedence — COMPLETE (REVIEWED; FIX ROUND 3 APPROVED; LIVE EVIDENCE RECORDED)
+
+This task follows Task 16 and addresses the remaining judge-only infrastructure boundary. Current `$` diagnostics are too coarse because root-level Pydantic failures can represent malformed JSON, root-shape mismatch, extra fields, or other schema categories. Judge-only failures also currently collapse into ordinary `FAILED` status when deterministic hard gates pass.
+
+- Extend structured-validation telemetry with a finite allow-list of local validation categories such as `json_invalid`, `missing`, `extra_forbidden`, `type_mismatch`, `numeric_bounds`, `string_bounds`, and `other_schema`. Derive categories locally from stable Pydantic error types; never retain provider content, `input_value`, exception messages, prompts, request payloads, or raw validation context.
+- Add offline RED/GREEN coverage for malformed JSON, missing fields, nested field errors, root-level shape errors, bounded serialization, and compatibility of existing typed diagnostics.
+- Add explicit status tests for setup/trace infrastructure failure; deterministic target failure; all deterministic gates passing plus judge provider/schema/output-limit/transport failure; mixed deterministic plus judge failure; threshold failure after scored judging; and clean review-required results.
+- Implement judge-only infrastructure precedence without changing the existing mixed-failure rule: a repetition with deterministic hard-gate failure remains a quality `FAILED` case while retaining judge diagnostics; a case/experiment with all deterministic gates passing but no score due to typed judge infrastructure failure must be `INFRASTRUCTURE FAILURE` with a safe failure reason.
+- Preserve the no-fabricated-score rule, one structured repair attempt, global `llm.max_tokens == 4096`, frozen v1 artifacts, and all existing target/fallback semantics.
+- Required evidence: RED/GREEN provider and runner tests, focused evaluation/provider suite, full offline gate, Luna-max implementation report, and Luna-max task review.
+
+Post-review fix round 3 is complete: Sol High identified an OpenAI structured-repair traceback-local leak, and Luna High implemented the one-line local scrub plus a focused marker regression in `a95262f`. A fresh Luna-max task review approved the minimal two-file change with no Critical or Important findings. The controller subsequently ran the full offline gate, Ruff, and whitespace checks, updated the fix ledger, and pushed before the authorized live evidence rerun and current-HEAD whole-branch review.
+
+The authorized follow-up live wave is also complete at candidate `160c334`. It ran one sequential repetition for each of the six agents with no retries and is documented in `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-live-rerun.md`. The rerun confirms the required-field, Critic routing/context, no-prohibited-call, and no-target-budget conclusions, while judge instability remains unresolved. It does not justify prompt tuning, token-budget changes, a suite run, or a claim of quality improvement from one noisy repetition.
+
+Task 18 judge-boundary diagnosis is complete at candidate `42a2b4a`: across the preserved controlled and live artifacts, judge schema paths vary between `$` and `rationale`, and judge output limits remain intermittent judge-side diagnostics. No operation-specific target limit or repeatable contract defect was established, so the evidence-gated disposition is `no-change`. The diagnosis report is retained in the ignored SDD workspace; no provider, judge, prompt, budget, rubric, threshold, retry, or status change is authorized.
+
+### Task 19: Sequential Live-Agent Diagnosis and Repair Loop — IN PROGRESS
+
+Task 19 is the user-authorized control-plane for the post-review live work. It
+must complete one registered agent before the next begins: one live repetition;
+typed artifact diagnosis; Sol High review in the existing browser session after
+the latest evidence is pushed; one smallest evidence-backed repair or explicit
+no-change ruling; offline RED/GREEN verification; and one focused live
+confirmation for the same agent. A confirmation with an unscorable judge does
+not establish full success, and target-side output-limit evidence is required
+before any budget amendment. The first Researcher repetition and Sol High
+review are recorded in the tracked sequential-live Researcher report and fix
+log; Task 20's focused confirmation is now recorded, and Source Evaluator is
+the current sequential task.
+
+### Task 19 Source Evaluator Checkpoint — NO-CHANGE RULING, FOCUSED CONFIRMATION NEXT
+
+The Source Evaluator live result at candidate `ce3a706` failed only
+`low_confidence_flagged` (`13/14` hard gates, deterministic quality `0.80`).
+The existing Sol High browser diagnosis at remote HEAD `ecf2b98` classified
+this as a frozen case/expectation mismatch, not an agent or evaluator defect:
+the live fixture places all four sources under one subtopic, so the designated
+weak source receives deterministic corroboration `1.0` and a `0.20` score
+floor, while the production low-confidence flag requires `overall_score <
+0.40`. The controlled analogue does not have that same topology. The same
+target-gate miss occurred in the earlier live waves, so it is not treated as a
+stochastic provider event.
+
+No Source Evaluator production, prompt, evaluator, case, rubric, threshold,
+weight, provider, budget, or fallback change is authorized. The judge's typed
+schema failures remain independent and produced no score. After recording
+this no-change ruling, exactly one focused Source Evaluator confirmation is
+allowed; another `low_confidence_flagged` miss will not be treated as new
+agent-repair evidence, and a judge failure must remain infrastructure-blocked.
+
+The focused confirmation at candidate `424ed6c` again failed only
+`low_confidence_flagged` (`13/14` hard gates, deterministic quality `0.80`).
+This repetition had a scorable judge (`0.77`) and aggregate `0.78`, but the
+case still failed its absolute low-confidence expectation. The evidence
+therefore confirms the frozen-contract mismatch rather than a Source Evaluator
+agent defect. Source Evaluator is complete for this sequential loop with no
+production change; under the original frozen-case campaign constraints,
+Source Evaluator would have been the next agent.
+
+### Production-Readiness Correction — SOURCE EVALUATOR NOT READY
+
+The user clarified that the objective is not merely to avoid an unjustified
+agent-code change: the repaired agent must be fit for production, with its
+metrics coherent, green where required, and ready for review. Therefore the
+Source Evaluator no-change ruling above is not a completion decision. The
+repeated `low_confidence_flagged` mismatch must receive a separately approved
+evaluation-contract or production-behavior decision, followed by a clean
+focused confirmation and review. The likely smallest boundary is to reconcile
+the frozen live-case topology/expected low-confidence assertion with the
+production scoring geometry; do not silently change the agent, threshold,
+weights, or case.
+
+Fact Checker was already launched before this correction and its evidence is
+preserved below, but it does not count as advancing the sequential loop or as
+evidence that the branch is production-ready. No further agent run starts
+until the Source Evaluator readiness decision is reviewed and recorded.
+
+### Sol High Production-Readiness Plan — Source Evaluator Live Case v2
+
+Sol High's task-scoped review at remote HEAD `8e0e0fb` concluded `NOT READY`
+with a bounded repair path. The production scoring implementation passed the
+controlled Source Evaluator baseline and confirmation; the failure is instead
+that live case v1 places all four findings under the same generic subtopic.
+That topology gives the weak/forum source cross-domain corroboration `1.0`
+and makes the required `low_confidence=True` expectation geometrically
+incoherent with the unchanged production threshold. Candidate `424ed6c`
+therefore remains immutable v1 evidence and does not establish production
+readiness for a corrected contract.
+
+The approved route is an evaluation-fixture correction only:
+
+1. Add RED tests in `tests/test_evaluation/test_cases_source_evaluator.py`
+   that require the live case version to be `2`, assert that the expected
+   low-confidence URL has `corroboration_score == 0.0` after grouping and
+   normalization, and retain a control proving authoritative URLs still have
+   positive corroboration. The controlled case must remain green.
+2. Update only `_LIVE` in
+   `src/deep_research/evaluation/cases/source_evaluator.py`: give the
+   designated forum/anecdotal finding a distinct meaningful subtopic such as
+   `Dataset discrepancy anecdotes`, set `version=2`, and leave the expected
+   URL partition unchanged.
+3. Preserve the Source Evaluator agent, scoring formula, weights `0.30/0.30/0.20/0.20`,
+   `LOW_CONFIDENCE_THRESHOLD`, evaluator gate, controlled cases, datasets,
+   dependency scenarios, rubrics, global `llm.max_tokens == 4096`, and all v1
+   artifacts. This is a versioned live-fixture correction, not a mutation of a
+   frozen controlled case or an agent-quality tuning change.
+4. Run the focused case tests, the neighboring Source Evaluator/evaluation
+   tests, the full offline suite with the campaign `src` directory first on
+   `sys.path`, Ruff, and `git diff --check`. No provider, suite, or live call
+   runs before the task-scoped Sol High review.
+5. Push the reviewed candidate and ask Sol High to verify case identity
+   `(source-evaluator-live-ranking, 2)`, isolated forum corroboration,
+   authoritative corroboration, unchanged expected URLs and gates, and no
+   production scoring changes. After a clean review, run exactly one fresh
+   Source Evaluator live repetition.
+
+The live confirmation is review-ready only if it reports case version `2`,
+`14/14` target gates, deterministic quality `1.00`, a scored judge with no
+diagnostics, aggregate quality at least `0.75`, no target or judge provider
+failure, zero prohibited calls, and runner status `REVIEW REQUIRED`. A failure
+after v2 is not retried or hidden by lowering thresholds; it reopens the
+diagnosis boundary. Fact Checker remains deferred until these conditions are
+met.
+
+### Task 19A Live Preflight Blocker — Dataset Version-Update Contract
+
+The first authorized v2 launch at the reviewed code state stopped before any
+target or judge model call with `dataset synchronization failed:
+dataset_unavailable` (exit `1`). The case-version bump exercised the real
+LangSmith dataset update path for the existing v1 example. `synchronize_dataset`
+passes a fresh payload to `client.update_examples(updates=...)`, but the
+payload has no existing example `id`; the real LangSmith client requires that
+identifier, while the permissive fake only counted updates. Therefore the
+offline dataset-version test did not cover the production update contract.
+
+This is a harness integration defect exposed by the v2 readiness correction,
+not Source Evaluator quality evidence. Do not retry the paid launch until a
+TDD fix adds a strict fake/update regression proving the existing example ID is
+preserved in the update payload, implements the smallest dataset-sync repair,
+passes the offline dataset/evaluation gate, receives a scoped Sol High review,
+and is pushed. The v2 case, production scoring, thresholds, weights, budgets,
+provider behavior, and global `4096` cap remain unchanged. The original v1
+artifacts remain immutable, and the single v2 confirmation authorization is
+paused pending this fix/review.
+
+### Task 19A: Repair Source Evaluator Live-Case Topology for Production Readiness — REVIEWED; CONFIRMATION AUTHORIZED
+
+**Files:**
+- Modify: `src/deep_research/evaluation/cases/source_evaluator.py` — `_LIVE` only.
+- Test: `tests/test_evaluation/test_cases_source_evaluator.py` — live version and corroboration geometry regressions.
+- Update: `docs/superpowers/2026-09-10-cross-agent-planner-fix-parity-sequential-live-source-evaluator.md` and the permanent fix log after implementation/review evidence exists.
+
+**Interfaces and invariants:**
+- Preserve the live case identity as `source-evaluator-live-ranking` and make its version `2`; v1 artifacts remain immutable evidence.
+- Give only the designated forum/anecdotal finding a distinct meaningful subtopic, such as `Dataset discrepancy anecdotes`, so the production `group_findings_by_url`/`corroboration_score` geometry yields zero corroboration for the expected low-confidence URL.
+- Keep `authoritative_urls`, `weak_urls`, and `expected_low_confidence_urls` unchanged.
+- Do not change `SourceEvaluatorAgent`, prompts, scoring formula, weights `0.30/0.30/0.20/0.20`, `LOW_CONFIDENCE_THRESHOLD`, evaluator gates, controlled cases, dependency scenarios, rubrics, dataset semantics, budgets, provider behavior, fallback behavior, or `llm.max_tokens == 4096`.
+
+- [ ] **Step 1: Add RED case-contract tests.** Require the registered live case to have `version == 2`; compute groups from the case's raw findings using the production source helpers and assert every expected low-confidence URL has corroboration `0.0`; add a control asserting each authoritative URL has positive corroboration; keep the existing URL/reference and controlled-case tests unchanged.
+- [ ] **Step 2: Run the focused RED tests.** Run `python -m pytest tests/test_evaluation/test_cases_source_evaluator.py -q -p no:cacheprovider`; the new version assertion and v2 topology assertions must fail against the current v1 fixture before implementation.
+- [ ] **Step 3: Make the minimal GREEN fixture repair.** Change only the forum/anecdotal finding's `sub_topic_title` and `_LIVE`'s `version=2`; do not alter production scoring or expected URL partitions.
+- [ ] **Step 4: Verify offline.** Run `python -m pytest tests/test_evaluation/test_cases_source_evaluator.py -q -p no:cacheprovider`; then run `python -m pytest tests/test_evaluation/test_cases_source_evaluator.py tests/test_evaluation/test_cases_registry.py tests/test_evaluation/test_datasets.py tests/test_evaluation/test_evaluators_agents.py tests/test_agents/test_source_evaluator.py tests/test_agents/test_sources.py -q -p no:cacheprovider`; run the full source-first offline pytest gate, repository-wide Ruff, and `git diff --check`.
+- [ ] **Step 5: Commit and push.** Commit the source/test change, push the branch, and report the exact SHA and fresh verification counts. Do not run provider, suite, or live evaluation in this task.
+- [ ] **Step 6: Review gate.** The controller creates a scoped diff package and sends the exact range and acceptance invariants to the existing Sol High browser conversation. Only a clean scoped review authorizes the single v2 live confirmation.
+
+### Task 20: Repair Researcher Live Retrieval Provenance — CONFIRMATION COMPLETE, JUDGE INFRASTRUCTURE BLOCKED
+
+**Sol High diagnosis:** the Researcher live failure is not yet a confirmed
+Researcher prompt or agent defect. Successful tool results retain up to the
+existing evidence limit, while the evaluation artifact keeps only the
+configured short trajectory summary. The `citations_known`,
+`no_invented_sources`, and `sources_are_real_urls` checks then infer retrieval
+from that lossy summary. A legitimate source URL can therefore be available to
+Researcher extraction but absent from the evaluator's trajectory text. A
+single live artifact cannot determine whether every failed URL was truly
+retrieved, so no Researcher prompt/loop change is justified yet.
+
+**Scope:** Add an additive, bounded, secret-safe retrieval-provenance field to
+`DependencyLedger`, derived only from successful evidence-tool payloads before
+trajectory truncation. Store normalized-source URL SHA-256 fingerprints, never
+raw URLs. Preserve `ARTIFACT_SCHEMA_VERSION == 1`; old artifacts must validate
+with an empty default. Update only the live Researcher paths of
+`citations_known`, `no_invented_sources`, and `sources_are_real_urls` to accept
+a cited URL when its normalized fingerprint is present. Preserve controlled
+scripted-source semantics and all other agents' current semantics.
+
+**TDD requirements:**
+
+1. Add a model regression proving the new ledger field defaults empty for old
+   payloads, accepts only lower-case 64-hex SHA-256 values, rejects malformed
+   values and an over-bound list, and never serializes the source URL itself.
+2. Add a target regression with a successful Researcher evidence-tool result
+   whose source identity occurs after the 200-character observation summary.
+   Assert the trajectory remains bounded while the ledger carries the source
+   fingerprint. Include web search result URLs and the successful scraper and
+   document-reader source shapes that the production tools already emit.
+3. Add evaluator RED/GREEN regressions showing a live Researcher finding whose
+   URL is absent from the trajectory but present in the retrieval fingerprint
+   set passes all three source-provenance checks, while a URL absent from both
+   still fails. Do not change any case inputs, rubric, metric weights, or
+   thresholds.
+
+**Implementation constraints:** derive only from successful tool results and
+the established source-identity fields (`web_search.results[*].url`,
+`web_scraper.url`, and remote `document_reader.source`); normalize before
+hashing; deduplicate; use a named finite bound sufficient for every source
+identity reachable under the existing case tool budgets and search result
+limits; never record snippets, page-body URLs, thoughts, provider output,
+prompts, or raw URL values. Do not modify `src/deep_research/agents/researcher.py`,
+Researcher prompts, `config.yaml`, live cases, judge/provider code, budgets,
+thresholds, scoring, fallback semantics, or the global `4096` cap.
+
+**Verification:** watch each RED fail for the intended missing-provenance
+reason, implement the smallest GREEN change, run the focused model/target/
+evaluator/case/Researcher tests, then the full offline pytest suite, Ruff, and
+`git diff --check`. Record the exact counts and artifact-safe diagnosis in the
+Task 19 ledger. After task-scoped Luna-max review is clean, run exactly one
+focused Researcher live confirmation with the same frozen configuration and a
+fresh output namespace. If a cited URL still lacks a retrieval fingerprint,
+open a separate Researcher-agent TDD task; do not combine it with this harness
+repair. If provenance passes but `max_iterations` persists, record it as a
+separate trajectory signal without changing iteration or token budgets.
+
+Implementation is committed and pushed at `e954f47` (the initial
+implementation is `1c9047b`). The additive
+`DependencyLedger.source_url_fingerprints` field records deduplicated,
+bounded SHA-256 fingerprints from successful live evidence-tool payloads;
+only the live Researcher source-provenance paths consume it. Controlled
+semantics, old artifact validation, target/prompt behavior, budgets, judge
+behavior, and the global `4096` cap remain unchanged. The implementation
+dispatch did not become ready after the existing campaign branch checkout
+was occupied; no Luna worker changed files, so the controller completed the
+exact approved scope locally rather than launching a duplicate worker.
+
+Verification: focused Task 20 tests `5 passed`; full offline pytest with
+`-p no:cacheprovider` `1,985 passed, 1 deselected, 2 warnings`; Ruff and
+`git diff --check` passed. The Luna-max task-review dispatch was closed after
+its extended bounded wait returned no result. A task-scoped Sol High browser
+review of the pushed `ac37cf7` candidate then returned `NOT READY` with two
+Important Task-20-local findings and one deferred Minor:
+
+1. `DependencyRecorder.record_source_url_payload()` fingerprints every string
+   in an authoritative URL field, including malformed/non-HTTP(S) values.
+   Fingerprints must be admitted only for valid absolute `http`/`https` URLs
+   with a host, with regression coverage for malformed search, scraper, and
+   remote document identities.
+2. The bounded 128-entry fingerprint list can silently truncate a legitimate
+   source because the existing `web_search.max_results` request is only
+     validated as positive and is not proven exhaustive by the repository.
+   Add bounded typed overflow/completeness telemetry (preferred, without
+   changing the frozen search behavior) so a truncated set is explicit and a
+   missing fingerprint is not reported as source invention, or prove a finite
+   upstream bound that makes the existing cap exhaustive. Add the corresponding
+   evaluator and artifact regressions.
+3. Deferred Minor: add a live non-Researcher regression proving the
+   Researcher-only wrapper guard leaves other live agents fingerprint-blind.
+
+Task 20 fix round 1 must address both Important findings with TDD, preserve
+the existing raw-URL-free artifact boundary, keep the `DependencyLedger`
+backward-compatible for old payloads, and leave Researcher code/prompts,
+search behavior, budgets, cases, config, judge/provider code, gates' intended
+known-source semantics, and the global `4096` cap unchanged. The fix round
+must be reviewed before the single focused Researcher live confirmation; no
+live confirmation has started.
+
+Fix round 1 implementation is committed and pushed at `0140769` (base
+`800be1f`). It adds the typed `source_url_fingerprints_complete` signal and
+fail-closed evaluator diagnostics for incomplete provenance, and records the
+required RED/GREEN and offline verification in the fix-round report. A
+task-scoped Sol High browser re-review of `800be1f..0140769` found no Critical
+finding and confirmed the overflow/completeness finding is addressed, but
+returned `NOT READY` for one remaining Important source-admission edge:
+
+1. The validator checks the normalized URL instead of the raw candidate. This
+   admits malformed path/query whitespace such as `https://example.com/a b` and
+   can reject a valid bracketed IPv6 URL because the shared normalizer rebuilds
+   its authority without IPv6 brackets. Either behavior makes provenance
+   telemetry misleading: a malformed identity can be trusted, while a valid
+   identity can disappear without the completeness signal changing.
+2. Deferred Minor: the live non-Researcher wrapper regression remains absent;
+   the Researcher-only guard itself remains correct.
+
+Task 20 fix round 2 must validate the raw candidate for an absolute HTTP(S)
+URL with a valid host/authority/port before normalization and hashing, while
+preserving the existing shared normalizer and search behavior. Add focused
+positive bracketed-IPv6 and negative path/query-whitespace regressions, keep
+the overflow/completeness and raw-URL-free contracts unchanged, run offline
+verification, and obtain a fresh scoped Sol High browser re-review before the
+focused Researcher live confirmation. No live confirmation has started.
+
+Fix round 2 is implemented and committed at `c117bf2` on top of
+`45ff39a`/`0140769`. The recorder now validates raw candidates before calling
+the shared normalizer, rejects literal whitespace/control characters across
+the candidate, and preserves valid bracketed IPv6 identities for normalized
+hashing. The implementation report records the intended RED failure, final
+GREEN result, focused evaluation verification (`180 passed`), full offline
+pytest (`1,992 passed, 1 deselected, 2 warnings`), Ruff, and
+`git diff --check`; no live/provider command ran.
+
+The existing Sol High browser re-review of `45ff39a..63fda61` returned
+`PASS WITH FOLLOW-UP` with no Critical or Important findings. It confirmed that
+raw validation precedes normalization, valid bracketed IPv6 is admitted, the
+earlier completeness/overflow repair remains intact, the Researcher-only
+wrapper scope is preserved, and the frozen configuration and `4096` token cap
+are unchanged. The only follow-up is the deferred Minor non-Researcher
+wrapper regression, which does not block Task 20. Exactly one focused
+Researcher live confirmation is therefore unblocked; its target-gate result
+must still be reported separately from any independent judge/infrastructure
+failure, and no other live agent or suite run starts in this step.
+
+Controller verification after the review initially exposed a local package
+binding error: direct `python -m pytest -q -p no:cacheprovider` imported the
+installed `streamlit-ui-polish` worktree and stopped during collection with
+five missing-symbol errors. This was not a campaign test result. Re-running
+with the campaign checkout's `src` explicitly first on `sys.path` produced
+`1,992 passed, 1 deselected, 2 warnings` in `30.43s`; repository-wide Ruff
+and `git diff --check` also passed. The deferred live non-Researcher wrapper
+regression remains parked and no live/provider command ran during this gate.
+
+Focused confirmation: at pushed candidate `9319024`, exactly one Researcher
+live repetition ran with the frozen `config.yaml`, the repository `.env`
+launcher, no CLI overrides, and a fresh output namespace. The experiment
+returned exit code `1` with `14/14` hard gates and deterministic quality
+`1.00`, but status `INFRASTRUCTURE FAILURE` and no mean score because the
+independent judge failed typed structured-output validation on `rationale` at
+attempts 1 and 2. The artifact is
+`output/evaluations/task20-researcher-confirmation-9319024/researcher/task20-researcher-confirmation-9319024-researcher-live-20260911T011711Z-9319024/results.json`, SHA-256
+`F4FC7B4ADD79E95D094BAF2CE6AD3A2159EEC3B1074D7CAD5EEF6C549E33B6B8`, with
+LangSmith experiment
+`https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727ee089c/projects/p/45f357c5-ff0d-46f4-89c8-2248115c6b34`.
+No target hard gate failed, no target-side typed `output_limit` appeared, and
+the result does not establish a full Researcher quality pass or authorize a
+budget/prompt change. The judge boundary remains independent; the sequential
+loop may advance to Source Evaluator while preserving this Researcher result
+as judge-infrastructure-blocked evidence.
+
+---
+
 ## Subagent-Driven Development Execution Contract
 
 At execution time, use the current `superpowers:subagent-driven-development` process rather than giving one agent this entire plan as a monolithic prompt:
@@ -1332,7 +2141,31 @@ At execution time, use the current `superpowers:subagent-driven-development` pro
 
 ## Recommended Subagent Model Routing
 
-Use the least expensive model that can reliably do the role, explicitly selected on every dispatch:
+Use explicit model selection for every remaining implementation or review dispatch. The user's required routing for this campaign is authoritative:
+
+| Work | Model | Reasoning |
+| --- | --- | --- |
+| Task 9 implementation and review-finding fixes | GPT-5.6 Luna | **high** |
+| Task 9 task-scoped review and scoped re-review | GPT-5.6 Luna | **max** |
+| Task 11 budget implementation/fixes | GPT-5.6 Luna | **high** |
+| Task 11 task-scoped review | GPT-5.6 Luna | **max** |
+| Task 12 agent implementation/fixes | GPT-5.6 Luna | **high** |
+| Task 12 task-scoped review | GPT-5.6 Luna | **max** |
+| Task 13 implementation fixes | GPT-5.6 Luna | **high** |
+| Task 13 task-scoped review | GPT-5.6 Luna | **max** |
+| Task 14 documentation/fix-log updates | GPT-5.6 Luna | **high** unless purely mechanical |
+| Task 14 task-scoped review | GPT-5.6 Luna | **max** |
+| Task 16 implementation and fix rounds | GPT-5.6 Luna | **max** |
+| Task 16 task-scoped review and re-review | GPT-5.6 Luna | **max** |
+| Task 17 implementation and fix rounds | GPT-5.6 Luna | **max** |
+| Task 17 task-scoped review and re-review | GPT-5.6 Luna | **max** |
+| Task 20 implementation and fix rounds | GPT-5.6 Luna | **high** |
+| Task 20 task-scoped review and re-review | Existing browser Sol High | **high** |
+| Task 15 whole-branch review | **Complete — Sol High review at 6a01175** | Ready with follow-ups; one non-blocking documentation chronology cleanup recorded. |
+
+Task 10 and Task 13 controlled target/judge runs must use the frozen evaluation model configuration. Implementation-model routing is not permission to change target model, judge model, reasoning effort, retry policy, or token budgets. High/max workers may require longer bounded controller waits; do not interpret slow reasoning as a repository-helper loop or launch duplicate workers.
+
+The original task-specific routing notes remain useful for completed tasks and are retained below:
 
 | Work | Suggested capability |
 | --- | --- |
@@ -1348,6 +2181,11 @@ Use the least expensive model that can reliably do the role, explicitly selected
 
 ## Explicit Non-Goals
 
+- Task 9 is network-zero: do not run `python -m deep_research.evaluation ...`, instantiate real providers, call LangSmith, sync datasets, or supply credentials.
+- Task 9 may change only the bounded artifact contract in the listed evaluation files and its offline tests; it may not change cases, rubrics, judges, prompts, gates, thresholds, dependency scenarios, retry behavior, model budgets, provider wrappers, or agent behavior.
+- Preserve `ARTIFACT_SCHEMA_VERSION`, global `llm.max_tokens=4096`, and the existing Planner-specific final-output budget.
+- Never persist raw provider/evaluator content, exception text, prompts, credentials, request payloads, hidden reasoning, or arbitrary diagnostic dictionaries. If typed visibility is insufficient, fail closed.
+- DeepSeek wrapper/bridge repair is deferred and has no dependency or allowed change in Task 9.
 - No live-tier evaluation.
 - No end-to-end graph quality campaign.
 - No change to Planner quality prompts or Planner scoring.
@@ -1364,6 +2202,11 @@ Use the least expensive model that can reliably do the role, explicitly selected
 Before execution, the controller must confirm:
 
 - Every confirmed transferable Planner issue maps to a task or an explicit no-change rationale.
+- New Task 9 appears immediately after completed Task 8 and blocks Task 10.
+- No path permits Task 8 to transition directly to a controlled baseline.
+- Task 9 preserves bounded deterministic metric details, exact prohibited-call count, finite ReAct stop reason, and nullable `{kind, operation}` fallback projection.
+- Task 9 preserves the existing weighted scalar `deterministic_quality` and does not change metric definitions, weights, thresholds, gates, or artifact schema version.
+- Task 9 has focused RED/GREEN, full offline evaluation, full offline suite, inventory accept/reject proofs, and one Luna-max approval before Task 10.
 - RC-A is fixed at the shared boundary rather than copied across agents.
 - The historical fix-log statement about Source Evaluator/Synthesizer has been reconciled with current no-ReAct architecture.
 - Planner-local wrapper removal happens only after shared RED/GREEN proof.
@@ -1376,3 +2219,469 @@ Before execution, the controller must confirm:
 - No task requires changing a case/rubric/gate to pass.
 - Every tracked task ends with a test/review/commit boundary appropriate for a fresh subagent.
 - The permanent fix log is part of completion, so future agents do not have to reconstruct this campaign from chat history.
+- Final Task 15 offline verification is rerun after Task 9 and any later tracked repair; the current whole-branch review is complete, with only non-blocking follow-up evidence work remaining.
+
+### Task 19A Fix Round 2 — Dataset Identity in Version Updates
+
+Sol High's scoped re-review of Fix Round 1 at remote `c9b7062` found that the
+dataset synchronization contract is still incomplete. The installed LangSmith
+client accepts `update_examples(dataset_name=..., dataset_id=..., updates=...)`
+and, when `updates` is supplied, requires dataset identity either as an explicit
+argument or on the update objects. The current production call supplies only
+`updates=to_update`; the update objects now carry the remote example `id` but not
+`dataset_id`. This can fail locally before any target or judge model call.
+
+The next bounded TDD repair must:
+
+- add a RED regression proving the version-update call carries the existing
+  dataset identity;
+- update the strict fake to accept and validate `dataset_id` against the
+  existing dataset, while retaining the existing example-ID validation;
+- make the smallest production change, preferably passing `dataset_id=dataset.id`
+  to `client.update_examples`;
+- preserve create/reuse/version-selection behavior, no-deletion behavior,
+  payload secret scanning, and all Source Evaluator/case/scoring/gate/threshold/
+  weight/budget/provider/fallback/4096-cap invariants;
+- run the focused RED/GREEN dataset tests, neighboring dataset/evaluation tests,
+  the source-first offline gate, Ruff, and `git diff --check`;
+- commit and push, obtain another scoped Sol High review, and only then
+  reconsider exactly one Source Evaluator v2 live confirmation.
+
+No paid retry, other agent run, suite run, retry policy change, prompt tuning,
+threshold/rubric/weight change, or token-budget change is authorized by this
+repair. The failed preflight and Fix Round 1 remain immutable evidence.
+
+### Task 19A Fix Round 2 Review — PASS; One V2 Confirmation Unblocked
+
+Sol High reviewed remote implementation range
+`c9b70621ec7dea2887cee3fd347d5eb9e65aefd6..4c4e6ce62f9ef3bfff20e3decf5975d08dffa34f`
+with bookkeeping at remote HEAD `6d6bf1ce57fd54c2fd8a1c82507859237bc932c9`.
+The review found `PASS` for spec compliance and task quality, with no
+Critical, Important, or Minor findings. The production update now passes
+`dataset_id=dataset.id` alongside structured updates, while Fix Round 1's
+remote example ID remains in each update. The fake validates both identities,
+and the regression proves dataset ID, example ID, and revised case version.
+
+The dataset-sync blocker is closed for the identified failure boundary. Exactly
+one fresh Source Evaluator v2 live confirmation is now unblocked. It must still
+meet the existing production-readiness acceptance contract: case version `2`,
+`14/14` hard gates, deterministic quality `1.00`, a scored judge with no
+diagnostics, aggregate quality `>= 0.75`, no target/judge/provider failure or
+fallback, zero prohibited calls, no target-side output-limit evidence, and
+runner status `REVIEW REQUIRED`. This code review does not itself establish
+those metrics. No retry, suite, later-agent run, prompt/threshold/budget/
+provider change, or automatic approval is authorized.
+
+### Task 19A V2 Live Confirmation — Target Green; Judge Infrastructure Blocked
+
+The single authorized Source Evaluator v2 confirmation ran once after the
+dataset-sync repair and completed target execution. It must not be interpreted
+as production-ready because the shared judge was unscorable.
+
+- Artifact:
+  `output/evaluations/task19-source-evaluator-readiness-v2-3eab969/source-evaluator/task19-source-evaluator-readiness-v2-3eab969-source-evaluator-source-evaluator-live-20260911T024444Z-3eab969/results.json`
+- Artifact SHA-256:
+  `F9F8638E831D4FA3E8B9E137B397ED3F4D5BD84427883A075742FE627FCE3278`
+- Case: `source-evaluator-live-ranking`, version `2`, repetition `1/1`.
+- Target evidence: `14/14` hard gates passed; `one_evaluation_per_source`,
+  `score_ordering`, `bounded_scores`, and `low_confidence_flagged` were all
+  `1.00`; deterministic quality was `1.00`; prohibited-call count was `0`;
+  target error list was empty; no target-side `output_limit` evidence or
+  fallback diagnostic was present.
+- Judge evidence: status `judge_not_run`, reason
+  `judge_schema_failure`; typed diagnostics were
+  `schema_output` attempt `1` at field `$` and attempt `2` at field
+  `rationale`. Aggregate quality was unavailable.
+- Runner disposition: `INFRASTRUCTURE FAILURE`, not a Source Evaluator quality
+  failure and not a production-readiness pass. The LangSmith experiment and
+  repetition review URLs are recorded in the permanent fix log; no retry was
+  run.
+
+The target-side Source Evaluator repair is therefore supported by the live
+metrics, but the agent cannot be marked review-ready while the shared judge
+boundary prevents a scored aggregate. The next decision is judge-boundary
+diagnosis from these typed field paths; do not tune Source Evaluator prompts,
+budgets, thresholds, weights, cases, or provider behavior, and do not advance
+to Fact Checker or a suite run.
+
+### Task 19A Judge-Boundary Diagnosis — NO CHANGE; Campaign Paused
+
+Sol High reviewed the v2 live evidence against remote HEAD `41707d3` in the
+existing browser conversation. The ruling is a recurring shared
+judge-structured-output/provider instability, with no specific deterministic
+defect in Source Evaluator or judge code established from the typed evidence.
+The prior Task 18 no-change decision remains valid: the recorded paths `$` and
+`rationale` do not identify the invalid provider output, and valid offline
+`JudgeVerdict` values containing a rationale are accepted and scored. No RED
+test can be honestly written without inventing an unseen response shape.
+
+No code change is justified. Do not loosen the rationale schema, add another
+repair attempt, alter parsing or retry/provider behavior, change reasoning
+effort, or raise the global `4096` cap. The precise campaign classification is
+Target-side Source Evaluator `GREEN`, overall production/review readiness
+`NOT READY` because the required judge score and aggregate are unavailable.
+Preserve the sole v2 confirmation, keep the campaign paused, and do not run a
+Source Evaluator retry, Fact Checker, or suite.
+
+### Task 19B Fact Checker Live Evidence — Target Gates Green; Quality Below Threshold
+
+The user explicitly authorized one fresh Fact Checker live repetition while
+Sol High was reviewing the shared judge repair plan. It ran against remote
+HEAD `30d9921` with no CLI effort/budget override, no code change, and no
+retry. This evidence is now awaiting the required Sol High diagnosis.
+
+- Artifact:
+  `output/evaluations/task21-fact-checker-readiness-30d9921/fact-checker/task21-fact-checker-readiness-30d9921-fact-checker-fact-checker-live-20260911T030226Z-30d9921/results.json`
+- Artifact SHA-256:
+  `CA5F682E801CAAF64D04A7BD15229B4EBB517E6860E0034CE36F804D8DFD8809`
+- LangSmith experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/ca1ecf5b-3517-46f9-897a-d44d8a7d54c5`
+- LangSmith repetition review:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/ca1ecf5b-3517-46f9-897a-d44d8a7d54c5/r/01a08e6a-b353-7402-a8c3-53c3f802f4db?poll=true`
+- Case/version/repetition: `fact-checker-live-verification` / `1` / `1 of 1`.
+- Target evidence: `15/15` hard gates; deterministic quality `1.00`; all
+  deterministic metrics `1.00`; prohibited calls `0`; target errors empty.
+- Target fallback evidence: `fallback_provider_diagnostic.kind=output_limit`,
+  operation `react_decision`. This is a preserved fallback diagnostic, not a
+  top-level target failure or proof that a new token budget is authorized.
+- Judge/quality evidence: judge scored `0.3675`; aggregate quality `0.6205`;
+  runner status `FAILED` against the configured threshold. No judge schema or
+  transport failure occurred in this repetition.
+
+The target contract is green, but Fact Checker is not production-ready on
+quality evidence. Sol High must classify whether the low judge score reflects
+Fact Checker behavior, the fallback trajectory, or a shared evaluation issue
+before any prompt, budget, or agent repair. No retry, later-agent run, or suite
+run is authorized from this artifact alone.
+
+### Scoped Sol High review disposition (2026-09-10, integrated HEAD `77bfd3d`)
+
+Sol High reviewed the integrated parallel-repair package and returned
+**NOT READY as currently packaged**, with no Critical finding. Streams J, F,
+and S remain supported within their approved boundaries. The supported
+load-bearing candidate is Stream C's shared Critic evaluator behavior.
+
+- The force-tracked worker reports beneath the ignored SDD scratch directory
+  are not permanent evidence. They are being removed from the Git index while
+  local ignored copies remain available; the tracked plan and fix log are the
+  durable record.
+- The next implementation is one serialized Luna-Max TDD task limited to
+  `_no_spurious_gaps_passes` in
+  `src/deep_research/evaluation/evaluators.py` and the two production-shaped
+  controls in `tests/test_evaluation/test_cases_critic.py`. The covered-
+  evidence control must remain `0`, and the acknowledged unresolved-limitation
+  control must become `1`. Case inputs, themes, rubric, weights, thresholds,
+  prompts, tools, budgets, routes, providers, and fallback semantics remain
+  frozen.
+- The correct tracked planning references are
+  `docs/superpowers/plans/2026-09-10-cross-agent-planner-fix-parity-parallel-repair.md`,
+  `docs/superpowers/plans/2026-09-10-parallel-stream-judge-brief.md`, and the
+  root Stream F/S/C briefs. Future worktree dispatches and review packages
+  must use those repository-relative paths.
+- Coordinator verification for the integrated J/F/S wave is `277 passed` in
+  the combined focused tests, `1,251 passed` in the evaluation/agent/provider
+  contract gate, and `2,000 passed, 1 deselected` in the full offline suite;
+  Ruff and `git diff --check` were clean. The initial focused failure came
+  from a stale editable install resolving an unrelated worktree; after
+  `python -m pip install -e ".[dev]"` from this campaign checkout, imports
+  resolved to the campaign source and the rerun passed. These are coordinator
+  counts, not independent Sol execution.
+- Live/provider/LangSmith/suite execution remains **NO-GO** until the C repair
+  is integrated, reviewed, and the offline gate is green. The global
+  `llm.max_tokens == 4096` cap and all judge/fallback semantics remain
+  unchanged.
+
+### Stream C evaluator repair fix round 1 (2026-09-10)
+
+- The first serialized C commit (`c644d77`) passed the original exact-theme and
+  acknowledged-limitation controls, but Sol High's scoped review rejected it
+  because exact-only matching would miss the ordinary paraphrase
+  `The report does not cover deployment at commercial scale.` for the theme
+  `commercial-scale deployment`. This was an Important behavioral finding,
+  not a scope or documentation issue.
+- TDD fix round: the worker added that paraphrased covered-evidence control,
+  observed the expected RED (`1.0` rather than `0.0`), then changed only
+  `_no_spurious_gaps_passes` to normalize case, punctuation, and hyphens and
+  reject only when all non-stop-word tokens from one reference theme occur in
+  the gap. Single-word overlap no longer rejects a gap. The canonical covered
+  control remains `0.0`, and the acknowledged durability/long-term limitation
+  remains `1.0`.
+- Worker commit `3d5fa91` was integrated into the campaign as `1443e00`. The
+  integrated range changes only
+  `src/deep_research/evaluation/evaluators.py` and
+  `tests/test_evaluation/test_cases_critic.py`; no case, report, theme,
+  rubric, weight, threshold, prompt, tool, budget, route, provider, fallback,
+  judge, or documentation semantics changed in the worker fix.
+- Fresh coordinator verification: `91 passed, 1 warning` for the combined
+  Critic agent/case tests, Ruff passed for the two changed files, and
+  `git diff --check` passed. No live/provider/LangSmith/suite command ran.
+- Next gate: push `1443e00`, obtain a scoped Sol High re-review of the fix
+  round, then run the consolidated offline gate. Live evaluation remains
+  **NO-GO** until those gates are complete.
+
+### Stream C evaluator repair fix round 2 (2026-09-10)
+
+- Sol High's scoped re-review of the normalized matcher confirmed that the
+  ordinary commercial-deployment paraphrase was fixed, but found one remaining
+  Important false positive: the natural limitation
+  `Additional durability and long-term performance data under field exposure
+  are needed.` was still scored `0.0` even though the report explicitly marks
+  that theme as unresolved and accumulating. Sol required a fourth
+  production-path control with expected score `1.0`; weakening the whole-theme
+  matcher alone was not acceptable.
+- The existing Stream C worker was reused again, aligned to `872610d`; no new
+  worker fork or worktree was created. The worker added the exact regression,
+  observed the required RED (`1 failed, 55 deselected`, returned `0.0`), then
+  changed only `_no_spurious_gaps_passes` to use sentence-local report
+  evidence. A full theme-token match is exempted only when the same report
+  sentence contains explicit unresolved/insufficient-language markers. The
+  canonical covered-evidence, acknowledged field-record, paraphrased
+  commercial-deployment, and new full-theme durability controls are all green.
+- Worker commit `ab65e410c66de4990c763f7f3e964db9b34fb84a` was integrated as
+  `f711f67`. Changed paths remain exactly
+  `src/deep_research/evaluation/evaluators.py` and
+  `tests/test_evaluation/test_cases_critic.py`; frozen cases, reports, themes,
+  rubrics, weights, thresholds, prompts, tools, budgets, routes, providers,
+  fallback semantics, judge behavior, and the `4096` cap are unchanged.
+- Worker verification: all four production-path controls `4 passed, 52
+  deselected, 1 warning`; focused Critic tests `92 passed, 1 warning`; relevant
+  evaluator tests `97 passed, 1 warning`; Ruff and `git diff --check` passed.
+  No live/provider/LangSmith/suite command ran, and `.deepseek-runs/` was not
+  staged.
+- Next gate: push `f711f67`, obtain a fresh scoped Sol High re-review of this
+  fix round, then run the consolidated offline gate. Live/provider/LangSmith/
+  suite execution remains **NO-GO** until both gates are complete.
+
+### Stream C evaluator repair fix round 3 (2026-09-10)
+
+- Sol High's scoped review of `872610d..c9f31ee` confirmed that the full-theme
+  durability limitation was fixed, but found a new current-case Important
+  false negative: the sentence containing covered `compressive strength
+  standards` also contains an unrelated `outstanding question` marker for
+  durability. The prior sentence-level exemption therefore accepted the
+  spurious gap `The report does not cover compressive strength standards.`
+  Sol required a production-path control expected to remain `0.0` and a
+  below-sentence-granularity association; the review returned **NOT APPROVED**
+  with no Critical finding. A one-token future-theme sensitivity was recorded
+  as Minor and deferred.
+- The existing Stream C worker was reused again, aligned to `c9f31ee`; no new
+  worker fork or worktree was created. An initial focused run unexpectedly
+  passed because the worker detected stale editable-install import provenance;
+  it corrected the source binding before accepting the TDD checkpoint. The
+  valid RED was `1 failed, 4 passed, 52 deselected, 1 warning`, with the new
+  compressive-strength gap returning `1.0` instead of `0.0`.
+- The worker changed only `_no_spurious_gaps_passes` and its production-path
+  regression, splitting report sentences into comma/semicolon/colon-delimited
+  clauses before associating unresolved markers with matched theme tokens. The
+  canonical covered deployment, acknowledged field-record limitation,
+  commercial paraphrase, full-theme durability limitation, and new
+  compressive-strength controls are all green. Worker commit
+  `10acab33021ec5e0839b83aee6a7c6358475b806` was integrated as `5763f8a`.
+- Worker verification: five production-path controls `5 passed, 52
+  deselected, 1 warning`; focused Critic tests `93 passed, 1 warning`; relevant
+  evaluator tests `97 passed, 1 warning`; Ruff and `git diff --check` passed.
+  No frozen case data, live/provider/LangSmith/suite command, or
+  `.deepseek-runs/` staging occurred.
+- Next gate: push the documented `5763f8a` state, obtain a fresh scoped Sol
+  High re-review, then run the consolidated offline gate. Live/provider/
+  LangSmith/suite execution remains **NO-GO** until both gates are complete.
+
+### Stream C scoped re-review disposition (2026-09-10)
+
+- Sol High reviewed the pushed range `c9f31ee..a08dbbd` and returned
+  **PASS WITH FOLLOW-UP**. It confirmed that the clause-local association fixes
+  the covered `compressive strength standards` false negative while preserving
+  the valid full-theme durability limitation. The review found no Critical or
+  Important findings.
+- The only remaining finding is the previously deferred Minor sensitivity for
+  a future reference theme with one meaningful token. None of the current six
+  Critic themes has that shape, so Sol required no action before the
+  consolidated offline gate.
+- Sol confirmed the production-path regression architecture, the exact
+  implementation scope in `5763f8a`, the documentation-only follow-up in
+  `a08dbbd`, the frozen case/report/theme/rubric/weight/threshold/prompt/tool/
+  budget/route/provider/fallback/judge invariants, and `llm.max_tokens: 4096`.
+  The reported verification counts remain coordinator evidence; Sol did not
+  independently execute them.
+- Gate: proceed to the consolidated offline gate. Live/provider/LangSmith/
+  suite execution remains **NO-GO** until that gate is green and any findings
+  are handled.
+
+### Stream C consolidated offline gate (2026-09-10)
+
+- After the Sol High `PASS WITH FOLLOW-UP` disposition for `c9f31ee..a08dbbd`,
+  the coordinator ran the required offline gate at `61a4126`. The targeted
+  evaluation/agent/provider contract command passed `1,256` tests with one
+  existing LangSmith deprecation warning. The full no-cache suite passed
+  `2,005` tests with one deselected and two existing warnings. Repository-wide
+  Ruff and `git diff --check` passed.
+- The campaign worktree and remote both resolve to `61a4126`; the only
+  untracked item remains the pre-existing ignored `.deepseek-runs/` directory,
+  which was not inspected or staged.
+- Parallel repair work is complete and no additional C worker is needed. The
+  remaining live work is paused by the shared judge/provider boundary after
+  the Critic confirmation; no next-agent run is authorized from that artifact.
+  Each paid command remains separately evidence-gated even though the user has
+  authorized paid live calls; no live/provider/LangSmith/suite command ran in
+  this offline gate.
+
+### Task 21 Critic post-fix live confirmation (2026-09-10)
+
+- Exactly one Critic live repetition ran at candidate `c74a4f2` after the
+  clause-local evaluator fix, with no retry, CLI effort override, budget change,
+  or next-agent run. The first invocation stopped before any provider call
+  because the worktree dotenv lookup did not expose credentials; a safe
+  boolean-only check confirmed the main repository `.env` contained the needed
+  variables, and the same command was rerun with that environment loaded
+  in-process. No credential values were printed.
+- Experiment:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/03123327-2243-42bd-a53f-11c0137f67ec`
+- Repetition review:
+  `https://eu.smith.langchain.com/o/dec92fa1-b347-483c-8a51-9cd727656d9d/projects/p/03123327-2243-42bd-a53f-11c0137f67ec/r/01a08ef8-1579-7693-ac8f-7efb89ce13c6?poll=true`
+- Artifact:
+  `output/evaluations/critic/cross-agent-planner-fix-parity-critic-confirmation-c74a4f2-critic-live-20260911T053652Z-c74a4f2/results.json`
+- Artifact SHA-256:
+  `825D4612700A25E4711997663F3DC2F153E7BF9E75A6C9822D271F3947533DD4`
+- Case/version/repetition: `critic-live-review` / `1` / `1 of 1`.
+  Target evidence: `14/14` hard gates; prohibited calls `0`; target errors
+  empty; deterministic quality `0.80`; `score_bounded=1.00`,
+  `route_consistent=1.00`, `no_spurious_gaps=1.00`, and
+  `rationale_present=0.00`. The repaired `no_spurious_gaps` behavior held in
+  the live path.
+- Judge evidence: status `judge_not_run`, reason `judge_schema_failure`;
+  typed diagnostics were `schema_output` attempt `1`, category
+  `string_bounds`, field `rationale`, and `schema_output` attempt `2`,
+  category `extra_forbidden`, field `$`. Aggregate quality was unavailable.
+  The preserved fallback diagnostic was typed `schema_output` for
+  `critic_report_review`; it is not target-side output-limit evidence.
+- Runner disposition: `INFRASTRUCTURE FAILURE`. The `rationale_present=0.00`
+  target metric is a separate Critic-output diagnosis candidate and must not be
+  conflated with the shared judge failure. No code or budget change is made
+  until Sol High reviews the typed artifact; no retry or next paid agent run is
+  authorized from this result alone.
+
+### Sol High Critic live diagnosis — judge/provider only, no change (2026-09-10)
+
+- Sol High reviewed the typed Critic confirmation and returned
+  **JUDGE/PROVIDER ONLY — NO-CHANGE**. The live `no_spurious_gaps=1.00` result
+  independently confirms that the clause-local Stream C evaluator repair held;
+  the unscorable judge cannot cause that target deterministic metric.
+- `rationale_present=0.00` is not evidence of an empty Critique rationale or a
+  `TargetOutput`/`state_update` serializer mismatch. The Critic's
+  `critic_report_review` provider failure produced the intentional generic
+  `provider_unavailable` fallback Critique, whose rationale is valid but not
+  grounded in a concrete report feature. That is why the grounding metric is
+  `0.00` while `score_bounded`, `route_consistent`, and `no_spurious_gaps` are
+  `1.00`.
+- The typed fallback diagnostic
+  `{kind: schema_output, operation: critic_report_review}` is target-agent
+  provider evidence, distinct from the later judge diagnostics (`rationale`
+  then `$`). Neither event is target-side `output_limit` evidence. The compact
+  `RepetitionResult.errors=[]` means no top-level target failure; it does not
+  erase the typed agent-level fallback diagnostic. This wording distinction is
+  recorded as a non-blocking documentation nuance.
+- Sol found no Critical or Important finding requiring code, evaluator,
+  serializer, prompt, case, threshold, weight, fallback, provider-budget, or
+  `llm.max_tokens` change. The optional future characterization is offline-only:
+  prove normal report-grounded Critique rationale scores `1.0` while the
+  existing provider fallback scores `0.0`; no production edit is authorized
+  unless that characterization contradicts the current contract.
+- Disposition: do not retry Critic and do not start the next paid agent run
+  from this artifact alone. Preserve the live artifact, keep the global
+  `4096` cap, and treat the shared judge/provider boundary as the remaining
+  campaign blocker.
+
+### Task 22: Characterize Critic Rationale Grounding — COMPLETE (TEST-ONLY; SOL HIGH PASS)
+
+This is an offline, test-only follow-up to the Critic live diagnosis. It must
+use the registered `critic-live-review` metric path and a production-shaped
+`TargetOutput`: flat Critique fields in `result` with the Critique state
+artifact in `state_update["critique"]`.
+
+- Add one evaluator-level regression proving that a normal report-grounded
+  Critique returns `rationale_present == 1.0` while the existing typed
+  `provider_unavailable` fallback returns `rationale_present == 0.0`.
+- Preserve and assert the fallback controls: `score_bounded == 1.0`,
+  `route_consistent == 1.0`, and `no_spurious_gaps == 1.0` with the typed
+  `critic_report_review` provider diagnostic.
+- Do not change production code, Critic fallback semantics, evaluator logic,
+  frozen cases, themes, thresholds, weights, prompts, retry behavior, model
+  budgets, judge contracts, or `llm.max_tokens == 4096`.
+- Run the focused Critic/evaluator tests, the required offline gate, Ruff, and
+  `git diff --check`. If the expected `1.0/0.0` distinction does not hold,
+  stop and report a separate evaluator/harness finding; do not repair it in
+  this task.
+- After implementation, synchronize the branch and obtain a scoped Sol High
+  task review. A paid/live confirmation remains disallowed unless a separate
+  typed production defect is discovered and repaired.
+
+Task 22 outcome:
+
+- The parallel offline judge audit found mixed typed `$`/`rationale` schema
+  diagnostics but no deterministic contract mismatch; its disposition is
+  judge/provider `NO-CHANGE`. The parallel Critic/Fact Checker characterization
+  confirmed normal grounded Critic rationale `1.0`, provider fallback rationale
+  `0.0`, all fallback controls `1.0`, and Fact Checker target-side gates and
+  deterministic quality `1.0` with no independent defect.
+- Commit `726cfe0100640ddb66f74bb4d2c139977bf85977` changes only
+  `tests/test_evaluation/test_cases_critic.py`. The new test uses flat Critique
+  fields in `TargetOutput.result`, `state_update["critique"]`, the registered
+  `critic-live-review` metrics, the real `fallback_critique()` helper, and the
+  typed `critic_report_review` diagnostic.
+- Verification: focused Critic/evaluator suite `125 passed`; full offline suite
+  `2,006 passed, 1 deselected`; Ruff and `git diff --check` passed. Existing
+  dependency deprecation warnings remain unchanged.
+- The controller's first default-import full-suite attempt resolved the package
+  from an unrelated `streamlit-ui-polish` worktree and failed collection; the
+  same suite rerun with this campaign worktree's `src` first on `sys.path`
+  passed `2,006` tests. This was an environment-resolution issue only and did
+  not require a repository change.
+- Scoped Sol High review of `1aef4e1..726cfe0`: spec compliance `PASS`, task
+  quality `PASS`, Critical/Important/Minor findings `None`. No production fix,
+  judge/provider change, or paid/live confirmation is justified by this task.
+
+### Task 23: Judge Observability Follow-Up — COMPLETE (STOP / NO-CHANGE)
+
+The fresh offline audit and Sol High architecture gate at `ca369b6` examined
+the current judge/provider telemetry boundary without changing files or
+launching providers. The existing contract already preserves:
+
+- typed judge status and not-run reason;
+- bounded diagnostic kind, attempt, category, and normalized field paths;
+- prompt ID, rubric version, judge model, prompt fingerprint, and judge
+  configuration fingerprint through scored and `judge_not_run` projections;
+- a prompt fingerprint that includes the frozen `JudgeVerdict` schema; and
+- target-provider operation attribution separately through fallback diagnostics.
+
+No second judge operation, missing fingerprint, projection loss, or typed
+consumer mismatch was demonstrated. Adding operation/schema/configuration
+fields now would be a persisted artifact-contract change without diagnostic
+benefit. The exact reopen conditions are a deterministic offline RED showing
+projection mismatch, colliding/missing fingerprints, indistinguishable real
+judge operations, or a typed consumer that cannot represent required context.
+Until then the judge disposition is `STOP / NO-CHANGE`, and no paid/live run is
+authorized merely to manufacture that evidence.
+
+### Task 8 follow-up: DeepSeek Judge Native-Schema Transport — OFFLINE COMPLETE / REVIEWED
+
+The judge native-schema transport repair is offline-complete and reviewed at
+implementation head `e914c13030e49ca0678f6d2cd6ee2ab76ee57228`, with evidence
+commit `8c6e655777ddc79d1f47c13206f178017891f3f2`. The recorded offline gates
+are `314` focused tests, `1,299` evaluation/agent/provider contract tests, and
+`2,043` full offline tests with `1` deselected.
+
+- Stage 1 cumulative implementation review (Sol High): **GO**, with no Critical
+  or Important findings. The transport-only fingerprint regression coverage is
+  the deferred Minor.
+- Stage 2 fresh architecture/readiness review (Sol High): **PASS** for
+  transport correctness, contract/failure-semantic preservation, target/judge
+  isolation, provenance, and conditional readiness for one future Researcher
+  canary; no Critical or Important findings. The same Minor remains deferred.
+
+Live state is **NO-GO pending separate explicit authorization**. This step
+authorizes no provider call, live/LangSmith/evaluation-suite run, paid canary,
+retry, token increase, or mass agent evaluation. If separately authorized,
+Researcher is the preferred first canary because its prior target gates and
+deterministic quality were green and its unresolved boundary was judge schema
+failure. This is future-canary eligibility only: no Researcher canary or
+provider request has run.

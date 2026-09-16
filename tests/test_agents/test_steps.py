@@ -12,8 +12,12 @@ from deep_research.agents.steps import (
     ReActRun,
     ReActStep,
     parse_tool_input,
+    react_decision_from_native_turn,
+    read_evidence_urls,
     summarize_text,
 )
+from deep_research.observability import TokenUsage
+from deep_research.providers import NativeToolCall, NativeToolTurn
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import ResearchError
 
@@ -330,3 +334,248 @@ def test_react_run_carries_a_non_empty_errors_list() -> None:
     assert len(run.errors) == 1
     assert run.errors[0].error_type == "TimeoutError"
     assert run.succeeded is False
+
+
+def test_a_native_tool_call_becomes_an_internal_react_decision() -> None:
+    decisions = react_decision_from_native_turn(
+        NativeToolTurn(
+            model="deepseek-v4-flash",
+            usage=TokenUsage(),
+            tool_calls=(
+                NativeToolCall(
+                    tool_name="web_search", arguments_json='{"query":"qec"}'
+                ),
+            ),
+        )
+    )
+    assert decisions == (
+        ReActDecision(
+            thought="Selected tool through provider-native calling.",
+            action="use_tool",
+            tool_name="web_search",
+            tool_input_json='{"query":"qec"}',
+        ),
+    )
+
+
+def test_two_native_calls_become_two_decisions_in_the_provider_order() -> None:
+    """One turn carrying several calls yields one decision per call, in order.
+
+    The provider is the parallel-call authority: it chose the order, so the
+    adapter must not sort, dedupe, or collapse the calls. Each decision keeps
+    the deterministic system ``thought``, never provider reasoning text.
+    """
+    decisions = react_decision_from_native_turn(
+        NativeToolTurn(
+            model="deepseek-v4-flash",
+            usage=TokenUsage(),
+            tool_calls=(
+                NativeToolCall(
+                    tool_name="web_search", arguments_json='{"query":"first"}'
+                ),
+                NativeToolCall(
+                    tool_name="query_memory", arguments_json='{"query":"second"}'
+                ),
+            ),
+        )
+    )
+    assert decisions == (
+        ReActDecision(
+            thought="Selected tool through provider-native calling.",
+            action="use_tool",
+            tool_name="web_search",
+            tool_input_json='{"query":"first"}',
+        ),
+        ReActDecision(
+            thought="Selected tool through provider-native calling.",
+            action="use_tool",
+            tool_name="query_memory",
+            tool_input_json='{"query":"second"}',
+        ),
+    )
+
+
+def _tool_step(
+    tool_name: str,
+    data: object,
+    *,
+    success: bool = True,
+) -> ReActStep:
+    """One step whose tool call carries exactly ``data``."""
+    return ReActStep(
+        iteration=1,
+        thought=f"Call {tool_name}.",
+        action="use_tool",
+        tool_name=tool_name,
+        observation=ReActObservation(
+            tool_name=tool_name,
+            success=success,
+            summary=f"{tool_name} {'succeeded' if success else 'failed'}",
+        ),
+        tool_result=(
+            ToolResult(tool_name=tool_name, success=True, data=data, latency_ms=1.0)
+            if success
+            else ToolResult(
+                tool_name=tool_name,
+                success=False,
+                error={"type": "TimeoutError", "message": "upstream timed out"},
+                latency_ms=1.0,
+            )
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        ({"url": "https://a.test/page", "text": "Read body."}, ("https://a.test/page",)),
+        # A URL with nothing read from it is a candidate, not a read.
+        ({"url": "https://a.test/page", "text": "   "}, ()),
+        ({"url": "https://a.test/page"}, ()),
+        ({"text": "Read body."}, ()),
+        ({"url": 17, "text": "Read body."}, ()),
+    ],
+)
+def test_only_a_scraped_page_with_text_is_read(
+    data: object, expected: tuple[str, ...]
+) -> None:
+    assert read_evidence_urls(_tool_step("web_scraper", data)) == expected
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (
+            {"source": "https://b.test/doc.pdf", "chunks": ["chunk"]},
+            ("https://b.test/doc.pdf",),
+        ),
+        # An empty chunk list means the document was never actually read.
+        ({"source": "https://b.test/doc.pdf", "chunks": []}, ()),
+        ({"source": "https://b.test/doc.pdf"}, ()),
+        ({"source": 17, "chunks": ["chunk"]}, ()),
+    ],
+)
+def test_only_a_document_with_chunks_is_read(
+    data: object, expected: tuple[str, ...]
+) -> None:
+    assert read_evidence_urls(_tool_step("document_reader", data)) == expected
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (
+            {"matches": [{"content": "Recalled.", "source_url": "https://c.test/m"}]},
+            ("https://c.test/m",),
+        ),
+        (
+            {
+                "matches": [
+                    {
+                        "content": "Recalled.",
+                        "metadata": {"source_url": "https://c.test/m"},
+                    }
+                ]
+            },
+            ("https://c.test/m",),
+        ),
+        # A match with no readable content was never read.
+        ({"matches": [{"source_url": "https://c.test/m"}]}, ()),
+        ({"matches": [{"content": "   ", "source_url": "https://c.test/m"}]}, ()),
+        # Content with no source is not a source.
+        ({"matches": [{"content": "Recalled."}]}, ()),
+        ({"matches": []}, ()),
+        ({"matches": ["not-a-dict"]}, ()),
+        ({"matches": [{"metadata": "not-a-dict"}]}, ()),
+    ],
+)
+def test_only_a_memory_match_with_content_and_a_source_is_read(
+    data: object, expected: tuple[str, ...]
+) -> None:
+    assert read_evidence_urls(_tool_step("query_memory", data)) == expected
+
+
+def test_search_results_are_discovery_only() -> None:
+    """Five search hits are five candidates, and not one byte of evidence."""
+    step = _tool_step(
+        "web_search",
+        {
+            "results": [
+                {"title": f"Hit {index}", "url": f"https://s.test/{index}"}
+                for index in range(5)
+            ]
+        },
+    )
+
+    assert read_evidence_urls(step) == ()
+
+
+def test_a_write_is_never_read_evidence() -> None:
+    step = _tool_step(
+        "save_to_memory",
+        {"entry_id": "1", "url": "https://d.test/stored"},
+    )
+
+    assert read_evidence_urls(step) == ()
+
+
+def test_an_unknown_tool_is_never_read_evidence() -> None:
+    step = _tool_step("echo", {"url": "https://e.test/page", "text": "body"})
+
+    assert read_evidence_urls(step) == ()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [{"url": "https://f.test/page", "text": "Read body."}, {"text": None}],
+)
+def test_a_failed_call_reads_nothing(data: object) -> None:
+    assert read_evidence_urls(_tool_step("web_scraper", data, success=False)) == ()
+
+
+def test_a_step_without_a_tool_result_reads_nothing() -> None:
+    step = ReActStep(
+        iteration=1,
+        thought="Think only.",
+        action="finish",
+        final_answer="No tool was called.",
+    )
+
+    assert read_evidence_urls(step) == ()
+
+
+def test_read_evidence_urls_normalizes_in_order_and_deduplicates_within_the_step() -> (
+    None
+):
+    step = _tool_step(
+        "query_memory",
+        {
+            "matches": [
+                {"content": "One.", "source_url": "HTTPS://A.test/one/"},
+                {"content": "One again.", "source_url": "https://a.test/one"},
+                {"content": "Two.", "source_url": "https://www.b.test/two?x=1#frag"},
+            ]
+        },
+    )
+
+    assert read_evidence_urls(step) == (
+        "https://a.test/one",
+        "https://b.test/two?x=1",
+    )
+
+
+def test_a_native_final_answer_becomes_an_internal_finish_decision() -> None:
+    decisions = react_decision_from_native_turn(
+        NativeToolTurn(
+            model="deepseek-v4-flash",
+            usage=TokenUsage(),
+            final_answer="The available evidence is sufficient.",
+        )
+    )
+    assert len(decisions) == 1
+    decision = decisions[0]
+    assert decision.action == "finish"
+    assert decision.thought == "Finished without another tool call."
+    assert decision.tool_input_json == "{}"
+    assert decision.final_answer == "The available evidence is sufficient."
+    assert decision.tool_name is None

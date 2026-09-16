@@ -50,10 +50,10 @@ _MIXED_RUBRIC = rubric(
     ),
     (
         "evidence_linkage",
-        "Judged claims carry the evidence strings and source URLs that "
-        "justify them.",
-        "Every judged claim names its evidence and the URLs it came from.",
-        "Claims are judged without naming any evidence or source.",
+        "Judged claims carry bounded passages tied to read source URLs.",
+        "Every judged claim names a structured passage and the URL it came "
+        "from.",
+        "Claims are judged without naming any read-bearing evidence.",
     ),
 )
 
@@ -251,7 +251,6 @@ _MIXED = build_case(
                 authority=0.95,
                 recency=0.90,
                 relevance=0.95,
-                corroboration=0.85,
                 overall=0.91,
                 rationale=(
                     "IAEA is the international nuclear safety authority "
@@ -264,7 +263,6 @@ _MIXED = build_case(
                 authority=0.88,
                 recency=0.85,
                 relevance=0.90,
-                corroboration=0.80,
                 overall=0.86,
                 rationale=(
                     "Industry association with technical SMR reviews; "
@@ -277,7 +275,6 @@ _MIXED = build_case(
                 authority=0.50,
                 recency=0.65,
                 relevance=0.70,
-                corroboration=0.30,
                 overall=0.54,
                 rationale=(
                     "Policy brief without primary operational data; "
@@ -290,7 +287,6 @@ _MIXED = build_case(
                 authority=0.55,
                 recency=0.80,
                 relevance=0.75,
-                corroboration=0.60,
                 overall=0.68,
                 rationale=(
                     "Trade reporting with documented operational data on "
@@ -303,7 +299,6 @@ _MIXED = build_case(
                 authority=0.30,
                 recency=0.70,
                 relevance=0.60,
-                corroboration=0.20,
                 overall=0.45,
                 rationale=(
                     "Promotional material from the vendor itself; no "
@@ -317,7 +312,6 @@ _MIXED = build_case(
                 authority=0.35,
                 recency=0.75,
                 relevance=0.55,
-                corroboration=0.25,
                 overall=0.48,
                 rationale=(
                     "Industry newsletter repeating vendor claims; low "
@@ -350,7 +344,7 @@ _MIXED = build_case(
                 "evidence_linked",
                 0.25,
                 "Every non-`insufficient_evidence` claim carries at least "
-                "one evidence string and at least one `source_url`.",
+                "one bounded verification passage tied to a source URL.",
             ),
             (
                 "confidence_calibrated",
@@ -445,7 +439,7 @@ _DEPENDENT = build_case(
                 "evidence_linked",
                 0.25,
                 "Every non-`insufficient_evidence` claim carries at least "
-                "one evidence string and at least one `source_url`.",
+                "one bounded verification passage tied to a source URL.",
             ),
             (
                 "sources_known",
@@ -600,8 +594,8 @@ _LIVE = build_case(
     expectations=CaseExpectations(
         required_output_fields=["verified_claims"],
         # Live-run note for Task 18's evaluator: the Fact Checker verifies
-        # with live web_search (tavily) and query_memory reads; no HTTP
-        # page fetches are required, so "http" is not a live dependency.
+        # with live web_search (tavily), read-bearing page/document calls, or
+        # query_memory reads. Search hits alone are never evidence.
         # Sources_known is intentionally absent: a live run discovers
         # URLs the case cannot pre-declare.
         reference={
@@ -615,7 +609,7 @@ _LIVE = build_case(
                 "evidence_linked",
                 0.30,
                 "Every non-`insufficient_evidence` claim carries at least "
-                "one evidence string and at least one `source_url`.",
+                "one bounded verification passage tied to a source URL.",
             ),
             (
                 "independence_enforced",

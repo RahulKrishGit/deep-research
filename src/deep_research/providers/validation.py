@@ -17,9 +17,7 @@ from deep_research.providers.contracts import (
 MAX_VALIDATION_FIELD_PATHS = 16
 MAX_VALIDATION_SUMMARY_LENGTH = 1000
 
-_CATEGORY_PRIORITY: tuple[
-    tuple[StructuredDiagnosticCategory, frozenset[str]], ...
-] = (
+_CATEGORY_PRIORITY: tuple[tuple[StructuredDiagnosticCategory, frozenset[str]], ...] = (
     ("json_invalid", frozenset({"json_invalid"})),
     ("missing", frozenset({"missing"})),
     ("extra_forbidden", frozenset({"extra_forbidden"})),
@@ -91,7 +89,7 @@ _CATEGORY_PRIORITY: tuple[
 
 
 def _single_schema_annotation(annotation: object) -> object | None:
-    """Unwrap metadata and optionality without guessing among real unions."""
+    """Unwrap metadata and optionality without guessing among unions."""
     while get_origin(annotation) is Annotated:
         annotation = get_args(annotation)[0]
     if get_origin(annotation) in (Union, UnionType):
@@ -193,7 +191,8 @@ def validation_diagnostic(
 ) -> StructuredValidationDiagnostic:
     """Extract bounded paths and a stable category, never input values."""
     paths: list[str] = []
-    for item in _validation_error_items(error):
+    items = _validation_error_items(error)
+    for item in items:
         location = item.get("loc", ())
         if not isinstance(location, Sequence) or isinstance(location, (str, bytes)):
             location = ()

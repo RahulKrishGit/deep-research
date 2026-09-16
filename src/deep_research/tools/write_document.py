@@ -24,6 +24,7 @@ class WriteDocumentTool(BaseTool):
     name = "write_document"
     description = "Write a UTF-8 Markdown research report to the output directory."
     input_schema = {"filename": "string", "content": "string"}
+    required_arguments = ("filename", "content")
     output_schema = {"path": "string", "bytes_written": "integer"}
 
     def __init__(self, tracker: Tracker, output_root: Path | str) -> None:

@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
 
+from deep_research.agents.steps import ReActDecision
+from tests.agent_fakes import native_turn_from_decision
+
 
 class FakeDataset:
     def __init__(self, name: str, dataset_id: str) -> None:
@@ -57,6 +60,7 @@ class FakeLangSmithClient:
         self.created_datasets: list[str] = []
         self.created_examples: list[dict[str, Any]] = []
         self.updated_examples: list[dict[str, Any]] = []
+        self.updated_dataset_ids: list[str] = []
         self.feedback: list[dict[str, Any]] = []
         self.read_project_calls: list[str | UUID] = []
         self.updated_projects: list[dict[str, Any]] = []
@@ -96,8 +100,31 @@ class FakeLangSmithClient:
                 )
             )
 
-    def update_examples(self, *, updates: Sequence[Mapping]):
+    def update_examples(
+        self, *, updates: Sequence[Mapping], dataset_id: str | None = None
+    ):
+        dataset = next(
+            (
+                candidate
+                for candidate in self._datasets.values()
+                if candidate.id == dataset_id
+            ),
+            None,
+        )
+        if dataset is None:
+            raise AssertionError(
+                "example updates must identify an existing dataset"
+            )
+        known_ids = {
+            example.id
+            for example in self._examples[dataset.name]
+        }
+        self.updated_dataset_ids.append(dataset_id)
         for payload in updates:
+            if payload.get("id") not in known_ids:
+                raise AssertionError(
+                    "example updates must identify an existing remote example"
+                )
             self.updated_examples.append(dict(payload))
 
     def create_feedback(self, run_id, key, **kwargs: Any) -> None:
@@ -254,12 +281,19 @@ class FakeExampleRow:
 
 
 class FakeStructuredProvider:
-    """Serves queued structured responses; never touches the network."""
+    """Serves queued responses; never touches the network.
+
+    One queue for both capabilities, serviced in call order. A queued
+    ``ReActDecision`` served through ``complete_react`` is converted to the
+    provider-native turn a real provider would return for it, which is what
+    lets a target agent's scripted decisions stay expressed as decisions.
+    """
 
     def __init__(self, responses: Sequence[Any] = ()) -> None:
         self.responses = list(responses)
         self.calls: list[tuple[Any, Any, str | None]] = []
         self.budgets: list[int | None] = []
+        self.react_calls: list[tuple[Any, Any, str | None]] = []
         self.last_model_returned: str | None = "deepseek-v4-flash-fake"
 
     async def complete_structured(
@@ -273,3 +307,19 @@ class FakeStructuredProvider:
         if isinstance(response, Exception):
             raise response
         return response
+
+    async def complete_react(
+        self, messages, tools, *, agent_name=None, max_tokens=None
+    ):
+        self.react_calls.append((list(messages), tuple(tools), agent_name))
+        self.budgets.append(max_tokens)
+        if not self.responses:
+            raise AssertionError("no scripted native ReAct turn left")
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        if not isinstance(response, ReActDecision):
+            raise AssertionError(
+                "a native ReAct turn must be scripted as a ReActDecision"
+            )
+        return native_turn_from_decision(response)

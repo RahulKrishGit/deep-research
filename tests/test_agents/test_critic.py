@@ -2,34 +2,57 @@
 
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 
 from deep_research.agents.critic import (
+    _CRITIQUE_HIGH_EXAMPLE_JSON,
+    _CRITIQUE_LOW_EXAMPLE_JSON,
+    _CRITIQUE_SCORE_BANDS,
+    _HIGH_EXAMPLE_SCORE,
+    _LOW_EXAMPLE_SCORE,
     ACCEPTANCE_SCORE,
     MAX_CRITIC_SCORE,
     MIN_CRITIC_SCORE,
     ROUTING_REASONS,
     CriticAgent,
     CritiqueDraft,
+    CritiqueGapDraft,
     CritiqueTask,
+    _render_spot_check_guidance,
     build_critique,
     clamp_score,
     critique_messages,
     fallback_critique,
+    normalize_gaps,
     normalize_notes,
     route_decision,
 )
 from deep_research.agents.errors import AgentConfigurationError
-from deep_research.agents.prompts import AgentTask
-from deep_research.agents.steps import ReActRun
+from deep_research.agents.identity import claim_fingerprint
+from deep_research.agents.prompts import (
+    CRITIC_REVIEW_SYSTEM_PROMPT,
+    AgentTask,
+)
+from deep_research.agents.steps import ReActDecision, ReActRun
+from deep_research.evaluation.cases.critic import LIVE_CASES
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseError,
+    ProviderResponseTelemetry,
+)
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Claim,
     Critique,
+    CritiqueGap,
+    ReportQualitySnapshot,
+    ResearchError,
     ResearchState,
     ScoredSource,
     SubTopic,
@@ -40,6 +63,17 @@ from tests.research_fakes import FakeSearchClient, critic_tools
 CRITIC_SOURCE_URL = "https://example.org/a"
 
 
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
+
+
 def _source(*, low_confidence: bool = False) -> ScoredSource:
     return ScoredSource(
         url=CRITIC_SOURCE_URL,
@@ -47,7 +81,6 @@ def _source(*, low_confidence: bool = False) -> ScoredSource:
         authority_score=0.8,
         recency_score=0.7,
         relevance_score=0.9,
-        corroboration_score=0.5,
         overall_score=0.76,
         rationale="Peer-reviewed and corroborated.",
         low_confidence=low_confidence,
@@ -56,12 +89,16 @@ def _source(*, low_confidence: bool = False) -> ScoredSource:
 
 def _claim(*, verdict: str = "verified") -> Claim:
     return Claim(
+        claim_id=claim_fingerprint(
+            "Logical error rates fell below break-even in 2025."
+        ),
         text="Logical error rates fell below break-even in 2025.",
         source_urls=[CRITIC_SOURCE_URL],
         verdict=verdict,
         confidence=0.8,
         evidence=[],
         contradictions=[],
+        verification_evidence=[],
     )
 
 
@@ -82,6 +119,18 @@ def _draft(
     )
 
 
+def _alpha() -> SubTopic:
+    """The one planned sub-topic every Critic request test renders."""
+    return SubTopic(
+        coverage_id="topic-01",
+        title="Alpha",
+        rationale="Alpha is load-bearing.",
+        search_queries=["alpha 2025"],
+        success_criteria=["A named source about Alpha."],
+        priority=1,
+    )
+
+
 def _task(**overrides: object) -> CritiqueTask:
     payload: dict[str, object] = {
         "instruction": "How mature is quantum error correction?",
@@ -90,11 +139,574 @@ def _task(**overrides: object) -> CritiqueTask:
         "max_iterations": 3,
         "claims": [_claim()],
         "sources": [_source()],
-        "sub_topics": ["Alpha"],
+        "sub_topics": [_alpha()],
         "error_count": 2,
     }
     payload.update(overrides)
     return CritiqueTask.model_validate(payload)
+
+
+# A sentence that exists only inside the registered live case's report body, so
+# these tests measure the report's presence rather than a nearby label.
+_LIVE_REPORT_PROBE = "Low-carbon cement technologies have moved from pilot"
+
+
+def _live_report() -> str:
+    """The registered live critic case's fixed report."""
+    report = (
+        next(
+            case for case in LIVE_CASES if case.case_id == "critic-live-review"
+        )
+        .fresh_state()
+        .report
+    )
+    assert report is not None
+    assert _LIVE_REPORT_PROBE in report
+    return report
+
+
+def test_spot_check_guidance_carries_the_report_under_review() -> None:
+    guidance = _render_spot_check_guidance(
+        _live_report(), [], report_chars=6000
+    )
+
+    assert _LIVE_REPORT_PROBE in guidance
+    assert "Report under review:" in guidance
+
+
+def test_spot_check_guidance_keeps_the_planned_queries_beside_the_report() -> None:
+    guidance = _render_spot_check_guidance(
+        _live_report(),
+        [_alpha()],
+        report_chars=6000,
+    )
+
+    assert _LIVE_REPORT_PROBE in guidance
+    # The spot-check prompt is the second place a planned sub-topic is shown,
+    # so it must carry the same ``coverage_id: title`` line the review request
+    # does: a model that finds the id here and not there has been told two
+    # different things about the same plan.
+    assert "- topic-01: Alpha" in guidance
+    assert "  - alpha 2025" in guidance
+
+
+def test_spot_check_guidance_clamps_the_report_like_the_review_prompt() -> None:
+    report = "R" * 5000
+
+    guidance = _render_spot_check_guidance(report, [], report_chars=100)
+
+    assert report not in guidance
+    assert "R" * 97 + "..." in guidance
+
+
+def test_spot_check_guidance_omits_the_report_section_when_there_is_none() -> None:
+    guidance = _render_spot_check_guidance("", [], report_chars=6000)
+
+    assert "Report under review" not in guidance
+
+
+@pytest.mark.asyncio
+async def test_the_spot_check_prompt_renders_the_report(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Enough context.", "No spot check needed.")],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(tracker, completer, tool_budget=1)
+    state = _critic_state(report="# Research report: report-body-marker")
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(state)
+
+    first_call = completer.react_calls[0]
+    assert first_call.agent_name == "critic"
+    assert "report-body-marker" in first_call.messages[1].content
+    assert [definition.name for definition in first_call.tools] == [
+        "web_search",
+        "query_memory",
+    ]
+
+
+def test_the_critic_weak_and_strong_examples_are_valid_and_in_band() -> None:
+    """Preservation test for the Critic's already-specialized example pair.
+
+    Both examples must stay valid JSON that validates as ``CritiqueDraft``,
+    and each must sit inside the band its own label claims: 1-3 for the weak
+    example and 9-10 for the strong one. A malformed or out-of-band example
+    would teach the model the wrong scale.
+    """
+    weak = json.loads(_CRITIQUE_LOW_EXAMPLE_JSON)
+    strong = json.loads(_CRITIQUE_HIGH_EXAMPLE_JSON)
+
+    assert CritiqueDraft.model_validate(weak).score == _LOW_EXAMPLE_SCORE
+    assert CritiqueDraft.model_validate(strong).score == _HIGH_EXAMPLE_SCORE
+    assert 1 <= weak["score"] <= 3
+    assert 9 <= strong["score"] <= 10
+    # "Negative" is weak semantics, never malformed JSON: the weak example
+    # still carries populated lists.
+    assert weak["gaps"] and weak["unsupported_claims"]
+    assert strong["gaps"] is not None and strong["unsupported_claims"] == []
+
+
+def test_the_review_call_uses_a_prompt_that_names_no_tools() -> None:
+    """The review request offers no tools, so its prompt must not name any.
+
+    Measured root cause: the review payload carries no ``tools`` and no
+    ``tool_choice``, yet the shared system prompt announced ``web_search`` and
+    ``query_memory``. The model obeyed and emitted DeepSeek tool-invocation
+    markup into the message text, where local JSON validation rejected it — 16
+    of 30 first attempts. The tool-aware prompt still belongs to the ReAct
+    spot-check loop, which does offer the tools.
+    """
+    system = critique_messages(
+        _task(),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[0].content
+
+    assert system == CRITIC_REVIEW_SYSTEM_PROMPT
+    lowered = system.lower()
+    for forbidden in ("web_search", "query_memory", "tool"):
+        assert forbidden not in lowered, forbidden
+
+
+def _fence_bounds(body: str) -> tuple[int, int, str]:
+    """Return the line indices of the report fence, plus its backtick run.
+
+    The closing fence is matched by exact tick count, because a report may
+    itself contain a shorter backtick run that is not the closing fence.
+    """
+    lines = body.splitlines()
+    opening = next(
+        index for index, line in enumerate(lines) if line.startswith("```")
+    )
+    tick = lines[opening].removesuffix("report")
+    closing = next(
+        index for index in range(opening + 1, len(lines)) if lines[index] == tick
+    )
+    return opening, closing, tick
+
+
+def test_the_review_request_fences_the_report() -> None:
+    """The report is quoted in a Markdown fence, not between angle-bracket tags.
+
+    A fence is the one Markdown construct that delimits a verbatim region, and
+    fenced content is not parsed as Markdown, so the report's own headings cannot
+    be read as sections of this request. The opening fence is the begin marker
+    and the closing fence is the end marker; its info string names the block.
+    """
+    body = _review_body()
+    lines = body.splitlines()
+    opening, closing, _ = _fence_bounds(body)
+
+    assert lines[opening] == "```report"
+    assert "\n".join(lines[opening + 1 : closing]) == _task().report
+    assert "<<<REPORT BEGIN>>>" not in body
+    assert "<<<REPORT END>>>" not in body
+    # Supporting context follows the closing fence, not inside the report.
+    assert lines.index("# Sub-topics planned") > closing
+
+
+def test_no_request_line_uses_angle_bracket_markers() -> None:
+    """Nothing outside the report may be tagged with angle brackets.
+
+    The report is arbitrary provider-written Markdown, so this constrains the
+    request's own envelope only, never the report's content.
+    """
+    body = _review_body()
+    lines = body.splitlines()
+    opening, closing, _ = _fence_bounds(body)
+    envelope = "\n".join([*lines[:opening], *lines[closing + 1 :]])
+
+    assert "<" not in envelope
+    assert ">" not in envelope
+
+
+def test_a_report_containing_a_fence_cannot_close_the_enclosing_fence() -> None:
+    """The enclosing fence must outlast any backtick run in the report.
+
+    A synthesised report can quote a fenced block of its own. A fixed three-
+    backtick fence would be closed early by that content, exposing the rest of
+    the report as if it were request text.
+    """
+    report = "# Title\n\n```\nquoted code\n```\n\n## Limitations\nNone."
+    body = critique_messages(
+        _task(report=report),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[1].content
+    lines = body.splitlines()
+    opening, closing, tick = _fence_bounds(body)
+
+    assert tick == "````"
+    assert lines[opening] == "````report"
+    assert "\n".join(lines[opening + 1 : closing]) == report
+
+
+def _review_body() -> str:
+    return critique_messages(
+        _task(),
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=6000,
+        claim_digest=40,
+    )[1].content
+
+
+def test_no_request_heading_can_be_confused_with_a_report_heading() -> None:
+    """Request sections are H1; the report's own sections are H2.
+
+    The canonical report is ``REPORT_SECTIONS`` — H2 body sections with H3
+    sub-groups — and this request previously used H2 as well, so
+    ``## Recorded problems`` sat at the same visual level as the report's own
+    ``## Limitations``, separated only by the markers. At H1 every request
+    heading outranks the report, so the report reads as content nested inside
+    ``# Report under review``.
+    """
+    body = _review_body()
+    lines = body.splitlines()
+    opening, closing, _ = _fence_bounds(body)
+    envelope = "\n".join([*lines[:opening], *lines[closing + 1 :]])
+
+    collisions = [line for line in envelope.splitlines() if line.startswith("## ")]
+    assert not collisions, f"request sections at H2: {collisions}"
+    for section in (
+        "# Research question",
+        "# Report under review",
+        "# Sub-topics planned",
+        "# Claim verdicts",
+        "# Source quality",
+        "# Recorded problems",
+        "# Spot checks",
+        "# Response contract",
+        "# How to choose the score",
+        "# Reply format",
+    ):
+        assert section in envelope, section
+
+
+def test_the_report_section_says_whose_headings_are_whose() -> None:
+    """The model must know the report's headings belong to the report.
+
+    The report carries its own H2 sections, so the request has to say so rather
+    than relying on heading level alone to carry the boundary.
+    """
+    body = _review_body()
+
+    assert (
+        "its own headings belong to the report rather than to this request" in body
+    )
+
+
+def test_the_review_request_names_json_and_shows_its_shape() -> None:
+    """The request must say JSON, and show the object it wants.
+
+    Measured on the live-tested commit: the review prompt contained zero JSON
+    lines and never used the word JSON, while the judge prompt — which has never
+    recorded a ``json_invalid`` failure on the same model, transport, and effort
+    — contained 147 JSON lines. DeepSeek's JSON Output guide requires the word
+    "json" in the prompt and an example of the desired JSON format.
+
+    A 50-request baseline measured a 22% failure rate for this call, and all
+    failures were non-empty text that was not valid JSON, which is the mode this
+    contract targets.
+    """
+    body = _review_body()
+
+    assert "JSON" in body
+    assert "# Reply format" in body
+    for field in (
+        "score",
+        "gaps",
+        "unsupported_claims",
+        "recommended_queries",
+        "rationale",
+    ):
+        assert f'"{field}"' in body
+
+
+def test_the_reply_examples_are_valid_json_instances() -> None:
+    """Both examples must be real JSON instances, not placeholder skeletons.
+
+    The earlier skeleton used angle-bracket placeholders like
+    ``<integer 1-10>``, which is not valid JSON, so the model was shown
+    something that was neither a schema nor an example.
+    """
+    body = _review_body()
+    examples = [
+        json.loads(line) for line in body.splitlines() if line.startswith('{"score"')
+    ]
+
+    assert len(examples) == 2
+    for payload in examples:
+        assert sorted(payload) == [
+            "gaps",
+            "rationale",
+            "recommended_queries",
+            "score",
+            "unsupported_claims",
+        ]
+        assert isinstance(payload["score"], int)
+        assert 1 <= payload["score"] <= 10
+        assert isinstance(payload["gaps"], list)
+        assert isinstance(payload["unsupported_claims"], list)
+        assert isinstance(payload["recommended_queries"], list)
+        assert payload["rationale"].strip()
+    # No angle-bracket placeholder may remain anywhere in the request.
+    assert "<integer" not in body
+    assert "<string>" not in body
+
+
+def test_the_examples_bracket_the_outcome_threshold() -> None:
+    """One example sits below the acceptance score and one clearly above.
+
+    Two examples alone invite the model to split the difference. The pair must
+    actually exercise both sides of the threshold the system computes routing
+    from, so the scale in use is unambiguous.
+    """
+    body = _review_body()
+    scores = [
+        json.loads(line)["score"]
+        for line in body.splitlines()
+        if line.startswith('{"score"')
+    ]
+
+    assert min(scores) < ACCEPTANCE_SCORE
+    assert max(scores) > ACCEPTANCE_SCORE
+    assert "Weak report" in body
+    assert "Strong report" in body
+
+
+def test_the_request_gives_explicit_guidance_for_choosing_a_score() -> None:
+    """Both examples need a stated rule for choosing between them.
+
+    Before this, the only calibration was the endpoints "1 is unusable" and "10
+    answers completely", which says nothing about the middle of the scale.
+    """
+    body = _review_body()
+
+    assert "# How to choose the score" in body
+    for band in ("1-3:", "4-6:", "7-8:", "9-10:"):
+        assert band in body, band
+    # The rule must be anchored on evidence, not on prose quality.
+    assert "weakest load-bearing element" in body
+    assert "not from its overall polish" in body
+
+
+def test_each_example_demonstrates_the_band_it_is_labelled_with() -> None:
+    """The anchors must show their own band, not merely claim a number.
+
+    A labelled pair is worthless if the low example reads like a 4-6 and the
+    high example reads like a 7-8, because the model calibrates against what
+    the examples *show*. Band 1-3 turns on claims with no cited source, and
+    band 9-10 turns on completeness with narrow gaps, so the examples have to
+    differ on exactly those signals.
+    """
+    body = _review_body()
+    examples = [
+        json.loads(line) for line in body.splitlines() if line.startswith('{"score"')
+    ]
+    low, high = sorted(examples, key=lambda payload: payload["score"])
+
+    assert 1 <= low["score"] <= 3
+    assert low["unsupported_claims"], "band 1-3 is about unsourced central claims"
+    assert 9 <= high["score"] <= 10
+    assert high["unsupported_claims"] == []
+    assert len(high["gaps"]) <= 1, "band 9-10 allows at most narrow gaps"
+    assert len(low["gaps"]) > len(high["gaps"])
+
+
+def _collapsed(text: str) -> str:
+    """Whitespace runs collapsed: the prompt is wrapped, the meaning is not."""
+    return " ".join(text.split())
+
+
+def _critique_bands() -> tuple[tuple[int, int, str], ...]:
+    """Parse the rendered band table into ``(low, high, guidance)`` rows.
+
+    The table opens with one line saying how to choose a score, then one line per
+    band, so only the band lines are parsed.
+    """
+    bands: list[tuple[int, int, str]] = []
+    for line in _CRITIQUE_SCORE_BANDS.splitlines():
+        match = re.fullmatch(r"(\d+)-(\d+): (.+)", line)
+        if match is not None:
+            bands.append((int(match[1]), int(match[2]), match[3]))
+    assert bands, "the band table must state at least one band"
+    return tuple(bands)
+
+
+def test_the_score_bands_cover_the_declared_range_without_overlap_or_gaps() -> None:
+    """Step 3: every score the router can see has exactly one band.
+
+    Routing compares the score against ``ACCEPTANCE_SCORE``, so a range the band
+    table leaves unstated is a range the model has no instruction for. The
+    earlier prompt anchored only 1 and 10 and said nothing about the middle. The
+    top band is worded as a reservation, which is what keeps the best scores from
+    becoming the default.
+    """
+    bands = _critique_bands()
+
+    assert bands[0][0] == MIN_CRITIC_SCORE
+    assert bands[-1][1] == MAX_CRITIC_SCORE
+    covered = [score for low, high, _ in bands for score in range(low, high + 1)]
+    assert covered == list(range(MIN_CRITIC_SCORE, MAX_CRITIC_SCORE + 1))
+    # Contradictory endpoint language: the top band reserves its own range, and
+    # no band names a score that belongs to a different band.
+    assert "reserve" in bands[-1][2].lower()
+    for low, high, guidance in bands:
+        for value in (int(item) for item in re.findall(r"\d+", guidance)):
+            assert low <= value <= high, (low, high, guidance)
+
+
+def test_each_example_sits_inside_its_band_and_brackets_the_threshold() -> None:
+    """Step 3: the labelled pair straddles the score routing turns on.
+
+    Both examples must be schema-valid and semantically opposite — a weak report
+    and a strong one — and each must land inside the band its own label claims,
+    or the pair teaches a scale the band table contradicts.
+    """
+    bands = _critique_bands()
+    weak = CritiqueDraft.model_validate_json(_CRITIQUE_LOW_EXAMPLE_JSON)
+    strong = CritiqueDraft.model_validate_json(_CRITIQUE_HIGH_EXAMPLE_JSON)
+
+    assert weak.score == _LOW_EXAMPLE_SCORE
+    assert strong.score == _HIGH_EXAMPLE_SCORE
+    weak_band = next(band for band in bands if band[0] <= weak.score <= band[1])
+    strong_band = next(band for band in bands if band[0] <= strong.score <= band[1])
+    assert weak_band != strong_band
+    assert weak.score < ACCEPTANCE_SCORE < strong.score
+    # Opposite semantic cases, never one case at two values.
+    assert weak.unsupported_claims and strong.unsupported_claims == []
+    assert len(weak.gaps) > len(strong.gaps)
+    body = _review_body()
+    assert f"Weak report, score {weak.score}:" in body
+    assert f"Strong report, score {strong.score}:" in body
+
+
+def test_the_labelled_pair_is_introduced_as_a_scale_not_a_target() -> None:
+    """Step 3: the pair is an illustration of the scale, stated once.
+
+    Both examples are labelled by the case they show, and the contract presents
+    them as examples of the scale in use. There is exactly one reply contract,
+    so the pair cannot be read as a second, competing protocol.
+    """
+    body = _review_body()
+    contract = body[body.index("# Reply format") :]
+    prose = _collapsed(contract)
+
+    assert "Two complete examples" in prose
+    assert "one for a weak report and one for a strong one" in prose
+    assert "showing the scale in use" in prose
+    assert f"Weak report, score {_LOW_EXAMPLE_SCORE}:" in contract
+    assert f"Strong report, score {_HIGH_EXAMPLE_SCORE}:" in contract
+    assert contract.count("JSON object") == 1
+
+
+def test_the_score_guidance_does_not_leak_routing_policy() -> None:
+    """Routing is computed locally; the prompt must not state the threshold.
+
+    `CRITIQUE_INSTRUCTION` tells the model not to decide continuation, so the
+    band table must describe report quality rather than publish the number the
+    router compares against.
+    """
+    body = _review_body()
+
+    assert "Do not decide whether research continues" in body
+    assert f"score {ACCEPTANCE_SCORE}" not in body
+    assert f"at least {ACCEPTANCE_SCORE}" not in body
+    assert "acceptance" not in body.lower()
+
+
+def test_the_request_states_its_json_requirement_once() -> None:
+    """One format requirement, not three competing renditions.
+
+    The request previously carried the response-contract prose, a skeleton and
+    the provider's trailing schema message, each phrasing the JSON demand
+    differently. The prose no longer repeats it; the example is the single
+    agent-side statement, and the provider message remains the schema.
+    """
+    body = _review_body()
+
+    assert body.count("# Reply format") == 1
+    assert "Reply with a single JSON object" not in body
+    assert "Do not wrap it in Markdown code fences" not in body
+
+
+def test_the_json_demand_preserves_the_scoring_contract() -> None:
+    """The JSON contract is additive; the scoring contract is unchanged."""
+    body = _review_body()
+
+    for requirement in (
+        "an integer from 1 to 10",
+        "list a gap only when closing it would materially change the",
+        "an empty list when the report is materially complete",
+        "Do not decide whether research continues",
+        "Never restate the score alone",
+    ):
+        assert requirement in body
+
+
+@pytest.mark.asyncio
+async def test_only_the_review_call_gets_the_operation_output_budget(
+    tracker: Tracker,
+) -> None:
+    """The report review is the one call that may exceed the global cap.
+
+    The Critic's review renders the report, claims, source quality signals, and
+    spot-check evidence and then asks for a score plus three lists plus a
+    rationale in one JSON object. At the global cap it returned non-JSON text
+    on both the initial attempt and the single repair in three consecutive
+    live canaries, so it carries an operation-specific budget. ReAct decisions
+    must stay at the global cap: widening them would change every agent's
+    loop, not this one call.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("Enough context.", "No spot check needed.")],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(tracker, completer, tool_budget=1)
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(_critic_state())
+
+    budgets = dict(
+        zip((call[0] for call in completer.calls), completer.budgets, strict=True)
+    )
+    assert completer.react_budgets == [
+        AgentRuntimeConfig().react_decision_max_tokens
+    ]
+    assert budgets["CritiqueDraft"] == AgentRuntimeConfig().critic_review_max_tokens
+
+
+@pytest.mark.asyncio
+async def test_the_review_budget_follows_the_agent_configuration(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Enough context.", "No spot check needed.")],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(
+        tracker,
+        completer,
+        tool_budget=1,
+        config=AgentRuntimeConfig(
+            max_iterations=2, tool_budget=1, critic_review_max_tokens=16384
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(_critic_state())
+
+    review_index = next(
+        index
+        for index, call in enumerate(completer.calls)
+        if call[0] == "CritiqueDraft"
+    )
+    assert completer.budgets[review_index] == 16384
 
 
 @pytest.mark.parametrize(
@@ -187,12 +799,154 @@ def test_a_critique_is_validated_clamped_and_routed() -> None:
 
     assert isinstance(critique, Critique)
     assert critique.score == MAX_CRITIC_SCORE
-    assert critique.gaps == ["No cost data."]
+    assert [gap.problem for gap in critique.gaps] == ["No cost data."]
     assert critique.recommended_queries == ["qec cost 2025"]
     assert critique.should_continue is True
     assert reason == "critical_gaps"
     assert critique.rationale.startswith("Well sourced and complete.")
     assert ROUTING_REASONS["critical_gaps"] in critique.rationale
+
+
+def test_critique_gaps_preserve_known_ids_and_globalize_unknown_ids() -> None:
+    draft = CritiqueDraft(
+        score=4,
+        gaps=[
+            CritiqueGapDraft(
+                coverage_id="topic-01",
+                problem="Alpha lacks cost evidence.",
+                recommended_queries=["alpha cost 2025"],
+            ),
+            CritiqueGapDraft(
+                coverage_id="topic-999",
+                problem="The provider invented this plan id.",
+                recommended_queries=["invented topic evidence"],
+            ),
+        ],
+        unsupported_claims=[],
+        recommended_queries=[],
+        rationale="The report needs targeted evidence.",
+    )
+
+    critique, reason = build_critique(
+        draft,
+        iteration=0,
+        max_iterations=3,
+        known_coverage_ids={"topic-01"},
+    )
+
+    assert reason == "low_score"
+    assert critique.gaps == [
+        CritiqueGap(
+            coverage_id="topic-01",
+            problem="Alpha lacks cost evidence.",
+            recommended_queries=["alpha cost 2025"],
+        ),
+        CritiqueGap(
+            coverage_id=None,
+            problem="The provider invented this plan id.",
+            recommended_queries=["invented topic evidence"],
+        ),
+    ]
+
+
+def test_normalize_gaps_accepts_a_legacy_string_gap() -> None:
+    """The one gap normalizer reads the pre-Task-7 free-text shape too.
+
+    ``CritiqueDraft`` and ``Critique`` both hand a legacy string list to this
+    function, so it is the single place the old shape is understood.
+    """
+    assert normalize_gaps(["No cost data."]) == [
+        CritiqueGap(
+            coverage_id=None,
+            problem="No cost data.",
+            recommended_queries=[],
+        )
+    ]
+
+
+def test_both_typed_gap_boundaries_share_one_normalizer(monkeypatch) -> None:
+    """One normalizer, called by both entry points, not two copies.
+
+    Two verbatim copies would drift the moment the gap shape changes: one
+    boundary would keep accepting the legacy string and the other would start
+    rejecting it. Recording the calls proves they share the implementation
+    rather than merely agreeing today.
+    """
+    import deep_research.agents.critic as critic_module
+
+    real = critic_module.normalize_gap_drafts
+    recorded_payloads: list[dict] = []
+
+    def recorded(values: object) -> object:
+        assert isinstance(values, dict)
+        recorded_payloads.append(values)
+        return real(values)
+
+    monkeypatch.setattr(critic_module, "normalize_gap_drafts", recorded)
+
+    draft = CritiqueDraft.model_validate(
+        {
+            "score": 4,
+            "gaps": ["No cost data."],
+            "unsupported_claims": [],
+            "recommended_queries": [],
+            "rationale": "Thin sourcing.",
+        }
+    )
+    critique = Critique.model_validate(
+        {
+            "score": 4,
+            "gaps": ["No cost data."],
+            "unsupported_claims": [],
+            "recommended_queries": [],
+            "should_continue": True,
+            "rationale": "Thin sourcing.",
+        }
+    )
+
+    # Both boundaries handed the legacy list to the same function.
+    assert [payload["gaps"] for payload in recorded_payloads] == [
+        ["No cost data."],
+        ["No cost data."],
+    ]
+    assert draft.gaps == [
+        CritiqueGapDraft(
+            coverage_id=None,
+            problem="No cost data.",
+            recommended_queries=[],
+        )
+    ]
+    assert critique.gaps == [
+        CritiqueGap(
+            coverage_id=None,
+            problem="No cost data.",
+            recommended_queries=[],
+        )
+    ]
+
+
+def test_blank_or_title_only_gap_targets_remain_global() -> None:
+    gaps = normalize_gaps(
+        [
+            CritiqueGapDraft(
+                coverage_id="   ",
+                problem="The report misses Beta evidence.",
+                recommended_queries=["beta evidence"],
+            ),
+            CritiqueGapDraft(
+                coverage_id=None,
+                problem="Alpha appears only as a title in this problem.",
+                recommended_queries=["alpha evidence"],
+            ),
+        ],
+        known_coverage_ids={"topic-01", "topic-02"},
+    )
+
+    assert [gap.coverage_id for gap in gaps] == [None, None]
+    assert [gap.problem for gap in gaps] == [
+        "The report misses Beta evidence.",
+        "Alpha appears only as a title in this problem.",
+    ]
 
 
 def test_a_blank_model_rationale_still_yields_a_usable_one() -> None:
@@ -214,7 +968,7 @@ def test_the_last_iteration_stops_even_on_a_scathing_critique() -> None:
 
     assert critique.should_continue is False
     assert reason == "max_iterations_reached"
-    assert critique.gaps == ["No cost data."]
+    assert [gap.problem for gap in critique.gaps] == ["No cost data."]
     assert ROUTING_REASONS["max_iterations_reached"] in critique.rationale
 
 
@@ -236,7 +990,9 @@ def test_a_missing_report_is_worth_one_more_cycle() -> None:
 
     assert critique.should_continue is True
     assert reason == "missing_report"
-    assert critique.gaps == ["No report was available to review."]
+    assert [gap.problem for gap in critique.gaps] == [
+        "No report was available to review."
+    ]
 
     exhausted, exhausted_reason = fallback_critique(
         reason="missing_report", iteration=3, max_iterations=3
@@ -260,18 +1016,86 @@ def test_critique_messages_carry_the_report_and_every_quality_signal() -> None:
 
     assert [message.role for message in messages] == ["developer", "user"]
     body = messages[1].content
-    assert "## Research question" in body
-    assert "## Report under review" in body
+    assert "# Research question" in body
+    assert "# Report under review" in body
     assert "# Research report:" in body
-    assert "## Sub-topics planned" in body
-    assert "- Alpha" in body
-    assert "## Claim verdicts" in body
+    assert "# Sub-topics planned" in body
+    # ``CRITIQUE_INSTRUCTION`` tells the model to copy a ``coverage_id``
+    # "exactly from a planned sub-topic" and never to infer one from a title.
+    # The id therefore has to appear in this rendered request next to its
+    # title, or the response contract points at a list of titles and every
+    # gap it targets is nulled by ``normalize_gaps``. The exact line pins both
+    # values and their order, so it subsumes the older title-only assertion.
+    assert "- topic-01: Alpha" in body
+    assert "# Claim verdicts" in body
     assert "[verified 0.80]" in body
-    assert "## Source quality" in body
-    assert "## Recorded problems" in body
+    assert "# Source quality" in body
+    assert "# Recorded problems" in body
     assert "2 error(s)" in body
-    assert "## Spot checks" in body
-    assert "## Response contract" in body
+    assert "# Spot checks" in body
+    assert "# Response contract" in body
+
+
+def test_critique_messages_keep_each_reader_section_and_typed_quality_context() -> None:
+    report = "\n\n".join(
+        [
+            "# Research report: balanced input",
+            "## Executive summary\nSUMMARY-MARKER",
+            "## Constraint ranking\nCONSTRAINT-MARKER",
+            "## Findings\nFINDINGS-MARKER",
+            "## Uncertainty and conflicting evidence\nUNCERTAINTY-MARKER",
+            "## Methodology\nMETHODOLOGY-MARKER",
+            "## References\nREFERENCES-MARKER",
+        ]
+    )
+    quality = ReportQualitySnapshot(
+        coverage_ratio=0.8,
+        planned_topics=5,
+        covered_topics=4,
+        unresolved_topic_ids=["topic-05"],
+        unique_findings=6,
+        unique_sources=4,
+        cited_sources=3,
+        scored_cited_source_ratio=1.0,
+        verified_claims=4,
+        contradicted_claims=1,
+        duplicate_claims=0,
+        duplicate_source_rows=0,
+        uncited_settled_points=0,
+        hard_failures=["broad_plan_coverage_below_0.80"],
+    )
+    task = _task(
+        report=report,
+        quality=quality,
+        errors=[
+            ResearchError(
+                error_type="researcher_sub_topic_skipped",
+                source="agent.researcher",
+                message="A planned sub-topic was skipped.",
+                details={"coverage_id": "topic-05"},
+            )
+        ],
+    )
+
+    body = critique_messages(
+        task,
+        ReActRun(agent_name="critic", stop_reason="finished"),
+        report_chars=80,
+        claim_digest=10,
+    )[1].content
+
+    for marker in (
+        "SUMMARY-MARKER",
+        "CONSTRAINT-MARKER",
+        "FINDINGS-MARKER",
+        "UNCERTAINTY-MARKER",
+        "METHODOLOGY-MARKER",
+        "REFERENCES-MARKER",
+    ):
+        assert marker in body
+    assert '"coverage_ratio": 0.8' in body
+    assert "agent.researcher" in body
+    assert "researcher_sub_topic_skipped" in body
 
 
 def test_critique_messages_clamp_a_long_report_without_flattening_it() -> None:
@@ -305,6 +1129,7 @@ def _critic(
     *,
     tools: list[BaseTool] | None = None,
     tool_budget: int = 0,
+    config: AgentRuntimeConfig | None = None,
 ) -> CriticAgent:
     return CriticAgent(
         provider=completer,
@@ -313,7 +1138,11 @@ def _critic(
             session_id="session-1", agent_name="critic", max_entries=20
         ),
         tools=tools if tools is not None else critic_tools(tracker),
-        config=AgentRuntimeConfig(max_iterations=2, tool_budget=tool_budget),
+        config=(
+            config
+            if config is not None
+            else AgentRuntimeConfig(max_iterations=2, tool_budget=tool_budget)
+        ),
     )
 
 
@@ -323,6 +1152,7 @@ def _critic_state(**overrides: object) -> ResearchState:
         "original_question": "How mature is quantum error correction?",
         "sub_topics": [
             SubTopic(
+                coverage_id="topic-01",
                 title="Alpha",
                 rationale="Alpha is load-bearing.",
                 search_queries=["alpha 2025"],
@@ -350,10 +1180,34 @@ def test_build_task_carries_the_report_budget_and_quality_signals(
     assert task.report == state.report
     assert task.iteration == 2
     assert task.max_iterations == 3
-    assert task.sub_topics == ["Alpha"]
+    assert [(topic.coverage_id, topic.title) for topic in task.sub_topics] == [
+        ("topic-01", "Alpha")
+    ]
     assert len(task.claims) == 1
     assert len(task.sources) == 1
     assert task.error_count == 0
+
+
+@pytest.mark.asyncio
+async def test_first_spot_check_receives_planned_search_query_guidance(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("Enough context.", "No spot check needed.")],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(tracker, completer, tool_budget=1)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert outcome.react.stop_reason == "finished"
+    first_call = completer.react_calls[0]
+    assert first_call.agent_name == "critic"
+    user_prompt = first_call.messages[1].content
+    assert "Alpha" in user_prompt
+    assert "alpha 2025" in user_prompt
+    assert "use an applicable planned search query verbatim" in user_prompt
 
 
 @pytest.mark.asyncio
@@ -398,7 +1252,7 @@ async def test_a_low_quality_report_asks_for_another_pass(
     critique = outcome.result
     assert critique is not None
     assert critique.should_continue is True
-    assert critique.gaps == ["No cost data."]
+    assert [gap.problem for gap in critique.gaps] == ["No cost data."]
     assert critique.recommended_queries == ["qec cost 2025"]
 
 
@@ -415,7 +1269,7 @@ async def test_the_final_iteration_forces_a_stop(tracker: Tracker) -> None:
     critique = outcome.result
     assert critique is not None
     assert critique.should_continue is False
-    assert critique.gaps == ["No cost data."]
+    assert [gap.problem for gap in critique.gaps] == ["No cost data."]
     event = outcome.state_update["events"][-1]
     assert event.metadata["reason"] == "max_iterations_reached"
     assert event.metadata["should_continue"] is False
@@ -482,7 +1336,7 @@ async def test_a_provider_failure_still_routes_and_stops(
     tracker: Tracker,
 ) -> None:
     agent = _critic(
-        tracker, ScriptedCompleter(outputs=[ProviderError("down")])
+        tracker, ScriptedCompleter(outputs=[_output_limit_error()])
     )
 
     async with tracker.session_span("session-1", "question"):
@@ -499,7 +1353,44 @@ async def test_a_provider_failure_still_routes_and_stops(
         if error.error_type == "critic_review_provider_error"
     )
     assert error.recoverable is False
-    assert error.details == {"exception_type": "ProviderError"}
+    assert error.details["operation"] == "critic_report_review"
+    provider = error.details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
+    assert provider["request_attempt"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_http_provider_failure_still_routes_and_stops(
+    tracker: Tracker,
+) -> None:
+    agent = _critic(
+        tracker,
+        ScriptedCompleter(
+            outputs=[
+                ProviderResponseError(
+                    "provider returned an HTTP error",
+                    retryable=True,
+                    failure_category="http",
+                    http_status_code=503,
+                    failure_origin="sdk",
+                )
+            ]
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert outcome.react.stop_reason == "provider_error"
+    error = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_provider_error"
+    )
+    provider = error.details["provider_failure"]
+    assert provider["kind"] == "provider_http"
+    assert provider["http_status_code"] == 503
 
 
 @pytest.mark.asyncio
@@ -532,6 +1423,32 @@ async def test_a_spot_check_reaches_the_review_prompt(tracker: Tracker) -> None:
     assert "[web_search]" in review_call[2][1].content
     event = outcome.state_update["events"][-1]
     assert event.metadata["tool_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_critic_react_handles_empty_unused_final_answer(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[
+            ReActDecision(
+                thought="Check the cost figure.",
+                action="use_tool",
+                tool_name="web_search",
+                tool_input_json='{"query": "qec cost 2025"}',
+                final_answer="",
+            ),
+            finish("Enough to judge.", "The cost figure checks out."),
+        ],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(tracker, completer, tool_budget=2)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.steps[0].final_answer is None
 
 
 @pytest.mark.asyncio

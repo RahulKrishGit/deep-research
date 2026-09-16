@@ -3,6 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.utils.types import (
     Claim,
     Critique,
@@ -20,6 +21,7 @@ from deep_research.utils.types import (
 
 def sub_topic(title: str = "Adoption", priority: int = 1) -> SubTopic:
     return SubTopic(
+        coverage_id="topic-01",
         title=title,
         rationale=f"Research {title.lower()}.",
         search_queries=[f"{title.lower()} evidence"],
@@ -46,7 +48,6 @@ def source(title: str = "Example source") -> ScoredSource:
         authority_score=0.8,
         recency_score=0.7,
         relevance_score=0.9,
-        corroboration_score=0.6,
         overall_score=0.75,
         rationale="Relevant and independently corroborated.",
     )
@@ -54,12 +55,14 @@ def source(title: str = "Example source") -> ScoredSource:
 
 def claim(text: str = "Adoption increased.") -> Claim:
     return Claim(
+        claim_id=claim_fingerprint(text),
         text=text,
         source_urls=["https://example.com/source"],
         verdict="verified",
         confidence=0.9,
         evidence=["The source reports a year-over-year increase."],
         contradictions=[],
+        verification_evidence=[],
     )
 
 
@@ -162,8 +165,6 @@ def test_state_rejects_iteration_above_maximum() -> None:
     [
         ("sub_topics", sub_topic()),
         ("raw_findings", finding()),
-        ("evaluated_sources", source()),
-        ("verified_claims", claim()),
         (
             "events",
             ResearchEvent(
@@ -192,6 +193,37 @@ def test_merge_appends_lists_without_mutating_original(
 
     assert getattr(merged, field_name) == [item]
     assert getattr(state, field_name) == []
+
+
+@pytest.mark.parametrize(
+    ("field_name", "existing", "replacement"),
+    [
+        ("evaluated_sources", source("Existing"), source("Replacement")),
+        ("verified_claims", claim("Existing"), claim("Replacement")),
+    ],
+)
+def test_merge_replaces_the_canonical_snapshot_channels(
+    field_name: str,
+    existing: object,
+    replacement: object,
+) -> None:
+    """These two channels carry a whole snapshot, so they replace.
+
+    Appending them is what let one source or claim pile up once per research
+    pass. The producer — Source Evaluator or Fact Checker — merges the new
+    pass into the previous snapshot before it writes, so an update is always
+    the complete canonical list and never a delta.
+    """
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        **{field_name: [existing]},
+    )
+
+    merged = merge_research_state(state, {field_name: [replacement]})
+
+    assert getattr(merged, field_name) == [replacement]
+    assert getattr(state, field_name) == [existing]
 
 
 def test_merge_preserves_multi_item_append_order() -> None:

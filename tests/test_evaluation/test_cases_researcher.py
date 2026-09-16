@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from deep_research.evaluation.cases import cases_for
+from deep_research.evaluation.cases import all_cases, cases_for
 from deep_research.evaluation.dependencies import SCENARIOS
 
 CONTROLLED = (
@@ -145,6 +145,31 @@ def test_every_controlled_case_carries_populated_sub_topics() -> None:
     for case in cases_for("researcher", "controlled"):
         assert case.state.sub_topics, case.case_id
         priorities = [topic.priority for topic in case.state.sub_topics]
+        assert priorities == sorted(priorities), case.case_id
+
+
+def test_every_case_state_plans_priority_ordered_planner_coverage_ids() -> None:
+    """``topic-01`` names the most important planned sub-topic, always.
+
+    A case state stands in for planner output: ``PlannerAgent`` orders a plan
+    by priority and stamps ``topic-NN`` on that order, so the id carries the
+    priority position, not the position the case author happened to write the
+    tuple in. Coverage from Task 3 onward is keyed on these ids, so an id
+    naming a lower-priority sub-topic than ``topic-01`` would silently
+    mis-report which planned topic was answered.
+    """
+    for case in all_cases():
+        sub_topics = case.state.sub_topics
+        coverage_ids = [sub_topic.coverage_id for sub_topic in sub_topics]
+        assert len(coverage_ids) == len(set(coverage_ids)), case.case_id
+        assert all(
+            coverage_id.startswith("topic-") for coverage_id in coverage_ids
+        ), case.case_id
+        assert coverage_ids == [
+            f"topic-{position:02d}"
+            for position in range(1, len(sub_topics) + 1)
+        ], case.case_id
+        priorities = [sub_topic.priority for sub_topic in sub_topics]
         assert priorities == sorted(priorities), case.case_id
 
 

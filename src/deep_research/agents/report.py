@@ -1,42 +1,126 @@
-"""Markdown report assembly — pure, offline rendering.
+"""The two Markdown artifacts — pure, offline rendering.
 
-Nothing here performs I/O, reads a clock, or calls a provider, so a report
-is a deterministic function of the evidence and prose handed to it. That is
-what makes "the report always carries its required sections" and "every
-verified claim is cited" testable without a provider, and true even when
-the provider call failed.
+One synthesis pass composes two documents, and they answer different
+questions:
 
-Citation convention: one number per canonical source URL, assigned by
-``build_citation_index`` — evaluated sources in order first, then claim
-sources not already numbered. Every marker rendered into the report
-resolves to a line in its Citations section; a URL with no number is never
-marked.
+* the **reader report** answers "what is settled, how strongly, and where is
+  it uncertain". Every settled statement is a claim-linked point that ends in
+  its own citation markers, and the reference list holds only the sources
+  those points actually cite;
+* the **evidence ledger** answers "what was checked, and what did the check
+  find". It carries the whole checked-claim registry, every source assessment
+  (including the ones no reader point cites), every verification passage, the
+  drafted content this pass refused, the findings no claim consumed, and the
+  run's error inventory.
+
+Nothing here performs I/O, reads a clock, or calls a provider, so both
+artifacts are deterministic functions of the composition handed to them.
+``As of`` is therefore the newest timestamp the *recorded evidence* carries,
+never a clock read.
+
+Canonicalization is repeated here on purpose. ``state.evaluated_sources`` and
+``state.verified_claims`` are canonical snapshots by contract, but a caller
+may hand a renderer a snapshot assembled before that contract, or a fixture
+built by hand. Both renderers therefore fold their inputs through
+``identity``'s merge helpers first, so no canonical URL and no claim text can
+appear twice and no identity is ever re-derived locally.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
-from pydantic import Field
-
-from deep_research.agents.sources import latest_scored_sources, normalize_source_url
+from deep_research.agents.identity import (
+    finding_fingerprint,
+    merge_claim_snapshot,
+    merge_source_snapshot,
+)
+from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import summarize_text
-from deep_research.utils.claims import latest_claims
-from deep_research.utils.types import Claim, ContractModel, ScoredSource
+from deep_research.utils.types import (
+    QUALITY_STATUS_ACCEPTED,
+    QUALITY_STATUS_NOT_GATED,
+    QUALITY_STATUS_PARTIAL,
+    Citation,
+    Claim,
+    Finding,
+    ReportComposition,
+    ReportConstraint,
+    ReportPoint,
+    ReportSection,
+    ResearchError,
+    ResearchEvent,
+    ScoredSource,
+    SubTopic,
+)
+
+__all__ = [
+    "EVIDENCE_SECTIONS",
+    "EVIDENCE_TITLE_PREFIX",
+    "LIMITATION_REASONS",
+    "QUALITY_STATUS_ACCEPTED",
+    "QUALITY_STATUS_NOT_GATED",
+    "QUALITY_STATUS_PARTIAL",
+    "REPORT_SECTIONS",
+    "REPORT_SUMMARY_FALLBACK",
+    "REPORT_TITLE_PREFIX",
+    "Citation",
+    "ReportComposition",
+    "ReportConstraint",
+    "ReportPoint",
+    "ReportSection",
+    "build_citation_index",
+    "canonical_claims",
+    "canonical_sources",
+    "citation_markers",
+    "reader_citations",
+    "render_citations",
+    "render_evidence_ledger",
+    "render_limitations",
+    "render_reader_report",
+    "report_as_of",
+    "report_scope",
+]
 
 REPORT_TITLE_PREFIX = "# Research report: "
+EVIDENCE_TITLE_PREFIX = "# Evidence ledger: "
 
-# The H2 headings every report carries, in order. Emitted unconditionally,
-# with an explicit placeholder body when empty: a reader must never have to
-# tell "nothing to report" apart from "this section was dropped".
+# The reader report's H2 headings, in the order a decision-maker meets them.
+# Emitted unconditionally, with an explicit placeholder body when empty: a
+# reader must never have to tell "nothing to report" apart from "this section
+# was dropped".
 REPORT_SECTIONS = (
     "## Executive summary",
+    "## Constraint ranking",
     "## Findings",
-    "## Verified claims",
     "## Uncertainty and conflicting evidence",
-    "## Limitations",
-    "## Citations",
-    "## Source appendix",
+    "## Methodology",
+    "## References",
+)
+
+# The evidence ledger's H2 headings. This is the verbose artifact: nothing is
+# summarized away, and a block with no rows says so rather than disappearing.
+EVIDENCE_SECTIONS = (
+    "## Checked claim registry",
+    "## Source assessment",
+    "## Reviewed but not cited",
+    "## Verification passages",
+    "## Rejected draft content",
+    "## Unchecked findings and open questions",
+    "## Run errors",
+)
+
+# The quality status a composed report carries before the terminal quality
+# gates judge it now lives with the composition itself, in
+# ``utils.types.QUALITY_STATUS_NOT_GATED``, because ``ResearchState`` carries
+# the composition the gates judged. It is re-exported here for the renderers
+# and every existing caller.
+
+REPORT_SUMMARY_FALLBACK = (
+    "No executive summary was written for this pass. The claims, sources, "
+    "and limitations recorded below are the whole of what this research "
+    "established."
 )
 
 # Enumerated, project-generated limitation reasons. Never provider text:
@@ -70,8 +154,6 @@ LIMITATION_REASONS = {
     ),
 }
 
-_APPENDIX_RATIONALE_CHARS = 200
-
 # Verdict groups for the uncertainty section, in the order a reader should
 # meet them: the evidence that argues against the report comes first.
 _UNCERTAIN_VERDICTS = (
@@ -80,42 +162,127 @@ _UNCERTAIN_VERDICTS = (
     ("insufficient_evidence", "Insufficient independent evidence"),
 )
 
+# Render bounds. Every one of them clamps a single cell or bullet, so a long
+# model-written sentence cannot push a table off the page or turn the reader
+# report back into the appendix-heavy document this design replaces.
+_POINT_CHARS = 600
+_RATIONALE_CHARS = 240
+_CLAIM_TEXT_CHARS = 240
+_EVIDENCE_CHARS = 200
+_LOCATOR_CHARS = 120
+_ERROR_MESSAGE_CHARS = 240
+_DETAILS_CHARS = 240
+# The narrowest bound here, because this cell carries one enumerated token
+# (``no_independent_source``) rather than prose: wide enough for the whole
+# vocabulary with room for a longer name, and no wider, so a snapshot that
+# carries something unexpected cannot widen the registry.
+_REASON_CHARS = 60
+#: The error types whose ``details`` may be published in the evidence ledger.
+#: Membership requires evidence that every value is bounded — a projection that
+#: revalidates what it copies, or an enumerated builder — because the ledger is
+#: a public artifact and the default for an unvetted key is to withhold it.
+#: See ``_published_details``.
+#:
+#: ``researcher_sub_topic_skipped`` joined after a run lost three planned
+#: sub-topics and the ledger could not say why: its details are a locally
+#: stamped ``coverage_id`` (``topic-01``), an integer ``priority``, one of three
+#: enumerated ``reason`` strings, and a summarised sub-topic title — the same
+#: kind of content this artifact already prints for claims and sources. The
+#: reason is what distinguishes "truncated by the cap" from "a provider failure
+#: stopped the pass" from "already satisfied on a refinement pass", which is
+#: exactly the difference between a coverage gap and an acceptable skip.
+_DETAILED_ERROR_TYPES = frozenset(
+    {"agent_tool_failed", "researcher_sub_topic_skipped"}
+)
+_NO_DATED_EVIDENCE = "no dated evidence was recorded"
+_NO_SCOPE = "not stated"
+_CELL_EMPTY = "—"
+_BLOCK_SEPARATOR = " · "
+# The registry joins several values into one cell with this separator; kept as
+# a named constant so it cannot drift between the two artifacts.
+_CELL_SEPARATOR_JOIN = ", "
 
-class Citation(ContractModel):
-    """One numbered source reference."""
 
-    number: int = Field(ge=1)
-    url: str = Field(min_length=1)
-    title: str = Field(min_length=1)
+# ``Citation``, ``ReportPoint``, ``ReportConstraint``, ``ReportSection`` and
+# ``ReportComposition`` are re-exported from ``utils.types`` above: they are
+# state records — ``ResearchState`` carries the composition the quality pass
+# judged — and this module is the pure renderer over them.
 
 
-class ReportSection(ContractModel):
-    """One validated narrative section of the report body.
+def canonical_sources(sources: Sequence[ScoredSource]) -> list[ScoredSource]:
+    """One record per canonical URL, in first-seen order."""
+    return merge_source_snapshot([], sources)
 
-    ``source_urls`` has already been checked against the citation index by
-    the time a section reaches here; rendering never validates.
+
+def canonical_claims(claims: Sequence[Claim]) -> list[Claim]:
+    """One record per claim identity, in first-seen order."""
+    return merge_claim_snapshot([], claims)
+
+
+def report_as_of(
+    *,
+    findings: Sequence[Finding],
+    events: Sequence[ResearchEvent],
+) -> str:
+    """The newest timestamp the recorded evidence carries, or an empty string.
+
+    A report's ``As of`` line must never be a clock read: it says how current
+    the *evidence* is, not when the document was printed. Both inputs are
+    already stamped by the pass that recorded them, so this is a pure
+    function of state.
     """
+    candidates: list[tuple[datetime, str]] = []
+    stamps = [finding.extracted_at for finding in findings]
+    stamps.extend(event.timestamp for event in events)
+    for stamp in stamps:
+        try:
+            parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        candidates.append((parsed, stamp))
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda item: item[0])[1]
 
-    title: str = Field(min_length=1)
-    body: str = Field(min_length=1)
-    source_urls: list[str] = Field(default_factory=list)
+
+def report_scope(sub_topics: Sequence[SubTopic]) -> str:
+    """State the scope this report assumes, from the plan alone.
+
+    The plan's sub-topics are the only scope the system was given, so naming
+    them is the honest declaration a reader needs before reading a ranking as
+    advice. Everything else the report prints is bounded by the sources its
+    points cite.
+    """
+    topics = list(sub_topics)
+    assumed = (
+        "No geography, population, or period beyond what the cited sources "
+        "state is assumed."
+    )
+    if not topics:
+        return f"No sub-topic plan was recorded. {assumed}"
+    listed = "; ".join(f"{topic.coverage_id} {topic.title}" for topic in topics)
+    return (
+        f"{len(topics)} planned sub-topic(s), in priority order: {listed}. "
+        f"{assumed}"
+    )
 
 
 def build_citation_index(
     sources: Sequence[ScoredSource],
     claims: Sequence[Claim],
 ) -> list[Citation]:
-    """Number every canonical URL this report may cite, sources first.
+    """Number every canonical URL this *research* may cite, sources first.
 
-    A source's own title is preferred; a URL that only ever appeared on a
-    claim is titled with the URL itself, because nothing scored it.
+    An evidence-level index: the ledger's assessment rows and the evaluation
+    harness both need a number for a URL no reader point cites. The reader
+    report numbers its own, narrower index with ``reader_citations``.
     """
     titles: dict[str, str] = {}
-    for source in latest_scored_sources(sources):
+    for source in canonical_sources(sources):
         url = normalize_source_url(source.url)
         if url:
             titles.setdefault(url, source.title)
-    for claim in latest_claims(claims):
+    for claim in canonical_claims(claims):
         for raw in claim.source_urls:
             url = normalize_source_url(raw)
             if url:
@@ -123,6 +290,46 @@ def build_citation_index(
     return [
         Citation(number=number, url=url, title=title)
         for number, (url, title) in enumerate(titles.items(), start=1)
+    ]
+
+
+def _reader_points(
+    composition: ReportComposition,
+) -> list[ReportPoint]:
+    """Every point the reader report prints, in the order it prints them."""
+    points: list[ReportPoint] = [*composition.summary, *composition.constraints]
+    for section in composition.sections:
+        points.extend(section.points)
+    return points
+
+
+def reader_citations(composition: ReportComposition) -> list[Citation]:
+    """Number the URLs the reader report cites, in first-use order.
+
+    Deliberately not ``build_citation_index``: the reader's reference list
+    holds only the sources its own points rely on, numbered 1..N without
+    gaps, in the order a reader meets them.
+    """
+    titles: dict[str, str] = {}
+    for source in composition.sources:
+        url = normalize_source_url(source.url)
+        if url:
+            titles.setdefault(url, source.title)
+    for claim in composition.claims:
+        for raw in claim.source_urls:
+            url = normalize_source_url(raw)
+            if url:
+                titles.setdefault(url, url)
+
+    ordered: list[str] = []
+    for point in _reader_points(composition):
+        for raw in point.source_urls:
+            url = normalize_source_url(raw)
+            if url and url not in ordered:
+                ordered.append(url)
+    return [
+        Citation(number=number, url=url, title=titles.get(url, url))
+        for number, url in enumerate(ordered, start=1)
     ]
 
 
@@ -145,7 +352,7 @@ def citation_markers(
 
 
 def render_citations(index: Sequence[Citation]) -> str:
-    """Render the numbered citation list the markers point at."""
+    """Render the numbered reference list the markers point at."""
     lines = [
         f"{citation.number}. {citation.title} — {citation.url}"
         for citation in index
@@ -153,99 +360,34 @@ def render_citations(index: Sequence[Citation]) -> str:
     return "\n".join(lines) or "(no sources were cited)"
 
 
-def _cell(text: str) -> str:
+def _cell(text: str, *, limit: int = _POINT_CHARS) -> str:
     """Collapse a value onto one Markdown table cell.
 
     Pipes are escaped rather than dropped: a title containing ``|`` would
     otherwise silently split the row into extra columns.
     """
-    return " ".join(text.split()).replace("|", "\\|")
+    return summarize_text(text, limit=limit).replace("|", "\\|")
 
 
-def render_source_appendix(
-    sources: Sequence[ScoredSource],
-    index: Sequence[Citation],
-) -> str:
-    """Render one appendix row per scored source, weak ones visible."""
-    if not sources:
-        return "(no sources were evaluated)"
-    numbers = _lookup(index)
+def _clamped(text: str, *, limit: int) -> str:
+    return summarize_text(text, limit=limit)
+
+
+def _marker_suffix(markers: str) -> str:
+    return f" {markers}" if markers else ""
+
+
+def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     lines = [
-        "| # | Source | Score | Confidence | Assessment |",
-        "| --- | --- | --- | --- | --- |",
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join("---" for _ in header) + " |",
     ]
-    for source in latest_scored_sources(sources):
-        number = numbers.get(normalize_source_url(source.url))
-        marker = str(number) if number is not None else "-"
-        confidence = "low" if source.low_confidence else "normal"
-        rationale = _cell(
-            summarize_text(source.rationale, limit=_APPENDIX_RATIONALE_CHARS)
-        )
-        lines.append(
-            f"| {marker} | {_cell(source.title)} ({source.url}) "
-            f"| {source.overall_score:.2f} | {confidence} | {rationale} |"
-        )
+    lines.extend("| " + " | ".join(row) + " |" for row in rows)
     return "\n".join(lines)
 
 
-def render_findings(
-    sections: Sequence[ReportSection],
-    index: Sequence[Citation],
-) -> str:
-    """Render the narrative sections, each closing with its citations."""
-    blocks: list[str] = []
-    for section in sections:
-        cited = citation_markers(section.source_urls, index) or "none cited"
-        blocks.append(
-            f"### {section.title}\n\n{section.body}\n\nSources: {cited}"
-        )
-    return "\n\n".join(blocks) or "(no findings were reported)"
-
-
-def render_verified_claims(
-    claims: Sequence[Claim],
-    index: Sequence[Citation],
-) -> str:
-    """Render only the claims that reached ``verified``, each cited."""
-    lines: list[str] = []
-    for claim in latest_claims(claims):
-        if claim.verdict != "verified":
-            continue
-        markers = citation_markers(claim.source_urls, index)
-        suffix = f" {markers}" if markers else ""
-        lines.append(
-            f"- {claim.text}{suffix} (confidence {claim.confidence:.2f})"
-        )
-    return "\n".join(lines) or "(no claim reached a verified verdict)"
-
-
-def render_uncertain_claims(
-    claims: Sequence[Claim],
-    index: Sequence[Citation],
-) -> str:
-    """Render every claim that did not reach ``verified``, by verdict.
-
-    Kept structurally apart from ``render_verified_claims`` so a weak claim
-    can never be read as a strong finding — the spec's "unverified claims
-    are separated from strong findings" requirement.
-    """
-    blocks: list[str] = []
-    for verdict, heading in _UNCERTAIN_VERDICTS:
-        lines: list[str] = []
-        for claim in latest_claims(claims):
-            if claim.verdict != verdict:
-                continue
-            markers = citation_markers(claim.source_urls, index)
-            suffix = f" {markers}" if markers else ""
-            note = (
-                f" — {len(claim.contradictions)} contradicting passage(s)"
-                if claim.contradictions
-                else ""
-            )
-            lines.append(f"- {claim.text}{suffix}{note}")
-        if lines:
-            blocks.append(f"### {heading}\n\n" + "\n".join(lines))
-    return "\n\n".join(blocks) or "(no unresolved claims were recorded)"
+def _bullets(lines: Sequence[str]) -> str:
+    return "\n".join(f"- {line}" for line in lines)
 
 
 def render_limitations(reasons: Sequence[str]) -> str:
@@ -259,37 +401,490 @@ def render_limitations(reasons: Sequence[str]) -> str:
     return "\n".join(lines) or "No limitations were recorded for this pass."
 
 
-def assemble_report(
-    *,
-    question: str,
-    summary: str,
-    sections: Sequence[ReportSection],
-    claims: Sequence[Claim],
-    sources: Sequence[ScoredSource],
-    index: Sequence[Citation],
-    limitations: Sequence[str],
-    uncertainty_notes: str = "",
-) -> str:
-    """Assemble the whole Markdown report from prose and recorded evidence.
+# --- the reader report --------------------------------------------------------
 
-    ``zip(..., strict=True)`` pins the body list to ``REPORT_SECTIONS``: a
-    heading added without a body (or the reverse) fails here rather than
-    silently shortening every future report.
-    """
-    claims = latest_claims(claims)
-    sources = latest_scored_sources(sources)
-    uncertain = render_uncertain_claims(claims, index)
-    notes = " ".join(uncertainty_notes.split())
+
+def render_reader_report(composition: ReportComposition) -> str:
+    """Render the whole reader report from validated, claim-linked content."""
+    index = reader_citations(composition)
     bodies = (
-        summary.strip() or "(no executive summary was produced)",
-        render_findings(sections, index),
-        render_verified_claims(claims, index),
-        f"{notes}\n\n{uncertain}" if notes else uncertain,
-        render_limitations(limitations),
+        _reader_summary(composition, index),
+        _reader_constraints(composition, index),
+        _reader_findings(composition, index),
+        _reader_uncertainty(composition, index),
+        _reader_methodology(composition),
         render_citations(index),
-        render_source_appendix(sources, index),
     )
-    blocks = [f"{REPORT_TITLE_PREFIX}{' '.join(question.split())}"]
+    blocks = [
+        f"{REPORT_TITLE_PREFIX}{' '.join(composition.question.split())}",
+        _reader_header(composition),
+    ]
     for heading, body in zip(REPORT_SECTIONS, bodies, strict=True):
         blocks.append(f"{heading}\n\n{body}")
     return "\n\n".join(blocks) + "\n"
+
+
+def _reader_header(composition: ReportComposition) -> str:
+    return "\n\n".join(
+        (
+            f"**As of:** {composition.as_of.strip() or _NO_DATED_EVIDENCE}",
+            f"**Scope:** {composition.scope.strip() or _NO_SCOPE}",
+            f"**Quality status:** {composition.quality_status.strip() or _NO_SCOPE}",
+        )
+    )
+
+
+def _reader_summary(
+    composition: ReportComposition,
+    index: Sequence[Citation],
+) -> str:
+    if not composition.summary:
+        return REPORT_SUMMARY_FALLBACK
+    return _bullets(
+        [
+            f"{_clamped(point.text, limit=_POINT_CHARS)}"
+            f"{_marker_suffix(citation_markers(point.source_urls, index))}"
+            for point in composition.summary
+        ]
+    )
+
+
+def _claims_for(
+    composition: ReportComposition,
+    point: ReportPoint,
+) -> list[Claim]:
+    """The checked claims a rendered point cites, in registry order."""
+    wanted = set(point.claim_ids)
+    return [claim for claim in composition.claims if claim.claim_id in wanted]
+
+
+def _evidence_strength(claims: Sequence[Claim]) -> str:
+    if not claims:
+        return "no checked claim"
+    return _CELL_SEPARATOR_JOIN.join(
+        f"{claim.verdict} {claim.confidence:.2f}" for claim in claims
+    )
+
+
+def _weakest_confidence(claims: Sequence[Claim]) -> str:
+    if not claims:
+        return _CELL_EMPTY
+    return f"{min(claim.confidence for claim in claims):.2f}"
+
+
+def _reader_constraints(
+    composition: ReportComposition,
+    index: Sequence[Citation],
+) -> str:
+    if not composition.constraints:
+        return "(no constraint was ranked for this pass)"
+    rows: list[list[str]] = []
+    for row in composition.constraints:
+        claims = _claims_for(composition, row)
+        markers = citation_markers(row.source_urls, index)
+        rows.append(
+            [
+                f"{_cell(row.text)}{_marker_suffix(markers)}",
+                _cell(row.deployment_mechanism or "not stated", limit=120),
+                _cell(row.geography or "not stated", limit=120),
+                _cell(_evidence_strength(claims), limit=200),
+                _weakest_confidence(claims),
+            ]
+        )
+    return _table(
+        (
+            "Constraint",
+            "Deployment mechanism",
+            "Geography",
+            "Evidence strength",
+            "Confidence",
+        ),
+        rows,
+    )
+
+
+def _reader_findings(
+    composition: ReportComposition,
+    index: Sequence[Citation],
+) -> str:
+    blocks: list[str] = []
+    for section in composition.sections:
+        if not section.points:
+            continue
+        blocks.append(
+            f"### {_clamped(section.title, limit=120)}\n\n"
+            + _bullets(
+                [
+                    f"{_clamped(point.text, limit=_POINT_CHARS)}"
+                    f"{_marker_suffix(citation_markers(point.source_urls, index))}"
+                    for point in section.points
+                ]
+            )
+        )
+    return "\n\n".join(blocks) or "(no finding passed validation for this pass)"
+
+
+def _reader_uncertainty(
+    composition: ReportComposition,
+    index: Sequence[Citation],
+) -> str:
+    blocks: list[str] = []
+    if composition.uncertainty_notes:
+        blocks.append(
+            _bullets(
+                [
+                    _clamped(note, limit=_POINT_CHARS)
+                    for note in composition.uncertainty_notes
+                ]
+            )
+        )
+    for verdict, heading in _UNCERTAIN_VERDICTS:
+        lines: list[str] = []
+        for claim in composition.claims:
+            if claim.verdict != verdict:
+                continue
+            markers = citation_markers(claim.source_urls, index)
+            note = (
+                f" — {len(claim.contradictions)} contradicting passage(s)"
+                if claim.contradictions
+                else ""
+            )
+            lines.append(
+                f"{_clamped(claim.text, limit=_CLAIM_TEXT_CHARS)}"
+                f"{_marker_suffix(markers)}{note}"
+            )
+        if lines:
+            blocks.append(f"### {heading}\n\n{_bullets(lines)}")
+    if not blocks:
+        blocks.append("(no unresolved claim was recorded for this pass)")
+    blocks.append(
+        "**Limitations recorded for this pass**\n\n"
+        f"{render_limitations(composition.limitations)}"
+    )
+    return "\n\n".join(blocks)
+
+
+def _reader_methodology(composition: ReportComposition) -> str:
+    scored = sum(
+        1 for source in composition.sources if source.evaluation_status == "scored"
+    )
+    unscored = len(composition.sources) - scored
+    verdicts = {
+        verdict: sum(1 for claim in composition.claims if claim.verdict == verdict)
+        for verdict, _ in _UNCERTAIN_VERDICTS
+    }
+    verified = sum(
+        1 for claim in composition.claims if claim.verdict == "verified"
+    )
+    passages = sum(
+        len(claim.verification_evidence) for claim in composition.claims
+    )
+    cited_claims = {
+        claim_id
+        for point in _reader_points(composition)
+        for claim_id in point.claim_ids
+    }
+    lines = [
+        f"{len(composition.sources)} reviewed source(s): {scored} scored, "
+        f"{unscored} unscored.",
+        f"{len(composition.claims)} checked claim(s): {verified} verified, "
+        f"{verdicts['contradicted']} contradicted, "
+        f"{verdicts['unverified']} unverified, "
+        f"{verdicts['insufficient_evidence']} insufficient; {passages} "
+        "verification passage(s) recorded.",
+        f"{len(composition.findings)} retrieved finding(s); "
+        f"{len(cited_claims)} checked claim(s) support a statement above.",
+        (
+            f"{len(composition.sub_topics)} planned sub-topic(s): "
+            + ", ".join(topic.coverage_id for topic in composition.sub_topics)
+            if composition.sub_topics
+            else "No sub-topic plan was recorded."
+        ),
+        (
+            f"Iteration {composition.iteration} of {composition.max_iterations}."
+            if composition.max_iterations
+            else f"Iteration {composition.iteration}."
+        ),
+        (
+            "Every statement above is a claim-linked point; its markers name "
+            "the sources the checked claims behind it carry."
+        ),
+        (
+            "The limitations this pass discloses are listed with the "
+            "uncertainty above, so no limitation is stated twice."
+        ),
+        (
+            "The full evidence ledger — every checked claim, every assessed "
+            "source, every verification passage, and every recorded error — is "
+            "a separate artifact, published only after the terminal quality "
+            "gates."
+        ),
+    ]
+    return _bullets(lines)
+
+
+# --- the evidence ledger ------------------------------------------------------
+
+
+def render_evidence_ledger(composition: ReportComposition) -> str:
+    """Render the verbose evidence artifact for the same pass."""
+    bodies = (
+        _claim_registry(composition),
+        _source_assessment(composition),
+        _reviewed_not_cited(composition),
+        _verification_passages(composition),
+        _rejected_content(composition),
+        _unchecked_findings(composition),
+        _run_errors(composition),
+    )
+    blocks = [
+        f"{EVIDENCE_TITLE_PREFIX}{' '.join(composition.question.split())}",
+        _ledger_header(composition),
+    ]
+    for heading, body in zip(EVIDENCE_SECTIONS, bodies, strict=True):
+        blocks.append(f"{heading}\n\n{body}")
+    return "\n\n".join(blocks) + "\n"
+
+
+def _ledger_header(composition: ReportComposition) -> str:
+    passages = sum(
+        len(claim.verification_evidence) for claim in composition.claims
+    )
+    return "\n\n".join(
+        (
+            f"**Session:** {composition.session_id} | "
+            f"**Iteration:** {composition.iteration} | "
+            f"**As of:** {composition.as_of.strip() or _NO_DATED_EVIDENCE}",
+            f"**Scope:** {composition.scope.strip() or _NO_SCOPE}",
+            f"**Quality status:** {composition.quality_status.strip() or _NO_SCOPE}",
+            f"**Canonical counts:** {len(composition.sources)} source(s), "
+            f"{len(composition.claims)} claim(s), "
+            f"{len(composition.findings)} finding(s), {passages} passage(s).",
+        )
+    )
+
+
+def _claim_registry(composition: ReportComposition) -> str:
+    if not composition.claims:
+        return "(no claim was checked for this pass)"
+    rows = [
+        [
+            str(position),
+            _cell(claim.claim_id, limit=80),
+            claim.verdict,
+            f"{claim.confidence:.2f}",
+            _cell(claim.text, limit=_CLAIM_TEXT_CHARS),
+            _cell(", ".join(claim.source_urls), limit=_RATIONALE_CHARS),
+            _cell(", ".join(claim.consumed_coverage_ids) or _CELL_EMPTY, limit=200),
+            _cell(_BLOCK_SEPARATOR.join(claim.contradictions) or _CELL_EMPTY),
+            _reason_cell(claim),
+        ]
+        for position, claim in enumerate(composition.claims, start=1)
+    ]
+    return _table(
+        (
+            "#",
+            "Claim ID",
+            "Verdict",
+            "Confidence",
+            "Claim",
+            "Sources",
+            "Coverage",
+            "Contradictions",
+            "Reason",
+        ),
+        rows,
+    )
+
+
+def _source_assessment(composition: ReportComposition) -> str:
+    """One row per canonical source, printing numbers only when scored."""
+    if not composition.sources:
+        return "(no source was reviewed for this pass)"
+    rows: list[list[str]] = []
+    for position, source in enumerate(composition.sources, start=1):
+        scored = source.evaluation_status == "scored"
+        rows.append(
+            [
+                str(position),
+                f"{_cell(source.title, limit=120)} ({source.url})",
+                source.evaluation_status,
+                _score_cell(source.authority_score if scored else None),
+                _score_cell(source.recency_score if scored else None),
+                _score_cell(source.relevance_score if scored else None),
+                _score_cell(source.overall_score if scored else None),
+                (
+                    "low" if scored and source.low_confidence
+                    else "normal" if scored
+                    else "not assessed"
+                ),
+                _cell(source.rationale, limit=_RATIONALE_CHARS),
+            ]
+        )
+    return _table(
+        (
+            "#",
+            "Source",
+            "Status",
+            "Authority",
+            "Recency",
+            "Relevance",
+            "Overall",
+            "Confidence",
+            "Assessment",
+        ),
+        rows,
+    )
+
+
+def _score_cell(value: float | None) -> str:
+    """A numeric quality field, or an explicit absence of one.
+
+    Only a ``scored`` source has a number to print. An unscored source's
+    status and reason say why; printing anything numeric for it would invent
+    a judgement nobody made.
+    """
+    return _CELL_EMPTY if value is None else f"{value:.2f}"
+
+
+def _reason_cell(claim: Claim) -> str:
+    """Why a claim could not be judged, or an explicit absence of a reason.
+
+    Only an ``insufficient_evidence`` claim has a reason to print, and the
+    gate is the same one ``_score_cell`` applies: a value the record's own
+    verdict does not entitle it to is not published. An insufficient claim
+    with no recorded reason stays empty too — that is a claim whose verdict
+    was read and resolved to nothing usable, which is a different finding
+    from one nothing independent was ever read for.
+    """
+    if claim.verdict != "insufficient_evidence":
+        return _CELL_EMPTY
+    return _cell(claim.insufficient_reason or _CELL_EMPTY, limit=_REASON_CHARS)
+
+
+def _reviewed_not_cited(composition: ReportComposition) -> str:
+    cited = {citation.url for citation in reader_citations(composition)}
+    unused = [
+        source
+        for source in composition.sources
+        if normalize_source_url(source.url) not in cited
+    ]
+    if not unused:
+        return "Reviewed but not cited: every reviewed source is cited above."
+    return "\n\n".join(
+        (
+            "Reviewed but not cited: these sources were assessed for this pass "
+            "and no statement in the reader report relies on them.",
+            _bullets(
+                [
+                    f"{source.url} ({_cell(source.title, limit=120)}) — "
+                    f"reviewed, not cited"
+                    for source in unused
+                ]
+            ),
+        )
+    )
+
+
+def _verification_passages(composition: ReportComposition) -> str:
+    rows: list[list[str]] = []
+    for position, claim in enumerate(composition.claims, start=1):
+        for passage in claim.verification_evidence:
+            rows.append(
+                [
+                    str(position),
+                    passage.stance,
+                    f"{_cell(passage.source_title, limit=120)} "
+                    f"({passage.source_url})",
+                    _cell(passage.locator, limit=_LOCATOR_CHARS),
+                    _cell(passage.excerpt, limit=_EVIDENCE_CHARS),
+                ]
+            )
+    if not rows:
+        return "(no verification passage was recorded for this pass)"
+    return _table(
+        ("Claim #", "Stance", "Source", "Locator", "Passage"),
+        rows,
+    )
+
+
+def _rejected_content(composition: ReportComposition) -> str:
+    if not composition.rejected:
+        return "(no drafted content was refused for this pass)"
+    return _bullets(
+        [
+            _clamped(reason, limit=_ERROR_MESSAGE_CHARS)
+            for reason in composition.rejected
+        ]
+    )
+
+
+def _unchecked_findings(composition: ReportComposition) -> str:
+    consumed = {
+        fingerprint
+        for claim in composition.claims
+        for fingerprint in claim.consumed_finding_fingerprints
+    }
+    unchecked = [
+        finding
+        for finding in composition.findings
+        if finding_fingerprint(finding) not in consumed
+    ]
+    if not unchecked:
+        return "(every retrieved finding supports a checked claim)"
+    return "\n\n".join(
+        (
+            "These findings support no checked claim, so they are open "
+            "questions rather than settled evidence.",
+            _bullets(
+                [
+                    f"[{_clamped(finding.related_sub_topic, limit=120)}] "
+                    f"{_clamped(finding.content, limit=_EVIDENCE_CHARS)} "
+                    f"({finding.source_url})"
+                    for finding in unchecked
+                ]
+            ),
+        )
+    )
+
+
+def _published_details(error: ResearchError) -> str:
+    """Render ``error.details`` for the one error type whose details are bounded.
+
+    ``agent_tool_failed`` is published because its details are produced by the
+    ReAct projection, which revalidates every value it copies: the tool name the
+    toolset resolved, the iteration, the enumerated error type, and — for
+    ``web_scraper`` — the bounded diagnosis (``attempts``, ``retries``,
+    ``status_code``, and a media type or the static ``unknown`` marker). Without
+    those values a scraper failure is countable but not *classifiable*, which is
+    the whole point of classifying it.
+
+    Every other error type's details are withheld. They are not vetted by a
+    projection that revalidates them, and this artifact is public, so an
+    unvetted key could carry text this project never publishes. Withholding is
+    the conservative default; a type is added here only with the same evidence
+    that its details are bounded.
+    """
+    if error.error_type not in _DETAILED_ERROR_TYPES or not error.details:
+        return _CELL_EMPTY
+    ordered = sorted(error.details.items(), key=lambda item: item[0])
+    return ", ".join(f"{key}={value}" for key, value in ordered)
+
+
+def _run_errors(composition: ReportComposition) -> str:
+    if not composition.errors:
+        return "(no error was recorded for this pass)"
+    rows = [
+        [
+            str(position),
+            _cell(error.error_type, limit=120),
+            _cell(error.source, limit=120),
+            "recoverable" if error.recoverable else "fatal",
+            _cell(error.message, limit=_ERROR_MESSAGE_CHARS),
+            _cell(_published_details(error), limit=_DETAILS_CHARS),
+        ]
+        for position, error in enumerate(composition.errors, start=1)
+    ]
+    return _table(
+        ("#", "Type", "Source", "Severity", "Message", "Details"), rows
+    )

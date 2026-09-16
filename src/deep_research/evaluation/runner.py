@@ -49,7 +49,12 @@ from deep_research.evaluation.dependencies import (
     build_live_dependencies,
     required_credentials,
 )
-from deep_research.evaluation.evaluators import code_evaluator, evaluate_target
+from deep_research.evaluation.evaluators import (
+    METRIC_FUNCTIONS,
+    code_evaluator,
+    evaluate_target_with_metrics,
+    format_code_evaluator_feedback,
+)
 from deep_research.evaluation.factory import evaluation_session_id
 from deep_research.evaluation.judging import (
     COMMON_DIMENSION_WEIGHTS,
@@ -78,6 +83,7 @@ from deep_research.evaluation.models import (
     SuiteResult,
     TargetOutput,
     cli_agent_name,
+    fallback_provider_diagnostic,
 )
 from deep_research.evaluation.reporting import write_suite_artifact
 from deep_research.evaluation.targets import (
@@ -90,6 +96,7 @@ from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import (
     ProviderConfigurationError,
     build_chat_provider,
+    build_judge_provider,
     embedding_capability_for,
     resolve_request_settings,
 )
@@ -486,6 +493,8 @@ def build_repetition_result(
     gates: GateReport,
     deterministic: float | None,
     judge: JudgeFeedback | None,
+    *,
+    deterministic_metrics: Mapping[str, float] | None = None,
 ) -> RepetitionResult:
     """One repetition's typed result. ``aggregate_quality`` is ``None``
     whenever the judge did not score the run or no deterministic score was
@@ -506,6 +515,15 @@ def build_repetition_result(
         completed=output.completed,
         gates=gates,
         deterministic_quality=deterministic,
+        deterministic_metrics=dict(deterministic_metrics or {}),
+        prohibited_call_count=len(output.dependencies.prohibited_calls),
+        react_stop_reason=(
+            None
+            if output.agent_name in {"source_evaluator", "synthesizer"}
+            or output.react is None
+            else output.react.stop_reason
+        ),
+        fallback_provider_diagnostic=fallback_provider_diagnostic(output),
         judge=judge,
         aggregate_quality=aggregate,
         trace_url=output.trace_url,
@@ -628,9 +646,55 @@ def decide_status(
     del tier, runtime
     if any(error.stage in ("trace", "setup") for error in errors):
         return "INFRASTRUCTURE FAILURE"
+    if any(
+        _has_deterministic_failure(repetition)
+        for case in cases
+        for repetition in case.repetitions
+    ):
+        return "FAILED"
+    if any(
+        _has_judge_infrastructure_failure(repetition)
+        for case in cases
+        for repetition in case.repetitions
+    ):
+        return "INFRASTRUCTURE FAILURE"
     if any(not case.passed for case in cases):
         return "FAILED"
     return "REVIEW REQUIRED"
+
+
+def _has_deterministic_failure(repetition: RepetitionResult) -> bool:
+    """Return whether target execution or deterministic gates failed."""
+    return (
+        bool(repetition.errors)
+        or not repetition.completed
+        or not repetition.gates.passed
+    )
+
+
+_JUDGE_INFRASTRUCTURE_REASONS = frozenset(
+    {
+        "setup_failure",
+        "unhandled_exception",
+        "judge_output_limit",
+        "judge_transport",
+        "judge_http",
+        "judge_provider_failure",
+        "judge_schema_failure",
+    }
+)
+
+
+def _has_judge_infrastructure_failure(repetition: RepetitionResult) -> bool:
+    """Return whether deterministic checks passed but judging was unavailable."""
+    judge = repetition.judge
+    return (
+        repetition.completed
+        and repetition.gates.passed
+        and judge is not None
+        and judge.status == "judge_not_run"
+        and judge.not_run_reason in _JUDGE_INFRASTRUCTURE_REASONS
+    )
 
 
 def _quality_thresholds(
@@ -659,7 +723,6 @@ def evaluation_failure_reason(
     if infrastructure is not None:
         return f"{infrastructure.stage}:{infrastructure.reason}"
 
-    threshold, floor = _quality_thresholds(runtime)
     for case in cases:
         for repetition in sorted(
             case.repetitions, key=lambda item: item.repetition
@@ -669,6 +732,7 @@ def evaluation_failure_reason(
                     f"{case.case_id} repetition {repetition.repetition} "
                     f"failed {repetition.errors[0].reason}"
                 )
+
     for case in cases:
         for repetition in sorted(
             case.repetitions, key=lambda item: item.repetition
@@ -683,6 +747,22 @@ def evaluation_failure_reason(
                     f"{case.case_id} repetition {repetition.repetition} "
                     "failed run_incomplete"
                 )
+
+    for case in cases:
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
+            if _has_judge_infrastructure_failure(repetition):
+                return (
+                    f"{case.case_id} repetition {repetition.repetition} "
+                    f"failed {repetition.judge.not_run_reason}"
+                )
+
+    threshold, floor = _quality_thresholds(runtime)
+    for case in cases:
+        for repetition in sorted(
+            case.repetitions, key=lambda item: item.repetition
+        ):
             if repetition.judge is None:
                 return (
                     f"{case.case_id} repetition {repetition.repetition} "
@@ -836,6 +916,19 @@ def _metadata_diagnostics(
     return tuple(projected)
 
 
+def _metadata_structured_attempts(metadata: Mapping[str, Any]) -> int | None:
+    """The structured-attempt depth a row recorded, or ``None``.
+
+    Only the provider's own 1-or-2 attempt number is accepted; a missing,
+    malformed, or out-of-range value becomes ``None`` rather than failing
+    the artifact reconstruction, and is never read as "no repair happened".
+    """
+    value = metadata.get("structured_attempts")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 1 <= value <= 2 else None
+
+
 def _judge_feedback_from_result(
     payload: Mapping[str, Any], *, runtime: EvaluationRuntimeConfig
 ) -> JudgeFeedback:
@@ -878,6 +971,7 @@ def _judge_feedback_from_result(
     )
     evaluator_trace_url = _metadata_url(metadata, "evaluator_trace_url")
     evaluator_source_url = _metadata_url(metadata, "evaluator_source_url")
+    structured_attempts = _metadata_structured_attempts(metadata)
 
     scored = status_entry is not None and status_entry.get("value") == "scored"
     if scored and quality_entry is not None:
@@ -904,6 +998,7 @@ def _judge_feedback_from_result(
             judge_quality=float(quality_entry["score"]),
             evaluator_trace_url=evaluator_trace_url,
             evaluator_source_url=evaluator_source_url,
+            structured_attempts=structured_attempts,
             **common,
         )
 
@@ -920,6 +1015,7 @@ def _judge_feedback_from_result(
         diagnostics=_metadata_diagnostics(metadata),
         evaluator_trace_url=evaluator_trace_url,
         evaluator_source_url=evaluator_source_url,
+        structured_attempts=structured_attempts,
         **common,
     )
 
@@ -1035,6 +1131,7 @@ async def run_agent_evaluation(
 
     pending_gates: dict[tuple[str, int, int], GateReport] = {}
     pending_deterministic: dict[tuple[str, int, int], float] = {}
+    pending_deterministic_metrics: dict[tuple[str, int, int], dict[str, float]] = {}
     repetitions_by_case: dict[tuple[str, int], list[RepetitionResult]] = {
         identity: [] for identity in case_by_identity
     }
@@ -1072,7 +1169,12 @@ async def run_agent_evaluation(
         except ValidationError:
             return code_evaluators[case_identity](run, example)
         try:
-            gates, deterministic = evaluate_target(output, case, secrets=secrets)
+            gates, deterministic, deterministic_metrics = evaluate_target_with_metrics(
+                output,
+                case,
+                secrets=secrets,
+                metric_functions=METRIC_FUNCTIONS,
+            )
         except Exception as error:
             # Defense in depth for finding 16: a gate that raises (e.g. a
             # malformed source URL reaching an unguarded
@@ -1094,6 +1196,7 @@ async def run_agent_evaluation(
                 ]
             )
             pending_deterministic[key] = 0.0
+            pending_deterministic_metrics[key] = {}
             return {
                 "results": [
                     {
@@ -1110,7 +1213,8 @@ async def run_agent_evaluation(
             }
         pending_gates[key] = gates
         pending_deterministic[key] = deterministic
-        return code_evaluators[case_identity](run, example)
+        pending_deterministic_metrics[key] = deterministic_metrics
+        return format_code_evaluator_feedback(gates, deterministic)
 
     _dispatch_code.__name__ = "code_evaluator"
 
@@ -1129,7 +1233,13 @@ async def run_agent_evaluation(
         if gates is not None:
             feedback = _judge_feedback_from_result(payload, runtime=runtime)
             repetitions_by_case[case_identity].append(
-                build_repetition_result(output, gates, deterministic, feedback)
+                build_repetition_result(
+                    output,
+                    gates,
+                    deterministic,
+                    feedback,
+                    deterministic_metrics=pending_deterministic_metrics.get(key, {}),
+                )
             )
         return payload
 
@@ -1301,7 +1411,6 @@ async def run_agent_evaluation(
 
     return result
 
-
 # --- Task 26: the six-agent controlled suite --------------------------------
 
 
@@ -1422,7 +1531,7 @@ async def run_suite_evaluation(
                 tracker,
                 api_key=chat_key,
             )
-            judge_provider = build_chat_provider(
+            judge_provider = build_judge_provider(
                 judge_llm_config(runtime, settings.llm),
                 tracker,
                 api_key=chat_key,

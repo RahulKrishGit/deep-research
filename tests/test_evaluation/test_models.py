@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 
 import pytest
 
@@ -11,14 +12,20 @@ from deep_research.evaluation.models import (
     ARTIFACT_SCHEMA_VERSION,
     CLI_AGENT_NAMES,
     CaseExpectations,
+    DependencyLedger,
     DeterministicMetric,
     EvaluationCase,
     EvaluationFailure,
     ExperimentResult,
+    FallbackProviderDiagnostic,
+    GateReport,
     JudgeFeedback,
     JudgeRubric,
     JudgeScores,
+    ReActSummary,
+    RepetitionResult,
     RubricDimension,
+    StructuredCallSummary,
     SuiteResult,
     TargetOutput,
     UnknownAgentError,
@@ -197,6 +204,7 @@ def test_case_state_is_deep_copied_per_repetition() -> None:
 
     first.sub_topics.append(
         SubTopic(
+            coverage_id="topic-01",
             title="t",
             rationale="r",
             search_queries=["q"],
@@ -332,6 +340,7 @@ def test_schema_and_provider_failure_details_retain_only_safe_fields() -> None:
     assert transport.model_dump(mode="json") == {
         "kind": "provider_transport",
         "type": "ProviderResponseError",
+        "failure_origin": None,
         "retryable": True,
         "status_code": None,
     }
@@ -426,6 +435,73 @@ def test_target_output_records_thinking_mode_not_reasoning_mode() -> None:
     assert TargetOutput.model_fields["thinking_mode"].default == "enabled"
 
 
+def test_dependency_ledger_has_a_bounded_versioned_scenario_miss_contract() -> None:
+    ledger = DependencyLedger(
+        scenario_contract_version=2,
+        scenario_misses=["web_search: unscripted query"],
+    )
+
+    payload = ledger.model_dump(mode="json")
+    assert payload["scenario_contract_version"] == 2
+    assert payload["scenario_misses"] == ["web_search: unscripted query"]
+    assert DependencyLedger.model_validate(payload) == ledger
+    assert DependencyLedger().scenario_contract_version == 1
+
+    with pytest.raises(ValueError):
+        DependencyLedger(scenario_misses=["x" * 257])
+    with pytest.raises(ValueError):
+        DependencyLedger(
+            scenario_misses=[
+                f"web_search: {index}" for index in range(17)
+            ]
+        )
+
+
+def test_dependency_ledger_round_trips_bounded_source_url_fingerprints() -> None:
+    fingerprint = sha256(
+        "https://example.com/source".encode("utf-8")
+    ).hexdigest()
+    ledger = DependencyLedger(source_url_fingerprints=[fingerprint])
+
+    payload = ledger.model_dump(mode="json")
+
+    assert payload["source_url_fingerprints"] == [fingerprint]
+    assert DependencyLedger.model_validate(payload) == ledger
+    assert (
+        DependencyLedger.model_validate({}).source_url_fingerprints == []
+    )
+
+    with pytest.raises(ValueError):
+        DependencyLedger(source_url_fingerprints=["not-a-sha256"])
+    with pytest.raises(ValueError):
+        DependencyLedger(source_url_fingerprints=[fingerprint] * 129)
+
+
+def test_dependency_ledger_marks_incomplete_source_fingerprint_provenance() -> None:
+    fingerprint = sha256(
+        "https://example.com/source".encode("utf-8")
+    ).hexdigest()
+    ledger = DependencyLedger(
+        source_url_fingerprints=[fingerprint],
+        source_url_fingerprints_complete=False,
+    )
+
+    payload = ledger.model_dump(mode="json")
+
+    assert payload["source_url_fingerprints_complete"] is False
+    assert "https://example.com/source" not in repr(payload)
+    assert (
+        DependencyLedger.model_validate({}).source_url_fingerprints_complete
+        is True
+    )
+    assert (
+        DependencyLedger.model_validate(
+            {"source_url_fingerprints": [fingerprint]}
+        ).source_url_fingerprints_complete
+        is True
+    )
+
+
 def test_suite_result_round_trips_through_json(experiment_result) -> None:
     suite = SuiteResult(
         suite_id="individual-agent-baseline",
@@ -437,3 +513,201 @@ def test_suite_result_round_trips_through_json(experiment_result) -> None:
     payload = json.loads(suite.model_dump_json())
     assert payload["schema_version"] == ARTIFACT_SCHEMA_VERSION
     assert SuiteResult.model_validate(payload) == suite
+
+
+def test_repetition_result_accepts_bounded_typed_telemetry() -> None:
+    result = RepetitionResult(
+        case_id="focused-decomposition",
+        case_version=1,
+        repetition=1,
+        completed=True,
+        gates=GateReport(),
+        deterministic_quality=0.75,
+        deterministic_metrics={"coverage": 1.0, "ordering": 0.0},
+        prohibited_call_count=2,
+        react_stop_reason="provider_error",
+        fallback_provider_diagnostic=FallbackProviderDiagnostic(
+            kind="output_limit", operation="react_decision"
+        ),
+    )
+
+    payload = result.model_dump(mode="json")
+    assert payload["deterministic_metrics"] == {
+        "coverage": 1.0,
+        "ordering": 0.0,
+    }
+    assert payload["fallback_provider_diagnostic"] == {
+        "kind": "output_limit",
+        "operation": "react_decision",
+        "diagnostics": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"": 1.0},
+        {"Not_snake_case": 1.0},
+        {"has-dash": 1.0},
+        {"too_large": 1.1},
+        {"not_finite": float("nan")},
+        {f"metric_{index}": 1.0 for index in range(17)},
+    ],
+)
+def test_repetition_result_rejects_malformed_metric_maps(metrics) -> None:
+    with pytest.raises(ValueError):
+        RepetitionResult(
+            case_id="focused-decomposition",
+            case_version=1,
+            repetition=1,
+            completed=True,
+            gates=GateReport(),
+            deterministic_metrics=metrics,
+        )
+
+
+@pytest.mark.parametrize("bad_value", [True, False, "0.0", "1.0"])
+def test_repetition_result_rejects_non_numeric_metric_values_before_coercion(
+    bad_value,
+) -> None:
+    with pytest.raises(ValueError):
+        RepetitionResult(
+            case_id="focused-decomposition",
+            case_version=1,
+            repetition=1,
+            completed=True,
+            gates=GateReport(),
+            deterministic_metrics={"coverage": bad_value, "ordering": 0.0},
+        )
+
+
+@pytest.mark.parametrize("count", [-1, 10_001, True])
+def test_repetition_result_rejects_invalid_prohibited_call_counts(count) -> None:
+    with pytest.raises(ValueError):
+        RepetitionResult(
+            case_id="focused-decomposition",
+            case_version=1,
+            repetition=1,
+            completed=True,
+            gates=GateReport(),
+            prohibited_call_count=count,
+        )
+
+
+def test_repetition_result_rejects_unknown_stop_reasons_and_unsafe_fallbacks() -> None:
+    with pytest.raises(ValueError):
+        ReActSummary(
+            iterations=0,
+            tool_calls=0,
+            stop_reason="unknown",
+            max_iterations=1,
+            tool_budget=0,
+        )
+
+    with pytest.raises(ValueError):
+        ReActSummary(
+            iterations=0,
+            tool_calls=0,
+            stop_reason="completed",
+            max_iterations=1,
+            tool_budget=0,
+        )
+
+    with pytest.raises(ValueError):
+        FallbackProviderDiagnostic(
+            kind="output_limit",
+            operation="react_decision",
+            raw_provider_output="must not persist",
+        )
+
+
+# --- The content-free structured-repair ledger ---
+
+
+def _target_output_kwargs(**overrides: object) -> dict[str, object]:
+    return {
+        "case_id": "focused-decomposition",
+        "case_version": 1,
+        "agent_name": "planner",
+        "tier": "controlled",
+        "repetition": 1,
+        "session_id": "evaluation-planner-focused-decomposition-r1",
+        "experiment_name": "planner-controlled-20260816T101500Z-abc1234",
+        "completed": True,
+        "result": {"sub_topics": []},
+        "target_model_requested": "gpt-5.6-luna",
+        "target_reasoning_effort": "high",
+        **overrides,
+    }
+
+
+def _not_run_feedback(**overrides: object) -> JudgeFeedback:
+    return JudgeFeedback(
+        status="judge_not_run",
+        not_run_reason="no_evaluable_output",
+        prompt_id="individual-agent-judge",
+        rubric_version=1,
+        prompt_fingerprint="abc123abc123",
+        judge_model="gpt-5.6-luna",
+        judge_configuration_fingerprint="def456def456",
+        **overrides,
+    )
+
+
+def test_a_structured_call_summary_defaults_to_zero_counts() -> None:
+    assert StructuredCallSummary().model_dump() == {
+        "calls": 0,
+        "repaired_calls": 0,
+        "failed_attempts": 0,
+    }
+    assert StructuredCallSummary(
+        calls=2, repaired_calls=1, failed_attempts=2
+    ).model_dump() == {"calls": 2, "repaired_calls": 1, "failed_attempts": 2}
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [
+        {"calls": -1},
+        {"repaired_calls": -1},
+        {"failed_attempts": -1},
+        {"calls": 1, "repaired_calls": 2},
+        {"calls": 1, "repaired_calls": 1, "failed_attempts": 3},
+        {"repaired_calls": 1},
+    ],
+)
+def test_a_structured_call_summary_rejects_impossible_counts(
+    counts: dict[str, int],
+) -> None:
+    with pytest.raises(ValueError):
+        StructuredCallSummary(**counts)
+
+
+def test_an_artifact_from_before_the_repair_ledger_still_validates() -> None:
+    """A v1 artifact written without the summary keeps its defaults."""
+    output = TargetOutput.model_validate(_target_output_kwargs())
+
+    assert output.structured_calls == StructuredCallSummary()
+    assert output.model_dump(mode="json")["structured_calls"] == {
+        "calls": 0,
+        "repaired_calls": 0,
+        "failed_attempts": 0,
+    }
+
+
+def test_target_output_rejects_an_impossible_repair_ledger() -> None:
+    with pytest.raises(ValueError):
+        TargetOutput(
+            **_target_output_kwargs(
+                structured_calls={"calls": 1, "repaired_calls": 2}
+            )
+        )
+
+
+def test_judge_feedback_carries_an_optional_structured_attempt() -> None:
+    assert _not_run_feedback().structured_attempts is None
+    assert _not_run_feedback(structured_attempts=2).structured_attempts == 2
+
+    for attempt in (0, 3):
+        with pytest.raises(ValueError):
+            _not_run_feedback(structured_attempts=attempt)
