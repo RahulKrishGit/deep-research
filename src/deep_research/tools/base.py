@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from deep_research.observability import SpanHandle, Tracker
+from deep_research.request_budget import RequestAttemptLimitError
 
 # A tool that lets an exception escape the framework's own error type is
 # reported with this static sentence rather than ``str(error)``: the message
@@ -124,6 +125,17 @@ class BaseTool(ABC):
                 )
                 span.set_outputs({**execution.output_summary, "success": True})
             return result
+        except RequestAttemptLimitError:
+            # A spent run-wide attempt ceiling is not a tool failure. The
+            # refusal is the budget's own decision and already carries the
+            # machine-readable reason, while a returned ``ToolResult`` would
+            # publish it as an ``agent_tool_failed`` record and let the run
+            # carry on spending past a declared limit. It is re-raised so the
+            # caller can stop instead. ``RequestAttemptLimitError`` subclasses
+            # ``RuntimeError``, so this handler is deliberately narrower than
+            # the generic one below rather than wider: every other
+            # ``RuntimeError`` a tool lets escape is still converted.
+            raise
         except Exception as error:
             # A ``ToolExecutionError`` is authored by the tool itself, so its
             # message is published as-is; anything else is an exception this

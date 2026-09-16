@@ -20,6 +20,10 @@ from deep_research.providers import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
+from deep_research.request_budget import (
+    RequestAttemptLimitError,
+    RequestBudget,
+)
 from deep_research.tools import web_scraper as web_scraper_module
 from deep_research.tools.base import (
     BaseTool,
@@ -28,6 +32,7 @@ from deep_research.tools.base import (
     ToolExecution,
     ToolResult,
 )
+from deep_research.utils.config import RequestBudgetConfig
 from tests.agent_fakes import (
     BoomTool,
     EchoTool,
@@ -1388,3 +1393,118 @@ async def test_the_loop_rejects_unbounded_arguments(
 
     with pytest.raises(ValueError, match=match):
         await run_react_loop(**payload)  # type: ignore[arg-type]
+
+
+# A spent run-wide attempt ceiling is not a tool failure the loop may absorb.
+# Converting it into a failed ``ToolResult`` would record an
+# ``agent_tool_failed`` error and let the run continue, which is exactly the
+# behaviour the ceiling exists to remove: the refusal has to end the run. The
+# loop catches provider failures only, so nothing here has to change for that —
+# these tests pin it, because the conversion ``BaseTool.execute`` used to
+# perform is one edit away from coming back.
+
+
+def _refused_tavily_budget() -> tuple[RequestBudget, RequestAttemptLimitError]:
+    """A real budget that has spent its one unit and now refuses the next."""
+    budget = RequestBudget(
+        RequestBudgetConfig(
+            deepseek_attempt_ceiling=None,
+            openai_attempt_ceiling=None,
+            tavily_attempt_ceiling=1,
+            stop_fraction=1.0,
+        )
+    )
+    budget.reserve("tavily")
+    with pytest.raises(RequestAttemptLimitError) as refusal:
+        budget.reserve("tavily")
+    return budget, refusal.value
+
+
+def _recorded_forms(tracker: Tracker) -> list[str]:
+    """Every event and error this tracker recorded, serialized for inspection."""
+    return [
+        json.dumps(record.model_dump(mode="json"), sort_keys=True)
+        for record in (*tracker.events, *tracker.errors)
+    ]
+
+
+class _RequestLimitTool(BaseTool):
+    """Raise one exact ``RequestAttemptLimitError`` out of ``_execute``."""
+
+    name = "request_limit"
+    description = "Raise the run-wide attempt ceiling refusal."
+    input_schema: dict[str, Any] = {}
+    output_schema: dict[str, Any] = {}
+
+    def __init__(self, tracker: Tracker, error: RequestAttemptLimitError) -> None:
+        super().__init__(tracker)
+        self._error = error
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: Any
+    ) -> ToolExecution:
+        raise self._error
+
+
+@pytest.mark.asyncio
+async def test_request_attempt_limit_error_escapes_the_react_loop(
+    tracker: Tracker,
+) -> None:
+    budget, refusal = _refused_tavily_budget()
+    tool = _RequestLimitTool(tracker, refusal)
+    run: ReActRun | None = None
+
+    with pytest.raises(RequestAttemptLimitError) as escaped:
+        async with agent_scope(tracker):
+            run = await run_react_loop(
+                agent_name="researcher",
+                tracker=tracker,
+                tools=AgentToolset([tool], allowed=[tool.name]),
+                decide=_decider(
+                    [
+                        use_tool("Search the web.", tool.name),
+                        finish("Move on.", "Partial answer."),
+                    ]
+                ),
+                max_iterations=4,
+                tool_budget=5,
+            )
+
+    assert escaped.value is refusal
+    assert escaped.value.snapshot is refusal.snapshot
+    # The loop returned no run at all, so it recorded no tool-failure error:
+    # a refused attempt is not a failed tool call and must not be counted as
+    # one by whatever reads the records.
+    assert run is None
+    assert budget.snapshot("tavily").attempts == 1
+    assert [
+        form for form in _recorded_forms(tracker) if "agent_tool_failed" in form
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_the_request_attempt_limit_escape_leaves_ordinary_failures_recorded(
+    tracker: Tracker,
+) -> None:
+    """Control for the escape above: an ordinary failure still records and runs on."""
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "boom"),
+            decide=_decider(
+                [
+                    use_tool("Try the flaky tool.", "boom"),
+                    finish("Fall back.", "Partial answer."),
+                ]
+            ),
+            max_iterations=4,
+            tool_budget=5,
+        )
+
+    assert run.stop_reason == "finished"
+    assert run.tool_calls == 1
+    step = run.steps[0]
+    assert step.tool_result is not None
+    assert step.tool_result.success is False
+    assert [error.error_type for error in run.errors] == ["agent_tool_failed"]

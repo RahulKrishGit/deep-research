@@ -7,6 +7,10 @@ from pydantic import ValidationError
 
 from deep_research.observability import ToolMetric
 from deep_research.observability.tracker import SpanHandle
+from deep_research.request_budget import (
+    RequestAttemptLimitError,
+    RequestBudget,
+)
 from deep_research.tools.base import (
     BaseTool,
     ToolCallContext,
@@ -15,6 +19,7 @@ from deep_research.tools.base import (
     ToolExecutionError,
     ToolResult,
 )
+from deep_research.utils.config import RequestBudgetConfig
 
 
 class SuccessfulTool(BaseTool):
@@ -291,3 +296,71 @@ async def test_tool_failure_message_is_static_project_text(tracker) -> None:
     assert key.error.message == _STATIC_FAILURE_MESSAGE
     assert runtime.error.type == "RuntimeError"
     assert key.error.type == "KeyError"
+
+
+# A spent run-wide attempt ceiling is not a tool failure. ``BaseTool.execute``
+# owns every other exception a tool lets escape and rebuilds it as a returned
+# ``ToolResult``; a refusal rewritten that way would reach the ReAct loop as an
+# ``agent_tool_failed`` record and let the run carry on spending. The refusal
+# therefore escapes ``execute`` unchanged, carrying the same snapshot it was
+# raised with. ``RequestAttemptLimitError`` subclasses ``RuntimeError``, so this
+# is a deliberate exception to the handler below it, not a wider one: the
+# ``RuntimeError`` case in the hostile-error table is still converted.
+
+
+def _refused_tavily_budget() -> tuple[RequestBudget, RequestAttemptLimitError]:
+    """A real budget that has spent its one unit and now refuses the next."""
+    budget = RequestBudget(
+        RequestBudgetConfig(
+            deepseek_attempt_ceiling=None,
+            openai_attempt_ceiling=None,
+            tavily_attempt_ceiling=1,
+            stop_fraction=1.0,
+        )
+    )
+    budget.reserve("tavily")
+    with pytest.raises(RequestAttemptLimitError) as refusal:
+        budget.reserve("tavily")
+    return budget, refusal.value
+
+
+class RequestLimitTool(BaseTool):
+    """Raise one exact ``RequestAttemptLimitError`` out of ``_execute``."""
+
+    name = "request-limit"
+    description = "Raise the run-wide attempt ceiling refusal."
+    input_schema = {}
+    output_schema = {}
+
+    def __init__(self, tracker, error: RequestAttemptLimitError) -> None:
+        super().__init__(tracker)
+        self._error = error
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: object
+    ) -> ToolExecution:
+        raise self._error
+
+
+@pytest.mark.asyncio
+async def test_request_attempt_limit_error_escapes_execute_unchanged(tracker) -> None:
+    budget, refusal = _refused_tavily_budget()
+    returned: list[ToolResult] = []
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError) as escaped:
+            returned.append(await RequestLimitTool(tracker, refusal).execute())
+
+    assert returned == []
+    assert escaped.value is refusal
+    assert escaped.value.snapshot is refusal.snapshot
+    assert type(escaped.value) is RequestAttemptLimitError
+    # Not the framework's own error type, and not a rebuilt copy of the refusal.
+    assert not isinstance(escaped.value, ToolExecutionError)
+    # The refusal left the budget exactly where it was.
+    assert budget.snapshot("tavily").attempts == 1
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert metric.success is False
+    assert metric.error_type == "RequestAttemptLimitError"

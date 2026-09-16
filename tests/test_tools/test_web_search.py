@@ -6,7 +6,10 @@ import httpx
 import pytest
 
 from deep_research.observability import ToolMetric
+from deep_research.request_budget import RequestAttemptLimitError, RequestBudget
+from deep_research.tools.base import ToolExecutionError, ToolResult
 from deep_research.tools.web_search import WebSearchTool
+from deep_research.utils.config import RequestBudgetConfig
 
 
 class FakeSearchClient:
@@ -405,3 +408,209 @@ def test_search_failure_details_revalidate_bounded_producer_values() -> None:
         "status_code": 404,
         "content_type": "unknown",
     }
+
+
+# ---------------------------------------------------------------------------
+# Run-wide Tavily attempt ceiling
+#
+# ``request_budget`` is optional. When it is absent this tool behaves exactly as
+# it did before the parameter existed. When it is present, every real
+# ``SearchClient.search`` call — the first attempt and every retry of it —
+# reserves one ``tavily`` unit *before* that call goes out, so a spent ceiling
+# refuses the next attempt instead of letting the retry loop below manufacture
+# headroom out of a declaration that was already spent. The budget is real in
+# these tests rather than stubbed: the point is that the real primitive is
+# reached.
+# ---------------------------------------------------------------------------
+
+
+def _tavily_budget(
+    *, ceiling: int | None = None, stop_fraction: float = 1.0
+) -> RequestBudget:
+    """A real budget whose only declared ceiling is Tavily's."""
+    return RequestBudget(
+        RequestBudgetConfig(
+            deepseek_attempt_ceiling=None,
+            openai_attempt_ceiling=None,
+            tavily_attempt_ceiling=ceiling,
+            stop_fraction=stop_fraction,
+        )
+    )
+
+
+class _BudgetAwareSearchClient(FakeSearchClient):
+    """A fake client that reads the budget at the moment it is really called."""
+
+    def __init__(
+        self, responses: list[Mapping[str, Any] | Exception], budget: RequestBudget
+    ) -> None:
+        super().__init__(responses)
+        self._budget = budget
+        self.attempts_at_call: list[int] = []
+
+    def search(
+        self,
+        *,
+        query: str,
+        search_depth: str,
+        max_results: int,
+    ) -> Mapping[str, Any]:
+        self.attempts_at_call.append(self._budget.snapshot("tavily").attempts)
+        return super().search(
+            query=query, search_depth=search_depth, max_results=max_results
+        )
+
+
+@pytest.mark.asyncio
+async def test_search_request_budget_reserves_one_tavily_attempt(
+    tracker,
+) -> None:
+    budget = _tavily_budget()
+    client = FakeSearchClient([_search_response()])
+    tool = WebSearchTool(tracker, client=client, request_budget=budget)
+
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is True
+    assert len(client.calls) == 1
+    assert budget.snapshot("tavily").attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_search_request_budget_reserves_one_attempt_per_retried_call(
+    tracker,
+) -> None:
+    """Each retried attempt is its own real call, so each reserves its own unit."""
+    budget = _tavily_budget()
+    client = FakeSearchClient([httpx.TimeoutException("timed out")] * 3)
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    tool = WebSearchTool(
+        tracker, client=client, sleep=sleep, request_budget=budget
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is False
+    assert result.error is not None
+    # The retry accounting the tool published before the budget existed is
+    # unchanged, and the reservations follow the calls one for one.
+    assert result.error.details == {"attempts": 3, "retries": 2}
+    assert len(client.calls) == 3
+    assert budget.snapshot("tavily").attempts == len(client.calls)
+    assert delays == [0.5, 1.0]
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert metric.retry_count == 2
+
+
+@pytest.mark.asyncio
+async def test_search_request_budget_reserves_before_the_client_call(
+    tracker,
+) -> None:
+    """A reserve-after-the-call implementation would observe zero here."""
+    budget = _tavily_budget()
+    client = _BudgetAwareSearchClient([_search_response()], budget)
+    tool = WebSearchTool(tracker, client=client, request_budget=budget)
+
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is True
+    assert client.attempts_at_call == [1]
+    assert budget.snapshot("tavily").attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_search_request_budget_refuses_the_retry_before_the_next_call(
+    tracker,
+) -> None:
+    """A ceiling of one is spent by the first call, so the retry never leaves."""
+    budget = _tavily_budget(ceiling=1)
+    client = FakeSearchClient(
+        [httpx.TimeoutException("timed out"), _search_response()]
+    )
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    tool = WebSearchTool(
+        tracker, client=client, sleep=sleep, request_budget=budget
+    )
+    returned: list[ToolResult] = []
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError) as refused:
+            returned.append(await tool.execute(query="topic"))
+
+    assert returned == []
+    assert len(client.calls) == 1
+    assert budget.snapshot("tavily").attempts == 1
+    assert refused.value.snapshot.provider == "tavily"
+    assert refused.value.snapshot.attempts == 1
+    assert refused.value.snapshot.ceiling == 1
+    assert refused.value.snapshot.effective_limit == 1
+    # The refusal escapes as itself rather than being rebuilt as a tool failure
+    # or mistaken for the retryable timeout the first call raised.
+    assert not isinstance(refused.value, ToolExecutionError)
+    assert delays == [0.5]
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert metric.success is False
+    assert metric.error_type == "RequestAttemptLimitError"
+    # The retry that was scheduled before the refusal is the only one recorded.
+    assert metric.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_search_request_budget_refuses_the_first_call_when_the_limit_is_zero(
+    tracker,
+) -> None:
+    """A zero limit is a real declaration: the very first call is refused."""
+    budget = _tavily_budget(ceiling=1, stop_fraction=0.5)
+    client = FakeSearchClient([_search_response()])
+    tool = WebSearchTool(tracker, client=client, request_budget=budget)
+    returned: list[ToolResult] = []
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError) as refused:
+            returned.append(await tool.execute(query="topic"))
+
+    assert returned == []
+    assert client.calls == []
+    assert refused.value.snapshot.attempts == 0
+    assert refused.value.snapshot.effective_limit == 0
+    assert budget.snapshot("tavily").attempts == 0
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert metric.error_type == "RequestAttemptLimitError"
+    assert metric.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_search_without_a_request_budget_stays_uncounted(tracker) -> None:
+    """The default is no budget at all: nothing is reserved and nothing refuses."""
+    client = FakeSearchClient([_search_response()])
+    tool = WebSearchTool(tracker, client=client)
+
+    assert tool._request_budget is None
+
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is True
+    assert result.metadata == {
+        "provider": "tavily",
+        "result_count": 1,
+        "retry_count": 0,
+    }
+    assert len(client.calls) == 1

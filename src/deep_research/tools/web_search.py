@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 from tavily import TavilyClient
@@ -17,6 +17,9 @@ from deep_research.tools.base import (
     ToolExecution,
     ToolExecutionError,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard for type checkers only
+    from deep_research.request_budget import RequestBudget
 
 # A failure published for a search request is bounded to this shape, so an
 # exception message or a remote ``Content-Type`` header can never be echoed
@@ -63,6 +66,7 @@ class WebSearchTool(BaseTool):
         timeout_s: float = 10.0,
         max_retries: int = 2,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        request_budget: RequestBudget | None = None,
     ) -> None:
         super().__init__(tracker)
         if not isinstance(search_depth, str) or not search_depth.strip():
@@ -92,6 +96,7 @@ class WebSearchTool(BaseTool):
         self._timeout_s = float(timeout_s)
         self._max_retries = max_retries
         self._sleep = sleep
+        self._request_budget = request_budget
 
     def _observability_inputs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         return {"query": kwargs.get("query"), "max_results": kwargs.get("max_results")}
@@ -120,16 +125,32 @@ class WebSearchTool(BaseTool):
     async def _search_with_retries(
         self, context: ToolCallContext, query: str, max_results: int
     ) -> Mapping[str, Any]:
+        budget = self._request_budget
+
+        def search_once() -> Mapping[str, Any]:
+            """One transport attempt: reserve its unit first, then make it.
+
+            The retry loop below calls this once per attempt, so the first call
+            and every retry of it each reserve their own unit rather than the
+            request reserving one for all of them. A refusal raised by
+            ``reserve`` is not a timeout and not a status error, so the handler
+            below does not catch it: it ends the request instead of being
+            retried, and it never counts as an attempt of its own, because the
+            budget refuses before it increments.
+            """
+            if budget is not None:
+                budget.reserve("tavily")
+            return self._client.search(
+                query=query,
+                search_depth=self._search_depth,
+                max_results=max_results,
+            )
+
         attempts = self._max_retries + 1
         for attempt in range(attempts):
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self._client.search,
-                        query=query,
-                        search_depth=self._search_depth,
-                        max_results=max_results,
-                    ),
+                    asyncio.to_thread(search_once),
                     timeout=self._timeout_s,
                 )
             except (
