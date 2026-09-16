@@ -129,8 +129,10 @@ authorizations have since been spent — agent baseline, agent fixes, corroborat
 resource, publisher retention, corroboration criterion, and evidence pooling — so
 the standing authorization is **exhausted at its declared tenth run** by the
 predeclarations' own numbering (see the baseline document §3.2, where the declared
-ordinals are also shown to conflict at slot 4). The heat-pump run, declared as the
-seventh, left no log, report, or ledger in any checkout. **No further live run is
+ordinals are also shown to conflict at slot 4). The heat-pump run declared as the
+seventh was **never authorized and never run** — its own predeclaration is marked
+*"PARKED — NOT AUTHORIZED, NOT RUN"* at the user's direction, with no candidate
+SHA frozen — so no artifact for it exists or is expected. **No further live run is
 authorized by this document.** Task 13 of the current plan is paid/live and
 requires a separately reconciled allowance and an explicit stage confirmation;
 the historical ~US$100 / approximately ten-run authorization is not a fresh

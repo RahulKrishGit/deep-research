@@ -281,34 +281,62 @@ Report length is a structural diagnostic, not a semantic score.
 
 ### 3.2 Log filename time versus trace `start_time` (**L**, unresolved convention)
 
-Each log's summary carries a LangSmith `Trace:` URL with a `start_time` query
-parameter. For nine of the eleven logs that value is exactly **7 hours ahead** of
-the timestamp embedded in the log's own filename (e.g. filename
-`...-223507-...` ↔ `start_time=2026-09-16T05%3A35%3A10.956109%2B00%3A00`). For the
-two Q1 logs the two values agree (`...-204454-q1.log` ↔
-`start_time=2026-09-15T20%3A45%3A09.462225%2B00%3A00`), which places them
-**earlier** than the nine others by filename and **later** than only
-`20260915-183058` by filename ordering. The local artifacts do not state which
-clock each field uses, so the offset's cause is unresolved (**F**). Log *order*
-below uses the trace `start_time` values, which match the documented narrative;
-file modification times were **not** used to establish recency.
+Each log's summary may carry a LangSmith `Trace:` URL with a `start_time` query
+parameter. Measured across all eleven logs (**L**): **nine carry a `start_time`
+and two do not** (`cli-canary-20260915-202101-q1.log`, whose run never started,
+and `cli-canary-20260915-202152-q1.log`, the planner failure). Of the nine that
+do:
+
+| Relation to the log's own filename timestamp | Logs | Count | Offset |
+| --- | --- | ---: | --- |
+| `start_time` is ahead by ≈7 h | `183058-task15`, `192428-agentbaseline`, `194430-agentfixes`, `201604-corroboration`, `204851-resource`, `212726-publisherretention`, `215848-corroborationcriterion`, `223507-evidencepooling` | **8** | +7.0008 h to +7.0011 h |
+| `start_time` matches the filename | `204454-q1` only | **1** | +15 s |
+
+So the 7-hour offset holds for eight of the nine trace-bearing logs, not for the
+Q1 log that actually published a report: `...-204454-q1.log` ↔
+`start_time=2026-09-15T20%3A45%3A09.462225%2B00%3A00`, a 15-second difference.
+That single log inverts the filename ordering — by filename `204454` is the
+**seventh of eleven** (later than six logs), while by trace time
+(09-15 20:45:09) it is **earlier than all eight** other trace-bearing logs
+(09-16 01:31 to 05:35). The local artifacts do not state which clock each field
+uses, so the offset's cause is unresolved (**F**). Log *order* below uses the
+trace `start_time` values, which match the documented narrative and the
+release-status record; file modification times were **not** used to establish
+recency.
 
 Measured order (**L**, by trace `start_time`):
 `50cbf592` (09-15 20:45Z) → `ce8911ee` (09-16 01:31Z) → `083f77bf` (02:24Z) →
 `b600945d` (02:44Z) → `eb9186f2` (03:16Z) → `d8894023` (03:48Z) →
 `97921fe4` (04:27Z) → `480fd561` (04:58Z) → `417fa933` (05:35Z).
+The two logs with no `start_time` are not placed on this axis.
 
 **Declared run ordinals conflict (F).** The predeclarations claim:
 agent-baseline "this is the fourth";
 agent-fixes "Fourth run of the standing authorization";
-corroboration "Fifth run"; resource "Sixth run"; heat-pump "Seventh run";
+corroboration "Fifth run"; resource "Sixth run"; heat-pump "Seventh run"
+(that run is parked and was never executed — see §3.3);
 publisher-retention "Eighth run"; corroboration-criterion "Ninth run";
 evidence-pooling "Tenth run".
-Two documents both claim the fourth slot, and the Q1 authorization is counted as
-one run in `2026-09-15-release-status.md` ("Three of ~10 authorized live runs are
-spent") but as two in the agent-baseline predeclaration. The measured order above
-agrees with the declared sequence only if the agent-fixes run is fifth. This
-conflict is recorded, not resolved.
+Two documents both claim the **fourth** slot, which is the verified conflict. The
+release-status document and the agent-baseline predeclaration count Q1 the same
+way — both enumerate it as two spent runs ("Q1, Q1's paid planner-failure
+attempt, this canary" versus "Q1, its paid planner-failure attempt, and the
+scraper-diagnosis canary"), so no disagreement between them is asserted here.
+The measured order above agrees with the declared sequence only if the
+agent-fixes run is fifth, which would renumber every ordinal from corroboration
+onward by one. This conflict is recorded, not resolved.
+
+### 3.3 Runs declared but never executed
+
+| Run | Status as its own artifact states it |
+| --- | --- |
+| heat-pump (`2026-09-15-heatpump-run-predeclaration.md`) | **"PARKED — NOT AUTHORIZED, NOT RUN."** Held at the user's direction on 2026-09-15; *"No candidate SHA is frozen and this document authorizes nothing until it is explicitly un-parked and filled in."* |
+
+No log, report, or ledger for the heat-pump question exists in any checkout, and
+none is expected: the run was deliberately never executed and never authorized.
+It is therefore **not** a missing artifact and **not** an open question. The
+question it declared — cold-climate residential heat pumps — remains outside the
+standing baseline, which stays the battery question.
 
 ## 4. Reconciliation of the latest result
 
@@ -425,7 +453,8 @@ per-repetition gate results, judge status, and judge verdict (**L**).
 | **Total** | **81** |
 
 Two of the 81 are test-harness fixtures, not evaluations (§6.4), leaving **79**
-real evaluation records.
+real evaluation records. The 81 records declare **120 cases** across **240
+repetitions**; §6.3 inventories every case on its own row.
 
 ### 6.2 Target configuration actually recorded in the files (**L**)
 
@@ -478,101 +507,168 @@ explicitly at the declared candidate.
 taken from a clean tree. That is a limitation on reproducibility, not a
 correctness claim.
 
-### 6.3 Full inventory
+### 6.3 Full inventory, by declared case
 
-Columns: `case` is `case_id` with its declared `case_version`; `reps` is the
-number of repetitions; `avg` is the record's `average_quality`; `failed gates`
-lists the **failed** gate ids — for a multi-repetition record, one entry per
-repetition in repetition order, separated by `, `, with `/` joining the ids that
-failed within one repetition; `judge status` and `judge quality` summarise all
+Columns: `rec` is the record number (1–81) and is **repeated on one row per
+declared case**, so a `rec` value appearing several times means one
+`results.json` file that declares several cases — the record-level fields
+(`results.json`, agent, tier, record status) repeat on each of its rows.
+`case (version)` is that case's `case_id` with its declared `case_version`;
+`reps` is that case's repetition count; `avg` and `passed` are that case's
+`average_quality` and `passed` flag; `failed gates` lists the failed gate ids for
+that case — one entry per repetition in repetition order, separated by `, `, with
+`/` joining the ids that failed within one repetition; `judge status` counts that
+case's repetitions by judge status; `judge quality` spans that case's scored
 repetitions. `—` means the file declares no value.
 
-The 81 rows cover **240 repetitions** in total. 122 repetitions carry a judge
-verdict with `agent_specific` scores; 116 are `judge_not_run`.
+| Quantity | Count |
+| --- | ---: |
+| `results.json` records | **81** |
+| Declared cases (one row each below) | **120** |
+| Repetitions across all cases | **240** |
+| Records declaring exactly one case | 60 |
+| Records declaring three cases | 20 |
+| Records declaring no case at all | 1 (the `planner-controlled-…-abc1234` fixture) |
+| Distinct `(case_id, case_version)` pairs | 22 |
+| Repetitions carrying a judge verdict with `agent_specific` scores | 122 |
+| Repetitions with `judge_not_run` | 116 |
 
-| # | `results.json` (relative to the old worktree's `output/`) | agent | tier | case (version) | reps | status | avg | failed gates | judge status | judge quality |
-| ---: | --- | --- | --- | --- | ---: | --- | ---: | --- | --- | --- |
-| 1 | `output/eval2/fact-checker/pr2-fact-check-r1-fact-checker-live-20260913T184224Z-16d2a8f/results.json` | fact_checker | live | `fact-checker-live-verification` v1 | 1 | REVIEW REQUIRED | 0.886 | none | scored | 0.81 |
-| 2 | `output/eval2/fact-checker/pr2-fact-check-r2-fact-checker-live-20260913T184408Z-16d2a8f/results.json` | fact_checker | live | `fact-checker-live-verification` v1 | 1 | REVIEW REQUIRED | 0.8095 | none | scored | 0.6825 |
-| 3 | `output/eval2/fact-checker/pr2-fact-check-r3-fact-checker-live-20260913T184706Z-16d2a8f/results.json` | fact_checker | live | `fact-checker-live-verification` v1 | 1 | FAILED | 0.826 | budgets_respected | scored | 0.81 |
-| 4 | `output/eval2/planner/pr2-planner-r2-planner-live-20260913T183407Z-16d2a8f/results.json` | planner | live | `planner-live-scope` v1 | 1 | REVIEW REQUIRED | 0.8755 | none | scored | 0.7925 |
-| 5 | `output/eval2/planner/pr2-planner-r3-planner-live-20260913T183517Z-16d2a8f/results.json` | planner | live | `planner-live-scope` v1 | 1 | REVIEW REQUIRED | 0.9115 | none | scored | 0.8525 |
-| 6 | `output/eval2/researcher/pr2-researcher-r1-researcher-live-20260913T183632Z-16d2a8f/results.json` | researcher | live | `researcher-live-evidence` v1 | 1 | REVIEW REQUIRED | 0.8767 | none | scored | 0.7945 |
-| 7 | `output/eval2/researcher/pr2-researcher-r2-researcher-live-20260913T183816Z-16d2a8f/results.json` | researcher | live | `researcher-live-evidence` v1 | 1 | REVIEW REQUIRED | 0.847 | none | scored | 0.745 |
-| 8 | `output/eval2/researcher/pr2-researcher-r3-researcher-live-20260913T183922Z-16d2a8f/results.json` | researcher | live | `researcher-live-evidence` v1 | 1 | REVIEW REQUIRED | 0.8485 | none | scored | 0.7475 |
-| 9 | `output/eval2/source-evaluator/pr2-source-eval-r1-source-evaluator-live-20260913T184027Z-16d2a8f/results.json` | source_evaluator | live | `source-evaluator-live-ranking` v2 | 1 | REVIEW REQUIRED | 0.904 | none | scored | 0.84 |
-| 10 | `output/eval2/source-evaluator/pr2-source-eval-r2-source-evaluator-live-20260913T184108Z-16d2a8f/results.json` | source_evaluator | live | `source-evaluator-live-ranking` v2 | 1 | REVIEW REQUIRED | 0.9115 | none | scored | 0.8525 |
-| 11 | `output/eval2/source-evaluator/pr2-source-eval-r3-source-evaluator-live-20260913T184145Z-16d2a8f/results.json` | source_evaluator | live | `source-evaluator-live-ranking` v2 | 1 | REVIEW REQUIRED | 0.922 | none | scored | 0.87 |
-| 12 | `output/evaluations/critic/cross-agent-planner-fix-parity-baseline-critic-critic-controlled-20260910T012037Z-d6a082c/results.json` | critic | controlled | `missing-evidence-or-budget-exhausted` v1 | 3 | FAILED | — | required_fields_present, required_fields_present/no_prohibited_calls, required_fields_present/no_prohibited_calls | judge_not_run, scored | 0.828–0.8575 |
-| 13 | `output/evaluations/critic/cross-agent-planner-fix-parity-confirmation-critic-critic-controlled-20260910T013054Z-d6a082c/results.json` | critic | controlled | `missing-evidence-or-budget-exhausted` v1 | 3 | FAILED | — | required_fields_present/no_prohibited_calls, required_fields_present, required_fields_present/no_prohibited_calls | judge_not_run, scored | 0.48–0.8055 |
-| 14 | `output/evaluations/critic/cross-agent-planner-fix-parity-critic-confirmation-c74a4f2-critic-live-20260911T053652Z-c74a4f2/results.json` | critic | live | `critic-live-review` v1 | 1 | INFRASTRUCTURE FAILURE | — | none | judge_not_run | — |
-| 15 | `output/evaluations/critic/cross-agent-planner-fix-parity-judge-native-schema-critic-canary-2e8b25f-critic-live-20260911T191641Z-2e8b25f/results.json` | critic | live | `critic-live-review` v1 | 1 | FAILED | 0.4715 | none | scored | 0.2525 |
-| 16 | `output/evaluations/critic/cross-agent-planner-fix-parity-live-20260910-critic-critic-live-20260910T191555Z-d697ff6/results.json` | critic | live | `critic-live-review` v1 | 1 | FAILED | 0.4055 | none | scored | 0.1425 |
-| 17 | `output/evaluations/critic/cross-agent-planner-fix-parity-repaired-baseline-critic-critic-controlled-20260910T041514Z-1f790b0/results.json` | critic | controlled | `missing-evidence-or-budget-exhausted` v1 | 3 | FAILED | — | none | judge_not_run, scored | 0.785–0.835 |
-| 18 | `output/evaluations/critic/cross-agent-planner-fix-parity-repaired-confirmation-critic-critic-controlled-20260910T042250Z-1f790b0/results.json` | critic | controlled | `missing-evidence-or-budget-exhausted` v1 | 3 | FAILED | — | none | judge_not_run, scored | 0.8–0.839 |
-| 19 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-baseline-fact-checker-fact-checker-controlled-20260910T003848Z-d6a082c/results.json` | fact_checker | controlled | `verification-search-failure` v1 | 3 | FAILED | — | required_fields_present/no_prohibited_calls, required_fields_present/budgets_respected/no_prohibited_calls, required_fields_present/no_prohibited_calls | judge_not_run, scored | 0.5525 |
-| 20 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-confirmation-fact-checker-fact-checker-controlled-20260910T005356Z-d6a082c/results.json` | fact_checker | controlled | `verification-search-failure` v1 | 3 | FAILED | — | required_fields_present/no_prohibited_calls, required_fields_present/no_prohibited_calls, required_fields_present/no_prohibited_calls | judge_not_run, scored | 0.4525–0.48 |
-| 21 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-judge-native-schema-fact-checker-canary-a503a7b-fact-checker-live-20260911T193525Z-a503a7b/results.json` | fact_checker | live | `fact-checker-live-verification` v1 | 1 | INFRASTRUCTURE FAILURE | — | none | judge_not_run | — |
-| 22 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-live-20260910-fact-checker-fact-checker-live-20260910T191351Z-d697ff6/results.json` | fact_checker | live | `fact-checker-live-verification` v1 | 1 | FAILED | 0.691 | none | scored | 0.485 |
-| 23 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-repaired-baseline-fact-checker-fact-checker-controlled-20260910T034149Z-1f790b0/results.json` | fact_checker | controlled | `verification-search-failure` v1 | 3 | FAILED | — | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run, scored | 0.53 |
-| 24 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-repaired-confirmation-fact-checker-fact-checker-controlled-20260910T035356Z-1f790b0/results.json` | fact_checker | controlled | `verification-search-failure` v1 | 3 | FAILED | 0.5833 | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | scored | 0.5215–0.615 |
-| 25 | `output/evaluations/live-critic-canary/critic/critic-canary-critic-live-20260912T204455Z-bc3f472/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.7653 | none | scored | 0.7755 |
-| 26 | `output/evaluations/live-critic-canary/critic/critic-canary-r2-critic-live-20260912T205014Z-bc3f472/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.8512 | none | scored | 0.752 |
-| 27 | `output/evaluations/live-critic-canary/critic/critic-canary-r3-critic-live-20260912T205119Z-bc3f472/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.889 | none | scored | 0.815 |
-| 28 | `output/evaluations/live-critic-confirm/critic/critic-confirm-96fe8a9-r1-critic-live-20260911T224609Z-6b2c9c3/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.88 | none | scored | 0.8 |
-| 29 | `output/evaluations/live-critic-confirm/critic/critic-confirm-96fe8a9-r2-critic-live-20260911T224752Z-6b2c9c3/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.767 | none | scored | 0.745 |
-| 30 | `output/evaluations/live-critic-confirm/critic/critic-confirm-96fe8a9-r3-critic-live-20260911T224859Z-6b2c9c3/results.json` | critic | live | `critic-live-review` v1 | 1 | FAILED | 0.7125 | none | scored | 0.6875 |
-| 31 | `output/evaluations/live-critic-d2/critic/critic-d2-r1-critic-live-20260912T212835Z-fceb466/results.json` | critic | live | `critic-live-review` v1 | 1 | FAILED | 0.7095 | none | scored | 0.6825 |
-| 32 | `output/evaluations/live-critic-d2/critic/critic-d2-r2-critic-live-20260912T212948Z-fceb466/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.8935 | none | scored | 0.8225 |
-| 33 | `output/evaluations/live-critic-d2/critic/critic-d2-r3-critic-live-20260912T213058Z-fceb466/results.json` | critic | live | `critic-live-review` v1 | 1 | FAILED | 0.639 | none | scored | 0.565 |
-| 34 | `output/evaluations/live-critic-gated/critic/critic-gated-cccc139-r1-critic-live-20260911T225259Z-cccc139/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.7905 | none | scored | 0.8175 |
-| 35 | `output/evaluations/live-critic-gated/critic/critic-gated-cccc139-r2-critic-live-20260911T225435Z-cccc139/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.8159 | none | scored | 0.8265 |
-| 36 | `output/evaluations/live-critic-gated/critic/critic-gated-cccc139-r3-critic-live-20260911T225625Z-cccc139/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.85 | none | scored | 0.75 |
-| 37 | `output/evaluations/live-critic-readiness/critic/critic-readiness-2fe4e32-critic-live-20260911T220455Z-2fe4e32/results.json` | critic | live | `critic-live-review` v1 | 1 | FAILED | 0.728 | none | scored | 0.68 |
-| 38 | `output/evaluations/live-critic-readiness/critic/critic-readiness-750472b-critic-live-20260911T221241Z-750472b/results.json` | critic | live | `critic-live-review` v1 | 1 | INFRASTRUCTURE FAILURE | — | none | judge_not_run | — |
-| 39 | `output/evaluations/live-critic-readiness/critic/critic-readiness-7f84378-critic-live-20260911T223606Z-7f84378/results.json` | critic | live | `critic-live-review` v1 | 1 | INFRASTRUCTURE FAILURE | — | none | judge_not_run | — |
-| 40 | `output/evaluations/live-critic-readiness/critic/critic-readiness-96fe8a9-critic-live-20260911T223836Z-96fe8a9/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.7725 | none | scored | 0.7875 |
-| 41 | `output/evaluations/live-critic-readiness/critic/critic-readiness-fe434cf-critic-live-20260911T212856Z-fe434cf/results.json` | critic | live | `critic-live-review` v1 | 1 | FAILED | 0.6995 | none | scored | 0.6325 |
-| 42 | `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r1-critic-live-20260911T230901Z-035d3c5/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.783 | none | scored | 0.805 |
-| 43 | `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r2-critic-live-20260911T231033Z-035d3c5/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.8245 | none | scored | 0.7075 |
-| 44 | `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r3-critic-live-20260911T231205Z-035d3c5/results.json` | critic | live | `critic-live-review` v1 | 1 | REVIEW REQUIRED | 0.8235 | none | scored | 0.8725 |
-| 45 | `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r4-critic-live-20260911T231359Z-035d3c5/results.json` | critic | live | `critic-live-review` v1 | 1 | FAILED | — | review_produced | judge_not_run | — |
-| 46 | `output/evaluations/live-rerun-160c334/critic/cross-agent-planner-fix-parity-live-rerun-160c334-critic-critic-live-20260910T223008Z-160c334/results.json` | critic | live | `critic-live-review` v1 | 1 | FAILED | 0.6555 | none | scored | 0.5925 |
-| 47 | `output/evaluations/live-rerun-160c334/fact-checker/cross-agent-planner-fix-parity-live-rerun-160c334-fact-checker-fact-checker-live-20260910T222742Z-160c334/results.json` | fact_checker | live | `fact-checker-live-verification` v1 | 1 | INFRASTRUCTURE FAILURE | — | none | judge_not_run | — |
-| 48 | `output/evaluations/live-rerun-160c334/planner/cross-agent-planner-fix-parity-live-rerun-160c334-planner-planner-live-20260910T222425Z-160c334/results.json` | planner | live | `planner-live-scope` v1 | 1 | REVIEW REQUIRED | 0.9271 | none | scored | 0.8785 |
-| 49 | `output/evaluations/live-rerun-160c334/researcher/cross-agent-planner-fix-parity-live-rerun-160c334-researcher-researcher-live-20260910T222533Z-160c334/results.json` | researcher | live | `researcher-live-evidence` v1 | 1 | FAILED | — | citations_known/no_invented_sources | judge_not_run | — |
-| 50 | `output/evaluations/live-rerun-160c334/source-evaluator/cross-agent-planner-fix-parity-live-rerun-160c334-source-evaluator-source-evaluator-live-20260910T222657Z-160c334/results.json` | source_evaluator | live | `source-evaluator-live-ranking` v1 | 1 | FAILED | 0.797 | low_confidence_flagged | scored | 0.795 |
-| 51 | `output/evaluations/live-rerun-160c334/synthesizer/cross-agent-planner-fix-parity-live-rerun-160c334-synthesizer-synthesizer-live-20260910T222902Z-160c334/results.json` | synthesizer | live | `synthesizer-live-report` v1 | 1 | INFRASTRUCTURE FAILURE | — | none | judge_not_run | — |
-| 52 | `output/evaluations/live-synthesizer-2dfa099/synthesizer/cross-agent-planner-fix-parity-live-synthesizer-2dfa099-synthesizer-live-20260911T204304Z-2dfa099/results.json` | synthesizer | live | `synthesizer-live-report` v1 | 1 | REVIEW REQUIRED | 0.81 | none | scored | 0.85 |
-| 53 | `output/evaluations/planner/cross-agent-planner-fix-parity-live-20260910-planner-planner-live-20260910T191110Z-d697ff6/results.json` | planner | live | `planner-live-scope` v1 | 1 | REVIEW REQUIRED | 0.8725 | none | scored | 0.7875 |
-| 54 | `output/evaluations/planner/planner-controlled-20260816T101500Z-abc1234/results.json` | planner | controlled | — | — | INFRASTRUCTURE FAILURE | — | — | — | — |
-| 55 | `output/evaluations/planner/planner-live-20260816T101500Z-abc1234/results.json` | planner | live | `planner-live-scope` v1 | 1 | FAILED | 0.91 | trace_available | scored | 0.85 |
-| 56 | `output/evaluations/production-readiness-v2-planner-r1/planner/prod-readiness-v2-planner-r1-planner-live-20260913T182911Z-16d2a8f/results.json` | planner | live | `planner-live-scope` v1 | 1 | REVIEW REQUIRED | 0.877 | none | scored | 0.795 |
-| 57 | `output/evaluations/researcher/cross-agent-planner-fix-parity-baseline-researcher-researcher-controlled-20260909T234501Z-d6a082c/results.json` | researcher | controlled | `partial-search-failure` v1 | 3 | FAILED | — | no_prohibited_calls/sub_topic_covered, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run | — |
-| 58 | `output/evaluations/researcher/cross-agent-planner-fix-parity-confirmation-researcher-researcher-controlled-20260910T000647Z-d6a082c/results.json` | researcher | controlled | `partial-search-failure` v1 | 3 | FAILED | — | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run | — |
-| 59 | `output/evaluations/researcher/cross-agent-planner-fix-parity-judge-native-schema-researcher-canary-c13dd9d-researcher-live-20260911T185526Z-c13dd9d/results.json` | researcher | live | `researcher-live-evidence` v1 | 1 | REVIEW REQUIRED | 0.8095 | none | scored | 0.6825 |
-| 60 | `output/evaluations/researcher/cross-agent-planner-fix-parity-live-20260910-researcher-researcher-live-20260910T191215Z-d697ff6/results.json` | researcher | live | `researcher-live-evidence` v1 | 1 | FAILED | 0.6469 | citations_known/no_invented_sources | scored | 0.6115 |
-| 61 | `output/evaluations/researcher/cross-agent-planner-fix-parity-repaired-baseline-researcher-researcher-controlled-20260910T031409Z-1f790b0/results.json` | researcher | controlled | `partial-search-failure` v1 | 3 | FAILED | — | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run, scored | 0.7575 |
-| 62 | `output/evaluations/researcher/cross-agent-planner-fix-parity-repaired-confirmation-researcher-researcher-controlled-20260910T032225Z-1f790b0/results.json` | researcher | controlled | `partial-search-failure` v1 | 3 | FAILED | — | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run, scored | 0.2975 |
-| 63 | `output/evaluations/sequential-live-20260910/researcher/cross-agent-planner-fix-parity-sequential-live-20260910-researcher-researcher-live-20260910T232024Z-c368849/results.json` | researcher | live | `researcher-live-evidence` v1 | 1 | FAILED | — | citations_known/no_invented_sources | judge_not_run | — |
-| 64 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-baseline-source-evaluator-source-evaluator-controlled-20260910T002727Z-d6a082c/results.json` | source_evaluator | controlled | `reputation-provider-failure` v1 | 3 | FAILED | — | required_fields_present, required_fields_present, required_fields_present | judge_not_run, scored | 0.895 |
-| 65 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-confirmation-source-evaluator-source-evaluator-controlled-20260910T003442Z-d6a082c/results.json` | source_evaluator | controlled | `reputation-provider-failure` v1 | 3 | FAILED | — | required_fields_present, required_fields_present, required_fields_present | judge_not_run | — |
-| 66 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-judge-native-schema-source-evaluator-canary-d902c57-source-evaluator-live-20260911T190947Z-d902c57/results.json` | source_evaluator | live | `source-evaluator-live-ranking` v2 | 1 | REVIEW REQUIRED | 0.928 | none | scored | 0.88 |
-| 67 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-live-20260910-source-evaluator-source-evaluator-live-20260910T191308Z-d697ff6/results.json` | source_evaluator | live | `source-evaluator-live-ranking` v1 | 1 | FAILED | — | low_confidence_flagged | judge_not_run | — |
-| 68 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-repaired-baseline-source-evaluator-source-evaluator-controlled-20260910T033036Z-1f790b0/results.json` | source_evaluator | controlled | `reputation-provider-failure` v1 | 3 | FAILED | — | none | judge_not_run | — |
-| 69 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-repaired-confirmation-source-evaluator-source-evaluator-controlled-20260910T033713Z-1f790b0/results.json` | source_evaluator | controlled | `reputation-provider-failure` v1 | 3 | FAILED | — | none | judge_not_run, scored | 0.902 |
-| 70 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-baseline-synthesizer-synthesizer-controlled-20260910T010651Z-d6a082c/results.json` | synthesizer | controlled | `write-or-memory-failure` v1 | 3 | FAILED | 0.9496 | required_fields_present, required_fields_present, required_fields_present | scored | 0.9105–0.92 |
-| 71 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-confirmation-synthesizer-synthesizer-controlled-20260910T011515Z-d6a082c/results.json` | synthesizer | controlled | `write-or-memory-failure` v1 | 3 | FAILED | — | required_fields_present, required_fields_present, required_fields_present | judge_not_run, scored | 0.9165 |
-| 72 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-judge-native-schema-synthesizer-canary-e1b8ae5-synthesizer-live-20260911T191351Z-e1b8ae5/results.json` | synthesizer | live | `synthesizer-live-report` v1 | 1 | REVIEW REQUIRED | 0.804 | none | scored | 0.84 |
-| 73 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-live-20260910-synthesizer-synthesizer-live-20260910T191500Z-d697ff6/results.json` | synthesizer | live | `synthesizer-live-report` v1 | 1 | INFRASTRUCTURE FAILURE | — | none | judge_not_run | — |
-| 74 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-repaired-baseline-synthesizer-synthesizer-controlled-20260910T040509Z-1f790b0/results.json` | synthesizer | controlled | `write-or-memory-failure` v1 | 3 | FAILED | — | none | judge_not_run, scored | 0.925–0.939 |
-| 75 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-repaired-confirmation-synthesizer-synthesizer-controlled-20260910T041019Z-1f790b0/results.json` | synthesizer | controlled | `write-or-memory-failure` v1 | 3 | FAILED | — | none | judge_not_run, scored | 0.929 |
-| 76 | `output/evaluations/task19-fact-checker-ef143ef/fact-checker/task19-fact-checker-ef143ef-fact-checker-live-20260911T013600Z-ef143ef/results.json` | fact_checker | live | `fact-checker-live-verification` v1 | 1 | FAILED | 0.691 | none | scored | 0.485 |
-| 77 | `output/evaluations/task19-source-evaluator-ce3a706/source-evaluator/task19-source-evaluator-ce3a706-source-evaluator-live-20260911T012237Z-ce3a706/results.json` | source_evaluator | live | `source-evaluator-live-ranking` v1 | 1 | FAILED | — | low_confidence_flagged | judge_not_run | — |
-| 78 | `output/evaluations/task19-source-evaluator-confirmation-424ed6c/source-evaluator/task19-source-evaluator-confirmation-424ed6c-source-evaluator-live-20260911T013412Z-424ed6c/results.json` | source_evaluator | live | `source-evaluator-live-ranking` v1 | 1 | FAILED | 0.782 | low_confidence_flagged | scored | 0.77 |
-| 79 | `output/evaluations/task19-source-evaluator-readiness-v2-3eab969/source-evaluator/task19-source-evaluator-readiness-v2-3eab969-source-evaluator-source-evaluator-live-20260911T024444Z-3eab969/results.json` | source_evaluator | live | `source-evaluator-live-ranking` v2 | 1 | INFRASTRUCTURE FAILURE | — | none | judge_not_run | — |
-| 80 | `output/evaluations/task20-researcher-confirmation-9319024/researcher/task20-researcher-confirmation-9319024-researcher-live-20260911T011711Z-9319024/results.json` | researcher | live | `researcher-live-evidence` v1 | 1 | INFRASTRUCTURE FAILURE | — | none | judge_not_run | — |
-| 81 | `output/evaluations/task21-fact-checker-readiness-30d9921/fact-checker/task21-fact-checker-readiness-30d9921-fact-checker-fact-checker-live-20260911T030226Z-30d9921/results.json` | fact_checker | live | `fact-checker-live-verification` v1 | 1 | FAILED | 0.6205 | none | scored | 0.3675 |
+Because every case gets its own row, the table below has **121 rows over 81
+distinct record numbers**, and its `reps` column sums to **240** — the same
+population the §6.6 aggregates and its 225 failed-gate instances are computed
+over. The controlled records' positive and negative control cases
+(`approve-strong-report`, `request-more-research`, `mixed-verdicts`,
+`independent-domain-evidence`, `multi-source-coverage`, `conflicting-evidence`,
+`strong-and-weak-sources`, `corroboration-recency-reputation`,
+`complete-cited-report`, `conflict-and-limitations`, each v1) therefore appear
+explicitly, four records each, instead of being collapsed into their record's
+final case.
+
+### 6.3.1 Per-case table
+
+| rec | `results.json` (relative to the old worktree's `output/`) | agent | tier | record status | case (version) | reps | avg | passed | failed gates | judge status | judge quality |
+| ---: | --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- | --- |
+| 1 | `output/eval2/fact-checker/pr2-fact-check-r1-fact-checker-live-20260913T184224Z-16d2a8f/results.json` | fact_checker | live | REVIEW REQUIRED | `fact-checker-live-verification` v1 | 1 | 0.886 | True | none | scored ×1 | 0.81 |
+| 2 | `output/eval2/fact-checker/pr2-fact-check-r2-fact-checker-live-20260913T184408Z-16d2a8f/results.json` | fact_checker | live | REVIEW REQUIRED | `fact-checker-live-verification` v1 | 1 | 0.8095 | True | none | scored ×1 | 0.6825 |
+| 3 | `output/eval2/fact-checker/pr2-fact-check-r3-fact-checker-live-20260913T184706Z-16d2a8f/results.json` | fact_checker | live | FAILED | `fact-checker-live-verification` v1 | 1 | 0.826 | False | budgets_respected | scored ×1 | 0.81 |
+| 4 | `output/eval2/planner/pr2-planner-r2-planner-live-20260913T183407Z-16d2a8f/results.json` | planner | live | REVIEW REQUIRED | `planner-live-scope` v1 | 1 | 0.8755 | True | none | scored ×1 | 0.7925 |
+| 5 | `output/eval2/planner/pr2-planner-r3-planner-live-20260913T183517Z-16d2a8f/results.json` | planner | live | REVIEW REQUIRED | `planner-live-scope` v1 | 1 | 0.9115 | True | none | scored ×1 | 0.8525 |
+| 6 | `output/eval2/researcher/pr2-researcher-r1-researcher-live-20260913T183632Z-16d2a8f/results.json` | researcher | live | REVIEW REQUIRED | `researcher-live-evidence` v1 | 1 | 0.8767 | True | none | scored ×1 | 0.7945 |
+| 7 | `output/eval2/researcher/pr2-researcher-r2-researcher-live-20260913T183816Z-16d2a8f/results.json` | researcher | live | REVIEW REQUIRED | `researcher-live-evidence` v1 | 1 | 0.847 | True | none | scored ×1 | 0.745 |
+| 8 | `output/eval2/researcher/pr2-researcher-r3-researcher-live-20260913T183922Z-16d2a8f/results.json` | researcher | live | REVIEW REQUIRED | `researcher-live-evidence` v1 | 1 | 0.8485 | True | none | scored ×1 | 0.7475 |
+| 9 | `output/eval2/source-evaluator/pr2-source-eval-r1-source-evaluator-live-20260913T184027Z-16d2a8f/results.json` | source_evaluator | live | REVIEW REQUIRED | `source-evaluator-live-ranking` v2 | 1 | 0.904 | True | none | scored ×1 | 0.84 |
+| 10 | `output/eval2/source-evaluator/pr2-source-eval-r2-source-evaluator-live-20260913T184108Z-16d2a8f/results.json` | source_evaluator | live | REVIEW REQUIRED | `source-evaluator-live-ranking` v2 | 1 | 0.9115 | True | none | scored ×1 | 0.8525 |
+| 11 | `output/eval2/source-evaluator/pr2-source-eval-r3-source-evaluator-live-20260913T184145Z-16d2a8f/results.json` | source_evaluator | live | REVIEW REQUIRED | `source-evaluator-live-ranking` v2 | 1 | 0.922 | True | none | scored ×1 | 0.87 |
+| 12 | `output/evaluations/critic/cross-agent-planner-fix-parity-baseline-critic-critic-controlled-20260910T012037Z-d6a082c/results.json` | critic | controlled | FAILED | `approve-strong-report` v1 | 3 | — | False | required_fields_present/route_consistent, required_fields_present/no_prohibited_calls, required_fields_present | judge_not_run ×3 | — |
+| 12 | `output/evaluations/critic/cross-agent-planner-fix-parity-baseline-critic-critic-controlled-20260910T012037Z-d6a082c/results.json` | critic | controlled | FAILED | `request-more-research` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present/no_prohibited_calls | judge_not_run ×1, scored ×2 | 0.7525–0.8215 |
+| 12 | `output/evaluations/critic/cross-agent-planner-fix-parity-baseline-critic-critic-controlled-20260910T012037Z-d6a082c/results.json` | critic | controlled | FAILED | `missing-evidence-or-budget-exhausted` v1 | 3 | — | False | required_fields_present, required_fields_present/no_prohibited_calls, required_fields_present/no_prohibited_calls | judge_not_run ×1, scored ×2 | 0.828–0.8575 |
+| 13 | `output/evaluations/critic/cross-agent-planner-fix-parity-confirmation-critic-critic-controlled-20260910T013054Z-d6a082c/results.json` | critic | controlled | FAILED | `approve-strong-report` v1 | 3 | — | False | required_fields_present/no_prohibited_calls/route_consistent, required_fields_present/no_prohibited_calls/route_consistent, required_fields_present/no_prohibited_calls/route_consistent | judge_not_run ×1, scored ×2 | 0.1375–0.165 |
+| 13 | `output/evaluations/critic/cross-agent-planner-fix-parity-confirmation-critic-critic-controlled-20260910T013054Z-d6a082c/results.json` | critic | controlled | FAILED | `request-more-research` v1 | 3 | — | False | required_fields_present/route_consistent, required_fields_present, required_fields_present | judge_not_run ×1, scored ×2 | 0.7525–0.8425 |
+| 13 | `output/evaluations/critic/cross-agent-planner-fix-parity-confirmation-critic-critic-controlled-20260910T013054Z-d6a082c/results.json` | critic | controlled | FAILED | `missing-evidence-or-budget-exhausted` v1 | 3 | — | False | required_fields_present/no_prohibited_calls, required_fields_present, required_fields_present/no_prohibited_calls | judge_not_run ×1, scored ×2 | 0.48–0.8055 |
+| 14 | `output/evaluations/critic/cross-agent-planner-fix-parity-critic-confirmation-c74a4f2-critic-live-20260911T053652Z-c74a4f2/results.json` | critic | live | INFRASTRUCTURE FAILURE | `critic-live-review` v1 | 1 | — | False | none | judge_not_run ×1 | — |
+| 15 | `output/evaluations/critic/cross-agent-planner-fix-parity-judge-native-schema-critic-canary-2e8b25f-critic-live-20260911T191641Z-2e8b25f/results.json` | critic | live | FAILED | `critic-live-review` v1 | 1 | 0.4715 | False | none | scored ×1 | 0.2525 |
+| 16 | `output/evaluations/critic/cross-agent-planner-fix-parity-live-20260910-critic-critic-live-20260910T191555Z-d697ff6/results.json` | critic | live | FAILED | `critic-live-review` v1 | 1 | 0.4055 | False | none | scored ×1 | 0.1425 |
+| 17 | `output/evaluations/critic/cross-agent-planner-fix-parity-repaired-baseline-critic-critic-controlled-20260910T041514Z-1f790b0/results.json` | critic | controlled | FAILED | `approve-strong-report` v1 | 3 | — | False | no_prohibited_calls, no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.7955 |
+| 17 | `output/evaluations/critic/cross-agent-planner-fix-parity-repaired-baseline-critic-critic-controlled-20260910T041514Z-1f790b0/results.json` | critic | controlled | FAILED | `request-more-research` v1 | 3 | — | False | no_prohibited_calls, no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.8625 |
+| 17 | `output/evaluations/critic/cross-agent-planner-fix-parity-repaired-baseline-critic-critic-controlled-20260910T041514Z-1f790b0/results.json` | critic | controlled | FAILED | `missing-evidence-or-budget-exhausted` v1 | 3 | — | False | none | judge_not_run ×1, scored ×2 | 0.785–0.835 |
+| 18 | `output/evaluations/critic/cross-agent-planner-fix-parity-repaired-confirmation-critic-critic-controlled-20260910T042250Z-1f790b0/results.json` | critic | controlled | FAILED | `approve-strong-report` v1 | 3 | — | False | no_prohibited_calls, no_prohibited_calls, no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.1075 |
+| 18 | `output/evaluations/critic/cross-agent-planner-fix-parity-repaired-confirmation-critic-critic-controlled-20260910T042250Z-1f790b0/results.json` | critic | controlled | FAILED | `request-more-research` v1 | 3 | — | False | no_prohibited_calls, no_prohibited_calls | judge_not_run ×1, scored ×2 | 0.7875–0.89 |
+| 18 | `output/evaluations/critic/cross-agent-planner-fix-parity-repaired-confirmation-critic-critic-controlled-20260910T042250Z-1f790b0/results.json` | critic | controlled | FAILED | `missing-evidence-or-budget-exhausted` v1 | 3 | — | False | none | judge_not_run ×1, scored ×2 | 0.8–0.839 |
+| 19 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-baseline-fact-checker-fact-checker-controlled-20260910T003848Z-d6a082c/results.json` | fact_checker | controlled | FAILED | `mixed-verdicts` v1 | 3 | — | False | required_fields_present/budgets_respected/no_prohibited_calls, required_fields_present/budgets_respected/no_prohibited_calls, required_fields_present/budgets_respected/no_prohibited_calls | judge_not_run ×3 | — |
+| 19 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-baseline-fact-checker-fact-checker-controlled-20260910T003848Z-d6a082c/results.json` | fact_checker | controlled | FAILED | `independent-domain-evidence` v1 | 3 | — | False | required_fields_present/no_prohibited_calls, required_fields_present/no_prohibited_calls, required_fields_present/no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.72 |
+| 19 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-baseline-fact-checker-fact-checker-controlled-20260910T003848Z-d6a082c/results.json` | fact_checker | controlled | FAILED | `verification-search-failure` v1 | 3 | — | False | required_fields_present/no_prohibited_calls, required_fields_present/budgets_respected/no_prohibited_calls, required_fields_present/no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.5525 |
+| 20 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-confirmation-fact-checker-fact-checker-controlled-20260910T005356Z-d6a082c/results.json` | fact_checker | controlled | FAILED | `mixed-verdicts` v1 | 3 | — | False | required_fields_present/budgets_respected/no_prohibited_calls, required_fields_present/budgets_respected/no_prohibited_calls, required_fields_present/no_prohibited_calls | judge_not_run ×3 | — |
+| 20 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-confirmation-fact-checker-fact-checker-controlled-20260910T005356Z-d6a082c/results.json` | fact_checker | controlled | FAILED | `independent-domain-evidence` v1 | 3 | 0.7265 | False | required_fields_present/no_prohibited_calls, required_fields_present/budgets_respected/no_prohibited_calls, required_fields_present | scored ×3 | 0.4525–0.7225 |
+| 20 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-confirmation-fact-checker-fact-checker-controlled-20260910T005356Z-d6a082c/results.json` | fact_checker | controlled | FAILED | `verification-search-failure` v1 | 3 | — | False | required_fields_present/no_prohibited_calls, required_fields_present/no_prohibited_calls, required_fields_present/no_prohibited_calls | judge_not_run ×1, scored ×2 | 0.4525–0.48 |
+| 21 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-judge-native-schema-fact-checker-canary-a503a7b-fact-checker-live-20260911T193525Z-a503a7b/results.json` | fact_checker | live | INFRASTRUCTURE FAILURE | `fact-checker-live-verification` v1 | 1 | — | False | none | judge_not_run ×1 | — |
+| 22 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-live-20260910-fact-checker-fact-checker-live-20260910T191351Z-d697ff6/results.json` | fact_checker | live | FAILED | `fact-checker-live-verification` v1 | 1 | 0.691 | False | none | scored ×1 | 0.485 |
+| 23 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-repaired-baseline-fact-checker-fact-checker-controlled-20260910T034149Z-1f790b0/results.json` | fact_checker | controlled | FAILED | `mixed-verdicts` v1 | 3 | — | False | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.4175 |
+| 23 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-repaired-baseline-fact-checker-fact-checker-controlled-20260910T034149Z-1f790b0/results.json` | fact_checker | controlled | FAILED | `independent-domain-evidence` v1 | 3 | — | False | budgets_respected/no_prohibited_calls, no_prohibited_calls, no_prohibited_calls | judge_not_run ×1, scored ×2 | 0.8375–0.843 |
+| 23 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-repaired-baseline-fact-checker-fact-checker-controlled-20260910T034149Z-1f790b0/results.json` | fact_checker | controlled | FAILED | `verification-search-failure` v1 | 3 | — | False | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.53 |
+| 24 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-repaired-confirmation-fact-checker-fact-checker-controlled-20260910T035356Z-1f790b0/results.json` | fact_checker | controlled | FAILED | `mixed-verdicts` v1 | 3 | — | False | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run ×3 | — |
+| 24 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-repaired-confirmation-fact-checker-fact-checker-controlled-20260910T035356Z-1f790b0/results.json` | fact_checker | controlled | FAILED | `independent-domain-evidence` v1 | 3 | — | False | budgets_respected/no_prohibited_calls, no_prohibited_calls, no_prohibited_calls | judge_not_run ×3 | — |
+| 24 | `output/evaluations/fact-checker/cross-agent-planner-fix-parity-repaired-confirmation-fact-checker-fact-checker-controlled-20260910T035356Z-1f790b0/results.json` | fact_checker | controlled | FAILED | `verification-search-failure` v1 | 3 | 0.5833 | False | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | scored ×3 | 0.5215–0.615 |
+| 25 | `output/evaluations/live-critic-canary/critic/critic-canary-critic-live-20260912T204455Z-bc3f472/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.7653 | True | none | scored ×1 | 0.7755 |
+| 26 | `output/evaluations/live-critic-canary/critic/critic-canary-r2-critic-live-20260912T205014Z-bc3f472/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.8512 | True | none | scored ×1 | 0.752 |
+| 27 | `output/evaluations/live-critic-canary/critic/critic-canary-r3-critic-live-20260912T205119Z-bc3f472/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.889 | True | none | scored ×1 | 0.815 |
+| 28 | `output/evaluations/live-critic-confirm/critic/critic-confirm-96fe8a9-r1-critic-live-20260911T224609Z-6b2c9c3/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.88 | True | none | scored ×1 | 0.8 |
+| 29 | `output/evaluations/live-critic-confirm/critic/critic-confirm-96fe8a9-r2-critic-live-20260911T224752Z-6b2c9c3/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.767 | True | none | scored ×1 | 0.745 |
+| 30 | `output/evaluations/live-critic-confirm/critic/critic-confirm-96fe8a9-r3-critic-live-20260911T224859Z-6b2c9c3/results.json` | critic | live | FAILED | `critic-live-review` v1 | 1 | 0.7125 | False | none | scored ×1 | 0.6875 |
+| 31 | `output/evaluations/live-critic-d2/critic/critic-d2-r1-critic-live-20260912T212835Z-fceb466/results.json` | critic | live | FAILED | `critic-live-review` v1 | 1 | 0.7095 | False | none | scored ×1 | 0.6825 |
+| 32 | `output/evaluations/live-critic-d2/critic/critic-d2-r2-critic-live-20260912T212948Z-fceb466/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.8935 | True | none | scored ×1 | 0.8225 |
+| 33 | `output/evaluations/live-critic-d2/critic/critic-d2-r3-critic-live-20260912T213058Z-fceb466/results.json` | critic | live | FAILED | `critic-live-review` v1 | 1 | 0.639 | False | none | scored ×1 | 0.565 |
+| 34 | `output/evaluations/live-critic-gated/critic/critic-gated-cccc139-r1-critic-live-20260911T225259Z-cccc139/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.7905 | True | none | scored ×1 | 0.8175 |
+| 35 | `output/evaluations/live-critic-gated/critic/critic-gated-cccc139-r2-critic-live-20260911T225435Z-cccc139/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.8159 | True | none | scored ×1 | 0.8265 |
+| 36 | `output/evaluations/live-critic-gated/critic/critic-gated-cccc139-r3-critic-live-20260911T225625Z-cccc139/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.85 | True | none | scored ×1 | 0.75 |
+| 37 | `output/evaluations/live-critic-readiness/critic/critic-readiness-2fe4e32-critic-live-20260911T220455Z-2fe4e32/results.json` | critic | live | FAILED | `critic-live-review` v1 | 1 | 0.728 | False | none | scored ×1 | 0.68 |
+| 38 | `output/evaluations/live-critic-readiness/critic/critic-readiness-750472b-critic-live-20260911T221241Z-750472b/results.json` | critic | live | INFRASTRUCTURE FAILURE | `critic-live-review` v1 | 1 | — | False | none | judge_not_run ×1 | — |
+| 39 | `output/evaluations/live-critic-readiness/critic/critic-readiness-7f84378-critic-live-20260911T223606Z-7f84378/results.json` | critic | live | INFRASTRUCTURE FAILURE | `critic-live-review` v1 | 1 | — | False | none | judge_not_run ×1 | — |
+| 40 | `output/evaluations/live-critic-readiness/critic/critic-readiness-96fe8a9-critic-live-20260911T223836Z-96fe8a9/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.7725 | True | none | scored ×1 | 0.7875 |
+| 41 | `output/evaluations/live-critic-readiness/critic/critic-readiness-fe434cf-critic-live-20260911T212856Z-fe434cf/results.json` | critic | live | FAILED | `critic-live-review` v1 | 1 | 0.6995 | False | none | scored ×1 | 0.6325 |
+| 42 | `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r1-critic-live-20260911T230901Z-035d3c5/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.783 | True | none | scored ×1 | 0.805 |
+| 43 | `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r2-critic-live-20260911T231033Z-035d3c5/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.8245 | True | none | scored ×1 | 0.7075 |
+| 44 | `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r3-critic-live-20260911T231205Z-035d3c5/results.json` | critic | live | REVIEW REQUIRED | `critic-live-review` v1 | 1 | 0.8235 | True | none | scored ×1 | 0.8725 |
+| 45 | `output/evaluations/live-critic-uniform/critic/critic-uniform-035d3c5-r4-critic-live-20260911T231359Z-035d3c5/results.json` | critic | live | FAILED | `critic-live-review` v1 | 1 | — | False | review_produced | judge_not_run ×1 | — |
+| 46 | `output/evaluations/live-rerun-160c334/critic/cross-agent-planner-fix-parity-live-rerun-160c334-critic-critic-live-20260910T223008Z-160c334/results.json` | critic | live | FAILED | `critic-live-review` v1 | 1 | 0.6555 | False | none | scored ×1 | 0.5925 |
+| 47 | `output/evaluations/live-rerun-160c334/fact-checker/cross-agent-planner-fix-parity-live-rerun-160c334-fact-checker-fact-checker-live-20260910T222742Z-160c334/results.json` | fact_checker | live | INFRASTRUCTURE FAILURE | `fact-checker-live-verification` v1 | 1 | — | False | none | judge_not_run ×1 | — |
+| 48 | `output/evaluations/live-rerun-160c334/planner/cross-agent-planner-fix-parity-live-rerun-160c334-planner-planner-live-20260910T222425Z-160c334/results.json` | planner | live | REVIEW REQUIRED | `planner-live-scope` v1 | 1 | 0.9271 | True | none | scored ×1 | 0.8785 |
+| 49 | `output/evaluations/live-rerun-160c334/researcher/cross-agent-planner-fix-parity-live-rerun-160c334-researcher-researcher-live-20260910T222533Z-160c334/results.json` | researcher | live | FAILED | `researcher-live-evidence` v1 | 1 | — | False | citations_known/no_invented_sources | judge_not_run ×1 | — |
+| 50 | `output/evaluations/live-rerun-160c334/source-evaluator/cross-agent-planner-fix-parity-live-rerun-160c334-source-evaluator-source-evaluator-live-20260910T222657Z-160c334/results.json` | source_evaluator | live | FAILED | `source-evaluator-live-ranking` v1 | 1 | 0.797 | False | low_confidence_flagged | scored ×1 | 0.795 |
+| 51 | `output/evaluations/live-rerun-160c334/synthesizer/cross-agent-planner-fix-parity-live-rerun-160c334-synthesizer-synthesizer-live-20260910T222902Z-160c334/results.json` | synthesizer | live | INFRASTRUCTURE FAILURE | `synthesizer-live-report` v1 | 1 | — | False | none | judge_not_run ×1 | — |
+| 52 | `output/evaluations/live-synthesizer-2dfa099/synthesizer/cross-agent-planner-fix-parity-live-synthesizer-2dfa099-synthesizer-live-20260911T204304Z-2dfa099/results.json` | synthesizer | live | REVIEW REQUIRED | `synthesizer-live-report` v1 | 1 | 0.81 | True | none | scored ×1 | 0.85 |
+| 53 | `output/evaluations/planner/cross-agent-planner-fix-parity-live-20260910-planner-planner-live-20260910T191110Z-d697ff6/results.json` | planner | live | REVIEW REQUIRED | `planner-live-scope` v1 | 1 | 0.8725 | True | none | scored ×1 | 0.7875 |
+| 54 | `output/evaluations/planner/planner-controlled-20260816T101500Z-abc1234/results.json` | planner | controlled | INFRASTRUCTURE FAILURE | — *(no cases declared)* | 0 | — | — | — | — | — |
+| 55 | `output/evaluations/planner/planner-live-20260816T101500Z-abc1234/results.json` | planner | live | FAILED | `planner-live-scope` v1 | 1 | 0.91 | False | trace_available | scored ×1 | 0.85 |
+| 56 | `output/evaluations/production-readiness-v2-planner-r1/planner/prod-readiness-v2-planner-r1-planner-live-20260913T182911Z-16d2a8f/results.json` | planner | live | REVIEW REQUIRED | `planner-live-scope` v1 | 1 | 0.877 | True | none | scored ×1 | 0.795 |
+| 57 | `output/evaluations/researcher/cross-agent-planner-fix-parity-baseline-researcher-researcher-controlled-20260909T234501Z-d6a082c/results.json` | researcher | controlled | FAILED | `multi-source-coverage` v1 | 3 | — | False | no_prohibited_calls/sub_topic_covered, no_prohibited_calls, no_prohibited_calls/sub_topic_covered | judge_not_run ×3 | — |
+| 57 | `output/evaluations/researcher/cross-agent-planner-fix-parity-baseline-researcher-researcher-controlled-20260909T234501Z-d6a082c/results.json` | researcher | controlled | FAILED | `conflicting-evidence` v1 | 3 | — | False | no_prohibited_calls/sub_topic_covered, no_prohibited_calls, sub_topic_covered | judge_not_run ×1, scored ×2 | 0.0225–0.9575 |
+| 57 | `output/evaluations/researcher/cross-agent-planner-fix-parity-baseline-researcher-researcher-controlled-20260909T234501Z-d6a082c/results.json` | researcher | controlled | FAILED | `partial-search-failure` v1 | 3 | — | False | no_prohibited_calls/sub_topic_covered, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run ×3 | — |
+| 58 | `output/evaluations/researcher/cross-agent-planner-fix-parity-confirmation-researcher-researcher-controlled-20260910T000647Z-d6a082c/results.json` | researcher | controlled | FAILED | `multi-source-coverage` v1 | 3 | — | False | no_prohibited_calls/sub_topic_covered, no_prohibited_calls/sub_topic_covered, no_prohibited_calls | judge_not_run ×3 | — |
+| 58 | `output/evaluations/researcher/cross-agent-planner-fix-parity-confirmation-researcher-researcher-controlled-20260910T000647Z-d6a082c/results.json` | researcher | controlled | FAILED | `conflicting-evidence` v1 | 3 | — | False | no_prohibited_calls/sub_topic_covered, no_prohibited_calls/sub_topic_covered, no_prohibited_calls/sub_topic_covered | judge_not_run ×3 | — |
+| 58 | `output/evaluations/researcher/cross-agent-planner-fix-parity-confirmation-researcher-researcher-controlled-20260910T000647Z-d6a082c/results.json` | researcher | controlled | FAILED | `partial-search-failure` v1 | 3 | — | False | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run ×3 | — |
+| 59 | `output/evaluations/researcher/cross-agent-planner-fix-parity-judge-native-schema-researcher-canary-c13dd9d-researcher-live-20260911T185526Z-c13dd9d/results.json` | researcher | live | REVIEW REQUIRED | `researcher-live-evidence` v1 | 1 | 0.8095 | True | none | scored ×1 | 0.6825 |
+| 60 | `output/evaluations/researcher/cross-agent-planner-fix-parity-live-20260910-researcher-researcher-live-20260910T191215Z-d697ff6/results.json` | researcher | live | FAILED | `researcher-live-evidence` v1 | 1 | 0.6469 | False | citations_known/no_invented_sources | scored ×1 | 0.6115 |
+| 61 | `output/evaluations/researcher/cross-agent-planner-fix-parity-repaired-baseline-researcher-researcher-controlled-20260910T031409Z-1f790b0/results.json` | researcher | controlled | FAILED | `multi-source-coverage` v1 | 3 | 0.652 | False | no_prohibited_calls/sub_topic_covered, no_prohibited_calls/sub_topic_covered, no_prohibited_calls/sub_topic_covered | scored ×3 | 0.5575–0.735 |
+| 61 | `output/evaluations/researcher/cross-agent-planner-fix-parity-repaired-baseline-researcher-researcher-controlled-20260910T031409Z-1f790b0/results.json` | researcher | controlled | FAILED | `conflicting-evidence` v1 | 3 | — | False | no_prohibited_calls, no_prohibited_calls, no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.7325 |
+| 61 | `output/evaluations/researcher/cross-agent-planner-fix-parity-repaired-baseline-researcher-researcher-controlled-20260910T031409Z-1f790b0/results.json` | researcher | controlled | FAILED | `partial-search-failure` v1 | 3 | — | False | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.7575 |
+| 62 | `output/evaluations/researcher/cross-agent-planner-fix-parity-repaired-confirmation-researcher-researcher-controlled-20260910T032225Z-1f790b0/results.json` | researcher | controlled | FAILED | `multi-source-coverage` v1 | 3 | — | False | no_prohibited_calls, no_prohibited_calls/sub_topic_covered, no_prohibited_calls/sub_topic_covered | judge_not_run ×1, scored ×2 | 0.525–0.665 |
+| 62 | `output/evaluations/researcher/cross-agent-planner-fix-parity-repaired-confirmation-researcher-researcher-controlled-20260910T032225Z-1f790b0/results.json` | researcher | controlled | FAILED | `conflicting-evidence` v1 | 3 | — | False | no_prohibited_calls, no_prohibited_calls, no_prohibited_calls | judge_not_run ×1, scored ×2 | 0.495–0.797 |
+| 62 | `output/evaluations/researcher/cross-agent-planner-fix-parity-repaired-confirmation-researcher-researcher-controlled-20260910T032225Z-1f790b0/results.json` | researcher | controlled | FAILED | `partial-search-failure` v1 | 3 | — | False | budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls, budgets_respected/no_prohibited_calls | judge_not_run ×2, scored ×1 | 0.2975 |
+| 63 | `output/evaluations/sequential-live-20260910/researcher/cross-agent-planner-fix-parity-sequential-live-20260910-researcher-researcher-live-20260910T232024Z-c368849/results.json` | researcher | live | FAILED | `researcher-live-evidence` v1 | 1 | — | False | citations_known/no_invented_sources | judge_not_run ×1 | — |
+| 64 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-baseline-source-evaluator-source-evaluator-controlled-20260910T002727Z-d6a082c/results.json` | source_evaluator | controlled | FAILED | `strong-and-weak-sources` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present | judge_not_run ×2, scored ×1 | 0.8575 |
+| 64 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-baseline-source-evaluator-source-evaluator-controlled-20260910T002727Z-d6a082c/results.json` | source_evaluator | controlled | FAILED | `corroboration-recency-reputation` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present | judge_not_run ×2, scored ×1 | 0.8625 |
+| 64 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-baseline-source-evaluator-source-evaluator-controlled-20260910T002727Z-d6a082c/results.json` | source_evaluator | controlled | FAILED | `reputation-provider-failure` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present | judge_not_run ×2, scored ×1 | 0.895 |
+| 65 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-confirmation-source-evaluator-source-evaluator-controlled-20260910T003442Z-d6a082c/results.json` | source_evaluator | controlled | FAILED | `strong-and-weak-sources` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present | judge_not_run ×2, scored ×1 | 0.8575 |
+| 65 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-confirmation-source-evaluator-source-evaluator-controlled-20260910T003442Z-d6a082c/results.json` | source_evaluator | controlled | FAILED | `corroboration-recency-reputation` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present | judge_not_run ×2, scored ×1 | 0.857 |
+| 65 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-confirmation-source-evaluator-source-evaluator-controlled-20260910T003442Z-d6a082c/results.json` | source_evaluator | controlled | FAILED | `reputation-provider-failure` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present | judge_not_run ×3 | — |
+| 66 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-judge-native-schema-source-evaluator-canary-d902c57-source-evaluator-live-20260911T190947Z-d902c57/results.json` | source_evaluator | live | REVIEW REQUIRED | `source-evaluator-live-ranking` v2 | 1 | 0.928 | True | none | scored ×1 | 0.88 |
+| 67 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-live-20260910-source-evaluator-source-evaluator-live-20260910T191308Z-d697ff6/results.json` | source_evaluator | live | FAILED | `source-evaluator-live-ranking` v1 | 1 | — | False | low_confidence_flagged | judge_not_run ×1 | — |
+| 68 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-repaired-baseline-source-evaluator-source-evaluator-controlled-20260910T033036Z-1f790b0/results.json` | source_evaluator | controlled | FAILED | `strong-and-weak-sources` v1 | 3 | — | False | none | judge_not_run ×2, scored ×1 | 0.924 |
+| 68 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-repaired-baseline-source-evaluator-source-evaluator-controlled-20260910T033036Z-1f790b0/results.json` | source_evaluator | controlled | FAILED | `corroboration-recency-reputation` v1 | 3 | — | False | none | judge_not_run ×3 | — |
+| 68 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-repaired-baseline-source-evaluator-source-evaluator-controlled-20260910T033036Z-1f790b0/results.json` | source_evaluator | controlled | FAILED | `reputation-provider-failure` v1 | 3 | — | False | none | judge_not_run ×3 | — |
+| 69 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-repaired-confirmation-source-evaluator-source-evaluator-controlled-20260910T033713Z-1f790b0/results.json` | source_evaluator | controlled | FAILED | `strong-and-weak-sources` v1 | 3 | — | False | none | judge_not_run ×1, scored ×2 | 0.877–0.93 |
+| 69 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-repaired-confirmation-source-evaluator-source-evaluator-controlled-20260910T033713Z-1f790b0/results.json` | source_evaluator | controlled | FAILED | `corroboration-recency-reputation` v1 | 3 | — | False | none | judge_not_run ×2, scored ×1 | 0.9025 |
+| 69 | `output/evaluations/source-evaluator/cross-agent-planner-fix-parity-repaired-confirmation-source-evaluator-source-evaluator-controlled-20260910T033713Z-1f790b0/results.json` | source_evaluator | controlled | FAILED | `reputation-provider-failure` v1 | 3 | — | False | none | judge_not_run ×2, scored ×1 | 0.902 |
+| 70 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-baseline-synthesizer-synthesizer-controlled-20260910T010651Z-d6a082c/results.json` | synthesizer | controlled | FAILED | `complete-cited-report` v1 | 3 | 0.8562 | False | required_fields_present, required_fields_present, required_fields_present | scored ×3 | 0.915–0.944 |
+| 70 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-baseline-synthesizer-synthesizer-controlled-20260910T010651Z-d6a082c/results.json` | synthesizer | controlled | FAILED | `conflict-and-limitations` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present | judge_not_run ×2, scored ×1 | 0.875 |
+| 70 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-baseline-synthesizer-synthesizer-controlled-20260910T010651Z-d6a082c/results.json` | synthesizer | controlled | FAILED | `write-or-memory-failure` v1 | 3 | 0.9496 | False | required_fields_present, required_fields_present, required_fields_present | scored ×3 | 0.9105–0.92 |
+| 71 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-confirmation-synthesizer-synthesizer-controlled-20260910T011515Z-d6a082c/results.json` | synthesizer | controlled | FAILED | `complete-cited-report` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present | judge_not_run ×2, scored ×1 | 0.5975 |
+| 71 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-confirmation-synthesizer-synthesizer-controlled-20260910T011515Z-d6a082c/results.json` | synthesizer | controlled | FAILED | `conflict-and-limitations` v1 | 3 | 0.9392 | False | required_fields_present, required_fields_present, required_fields_present | scored ×3 | 0.895–0.9005 |
+| 71 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-confirmation-synthesizer-synthesizer-controlled-20260910T011515Z-d6a082c/results.json` | synthesizer | controlled | FAILED | `write-or-memory-failure` v1 | 3 | — | False | required_fields_present, required_fields_present, required_fields_present | judge_not_run ×1, scored ×2 | 0.9165 |
+| 72 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-judge-native-schema-synthesizer-canary-e1b8ae5-synthesizer-live-20260911T191351Z-e1b8ae5/results.json` | synthesizer | live | REVIEW REQUIRED | `synthesizer-live-report` v1 | 1 | 0.804 | True | none | scored ×1 | 0.84 |
+| 73 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-live-20260910-synthesizer-synthesizer-live-20260910T191500Z-d697ff6/results.json` | synthesizer | live | INFRASTRUCTURE FAILURE | `synthesizer-live-report` v1 | 1 | — | False | none | judge_not_run ×1 | — |
+| 74 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-repaired-baseline-synthesizer-synthesizer-controlled-20260910T040509Z-1f790b0/results.json` | synthesizer | controlled | FAILED | `complete-cited-report` v1 | 3 | — | False | none | judge_not_run ×1, scored ×2 | 0.92–0.9375 |
+| 74 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-repaired-baseline-synthesizer-synthesizer-controlled-20260910T040509Z-1f790b0/results.json` | synthesizer | controlled | FAILED | `conflict-and-limitations` v1 | 3 | — | False | none | judge_not_run ×2, scored ×1 | 0.8825 |
+| 74 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-repaired-baseline-synthesizer-synthesizer-controlled-20260910T040509Z-1f790b0/results.json` | synthesizer | controlled | FAILED | `write-or-memory-failure` v1 | 3 | — | False | none | judge_not_run ×1, scored ×2 | 0.925–0.939 |
+| 75 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-repaired-confirmation-synthesizer-synthesizer-controlled-20260910T041019Z-1f790b0/results.json` | synthesizer | controlled | FAILED | `complete-cited-report` v1 | 3 | — | False | none | judge_not_run ×1, scored ×2 | 0.926–0.9425 |
+| 75 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-repaired-confirmation-synthesizer-synthesizer-controlled-20260910T041019Z-1f790b0/results.json` | synthesizer | controlled | FAILED | `conflict-and-limitations` v1 | 3 | — | False | none | judge_not_run ×1, scored ×2 | 0.906–0.9235 |
+| 75 | `output/evaluations/synthesizer/cross-agent-planner-fix-parity-repaired-confirmation-synthesizer-synthesizer-controlled-20260910T041019Z-1f790b0/results.json` | synthesizer | controlled | FAILED | `write-or-memory-failure` v1 | 3 | — | False | none | judge_not_run ×2, scored ×1 | 0.929 |
+| 76 | `output/evaluations/task19-fact-checker-ef143ef/fact-checker/task19-fact-checker-ef143ef-fact-checker-live-20260911T013600Z-ef143ef/results.json` | fact_checker | live | FAILED | `fact-checker-live-verification` v1 | 1 | 0.691 | False | none | scored ×1 | 0.485 |
+| 77 | `output/evaluations/task19-source-evaluator-ce3a706/source-evaluator/task19-source-evaluator-ce3a706-source-evaluator-live-20260911T012237Z-ce3a706/results.json` | source_evaluator | live | FAILED | `source-evaluator-live-ranking` v1 | 1 | — | False | low_confidence_flagged | judge_not_run ×1 | — |
+| 78 | `output/evaluations/task19-source-evaluator-confirmation-424ed6c/source-evaluator/task19-source-evaluator-confirmation-424ed6c-source-evaluator-live-20260911T013412Z-424ed6c/results.json` | source_evaluator | live | FAILED | `source-evaluator-live-ranking` v1 | 1 | 0.782 | False | low_confidence_flagged | scored ×1 | 0.77 |
+| 79 | `output/evaluations/task19-source-evaluator-readiness-v2-3eab969/source-evaluator/task19-source-evaluator-readiness-v2-3eab969-source-evaluator-source-evaluator-live-20260911T024444Z-3eab969/results.json` | source_evaluator | live | INFRASTRUCTURE FAILURE | `source-evaluator-live-ranking` v2 | 1 | — | False | none | judge_not_run ×1 | — |
+| 80 | `output/evaluations/task20-researcher-confirmation-9319024/researcher/task20-researcher-confirmation-9319024-researcher-live-20260911T011711Z-9319024/results.json` | researcher | live | INFRASTRUCTURE FAILURE | `researcher-live-evidence` v1 | 1 | — | False | none | judge_not_run ×1 | — |
+| 81 | `output/evaluations/task21-fact-checker-readiness-30d9921/fact-checker/task21-fact-checker-readiness-30d9921-fact-checker-fact-checker-live-20260911T030226Z-30d9921/results.json` | fact_checker | live | FAILED | `fact-checker-live-verification` v1 | 1 | 0.6205 | False | none | scored ×1 | 0.3675 |
 
 ### 6.4 Test-harness fixtures inside the evidence directory (**L**)
 
@@ -670,9 +766,14 @@ Neither record carries a quality result, and neither may be cited as one.
 `citations_known` — "unknown source urls: https://afsethmillar.co.uk/…,
 https://bonnenbatteries.com/…, https://ffb.fraunhofer.de/…"; and
 `no_invented_sources` — "a finding cites a url outside the known sources".
-`deterministic_metrics.sources_are_real_urls = 0.0`. This is the only record in
-the inventory whose citations fail hard, and it is evidence for Tasks 1/5/6
-rather than a reason to relax the gate.
+`deterministic_metrics.sources_are_real_urls = 0.0`. This is **one of three
+records whose citations fail hard** — records **49** (this one), **60**
+(`cross-agent-planner-fix-parity-live-20260910-researcher-…-d697ff6`) and **63**
+(`sequential-live-20260910/researcher/…-c368849`). All three fail
+`citations_known` **and** `no_invented_sources`, and this is the only gate class
+in the inventory where three separate records fail the same pair; §6.6 counts
+them. Three records is a defect class, not an isolated miss, and it is evidence
+for Tasks 1/5/6 rather than a reason to relax the gate.
 
 ### 6.6 Status and gate rollup (**L**)
 
@@ -726,10 +827,11 @@ Two facts about this distribution matter for later tasks:
 Judge availability across the same 240 repetitions (**L**): `scored` 124,
 `judge_not_run` 116. The 116 non-results split exactly in half:
 `judge_schema_failure` 58 and `judge_output_limit` 58. **Nearly half of all
-recorded repetitions carry no quality judgment at all**, and 9 of the 81 records
-are `INFRASTRUCTURE FAILURE` with `average_quality = None`. Any aggregate over
-this directory that ignores judge status averages over a population that is
-mostly unjudged.
+recorded repetitions carry no quality judgment at all**, and **10 of the 81
+records** are `INFRASTRUCTURE FAILURE` with `average_quality = None` — 9 of the
+79 real evaluations plus the `planner-controlled-…-abc1234` fixture of §6.4.
+Any aggregate over this directory that ignores judge status averages over a
+population that is mostly unjudged.
 
 ## 7. F1 payload comparison for the three repeated live atoms
 
@@ -794,7 +896,9 @@ Recorded excerpts (**L**, verbatim, `…` marks the ledger's own ellipsis):
   wait times are increasing)": "The average time projects spent in queues before
   being built has increased markedly. The typical project built in 2023 took
   nearly 5 years from the interconnection request to commercial operations,…"
-  (186 chars).
+  (**200 chars** — this is the row that reaches the render cap and ends in the
+  ledger's own `...`. The two 186-character rows belong to claim **#11**, not
+  #15: `queued_up_2022_04-06-2023.pdf` p. 3 and its p. 1 / p. 4 pair.)
 
 **Comparable without the missing bytes (L + I):**
 - The claim's `2,600 GW` equals exactly the sum recorded in its own LBNL excerpt:
@@ -813,7 +917,7 @@ Recorded excerpts (**L**, verbatim, `…` marks the ledger's own ellipsis):
 **Exact first missing boundary (F).** The comparison stops at the ledger's
 200-character passage cells: for #1 that is character 200 of the
 `emp.lbl.gov` excerpt and character 200 of the `rtoinsider.com` excerpt; for #15
-it is character 135 / 186 respectively. Behind that, the fetched bytes —
+it is character 135 / **200** respectively. Behind that, the fetched bytes —
 the Queued Up 2022 PDF, the Queued Up 2024 Edition PDF, the RTO Insider article,
 and the Utility Dive and Novoco pages — are **not retained anywhere on disk**.
 The claim-vs-excerpt comparison is therefore **diagnosable**; the
@@ -898,7 +1002,7 @@ kept apart exactly as the brief requires.
 | **TR-06** | Fact Checker spent 100 ReAct turns over 20 verification jobs, nearly exhausting ten calls each time, and retained 16 canonical claims; all four extraction batches produced exactly five accepted claims. Job verdicts were 6 verified / 5 unverified / 9 insufficient, which are **not** the final canonical 5/3/8. Four jobs had no new independent publisher and bypassed adjudication. Two structured responses failed validation and were retried, both with `finish_reason_category=stop`. | **T**. The review explicitly warns not to diagnose the retries as token truncation or provider outages. | `agents/fact_checker.py` (`valid_verification_passages`, `claim_verification_messages`, `verify_claim`, `DEFAULT_MAX_CLAIMS`) | 1, 5, 6 |
 | **TR-07** | `_refinement_satisfied_sub_topics` skips a topic when it has **any** prior raw finding and the Critic did not name that topic as a gap. The log records topic-04 skipped in pass 1, topic-02 skipped in passes 2 and 3, topic-05 skipped in pass 3. | **L**: the latest ledger's own `Run errors` rows 36, 56, 71, 72 carry `researcher_sub_topic_skipped` with `reason=interim_satisfaction` for `topic-04`, `topic-02`, `topic-02`, `topic-05`. **L** anchor §1.2. | `agents/researcher.py:209`, `:1146` | 9, 10, 11 |
 | **TR-08** | Synthesis exposes rather than repairs a weak evidence selection: all four synthesis calls returned without provider failure; claim counts grew 5 → 10 → 13 → 16 while section count stalled at four; the reader has eight references, not six; every ranked mechanism says "not stated"; C001/C011 leak; a figure absent from checked claims ("890 GW") appears in prose that says it is not being reported; the scope/methodology assert stronger statement linkage and non-repetition than the prose demonstrates. | **L** — every item re-measured directly in §5 against `report-417fa933…-3.md`. | — | 7, 10, 11 |
-| **TR-09** | Critic is an inefficient reviewer, but the low score is not itself the defect. Scores 4 → 4 → 4 → 5 with gaps 5 → 5 → 4 → 6; every pass used ten search/memory calls and it cannot open a page. One `CritiqueDraft` schema error recovered; the exact malformed fields and full gap wording are **absent from the trace**. | **L** (scores 4,4,4,5 in the four canary logs; gap counts **T**) + **T** (schema recovery). Missing payloads are **F** and "must not be diagnosed as a particular prompt error". | — | 8, 10 |
+| **TR-09** | Critic is an inefficient reviewer, but the low score is not itself the defect. Scores 4 → 4 → 4 → 5 with gaps 5 → 5 → 4 → 6; every pass used ten search/memory calls and it cannot open a page. One `CritiqueDraft` schema error recovered; the exact malformed fields and full gap wording are **absent from the trace**. | **L** (scores 4,4,4,5 in the four canary logs; gap counts **T**) + **T** (schema recovery). Missing payloads are **F** and "must not be diagnosed as a particular prompt error". | — | 6, 8, 12 *(the trace review's own owner line is narrower: "Tasks 8 and 10")* |
 
 Two findings the review records as **strengths to preserve**, with local support:
 the Source Evaluator reused assessments across passes — four passes reporting
@@ -990,7 +1094,7 @@ evidence, not a promise.
 | D-14 (§6.4) | The offline suite writes fixture `results.json` files into the live-evaluation output namespace | L | 12 *(nearest owner; the plan names none)* | Test output is separable from evaluation evidence without opening each file |
 | D-15 (§7) | Two of three repeated live atoms have **no** recorded verification passage, and the third's excerpts are prefix-capped at 200 characters, so historical payload loss is largely `not_diagnosable` | L + F | 1, 3, 5, 6 (bounded evidence manifests) | Every accepted claim carries replayable selected passages with locators; the F1 boundary moves from "not recorded" to "recorded and auditable" |
 | D-16 (§3.2) | Log filename timestamps and trace `start_time` values disagree by 7 hours for 9 of 11 logs; declared run ordinals conflict at slot 4 | L + F | 11 *(nearest owner)* | One clock convention per artifact; run ordinals not required to disambiguate evidence |
-| D-17 (§3) | The heat-pump run is declared as the "Seventh run of the standing authorization" but no log, report, or ledger for it exists in any checkout | F | *(controller)* | Located, or recorded as never executed |
+| D-17 (§3.3) | *Resolved, not a defect.* The heat-pump run is declared **"PARKED — NOT AUTHORIZED, NOT RUN"** at the user's direction, with no candidate SHA frozen. No artifact is expected, so none is missing. | **L** (predeclaration) | *(none — closed)* | Closed by the predeclaration's own status line; re-open only if the run is explicitly un-parked |
 
 Two rules bind every row: **REVIEW REQUIRED is not release approval**, and **an
 infrastructure failure is not an agent-quality success**. Structural cleanliness
@@ -1000,11 +1104,16 @@ is necessary, not sufficient.
 
 | Check | Result |
 | --- | --- |
-| Branch and HEAD | `codex/agent-cli-quality-trace-plan` at `7fd440fc95674d3f0007fcfe37593838baf37309` (**L**) |
+| Branch and inventoried code state | branch `codex/agent-cli-quality-trace-plan`; every code anchor in §1.2 was read at `7fd440fc95674d3f0007fcfe37593838baf37309` (**L**). This document's own commits are docs-only children of that revision |
 | Every named artifact located in exactly one place | yes; all in the old worktree; none fabricated in this worktree (**L**) |
 | SHA-256 of the three canonical artifacts | reproduces the trace review's published values exactly (**L**) |
 | SHA-256 of the Q1 artifacts | reproduces `2026-09-15-cli-q1-failed-validation.md`'s table exactly — an independent cross-check on the hashing method (**L**) |
 | Per-agent `results.json` parsed | 81 files; 79 real records + 2 fixtures (**L**) |
+| Per-case inventory reconciliation | table has 121 data rows over 81 distinct `rec` numbers; `reps` column sums to **240**; 120 cases; 22 distinct `(case_id, case_version)` pairs (**L**, re-derived from the JSON after review round 1) |
+| Record-status recount | `REVIEW REQUIRED` 30, `FAILED` 41, `INFRASTRUCTURE FAILURE` **10** (**L**) |
+| Hard-gate recount | `citations_known` and `no_invented_sources` each fail in **3** records (49, 60, 63) (**L**) |
+| Passage-cell recount | 15 rows; lengths `200, 200, 132, 200, 200, 151, 200, 189, 148, 160, 82, 186, 186, 135, 200`; min 82, max **200**; claim #15 = 135 and **200** (**L**, re-derived after review round 1) |
+| Log time-offset recount | 9 logs carry `start_time`, 2 do not; 8 of the 9 are **+7.0008 h to +7.0011 h**; `204454-q1` is **+15 s** (**L**, re-derived after review round 1) |
 | Ledger counts re-derived from the artifact | 16 claims, 15 passages, 10 sources, 36 findings, 78 error rows, 8 references (**L**) |
 | Word counts re-derived | 1,629 / 1,746 / 1,873 / 1,938 / 2,099 / 2,332 / 3,261 / 6,291 / 10,377 / 15,567 / 3,656 (**L**) |
 | `git diff --check` | clean (**L**, run before the commit) |
@@ -1021,9 +1130,13 @@ is necessary, not sufficient.
 3. **The memory-store duplicate count does not match the trace-derived initial
    state** (3 Utility Dive copies on disk now vs 2 recorded in the initial state).
    §2.5 records the gap as unresolved.
-4. **Run ordinals are internally inconsistent** in the predeclarations, and the
-   Q1 authorization is counted as one run in one record and two in another. §3.2.
-5. **The heat-pump run is declared but unlocated** (D-17).
+4. **Run ordinals are internally inconsistent** in the predeclarations: two
+   documents both claim the fourth slot. The release-status and agent-baseline
+   records agree on how Q1 is counted, so that is not part of the conflict. §3.2.
+5. **The heat-pump run was never executed** — its predeclaration is explicitly
+   parked and not authorized, so this is a **closed** item (D-17, §3.3), not a
+   missing artifact. It is listed here only so no reader re-opens a search for
+   evidence that was never produced.
 6. **Every real evaluation record was taken from a `git_dirty: True` tree.** No
    evaluation in this inventory is reproducible from a clean commit.
 7. **No raw payload exists for any historical run.** This is the single largest
