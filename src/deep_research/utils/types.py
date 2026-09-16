@@ -172,6 +172,20 @@ class Claim(ContractModel):
     evidence: list[str]
     contradictions: list[str]
     verification_evidence: list[EvidencePassage]
+    # Why this claim could not be judged, and ``None`` for every claim that
+    # was. Set only when ``verdict == "insufficient_evidence"``, from the Fact
+    # Checker's enumerated ``INSUFFICIENT_REASONS`` set, so that "nothing
+    # independent was ever read" stays distinguishable from "the verdict came
+    # back thin" — in the published artifacts, not only in the event log a
+    # reviewer never sees.
+    #
+    # The type is a plain ``str`` and deliberately not that enumeration:
+    # ``INSUFFICIENT_REASONS`` belongs to the agent, and this module is the
+    # shared contract layer every agent reads, so importing it here would
+    # invert the dependency. It carries no ``Field`` constraint for the same
+    # reason — a snapshot written by a later release, naming a reason this
+    # one does not know, must stay readable rather than fail validation.
+    insufficient_reason: str | None = None
     # The origin findings and planned coverage topics this claim already
     # consumed, as stable identities. Both default to empty, which suppresses
     # nothing: a claim carrying no recorded provenance (a fixture, or a

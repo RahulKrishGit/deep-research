@@ -743,10 +743,18 @@ def insufficient_claim(
 ) -> Claim:
     """Record a claim that could not be judged, with no invented confidence.
 
-    ``reason`` is one of ``INSUFFICIENT_REASONS``; it travels in the
-    claim's event metadata rather than on the record, because ``Claim``
-    has no field for it and this project does not widen a shared contract
-    for one agent's bookkeeping.
+    ``reason`` is one of ``INSUFFICIENT_REASONS``. It travels in the claim's
+    event metadata and on the record itself, so the evidence ledger's claim
+    registry can print it: without it an operator reading only the published
+    artifacts cannot tell a claim that went unjudged because nothing
+    independent was ever read from one whose verdict came back thin, and the
+    reviewer's classification of every insufficient claim is not computable.
+    The field carries the enumerated token, never the sentence it maps to —
+    the token is what an audit groups on, and the explanation stays a
+    rendering concern. This is the only construction path that sets it:
+    ``build_claim`` reaches ``insufficient_evidence`` too, from a verdict
+    nothing usable was read out of, and leaves the field ``None`` because
+    nothing was unavailable there.
 
     Whether the two ``consumed_*`` lists are supplied is the caller's
     decision, and it is a decision about whether this finding was *judged*:
@@ -768,6 +776,7 @@ def insufficient_claim(
         evidence=[],
         contradictions=[],
         verification_evidence=[],
+        insufficient_reason=reason,
         consumed_finding_fingerprints=list(consumed_finding_fingerprints),
         consumed_coverage_ids=list(consumed_coverage_ids),
     )

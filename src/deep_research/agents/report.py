@@ -172,6 +172,11 @@ _EVIDENCE_CHARS = 200
 _LOCATOR_CHARS = 120
 _ERROR_MESSAGE_CHARS = 240
 _DETAILS_CHARS = 240
+# The narrowest bound here, because this cell carries one enumerated token
+# (``no_independent_source``) rather than prose: wide enough for the whole
+# vocabulary with room for a longer name, and no wider, so a snapshot that
+# carries something unexpected cannot widen the registry.
+_REASON_CHARS = 60
 #: The error types whose ``details`` may be published in the evidence ledger.
 #: Membership requires evidence that every value is bounded — a projection that
 #: revalidates what it copies, or an enumerated builder — because the ledger is
@@ -672,6 +677,7 @@ def _claim_registry(composition: ReportComposition) -> str:
             _cell(", ".join(claim.source_urls), limit=_RATIONALE_CHARS),
             _cell(", ".join(claim.consumed_coverage_ids) or _CELL_EMPTY, limit=200),
             _cell(_BLOCK_SEPARATOR.join(claim.contradictions) or _CELL_EMPTY),
+            _reason_cell(claim),
         ]
         for position, claim in enumerate(composition.claims, start=1)
     ]
@@ -685,6 +691,7 @@ def _claim_registry(composition: ReportComposition) -> str:
             "Sources",
             "Coverage",
             "Contradictions",
+            "Reason",
         ),
         rows,
     )
@@ -738,6 +745,21 @@ def _score_cell(value: float | None) -> str:
     a judgement nobody made.
     """
     return _CELL_EMPTY if value is None else f"{value:.2f}"
+
+
+def _reason_cell(claim: Claim) -> str:
+    """Why a claim could not be judged, or an explicit absence of a reason.
+
+    Only an ``insufficient_evidence`` claim has a reason to print, and the
+    gate is the same one ``_score_cell`` applies: a value the record's own
+    verdict does not entitle it to is not published. An insufficient claim
+    with no recorded reason stays empty too — that is a claim whose verdict
+    was read and resolved to nothing usable, which is a different finding
+    from one nothing independent was ever read for.
+    """
+    if claim.verdict != "insufficient_evidence":
+        return _CELL_EMPTY
+    return _cell(claim.insufficient_reason or _CELL_EMPTY, limit=_REASON_CHARS)
 
 
 def _reviewed_not_cited(composition: ReportComposition) -> str:

@@ -107,6 +107,7 @@ def _claim(
     passages: list[EvidencePassage] | None = None,
     coverage_ids: list[str] | None = None,
     finding_fingerprints: list[str] | None = None,
+    insufficient_reason: str | None = None,
 ) -> Claim:
     return Claim(
         claim_id=claim_fingerprint(text),
@@ -117,6 +118,14 @@ def _claim(
         evidence=["An independent review states the same figure."],
         contradictions=contradictions or [],
         verification_evidence=passages or [],
+        # The reason is set on the insufficient path only, so a fixture that
+        # is not an insufficient claim does not carry the field at all —
+        # the same shape the fact checker emits.
+        **(
+            {"insufficient_reason": insufficient_reason}
+            if insufficient_reason is not None
+            else {}
+        ),
         consumed_finding_fingerprints=finding_fingerprints or [],
         consumed_coverage_ids=coverage_ids or [],
     )
@@ -307,6 +316,78 @@ def test_the_pathological_ledger_registers_each_canonical_claim_once() -> None:
     rows = _table_rows(registry)[2:]
     assert len(rows) == PATHOLOGICAL_CANONICAL_CLAIMS
     assert ledger.count("Claim 001 states a measured result.") == 1
+
+
+def test_the_claim_registry_keeps_its_columns_and_ends_with_reason() -> None:
+    """The audit column is additive: nothing the ledger already showed moves.
+
+    A reader who learned the registry's eight columns must find all eight in
+    the same order, with the new ``Reason`` column appended rather than
+    inserted, and every row — header, separator and data — as wide as the
+    header it belongs to.
+    """
+    _, ledger = render_reports(pathological_composition())
+    rows = _table_rows(_section_body(ledger, "## Checked claim registry"))
+
+    assert _cells(rows[0]) == [
+        "#",
+        "Claim ID",
+        "Verdict",
+        "Confidence",
+        "Claim",
+        "Sources",
+        "Coverage",
+        "Contradictions",
+        "Reason",
+    ]
+    assert {len(_cells(row)) for row in rows} == {9}
+
+
+def test_an_insufficient_claim_registers_its_reason_in_the_ledger() -> None:
+    """The classification a reviewer asked for, read off the artifact.
+
+    ``verdict`` alone cannot say whether a claim went unjudged because nothing
+    independent was ever read or because the verdict came back thin; the
+    enumerated reason is what separates them, and the ledger is where a
+    reviewer who never sees the event log reads it.
+    """
+    _, ledger = render_reports(
+        _composition(
+            claims=[
+                _claim(
+                    verdict="insufficient_evidence",
+                    confidence=0.0,
+                    insufficient_reason="no_independent_source",
+                )
+            ]
+        )
+    )
+    cells = _cells(
+        _table_rows(_section_body(ledger, "## Checked claim registry"))[2]
+    )
+
+    assert len(cells) == 9
+    assert cells[-1] == "no_independent_source"
+
+
+def test_a_verified_claim_registers_no_reason() -> None:
+    """The reason is an admission, not a verdict.
+
+    A claim that was judged against independent evidence carries no reason —
+    on the record or in the ledger — so an empty ``Reason`` cell stays
+    distinguishable from a populated one.
+    """
+    claim = _claim()
+    _, ledger = render_reports(_composition(claims=[claim]))
+    cells = _cells(
+        _table_rows(_section_body(ledger, "## Checked claim registry"))[2]
+    )
+
+    # Nine cells: the eight the registry always had, plus Reason, which is
+    # empty for a claim nothing was wrong with.
+    assert len(cells) == 9
+    assert cells[-1] == "—"
+    assert claim.insufficient_reason is None
 
 
 def test_reviewed_but_unused_sources_reach_the_ledger_only() -> None:
@@ -1118,6 +1199,15 @@ def _section_body(markdown: str, heading: str) -> str:
 
 def _table_rows(body: str) -> list[str]:
     return [line for line in body.splitlines() if line.startswith("| ")]
+
+
+def _cells(row: str) -> list[str]:
+    """One Markdown table row as its stripped cells.
+
+    Test-local: every row asserted through it is built from fixture text with
+    no escaped pipe, so splitting on the delimiter is exact.
+    """
+    return [cell.strip() for cell in row.strip().strip("|").split("|")]
 
 
 def _reader_points(composition: ReportComposition) -> list[ReportPoint]:

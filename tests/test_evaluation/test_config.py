@@ -348,11 +348,22 @@ CRITIC_PROMPT_FINGERPRINT = "97a2d10ad688"
 #   fact_checker      5080d1810c7e -> f13fdde0e8bc
 #   synthesizer       dd422429c34b -> ad25c1b309b1
 #   critic            bc6b1f23064c -> 97a2d10ad688
+# The claim-reason amendment moved the Fact Checker's own value a further
+# time, ``f13fdde0e8bc`` -> ``1f52e702839d``, and nothing else. NO prompt
+# string moved: ``insufficient_claim`` now records the enumerated reason it
+# was already given on the ``Claim`` it returns — ``Claim.insufficient_reason``
+# is a new optional field on the shared contract — so the evidence ledger's
+# claim registry can print why a claim went unjudged instead of leaving that
+# fact in the event log, where no published artifact could carry it. The
+# shared ``agents/prompts.py`` was untouched, so the other five target pins
+# and the Judge pin are unchanged: this is the module-source false positive
+# recorded for A-4/A-6 and P4 above, and the reason the alarm is checked as a
+# matrix rather than per file.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "1a29b6e63b2d",
     "researcher": "efe153883c5b",
     "source_evaluator": "4fdf95ddcc64",
-    "fact_checker": "f13fdde0e8bc",
+    "fact_checker": "1f52e702839d",
     "synthesizer": "ad25c1b309b1",
     "critic": "97a2d10ad688",
 }

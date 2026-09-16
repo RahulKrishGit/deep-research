@@ -679,11 +679,34 @@ def test_an_insufficient_claim_names_its_reason_and_invents_no_confidence() -> N
     assert claim.contradictions == []
     assert claim.source_urls == ["https://example.org/a"]
     assert claim.claim_id == claim_fingerprint(claim.text)
+    # The reason used to reach only the event metadata, so no published
+    # artifact could say why a claim went unjudged. It is on the record now,
+    # as the enumerated token the caller passed rather than its explanation.
+    assert claim.insufficient_reason == "loop_failed"
 
 
 def test_an_insufficient_claim_rejects_an_unenumerated_reason() -> None:
     with pytest.raises(ValueError, match="reason"):
         insufficient_claim(_claim_draft(), reason="because")
+
+
+def test_a_judged_claim_records_no_insufficient_reason() -> None:
+    """``build_claim`` reaches ``insufficient_evidence`` too, from a verdict.
+
+    A model that answered over evidence which was read, but whose answer
+    resolved to nothing usable, produces an insufficient claim with no
+    reason: nothing was unavailable, the verdict was thin. Leaving the field
+    unset is what keeps that distinguishable from an unread claim.
+    """
+    claim = build_claim(
+        _claim_draft(),
+        _verdict_draft(verdict="probably true", passages=[]),
+        independent=["third.test"],
+        retrieved_urls=["https://third.test/x"],
+    )
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.insufficient_reason is None
 
 
 def test_verification_messages_carry_the_claim_and_its_evidence() -> None:

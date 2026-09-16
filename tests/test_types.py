@@ -180,6 +180,51 @@ def test_claim_provenance_is_bounded() -> None:
         )
 
 
+def _claim_snapshot() -> dict[str, object]:
+    """One persisted claim record, in the shape a snapshot serialises to."""
+    text = "Logical error rates fell below break-even in 2025."
+    return {
+        "claim_id": claim_fingerprint(text),
+        "text": text,
+        "source_urls": ["https://example.com/a"],
+        "verdict": "insufficient_evidence",
+        "confidence": 0.0,
+        "evidence": [],
+        "contradictions": [],
+        "verification_evidence": [],
+        "consumed_finding_fingerprints": [],
+        "consumed_coverage_ids": [],
+    }
+
+
+def test_a_claim_snapshot_without_an_insufficient_reason_still_validates() -> None:
+    """The new field is additive, so a snapshot written before it validates.
+
+    ``Claim`` is a shared contract read back from persisted state, so a field
+    added for one agent's audit cannot make an older record unreadable. The
+    omission has to mean the same thing it means on the record: no reason was
+    recorded, which is not the same as a reason of "unknown".
+    """
+    claim = Claim.model_validate(_claim_snapshot())
+
+    assert claim.insufficient_reason is None
+
+
+def test_a_claim_snapshot_keeps_an_unenumerated_insufficient_reason() -> None:
+    """The field is a bounded string, not a closed enumeration.
+
+    ``Claim`` must not import the fact checker's ``INSUFFICIENT_REASONS`` to
+    constrain this value: the contract layer cannot depend on an agent, and a
+    reason coined by a later release than the reader's would otherwise turn a
+    readable snapshot into a validation failure.
+    """
+    snapshot = {**_claim_snapshot(), "insufficient_reason": "a_later_reason"}
+
+    claim = Claim.model_validate(snapshot)
+
+    assert claim.insufficient_reason == "a_later_reason"
+
+
 @pytest.mark.parametrize("value", [-0.01, 1.01])
 def test_unit_scores_reject_out_of_range_values(value: float) -> None:
     with pytest.raises(ValidationError):
