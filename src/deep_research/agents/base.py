@@ -278,7 +278,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                 tools=toolset,
                 decide=decide,
                 max_iterations=self._config.max_iterations,
-                tool_budget=self._config.tool_budget,
+                tool_budget=self._config.tool_budget_for(self._name),
                 on_step=self._record_step,
                 is_sufficient=self.is_sufficient,
                 summary_limit=self._config.observation_summary_chars,

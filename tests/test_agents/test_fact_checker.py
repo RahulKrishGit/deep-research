@@ -1175,6 +1175,51 @@ async def test_the_agent_pools_evidence_the_researcher_read_upstream(
 
 
 @pytest.mark.asyncio
+async def test_a_fact_checker_budget_override_bounds_each_claim_loop(
+    tracker: Tracker,
+) -> None:
+    """The fact checker's own override reaches its direct ReAct loop.
+
+    ``fact_checker: 10`` is production's value and equals the global default,
+    so the override is pinned at one here against a global budget of three:
+    only the override can stop the claim's loop after one executed call.
+    """
+    completer = ScriptedCompleter(
+        decisions=list(_check_decisions()),
+        outputs=[
+            ClaimsDraft(claims=[_claim_draft()]),
+            _verdict_draft(),
+        ],
+    )
+    agent = FactCheckerAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="fact_checker", max_entries=20
+        ),
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            tool_budget_overrides={"fact_checker": 1},
+        ),
+        max_claims=5,
+    )
+    state = _check_state([_check_finding("https://example.org/a")])
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.react.tool_calls == 1
+    assert outcome.react.stop_reason == "tool_budget_exhausted"
+
+
+@pytest.mark.asyncio
 async def test_a_contradiction_survives_a_verified_model_answer(
     tracker: Tracker,
 ) -> None:

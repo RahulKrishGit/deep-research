@@ -164,6 +164,21 @@ class SourceEvaluatorConfig(BaseModel):
     max_total_sources: int = Field(default=36, ge=1)
 
 
+# The six agents one production run assembles, in graph order. Per-agent
+# override tables are keyed by these names, and a key outside this set is a
+# typo that would silently do nothing — so every such table rejects one:
+# ``evaluation.target_reasoning_effort_overrides`` (the evaluation target
+# profile) and ``agents.tool_budget_overrides`` (one agent's tool budget).
+PRODUCTION_AGENT_NAMES = (
+    "planner",
+    "researcher",
+    "source_evaluator",
+    "fact_checker",
+    "synthesizer",
+    "critic",
+)
+
+
 class AgentRuntimeConfig(BaseModel):
     """Bounds every ReAct agent runs under.
 
@@ -201,6 +216,15 @@ class AgentRuntimeConfig(BaseModel):
     production default attempts the whole plan: a cap below the plan size
     silently drops planned sub-topics, and the ones it drops are the least
     important by priority, which is exactly where a thin report comes from.
+
+    ``tool_budget_overrides`` is the one place a single agent's ReAct loop is
+    bounded harder than ``tool_budget``. The planner spends at most one
+    procedural lookup, because the session's own startup recall is that
+    lookup; a planner on the global ten-call budget spent all ten before it
+    produced a plan and discovered no new public evidence doing it. Keys are
+    the six production agent names — a misspelled key would leave the agent
+    on the global budget while the configuration read as bound, so an
+    unknown key is rejected rather than ignored.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -208,6 +232,7 @@ class AgentRuntimeConfig(BaseModel):
     source_evaluator: SourceEvaluatorConfig = SourceEvaluatorConfig()
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
+    tool_budget_overrides: dict[str, int] = Field(default_factory=dict)
     max_sub_topics: int = Field(default=7, ge=1)
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
@@ -215,6 +240,39 @@ class AgentRuntimeConfig(BaseModel):
     critic_review_max_tokens: int = Field(default=32768, ge=1)
     judge_max_tokens: int = Field(default=32768, ge=1)
     react_decision_max_tokens: int = Field(default=32768, ge=1)
+
+    @model_validator(mode="after")
+    def validate_tool_budget_overrides(self) -> "AgentRuntimeConfig":
+        unknown = sorted(
+            set(self.tool_budget_overrides) - set(PRODUCTION_AGENT_NAMES)
+        )
+        if unknown:
+            valid = ", ".join(PRODUCTION_AGENT_NAMES)
+            raise ValueError(
+                "unknown tool_budget_overrides keys: "
+                f"{', '.join(unknown)}; expected any of: {valid}"
+            )
+        negative = sorted(
+            name
+            for name, budget in self.tool_budget_overrides.items()
+            if budget < 0
+        )
+        if negative:
+            raise ValueError(
+                "tool budget overrides must not be negative: "
+                f"{', '.join(negative)}"
+            )
+        return self
+
+    def tool_budget_for(self, agent_name: str) -> int:
+        """The tool-call budget one named agent's ReAct loop runs under.
+
+        The global ``tool_budget`` is the default and is never rewritten:
+        resolving an override returns a number for one agent, so the same
+        ``AgentRuntimeConfig`` can bound six agents differently without six
+        configurations.
+        """
+        return self.tool_budget_overrides.get(agent_name, self.tool_budget)
 
 
 class GraphConfig(BaseModel):
@@ -244,14 +302,7 @@ class OutputConfig(BaseModel):
     default_format: str = "markdown"
 
 
-EVALUATION_AGENT_KEYS = (
-    "planner",
-    "researcher",
-    "source_evaluator",
-    "fact_checker",
-    "synthesizer",
-    "critic",
-)
+EVALUATION_AGENT_KEYS = PRODUCTION_AGENT_NAMES
 
 # DeepSeek V4 Flash supports exactly two enabled efforts: high and max. The
 # original OpenAI baseline's low/medium levels map onto them as approved in

@@ -1017,7 +1017,7 @@ class CriticAgent(BaseAgent[Critique]):
             tools=toolset,
             decide=decide,
             max_iterations=self.config.max_iterations,
-            tool_budget=self.config.tool_budget,
+            tool_budget=self.config.tool_budget_for(self.name),
             on_step=self._record_step,
             is_sufficient=self.is_sufficient,
             summary_limit=self.config.observation_summary_chars,
@@ -1042,7 +1042,7 @@ class CriticAgent(BaseAgent[Critique]):
         errors: list[ResearchError] = []
 
         async with self.tracker.agent_span(self.name) as span:
-            if has_report and self.config.tool_budget > 0:
+            if has_report and self.config.tool_budget_for(self.name) > 0:
                 react = await self._spot_check(task)
             else:
                 # Nothing to check against (no report) or nothing to check

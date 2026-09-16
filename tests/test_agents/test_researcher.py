@@ -1772,6 +1772,39 @@ async def test_two_sub_topics_each_produce_findings_with_a_fresh_tool_budget(
 
 
 @pytest.mark.asyncio
+async def test_a_researcher_budget_override_bounds_each_sub_topic_loop(
+    tracker: Tracker,
+) -> None:
+    """The researcher's own override reaches its direct ReAct loop.
+
+    ``researcher: 10`` is production's value and equals the global default,
+    so a wiring bug would be invisible at that value. This pins the override
+    at one against a global budget of four: only the override can stop the
+    loop after the first executed call.
+    """
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(),
+        outputs=[SubTopicFindingsDraft(findings=[])],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([search_response()]),
+        config=AgentRuntimeConfig(
+            max_iterations=4,
+            tool_budget=4,
+            tool_budget_overrides={"researcher": 1},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    assert outcome.react.tool_calls == 1
+    assert outcome.react.stop_reason == "tool_budget_exhausted"
+
+
+@pytest.mark.asyncio
 async def test_the_researcher_respects_its_iteration_bound(
     tracker: Tracker,
 ) -> None:

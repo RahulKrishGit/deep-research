@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from deep_research.observability import Tracker
 from deep_research.utils.config import (
+    AgentRuntimeConfig,
     ConfigSettings,
     EffectiveModelConfig,
     EvaluationConfig,
@@ -813,6 +814,74 @@ def test_agent_runtime_config_rejects_unbounded_values(
 
     with pytest.raises(ValidationError):
         AgentRuntimeConfig(**{field_name: invalid_value})
+
+
+def test_agent_budgets_resolve_without_changing_global_default():
+    config = AgentRuntimeConfig(
+        tool_budget=10, tool_budget_overrides={"planner": 1, "critic": 0}
+    )
+    assert config.tool_budget_for("planner") == 1
+    assert config.tool_budget_for("researcher") == 10
+    assert config.tool_budget_for("critic") == 0
+
+
+def test_an_agent_budget_override_is_keyed_by_the_canonical_agent_name() -> None:
+    """A name that is not one of the six agents changes nobody's budget.
+
+    The override table exists so one agent's loop can be bounded harder than
+    the rest. A misspelled key that silently did nothing would leave the
+    planner on the global ten-call budget while the configuration read as if
+    it had been bounded, so unknown keys are rejected outright.
+    """
+    with pytest.raises(ValidationError) as caught:
+        AgentRuntimeConfig(tool_budget_overrides={"planer": 1})
+
+    assert "planer" in str(caught.value)
+
+    config = AgentRuntimeConfig(
+        tool_budget=10, tool_budget_overrides={"planner": 1}
+    )
+    assert config.tool_budget_for("researcher") == 10
+
+
+@pytest.mark.parametrize("budget", [-1, -10])
+def test_an_agent_budget_override_rejects_a_negative_budget(budget: int) -> None:
+    with pytest.raises(ValidationError):
+        AgentRuntimeConfig(tool_budget_overrides={"planner": budget})
+
+
+def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
+    """The shipped overrides are the plan's exact values, and no seventh key."""
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["tool_budget"] == 10
+    assert raw["agents"]["tool_budget_overrides"] == {
+        "planner": 1,
+        "researcher": 10,
+        "fact_checker": 10,
+        "source_evaluator": 0,
+        "synthesizer": 0,
+    }
+
+
+def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
+    """``llm.model_overrides`` is what lets production express a per-agent
+    effort at all; without it the CLI could only offer one value for all six
+    agents while evaluation ran a per-agent profile."""
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["llm"]["model_overrides"] == {
+        "planner": {"reasoning_effort": "max"},
+        "fact_checker": {"reasoning_effort": "max"},
+        "synthesizer": {"reasoning_effort": "max"},
+        "critic": {"reasoning_effort": "max"},
+        "researcher": {"reasoning_effort": "high"},
+        "source_evaluator": {"reasoning_effort": "high"},
+    }
+    # The snippet amends the ``llm`` mapping; the other fields stay.
+    assert raw["llm"]["provider"] == "deepseek"
+    assert raw["llm"]["max_tokens"] == 32768
+    assert raw["llm"]["reasoning_effort"] == "high"
 
 
 def test_graph_settings_default_to_a_bounded_uncheckpointed_run() -> None:

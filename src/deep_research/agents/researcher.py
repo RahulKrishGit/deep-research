@@ -1127,7 +1127,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             tools=toolset,
             decide=decide,
             max_iterations=self.config.max_iterations,
-            tool_budget=self.config.tool_budget,
+            tool_budget=self.config.tool_budget_for(self.name),
             on_step=self._record_step,
             is_sufficient=self.is_sufficient,
             summary_limit=self.config.observation_summary_chars,

@@ -1211,6 +1211,67 @@ async def test_first_spot_check_receives_planned_search_query_guidance(
 
 
 @pytest.mark.asyncio
+async def test_a_zero_critic_budget_override_skips_the_spot_check(
+    tracker: Tracker,
+) -> None:
+    """The critic's own override bounds its direct ReAct loop.
+
+    ``critic: 0`` is the value Task 8 sets. It must reach both the loop's
+    budget and the ``has_report and budget > 0`` gate in front of it: a gate
+    still reading the global ``tool_budget`` would run a whole ReAct loop the
+    configuration says the agent may not run.
+    """
+    completer = ScriptedCompleter(outputs=[_draft(score=9)])
+    agent = _critic(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=2,
+            tool_budget=2,
+            tool_budget_overrides={"critic": 0},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert completer.react_calls == []
+    assert outcome.result is not None
+    assert outcome.result.score == 9
+    assert outcome.react.tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_critic_budget_override_bounds_the_spot_check_loop(
+    tracker: Tracker,
+) -> None:
+    """An override of one stops the spot check after one executed call."""
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Search once.", "web_search", '{"query": "qec 2025"}'),
+            use_tool("Search again.", "web_search", '{"query": "qec 2026"}'),
+            finish("Enough.", "No further check."),
+        ],
+        outputs=[_draft(score=9)],
+    )
+    agent = _critic(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=4,
+            tool_budget=4,
+            tool_budget_overrides={"critic": 1},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert outcome.react.tool_calls == 1
+    assert outcome.react.stop_reason == "tool_budget_exhausted"
+
+
+@pytest.mark.asyncio
 async def test_an_acceptable_report_ends_the_graph(tracker: Tracker) -> None:
     agent = _critic(
         tracker, ScriptedCompleter(decisions=[], outputs=[_draft(score=9)])

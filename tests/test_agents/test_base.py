@@ -86,6 +86,8 @@ def _state(question: str = "Why is the sky blue?") -> ResearchState:
     return ResearchState(session_id="session-1", original_question=question)
 
 
+
+
 def _pad(agent_name: str = "summarizer", max_entries: int = 20) -> ScratchpadMemory:
     return ScratchpadMemory(
         session_id="session-1",
@@ -470,6 +472,106 @@ def test_the_default_config_bounds_the_loop(tracker: Tracker) -> None:
 
     assert agent.config == AgentRuntimeConfig()
     assert agent.toolset.names == ("echo",)
+
+
+class BudgetAgent(SummaryAgent):
+    """A synthetic agent declared under a canonical agent name.
+
+    ``tool_budget_overrides`` is keyed by the six production agent names, so
+    only an agent that *is* one of them can look up an override. Declaring a
+    test double under ``synthesizer`` is what makes the base loop's budget
+    lookup observable: with the override in place the loop must stop after
+    one executed tool call even though the global budget is three.
+    """
+
+    name = "synthesizer"
+
+
+@pytest.mark.asyncio
+async def test_the_base_loop_uses_the_agent_specific_budget(
+    tracker: Tracker,
+) -> None:
+    """The ReAct loop is bounded by this agent's budget, not the global one."""
+    completer = ScriptedCompleter(
+        [
+            use_tool("Echo once.", "echo", '{"value": "one"}'),
+            use_tool("Echo twice.", "echo", '{"value": "two"}'),
+            finish("Enough.", "Rayleigh."),
+        ]
+    )
+    agent = BudgetAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=_pad(BudgetAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(
+            max_iterations=4,
+            tool_budget=3,
+            tool_budget_overrides={"synthesizer": 1},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    assert outcome.react.tool_calls == 1
+    assert outcome.react.stop_reason == "tool_budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_a_zero_budget_override_lets_an_agent_think_without_tools(
+    tracker: Tracker,
+) -> None:
+    """``tool_budget_overrides={"synthesizer": 0}`` is a real bound, not a
+    fallback to the global default."""
+    completer = ScriptedCompleter([finish("Nothing to look up.", "Rayleigh.")])
+    agent = BudgetAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=_pad(BudgetAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            tool_budget_overrides={"synthesizer": 0},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    assert outcome.react.tool_calls == 0
+    assert outcome.react.stop_reason == "finished"
+
+
+@pytest.mark.asyncio
+async def test_another_agents_budget_override_does_not_apply_here(
+    tracker: Tracker,
+) -> None:
+    """A planner override must not narrow the synthesizer's own loop."""
+    completer = ScriptedCompleter(
+        [
+            use_tool("Echo once.", "echo", '{"value": "one"}'),
+            use_tool("Echo twice.", "echo", '{"value": "two"}'),
+            finish("Enough.", "Rayleigh."),
+        ]
+    )
+    agent = BudgetAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=_pad(BudgetAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(
+            max_iterations=4,
+            tool_budget=2,
+            tool_budget_overrides={"planner": 0},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    assert outcome.react.tool_calls == 2
 
 
 def test_the_agent_exposes_its_provider_and_tracker(tracker: Tracker) -> None:
