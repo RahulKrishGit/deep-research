@@ -11,6 +11,14 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from deep_research.observability import SpanHandle, Tracker
 
+# A tool that lets an exception escape the framework's own error type is
+# reported with this static sentence rather than ``str(error)``: the message
+# reaches public state and the model-visible observation summary, so the text
+# of an arbitrary exception (a URL, a response body, a prompt, a credential)
+# must never be published there. The failure stays classifiable through its
+# enumerated error type instead.
+_UNEXPECTED_FAILURE_MESSAGE = "the tool failed unexpectedly"
+
 
 class ToolError(BaseModel):
     # NOTE: str_strip_whitespace is deliberately NOT set here. Pydantic applies it
@@ -117,11 +125,14 @@ class BaseTool(ABC):
                 span.set_outputs({**execution.output_summary, "success": True})
             return result
         except Exception as error:
+            # A ``ToolExecutionError`` is authored by the tool itself, so its
+            # message is published as-is; anything else is an exception this
+            # framework does not own, and only its enumerated type is public.
             failure = (
                 error
                 if isinstance(error, ToolExecutionError)
                 else ToolExecutionError(
-                    str(error) or type(error).__name__,
+                    _UNEXPECTED_FAILURE_MESSAGE,
                     error_type=type(error).__name__,
                 )
             )

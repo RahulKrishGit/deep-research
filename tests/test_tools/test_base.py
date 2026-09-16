@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -88,6 +89,24 @@ class SummaryCannotOverrideSuccessTool(BaseTool):
         self, context: ToolCallContext, **kwargs: object
     ) -> ToolExecution:
         return ToolExecution(data=None, output_summary={"success": False})
+
+
+class HostileTool(BaseTool):
+    """An arbitrary tool whose exception text must never reach public state."""
+
+    name = "hostile"
+    description = "Raise a caller-supplied exception carrying hostile text."
+    input_schema = {"value": "string"}
+    output_schema = {}
+
+    def __init__(self, tracker, error: BaseException) -> None:
+        super().__init__(tracker)
+        self._error = error
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: object
+    ) -> ToolExecution:
+        raise self._error
 
 
 class RecordingToolTracker:
@@ -203,3 +222,72 @@ async def test_cancellation_propagates_without_a_tool_result(tracker) -> None:
     async with tracker.session_span("session-1", "question"):
         with pytest.raises(asyncio.CancelledError):
             await CancelledTool(tracker).execute()
+
+
+# Any tool that lets an exception escape the framework's own error type must
+# not publish that exception's text: the message reaches public state and the
+# model-visible observation summary, while the enumerated error type keeps the
+# failure classifiable.
+_HOSTILE_SENTINEL = "HOSTILE-SENTINEL-7c1d"
+_STATIC_FAILURE_MESSAGE = "the tool failed unexpectedly"
+
+
+class ProviderLeakError(Exception):
+    """A project-specific failure type that must stay classifiable."""
+
+
+_HOSTILE_ERRORS = [
+    RuntimeError(f"{_HOSTILE_SENTINEL} provider response body"),
+    ValueError(f"{_HOSTILE_SENTINEL} in https://user:secret@host.test/path"),
+    KeyError(_HOSTILE_SENTINEL),
+    ProviderLeakError(f"{_HOSTILE_SENTINEL} api_key=sk-live-secret"),
+    Exception(f"{_HOSTILE_SENTINEL} prompt text"),
+]
+_HOSTILE_ERROR_IDS = [
+    "runtime-error",
+    "value-error",
+    "key-error",
+    "provider-error",
+    "bare-exception",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", _HOSTILE_ERRORS, ids=_HOSTILE_ERROR_IDS)
+async def test_arbitrary_tool_cannot_leak_hostile_exception_text(
+    tracker, error
+) -> None:
+    async with tracker.session_span("session-1", "question"):
+        result = await HostileTool(tracker, error).execute(value=_HOSTILE_SENTINEL)
+
+    assert result.success is False
+    assert result.error is not None
+    # The failure stays classifiable through its enumerated error type.
+    assert result.error.type == type(error).__name__
+    assert result.error.recoverable is True
+    assert result.error.details == {}
+    assert result.error.message == _STATIC_FAILURE_MESSAGE
+    serialized = json.dumps(result.model_dump(mode="json"), sort_keys=True)
+    assert _HOSTILE_SENTINEL not in serialized
+    assert "sk-live-secret" not in serialized
+    assert "host.test" not in serialized
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert metric.success is False
+    assert metric.error_type == type(error).__name__
+    assert metric.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_failure_message_is_static_project_text(tracker) -> None:
+    async with tracker.session_span("session-1", "question"):
+        runtime = await HostileTool(tracker, RuntimeError(_HOSTILE_SENTINEL)).execute()
+        key = await HostileTool(tracker, KeyError(_HOSTILE_SENTINEL)).execute()
+
+    assert runtime.error is not None
+    assert key.error is not None
+    assert runtime.error.message == _STATIC_FAILURE_MESSAGE
+    assert key.error.message == _STATIC_FAILURE_MESSAGE
+    assert runtime.error.type == "RuntimeError"
+    assert key.error.type == "KeyError"
