@@ -983,7 +983,10 @@ async def test_the_budget_double_fails_memory_and_serves_the_search(
     assert memory_result.success is False
     assert memory_result.error is not None
     assert memory_result.error.type == "RuntimeError"
-    assert memory_result.error.message == "long-term memory is unavailable"
+    # A raw non-ToolExecutionError escaping a tool publishes static project
+    # text, never the raw exception text: the failure stays classifiable
+    # through the enumerated error.type asserted above.
+    assert memory_result.error.message == "the tool failed unexpectedly"
     assert memory_result.error.recoverable is True
 
     assert search_result.success, search_result.error

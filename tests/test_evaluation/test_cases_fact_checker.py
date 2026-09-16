@@ -599,7 +599,10 @@ async def test_the_search_failure_double_raises_once_and_is_recorded(
     assert failed.success is False
     assert failed.error is not None
     assert failed.error.type == "RuntimeError"
-    assert failed.error.message == "search backend unavailable"
+    # A raw non-ToolExecutionError escaping a tool publishes static project
+    # text, never the raw exception text: the failure stays classifiable
+    # through the enumerated error.type asserted above.
+    assert failed.error.message == "the tool failed unexpectedly"
 
     assert succeeded.success, succeeded.error
     assert [result["url"] for result in succeeded.data["results"]] == [
