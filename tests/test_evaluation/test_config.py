@@ -366,17 +366,19 @@ CRITIC_PROMPT_FINGERPRINT = "60ffff5a3558"
 # more, ``1f52e702839d`` -> ``04582f1aaed1``: a fact_checker.py
 # module-source change, not a prompt edit — no prompt string moved.
 # Task 2 moved four of the six again — planner ``8cc4d32e20f4`` ->
-# ``9780dd363af4``, researcher ``efe153883c5b`` -> ``2417681b57d9``,
+# ``222dbd5609bf``, researcher ``efe153883c5b`` -> ``2417681b57d9``,
 # fact_checker ``04582f1aaed1`` -> ``a9e15c0de776``, critic
 # ``97a2d10ad688`` -> ``60ffff5a3558`` — and the Source Evaluator and
 # Synthesizer pins are unchanged. Three of those are module-source-only moves
 # (`tool_budget_for(self.name)` replacing `self.config.tool_budget` at each
 # agent's own `run_react_loop` call site: no prompt string moved). The
 # planner's is a real prompt change: its plan request now prints the frozen
-# answer contract and asks for 1-4 atomic evidence targets, and it makes one
-# tool-free semantic review call. The Judge pin is unchanged.
+# answer contract and asks for 1-4 atomic evidence targets, it makes one
+# tool-free semantic review call, and its loop prompt states that the
+# session's startup recall already supplied the one procedural lookup. The
+# Judge pin is unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "9780dd363af4",
+    "planner": "222dbd5609bf",
     "researcher": "2417681b57d9",
     "source_evaluator": "4fdf95ddcc64",
     "fact_checker": "a9e15c0de776",

@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -46,7 +47,7 @@ from deep_research.providers import (
     StructuredOutputError,
     StructuredValidationDiagnostic,
 )
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, load_config
 from deep_research.utils.types import (
     Finding,
     MemorySnapshot,
@@ -804,7 +805,8 @@ def test_build_task_carries_the_question_and_recalled_memory(
     task = agent.build_task(state)
 
     assert task.instruction == state.original_question
-    assert "1 finding(s) recalled from previous sessions:" in task.guidance
+    assert "1 finding(s) recalled from previous sessions" in task.guidance
+    assert "leads, not evidence" in task.guidance
     assert "Shor's algorithm breaks RSA." in task.guidance
 
 
@@ -2070,6 +2072,134 @@ def test_extending_a_legacy_plan_without_a_contract_is_refused(
 
     assert caught.value.problems == ("answer_contract is missing",)
     assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_startup_recall_is_the_planners_single_procedural_lookup(
+    tracker: Tracker,
+) -> None:
+    """With guidance in hand the planner is not offered a second lookup.
+
+    The startup recall IS the planner's procedural lookup, so the run must
+    total at most one: the agent that already has guidance carries no
+    ``query_memory`` at all, and one that has none may use its single call.
+    The request itself is inspected, not just the counter.
+    """
+    budget = AgentRuntimeConfig(
+        max_iterations=3,
+        tool_budget=10,
+        tool_budget_overrides={"planner": 1},
+    )
+    guided = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_sorting_plan(), _review()],
+    )
+    guided_agent = _planner(tracker, guided, config=budget)
+    state = _state(
+        memory_context=MemorySnapshot(
+            suggested_strategies=["Prefer primary filings."]
+        )
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await guided_agent.run(state)
+
+    assert guided_agent.config.tool_budget_for("planner") == 1
+    offered = [definition.name for definition in guided.react_calls[0].tools]
+    assert offered == ["web_search"]
+    assert "Prefer primary filings." in guided.react_calls[0].messages[1].content
+    # The plan request itself carries the guidance, not recalled findings.
+    plan_request = guided.calls[0][2][1].content
+    assert "Prefer primary filings." in plan_request
+    assert outcome.result is not None
+
+    unguided = ScriptedCompleter(
+        decisions=[
+            use_tool(
+                "Recall procedural guidance.",
+                "query_memory",
+                '{"query": "quantum"}',
+            ),
+            finish("No further lookup.", "Three angles matter."),
+        ],
+        outputs=[_sorting_plan(), _review()],
+    )
+    unguided_agent = _planner(tracker, unguided, config=budget)
+
+    async with tracker.session_span("session-1", "q"):
+        await unguided_agent.run(_state())
+
+    offered_without_guidance = [
+        definition.name for definition in unguided.react_calls[0].tools
+    ]
+    assert offered_without_guidance == ["query_memory", "web_search"]
+    # One lookup at most: the second decision made no tool call at all.
+    assert unguided.react_calls[0].tools[0].name == "query_memory"
+    assert unguided_agent.config.tool_budget_for("planner") == 1
+
+
+def test_a_narrowed_toolset_can_only_remove_tools(tracker: Tracker) -> None:
+    """``without`` narrows; an unknown name cannot widen anything."""
+    agent = _planner(tracker, ScriptedCompleter())
+
+    narrowed = agent.toolset.without("query_memory", "not_a_tool")
+
+    assert narrowed.names == ("web_search",)
+    assert agent.toolset.names == ("query_memory", "web_search")
+
+
+@pytest.mark.asyncio
+async def test_recalled_findings_are_leads_for_planning_not_premises(
+    tracker: Tracker,
+) -> None:
+    """A recalled finding may suggest where to look; it settles nothing."""
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Recall prior work.", "query_memory", '{"query": "qec"}'),
+            finish("No further lookup.", "Three angles matter."),
+        ],
+        outputs=[_sorting_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+    state = _state(
+        memory_context=MemorySnapshot(
+            similar_findings=[
+                Finding(
+                    content="Shor's algorithm breaks RSA.",
+                    source_url="https://example.test/shor",
+                    source_title="Shor 1994",
+                    extracted_at="2026-01-01T00:00:00+00:00",
+                    confidence=0.99,
+                    related_sub_topic="Cryptography",
+                )
+            ]
+        )
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    plan_request = completer.calls[0][2][1].content
+    assert "Shor's algorithm breaks RSA." in plan_request
+    assert "leads, not evidence" in plan_request
+    assert "never a settled premise" in plan_request
+    for sub_topic in outcome.result.sub_topics:
+        for target in sub_topic.evidence_targets:
+            assert "Shor" not in target.question
+
+
+def test_graph_budgets_let_the_planner_look_once_and_the_rest_work() -> None:
+    """The shipped budgets total one planner lookup and no zero-tool agent
+    that still needs a tool."""
+    settings = load_config(str(Path("config.yaml")))
+
+    assert settings.agents.tool_budget_for("planner") == 1
+    assert settings.agents.tool_budget_for("researcher") == 10
+    assert settings.agents.tool_budget_for("fact_checker") == 10
+    assert settings.agents.tool_budget_for("source_evaluator") == 0
+    assert settings.agents.tool_budget_for("synthesizer") == 0
+    # Task 8 sets critic: 0; until then the critic keeps the global budget.
+    assert settings.agents.tool_budget_for("critic") == 10
 
 
 @pytest.mark.asyncio

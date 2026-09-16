@@ -30,6 +30,7 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
 )
 from deep_research.agents.steps import ReActRun, summarize_text
+from deep_research.agents.toolset import AgentToolset
 from deep_research.agents.validation import _invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
@@ -262,9 +263,12 @@ PLANNER_SYSTEM_PROMPT = (
     "You are the planner of a multi-agent research system. Your job is to "
     "turn one research question into a plan of distinct sub-topics that "
     "together answer it.\n"
-    "Use query_memory to recall what previous sessions already learned. Use "
-    "web_search only to scope unfamiliar terminology — a later agent "
-    "gathers the evidence, so do not research the question here.\n"
+    "This session's startup memory recall has already run and its procedural "
+    "guidance is printed in the context below; it is the planner's single "
+    "memory lookup. Call query_memory only when that context carries no "
+    "guidance at all, and then once. Use web_search only to scope unfamiliar "
+    "terminology — a later agent gathers the evidence, so do not research "
+    "the question here.\n"
     "If every term in the research question is familiar to you, finish "
     "without searching.\n"
     "Finish as soon as you understand the shape of the question."
@@ -461,6 +465,50 @@ class ResearchPlanDraft(ContractModel):
     """The provider-facing plan schema."""
 
     sub_topics: list[SubTopicDraft]
+
+
+def planner_guidance(memory_context: MemorySnapshot) -> str:
+    """Render planning context: procedural guidance, and leads that are not
+    evidence.
+
+    The session's startup recall runs with ``purpose="planning"``, so in
+    production ``similar_findings`` is empty and this renders strategies
+    only. A planner handed findings anyway — a replay, a resumed session, a
+    caller that recalled for research — still gets them labelled for what
+    they are: leads that may suggest where to look, never a settled premise
+    and never a reason to prioritize one target over another.
+    """
+    sections: list[str] = []
+    if memory_context.suggested_strategies:
+        sections.append(
+            render_memory_guidance(
+                MemorySnapshot(
+                    suggested_strategies=memory_context.suggested_strategies
+                )
+            )
+        )
+    if memory_context.similar_findings:
+        leads = "\n".join(
+            f"- {summarize_text(finding.content)} ({finding.source_url})"
+            for finding in memory_context.similar_findings
+        )
+        sections.append(
+            f"{len(memory_context.similar_findings)} finding(s) recalled from "
+            "previous sessions — leads, not evidence. They may suggest where "
+            "to look; they are never a settled premise, they never answer a "
+            "target, and they never decide a target's priority.\n"
+            f"{leads}"
+        )
+    return "\n\n".join(sections)
+
+
+def has_startup_guidance(memory_context: MemorySnapshot) -> bool:
+    """True when this session's startup recall produced usable guidance.
+
+    The planner's own tool lookup is permitted only when this is false, so
+    the run totals at most one procedural lookup.
+    """
+    return bool(planner_guidance(memory_context).strip())
 
 
 class PlanReviewDraft(ContractModel):
@@ -1542,6 +1590,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 "got a naive datetime instead"
             )
         self._clock = clock
+        # Set for the duration of one run by ``run``: the tools this run
+        # offers, or ``None`` when the inherited toolset applies unchanged.
+        self._restricted_toolset: AgentToolset | None = None
 
     @property
     def output_schema(self) -> type[ResearchPlan]:
@@ -1561,7 +1612,48 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     def build_task(self, state: ResearchState) -> AgentTask:
         return AgentTask(
             instruction=state.original_question,
-            guidance=render_memory_guidance(state.memory_context),
+            guidance=planner_guidance(state.memory_context),
+        )
+
+    @property
+    def toolset(self) -> AgentToolset:
+        """The tools this run offers, with the planner's lookup rule applied.
+
+        ``query_memory`` is dropped when the session's startup recall already
+        produced guidance: that recall *is* the planner's single procedural
+        lookup, and a second one would repeat work the session has done. The
+        restriction is applied per run, not at construction, because the
+        decision depends on what recall found; ``web_search`` is unaffected,
+        since scoping unfamiliar terminology is not a memory lookup.
+        """
+        restricted = self._restricted_toolset
+        return self._toolset if restricted is None else restricted
+
+    async def run(self, state: ResearchState) -> AgentRun[ResearchPlan]:
+        """Run the inherited loop, bracketed by planning progress events.
+        """
+        self._restricted_toolset = (
+            self._toolset.without("query_memory")
+            if has_startup_guidance(state.memory_context)
+            else None
+        )
+        events = [
+            planning_started_event(state),
+            memory_recalled_event(state.memory_context),
+        ]
+        try:
+            outcome = await super().run(state)
+        except ProviderError as error:
+            raise planning_provider_error("react_decision") from error
+        finally:
+            self._restricted_toolset = None
+        events.append(planning_completed_event(outcome))
+        return AgentRun(
+            agent_name=outcome.agent_name,
+            result=outcome.result,
+            react=outcome.react,
+            errors=outcome.errors,
+            state_update={**outcome.state_update, "events": events},
         )
 
     def answer_contract_for(self, question: str) -> AnswerContract:
@@ -1775,24 +1867,4 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             sub_topics=additions,
             answer_contract=contract,
             extension=True,
-        )
-
-    async def run(self, state: ResearchState) -> AgentRun[ResearchPlan]:
-        """Run the inherited loop, bracketed by planning progress events.
-        """
-        events = [
-            planning_started_event(state),
-            memory_recalled_event(state.memory_context),
-        ]
-        try:
-            outcome = await super().run(state)
-        except ProviderError as error:
-            raise planning_provider_error("react_decision") from error
-        events.append(planning_completed_event(outcome))
-        return AgentRun(
-            agent_name=outcome.agent_name,
-            result=outcome.result,
-            react=outcome.react,
-            errors=outcome.errors,
-            state_update={**outcome.state_update, "events": events},
         )

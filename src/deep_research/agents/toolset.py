@@ -155,3 +155,20 @@ class AgentToolset:
 
     def __len__(self) -> int:
         return len(self._tools)
+
+    def without(self, *names: str) -> "AgentToolset":
+        """A toolset missing ``names``, validated like any other.
+
+        The one legitimate way to narrow a toolset after construction, for a
+        decision that depends on run state rather than on the agent's
+        declaration — the planner offering no ``query_memory`` once the
+        session's startup recall has already supplied its procedural
+        guidance. A name that is not in the set is ignored: this narrows, it
+        never adds, so an unknown name cannot widen anything.
+        """
+        dropped = {name for name in names}
+        retained = [name for name in self._tools if name not in dropped]
+        return AgentToolset(
+            [tool for tool in self._tools.values() if tool.name not in dropped],
+            allowed=retained,
+        )

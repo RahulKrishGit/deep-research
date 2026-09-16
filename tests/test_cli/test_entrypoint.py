@@ -442,6 +442,85 @@ def test_resume_passes_the_session_id_and_no_question() -> None:
     assert runner.calls[0]["resume_session_id"] == "session-1"
 
 
+def test_the_entrypoint_starts_the_session_with_planning_recall(
+    tmp_path, monkeypatch
+) -> None:
+    """Startup recall runs with ``purpose="planning"``, through the real
+    entry point.
+
+    That recall is the planner's single procedural lookup, and it must not
+    read long-term findings: remembered prose handed to the planner becomes a
+    settled premise in the plan. The call is inspected where ``run_research``
+    actually makes it, not only where ``recall_memory_context`` is defined.
+    """
+    import asyncio
+
+    from deep_research import main as main_module
+    from deep_research.main import run_research
+    from deep_research.runtime.assembly import ResearchRuntime
+    from deep_research.request_budget import RequestBudget
+    from deep_research.utils.types import MemorySnapshot
+    from tests.graph_fakes import fake_research_agents
+    from deep_research.graph.orchestrator import compile_research_graph
+    from deep_research.observability import LangSmithRuntimeConfig, Tracker
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "graph": {"max_iterations": 1},
+                "output": {"directory": str(tmp_path / "output")},
+                "memory": {
+                    "long_term": {"persist_directory": str(tmp_path / "memory")},
+                    "procedural": {
+                        "strategies_path": str(tmp_path / "strategies.json")
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    recalled: list[dict] = []
+
+    async def recording_recall(**kwargs):
+        recalled.append(kwargs)
+        return MemorySnapshot()
+
+    monkeypatch.setattr(main_module, "recall_memory_context", recording_recall)
+
+    async def builder(settings, *, session_id, **_ignored):
+        return ResearchRuntime(
+            session_id=session_id,
+            settings=settings,
+            tracker=Tracker(
+                LangSmithRuntimeConfig(
+                    tracing_enabled=False,
+                    project="entrypoint-tests",
+                    api_key=None,
+                )
+            ),
+            request_budget=RequestBudget(),
+            graph=compile_research_graph(fake_research_agents()),
+            long_term=None,
+            procedural=None,
+        )
+
+    asyncio.run(
+        run_research(
+            QUESTION,
+            config_path=str(config),
+            runtime_builder=builder,
+        )
+    )
+
+    assert len(recalled) == 1
+    assert recalled[0]["purpose"] == "planning"
+    assert recalled[0]["question"] == QUESTION
+
+
 def test_a_configuration_failure_prints_its_hint_and_exits_one() -> None:
     runner = RecordingRunner(
         error=configuration_error(

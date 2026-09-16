@@ -242,6 +242,11 @@ class BaseAgent(ABC, Generic[ResultT]):
         no agent can reintroduce a prompt-encoded tool protocol of its own.
         One turn may select several tools at once, so a tuple of decisions
         comes back rather than a single one.
+
+        The tools travel through ``self.toolset`` rather than the internal
+        attribute, so an agent that narrows its own toolset for one run — the
+        planner withholding ``query_memory`` once startup recall has supplied
+        the guidance — offers the provider exactly the tools it will execute.
         """
         turn = await self._provider.complete_react(
             render_react_messages(
@@ -253,7 +258,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                 iteration=iteration,
                 max_iterations=self._config.max_iterations,
             ),
-            self._toolset.provider_definitions(),
+            self.toolset.provider_definitions(),
             agent_name=self._name,
             max_tokens=self._config.react_decision_max_tokens,
         )

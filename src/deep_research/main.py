@@ -234,10 +234,18 @@ async def run_research(
                 ) from error
         else:
             assert question is not None  # narrowed by the guards above
+            # ``purpose="planning"`` is the whole point of this call site: the
+            # session's startup recall IS the planner's single procedural
+            # lookup, so it reads procedural guidance and never long-term
+            # findings or reputations. Remembered prose reaching the planner
+            # would become a settled premise in the plan; the Researcher
+            # discovers prior source leads separately under its own budget and
+            # must re-admit whatever it finds as evidence of this run.
             memory_context = await recall_memory_context(
                 question=question,
                 long_term=runtime.long_term,
                 procedural=runtime.procedural,
+                purpose="planning",
             )
             run = await run_research_graph(
                 graph=runtime.graph,
