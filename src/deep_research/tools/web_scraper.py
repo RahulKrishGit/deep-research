@@ -37,7 +37,16 @@ class WebScraperTool(BaseTool):
     """Fetch an allowed static HTML page and extract its visible text."""
 
     name = "web_scraper"
-    description = "Fetch an allowed static HTML page and extract visible text."
+    # Capability-first wording, deliberately. The previous description led with
+    # a restriction ("Fetch an allowed static HTML page"), while
+    # ``document_reader`` advertises "local or remote documents" — broader-
+    # sounding and therefore the tool a model reaches for when it wants to read
+    # a URL it just found. A measured live run showed the researcher making 183
+    # ``web_search`` calls and **zero** ``web_scraper`` calls, reading only
+    # through ``document_reader``. The robots policy is still enforced by the
+    # tool; this line only stops the description from steering the model away
+    # from the page reader.
+    description = "Read a web page and extract its visible text."
     input_schema = {"url": "string"}
     required_arguments = ("url",)
     output_schema = {

@@ -93,6 +93,11 @@ RESEARCHER_SYSTEM_PROMPT = (
     "A search result is a lead, never evidence: every claim you report must "
     "come from a page or document you actually read in this loop. If a tool "
     "fails, try another query or another source rather than giving up.\n"
+    "Spend your calls on reading, not on repeating searches. After the first "
+    "search for a sub-topic, read the most promising result before searching "
+    "again — web_scraper for a page, document_reader for a PDF or data file — "
+    "and keep alternating until the sub-topic's success criteria are met. One "
+    "page you have read is worth more than several more queries.\n"
     "Finish once the sub-topic's success criteria are met, or once no "
     "further source is worth retrieving."
 )
