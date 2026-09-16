@@ -21,7 +21,9 @@ from deep_research.agents.fact_checker import (
     FactCheckerAgent,
 )
 from deep_research.agents.planner import (
+    EvidenceTargetDraft,
     PlannerAgent,
+    PlanReviewDraft,
     ResearchPlanDraft,
     SubTopicDraft,
 )
@@ -60,6 +62,15 @@ _PLAN = ResearchPlanDraft(
             search_queries=[f"quantum computing angle {index}"],
             success_criteria=[f"evidence about angle number {index}"],
             priority=index,
+            evidence_targets=[
+                EvidenceTargetDraft(
+                    question=(
+                        f"What does angle number {index} report, and where?"
+                    ),
+                    required_dimensions=[f"measure: angle number {index}"],
+                    critical=index == 1,
+                )
+            ],
         )
         for index in (1, 2, 3)
     ]
@@ -88,7 +99,20 @@ def _state(**updates: object) -> ResearchState:
 
 
 def _planner_case() -> tuple[ResearchState, list, list]:
-    return _state(), [finish("Enough context.", "Scoping is complete.")], [_PLAN]
+    return (
+        _state(),
+        [finish("Enough context.", "Scoping is complete.")],
+        [
+            _PLAN,
+            PlanReviewDraft(
+                sound=True,
+                missing_dimensions=[],
+                atomicity_defects=[],
+                unsupported_premises=[],
+                repair_instruction="",
+            ),
+        ],
+    )
 
 
 def _researcher_case() -> tuple[ResearchState, list, list]:

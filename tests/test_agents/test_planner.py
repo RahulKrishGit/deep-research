@@ -2,22 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Callable
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
 
-from deep_research.agents.errors import PlanningError
+from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.planner import (
     MAX_SUB_TOPICS,
     MIN_SUB_TOPICS,
     PLAN_INSTRUCTION,
+    EvidenceTargetDraft,
     PlannerAgent,
+    PlanReviewDraft,
     ResearchPlan,
     ResearchPlanDraft,
     SubTopicDraft,
+    apply_answer_contract,
+    answer_kind_for,
+    derive_answer_contract,
+    extend_plan,
     format_plan_problems,
+    invented_tolerances,
     plan_messages,
+    plan_review_messages,
+    stale_year_anchors,
+    support_policy_for,
+    target_problems,
+    targets_requiring_replanning,
     validate_plan_draft,
 )
 from deep_research.agents.prompts import AgentTask
@@ -48,12 +63,30 @@ from tests.research_fakes import (
 )
 
 
+def _target(
+    question: str = "What benchmark result does Alpha report?",
+    *,
+    dimensions: list[str] | None = None,
+    critical: bool = True,
+) -> EvidenceTargetDraft:
+    return EvidenceTargetDraft(
+        question=question,
+        required_dimensions=(
+            ["measure: benchmark result", "period: most recent reported year"]
+            if dimensions is None
+            else dimensions
+        ),
+        critical=critical,
+    )
+
+
 def _draft(
     title: str = "Error correction",
     *,
     priority: int = 1,
     search_queries: list[str] | None = None,
     success_criteria: list[str] | None = None,
+    evidence_targets: list[EvidenceTargetDraft] | None = None,
 ) -> SubTopicDraft:
     return SubTopicDraft(
         title=title,
@@ -67,6 +100,9 @@ def _draft(
             else success_criteria
         ),
         priority=priority,
+        evidence_targets=(
+            [_target()] if evidence_targets is None else evidence_targets
+        ),
     )
 
 
@@ -382,6 +418,7 @@ def _planner(
     search: FakeSearchClient | None = None,
     memory: FakeMemory | None = None,
     config: AgentRuntimeConfig | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> PlannerAgent:
     return PlannerAgent(
         provider=completer,
@@ -391,6 +428,7 @@ def _planner(
         ),
         tools=planner_tools(tracker, search=search, memory=memory),
         config=config or AgentRuntimeConfig(max_iterations=3, tool_budget=3),
+        clock=clock or _clock,
     )
 
 
@@ -431,7 +469,7 @@ async def test_the_plan_reaching_state_carries_coverage_ids_in_priority_order(
     """The ids a later stage reads are the ones the planner stamped."""
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
-        outputs=[_scrambled_plan()],
+        outputs=[_scrambled_plan(), _review()],
     )
     agent = _planner(tracker, completer)
 
@@ -485,6 +523,13 @@ def _raw_draft(**overrides: object) -> dict[str, object]:
         "search_queries": ["qec benchmarks 2025"],
         "success_criteria": [_LONE_CRITERION],
         "priority": 1,
+        "evidence_targets": [
+            {
+                "question": "What benchmark result does Alpha report?",
+                "required_dimensions": ["measure: benchmark result"],
+                "critical": True,
+            }
+        ],
     }
     payload.update(overrides)
     return payload
@@ -551,11 +596,20 @@ def test_the_field_schema_still_asks_the_model_for_an_array_of_strings(
     }
 
 
-# ``SubTopicDraft.model_json_schema()`` captured before the tolerance was
-# added, minus the ``description`` that the class docstring renders into.
+# ``SubTopicDraft.model_json_schema()`` as the provider is handed it, minus
+# the ``description`` that the class docstring renders into. Task 2 added
+# ``evidence_targets`` on purpose — the plan now has to say what each
+# sub-topic owes — and added no constraint keyword with it, so the schema
+# still carries only ``type``, ``title``, ``items``, ``additionalProperties``,
+# ``required``, and ``properties``.
 _PLAN_SCHEMA_BEFORE_THE_FIX: dict[str, object] = {
     "additionalProperties": False,
     "properties": {
+        "evidence_targets": {
+            "items": {"$ref": "#/$defs/EvidenceTargetDraft"},
+            "title": "Evidence Targets",
+            "type": "array",
+        },
         "priority": {"title": "Priority", "type": "integer"},
         "rationale": {"title": "Rationale", "type": "string"},
         "search_queries": {
@@ -576,6 +630,7 @@ _PLAN_SCHEMA_BEFORE_THE_FIX: dict[str, object] = {
         "search_queries",
         "success_criteria",
         "priority",
+        "evidence_targets",
     ],
     "title": "SubTopicDraft",
     "type": "object",
@@ -588,12 +643,23 @@ def test_the_plan_schema_the_model_is_handed_is_unchanged() -> None:
     The draft model is converted to a strict JSON schema and sent to the
     provider, so anything that leaked into that schema would change what the
     model is asked for. This pins the whole schema but the human-readable
-    docstring.
+    docstring — including that ``evidence_targets`` brought no ``minItems``
+    or ``minLength`` with it, which the strict subset rejects.
     """
     schema = dict(SubTopicDraft.model_json_schema())
     schema.pop("description", None)
+    schema.pop("$defs", None)
 
     assert schema == _PLAN_SCHEMA_BEFORE_THE_FIX
+    structural = json.dumps(
+        {
+            key: value
+            for key, value in SubTopicDraft.model_json_schema().items()
+            if key != "description"
+        }
+    )
+    for keyword in ("minItems", "minLength", "maxItems"):
+        assert keyword not in structural
 
 
 def _plan_text(sub_topic: SubTopic) -> str:
@@ -751,7 +817,7 @@ async def test_the_planner_turns_a_question_into_a_validated_plan(
             use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
             finish("I understand the question.", "Three angles matter."),
         ],
-        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations"), _review()],
     )
     agent = _planner(tracker, completer)
 
@@ -787,7 +853,7 @@ async def test_react_decision_requests_carry_the_react_decision_budget(
             use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
             finish("I understand the question.", "Three angles matter."),
         ],
-        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations"), _review()],
     )
     agent = _planner(tracker, completer)
 
@@ -796,10 +862,13 @@ async def test_react_decision_requests_carry_the_react_decision_budget(
 
     assert [call[0] for call in completer.calls] == [
         "ResearchPlanDraft",
+        "PlanReviewDraft",
     ]
     decision_budget = AgentRuntimeConfig().react_decision_max_tokens
     assert completer.react_budgets == [decision_budget, decision_budget]
-    assert completer.budgets == [32768]
+    # Both plan-side structured calls carry the planner's own budget: the
+    # review is a tool-free call about the plan, not a ReAct decision.
+    assert completer.budgets == [32768, 32768]
 
 
 @pytest.mark.asyncio
@@ -812,7 +881,7 @@ async def test_only_final_plan_requests_use_the_planner_final_budget(
             use_tool("Recall prior work.", "query_memory", '{"query": "quantum"}'),
             finish("I understand the question.", "Three angles matter."),
         ],
-        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations"), _review()],
     )
     agent = _planner(
         tracker,
@@ -829,14 +898,14 @@ async def test_only_final_plan_requests_use_the_planner_final_budget(
 
     decision_budget = AgentRuntimeConfig().react_decision_max_tokens
     assert completer.react_budgets == [decision_budget, decision_budget]
-    assert completer.budgets == [8192]
+    assert completer.budgets == [8192, 8192]
 
 
 @pytest.mark.asyncio
 async def test_repair_plan_requests_also_use_the_planner_final_budget(
     tracker: Tracker,
 ) -> None:
-    """Both plan drafts — initial and repair — carry the final budget."""
+    """Every plan-side structured call carries the planner's own budget."""
     redundant = ResearchPlanDraft(
         sub_topics=[
             _draft("Cryptography", priority=1),
@@ -848,6 +917,7 @@ async def test_repair_plan_requests_also_use_the_planner_final_budget(
         outputs=[
             redundant,
             _plan("Cryptography", "Hardware timelines", "Mitigations"),
+            _review(),
         ],
     )
     agent = _planner(
@@ -867,7 +937,7 @@ async def test_repair_plan_requests_also_use_the_planner_final_budget(
     assert outcome.result.repair_attempted is True
     decision_budget = AgentRuntimeConfig().react_decision_max_tokens
     assert completer.react_budgets == [decision_budget]
-    assert completer.budgets == [8192, 8192]
+    assert completer.budgets == [8192, 8192, 8192]
 
 
 def _output_limit_error() -> ProviderOutputLimitError:
@@ -927,7 +997,7 @@ async def test_planner_preserves_final_plan_provider_cause_without_reachability_
 async def test_the_plan_merges_into_research_state(tracker: Tracker) -> None:
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
-        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations"), _review()],
     )
     agent = _planner(tracker, completer)
 
@@ -945,7 +1015,7 @@ async def test_the_planner_emits_start_recall_and_completion_events(
 ) -> None:
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
-        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations"), _review()],
     )
     agent = _planner(tracker, completer)
     state = _state(
@@ -984,6 +1054,7 @@ async def test_a_redundant_plan_is_repaired_once_and_then_accepted(
         outputs=[
             redundant,
             _plan("Cryptography", "Hardware timelines", "Mitigations"),
+            _review(),
         ],
     )
     agent = _planner(tracker, completer)
@@ -993,7 +1064,7 @@ async def test_a_redundant_plan_is_repaired_once_and_then_accepted(
 
     assert outcome.result is not None
     assert outcome.result.repair_attempted is True
-    repair_body = completer.calls[-1][2][1].content
+    repair_body = completer.calls[-2][2][1].content
     assert "# Repair" in repair_body
     assert "repeat the same title" in repair_body
     assert "produce between 3 and 7" in repair_body
@@ -1263,7 +1334,7 @@ async def test_a_search_failure_does_not_stop_the_planner(
             use_tool("Scope the terms.", "web_search", '{"query": "quantum"}'),
             finish("Enough context.", "Three angles matter."),
         ],
-        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations"), _review()],
     )
     agent = _planner(
         tracker,
@@ -1314,7 +1385,7 @@ async def test_planner_regression_finish_decision_with_empty_tool_name_completes
     ).model_copy(update={"tool_name": ""})
     completer = ScriptedCompleter(
         decisions=[finish_with_empty_tool_name],
-        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations"), _review()],
     )
     agent = _planner(tracker, completer)
 
@@ -1339,7 +1410,7 @@ async def test_planner_regression_tool_decision_with_empty_final_answer_complete
             tool_with_empty_final_answer,
             finish("I understand the question.", "Three angles matter."),
         ],
-        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations"), _review()],
     )
     agent = _planner(tracker, completer)
 
@@ -1405,3 +1476,658 @@ def test_planner_regression_plan_instruction_requires_balanced_wording() -> None
     # permits out of the plan's assertions.
     assert "Do not assert those terms as facts" in rendered
     assert "use them only as search targets" in rendered
+
+
+# --- Task 2: answer-shaped, scoped, feasible, production-configured plans ----
+
+# The September 2026 session the baseline measured. Pinned so every assertion
+# below is about the planner and not about the day this suite runs.
+_CLOCK_NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+
+
+def _clock() -> datetime:
+    return _CLOCK_NOW
+
+
+def _review(
+    *,
+    sound: bool = True,
+    missing_dimensions: list[str] | None = None,
+    atomicity_defects: list[str] | None = None,
+    unsupported_premises: list[str] | None = None,
+    repair_instruction: str = "",
+) -> PlanReviewDraft:
+    return PlanReviewDraft(
+        sound=sound,
+        missing_dimensions=missing_dimensions or [],
+        atomicity_defects=atomicity_defects or [],
+        unsupported_premises=unsupported_premises or [],
+        repair_instruction=repair_instruction,
+    )
+
+
+def _sorting_plan() -> ResearchPlanDraft:
+    return _plan("Cryptography", "Hardware timelines", "Mitigations")
+
+
+def _contract(question: str = "What are the current constraints?", **kwargs):
+    return derive_answer_contract(
+        question=question, now=_CLOCK_NOW, **kwargs
+    )
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("What limits grid-scale battery storage today?", "factual"),
+        ("Which FERC rules govern battery storage interconnection?", "constraints"),
+        ("What are the current EU permitting constraints?", "constraints"),
+        ("How do pumped hydro and lithium-ion compare on cost?", "comparison"),
+        ("What did the 2015 capacity market rules require?", "historical"),
+        ("Why did interconnection queue times grow after 2019?", "explanation"),
+    ],
+)
+def test_the_answer_form_matches_the_question(question: str, expected: str) -> None:
+    assert answer_kind_for(question, clock_year=2026) == expected
+
+
+def test_the_answer_contract_is_stamped_from_the_injected_run_clock() -> None:
+    """The as-of date is the run clock's date, not the model's belief."""
+    contract = _contract("What are the current interconnection constraints?")
+
+    assert contract.as_of_date == "2026-09-16"
+    assert contract.question == (
+        "What are the current interconnection constraints?"
+    )
+    assert contract.answer_kind == "constraints"
+    assert "latest available evidence as of 2026-09-16" in (
+        contract.evidence_period_requirement
+    )
+    assert contract.geographic_scope == "unspecified"
+    assert contract.assumptions
+
+
+def test_a_question_that_names_a_year_keeps_that_year_as_its_as_of_date() -> None:
+    """A user-supplied historical date is preserved, not re-anchored."""
+    contract = _contract("What did the 2021 capacity market rules require?")
+
+    assert contract.as_of_date == "2021-12-31"
+    assert "2021" in contract.evidence_period_requirement
+    assert "never substitute today's figures" in (
+        contract.evidence_period_requirement
+    )
+
+
+def test_a_future_year_is_a_forecast_horizon_not_an_as_of_date() -> None:
+    contract = _contract("What will 4-hour storage cost in 2035?")
+
+    assert contract.as_of_date == "2026-09-16"
+    assert "2035 is a forecast horizon" in contract.evidence_period_requirement
+    assert "never as today's figure" in contract.evidence_period_requirement
+
+
+def test_a_named_jurisdiction_is_recorded_and_an_unqualified_one_assumes() -> None:
+    scoped = _contract("What are the current California interconnection rules?")
+    unscoped = _contract("What are the current interconnection rules?")
+
+    assert scoped.geographic_scope == "California"
+    assert scoped.assumptions == []
+    assert unscoped.geographic_scope == "unspecified"
+    assert "no regional sample may support a global conclusion" in (
+        unscoped.assumptions[0]
+    )
+
+
+def test_a_requested_word_limit_is_recorded() -> None:
+    assert _contract("Summarize the rules in under 500 words.").requested_word_limit == 500
+    assert _contract("What are the rules?").requested_word_limit is None
+
+
+def test_a_naive_clock_is_rejected_at_construction(tracker: Tracker) -> None:
+    with pytest.raises(AgentConfigurationError, match="timezone-aware"):
+        PlannerAgent(
+            provider=ScriptedCompleter(),
+            tracker=tracker,
+            scratchpad=ScratchpadMemory(
+                session_id="session-1", agent_name="planner", max_entries=20
+            ),
+            tools=planner_tools(tracker),
+            clock=lambda: datetime(2026, 9, 16, 12, 0),
+        )
+
+
+def test_targets_carry_locally_stamped_ids_and_the_contract_dimensions() -> None:
+    contract = _contract("What are the current interconnection constraints?")
+    sub_topics, problems = validate_plan_draft(
+        ResearchPlanDraft(
+            sub_topics=[
+                _draft(
+                    title,
+                    priority=index,
+                    evidence_targets=[
+                        _target(f"What does {title} report first?"),
+                        _target(f"What does {title} report second?"),
+                    ],
+                )
+                for index, title in enumerate(
+                    ("Queue totals", "Withdrawn capacity", "Reforms"), start=1
+                )
+            ]
+        )
+    )
+    stamped = apply_answer_contract(sub_topics, contract)
+
+    assert problems == []
+    assert [target.target_id for target in stamped[0].evidence_targets] == [
+        "topic-01-target-01",
+        "topic-01-target-02",
+    ]
+    first = stamped[0].evidence_targets[0]
+    assert first.coverage_id == "topic-01"
+    assert first.required is True
+    assert first.critical is True
+    assert any(
+        dimension.startswith("evidence period:") for dimension in first.required_dimensions
+    )
+    assert any(
+        dimension.startswith("geography:") for dimension in first.required_dimensions
+    )
+    assert any(
+        dimension.startswith("answer form:") for dimension in first.required_dimensions
+    )
+    assert target_problems(stamped, contract) == []
+
+
+def test_a_legacy_plan_without_targets_requires_replanning() -> None:
+    legacy = SubTopic(
+        coverage_id="topic-01",
+        title="Alpha",
+        rationale="Alpha is load-bearing.",
+        search_queries=["alpha 2025"],
+        success_criteria=["A named source about Alpha."],
+        priority=1,
+    )
+
+    assert legacy.evidence_targets == []
+    assert targets_requiring_replanning([legacy]) == ["topic-01"]
+
+
+def test_a_support_policy_is_assigned_before_any_verdict_exists() -> None:
+    """Official rule dates are primary attribution, not a second model of it."""
+    assert (
+        support_policy_for(
+            question="What is the effective date of the 2023 interconnection rule?"
+        )
+        == "primary_attribution"
+    )
+    assert (
+        support_policy_for(question="What is the fee schedule for a permit?")
+        == "primary_attribution"
+    )
+    assert (
+        support_policy_for(
+            question="What is the cost per megawatt of installed capacity?"
+        )
+        == "derivation"
+    )
+    assert (
+        support_policy_for(
+            question="Did queue times grow faster in the west than in the east?"
+        )
+        == "independent_pair"
+    )
+
+
+def test_stale_year_anchors_are_reported_only_in_a_currency_frame() -> None:
+    assert stale_year_anchors(
+        "The current 2024 figures settle it.", as_of_year=2026
+    ) == [2024]
+    assert stale_year_anchors(
+        "Latest available data as of 2023.", as_of_year=2026
+    ) == [2023]
+    # A question or criterion is allowed to be about an older year; that is
+    # its subject, not a claim that the year is current.
+    assert stale_year_anchors(
+        "What did the 2021 rules require?", as_of_year=2026
+    ) == []
+    assert stale_year_anchors(
+        "Current figures as of 2026.", as_of_year=2026
+    ) == []
+
+
+def test_invented_tolerances_are_rejected_unless_the_question_or_a_basis_sets_them() -> None:
+    """The last measured plan invented 10%, 5 pp, 15%, and 3 pp."""
+    question = "How much capacity was withheld in 2024?"
+
+    assert invented_tolerances(
+        "Two publishers agree within 10%.", question=question
+    ) == ["within 10%"]
+    assert invented_tolerances(
+        "The two figures agree within 5 percentage points.", question=question
+    ) == ["within 5 percentage points"]
+    # The question itself sets the precision.
+    assert invented_tolerances(
+        "Both agree within 3 percentage points.",
+        question="Do the estimates agree within 3 percentage points?",
+    ) == []
+    # A named measurement or method is a basis.
+    assert invented_tolerances(
+        "They agree within 2%, the instrument's stated measurement resolution.",
+        question=question,
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_a_stale_anchor_in_a_plan_is_reported_and_repaired_not_accepted(
+    tracker: Tracker,
+) -> None:
+    """A fixture proposing "2024 is current" becomes a latest-available
+    obligation rather than a hard-coded old-year limit.
+
+    The first plan is rejected for anchoring currency to 2024 in a September
+    2026 session; the repair asks for the latest available evidence, and the
+    obligation the reader ends up bound by names the run clock's date.
+    """
+    stale = ResearchPlanDraft(
+        sub_topics=[
+            _draft(
+                title,
+                priority=index,
+                success_criteria=[
+                    "Current as of 2024 figures are available for both "
+                    "publishers."
+                ],
+            )
+            for index, title in enumerate(
+                ("Queue totals", "Withdrawn capacity", "Reforms"), start=1
+            )
+        ]
+    )
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            stale,
+            _sorting_plan(),
+            _review(),
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What are the current interconnection constraints?")
+        )
+
+    assert outcome.result is not None
+    assert outcome.result.repair_attempted is True
+    repair_request = completer.calls[1][2][1].content
+    assert "anchors currency to 2024" in repair_request
+    assert "ask for the latest available evidence instead" in repair_request
+
+    for sub_topic in outcome.result.sub_topics:
+        for target in sub_topic.evidence_targets:
+            period = [
+                dimension
+                for dimension in target.required_dimensions
+                if dimension.startswith("evidence period:")
+            ]
+            assert period == [
+                "evidence period: the latest available evidence as of "
+                "2026-09-16; a fixed earlier year is not a current answer"
+            ]
+            assert "2024" not in target.question
+
+
+def test_an_asserted_target_is_reported_as_a_question_to_ask() -> None:
+    contract = _contract("What are the current constraints?")
+    sub_topics, _ = validate_plan_draft(
+        ResearchPlanDraft(
+            sub_topics=[
+                _draft(
+                    title,
+                    priority=index,
+                    evidence_targets=[_target("Queue times doubled in 2024.")],
+                )
+                for index, title in enumerate(
+                    ("Queue totals", "Withdrawn capacity", "Reforms"), start=1
+                )
+            ]
+        )
+    )
+
+    problems = target_problems(
+        apply_answer_contract(sub_topics, contract), contract
+    )
+
+    assert any("written as an assertion" in problem for problem in problems)
+
+
+def test_a_compound_target_is_found_by_the_review_not_by_a_regex() -> None:
+    """Semantic atomicity is the review's job, and the review names it."""
+    contract = _contract("How much storage capacity was added?")
+    sub_topics = apply_answer_contract(
+        validate_plan_draft(_sorting_plan())[0], contract
+    )
+    compound = (
+        "How much capacity was added in California after the 2023 rule and in "
+        "Texas after the 2021 rule?"
+    )
+    sub_topics = [
+        sub_topics[0].model_copy(
+            update={
+                "evidence_targets": [
+                    sub_topics[0].evidence_targets[0].model_copy(
+                        update={"question": compound}
+                    )
+                ]
+            }
+        ),
+        *sub_topics[1:],
+    ]
+
+    # Nothing structural rejects it: one sentence, one question mark.
+    assert target_problems(sub_topics, contract) == []
+
+    messages = plan_review_messages(contract, sub_topics)
+    body = messages[1].content
+    assert "one measure, one rule date, one jurisdiction" in body
+    assert "compound even when it reads as one sentence" in body
+    assert contract.question in body
+
+
+@pytest.mark.asyncio
+async def test_the_plan_review_is_one_tool_free_call_that_can_fail_the_plan(
+    tracker: Tracker,
+) -> None:
+    """A review that stays unsound fails the session with its named defects."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(
+                sound=False,
+                missing_dimensions=["siting and permitting"],
+                repair_instruction="Add a sub-topic for siting and permitting.",
+            ),
+            _sorting_plan(),
+            _review(
+                sound=False,
+                atomicity_defects=["target-01-01 combines two measures"],
+            ),
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as caught:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(
+                _state("What limits grid-scale battery storage deployment?")
+            )
+
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+    ]
+    assert any(
+        "target-01-01 combines two measures" in problem
+        for problem in caught.value.problems
+    )
+    # The review request is tool-free and carries the frozen question.
+    review_request = completer.calls[1][2][1].content
+    assert "What limits grid-scale battery storage deployment?" in review_request
+    for tool_name in ("web_search", "query_memory", "web_scraper"):
+        assert tool_name not in review_request
+
+
+@pytest.mark.asyncio
+async def test_a_missing_dimension_is_named_in_the_repair_with_the_original_question(
+    tracker: Tracker,
+) -> None:
+    """A seemingly diverse plan that omits a dimension is repaired by name."""
+    repaired = _plan(
+        "Queue totals", "Withdrawn capacity", "Siting and permitting"
+    )
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(
+                sound=False,
+                missing_dimensions=["siting and permitting"],
+                repair_instruction="Cover siting and permitting.",
+            ),
+            repaired,
+            _review(),
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What limits grid-scale battery storage deployment?")
+        )
+
+    repair_request = completer.calls[2][2][1].content
+    assert "siting and permitting" in repair_request
+    assert "The original question is unchanged" in repair_request
+    assert "What limits grid-scale battery storage deployment?" in repair_request
+    assert outcome.result is not None
+    assert [sub_topic.title for sub_topic in outcome.result.sub_topics] == [
+        "Queue totals",
+        "Withdrawn capacity",
+        "Siting and permitting",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_planning_request_carries_the_frozen_contract_and_its_obligations(
+    tracker: Tracker,
+) -> None:
+    """The actual request is inspected, not just the planner's own fields."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_sorting_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_state("What did the 2021 capacity rules require?"))
+
+    plan_request = completer.calls[0][2][1].content
+    assert "# Answer contract" in plan_request
+    assert "- As of: 2021-12-31" in plan_request
+    assert "never substitute today's figures" in plan_request
+    assert "between 1 and 4 evidence_targets" in plan_request
+    assert "2024" not in plan_request
+
+
+@pytest.mark.asyncio
+async def test_the_state_update_freezes_the_contract_and_the_initial_inventory(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_sorting_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state("What are the current constraints?"))
+
+    contract = outcome.state_update["answer_contract"]
+    assert contract.as_of_date == "2026-09-16"
+    assert outcome.state_update["initial_target_ids"] == [
+        "topic-01-target-01",
+        "topic-02-target-01",
+        "topic-03-target-01",
+    ]
+    assert "expanded_target_ids" not in outcome.state_update
+
+
+def test_extend_plan_adds_topics_and_targets_without_touching_what_exists() -> None:
+    """The siting/permitting case: an omission is added, never substituted.
+
+    The initial plan covers queue totals, withdrawn capacity, and reforms. The
+    extension adds siting and permitting, and nothing else changes: existing
+    ids, priorities, critical flags, and the frozen as-of date all survive.
+    """
+    contract = _contract("What limits battery storage deployment?")
+    existing = apply_answer_contract(
+        validate_plan_draft(_sorting_plan())[0], contract
+    )
+    before = [sub_topic.model_dump() for sub_topic in existing]
+
+    additions, problems = extend_plan(
+        existing,
+        ResearchPlanDraft(
+            sub_topics=[
+                _draft(
+                    "Siting and permitting",
+                    priority=4,
+                    evidence_targets=[
+                        _target("Which authority issues the siting permit?"),
+                        _target("How long does permitting take?"),
+                    ],
+                )
+            ]
+        ),
+        contract=contract,
+    )
+
+    assert problems == []
+    assert [sub_topic.coverage_id for sub_topic in additions] == ["topic-04"]
+    assert [target.target_id for target in additions[0].evidence_targets] == [
+        "topic-04-target-01",
+        "topic-04-target-02",
+    ]
+    assert [sub_topic.model_dump() for sub_topic in existing] == before
+    assert [sub_topic.coverage_id for sub_topic in existing] == [
+        "topic-01",
+        "topic-02",
+        "topic-03",
+    ]
+
+
+def test_an_extension_that_does_not_fit_is_an_explicit_capacity_conflict() -> None:
+    """A full plan reports the conflict; it is not permission to delete."""
+    contract = _contract("What limits battery storage deployment?")
+    existing = apply_answer_contract(
+        validate_plan_draft(
+            ResearchPlanDraft(
+                sub_topics=[
+                    _draft(title, priority=index)
+                    for index, title in enumerate(
+                        (
+                            "One",
+                            "Two",
+                            "Three",
+                            "Four",
+                            "Five",
+                            "Six",
+                            "Seven",
+                        ),
+                        start=1,
+                    )
+                ]
+            )
+        )[0],
+        contract,
+    )
+    assert len(existing) == MAX_SUB_TOPICS
+
+    additions, problems = extend_plan(
+        existing,
+        ResearchPlanDraft(
+            sub_topics=[
+                _draft("Siting and permitting", priority=8),
+                _draft("Grid interconnection", priority=9),
+            ]
+        ),
+        contract=contract,
+    )
+
+    assert additions == []
+    assert any("capacity" in problem or "at most 7" in problem for problem in problems)
+    assert any("never removed to make room" in problem for problem in problems)
+
+
+def test_extending_a_legacy_plan_without_a_contract_is_refused(
+    tracker: Tracker,
+) -> None:
+    """A legacy session has no frozen scope to extend within."""
+    completer = ScriptedCompleter()
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as caught:
+        asyncio.run(
+            agent.extend_plan(
+                _state("What limits battery storage deployment?"),
+                omission="siting and permitting",
+            )
+        )
+
+    assert caught.value.problems == ("answer_contract is missing",)
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_extension_through_the_agent_keeps_both_inventories(
+    tracker: Tracker,
+) -> None:
+    """The extension appends; the initial inventory and contract are frozen."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(),
+            ResearchPlanDraft(
+                sub_topics=[_draft("Siting and permitting", priority=4)]
+            ),
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        planned = await agent.run(
+            _state("What limits battery storage deployment?")
+        )
+        state = merge_research_state(
+            _state("What limits battery storage deployment?"),
+            planned.state_update,
+        )
+        extended = await agent.extend_plan(
+            state, omission="siting and permitting"
+        )
+
+    assert extended.extension is True
+    update = agent.state_update(
+        extended, ReActRun(agent_name="planner", stop_reason="finished")
+    )
+    assert "answer_contract" not in update
+    assert update["expanded_target_ids"] == ["topic-04-target-01"]
+    # Only the addition crosses the state boundary; the plan already in state
+    # supplies everything else.
+    assert [sub_topic.coverage_id for sub_topic in update["sub_topics"]] == [
+        "topic-04"
+    ]
+    merged = merge_research_state(state, update)
+    assert merged.initial_target_ids == [
+        "topic-01-target-01",
+        "topic-02-target-01",
+        "topic-03-target-01",
+    ]
+    assert merged.expanded_target_ids == ["topic-04-target-01"]
+    assert [sub_topic.coverage_id for sub_topic in merged.sub_topics] == [
+        "topic-01",
+        "topic-02",
+        "topic-03",
+        "topic-04",
+    ]
+    assert merged.answer_contract == state.answer_contract
+    # A later omission may add; it can never remove what the first plan owed.
+    preserved = merge_research_state(
+        merged, {"initial_target_ids": ["topic-01-target-01"]}
+    )
+    assert preserved.initial_target_ids == merged.initial_target_ids

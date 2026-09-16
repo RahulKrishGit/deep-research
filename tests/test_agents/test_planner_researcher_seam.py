@@ -24,7 +24,13 @@ from __future__ import annotations
 
 import pytest
 
-from deep_research.agents.planner import PlannerAgent, ResearchPlanDraft, SubTopicDraft
+from deep_research.agents.planner import (
+    EvidenceTargetDraft,
+    PlannerAgent,
+    PlanReviewDraft,
+    ResearchPlanDraft,
+    SubTopicDraft,
+)
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
     FindingDraft,
@@ -118,6 +124,17 @@ def _plan_draft() -> ResearchPlanDraft:
                 search_queries=[query],
                 success_criteria=[criterion],
                 priority=priority,
+                evidence_targets=[
+                    EvidenceTargetDraft(
+                        question="Which United States instrument settles "
+                        f"{title.lower()}?",
+                        required_dimensions=[
+                            f"measure: the binding rule for {title.lower()}",
+                            "source: the issuing authority",
+                        ],
+                        critical=priority == 1,
+                    )
+                ],
             )
             for title, priority, query, criterion in _DRAFTED_SUB_TOPICS
         ]
@@ -164,7 +181,16 @@ async def _planned_state(tracker: Tracker) -> ResearchState:
     """Run the real Planner and merge its plan the way the orchestrator does."""
     planner_completer = ScriptedCompleter(
         decisions=[finish("I understand the question.", "Five angles matter.")],
-        outputs=[_plan_draft()],
+        outputs=[
+            _plan_draft(),
+            PlanReviewDraft(
+                sound=True,
+                missing_dimensions=[],
+                atomicity_defects=[],
+                unsupported_premises=[],
+                repair_instruction="",
+            ),
+        ],
     )
     planner = PlannerAgent(
         provider=planner_completer,

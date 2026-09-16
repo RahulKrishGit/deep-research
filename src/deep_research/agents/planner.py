@@ -10,12 +10,19 @@ domain rules locally where their failures can be turned into a repair prompt.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import re
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
+from typing import TypeAlias
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
-from deep_research.agents.base import AgentRun, BaseAgent
-from deep_research.agents.errors import PlanningError, planning_provider_error
+from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.errors import (
+    AgentConfigurationError,
+    PlanningError,
+    planning_provider_error,
+)
 from deep_research.agents.events import agent_event
 from deep_research.agents.prompts import (
     AgentTask,
@@ -24,13 +31,21 @@ from deep_research.agents.prompts import (
 )
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.validation import _invalid_fields
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import Tracker
 from deep_research.providers import (
     ChatMessage,
     ProviderError,
     StructuredOutputError,
 )
+from deep_research.tools.base import BaseTool
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    MAX_TARGETS_PER_TOPIC,
+    AnswerContract,
+    AnswerKind,
     ContractModel,
+    EvidenceTarget,
     MemorySnapshot,
     ResearchEvent,
     ResearchState,
@@ -41,7 +56,207 @@ from deep_research.utils.types import (
 PLANNER_NAME = "planner"
 MIN_SUB_TOPICS = 3
 MAX_SUB_TOPICS = 7
+MIN_TARGETS_PER_TOPIC = 1
 _COVERAGE_ID_WIDTH = 2
+
+# Mirrors the Researcher's injected clock: a callable returning a
+# timezone-aware datetime. The planner stamps its as-of date from this and
+# never from model knowledge or memory, so a test can pin "today" without
+# patching the standard library.
+Clock: TypeAlias = Callable[[], datetime]
+
+
+def utc_now() -> datetime:
+    """The wall clock the planner stamps ``as_of_date`` from by default."""
+    return datetime.now(timezone.utc)
+
+
+# --- answer-form vocabulary -------------------------------------------------
+
+# What a satisfactory answer to each form looks like. The planner writes the
+# matching requirement into every target's dimensions, so the obligation a
+# researcher is handed already says what shape of answer closes it.
+_ANSWER_FORM_REQUIREMENTS: dict[AnswerKind, str] = {
+    "constraints": (
+        "answer form: a list of the binding constraints, each with the "
+        "instrument, rule, or authority that imposes it and the date it took "
+        "effect"
+    ),
+    "comparison": (
+        "answer form: the same measured dimension for every option compared, "
+        "on one shared basis and unit"
+    ),
+    "explanation": (
+        "answer form: a causal mechanism with evidence for each step, not a "
+        "correlation and not a restatement of the outcome"
+    ),
+    "factual": (
+        "answer form: the specific fact asked for, with its value, unit, and "
+        "the date the value applies to"
+    ),
+    "historical": (
+        "answer form: the state of affairs in the period the question names, "
+        "dated to that period and never substituted with today's figures"
+    ),
+}
+
+# Ordered deliberately: a question that both compares and concerns a
+# regulation is a comparison first, because two incomparable measurements do
+# not answer it. Each marker is matched case-insensitively against the
+# normalized question.
+_COMPARISON_MARKERS = (
+    "compare",
+    "compared with",
+    "compared to",
+    "versus",
+    " vs ",
+    "difference between",
+    "trade-off",
+    "tradeoff",
+    "which is better",
+    "cheaper",
+    "more expensive",
+    "relative to",
+)
+_CONSTRAINTS_MARKERS = (
+    "constraint",
+    "requirement",
+    "regulation",
+    "regulatory",
+    "rule",
+    "policy",
+    "law",
+    "legal",
+    "standard",
+    "permit",
+    "compliance",
+    "allowed",
+    "eligible",
+    "mandate",
+    "ban",
+)
+_EXPLANATION_MARKERS = (
+    "why",
+    "how does",
+    "how do",
+    "how did",
+    "explain",
+    "mechanism",
+    "reason for",
+)
+_HISTORICAL_MARKERS = (
+    "historically",
+    "history of",
+    "in the past",
+    "in the 19",
+    "in the 20",
+)
+
+# Jurisdictions the planner recognizes by name. Deliberately a short, explicit
+# list rather than a gazetteer: the only thing it decides is whether the
+# question states a scope, and an unrecognized name simply means the plan says
+# the scope is unspecified and names that as an assumption — which is honest,
+# while a wrong guess is not.
+_GEOGRAPHIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("United States", ("united states", "u.s.", "us ", "usa", "american")),
+    ("California", ("california",)),
+    ("Texas", ("texas",)),
+    ("New York", ("new york",)),
+    ("European Union", ("european union", "eu ", "e.u.")),
+    ("United Kingdom", ("united kingdom", "uk ", "britain", "british")),
+    ("Germany", ("germany", "german")),
+    ("France", ("france", "french")),
+    ("China", ("china", "chinese")),
+    ("India", ("india", "indian")),
+    ("Japan", ("japan", "japanese")),
+    ("Canada", ("canada", "canadian")),
+    ("Australia", ("australia", "australian")),
+    ("Brazil", ("brazil", "brazilian")),
+)
+_GLOBAL_MARKERS = ("global", "worldwide", "world-wide", "internationally")
+
+# A phrase that asks for the newest material rather than a fixed year.
+_CURRENCY_MARKERS = (
+    "current",
+    "currently",
+    "latest",
+    "most recent",
+    "today",
+    "now",
+    "as of",
+    "recent",
+)
+
+# ``10%``, ``5 percentage points``, ``3 pp``, ``within 15 percent``. A
+# cross-publisher agreement tolerance is a measurement claim: without a basis
+# in the question or a named method it is invented, and the last measured plan
+# invented four of them (baseline TR-04).
+_TOLERANCE_PATTERN = re.compile(
+    r"(?:\bwithin\b|\bplus or minus\b|\+/-|±)?\s*"
+    r"\d+(?:\.\d+)?\s*(?:percentage points?|percent|pp\b|%)",
+    re.IGNORECASE,
+)
+# Only a percentage tolerance carries the "these two sources agree to within
+# X" risk; ``5 percentage points`` and ``10%`` both match the pattern above.
+_YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
+_ISO_DATE_PATTERN = re.compile(r"\b(?:19|20)\d{2}-\d{2}-\d{2}\b")
+_WORD_LIMIT_PATTERN = re.compile(r"\b(\d{2,7})[- ]words?\b", re.IGNORECASE)
+
+# Support-policy markers, in precedence order (see ``support_policy_for``).
+_DERIVATION_MARKERS = (
+    "calculate",
+    "calculated",
+    "compute",
+    "computed",
+    "derive",
+    "derived",
+    " per ",
+    "per capita",
+    "per year",
+    "per unit",
+    "ratio",
+    "rate of",
+    "convert",
+    "normalize",
+    "normalised",
+    "normalized",
+)
+_PRIMARY_ATTRIBUTION_MARKERS = (
+    "effective date",
+    "in force",
+    "came into force",
+    "official",
+    "definition of",
+    "defined as",
+    "regulator",
+    "regulatory",
+    "regulation",
+    "statute",
+    "standard specifies",
+    "tariff",
+    "fee schedule",
+    "permit",
+    "licence",
+    "license",
+)
+
+# What makes a stated tolerance legitimate: the criterion names the
+# measurement or the method that establishes it, rather than asserting that
+# two publishers simply agree.
+_BASIS_MARKERS = (
+    "measured",
+    "measurement",
+    "method",
+    "methodology",
+    "instrument",
+    "resolution",
+    "tolerance",
+    "error bar",
+    "margin of error",
+    "rounding",
+    "significant figures",
+    "as reported",
+)
 
 PLANNER_SYSTEM_PROMPT = (
     "You are the planner of a multi-agent research system. Your job is to "
@@ -112,9 +327,25 @@ PLAN_INSTRUCTION = (
     "and datasets that state the facts directly — and say which class of "
     "source each query should reach. Include, for each sub-topic, a query "
     "aimed at an independent second source for its key facts.\n"
-    "State the as-of date and the geographic scope the plan assumes, and "
-    "write both into the queries or success criteria; the plan has no field "
-    "of its own for either.\n"
+    # The as-of date and the geographic scope used to be prose the model was
+    # asked to write into its own queries, with no field of its own. It wrote
+    # whatever year it believed was current — 2024, in a September 2026
+    # session — and the stale anchor reached the reader as a hard limit
+    # (baseline TR-04). Both now come from the frozen answer contract printed
+    # above, and the plan may not restate them as its own assumption.
+    "The answer contract above fixes the as-of date, the geographic scope, "
+    "and the answer form. Do not restate them as your own assumptions and do "
+    "not narrow or widen them; every sub-topic is answered within them.\n"
+    "Give every sub-topic between 1 and 4 evidence_targets. Each target is one "
+    "atomic obligation, written as a question whose answer is a fact or a "
+    "measurement, not as an assertion the plan already believes. Never combine "
+    "two measures, two rule dates, or two jurisdictions into one target, and "
+    "never require two sources to agree within a numeric tolerance unless the "
+    "question itself states that tolerance.\n"
+    "Mark a target critical when the question cannot be answered without it, "
+    "and give every target the dimensions a reader needs to judge it: the "
+    "measure, the period, the geography, and the kind of source that settles "
+    "it.\n"
     "Make every success criterion measurable, so a reader can tell from the "
     "evidence it names whether the sub-topic was answered.\n"
     "Two sub-topics must never share a title."
@@ -132,23 +363,57 @@ _PLAN_REPLY_EXAMPLES = (
         '"search_queries":["city bus rail travel demand route coverage"],'
         '"success_criteria":['
         '"Measured demand and coverage estimates are available for both '
-        'options."],"priority":1},'
+        'options."],"priority":1,'
+        '"evidence_targets":['
+        '{"question":"What ridership did the bus option carry in the most '
+        'recent reported year?","required_dimensions":["measure: annual '
+        'ridership","period: most recent reported year","geography: the '
+        'city"],"critical":true},'
+        '{"question":"What ridership did the rail option carry in the same '
+        'reported year?","required_dimensions":["measure: annual ridership",'
+        '"period: the same reported year as the bus figure","geography: the '
+        'city"],"critical":true}]},'
         '{"title":"cost and delivery",'
         '"rationale":"Compare the resources and time required to deliver each '
         'option.",'
         '"search_queries":["city bus rail capital operating cost delivery '
         'time"],"success_criteria":['
-        '"Comparable cost and delivery estimates are available."],"priority":2},'
+        '"Comparable cost and delivery estimates are available."],"priority":2,'
+        '"evidence_targets":['
+        '{"question":"What capital cost per route kilometre does each option '
+        'report?","required_dimensions":["measure: capital cost per route '
+        'kilometre","period: the most recent published estimate"],'
+        '"critical":false}]},'
         '{"title":"benefits and risks",'
         '"rationale":"Identify the main outcomes and failure modes for each '
         'option.",'
         '"search_queries":["city bus rail benefits risks evidence"],'
         '"success_criteria":['
         '"Measured benefits and documented risks are available for both '
-        'options."],"priority":3}'
+        'options."],"priority":3,'
+        '"evidence_targets":['
+        '{"question":"Which documented risks does each option carry, and by '
+        'which issuer?","required_dimensions":["measure: documented risk",'
+        '"source: the issuing authority","geography: the city"],'
+        '"critical":false}]}'
         "]}",
     ),
 )
+
+
+class EvidenceTargetDraft(ContractModel):
+    """One model-proposed obligation, before the planner stamps it.
+
+    No ``Field`` constraints, for the same reason ``SubTopicDraft`` has none:
+    this model is converted to a strict JSON schema. The planner assigns the
+    id, the support policy, and the contract's own dimensions; the model
+    supplies the question the obligation answers, the dimensions a reader
+    needs, and whether the question can be answered without it.
+    """
+
+    question: str
+    required_dimensions: list[str]
+    critical: bool
 
 
 class SubTopicDraft(ContractModel):
@@ -164,6 +429,7 @@ class SubTopicDraft(ContractModel):
     search_queries: list[str]
     success_criteria: list[str]
     priority: int
+    evidence_targets: list[EvidenceTargetDraft]
 
     @field_validator("search_queries", "success_criteria", mode="before")
     @classmethod
@@ -197,18 +463,286 @@ class ResearchPlanDraft(ContractModel):
     sub_topics: list[SubTopicDraft]
 
 
+class PlanReviewDraft(ContractModel):
+    """The provider-facing verdict of one tool-free plan review.
+
+    Every field is required and unconstrained, for the same reason the plan
+    draft is: this model becomes a strict JSON schema. ``sound`` is the only
+    field the planner decides on; the four lists are what a repair prompt
+    gets to name, and ``repair_instruction`` is the reviewer's own wording
+    for the single correction that would make the plan sound.
+    """
+
+    sound: bool
+    missing_dimensions: list[str]
+    atomicity_defects: list[str]
+    unsupported_premises: list[str]
+    repair_instruction: str
+
+
+class PlanExtensionDraft(ResearchPlanDraft):
+    """The provider-facing schema for a reviewed-omission extension.
+
+    Deliberately the same shape as ``ResearchPlanDraft``: an extension is a
+    plan of additional sub-topics, and the same validation applies to it.
+    Keeping the schema identical means the model is not asked to learn a
+    second format, and ``extend_plan`` enforces the "additional only" rule
+    locally by refusing to touch anything that already exists.
+    """
+
+
 class ResearchPlan(ContractModel):
     """The validated plan ``PlannerAgent`` produces.
 
     Never sent to the provider — ``ResearchPlanDraft`` is — so its size
-    bounds are free to be real constraints.
+    bounds are free to be real constraints. The lower bound is enforced in a
+    validator rather than as a field keyword because an extension is a plan
+    of *additional* sub-topics and legitimately carries fewer than three;
+    every other plan carries the 3-7 the instruction asks for.
+
+    ``answer_contract`` is the frozen contract the plan was written against.
+    ``extension`` marks a plan that carries *only* the topics a later
+    reviewed omission added: those topics append to the plan already in state
+    instead of replacing it, so an extension can never shrink the plan.
     """
 
-    sub_topics: list[SubTopic] = Field(
-        min_length=MIN_SUB_TOPICS,
-        max_length=MAX_SUB_TOPICS,
-    )
+    sub_topics: list[SubTopic] = Field(max_length=MAX_SUB_TOPICS)
     repair_attempted: bool = False
+    answer_contract: AnswerContract | None = None
+    extension: bool = False
+
+    @model_validator(mode="after")
+    def validate_plan_size(self) -> ResearchPlan:
+        if self.extension:
+            if not self.sub_topics:
+                raise ValueError(
+                    "an extension plan must carry at least one sub-topic"
+                )
+            return self
+        count = len(self.sub_topics)
+        if count < MIN_SUB_TOPICS or count > MAX_SUB_TOPICS:
+            raise ValueError(
+                f"the plan has {count} sub-topics; a plan carries between "
+                f"{MIN_SUB_TOPICS} and {MAX_SUB_TOPICS}"
+            )
+        return self
+
+
+def _normalized_question(question: str) -> str:
+    """Collapse whitespace and casefold, for marker matching only."""
+    return " ".join(question.split()).casefold()
+
+
+def answer_kind_for(question: str, *, clock_year: int | None = None) -> AnswerKind:
+    """Classify the answer form the question asks for, locally.
+
+    The order of the tests is the precedence. A question that compares two
+    things is a comparison even when it also names a regulation, because two
+    incomparable measurements do not answer it. A question about what is
+    permitted is a constraints question even when it names a past year,
+    because the *form* of the answer is a list of binding rules and the
+    period is already carried by ``as_of_date``. Nothing here reads a clock
+    or memory, and an unrecognized question is ``factual`` — the narrowest
+    form — rather than a guess.
+
+    ``clock_year`` is what separates a historical question from a current one
+    that happens to name a year: with a 2026 clock, "the 2024 figures" is a
+    request for a number, not for 2024's state of affairs. A question that
+    asks for currency at all is never classified historical.
+    """
+    normalized = f" {_normalized_question(question)} "
+    years = _past_years(question)
+    asks_for_currency = any(marker in normalized for marker in _CURRENCY_MARKERS)
+    past_years = [
+        year for year in years if clock_year is None or year < clock_year
+    ]
+    if any(marker in normalized for marker in _COMPARISON_MARKERS):
+        return "comparison"
+    # A question that asks *why* is answered by a mechanism whatever period it
+    # is about; the period travels in the as-of date, not in the answer form.
+    if any(marker in normalized for marker in _EXPLANATION_MARKERS):
+        return "explanation"
+    # A question anchored in a period the clock has left behind is answered
+    # about that period: the answer form is "the state of affairs then", and
+    # the as-of date says which period that is.
+    if past_years and not asks_for_currency:
+        return "historical"
+    if any(marker in normalized for marker in _CONSTRAINTS_MARKERS):
+        return "constraints"
+    if any(marker in normalized for marker in _HISTORICAL_MARKERS):
+        return "historical"
+    return "factual"
+
+
+def answer_form_requirement(kind: AnswerKind) -> str:
+    """The dimension text that says what shape of answer closes a target."""
+    return _ANSWER_FORM_REQUIREMENTS[kind]
+
+
+def _past_years(question: str) -> list[int]:
+    """Four-digit years the question states, oldest first."""
+    return sorted({int(match) for match in _YEAR_PATTERN.findall(question)})
+
+
+def geographic_scope_for(question: str) -> tuple[str, list[str]]:
+    """The scope the question states, and the assumption when it states none.
+
+    A named jurisdiction is read from a short explicit vocabulary. Anything
+    else — including a jurisdiction this list does not know — resolves to
+    ``"unspecified"`` with an explicit assumption, because a regional sample
+    silently presented as the world is worse than an admitted gap.
+    """
+    normalized = f" {_normalized_question(question)} "
+    for canonical, aliases in _GEOGRAPHIES:
+        if any(alias in normalized for alias in aliases):
+            return canonical, []
+    if any(marker in normalized for marker in _GLOBAL_MARKERS):
+        return "global", []
+    return (
+        "unspecified",
+        [
+            "The question names no geography, so the plan assumes none: every "
+            "target states the geography its evidence covers, and no regional "
+            "sample may support a global conclusion.",
+        ],
+    )
+
+
+def requested_word_limit_for(question: str) -> int | None:
+    """The reader length the question explicitly asks for, or ``None``."""
+    match = _WORD_LIMIT_PATTERN.search(question)
+    if match is None:
+        return None
+    limit = int(match.group(1))
+    return limit if limit >= 1 else None
+
+
+def _evidence_period_requirement(
+    *,
+    question: str,
+    as_of_date: str,
+    past_years: Sequence[int],
+    future_years: Sequence[int],
+    asks_for_currency: bool,
+) -> str:
+    """What period counts as current for this question.
+
+    Publication date, data period, forecast horizon, effective policy date,
+    and retrieval date are different things (Section 2.3), so this names the
+    one the question is about instead of leaving "current" unqualified.
+    """
+    parts: list[str] = []
+    if past_years:
+        stated = ", ".join(str(year) for year in past_years)
+        parts.append(
+            f"the period the question names ({stated}); answer it as of "
+            f"{as_of_date} and never substitute today's figures"
+        )
+    elif asks_for_currency:
+        parts.append(
+            "the latest available evidence as of "
+            f"{as_of_date}; a fixed earlier year is not a current answer"
+        )
+    else:
+        parts.append(f"evidence available as of {as_of_date}")
+    if future_years:
+        stated = ", ".join(str(year) for year in future_years)
+        parts.append(
+            f"{stated} is a forecast horizon, not a current value: report it "
+            "as a projection and never as today's figure"
+        )
+    return "; ".join(parts)
+
+
+def derive_answer_contract(
+    *,
+    question: str,
+    now: datetime,
+    requested_word_limit: int | None = None,
+) -> AnswerContract:
+    """Freeze the question, its scope, its as-of date, and its answer form.
+
+    ``as_of_date`` comes from ``now`` — the run's injected clock — and never
+    from model knowledge or memory. The one exception is a date the question
+    itself supplies: a question about 2021 is answered as of 2021, and the
+    contract says so rather than silently re-anchoring it to today. Years
+    later than the clock's are treated as forecast horizons, not as-of dates,
+    so a 2035 projection cannot become today's cost.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError(
+            "derive_answer_contract requires a timezone-aware clock value"
+        )
+    if not question.strip():
+        raise ValueError("derive_answer_contract requires a question")
+
+    clock_year = now.year
+    years = _past_years(question)
+    past_years = [year for year in years if year <= clock_year]
+    future_years = [year for year in years if year > clock_year]
+    iso_dates = _ISO_DATE_PATTERN.findall(question)
+    historical_iso = [value for value in iso_dates if value <= now.date().isoformat()]
+
+    if historical_iso:
+        as_of_date = max(historical_iso)
+    elif past_years:
+        as_of_date = f"{max(past_years)}-12-31"
+    else:
+        as_of_date = now.date().isoformat()
+
+    normalized = _normalized_question(question)
+    asks_for_currency = any(marker in normalized for marker in _CURRENCY_MARKERS)
+    scope, assumptions = geographic_scope_for(question)
+    kind = answer_kind_for(question, clock_year=clock_year)
+    limit = (
+        requested_word_limit
+        if requested_word_limit is not None
+        else requested_word_limit_for(question)
+    )
+
+    period = _evidence_period_requirement(
+        question=question,
+        as_of_date=as_of_date,
+        past_years=past_years,
+        future_years=future_years,
+        asks_for_currency=asks_for_currency,
+    )
+    scope_statement = (
+        f"{question.strip()} — answered for {scope} as of {as_of_date}, as a "
+        f"{kind} answer; evidence period: {period}."
+    )
+    return AnswerContract(
+        question=question.strip(),
+        scope_statement=scope_statement,
+        geographic_scope=scope,
+        as_of_date=as_of_date,
+        evidence_period_requirement=period,
+        assumptions=assumptions,
+        answer_kind=kind,
+        requested_word_limit=limit,
+    )
+
+
+def latest_available_obligation(contract: AnswerContract) -> str:
+    """The one dimension every target carries about the evidence period.
+
+    It is built from the frozen contract, so it cannot become a hard-coded
+    older year: with a 2026 clock it asks for the latest available evidence
+    as of 2026-09-16, and a question about 2021 asks for 2021.
+    """
+    return f"evidence period: {contract.evidence_period_requirement}"
+
+
+def geographic_obligation(contract: AnswerContract) -> str:
+    """The dimension that keeps a regional sample from supporting the world."""
+    if contract.geographic_scope == "unspecified":
+        return (
+            "geography: unspecified by the question, so state the geography "
+            "each piece of evidence covers and do not generalise beyond it"
+        )
+    if contract.geographic_scope == "global":
+        return "geography: global, with evidence that covers more than one region"
+    return f"geography: {contract.geographic_scope}"
 
 
 def _normalized_title(title: str) -> str:
@@ -235,13 +769,376 @@ def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
     priority keep the order the model produced — the same tie-break
     ``researcher._ordered_sub_topics`` applies downstream. Ids are stamped
     after that ordering, never before it, so an id always names a plan
-    position rather than a draft position.
+    position rather than a draft position. Each target's id is re-stamped
+    with its sub-topic's, because a target id is namespaced by it.
     """
     ordered = sorted(sub_topics, key=lambda sub_topic: sub_topic.priority)
+    stamped: list[SubTopic] = []
+    for position, sub_topic in enumerate(ordered, start=1):
+        coverage_id = coverage_id_for(position)
+        targets = [
+            target.model_copy(
+                update={
+                    "coverage_id": coverage_id,
+                    "target_id": target_id_for(coverage_id, target_position),
+                }
+            )
+            for target_position, target in enumerate(
+                sub_topic.evidence_targets, start=1
+            )
+        ]
+        stamped.append(
+            sub_topic.model_copy(
+                update={
+                    "coverage_id": coverage_id,
+                    "evidence_targets": targets,
+                }
+            )
+        )
+    return stamped
+
+
+def _draft_targets(
+    item: SubTopicDraft, coverage_id: str
+) -> list[EvidenceTarget]:
+    """Convert one draft's obligations into provisional ``EvidenceTarget``s.
+
+    Provisional in exactly two ways: the ids are positional within the draft
+    (``_assign_coverage_ids`` re-stamps them once the plan is ordered), and
+    the support policy is the planner's own rule applied to the question (the
+    binding policy is stamped by ``apply_answer_contract``). Everything else —
+    the question, the model's dimensions, ``critical`` — is carried through,
+    so a draft that omits a question, lists no dimensions, or proposes more
+    obligations than a sub-topic may carry fails validation here and is
+    reported as a repair problem.
+    """
     return [
-        sub_topic.model_copy(update={"coverage_id": coverage_id_for(position)})
-        for position, sub_topic in enumerate(ordered, start=1)
+        EvidenceTarget(
+            target_id=target_id_for(coverage_id, position),
+            coverage_id=coverage_id,
+            question=target.question,
+            required_dimensions=list(target.required_dimensions),
+            required=True,
+            critical=target.critical,
+            support_policy=support_policy_for(question=target.question),
+        )
+        for position, target in enumerate(item.evidence_targets, start=1)
     ]
+
+
+def target_id_for(coverage_id: str, position: int) -> str:
+    """The id this planner stamps on one target of one sub-topic.
+
+    Namespaced by the sub-topic so a target id is unique across the whole
+    plan without a second counter, and positional within the sub-topic so the
+    same plan always produces the same ids. No provider ever proposes one.
+    """
+    return f"{coverage_id}-target-{position:0{_COVERAGE_ID_WIDTH}d}"
+
+
+def support_policy_for(*, question: str) -> str:
+    """The support policy this target is answered under, decided locally.
+
+    Section 2.1 requires the policy to be assigned before any verdict exists,
+    so the planner assigns it here and no later stage may downgrade it to
+    pass a coverage gate. The rules, in precedence order:
+
+    - a target that asks for a computed quantity is ``derivation``: its
+      premises must be supported and its arithmetic reproducible;
+    - a target about an official rule, definition, or measurement is
+      ``primary_attribution``: the issuing body's own instrument settles it,
+      and requiring a second organization to independently model the same
+      official date would make an official date unanswerable;
+    - everything else — comparative, causal, and empirical conclusions — is
+      ``independent_pair``.
+    """
+    normalized = f" {_normalized_question(question)} "
+    if any(marker in normalized for marker in _DERIVATION_MARKERS):
+        return "derivation"
+    if any(marker in normalized for marker in _PRIMARY_ATTRIBUTION_MARKERS):
+        return "primary_attribution"
+    return "independent_pair"
+
+
+def stale_year_anchors(text: str, *, as_of_year: int) -> list[int]:
+    """Years in ``text`` that anchor currency earlier than the as-of year.
+
+    Only a *currency* frame is reported — "current as of 2024", "the latest
+    2024 figures" — because a question or criterion may legitimately name an
+    older year as its subject. What this must never do is let a plan treat an
+    earlier year as today: that is the TR-04 defect. The check is deliberately
+    conservative in the other direction too; the plan review call is what
+    judges meaning, and this only refuses an explicitly stale anchor.
+    """
+    normalized = _normalized_question(text)
+    if not any(marker in normalized for marker in _CURRENCY_MARKERS):
+        return []
+    return sorted(
+        {
+            int(match)
+            for match in _YEAR_PATTERN.findall(text)
+            if int(match) < as_of_year
+        }
+    )
+
+
+def invented_tolerances(text: str, *, question: str) -> list[str]:
+    """Numeric agreement tolerances in ``text`` with no basis in the question.
+
+    A cross-publisher tolerance ("both sources agree within 10%") is a
+    measurement claim: it is legitimate when the question asks for that
+    precision, or when the criterion names the measurement or method that
+    establishes it. Otherwise the planner invented it — the last measured
+    plan invented 10%, 5 percentage points, 15%, and 3 percentage points
+    (baseline TR-04) — and it is reported so the repair prompt can remove it.
+    """
+    found = [
+        match.group(0).strip()
+        for match in _TOLERANCE_PATTERN.finditer(text)
+    ]
+    if not found:
+        return []
+    question_tolerances = {
+        match.group(0).strip()
+        for match in _TOLERANCE_PATTERN.finditer(question)
+    }
+    basis = any(marker in _normalized_question(text) for marker in _BASIS_MARKERS)
+    if basis:
+        return []
+    return [value for value in found if value not in question_tolerances]
+
+
+def target_problems(
+    sub_topics: Sequence[SubTopic],
+    contract: AnswerContract,
+) -> list[str]:
+    """Semantic-adjacent defects the contract can name structurally.
+
+    This is not an atomicity proof: one measure combined with another inside
+    a single criterion is a meaning defect, and the plan review call is what
+    judges meaning. What is checkable here is that every sub-topic carries
+    1-4 obligations, that each obligation is asked as a question rather than
+    asserted, that nothing anchors currency to a year the contract has already
+    left behind, and that nothing invents a numeric agreement tolerance.
+    """
+    problems: list[str] = []
+    as_of_year = int(contract.as_of_date[:4])
+    for sub_topic in sub_topics:
+        count = len(sub_topic.evidence_targets)
+        if count < MIN_TARGETS_PER_TOPIC or count > MAX_TARGETS_PER_TOPIC:
+            problems.append(
+                f"{sub_topic.coverage_id} proposes {count} evidence targets; "
+                f"every sub-topic carries between {MIN_TARGETS_PER_TOPIC} and "
+                f"{MAX_TARGETS_PER_TOPIC}"
+            )
+            continue
+        for target in sub_topic.evidence_targets:
+            if not target.question.rstrip().endswith("?"):
+                problems.append(
+                    f"{target.target_id} is written as an assertion; request "
+                    "the unknown as a question instead"
+                )
+            stale = stale_year_anchors(
+                target.question, as_of_year=as_of_year
+            )
+            if stale:
+                problems.append(
+                    f"{target.target_id} anchors currency to "
+                    f"{', '.join(str(year) for year in stale)} for a session "
+                    f"as of {contract.as_of_date}; ask for the latest "
+                    "available evidence instead"
+                )
+            invented = invented_tolerances(
+                target.question, question=contract.question
+            )
+            if invented:
+                problems.append(
+                    f"{target.target_id} requires a numeric agreement "
+                    f"tolerance ({', '.join(invented)}) that the question does "
+                    "not state and no measurement basis establishes"
+                )
+        for criterion in sub_topic.success_criteria:
+            stale = stale_year_anchors(criterion, as_of_year=as_of_year)
+            if stale:
+                # The measured defect lived here: a criterion that required
+                # "current" numbers pinned to 2024. A criterion that is *about*
+                # an older year is untouched — only a currency frame is read.
+                problems.append(
+                    f"{sub_topic.coverage_id} anchors currency to "
+                    f"{', '.join(str(year) for year in stale)} in a success "
+                    f"criterion for a session as of {contract.as_of_date}; ask "
+                    "for the latest available evidence instead"
+                )
+            invented = invented_tolerances(
+                criterion, question=contract.question
+            )
+            if invented:
+                problems.append(
+                    f"{sub_topic.coverage_id} sets a numeric agreement "
+                    f"tolerance ({', '.join(invented)}) in a success "
+                    "criterion that the question does not state and no "
+                    "measurement basis establishes"
+                )
+    return problems
+
+
+def apply_answer_contract(
+    sub_topics: Sequence[SubTopic],
+    contract: AnswerContract,
+) -> list[SubTopic]:
+    """Attach the contract's binding dimensions and support policy.
+
+    Every target keeps the dimensions the model proposed and gains the three
+    the contract fixes: the answer form, the evidence period, and the
+    geography rule. ``required`` is set here rather than taken from the
+    draft: an obligation the planner stamped is required by definition, and a
+    target that could be marked optional is a target that can be dropped
+    later without anyone deciding to drop it. The model's ``critical`` flag
+    is preserved — a critical obligation is one the question cannot be
+    answered without.
+    """
+    form = answer_form_requirement(contract.answer_kind)
+    period = latest_available_obligation(contract)
+    geography = geographic_obligation(contract)
+
+    stamped: list[SubTopic] = []
+    for sub_topic in sub_topics:
+        targets = [
+            EvidenceTarget(
+                target_id=target_id_for(sub_topic.coverage_id, position),
+                coverage_id=sub_topic.coverage_id,
+                question=target.question,
+                required_dimensions=_unique_phrases(
+                    [*target.required_dimensions, form, period, geography]
+                ),
+                required=True,
+                critical=target.critical,
+                support_policy=support_policy_for(question=target.question),
+            )
+            for position, target in enumerate(
+                sub_topic.evidence_targets, start=1
+            )
+        ]
+        stamped.append(
+            sub_topic.model_copy(update={"evidence_targets": targets})
+        )
+    return stamped
+
+
+def _unique_phrases(values: Sequence[str]) -> list[str]:
+    """First-seen order with blanks dropped and case-insensitive duplicates
+    removed, so the same dimension is never listed twice."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(cleaned)
+    return unique
+
+
+def targets_requiring_replanning(
+    sub_topics: Sequence[SubTopic],
+) -> list[str]:
+    """The coverage ids of sub-topics that carry no evidence target.
+
+    A plan written before the target contract loads with an empty list —
+    nothing is invented for it — and an empty list is exactly what says it
+    cannot be executed: such a plan has to be replanned rather than treated
+    as a plan with no obligations.
+    """
+    return [
+        sub_topic.coverage_id
+        for sub_topic in sub_topics
+        if not sub_topic.evidence_targets
+    ]
+
+
+def inventory_target_ids(sub_topics: Sequence[SubTopic]) -> list[str]:
+    """Every counted target id in plan order."""
+    return [
+        target.target_id
+        for sub_topic in sub_topics
+        for target in sub_topic.evidence_targets
+    ]
+
+
+def extend_plan(
+    existing: Sequence[SubTopic],
+    extension: ResearchPlanDraft,
+    *,
+    contract: AnswerContract,
+) -> tuple[list[SubTopic], list[str]]:
+    """Turn a reviewed-omission draft into additional sub-topics, and only.
+
+    Returns the *new* sub-topics with ids continuing after ``existing``, plus
+    any problems. Nothing here can touch a topic that already exists: no
+    existing id is renumbered, no target is removed, no critical flag is
+    cleared, and the contract — question, scope, as-of date — is the one
+    already frozen. A plan that no longer fits ``MAX_SUB_TOPICS`` is reported
+    as an explicit capacity conflict naming the topics that cannot fit, which
+    is not permission to delete a difficult topic.
+    """
+    problems: list[str] = []
+    if len(extension.sub_topics) < 1:
+        return [], ["the extension proposes no sub-topics; name the omission "
+                    "and the sub-topics that close it"]
+
+    additions: list[SubTopic] = []
+    for index, item in enumerate(extension.sub_topics, start=1):
+        coverage_id = coverage_id_for(len(existing) + index)
+        try:
+            additions.append(
+                SubTopic.model_validate(
+                    {
+                        **item.model_dump(exclude={"evidence_targets"}),
+                        "coverage_id": coverage_id,
+                        "evidence_targets": [
+                            target.model_dump()
+                            for target in _draft_targets(item, coverage_id)
+                        ],
+                    }
+                )
+            )
+        except ValidationError as error:
+            problems.append(
+                f"extension sub-topic {index} is invalid: check these "
+                f"fields: {_invalid_fields(error)}"
+            )
+    if problems:
+        return [], problems
+
+    titles = {_normalized_title(sub_topic.title) for sub_topic in existing}
+    for position, sub_topic in enumerate(additions, start=1):
+        key = _normalized_title(sub_topic.title)
+        if key in titles:
+            problems.append(
+                f"extension sub-topic {position} repeats an existing title; "
+                "an extension adds a new dimension rather than restating one"
+            )
+        titles.add(key)
+
+    total = len(existing) + len(additions)
+    if total > MAX_SUB_TOPICS:
+        # Nothing is returned here: a partially applied extension is exactly
+        # the smaller-denominator failure this refusal exists to prevent.
+        return [], [
+            *problems,
+            f"the plan already carries {len(existing)} sub-topics and the "
+            f"extension adds {len(additions)}, which is {total}; a plan "
+            f"carries at most {MAX_SUB_TOPICS}. Name which extension "
+            "sub-topics to drop — an existing sub-topic is never removed to "
+            "make room",
+        ]
+
+    stamped = apply_answer_contract(additions, contract)
+    problems.extend(target_problems(stamped, contract))
+    return stamped, problems
 
 
 def validate_plan_draft(
@@ -258,19 +1155,24 @@ def validate_plan_draft(
     problems: list[str] = []
 
     for index, item in enumerate(draft.sub_topics, start=1):
+        coverage_id = coverage_id_for(index)
         try:
             validated.append(
                 (
                     index,
                     SubTopic.model_validate(
                         {
-                            **item.model_dump(),
+                            **item.model_dump(exclude={"evidence_targets"}),
                             # A provisional id, so ``SubTopic``'s own rules —
                             # including this field's — apply to every value
                             # here. ``_assign_coverage_ids`` re-stamps all of
                             # them in final order, so no caller ever observes
                             # a draft-position id.
-                            "coverage_id": coverage_id_for(index),
+                            "coverage_id": coverage_id,
+                            "evidence_targets": [
+                                target.model_dump()
+                                for target in _draft_targets(item, coverage_id)
+                            ],
                         }
                     ),
                 )
@@ -313,6 +1215,81 @@ def format_plan_problems(problems: Sequence[str]) -> str:
     )
 
 
+def requested_problems(review: PlanReviewDraft) -> list[str]:
+    """The review's own findings, rendered as bounded problem lines.
+
+    The reviewer's free text is never copied into a problem list unprepared:
+    each finding is prefixed with the defect class it belongs to, so a reader
+    of ``PlanningError.problems`` can tell a missing dimension from a
+    compound target without reading prose.
+    """
+    problems = [
+        f"plan review found a missing dimension: {detail}"
+        for detail in review.missing_dimensions
+    ]
+    problems.extend(
+        f"plan review found a compound obligation: {detail}"
+        for detail in review.atomicity_defects
+    )
+    problems.extend(
+        f"plan review found an unsupported premise: {detail}"
+        for detail in review.unsupported_premises
+    )
+    if not problems:
+        problems.append(
+            "plan review reported the plan as unsound without naming a defect"
+        )
+    return problems
+
+
+def format_review_problems(review: PlanReviewDraft) -> str:
+    """Render a review's findings as the corrective instruction for repair."""
+    lines = [f"- {problem}" for problem in requested_problems(review)]
+    instruction = review.repair_instruction.strip()
+    if instruction:
+        lines.append(f"- the reviewer's correction: {instruction}")
+    listed = "\n".join(lines)
+    return (
+        "The plan review found the plan unsound. The original question is "
+        "unchanged and must not be rephrased, narrowed, or widened. Fix every "
+        f"defect listed below and return a corrected plan.\n{listed}"
+    )
+
+
+def extension_messages(
+    contract: AnswerContract,
+    existing: Sequence[SubTopic],
+    omission: str,
+) -> list[ChatMessage]:
+    """Build the request for additional sub-topics closing one omission.
+
+    The existing plan is printed with its ids and obligations so the model
+    can see what is already covered; the instruction then asks for *only*
+    what is missing. Nothing in this request invites a replacement plan, and
+    ``extend_plan`` refuses one that arrives anyway.
+    """
+    sections = [
+        f"# Original question (frozen)\n{contract.question}",
+        f"# Answer contract\n{render_answer_contract(contract)}",
+        "# Plan so far (already frozen; never restate or replace it)\n"
+        f"{render_plan_for_review(existing)}",
+        "# Original-question omission to close\n"
+        f"{omission.strip()}",
+        "# Requirements\n"
+        "Return ONLY the additional sub-topics that close this omission, in "
+        "the same format as the plan above. Do not repeat a sub-topic or a "
+        "target that already exists; the ids you would give them belong to "
+        "the planner. Every added sub-topic carries between 1 and 4 atomic "
+        "evidence_targets, each written as a question. Stay inside the frozen "
+        "scope and as-of date.",
+        f"# Reply format\n{render_structured_reply_format(_PLAN_REPLY_EXAMPLES)}",
+    ]
+    return [
+        ChatMessage(role="developer", content=PLANNER_PLAN_SYSTEM_PROMPT),
+        ChatMessage(role="user", content="\n\n".join(sections)),
+    ]
+
+
 def _render_notes(run: ReActRun) -> str:
     """Render what the scoping loop actually learned, one line each."""
     lines = [
@@ -325,14 +1302,46 @@ def _render_notes(run: ReActRun) -> str:
     return "\n".join(lines) or "(no scoping notes)"
 
 
+def render_answer_contract(contract: AnswerContract) -> str:
+    """Print the frozen contract into a request, one field per line."""
+    assumptions = (
+        "\n".join(f"- {assumption}" for assumption in contract.assumptions)
+        or "- none"
+    )
+    word_limit = (
+        "none requested"
+        if contract.requested_word_limit is None
+        else f"{contract.requested_word_limit} words"
+    )
+    return (
+        f"- Original question (frozen, do not restate or narrow it): "
+        f"{contract.question}\n"
+        f"- Scope: {contract.geographic_scope}\n"
+        f"- As of: {contract.as_of_date}\n"
+        f"- Evidence period: {contract.evidence_period_requirement}\n"
+        f"- Answer form: {contract.answer_kind} — "
+        f"{answer_form_requirement(contract.answer_kind)}\n"
+        f"- Reader length: {word_limit}\n"
+        f"- Assumptions the plan makes:\n{assumptions}"
+    )
+
+
 def plan_messages(
     task: AgentTask,
     run: ReActRun,
     *,
+    contract: AnswerContract | None = None,
     repair: str | None = None,
 ) -> list[ChatMessage]:
-    """Build the messages that request one structured plan draft."""
+    """Build the messages that request one structured plan draft.
+
+    ``contract`` is the frozen answer contract. The planner always passes
+    one; a caller that omits it gets the plan requirements without a frozen
+    scope, which is what a replay of an older prompt looks like.
+    """
     sections = [f"# Research question\n{task.instruction}"]
+    if contract is not None:
+        sections.append(f"# Answer contract\n{render_answer_contract(contract)}")
     if task.guidance.strip():
         sections.append(f"# Context\n{task.guidance}")
     sections.append(f"# Scoping notes\n{_render_notes(run)}")
@@ -344,6 +1353,80 @@ def plan_messages(
     )
     return [
         ChatMessage(role="developer", content=PLANNER_PLAN_SYSTEM_PROMPT),
+        ChatMessage(role="user", content="\n\n".join(sections)),
+    ]
+
+
+PLAN_REVIEW_SYSTEM_PROMPT = (
+    "You are reviewing a research plan before any research starts. You have "
+    "no tools and need none: the question, the frozen answer contract, and "
+    "the plan are printed in the request. Judge the plan's meaning against "
+    "the question, not its formatting."
+)
+
+PLAN_REVIEW_INSTRUCTION = (
+    "Decide whether this plan, as written, would answer the original "
+    "question. Report `sound: true` only when all of the following hold.\n"
+    "- Every required dimension of the original question is covered by some "
+    "sub-topic; a plan that looks diverse but omits a dimension the question "
+    "asks for is not sound. Name each missing dimension you find.\n"
+    "- Every evidence target is atomic: one measure, one rule date, one "
+    "jurisdiction. A target that requires two measures, two rule dates, or "
+    "two jurisdictions to be settled is compound even when it reads as one "
+    "sentence. Name each compound target.\n"
+    "- No search query or success criterion assumes the answer, states a "
+    "conclusion the plan has not established, or treats a recalled memory as "
+    "evidence. Name each such premise.\n"
+    "- The plan stays inside the frozen scope and as-of date. Name any target "
+    "that widens the scope or re-anchors the period.\n"
+    "- The batch is feasible: each sub-topic can be answered by a bounded "
+    "number of reads, and no sub-topic carries more than four obligations.\n"
+    "`repair_instruction` is the single correction that would make the plan "
+    "sound; leave it empty when sound is true. Name dimensions, never "
+    "rephrase the original question."
+)
+
+
+def render_plan_for_review(sub_topics: Sequence[SubTopic]) -> str:
+    """Print a plan as the review request sees it, ids and all."""
+    lines: list[str] = []
+    for sub_topic in sub_topics:
+        lines.append(
+            f"{sub_topic.coverage_id} (priority {sub_topic.priority}): "
+            f"{sub_topic.title}"
+        )
+        lines.append(f"  rationale: {sub_topic.rationale}")
+        lines.append(f"  queries: {'; '.join(sub_topic.search_queries)}")
+        lines.append(f"  criteria: {'; '.join(sub_topic.success_criteria)}")
+        for target in sub_topic.evidence_targets:
+            criticality = "critical" if target.critical else "supporting"
+            lines.append(
+                f"  {target.target_id} [{criticality}, "
+                f"{target.support_policy}]: {target.question}"
+            )
+            lines.append(
+                f"    dimensions: {'; '.join(target.required_dimensions)}"
+            )
+    return "\n".join(lines)
+
+
+def plan_review_messages(
+    contract: AnswerContract,
+    sub_topics: Sequence[SubTopic],
+    *,
+    repair: str | None = None,
+) -> list[ChatMessage]:
+    """Build the one tool-free request that reviews a plan's meaning."""
+    sections = [
+        f"# Original question (frozen)\n{contract.question}",
+        f"# Answer contract\n{render_answer_contract(contract)}",
+        f"# Plan under review\n{render_plan_for_review(sub_topics)}",
+        f"# Review requirements\n{PLAN_REVIEW_INSTRUCTION}",
+    ]
+    if repair is not None:
+        sections.append(f"# Correction already requested\n{repair}")
+    return [
+        ChatMessage(role="developer", content=PLAN_REVIEW_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
 
@@ -423,15 +1506,42 @@ def structured_output_problems(error: StructuredOutputError) -> tuple[str, ...]:
 class PlannerAgent(BaseAgent[ResearchPlan]):
     """Convert ``original_question`` into 3-7 distinct, prioritized sub-topics.
 
-    The ReAct loop is for scoping only — recalling prior findings and
-    resolving unfamiliar terminology. The plan itself is produced in
-    ``finalize`` by a structured-output call over what the loop learned.
+    The ReAct loop is for scoping only — the session's own startup recall is
+    the planner's single procedural lookup, and ``web_search`` is available
+    for unfamiliar terminology. The plan itself is produced in ``finalize``
+    by a structured-output call over what the loop learned, and is then
+    reviewed once by a tool-free semantic call.
     """
 
     name = PLANNER_NAME
     description = "Turn a research question into a validated research plan."
     allowed_tools = ("query_memory", "web_search")
     preserve_provider_errors = True
+
+    def __init__(
+        self,
+        *,
+        provider: AgentCompleter,
+        tracker: Tracker,
+        scratchpad: ScratchpadMemory,
+        tools: Sequence[BaseTool] = (),
+        config: AgentRuntimeConfig | None = None,
+        clock: Clock = utc_now,
+    ) -> None:
+        super().__init__(
+            provider=provider,
+            tracker=tracker,
+            scratchpad=scratchpad,
+            tools=tools,
+            config=config,
+        )
+        probe = clock()
+        if probe.tzinfo is None or probe.utcoffset() is None:
+            raise AgentConfigurationError(
+                "PlannerAgent clock must return a timezone-aware datetime; "
+                "got a naive datetime instead"
+            )
+        self._clock = clock
 
     @property
     def output_schema(self) -> type[ResearchPlan]:
@@ -454,16 +1564,21 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             guidance=render_memory_guidance(state.memory_context),
         )
 
+    def answer_contract_for(self, question: str) -> AnswerContract:
+        """Freeze this run's answer contract from the injected clock."""
+        return derive_answer_contract(question=question, now=self._clock())
+
     async def _request_plan(
         self,
         task: AgentTask,
         run: ReActRun,
         *,
+        contract: AnswerContract,
         repair: str | None = None,
     ) -> tuple[list[SubTopic], list[str]]:
         try:
             draft = await self.provider.complete_structured(
-                plan_messages(task, run, repair=repair),
+                plan_messages(task, run, contract=contract, repair=repair),
                 ResearchPlanDraft,
                 agent_name=self.name,
                 max_tokens=self.config.planner_final_max_tokens,
@@ -474,41 +1589,193 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             ) from error
         except ProviderError as error:
             raise planning_provider_error("plan_draft") from error
-        return validate_plan_draft(draft)
+        return self._stamp(draft, contract)
+
+    def _stamp(
+        self,
+        draft: ResearchPlanDraft,
+        contract: AnswerContract,
+    ) -> tuple[list[SubTopic], list[str]]:
+        """Validate a draft, then attach the contract's binding obligations."""
+        sub_topics, problems = validate_plan_draft(draft)
+        if problems:
+            return sub_topics, problems
+        stamped = apply_answer_contract(sub_topics, contract)
+        return stamped, target_problems(stamped, contract)
+
+    async def _review_plan(
+        self,
+        contract: AnswerContract,
+        sub_topics: Sequence[SubTopic],
+        *,
+        already_requested: str | None = None,
+    ) -> PlanReviewDraft:
+        """Ask the one tool-free semantic review call about this plan.
+
+        The review is a review problem like any other, so a provider failure
+        here is reported the same way a failed plan draft is.
+        """
+        try:
+            return await self.provider.complete_structured(
+                plan_review_messages(
+                    contract, sub_topics, repair=already_requested
+                ),
+                PlanReviewDraft,
+                agent_name=self.name,
+                max_tokens=self.config.planner_final_max_tokens,
+            )
+        except StructuredOutputError as error:
+            raise planning_provider_error(
+                "plan_review", problems=structured_output_problems(error)
+            ) from error
+        except ProviderError as error:
+            raise planning_provider_error("plan_review") from error
 
     async def finalize(
         self,
         task: AgentTask,
         run: ReActRun,
     ) -> ResearchPlan | None:
-        """Request a plan, repair it at most once, or fail the session."""
+        """Request a plan, repair and review it at most once each, or fail.
+
+        The bounds are explicit because every unstated retry is a place a bad
+        plan can quietly become an accepted one: one structural repair, one
+        semantic review, at most one repair of what the review named, and one
+        confirming review. A plan that is still unsound after that is
+        reported with the reviewer's own defect list rather than accepted.
+        """
         if not run.succeeded:
             raise planning_provider_error("react_loop")
 
-        sub_topics, problems = await self._request_plan(task, run)
-        if not problems:
-            return ResearchPlan(sub_topics=sub_topics)
-
+        contract = self.answer_contract_for(task.instruction)
         sub_topics, problems = await self._request_plan(
-            task, run, repair=format_plan_problems(problems)
+            task, run, contract=contract
         )
+        repaired = False
+        if problems:
+            sub_topics, problems = await self._request_plan(
+                task,
+                run,
+                contract=contract,
+                repair=format_plan_problems(problems),
+            )
+            repaired = True
+            if problems:
+                raise PlanningError(
+                    "The planner could not produce a valid research plan after "
+                    "one repair attempt.",
+                    problems=problems,
+                )
+
+        review = await self._review_plan(contract, sub_topics)
+        if review.sound:
+            return ResearchPlan(
+                sub_topics=sub_topics,
+                repair_attempted=repaired,
+                answer_contract=contract,
+            )
+
+        requested = format_review_problems(review)
+        sub_topics, problems = await self._request_plan(
+            task, run, contract=contract, repair=requested
+        )
+        repaired = True
         if problems:
             raise PlanningError(
                 "The planner could not produce a valid research plan after "
-                "one repair attempt.",
-                problems=problems,
+                "one repair of the plan review's findings.",
+                problems=[*requested_problems(review), *problems],
             )
-        return ResearchPlan(sub_topics=sub_topics, repair_attempted=True)
+        confirming = await self._review_plan(
+            contract, sub_topics, already_requested=requested
+        )
+        if not confirming.sound:
+            raise PlanningError(
+                "The planner could not produce a sound research plan: the "
+                "plan review still reports semantic defects after one repair.",
+                problems=requested_problems(confirming),
+            )
+        return ResearchPlan(
+            sub_topics=sub_topics,
+            repair_attempted=repaired,
+            answer_contract=contract,
+        )
 
     def state_update(
         self,
         result: ResearchPlan | None,
         run: ReActRun,
     ) -> ResearchStateUpdate:
+        """The plan, and for a first plan the frozen contract and inventory.
+
+        An extension reports only what it added: its sub-topics append to the
+        plan already in state, and its targets belong to the *expanded*
+        inventory, so neither the frozen contract nor the initial inventory is
+        rewritten by a later pass.
+        """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
-        if result is not None:
-            update["sub_topics"] = list(result.sub_topics)
+        if result is None:
+            return update
+        update["sub_topics"] = list(result.sub_topics)
+        target_ids = inventory_target_ids(result.sub_topics)
+        if result.extension:
+            update["expanded_target_ids"] = target_ids
+            return update
+        if result.answer_contract is not None:
+            update["answer_contract"] = result.answer_contract
+        update["initial_target_ids"] = target_ids
         return update
+
+    async def extend_plan(
+        self,
+        state: ResearchState,
+        *,
+        omission: str,
+    ) -> ResearchPlan:
+        """Add sub-topics for one reviewed omission of the original question.
+
+        Returns a plan carrying **only** the additional sub-topics, with ids
+        continuing after the plan already in state. The frozen contract, the
+        existing ids, and every existing obligation are untouched: this call
+        can add a target and can never remove or weaken one. A capacity
+        conflict is raised as a ``PlanningError`` naming what cannot fit,
+        which is not permission to drop a difficult topic.
+        """
+        if state.answer_contract is None:
+            raise PlanningError(
+                "This session has no frozen answer contract, so no reviewed "
+                "omission can be added to it: plan the session first.",
+                problems=["answer_contract is missing"],
+            )
+        contract = state.answer_contract
+        messages = extension_messages(contract, state.sub_topics, omission)
+        try:
+            draft = await self.provider.complete_structured(
+                messages,
+                PlanExtensionDraft,
+                agent_name=self.name,
+                max_tokens=self.config.planner_final_max_tokens,
+            )
+        except StructuredOutputError as error:
+            raise planning_provider_error(
+                "extend_plan", problems=structured_output_problems(error)
+            ) from error
+        except ProviderError as error:
+            raise planning_provider_error("extend_plan") from error
+
+        additions, problems = extend_plan(
+            state.sub_topics, draft, contract=contract
+        )
+        if problems:
+            raise PlanningError(
+                "The planner could not add the reviewed omission to the plan.",
+                problems=problems,
+            )
+        return ResearchPlan(
+            sub_topics=additions,
+            answer_contract=contract,
+            extension=True,
+        )
 
     async def run(self, state: ResearchState) -> AgentRun[ResearchPlan]:
         """Run the inherited loop, bracketed by planning progress events.

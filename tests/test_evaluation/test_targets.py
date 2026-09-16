@@ -9,7 +9,12 @@ from hashlib import sha256
 import pytest
 
 from deep_research.agents.errors import PlanningError
-from deep_research.agents.planner import ResearchPlanDraft, SubTopicDraft
+from deep_research.agents.planner import (
+    EvidenceTargetDraft,
+    PlanReviewDraft,
+    ResearchPlanDraft,
+    SubTopicDraft,
+)
 from deep_research.agents.steps import ReActDecision
 from deep_research.evaluation.dependencies import (
     bounded_url_fingerprints,
@@ -447,6 +452,13 @@ def _planner_script() -> list[object]:
                     search_queries=[f"query about {title}"],
                     success_criteria=[f"evidence about {title}"],
                     priority=index,
+                    evidence_targets=[
+                        EvidenceTargetDraft(
+                            question=f"What does {title} measure?",
+                            required_dimensions=[f"measure: {title}"],
+                            critical=index == 1,
+                        )
+                    ],
                 )
                 for index, title in enumerate(
                     (
@@ -457,6 +469,13 @@ def _planner_script() -> list[object]:
                     start=1,
                 )
             ]
+        ),
+        PlanReviewDraft(
+            sound=True,
+            missing_dimensions=[],
+            atomicity_defects=[],
+            unsupported_premises=[],
+            repair_instruction="",
         ),
     ]
 
@@ -547,13 +566,16 @@ async def test_a_repaired_structured_call_is_counted_without_its_content(
     output = TargetOutput.model_validate(payload)
 
     assert output.completed is True, output.failure
+    # Two structured calls, and this scripted provider fails the first
+    # attempt of each: the plan draft and the planner's tool-free plan
+    # review. Neither call's content may appear in the ledger.
     assert output.structured_calls == StructuredCallSummary(
-        calls=1, repaired_calls=1, failed_attempts=1
+        calls=2, repaired_calls=2, failed_attempts=2
     )
     assert output.model_dump(mode="json")["structured_calls"] == {
-        "calls": 1,
-        "repaired_calls": 1,
-        "failed_attempts": 1,
+        "calls": 2,
+        "repaired_calls": 2,
+        "failed_attempts": 2,
     }
     serialized = json.dumps(payload)
     assert _LEDGER_SENTINEL not in serialized
@@ -575,8 +597,9 @@ async def test_a_first_try_structured_call_is_not_counted_as_repaired(
     output = TargetOutput.model_validate(payload)
 
     assert output.completed is True
+    # The plan draft and the plan review, both first-try.
     assert output.structured_calls == StructuredCallSummary(
-        calls=1, repaired_calls=0, failed_attempts=0
+        calls=2, repaired_calls=0, failed_attempts=0
     )
 
 
@@ -600,7 +623,7 @@ async def test_concurrent_repetitions_count_only_their_own_attempts(
     assert len({output.session_id for output in outputs}) == 2
     for output in outputs:
         assert output.completed is True
-        # A session-blind count would report two calls and two repairs here.
+        # A session-blind count would report four calls and four repairs here.
         assert output.structured_calls == StructuredCallSummary(
-            calls=1, repaired_calls=1, failed_attempts=1
+            calls=2, repaired_calls=2, failed_attempts=2
         )

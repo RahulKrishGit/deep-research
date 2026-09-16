@@ -12,7 +12,12 @@ from pathlib import Path
 import pytest
 
 from deep_research.agents.identity import claim_fingerprint
-from deep_research.agents.planner import ResearchPlanDraft, SubTopicDraft
+from deep_research.agents.planner import (
+    EvidenceTargetDraft,
+    PlanReviewDraft,
+    ResearchPlanDraft,
+    SubTopicDraft,
+)
 from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
 from deep_research.agents.steps import ReActDecision, ReActStep
 from deep_research.evaluation.cases import (
@@ -1613,6 +1618,14 @@ def _planner_draft(*titles: str) -> ResearchPlanDraft:
                 search_queries=[f"query about {title}"],
                 success_criteria=[f"evidence about {title}"],
                 priority=index,
+                evidence_targets=[
+                    EvidenceTargetDraft(
+                        question=f"What does {title} measure, and per which "
+                        "authority?",
+                        required_dimensions=[f"measure: {title}"],
+                        critical=index == 1,
+                    )
+                ],
             )
             for index, title in enumerate(titles, start=1)
         ]
@@ -1620,7 +1633,7 @@ def _planner_draft(*titles: str) -> ResearchPlanDraft:
 
 
 def _planner_responses(*, leak: str | None = None) -> list:
-    """One finishing decision, then a valid three-subtopic plan draft.
+    """One finishing decision, a valid plan draft, and one sound review.
 
     When ``leak`` is given, it is embedded in the first subtopic's
     rationale so the target's redaction step has a real secret to catch.
@@ -1637,7 +1650,18 @@ def _planner_responses(*, leak: str | None = None) -> list:
         draft = draft.model_copy(
             update={"sub_topics": [first, *draft.sub_topics[1:]]}
         )
-    return [_finish_decision(), draft]
+    return [_finish_decision(), draft, _sound_review()]
+
+
+def _sound_review() -> PlanReviewDraft:
+    """The planner's tool-free review verdict for a plan that is sound."""
+    return PlanReviewDraft(
+        sound=True,
+        missing_dimensions=[],
+        atomicity_defects=[],
+        unsupported_premises=[],
+        repair_instruction="",
+    )
 
 
 @pytest.fixture
