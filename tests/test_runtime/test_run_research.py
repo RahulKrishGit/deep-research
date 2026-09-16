@@ -52,6 +52,12 @@ def fake_builder(tracker, *, agents=None, checkpointer=None):
             session_id=session_id,
             settings=settings,
             tracker=tracker,
+            # ``ResearchRuntime`` requires a budget because the production
+            # builder always constructs exactly one for the run. A stand-in
+            # that omitted it would stop exercising the same constructor the
+            # runtime uses, so this builds a real (undeclared-ceiling) budget
+            # rather than passing ``None``.
+            request_budget=RequestBudget(),
             graph=compile_research_graph(
                 agents or fake_research_agents(), checkpointer=checkpointer
             ),
