@@ -578,10 +578,30 @@ def test_evidence_reports_when_nothing_was_retrieved() -> None:
             {"url": "https://b.test/two", "text": "body"},
             ("https://b.test/two",),
         ),
+        # The body came from the URL the transport actually resolved to, so
+        # that is the source a finding from it may cite.
+        (
+            "web_scraper",
+            {
+                "url": "https://b.test/asked",
+                "resolved_url": "https://mirror.test/two",
+                "text": "body",
+            },
+            ("https://mirror.test/two",),
+        ),
         (
             "document_reader",
             {"source": "https://c.test/three.pdf", "chunks": ["chunk"]},
             ("https://c.test/three.pdf",),
+        ),
+        (
+            "document_reader",
+            {
+                "source": "https://c.test/asked.pdf",
+                "resolved_source": "https://cdn.test/three.pdf",
+                "chunks": ["chunk"],
+            },
+            ("https://cdn.test/three.pdf",),
         ),
     ],
 )

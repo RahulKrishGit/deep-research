@@ -9,6 +9,7 @@ from deep_research.agents.evidence import (
     passages_from_chunks,
 )
 from deep_research.tools.document_reader import DocumentReaderTool
+from deep_research.utils.types import INCOMPLETE_CONTENT_SHA256
 
 
 @pytest.mark.asyncio
@@ -234,6 +235,39 @@ async def test_reader_marks_a_scanned_page_extraction_incomplete(
     assert [chunk["page"] for chunk in result.data["chunks"]] == [1, 3]
     assert result.data["failures"] == []
     assert result.data["extraction_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_whitespace_only_document_is_a_documented_failure(
+    tracker, tmp_path
+) -> None:
+    """A canonical-empty document is no content at all, not a partial read.
+
+    Its chunk list is non-empty, so the old ordering reached the content-hash
+    helper first and let an internal contract error escape as
+    ``error_type="EvidenceContractError"`` — an undocumented failure neither
+    the model nor an audit can act on.
+    """
+    source = tmp_path / "blank.txt"
+    source.write_text("\n", encoding="utf-8")
+
+    async with tracker.session_span("session-1", "question"):
+        result = await DocumentReaderTool(tracker).execute(source=str(source))
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.type == "empty_document_content"
+    assert result.error.message == "document extraction produced no text"
+    assert result.error.recoverable is True
+    assert result.data is not None
+    # The extraction itself completed — the document simply has no text — so
+    # the completeness flag stays true while the hash reports that there is
+    # nothing usable to identify. No ReadRecord can be built from this pairing
+    # (the contract rejects a complete read without a digest), and the read
+    # never succeeds, so the pairing only ever appears on a failure payload.
+    assert result.data["extraction_complete"] is True
+    assert result.data["content_sha256"] == INCOMPLETE_CONTENT_SHA256
+    assert "EvidenceContractError" not in result.model_dump_json()
 
 
 @pytest.mark.asyncio

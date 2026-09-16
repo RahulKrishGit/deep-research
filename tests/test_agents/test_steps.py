@@ -429,6 +429,21 @@ def _tool_step(
     ("data", "expected"),
     [
         ({"url": "https://a.test/page", "text": "Read body."}, ("https://a.test/page",)),
+        # A redirect must not leave only the requested URL behind: the body
+        # came from the resolved URL, so that is the read URL.
+        (
+            {
+                "url": "https://a.test/asked",
+                "resolved_url": "https://served.test/page",
+                "text": "Read body.",
+            },
+            ("https://served.test/page",),
+        ),
+        # A payload with no resolved URL still reads the one it asked for.
+        (
+            {"url": "https://a.test/asked", "resolved_url": "  ", "text": "Body."},
+            ("https://a.test/asked",),
+        ),
         # A URL with nothing read from it is a candidate, not a read.
         ({"url": "https://a.test/page", "text": "   "}, ()),
         ({"url": "https://a.test/page"}, ()),
@@ -447,6 +462,19 @@ def test_only_a_scraped_page_with_text_is_read(
     [
         (
             {"source": "https://b.test/doc.pdf", "chunks": ["chunk"]},
+            ("https://b.test/doc.pdf",),
+        ),
+        (
+            {
+                "source": "https://b.test/asked.pdf",
+                "resolved_source": "https://cdn.test/doc.pdf",
+                "chunks": ["chunk"],
+            },
+            ("https://cdn.test/doc.pdf",),
+        ),
+        (
+            {"source": "https://b.test/doc.pdf", "resolved_source": None,
+             "chunks": ["chunk"]},
             ("https://b.test/doc.pdf",),
         ),
         # An empty chunk list means the document was never actually read.
@@ -574,37 +602,42 @@ def test_a_step_without_a_tool_result_reads_nothing() -> None:
     assert read_evidence_urls(step) == ()
 
 
-def test_read_evidence_urls_normalizes_in_order_and_deduplicates_within_the_step() -> (
-    None
-):
+def test_read_evidence_urls_normalizes_the_serving_url_it_selects() -> None:
+    """A redirect leaves the served URL normalized, not the requested one."""
     step = _tool_step(
-        "document_reader",
+        "web_scraper",
         {
-            "source": "HTTPS://A.test/one/",
-            "chunks": ["chunk"],
+            "url": "HTTPS://WWW.a.test/asked/",
+            "resolved_url": "https://b.test/one/",
+            "text": "Read body.",
         },
     )
 
-    assert read_evidence_urls(step) == ("https://a.test/one",)
+    assert read_evidence_urls(step) == ("https://b.test/one",)
 
 
 def test_read_evidence_urls_normalizes_one_page_reported_two_ways() -> None:
     """Two tools, one page: each step reports the same canonical URL.
 
-    The fold that collapses those repeats into one entry is
-    ``retrieved_finding_urls``; this is the per-step contract it folds.
+    The first asked for a URL that redirects, the second reports the served
+    URL directly. ``retrieved_finding_urls`` folds those steps into one entry,
+    which only works because each step reports the canonical serving URL.
     """
     run = ReActRun(
         agent_name="researcher",
         stop_reason="finished",
         steps=[
             _tool_step(
-                "document_reader",
-                {"source": "https://www.b.test/two?x=1#frag", "chunks": ["chunk"]},
+                "web_scraper",
+                {
+                    "url": "HTTPS://WWW.b.test/two/?x=1",
+                    "resolved_url": "https://b.test/two?x=1",
+                    "text": "Read body.",
+                },
             ),
             _tool_step(
-                "web_scraper",
-                {"url": "https://b.test/two?x=1", "text": "Read body."},
+                "document_reader",
+                {"source": "https://b.test/two?x=1#frag", "chunks": ["chunk"]},
             ),
         ],
         iterations=2,

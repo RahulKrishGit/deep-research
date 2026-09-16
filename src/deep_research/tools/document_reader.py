@@ -14,7 +14,10 @@ from urllib.parse import urlsplit
 import httpx
 import pdfplumber
 
-from deep_research.agents.evidence import normalized_content_sha256
+from deep_research.agents.evidence import (
+    canonical_read_text,
+    normalized_content_sha256,
+)
 from deep_research.observability import Tracker
 from deep_research.tools.base import (
     BaseTool,
@@ -22,6 +25,7 @@ from deep_research.tools.base import (
     ToolExecution,
     ToolExecutionError,
 )
+from deep_research.utils.types import INCOMPLETE_CONTENT_SHA256
 
 
 class AsyncHttpClient(Protocol):
@@ -43,13 +47,6 @@ _CONTENT_TYPE_FORMATS = {
     "text/markdown": "markdown",
     "text/plain": "text",
 }
-
-# The published value of ``content_sha256`` when the reader cannot hash a
-# complete document. It is deliberately not a digest: a partial extraction
-# hashed as if it were the whole work would give two different documents one
-# identity, and every consumer of this payload must treat the marker as
-# "no usable content hash" instead.
-_INCOMPLETE_HASH = "incomplete"
 
 
 class DocumentReaderTool(BaseTool):
@@ -149,6 +146,7 @@ class DocumentReaderTool(BaseTool):
         chunks, failures, extraction_complete = _extract(
             document_format, payload, self._chunk_chars, self._csv_rows_per_chunk
         )
+        document_text = _document_text(chunks)
         data = {
             "source": source,
             "requested_source": source,
@@ -156,7 +154,9 @@ class DocumentReaderTool(BaseTool):
             "format": document_format,
             "chunks": chunks,
             "failures": failures,
-            "content_sha256": _document_sha256(chunks, extraction_complete),
+            "content_sha256": _document_sha256(
+                document_text, extraction_complete
+            ),
             "extraction_complete": extraction_complete,
         }
         if not chunks:
@@ -164,6 +164,18 @@ class DocumentReaderTool(BaseTool):
                 "document extraction produced no chunks",
                 error_type="document_extraction_failed",
                 details={"failure_count": len(failures)},
+                data=data,
+            )
+        if not canonical_read_text(document_text):
+            # Whitespace-only content is no content at all, and it is not an
+            # incomplete extraction either. It fails here as a documented tool
+            # failure, exactly as an empty scraped page does, instead of
+            # letting the content-hash helper raise an internal contract error
+            # that ``tools.base`` would publish as an unexpected failure.
+            raise ToolExecutionError(
+                "document extraction produced no text",
+                error_type="empty_document_content",
+                details={"chunk_count": len(chunks)},
                 data=data,
             )
         return ToolExecution(
@@ -255,19 +267,20 @@ def _document_text(chunks: list[dict[str, Any]]) -> str:
     return "".join(str(chunk.get("text", "")) for chunk in chunks)
 
 
-def _document_sha256(
-    chunks: list[dict[str, Any]], extraction_complete: bool
-) -> str:
-    """The content hash of ``chunks``, or a placeholder when unusable.
+def _document_sha256(document_text: str, extraction_complete: bool) -> str:
+    """The content hash of ``document_text``, or a placeholder when unusable.
 
     A windowed extraction keeps only part of the document, and pages whose
     text could not be read are missing from it entirely: neither may be
     hashed as if it identified the complete work, so both report the same
     explicit marker instead of a digest that would look authoritative.
+
+    Total by construction: the caller publishes this value for failures too,
+    so it never raises for text that canonicalizes to nothing.
     """
-    if not chunks or not extraction_complete:
-        return _INCOMPLETE_HASH
-    return normalized_content_sha256(_document_text(chunks))
+    if not extraction_complete or not canonical_read_text(document_text):
+        return INCOMPLETE_CONTENT_SHA256
+    return normalized_content_sha256(document_text)
 
 
 def _source_suffix(source: str) -> str:
