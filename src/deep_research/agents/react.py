@@ -45,12 +45,18 @@ _UNEXECUTED_REMAINDER_TOOL_NAME = "(unexecuted)"
 
 # The one tool whose failures publish a bounded, countable diagnosis. Those
 # values are bounded by the producer too (``tools/web_scraper.py``), and they
-# are revalidated here against the same bounds rather than trusted, because
-# the record is public state and the values arrive from a tool: ``attempts``
-# is 1..3, ``retries`` is 0..2, ``status_code`` is an integer in 100..599, and
-# ``content_type`` is a lower-case ASCII media type of at most 64 characters.
-# Nothing else in the failure is ever read, so the message, the request URL,
-# the page content, and any unexpected key have no path into the record.
+# are revalidated here rather than trusted, because the record is public state
+# and the values arrive from a tool: ``attempts`` is 1..3, ``retries`` is 0..2,
+# ``status_code`` is an integer in 100..599, and ``content_type`` is either a
+# lower-case ASCII media type of at most 64 characters or the producer's own
+# static marker for a header it could not read. That marker is admitted
+# deliberately, and it is the one place this projection is deliberately wider
+# than the media-type grammar instead of narrower: the producer publishes the
+# marker *in place of* a media type, and the branch that produces it publishes
+# nothing else, so refusing the marker here would leave an unparseable content
+# type with no diagnostic at all and uncountable by class. Nothing else in the
+# failure is ever read, so the message, the request URL, the page content, and
+# any unexpected key have no path into the record.
 _SCRAPER_TOOL_NAME = "web_scraper"
 _MIN_ATTEMPTS = 1
 _MAX_ATTEMPTS = 3
@@ -59,6 +65,9 @@ _MAX_RETRIES = 2
 _MIN_STATUS_CODE = 100
 _MAX_STATUS_CODE = 599
 _MAX_MEDIA_TYPE_LENGTH = 64
+# The producer's static marker, project-authored text rather than remote
+# input, so admitting it verbatim opens no channel.
+_UNKNOWN_CONTENT_TYPE = "unknown"
 _MEDIA_TYPE_PATTERN = re.compile(
     r"[a-z0-9!#$%&'*+.^_`|~-]+/[a-z0-9!#$%&'*+.^_`|~-]+"
 )
@@ -77,16 +86,22 @@ def _bounded_int(value: JsonValue, *, minimum: int, maximum: int) -> int | None:
 
 
 def _bounded_media_type(value: JsonValue) -> str | None:
-    """``value`` when it is a lower-case ASCII media type, else ``None``.
+    """``value`` when it is a published content type, else ``None``.
 
-    Mirrors the producer's bound, ASCII first: folding and stripping are
-    Unicode-aware, so a KELVIN SIGN would fold to ASCII ``k`` and a no-break
-    space would be stripped, turning malformed input into a normalised copy of
-    itself. A value that is not already the published shape is dropped, never
-    truncated into one.
+    The producer publishes exactly two shapes, and both are kept: a lower-case
+    ASCII media type, and its static marker for a header it could not read.
+    The marker is admitted deliberately — it is project-authored text, the
+    branch that publishes it publishes nothing else, and dropping it would make
+    an unparseable content type indistinguishable from one that was never
+    published. Everything else is dropped rather than normalised, ASCII first:
+    folding and stripping are Unicode-aware, so a KELVIN SIGN would fold to
+    ASCII ``k`` and a no-break space would be stripped, turning malformed input
+    into a normalised copy of itself.
     """
     if not isinstance(value, str) or not value.isascii():
         return None
+    if value == _UNKNOWN_CONTENT_TYPE:
+        return value
     if len(value) > _MAX_MEDIA_TYPE_LENGTH or value != value.lower():
         return None
     return value if _MEDIA_TYPE_PATTERN.fullmatch(value) is not None else None
@@ -139,10 +154,16 @@ def _tool_failure_details(
     """Build the details for one ``agent_tool_failed`` record.
 
     Every failed call records the tool, the iteration, and the error type the
-    observation already carries. Only ``web_scraper`` adds its own bounded
-    diagnosis, and only for the tool the loop actually executed: the gate is
-    the name the toolset resolved, never a name the result asserts about
-    itself, so no other tool can reach into this projection.
+    observation already carries. ``tool_error_type`` is the one value here that
+    is neither revalidated nor length-bounded, and it stays that way on
+    purpose: its provenance is the tool that raised rather than this loop, and
+    it is what the observation has always shown the model — a pre-existing
+    property of the record, out of this projection's scope.
+
+    Only ``web_scraper`` adds its own bounded diagnosis, and only for the tool
+    the loop actually executed: the gate is the name the toolset resolved,
+    never a name the result asserts about itself, so no other tool can reach
+    into this projection.
     """
     details: dict[str, JsonValue] = {
         "tool": tool_name,

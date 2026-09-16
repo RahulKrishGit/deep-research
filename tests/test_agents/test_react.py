@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from deep_research.agents import react as react_module
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.steps import ReActDecision, ReActRun, ReActStep
 from deep_research.agents.toolset import AgentToolset
@@ -19,6 +20,7 @@ from deep_research.providers import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
+from deep_research.tools import web_scraper as web_scraper_module
 from deep_research.tools.base import (
     BaseTool,
     ToolCallContext,
@@ -794,6 +796,10 @@ async def test_the_scraper_projection_omits_an_absent_status_code(
         ({"status_code": 503.0}, {}),
         ({"status_code": _HOSTILE_URL}, {}),
         ({"content_type": "text/html"}, {"content_type": "text/html"}),
+        # The producer's static marker for a header it could not read is
+        # published *in place of* a media type, so it is projected verbatim:
+        # an unparseable content type is a class to count, not a value to drop.
+        ({"content_type": "unknown"}, {"content_type": "unknown"}),
         ({"content_type": _HOSTILE_CONTENT_TYPE}, {}),
         ({"content_type": "TEXT/HTML"}, {}),
         ({"content_type": "a" * 100 + "/b"}, {}),
@@ -817,6 +823,58 @@ async def test_the_scraper_projection_revalidates_every_published_value(
         "tool_error_type": "HTTPStatusError",
         **projected,
     }
+
+
+def test_the_projection_and_the_producer_share_one_media_type_bound() -> None:
+    """The duplicated bound is pinned to the producer's here, in tests only.
+
+    ``agents/react.py`` must not import a concrete tool module — and a shared
+    validator would let one producer bug hide the other — so the suite is what
+    keeps the two copies honest. A change to the producer's pattern, length, or
+    static marker fails here instead of silently narrowing what a failure
+    record can publish, which is how the marker came to be dropped once.
+    """
+    assert (
+        react_module._MEDIA_TYPE_PATTERN.pattern
+        == web_scraper_module._MEDIA_TYPE_PATTERN.pattern
+    )
+    assert (
+        react_module._MAX_MEDIA_TYPE_LENGTH
+        == web_scraper_module._MEDIA_TYPE_MAX_LENGTH
+    )
+    assert (
+        react_module._UNKNOWN_CONTENT_TYPE
+        == web_scraper_module._UNKNOWN_CONTENT_TYPE
+    )
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "",
+        "application/pdf",
+        "APPLICATION/PDF; charset=binary",
+        _HOSTILE_CONTENT_TYPE,
+        "application/pdf<script>alert(4)</script>",
+        "a" * 100 + "/b",
+        "\u212a/x",
+        "\u00a0application/pdf",
+        "text/plain; name=h\u00e9llo",
+    ],
+)
+def test_every_content_type_the_producer_publishes_survives_the_projection(
+    header: str,
+) -> None:
+    """Nothing the producer chose to publish is dropped on the way to a record.
+
+    A malformed, non-ASCII, over-long, or absent header becomes the producer's
+    own static marker, and the unparseable-content-type branch publishes
+    neither ``attempts``, ``retries``, nor ``status_code`` — so dropping that
+    marker would leave that whole failure class with no diagnostic to count it
+    by, indistinguishable from a scrape that published no content type at all.
+    """
+    published = web_scraper_module._bounded_content_type(header)
+    assert react_module._bounded_media_type(published) == published
 
 
 @pytest.mark.asyncio
