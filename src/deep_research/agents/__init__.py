@@ -102,6 +102,7 @@ from deep_research.agents.planner import (
     plan_messages,
     planning_completed_event,
     planning_started_event,
+    structured_output_problems,
     validate_plan_draft,
 )
 from deep_research.agents.prompts import (
@@ -548,6 +549,7 @@ __all__ = [
     "resolve_verdict",
     "retrieved_finding_urls",
     "retrieved_source_urls",
+    "structured_output_problems",
     "union_claim_provenance",
     "valid_verification_passages",
     "route_decision",

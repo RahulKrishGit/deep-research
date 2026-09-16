@@ -284,9 +284,27 @@ CRITIC_PROMPT_FINGERPRINT = "bc6b1f23064c"
 # ``CritiqueDraft`` and ``Critique`` into one shared ``normalize_gap_drafts``,
 # moving the Critic's value a final time, ``141c47557a29`` -> ``e8bb04d10046``.
 # No prompt text was edited in any of those steps and no other value moved.
+# Re-pinned deliberately, after the agent-performance session measured two live
+# failures and a behavioural shortfall. ``agent_prompt_fingerprint`` hashes each
+# agent's *module source*, so a non-prompt edit to an agent module moves its
+# value too — that is a property of this alarm, not a defect in it.
+#   planner 028150f7e4a5 -> 2e357f4a04c4: ``SubTopicDraft`` gained a
+#     ``mode="before"`` validator that reads a lone string as a one-element list
+#     for ``search_queries``/``success_criteria``. Two of four live runs died at
+#     the planner with ``graph_planning_failed`` after 22,593 and 17,433 tokens
+#     because a sampled plan request wrote its single criterion as a bare string
+#     where the schema declares ``list[str]``. The JSON schema handed to the
+#     model is byte-identical before and after (verified by hashing
+#     ``model_json_schema()``), so the model is still asked for an array.
+#   researcher 96907685a382 -> 58ec2371ccc7: the researcher's system prompt
+#     gained an ordering rule — read the most promising result before searching
+#     again — after a per-agent trace analysis showed 183 ``web_search`` calls,
+#     zero ``web_scraper`` calls, and every ReAct loop ending at exactly its
+#     10-call tool budget. Wording only; no tool semantics changed.
+# No other agent's value moved.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "028150f7e4a5",
-    "researcher": "96907685a382",
+    "planner": "2e357f4a04c4",
+    "researcher": "58ec2371ccc7",
     "source_evaluator": "6e127ffba9d4",
     "fact_checker": "5080d1810c7e",
     "synthesizer": "dd422429c34b",
