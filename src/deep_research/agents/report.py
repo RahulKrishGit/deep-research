@@ -49,6 +49,7 @@ from deep_research.utils.types import (
     ReportConstraint,
     ReportPoint,
     ReportSection,
+    ResearchError,
     ResearchEvent,
     ScoredSource,
     SubTopic,
@@ -170,6 +171,12 @@ _CLAIM_TEXT_CHARS = 240
 _EVIDENCE_CHARS = 200
 _LOCATOR_CHARS = 120
 _ERROR_MESSAGE_CHARS = 240
+_DETAILS_CHARS = 240
+#: The error types whose ``details`` may be published in the evidence ledger.
+#: Membership requires evidence that every value is bounded — a projection that
+#: revalidates what it copies — because the ledger is a public artifact and the
+#: default for an unvetted key is to withhold it. See ``_published_details``.
+_DETAILED_ERROR_TYPES = frozenset({"agent_tool_failed"})
 _NO_DATED_EVIDENCE = "no dated evidence was recorded"
 _NO_SCOPE = "not stated"
 _CELL_EMPTY = "—"
@@ -807,6 +814,29 @@ def _unchecked_findings(composition: ReportComposition) -> str:
     )
 
 
+def _published_details(error: ResearchError) -> str:
+    """Render ``error.details`` for the one error type whose details are bounded.
+
+    ``agent_tool_failed`` is published because its details are produced by the
+    ReAct projection, which revalidates every value it copies: the tool name the
+    toolset resolved, the iteration, the enumerated error type, and — for
+    ``web_scraper`` — the bounded diagnosis (``attempts``, ``retries``,
+    ``status_code``, and a media type or the static ``unknown`` marker). Without
+    those values a scraper failure is countable but not *classifiable*, which is
+    the whole point of classifying it.
+
+    Every other error type's details are withheld. They are not vetted by a
+    projection that revalidates them, and this artifact is public, so an
+    unvetted key could carry text this project never publishes. Withholding is
+    the conservative default; a type is added here only with the same evidence
+    that its details are bounded.
+    """
+    if error.error_type not in _DETAILED_ERROR_TYPES or not error.details:
+        return _CELL_EMPTY
+    ordered = sorted(error.details.items(), key=lambda item: item[0])
+    return ", ".join(f"{key}={value}" for key, value in ordered)
+
+
 def _run_errors(composition: ReportComposition) -> str:
     if not composition.errors:
         return "(no error was recorded for this pass)"
@@ -817,7 +847,10 @@ def _run_errors(composition: ReportComposition) -> str:
             _cell(error.source, limit=120),
             "recoverable" if error.recoverable else "fatal",
             _cell(error.message, limit=_ERROR_MESSAGE_CHARS),
+            _cell(_published_details(error), limit=_DETAILS_CHARS),
         ]
         for position, error in enumerate(composition.errors, start=1)
     ]
-    return _table(("#", "Type", "Source", "Severity", "Message"), rows)
+    return _table(
+        ("#", "Type", "Source", "Severity", "Message", "Details"), rows
+    )

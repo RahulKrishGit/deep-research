@@ -893,6 +893,54 @@ def test_an_empty_ledger_still_carries_every_block() -> None:
     assert ledger.endswith("\n")
 
 
+def test_the_run_errors_block_publishes_bounded_tool_failure_details() -> None:
+    """A classified tool failure reaches the ledger; an unvetted one does not.
+
+    The bounded scraper diagnosis is the only reason a ``web_scraper`` failure
+    can be counted *by class* rather than merely counted, so the evidence
+    artifact has to carry it — otherwise classifying the failure buys nothing
+    for the reader of this artifact. Every other error type's details are
+    withheld: this ledger is public, and those values are not produced by a
+    projection that revalidates them.
+    """
+    ledger = render_evidence_ledger(
+        _composition(
+            errors=[
+                ResearchError(
+                    error_type="agent_tool_failed",
+                    source="agent.researcher",
+                    message="web_scraper failed; the agent continued.",
+                    recoverable=True,
+                    details={
+                        "tool": "web_scraper",
+                        "iteration": 3,
+                        "tool_error_type": "HTTPStatusError",
+                        "attempts": 2,
+                        "retries": 1,
+                        "status_code": 503,
+                        "content_type": "text/html",
+                    },
+                ),
+                ResearchError(
+                    error_type="synthesizer_invalid_section",
+                    source="agent.synthesizer",
+                    message="Some drafted content was refused.",
+                    recoverable=True,
+                    details={"unvetted": "https://internal.example/secret"},
+                ),
+            ]
+        )
+    )
+
+    errors = _section_body(ledger, "## Run errors")
+
+    assert "tool_error_type=HTTPStatusError" in errors
+    assert "status_code=503" in errors
+    assert "content_type=text/html" in errors
+    assert "unvetted" not in errors
+    assert "internal.example" not in errors
+
+
 # --- identity and citation helpers -------------------------------------------
 
 
