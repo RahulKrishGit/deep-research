@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.utils.types import (
+    INCOMPLETE_CONTENT_SHA256,
     QUALITY_CONTRACT_VERSION,
     BoundaryAudit,
     EvidenceDisposition,
@@ -465,12 +466,13 @@ def _complete_content_hash(row: Mapping[str, object]) -> str | None:
     """The row's complete-content hash, or ``None`` when it is unusable.
 
     Only a full 64-digit hexadecimal digest is an identity edge, and only when
-    the row does not declare its extraction incomplete: a placeholder, an
-    error string, a truncated digest, or a hash taken from part of a document
-    identifies no work.
+    the extraction it came from is complete. Completeness is read strictly: an
+    absent flag leaves the hash field's own name asserting it, and anything
+    else must be the boolean ``True``. A serialized ``"false"``, ``0``, or
+    ``None`` never counts as complete, because a truthy string is exactly how
+    a corrupt snapshot would smuggle a partial hash into an identity.
     """
-    complete = row.get("extraction_complete")
-    if isinstance(complete, bool) and not complete:
+    if "extraction_complete" in row and row["extraction_complete"] is not True:
         return None
     value = row.get("complete_content_sha256")
     if not isinstance(value, str):
@@ -503,6 +505,7 @@ def build_read_id(
     reader: str,
     resolved_url: str,
     content_sha256: str,
+    passages: Mapping[str, str] | None = None,
 ) -> str:
     """Return the stable identity of one read body inside one session.
 
@@ -511,12 +514,32 @@ def build_read_id(
     different one. Identity resolution, scoring, and target association are
     deliberately absent from the key: they are assessments, and an assessment
     must never renumber evidence.
+
+    A partial extraction has no content hash to identify it by, so the
+    locator-keyed text it did read is folded in instead; without that, every
+    partial read of one URL in a session would share an ID, and a retry that
+    recovers a lost page would look like a conflicting rewrite of the same
+    read rather than a second one.
     """
+    digest = content_sha256.strip().casefold()
+    salt = ""
+    if digest == INCOMPLETE_CONTENT_SHA256:
+        if not passages:
+            raise EvidenceContractError(
+                "a partial read requires the passages it did read"
+            )
+        salt = _fingerprint(
+            *(
+                f"{locator}\x1e{canonical_read_text(text)}"
+                for locator, text in sorted(passages.items())
+            )
+        )
     return "read-" + _fingerprint(
         session_id,
         reader,
         normalize_source_url(resolved_url),
-        content_sha256.strip().casefold(),
+        digest,
+        salt,
     )[:_DIGEST_LENGTH]
 
 
@@ -537,11 +560,18 @@ def build_read_record(
     """Build the one admissible read record for a successful read.
 
     Every field a replay needs must be present and consistent: a body with no
-    content, a passage that is not verbatim text of that body, a declared hash
-    that disagrees with the body it was taken from, or an extraction the
-    reader itself reported incomplete all fail here rather than becoming
-    evidence. ``text`` is the complete extracted document; ``passages`` maps
-    the locator the reader reported to the text at that locator.
+    content, a passage that is not verbatim text of that body, and a declared
+    hash that disagrees with the body it was taken from all fail here rather
+    than becoming evidence. ``text`` is the extracted document; ``passages``
+    maps the locator the reader reported to the text at that locator.
+
+    ``extraction_complete=False`` records a read that lost part of its
+    document — a PDF page that would not parse, a scanned page with no text —
+    as a read of the locators it did extract, with
+    ``INCOMPLETE_CONTENT_SHA256`` in place of a content hash. Discarding such
+    a document outright would throw away evidence that Section 2.1 admits (an
+    exact excerpt with a locator from a successful same-run read), while
+    letting it keep a digest would identify a work nobody fully read.
     """
     if reader not in ("web_scraper", "document_reader"):
         raise EvidenceContractError(
@@ -552,10 +582,6 @@ def build_read_record(
     if not requested or not resolved:
         raise EvidenceContractError(
             "a read record requires both the requested and the resolved URL"
-        )
-    if not extraction_complete:
-        raise EvidenceContractError(
-            "an incomplete extraction is not an admissible read"
         )
     if not session_id.strip():
         raise EvidenceContractError("a read record requires its session id")
@@ -578,13 +604,21 @@ def build_read_record(
             )
         checked[locator] = passage_text
 
-    content_sha256 = normalized_content_sha256(canonical)
-    if declared_content_sha256 is not None and (
-        declared_content_sha256.strip().casefold() != content_sha256
-    ):
-        raise EvidenceContractError(
-            "the declared content hash does not match the read body"
-        )
+    if extraction_complete:
+        content_sha256 = normalized_content_sha256(canonical)
+        if declared_content_sha256 is not None and (
+            declared_content_sha256.strip().casefold() != content_sha256
+        ):
+            raise EvidenceContractError(
+                "the declared content hash does not match the read body"
+            )
+    else:
+        declared = (declared_content_sha256 or "").strip().casefold()
+        if declared and declared != INCOMPLETE_CONTENT_SHA256:
+            raise EvidenceContractError(
+                "an incomplete extraction must not declare a content hash"
+            )
+        content_sha256 = INCOMPLETE_CONTENT_SHA256
 
     return ReadRecord(
         read_id=build_read_id(
@@ -592,6 +626,7 @@ def build_read_record(
             reader=reader,
             resolved_url=resolved,
             content_sha256=content_sha256,
+            passages=checked,
         ),
         requested_url=requested,
         resolved_url=resolved,
@@ -599,7 +634,7 @@ def build_read_record(
         reader=reader,
         retrieved_at=retrieved_at,
         content_sha256=content_sha256,
-        extraction_complete=True,
+        extraction_complete=extraction_complete,
         passages=checked,
         target_ids=list(target_ids),
         origin_session_id=session_id,
@@ -722,9 +757,16 @@ def validate_cached_read(
     needed. ``None`` means refused: the caller records an
     :class:`~deep_research.utils.types.EvidenceDisposition` for it. Task 3
     owns when this is called; this function owns what it may accept.
+
+    Only a *complete* original is ever admitted here. A partial read is
+    admissible evidence in its own right, but it has no content identity, so
+    there is nothing for a later version to be checked against and the marker
+    it carries is refused rather than treated as an expected hash.
     """
     _require_aware_timestamp(validated_at, name="validated_at")
     expected = expected_content_sha256.strip().casefold()
+    if expected == INCOMPLETE_CONTENT_SHA256:
+        return None
     if len(expected) != 64 or not set(expected) <= _HEX_DIGITS:
         raise EvidenceContractError(
             "expected_content_sha256 must be a resolved stored hash"
@@ -740,7 +782,9 @@ def validate_cached_read(
         return None
     if not version_eligible:
         return None
-    if not getattr(record, "extraction_complete", False):
+    if getattr(record, "extraction_complete", None) is not True:
+        # Strictly typed: a serialized ``"false"`` is not completeness, and a
+        # truthy string must never pass a truthiness test here.
         return None
 
     resolved_text = canonical_read_text(canonical_text)
@@ -794,9 +838,10 @@ def merge_read_records(
     """Fold new reads into the registry, refusing one ID with two bodies.
 
     A read ID names an immutable body. Two records under one ID that agree on
-    that body are the same read — the earlier observation and both target
-    associations are kept — while a disagreement is a conflict that raises,
-    because overwriting either one would silently re-point stored evidence.
+    that body are the same read — the earlier observation, the first
+    observation's title, and both target associations are kept — while a
+    disagreement about the body is a conflict that raises, because
+    overwriting either one would silently re-point stored evidence.
     """
     merged: dict[str, ReadRecord] = dict(previous)
     for read_id, record in current.items():
@@ -813,7 +858,13 @@ def merge_read_records(
 
 
 def _read_body(record: ReadRecord) -> tuple[object, ...]:
-    """The immutable facts of a read; assessments and stamps are not here."""
+    """The immutable facts of a read; assessments and stamps are not here.
+
+    ``title`` is deliberately outside the body: the same bytes fetched twice
+    can be labelled differently (a re-read whose extractor fell back to the
+    URL), and that is not a second body. The rule for which label survives is
+    explicit in :func:`_combine_reads` rather than accidental.
+    """
     return (
         record.reader,
         record.requested_url,
@@ -825,6 +876,15 @@ def _read_body(record: ReadRecord) -> tuple[object, ...]:
 
 
 def _combine_reads(existing: ReadRecord, incoming: ReadRecord) -> ReadRecord:
+    """One record for one read ID: first observation wins where they differ.
+
+    The earlier ``retrieved_at`` and the earlier ``title`` are the record's
+    history — a later re-read cannot restate when the evidence was observed or
+    relabel a passage that already cites it. A same-session network read does
+    replace a cache import of the same body, because it is the stronger
+    observation, and target associations always union so nothing a later
+    selector contributed is dropped.
+    """
     preferred = existing
     if existing.acquisition_kind == "cache" and incoming.acquisition_kind == "network":
         preferred = incoming
@@ -838,7 +898,11 @@ def _combine_reads(existing: ReadRecord, incoming: ReadRecord) -> ReadRecord:
         key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")),
     )
     return preferred.model_copy(
-        update={"retrieved_at": observed, "target_ids": targets}
+        update={
+            "retrieved_at": observed,
+            "title": existing.title,
+            "target_ids": targets,
+        }
     )
 
 
@@ -846,7 +910,14 @@ def merge_evidence_units(
     previous: Mapping[str, EvidenceUnit],
     current: Mapping[str, EvidenceUnit],
 ) -> dict[str, EvidenceUnit]:
-    """Fold new evidence units in, unioning targets and refusing rewrites."""
+    """Fold new evidence units in, unioning targets and refusing rewrites.
+
+    One passage read by both agents is reuse, not conflict: the unit keeps the
+    agent that selected it first and the union of every target that later
+    selected it, so the second selection adds associations instead of being
+    silently dropped. A different recorded source label for that one passage
+    is a disagreement about what the passage is, and raises.
+    """
     merged: dict[str, EvidenceUnit] = dict(previous)
     for evidence_id, unit in current.items():
         existing = merged.get(evidence_id)
@@ -858,6 +929,7 @@ def merge_evidence_units(
             or existing.locator != unit.locator
             or existing.excerpt != unit.excerpt
             or existing.source_url != unit.source_url
+            or existing.source_title != unit.source_title
         ):
             raise EvidenceIdentityConflict(
                 f"evidence {evidence_id!r} already names a different passage"
@@ -876,7 +948,13 @@ def merge_evidence_dispositions(
     previous: Sequence[EvidenceDisposition],
     current: Sequence[EvidenceDisposition],
 ) -> list[EvidenceDisposition]:
-    """Append dispositions, refusing two reasons for one item at one stage."""
+    """Append dispositions, refusing contradictions for one item at one stage.
+
+    One item has one reason per stage. A repeat with the same reason unions its
+    targets, and a later pass may fill in the retained equivalent it resolved —
+    but two different retained equivalents, or two different reasons, describe
+    two different omissions wearing one identity, so they raise.
+    """
     merged: list[EvidenceDisposition] = []
     index_by_key: dict[tuple[str, str], int] = {}
     for item in (*previous, *current):
@@ -892,11 +970,27 @@ def merge_evidence_dispositions(
                 f"item {item.item_id!r} already has reason {known.reason!r} "
                 f"at stage {item.stage!r}"
             )
+        retained = known.retained_equivalent_id
+        if retained is None:
+            retained = item.retained_equivalent_id
+        elif (
+            item.retained_equivalent_id is not None
+            and item.retained_equivalent_id != retained
+        ):
+            raise EvidenceIdentityConflict(
+                f"item {item.item_id!r} already points at retained evidence "
+                f"{retained!r} at stage {item.stage!r}"
+            )
         targets = list(known.target_ids)
         for target_id in item.target_ids:
             if target_id not in targets:
                 targets.append(target_id)
-        merged[position] = known.model_copy(update={"target_ids": targets})
+        merged[position] = known.model_copy(
+            update={
+                "target_ids": targets,
+                "retained_equivalent_id": retained,
+            }
+        )
     return merged
 
 

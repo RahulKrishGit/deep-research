@@ -161,6 +161,21 @@ class EvidencePassage(ContractModel):
 QUALITY_CONTRACT_VERSION = "1"
 LEGACY_QUALITY_CONTRACT_VERSION = "0"
 
+# What ``ReadRecord.content_sha256`` carries when the reader could not hash a
+# complete document — a PDF that lost a page, say. It is deliberately not a
+# digest: a hash over part of a document would identify a work nobody fully
+# read, and two different partial extractions would share one identity. The
+# readers publish this same marker (``tools.document_reader``), so the tool
+# boundary and the persisted record cannot disagree about it.
+INCOMPLETE_CONTENT_SHA256 = "incomplete"
+
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _is_content_digest(value: str) -> bool:
+    """True for a full lowercase SHA-256 digest, and for nothing else."""
+    return len(value) == 64 and set(value) <= _HEX_DIGITS
+
 
 class _VerbatimContractModel(ContractModel):
     """Contract model that keeps extracted source text exactly as read.
@@ -209,6 +224,13 @@ class ReadRecord(_VerbatimContractModel):
     locator-keyed text itself, and the session that read it. Nothing mutable —
     no score, no verdict, no assessment — is stored here, so a later pass
     cannot silently re-identify evidence by rewriting its assessment.
+
+    A read whose extraction was incomplete is still a read: it keeps every
+    locator it did extract, so a 200-page document that lost page 7 stays
+    auditable instead of disappearing from the registry. What it may not keep
+    is a content identity, so ``content_sha256`` carries
+    ``INCOMPLETE_CONTENT_SHA256`` and the two fields are checked against each
+    other below.
     """
 
     read_id: str = Field(min_length=1)
@@ -219,8 +241,8 @@ class ReadRecord(_VerbatimContractModel):
     reader: Literal["web_scraper", "document_reader"]
     retrieved_at: AwareISOString
     """When this body was observed — preserved across cache admission."""
-    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    """SHA-256 of the normalized complete text; never an empty or partial hash."""
+    content_sha256: str = Field(min_length=1)
+    """The digest of the complete text, or the explicit incomplete marker."""
     extraction_complete: bool
     passages: dict[str, str] = Field(min_length=1)
     """Locator -> the extracted text at that locator, verbatim."""
@@ -231,6 +253,26 @@ class ReadRecord(_VerbatimContractModel):
     """The session that read the bytes; never the session that imported them."""
     version_validated_at: AwareISOString | None = None
     """When a time-sensitive cached version was last validated locally."""
+
+    @model_validator(mode="after")
+    def validate_content_identity(self) -> ReadRecord:
+        """A content hash and a completeness claim must agree.
+
+        A complete read publishes the digest of its whole document. A read
+        whose extraction was incomplete publishes the marker instead, because
+        a digest over the part that happened to parse would identify a work
+        nobody fully read. Neither direction may be smuggled past this check.
+        """
+        if self.extraction_complete:
+            if not _is_content_digest(self.content_sha256):
+                raise ValueError(
+                    "a complete read requires the SHA-256 of its full text"
+                )
+        elif self.content_sha256 != INCOMPLETE_CONTENT_SHA256:
+            raise ValueError(
+                "an incomplete extraction must not publish a content hash"
+            )
+        return self
 
 
 class EvidenceUnit(_VerbatimContractModel):
@@ -665,20 +707,6 @@ _APPEND_STATE_FIELDS = frozenset(
     }
 )
 
-# Registries whose update folds into what the state already holds, through the
-# conflict-detecting reducers in ``agents.evidence``. An update supplies only
-# the records it produced; the reducer keeps the rest, and one ID carrying two
-# different bodies raises instead of overwriting. Imported at call time
-# because ``agents.evidence`` imports this module.
-_MERGED_STATE_FIELDS = frozenset(
-    {
-        "read_records",
-        "evidence_units",
-        "evidence_dispositions",
-        "boundary_audits",
-    }
-)
-
 
 def merge_research_state(
     state: ResearchState,
@@ -698,6 +726,14 @@ def merge_research_state(
         merge_read_records,
     )
 
+    # The one list of registries whose update folds into what the state already
+    # holds, through the conflict-detecting reducers in ``agents.evidence``: an
+    # update supplies only the records it produced, the reducer keeps the rest,
+    # and one ID carrying two different bodies raises instead of overwriting.
+    # A name that is not a key here is not merged — so a registry added to the
+    # state without a reducer fails the unknown-field check or replaces
+    # loudly, and can never quietly become last-write-wins. Imported at call
+    # time because ``agents.evidence`` imports this module.
     reducers = {
         "read_records": merge_read_records,
         "evidence_units": merge_evidence_units,
@@ -711,7 +747,7 @@ def merge_research_state(
             if not isinstance(value, list):
                 raise TypeError(f"{field_name} update must be a list")
             payload[field_name] = [*payload[field_name], *deepcopy(value)]
-        elif field_name in _MERGED_STATE_FIELDS:
+        elif field_name in reducers:
             # Folded from the state's own records rather than from its dump:
             # the dump has already turned them into plain mappings, and the
             # reducers compare record fields. The result is deep-copied so the

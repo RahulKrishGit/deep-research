@@ -30,6 +30,7 @@ def test_all_subpackages_import() -> None:
 
 def test_shared_research_types_import_from_utils_package() -> None:
     from deep_research.utils import (  # noqa: F401
+        INCOMPLETE_CONTENT_SHA256,
         LEGACY_QUALITY_CONTRACT_VERSION,
         QUALITY_CONTRACT_VERSION,
         AwareISOString,

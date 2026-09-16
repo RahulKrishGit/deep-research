@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from deep_research.agents.identity import claim_fingerprint
 from deep_research.utils.types import (
+    INCOMPLETE_CONTENT_SHA256,
     MAX_CONSUMED_COVERAGE_IDS,
     MAX_CONSUMED_FINDING_FINGERPRINTS,
     BoundaryAudit,
@@ -115,6 +116,49 @@ def test_a_read_record_keeps_extracted_passage_text_verbatim() -> None:
     )
 
     assert record.passages["p-1"] == passage
+
+
+def test_a_content_hash_and_a_completeness_flag_must_agree() -> None:
+    """The partial-read escape hatch cannot be used to smuggle a digest.
+
+    A complete read publishes the digest of its whole document; a read whose
+    extraction was incomplete publishes the explicit non-digest marker, so no
+    hash that would identify a document nobody fully read is ever persisted.
+    """
+    values: dict[str, object] = {
+        "read_id": "read-1",
+        "requested_url": "https://lab.example/queue.pdf",
+        "resolved_url": "https://lab.example/queue.pdf",
+        "title": "Queue Study",
+        "reader": "document_reader",
+        "retrieved_at": "2026-09-16T10:00:00+00:00",
+        "content_sha256": "a" * 64,
+        "extraction_complete": True,
+        "passages": {"page-1-chunk-0": "Example Lab measured that capacity."},
+        "origin_session_id": "session-1",
+    }
+
+    partial = ReadRecord.model_validate(
+        {
+            **values,
+            "content_sha256": INCOMPLETE_CONTENT_SHA256,
+            "extraction_complete": False,
+        }
+    )
+    assert partial.content_sha256 == "incomplete"
+    assert partial.extraction_complete is False
+
+    for replacement in (
+        # A partial extraction must not claim a document-identifying digest.
+        {"extraction_complete": False},
+        # Nor may a complete read hide behind the marker.
+        {
+            "content_sha256": INCOMPLETE_CONTENT_SHA256,
+            "extraction_complete": True,
+        },
+    ):
+        with pytest.raises(ValidationError):
+            ReadRecord.model_validate({**values, **replacement})
 
 
 def test_a_boundary_audit_requires_its_scalars_and_opens_every_id_list() -> None:

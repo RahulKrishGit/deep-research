@@ -42,6 +42,8 @@ from deep_research.agents.evidence import (
 )
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.utils.types import (
+    INCOMPLETE_CONTENT_SHA256,
+    QUALITY_CONTRACT_VERSION,
     EvidenceDisposition,
     EvidenceUnit,
     ReadRecord,
@@ -386,6 +388,38 @@ def test_an_uppercase_hash_is_normalized_not_rejected() -> None:
     assert resolved["a"].key == resolved["b"].key
 
 
+@pytest.mark.parametrize("declared", ["false", "False", "no", 0, None])
+def test_a_non_boolean_completeness_flag_never_reads_as_complete(
+    declared: object,
+) -> None:
+    """Only an absent flag or a real ``True`` licenses a content identity."""
+    rows = [
+        {
+            "source_id": "a",
+            "complete_content_sha256": "a" * 64,
+            "extraction_complete": declared,
+        },
+        {
+            "source_id": "b",
+            "complete_content_sha256": "a" * 64,
+            "extraction_complete": declared,
+        },
+    ]
+    resolved = resolve_work_identities(rows)
+
+    assert resolved["a"].aliases == []
+    assert resolved["a"].key is None
+    assert resolved["a"].identity_status == "unknown"
+
+
+def test_an_absent_completeness_flag_keeps_the_named_complete_hash() -> None:
+    """``complete_content_sha256`` asserts completeness by its own name."""
+    rows = [{"source_id": "a", "complete_content_sha256": "a" * 64}]
+    resolved = resolve_work_identities(rows)
+
+    assert resolved["a"].key == f"sha256:{'a' * 64}"
+
+
 def test_report_number_is_namespaced_by_its_issuer() -> None:
     rows = [
         {"source_id": "a", "issuer": "Example Lab", "report_number": "TR-2025-01"},
@@ -586,7 +620,8 @@ def test_build_read_record_rejects_a_declared_hash_that_is_not_its_own_text() ->
         )
 
 
-def test_build_read_record_rejects_an_incomplete_extraction() -> None:
+def test_build_read_record_rejects_an_incomplete_extraction_claiming_a_hash() -> None:
+    """A partial read may exist, but never behind a hash that looks complete."""
     with pytest.raises(EvidenceContractError):
         build_read_record(
             session_id=SESSION_ID,
@@ -598,7 +633,140 @@ def test_build_read_record_rejects_an_incomplete_extraction() -> None:
             text=TEXT,
             passages={"p-1": PASSAGE},
             extraction_complete=False,
+            declared_content_sha256=normalized_content_sha256(TEXT),
         )
+
+
+def _partial_read(**overrides: object) -> ReadRecord:
+    """One read of a document whose page 7 could not be extracted."""
+    record = build_read_record(
+        session_id=SESSION_ID,
+        reader="document_reader",
+        requested_url="https://lab.example/queue.pdf",
+        resolved_url="https://lab.example/queue.pdf",
+        title="Queue Study",
+        retrieved_at=RETRIEVED_AT,
+        text=TEXT,
+        passages={"page-1-chunk-0": PASSAGE},
+        extraction_complete=False,
+        target_ids=("target-1",),
+    )
+    if overrides:
+        record = record.model_copy(update=overrides)
+    return record
+
+
+def test_a_partial_extraction_is_an_admissible_read() -> None:
+    """Discarding a 200-page PDF over page 7 loses evidence nobody can audit.
+
+    The record still names its read, both URLs, its observation, and the
+    locators it did read; only the content hash is withheld, because a hash
+    over part of a document identifies nothing.
+    """
+    record = _partial_read()
+
+    assert record.extraction_complete is False
+    assert record.content_sha256 == INCOMPLETE_CONTENT_SHA256
+    assert record.passages == {"page-1-chunk-0": PASSAGE}
+    assert record.read_id.startswith("read-")
+
+
+def test_a_partial_read_still_carries_evidence_units() -> None:
+    """Section 2.4's chain needs the read to exist, not to be perfect."""
+    record = _partial_read()
+
+    unit = build_evidence_unit(
+        read=record,
+        locator="page-1-chunk-0",
+        excerpt=PASSAGE,
+        origin="researcher",
+    )
+
+    assert unit.read_id == record.read_id
+    assert unit.excerpt == PASSAGE
+    assert merge_read_records({record.read_id: record}, {}) == {
+        record.read_id: record
+    }
+
+
+def test_a_partial_read_has_no_usable_content_identity() -> None:
+    """Its marker hash is never an identity edge, and never a digest."""
+    partial = _partial_read()
+    resolved = resolve_work_identities(
+        [
+            {
+                "source_id": "partial",
+                "title": "Queue Study",
+                "issuer": "Example Lab",
+                "year": 2025,
+                "complete_content_sha256": partial.content_sha256,
+                "extraction_complete": False,
+            },
+            {
+                "source_id": "other",
+                "title": "Queue Study",
+                "issuer": "Example Lab",
+                "year": 2025,
+                "complete_content_sha256": partial.content_sha256,
+                "extraction_complete": False,
+            },
+        ]
+    )
+
+    assert resolved["partial"].aliases == []
+    # Only the conservative title alias joins them, never a hash.
+    assert resolved["partial"].key == resolved["other"].key
+    assert resolved["partial"].key.startswith("title:")
+    assert resolved["partial"].key != f"sha256:{partial.content_sha256}"
+
+
+def test_two_different_partial_reads_of_one_source_are_two_reads() -> None:
+    """A retry that recovers page 7 is a new read, not a conflicting one."""
+    first = _partial_read()
+    second = build_read_record(
+        session_id=SESSION_ID,
+        reader="document_reader",
+        requested_url="https://lab.example/queue.pdf",
+        resolved_url="https://lab.example/queue.pdf",
+        title="Queue Study",
+        retrieved_at=RETRIEVED_AT,
+        text=TEXT,
+        passages={
+            "page-1-chunk-0": PASSAGE,
+            "page-7-chunk-1": "the delay did not fall below 5% in 2025",
+        },
+        extraction_complete=False,
+    )
+
+    assert second.read_id != first.read_id
+    merged = merge_read_records({first.read_id: first}, {second.read_id: second})
+    assert set(merged) == {first.read_id, second.read_id}
+
+
+def test_a_partial_read_is_never_admitted_from_the_cache() -> None:
+    """Cache admission resolves a validated immutable original, not a fragment."""
+    record = _partial_read()
+
+    assert (
+        validate_cached_read(
+            record,
+            TEXT,
+            expected_content_sha256=record.content_sha256,
+            version_eligible=True,
+            validated_at=VALIDATED_AT,
+        )
+        is None
+    )
+    assert (
+        validate_cached_read(
+            record,
+            TEXT,
+            expected_content_sha256=normalized_content_sha256(TEXT),
+            version_eligible=True,
+            validated_at=VALIDATED_AT,
+        )
+        is None
+    )
 
 
 def test_a_read_keeps_its_requested_and_resolved_urls_apart() -> None:
@@ -836,6 +1004,29 @@ def test_cache_validation_requires_a_complete_read_and_valid_locators() -> None:
     )
 
 
+def test_a_serialized_completeness_flag_is_never_treated_as_complete() -> None:
+    """``"false"`` is not ``True``: a corrupt snapshot must fail closed."""
+    stored = _original_read()
+
+    forged = stored.model_construct(
+        **{
+            **stored.__dict__,
+            "extraction_complete": "false",
+        }
+    )
+
+    assert (
+        validate_cached_read(
+            forged,
+            TEXT,
+            expected_content_sha256=normalized_content_sha256(TEXT),
+            version_eligible=True,
+            validated_at=VALIDATED_AT,
+        )
+        is None
+    )
+
+
 def test_the_local_validation_stamp_and_expected_hash_are_caller_errors() -> None:
     stored = _original_read()
 
@@ -891,6 +1082,7 @@ def test_one_read_id_with_one_body_keeps_the_first_observation() -> None:
     reread = stored.model_copy(
         update={
             "retrieved_at": "2026-09-16T12:00:00+00:00",
+            "title": "Queue Study (re-read)",
             "target_ids": ["target-2"],
         }
     )
@@ -899,6 +1091,28 @@ def test_one_read_id_with_one_body_keeps_the_first_observation() -> None:
 
     assert merged[stored.read_id].retrieved_at == RETRIEVED_AT
     assert merged[stored.read_id].target_ids == ["target-1", "target-2"]
+    # The label belongs to the first observation of that read id: a re-read
+    # cannot silently relabel evidence a passage already cites.
+    assert merged[stored.read_id].title == stored.title
+
+
+def test_a_network_read_replaces_a_cache_import_of_the_same_body() -> None:
+    stored = _original_read()
+    imported = stored.model_copy(
+        update={
+            "acquisition_kind": "cache",
+            "version_validated_at": VALIDATED_AT,
+            "retrieved_at": "2026-09-16T12:00:00+00:00",
+            "title": "Imported copy label",
+        }
+    )
+
+    merged = merge_read_records({stored.read_id: imported}, {stored.read_id: stored})
+
+    assert merged[stored.read_id].acquisition_kind == "network"
+    assert merged[stored.read_id].retrieved_at == RETRIEVED_AT
+    # First observation still owns the label, whichever record is preferred.
+    assert merged[stored.read_id].title == "Imported copy label"
 
 
 def test_evidence_ids_are_stable_when_a_stronger_identity_arrives() -> None:
@@ -967,6 +1181,52 @@ def test_conflicting_evidence_units_for_one_id_are_a_conflict() -> None:
         merge_evidence_units({unit.evidence_id: unit}, {altered.evidence_id: altered})
 
 
+def test_one_passage_selected_twice_keeps_its_first_selector() -> None:
+    """Both agents read the same stored passage: that is reuse, not conflict.
+
+    The unit records the agent that selected it first and unions the targets
+    the later selection added, so nothing a later selector contributed is
+    dropped — cross-agent reuse of one read is exactly what the registry is
+    for.
+    """
+    stored = _original_read()
+    first = build_evidence_unit(
+        read=stored,
+        locator="p-1",
+        excerpt=PASSAGE,
+        origin="researcher",
+        target_ids=("target-1",),
+    )
+    second = build_evidence_unit(
+        read=stored,
+        locator="p-1",
+        excerpt=PASSAGE,
+        origin="fact_checker",
+        target_ids=("target-2",),
+    )
+
+    merged = merge_evidence_units(
+        {first.evidence_id: first}, {second.evidence_id: second}
+    )
+
+    assert merged[first.evidence_id].origin == "researcher"
+    assert merged[first.evidence_id].target_ids == ["target-1", "target-2"]
+
+
+def test_two_titles_for_one_evidence_id_are_a_conflict() -> None:
+    """One passage has one recorded source label; disagreement is not silent."""
+    stored = _original_read()
+    unit = build_evidence_unit(
+        read=stored, locator="p-1", excerpt=PASSAGE, origin="researcher"
+    )
+    relabelled = unit.model_copy(update={"source_title": "Somewhere else"})
+
+    with pytest.raises(EvidenceIdentityConflict):
+        merge_evidence_units(
+            {unit.evidence_id: unit}, {relabelled.evidence_id: relabelled}
+        )
+
+
 def test_dispositions_persist_an_explicit_reason_per_item() -> None:
     deferred = EvidenceDisposition(
         item_id="https://lab.example/queue.pdf",
@@ -995,6 +1255,28 @@ def test_a_disposition_requires_a_non_empty_stage_and_reason() -> None:
         EvidenceDisposition(item_id="x", stage="read-selection", reason="")
     assert "read-selection" in DISPOSITION_STAGES
     assert "deferred_capacity" in DISPOSITION_REASONS
+
+
+def test_a_disposition_records_which_retained_evidence_it_matches() -> None:
+    """A duplicate names the retained evidence; disagreement is not silent."""
+    item_id = "https://lab.example/queue.pdf"
+    unresolved = EvidenceDisposition(
+        item_id=item_id,
+        stage="retention",
+        reason="duplicate_content",
+        retained_equivalent_id=None,
+    )
+    resolved = unresolved.model_copy(update={"retained_equivalent_id": "ev-kept"})
+    elsewhere = unresolved.model_copy(
+        update={"retained_equivalent_id": "ev-somewhere-else"}
+    )
+
+    # A later pass that resolves the retained equivalent fills it in.
+    merged = merge_evidence_dispositions([unresolved], [resolved])
+    assert merged[0].retained_equivalent_id == "ev-kept"
+    # Two different retained equivalents for one omitted item contradict.
+    with pytest.raises(EvidenceIdentityConflict):
+        merge_evidence_dispositions([resolved], [elsewhere])
 
 
 # --------------------------------------------------------------------------
@@ -1172,7 +1454,7 @@ def test_audit_ids_are_deterministic_and_schema_stamped() -> None:
 
     assert audit.audit_id == repeated.audit_id
     assert audit.audit_id != other.audit_id
-    assert audit.schema_version
+    assert audit.schema_version == QUALITY_CONTRACT_VERSION
     assert audit.audit_id.startswith("audit-")
 
 

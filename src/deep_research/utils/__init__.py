@@ -1,6 +1,7 @@
 """Shared utilities and typed research contracts."""
 
 from deep_research.utils.types import (
+    INCOMPLETE_CONTENT_SHA256,
     LEGACY_QUALITY_CONTRACT_VERSION,
     QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
@@ -39,6 +40,7 @@ from deep_research.utils.types import (
 )
 
 __all__ = [
+    "INCOMPLETE_CONTENT_SHA256",
     "LEGACY_QUALITY_CONTRACT_VERSION",
     "QUALITY_CONTRACT_VERSION",
     "QUALITY_STATUS_ACCEPTED",
