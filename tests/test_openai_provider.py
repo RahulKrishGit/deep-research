@@ -29,6 +29,7 @@ from deep_research.providers import (
     NativeToolTurn,
     ToolDefinition,
 )
+from deep_research.providers.contracts import ProviderError
 from deep_research.providers.openai_provider import (
     ChatMessage,
     OpenAIChatProvider,
@@ -39,7 +40,11 @@ from deep_research.providers.openai_provider import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
-from deep_research.utils.config import LLMConfig
+from deep_research.request_budget import (
+    RequestAttemptLimitError,
+    RequestBudget,
+)
+from deep_research.utils.config import LLMConfig, RequestBudgetConfig
 
 
 def response(
@@ -1897,3 +1902,316 @@ async def test_openai_native_react_exhausted_retries_chain_no_sdk_error(
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert OPENAI_SENTINEL not in repr(_provider_exception_surfaces(caught.value))
+
+
+# ---------------------------------------------------------------------------
+# Request-budget wiring.
+#
+# Every OpenAI transport attempt -- including each repo-owned retry, which is a
+# real outbound request -- reserves one unit *before* the SDK call, and the
+# attempt past the effective limit is refused before any network I/O. Reported
+# tokens are recorded only when a real response carried a safely parsed usage
+# figure; a transport failure reports no tokens at all.
+# ---------------------------------------------------------------------------
+
+
+def _openai_budget(
+    *, ceiling: int | None = None, stop_fraction: float = 1.0
+) -> RequestBudget:
+    """A run budget capping OpenAI attempts; uncapped by default."""
+    return RequestBudget(
+        RequestBudgetConfig(
+            openai_attempt_ceiling=ceiling,
+            stop_fraction=stop_fraction,
+        )
+    )
+
+
+def _budgeted_provider(
+    tracker: Tracker,
+    responses: RecordingResponses,
+    budget: RequestBudget,
+    **config_updates: object,
+) -> OpenAIChatProvider:
+    return OpenAIChatProvider(
+        openai_config(**config_updates),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+        request_budget=budget,
+    )
+
+
+def test_request_budget_defaults_to_none_so_existing_callers_are_uncounted() -> None:
+    provider = OpenAIChatProvider(
+        openai_config(),
+        local_tracker(),
+        client=FakeOpenAIClient(responses=RecordingResponses()),
+    )
+
+    assert provider._request_budget is None
+
+
+@pytest.mark.asyncio
+async def test_request_budget_reserves_once_per_repo_retry_attempt(
+    monkeypatch,
+) -> None:
+    """Each retry is a real outbound attempt and reserves its own unit."""
+    slept = _recorded_sleeps(monkeypatch)
+    budget = _openai_budget()
+    responses = RecordingResponses(
+        APITimeoutError(request=httpx.Request("POST", "https://api.openai.com")),
+        RateLimitError(
+            "limited",
+            response=httpx.Response(
+                429, request=httpx.Request("POST", "https://api.openai.com")
+            ),
+            body=None,
+        ),
+        response(text="answer"),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        responses,
+        budget,
+        retry_count=3,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+
+    assert result.text == "answer"
+    assert len(responses.create_calls) == 3
+    assert slept == [1.0, 2.0]
+    # Three outbound attempts, three reservations -- reserving once outside the
+    # retry wrapper would have recorded a single unit here.
+    snapshot = budget.snapshot("openai")
+    assert snapshot.attempts == 3
+    # Only the response that arrived reported usage, and it was recorded.
+    assert snapshot.input_tokens == 8
+    assert snapshot.output_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_request_budget_refuses_the_attempt_past_the_limit_before_io() -> None:
+    budget = _openai_budget(ceiling=1)
+    responses = RecordingResponses(response(text="answer"))
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, responses, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        first = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+        with pytest.raises(RequestAttemptLimitError) as caught:
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert first.text == "answer"
+    # The refused attempt reached no transport at all.
+    assert len(responses.create_calls) == 1
+    assert budget.snapshot("openai").attempts == 1
+    assert not isinstance(caught.value, ProviderError)
+
+
+@pytest.mark.asyncio
+async def test_request_budget_refuses_the_first_attempt_when_the_limit_is_zero() -> (
+    None
+):
+    """A limit of zero is a real declaration: no request may leave at all."""
+    budget = _openai_budget(ceiling=1, stop_fraction=0.5)
+    responses = RecordingResponses(response(text="answer"))
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, responses, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    assert responses.create_calls == []
+    assert budget.snapshot("openai").attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_request_budget_refusal_during_retry_escapes_sdk_translation(
+    monkeypatch,
+) -> None:
+    """A limit error is a hard run boundary, never a retryable provider error."""
+    _recorded_sleeps(monkeypatch)
+    budget = _openai_budget(ceiling=1)
+    responses = RecordingResponses(
+        APITimeoutError(request=httpx.Request("POST", "https://api.openai.com")),
+        response(text="answer"),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        responses,
+        budget,
+        retry_count=3,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(RequestAttemptLimitError) as caught:
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    # The retry was refused before it became a request.
+    assert len(responses.create_calls) == 1
+    assert budget.snapshot("openai").attempts == 1
+    assert type(caught.value) is RequestAttemptLimitError
+    assert not isinstance(caught.value, ProviderError)
+    assert caught.value.snapshot.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_request_budget_structured_repair_reserves_each_transport_attempt() -> (
+    None
+):
+    budget = _openai_budget()
+    repaired = Outline(title="Repaired", points=["Valid"])
+    responses = RecordingResponses(
+        outline_validation_error(), response(parsed=repaired)
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, responses, budget)
+
+    async with tracker.session_span("session-1", "decide"):
+        parsed = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], Outline
+        )
+
+    assert parsed == repaired
+    assert len(responses.parse_calls) == 2
+    snapshot = budget.snapshot("openai")
+    assert snapshot.attempts == 2
+    # The validation exception returned no response, so it reported no tokens;
+    # the repaired response really carried usage, so it was recorded.
+    assert snapshot.input_tokens == 8
+    assert snapshot.output_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_request_budget_parse_validation_without_a_response() -> (
+    None
+):
+    """A ``responses.parse`` validation exception has no response to measure.
+
+    It therefore consumes an attempt -- it was a real outbound request -- while
+    inventing no token usage, and the refusal path stays the only way an
+    attempt goes uncounted.
+    """
+    budget = _openai_budget(ceiling=1)
+    responses = RecordingResponses(
+        outline_validation_error(), response(parsed=Outline(title="R", points=[]))
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, responses, budget)
+
+    async with tracker.session_span("session-1", "decide"):
+        with pytest.raises(RequestAttemptLimitError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], Outline
+            )
+
+    snapshot = budget.snapshot("openai")
+    # The validation failure consumed the one permitted attempt ...
+    assert snapshot.attempts == 1
+    assert len(responses.parse_calls) == 1
+    # ... with no response to measure, so no tokens were invented ...
+    assert snapshot.input_tokens == 0
+    assert snapshot.output_tokens == 0
+    # ... and only the refusal kept the repair from being counted.
+    assert type(caught.value) is RequestAttemptLimitError
+    assert not isinstance(caught.value, ProviderError)
+
+
+@pytest.mark.asyncio
+async def test_request_budget_native_react_reserves_and_records_one_attempt() -> None:
+    budget = _openai_budget()
+    responses = RecordingResponses(
+        response(
+            text="",
+            input_tokens=11,
+            output_tokens=5,
+            output=[
+                native_function_call("web_search", '{"query":"qec capacity"}')
+            ],
+        )
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, responses, budget)
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="critic",
+        )
+
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].tool_name == "web_search"
+    snapshot = budget.snapshot("openai")
+    assert snapshot.attempts == 1
+    assert snapshot.input_tokens == 11
+    assert snapshot.output_tokens == 5
+    # The existing local attempt telemetry counts the same attempt.
+    assert turn.usage.input_tokens == 11
+
+
+@pytest.mark.asyncio
+async def test_request_budget_records_no_tokens_on_transport_failure(
+    monkeypatch,
+) -> None:
+    """A failed call must not report spend that never happened."""
+    slept = _recorded_sleeps(monkeypatch)
+    budget = _openai_budget()
+    responses = RecordingResponses(
+        APIConnectionError(request=httpx.Request("POST", "https://api.openai.com")),
+        APIConnectionError(request=httpx.Request("POST", "https://api.openai.com")),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        responses,
+        budget,
+        retry_count=1,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    snapshot = budget.snapshot("openai")
+    assert len(responses.create_calls) == 2
+    assert slept == [1.0]
+    assert snapshot.attempts == 2
+    assert snapshot.input_tokens == 0
+    assert snapshot.output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_request_budget_records_no_tokens_when_usage_is_malformed() -> None:
+    budget = _openai_budget()
+    responses = RecordingResponses(
+        SimpleNamespace(
+            output_text="Answer", usage=SimpleNamespace(input_tokens="bad")
+        )
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, responses, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="usage"):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    snapshot = budget.snapshot("openai")
+    assert snapshot.attempts == 1
+    assert snapshot.input_tokens == 0
+    assert snapshot.output_tokens == 0

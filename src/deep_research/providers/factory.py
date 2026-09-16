@@ -51,12 +51,12 @@ def build_chat_provider(
     explicitly. ``None`` keeps the adapters' default behaviour of reading
     the process environment, which is what production wiring relies on.
 
-    ``request_budget`` is the run's attempt budget. It reaches the DeepSeek
-    adapter, whose transport reserves one attempt before every SDK call;
-    ``None`` means uncounted, which is what every existing caller gets. An
-    adapter that cannot honour a budget refuses it here rather than accepting
-    and dropping it: a budget that silently goes nowhere is exactly the
-    decorative ceiling this machinery exists to replace.
+    ``request_budget`` is the run's attempt budget. It reaches both chat
+    adapters, each of whose transports reserves one attempt before every SDK
+    call; ``None`` means uncounted, which is what every existing caller gets.
+    An adapter that could not honour a budget would refuse it here rather than
+    accepting and dropping it: a budget that silently goes nowhere is exactly
+    the decorative ceiling this machinery exists to replace.
 
     The DeepSeek target adapter is ``DeepSeekSchemaChatProvider``: plain
     completions still use Chat Completions, but structured output is asked
@@ -68,8 +68,9 @@ def build_chat_provider(
             config, tracker, api_key=api_key, request_budget=request_budget
         )
     if config.provider == "openai":
-        _reject_unhonourable_budget(request_budget)
-        return OpenAIChatProvider(config, tracker, api_key=api_key)
+        return OpenAIChatProvider(
+            config, tracker, api_key=api_key, request_budget=request_budget
+        )
     raise ProviderConfigurationError(
         f"Unsupported chat provider {config.provider!r}; "
         "accepted values: deepseek, openai"
@@ -86,31 +87,20 @@ def build_judge_provider(
     """Select the judge adapter by configured provider name.
 
     ``request_budget`` follows the same rule as in
-    :func:`build_chat_provider`: the DeepSeek judge transport reserves
-    against it, and an adapter that cannot honour one refuses it instead of
-    dropping it.
+    :func:`build_chat_provider`: both judge transports reserve against it, and
+    ``None`` means uncounted.
     """
     if config.provider == "deepseek":
         return DeepSeekJudgeProvider(
             config, tracker, api_key=api_key, request_budget=request_budget
         )
     if config.provider == "openai":
-        _reject_unhonourable_budget(request_budget)
-        return OpenAIChatProvider(config, tracker, api_key=api_key)
+        return OpenAIChatProvider(
+            config, tracker, api_key=api_key, request_budget=request_budget
+        )
     raise ProviderConfigurationError(
         f"Unsupported chat provider {config.provider!r}; "
         "accepted values: deepseek, openai"
-    )
-
-
-def _reject_unhonourable_budget(request_budget: RequestBudget | None) -> None:
-    """Refuse a budget the selected adapter would silently ignore."""
-    if request_budget is None:
-        return
-    raise ProviderConfigurationError(
-        "request_budget was supplied for the openai adapter, which does not "
-        "reserve against it; a budget that is accepted and dropped is a "
-        "ceiling that does not hold"
     )
 
 

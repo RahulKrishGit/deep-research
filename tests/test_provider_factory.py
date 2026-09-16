@@ -296,21 +296,58 @@ def test_request_budget_defaults_to_none_in_both_deepseek_factories(tracker) -> 
     assert judge._request_budget is None
 
 
-def test_request_budget_is_refused_for_an_adapter_that_cannot_honour_it(
-    tracker,
-) -> None:
-    """A budget that would be silently dropped is a decorative ceiling."""
-    from deep_research.request_budget import RequestBudget
-
-    budget = RequestBudget()
-    config = LLMConfig(
+def _openai_config() -> LLMConfig:
+    return LLMConfig(
         provider="openai",
         model="gpt-4o",
         thinking_mode="disabled",
         reasoning_effort="none",
     )
 
-    with pytest.raises(ProviderConfigurationError) as caught:
-        build_chat_provider(config, tracker, request_budget=budget)
 
-    assert "request_budget" in str(caught.value)
+def test_request_budget_reaches_the_openai_chat_adapter(tracker) -> None:
+    """The OpenAI transport reserves against the run budget, so the factory
+    hands it over instead of refusing it: a refused budget would leave the
+    OpenAI half of a run uncounted."""
+    from deep_research.request_budget import RequestBudget
+
+    budget = RequestBudget()
+
+    provider = build_chat_provider(
+        _openai_config(),
+        tracker,
+        api_key="sk-openai-abcdefgh",
+        request_budget=budget,
+    )
+
+    assert isinstance(provider, OpenAIChatProvider)
+    assert provider._request_budget is budget
+
+
+def test_request_budget_reaches_the_openai_judge_adapter(tracker) -> None:
+    from deep_research.request_budget import RequestBudget
+
+    budget = RequestBudget()
+
+    provider = factory.build_judge_provider(
+        _openai_config(),
+        tracker,
+        api_key="sk-openai-abcdefgh",
+        request_budget=budget,
+    )
+
+    assert isinstance(provider, OpenAIChatProvider)
+    assert provider._request_budget is budget
+
+
+def test_request_budget_defaults_to_none_in_both_openai_factories(tracker) -> None:
+    """A ``None`` budget stays exactly today's uncounted behaviour."""
+    chat = build_chat_provider(
+        _openai_config(), tracker, api_key="sk-openai-abcdefgh"
+    )
+    judge = factory.build_judge_provider(
+        _openai_config(), tracker, api_key="sk-openai-abcdefgh"
+    )
+
+    assert chat._request_budget is None
+    assert judge._request_budget is None

@@ -40,6 +40,7 @@ from deep_research.providers.validation import (
     validation_diagnostic_from_text,
     validation_summary,
 )
+from deep_research.request_budget import RequestBudget
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -351,11 +352,51 @@ class OpenAIChatProvider:
         *,
         api_key: str | None = None,
         client: Any | None = None,
+        request_budget: RequestBudget | None = None,
     ) -> None:
         self._config = config
         self._tracker = tracker
         self._client = _build_client(config, api_key=api_key, client=client)
+        self._request_budget = request_budget
         self._last_model_returned: str | None = None
+
+    def _reserve_attempt(self) -> None:
+        """Reserve one OpenAI transport attempt before any network I/O.
+
+        Called from *inside* the retried operation, because each retry is a
+        real outbound request: reserving once outside the retry wrapper would
+        under-count a run's attempts by up to its retry count. The refusal
+        therefore also sits outside SDK exception translation, so a
+        :class:`~deep_research.request_budget.RequestAttemptLimitError` -- a
+        hard run boundary -- escapes instead of being rewritten into an
+        ordinary, retryable provider error.
+
+        A ``None`` budget reserves nothing: this is today's uncounted
+        behaviour, and every existing caller keeps it.
+        """
+        budget = self._request_budget
+        if budget is None:
+            return
+        budget.reserve("openai")
+
+    def _record_tokens(self, usage: TokenUsage) -> None:
+        """Record reported usage, and only for a response that arrived.
+
+        Never called for a transport failure, and never for a response whose
+        usage failed to parse: a token figure invented after a failed call
+        would report spend that did not happen and hide spend that did. An SDK
+        ``responses.parse`` validation exception returns no response at all,
+        so it consumes an attempt and reports no tokens -- there is nothing to
+        measure, and zero is only honest because nothing is added.
+        """
+        budget = self._request_budget
+        if budget is None:
+            return
+        budget.record_tokens(
+            "openai",
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+        )
 
     @property
     def last_model_returned(self) -> str | None:
@@ -420,6 +461,7 @@ class OpenAIChatProvider:
                 _sdk = _openai_errors()
 
                 async def _request() -> Any:
+                    self._reserve_attempt()
                     try:
                         return await self._client.responses.create(
                             **{**request, "input": payload}
@@ -443,6 +485,11 @@ class OpenAIChatProvider:
                     initial_delay=self._config.retry_initial_delay,
                     max_delay=self._config.retry_max_delay,
                 )
+                # Usage is parsed and recorded as soon as a response exists, so
+                # spend the provider really reported is counted even when the
+                # response is then rejected locally for its output.
+                usage = _usage_from_response(response)
+                self._record_tokens(usage)
                 output_text = getattr(response, "output_text", None)
                 if not isinstance(output_text, str):
                     raise ProviderResponseError(
@@ -455,7 +502,6 @@ class OpenAIChatProvider:
                         "OpenAI response did not contain text output",
                         failure_origin="local_response",
                     )
-                usage = _usage_from_response(response)
                 _set_span_result(span, response, usage)
                 self._last_model_returned = (
                     getattr(response, "model", None) or effective.model
@@ -487,6 +533,7 @@ class OpenAIChatProvider:
             _sdk = _openai_errors()
 
             async def _request() -> Any:
+                self._reserve_attempt()
                 try:
                     return await self._client.responses.parse(
                         **{**request, "input": payload, "text_format": schema}
@@ -518,6 +565,7 @@ class OpenAIChatProvider:
                 max_delay=self._config.retry_max_delay,
             )
             usage = _usage_from_response(response)
+            self._record_tokens(usage)
             _set_span_result(span, response, usage)
             parsed = getattr(response, "output_parsed", None)
             if not isinstance(parsed, schema):
@@ -572,6 +620,10 @@ class OpenAIChatProvider:
 
             async def _request() -> Any:
                 nonlocal request_attempt
+                # The reservation comes first so this existing local counter --
+                # the one the telemetry reports -- counts only attempts the
+                # budget actually permitted, rather than attempts requested.
+                self._reserve_attempt()
                 request_attempt += 1
                 try:
                     return await self._client.responses.create(
@@ -622,6 +674,7 @@ class OpenAIChatProvider:
                 # the frames that still hold the raw response.
                 failure = _fresh_provider_error(error)
             if failure is None:
+                self._record_tokens(usage)
                 _set_span_result(span, response, usage)
                 tool_calls, final_answer, failure = _native_response_outcome(
                     response,
