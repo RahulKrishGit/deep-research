@@ -82,10 +82,11 @@ Tool activity: `web_search` 352 calls (8 failed); `web_scraper` **17 calls, 8
 failed (47%)** — improved from Q1's 14 of 24 (58%), still high; `document_reader`
 34; `query_memory` 83; `write_document` 2.
 
-## 4. Task 15's actual deliverable — the diagnosis is BLOCKED, and that is the finding
+## 4. Task 15's deliverable — the diagnosis, the artifact gap that nearly blocked it, and the finding underneath
 
 The plan asks for "the observed `web_scraper` failure classes with counts from
-the run's agent records". **The counts exist; the classes do not.**
+the run's agent records". **The counts exist; the classes did not — and they were
+recovered from the run's trace instead, at no provider cost.** See §4.1.
 
 At the candidate commit, `src/deep_research/agents/report.py::_run_errors`
 rendered exactly five columns — `#`, `Type`, `Source`, `Severity`, `Message` —
@@ -98,20 +99,87 @@ the same generic sentence** — `web_scraper failed; the agent continued with an
 observation.` A failure is countable; it is not *classifiable*, which is the
 entire point of having classified it.
 
-**The defect this task was meant to diagnose therefore cannot be diagnosed from
-this run's artifacts, and that publishing gap is itself the finding.** This is
-not a process complaint: Task 4 is titled "Project bounded scraper diagnostics
-into agent records", and if the only public artifact drops them, that work is
-invisible in the product.
+**That publishing gap is a real product defect**, independent of this task: Task 4
+is titled "Project bounded scraper diagnostics into agent records", and if the only
+public artifact drops them, that work is invisible to anyone who reads the ledger.
 
-**Fixed after the run, and explicitly not validated by it.** Commit `34fed3a`
-adds a bounded `Details` column that publishes details for `agent_tool_failed`
-only — the one type whose values are produced by the ReAct projection, which
-revalidates every value it copies — and **withholds** every other error type's
-details, because the ledger is public and an unvetted key could carry text this
-project never publishes. It carries a test proving the scraper class appears and
-that an unvetted type's details (and a hostile URL inside them) do not. **The
-next live run will be the first that can actually be diagnosed by class.**
+**It is fixed in `34fed3a`, which adds a bounded `Details` column** that publishes
+details for `agent_tool_failed` only — the one type whose values are produced by the
+ReAct projection, which revalidates every value it copies — and **withholds** every
+other error type's details, because the ledger is public and an unvetted key could
+carry text this project never publishes. Its test proves both halves: that the
+scraper class appears, and that an unvetted type's details (including a hostile URL
+inside them) do not. **The next live run will be the first diagnosable by class from
+its own artifacts.** It is not validated by this run — the classes below came from
+the trace.
+
+### 4.1 The classes, recovered from the trace with zero additional spend
+
+The run's own LangSmith trace (`deep-research-dev`, trace
+`01a0a7d6-b43c-7982-92c5-2fc5f8f70d75`) records every tool span with its error.
+Querying it — **no provider call, no spend** — yielded 1,133 distinct runs and the
+complete failure taxonomy:
+
+```
+web_scraper: 9 succeeded, 8 failed  -> ALL 8 are ONE class:
+    ToolExecutionError('the page request failed with an HTTP error status')
+web_search:  8 failed               -> ALL 8 are ONE class:
+    ForbiddenError("This request exceeds your plan's set usage limit. Please upgrade your plan")
+```
+
+### 4.2 The scraper failures are NOT a scraper defect
+
+Every one of the 8 is an **HTTP error status returned by the target host** — a 404,
+403 or 5xx from a real site. That is the plan's own *"failures are not a defect"*
+branch: dead links, and hosts that refuse automated reads, are **legitimate
+outcomes**, not bugs. Nothing in the evidence implicates transport timeouts, the
+retry policy, or content-type classification.
+
+**Task 16's decision table therefore selects its last row: no code change to
+`web_scraper`.** The plan states that this is a complete result — "the task's
+deliverable is that finding" — and it is the outcome the evidence supports. The 47%
+failure rate is a property of the pages the Researcher chose to read, not of the
+reader.
+
+### 4.3 The finding the plan did not anticipate: the Tavily plan quota, not our ceiling
+
+All 8 `web_search` failures are the **Tavily account's plan limit**:
+
+> `ForbiddenError("This request exceeds your plan's set usage limit. Please upgrade your plan")`
+
+This is an operational constraint on the entire canary programme that was invisible
+until now for exactly the reason this amendment exists — nothing counted or reported
+search attempts. The run issued **352 Tavily attempts against a declared ceiling of
+450**, comfortably inside its own bound, while the account's quota ran out underneath
+it. **The declared ceiling and the plan quota are different limits, and only one of
+them was ever enforced or observed.** Every future canary must treat the quota as a
+real constraint: a run that exhausts it silently loses search results and
+under-reports its own coverage for reasons unrelated to pipeline quality.
+
+### 4.4 The evidence funnel, and where the shortfall actually comes from
+
+| Stage | Count |
+| --- | ---: |
+| `web_search` calls | 352 (8 lost to quota) |
+| `web_scraper` attempts | 17 (8 lost to host HTTP status) |
+| Sources scored | **5** |
+| Cited sources | 5 |
+| Verified claims | 2 |
+| Topics covered | **3 of 6** |
+
+Retrieval is emphatically **not** the bottleneck. The funnel narrows hardest at
+**reading and scoring**, and the report's own headings say why: its findings are
+*"Interconnection queue and transmission-level constraints"* and *"Supply chain and
+critical minerals: **retrieved but unverified**"*, followed by sections titled *"Not
+addressed by independent sources"* and *"Insufficient independent evidence"*. The
+five sources it did score are strong (IEA 0.84, LBNL 0.80, RFF 0.74) — **the pipeline
+finds quality material and then cannot convert it into enough independently
+corroborated, citable sources to cover six topics.**
+
+**Actionable conclusion:** the two live-observed constraints are the Tavily plan
+quota and the fact that the Researcher read only ~17 pages while searching 352 times.
+Both point at sourcing and reading effort — not at `web_scraper`'s code, and not at
+the size of the tool budget.
 
 ## 5. A correction to my own mid-run reading
 
