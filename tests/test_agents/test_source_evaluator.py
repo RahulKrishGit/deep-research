@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from deep_research.agents.evidence import (
+    build_read_dossiers,
     build_read_record,
     compute_assessment_revision,
     read_assessment_revision,
@@ -1137,6 +1138,91 @@ async def test_the_official_mirror_is_usable_but_adds_no_origin() -> None:
     assert source_origin_id(copied) == source_origin_id(first)
 
 
+# A report with no DOI and no report number: the only identity a read can
+# evidence is its complete content, and two copies of one report that were
+# re-typeset do not share that.
+PLAIN_REPORT_TEXT = (
+    "Grid Storage Outlook. Published by Example Lab on 2026-01-15. "
+    "Example Lab measured that 1,200 MW of interconnection capacity was "
+    "withheld during 2024."
+)
+
+
+@pytest.mark.asyncio
+async def test_a_re_typeset_mirror_adds_no_origin() -> None:
+    """A copy whose wrapper differs is the same work's origin, not a new one.
+
+    Two byte-different copies of one report share no content hash, so a bare
+    hash can never be the origin they are compared by. The publisher is what
+    they do share, and folding it into the origin is what stops one underlying
+    work being counted twice.
+    """
+    original = _read(LAB_REPORT_URL, text=PLAIN_REPORT_TEXT)
+    retypeset = _read(
+        MIRROR_REPORT_URL,
+        text=(
+            PLAIN_REPORT_TEXT
+            + " Downloaded from the institutional repository."
+        ),
+    )
+    drafts = [
+        _lab_draft(doi=""),
+        _lab_draft(
+            url=MIRROR_REPORT_URL, doi="", transport_relation="mirror"
+        ),
+    ]
+
+    sources, _ = await _assess([original, retypeset], [_scores(*drafts)])
+
+    by_url = {source.url: source for source in sources}
+    first = by_url[LAB_REPORT_URL]
+    copied = by_url[MIRROR_REPORT_URL]
+    # The scenario really is the byte-different one: the hashes disagree.
+    assert original.content_sha256 != retypeset.content_sha256
+    assert first.work_id != copied.work_id
+    assert first.work_id is not None and first.work_id.startswith("sha256:")
+    assert copied.work_id.startswith("sha256:")
+    assert copied.publisher_id == first.publisher_id == "example lab"
+    # Same work, however the wrapper differs: one origin, not two.
+    assert source_origin_id(copied) == source_origin_id(first)
+    assert source_origin_id(first) == "publisher:example lab"
+
+
+@pytest.mark.asyncio
+async def test_different_publishers_keep_distinct_origins() -> None:
+    """Folding the publisher in must not collapse everyone onto one origin.
+
+    Two genuinely independent documents from two publishers are exactly the
+    pair a corroboration check exists to allow.
+    """
+    first_read = _read(LAB_REPORT_URL, text=PLAIN_REPORT_TEXT)
+    second_read = _read(
+        REVIEW_URL,
+        title="We measured the queue ourselves",
+        text=(
+            "We measured the queue ourselves. Published by Review Weekly on "
+            "2026-02-10. This outlet ran its own measurement of 1,180 MW "
+            "during 2024."
+        ),
+    )
+    drafts = [
+        _lab_draft(doi=""),
+        _draft(
+            url=REVIEW_URL,
+            source_role="independent_research",
+            transport_relation="original",
+            issuer="Review Weekly",
+            rationale="Original measurement published by the outlet.",
+        ),
+    ]
+
+    sources, _ = await _assess([first_read, second_read], [_scores(*drafts)])
+
+    origins = [source_origin_id(source) for source in sources]
+    assert origins == ["publisher:example lab", "publisher:review weekly"]
+    assert origins[0] != origins[1]
+
+
 @pytest.mark.asyncio
 async def test_a_derivative_news_statistic_is_not_an_origin() -> None:
     """Repeating one report is not independent evidence for what it reports."""
@@ -1195,7 +1281,10 @@ async def test_an_independently_researched_article_is_an_origin() -> None:
 
     source = sources[0]
     assert source.source_role == "independent_research"
-    assert source_origin_id(source) == f"work:sha256:{read.content_sha256}"
+    # Its identity rests on a bare content hash, so the origin it contributes
+    # is its publisher's: a hash names bytes, and a re-typeset copy of it
+    # would hash differently while still being the same origin.
+    assert source_origin_id(source) == "publisher:review weekly"
 
 
 @pytest.mark.asyncio
@@ -1530,20 +1619,52 @@ async def test_a_high_authority_score_cannot_override_unsupported_content() -> N
 
 
 def test_role_and_transport_never_change_the_overall_score() -> None:
-    """Labels describe the relation; they are not quality dimensions."""
-    group = _group()
-    plain = build_scored_source(group, _lab_draft(source_role="original_report",
-                                                 transport_relation="original"),
-                                reputation=None)
+    """Labels describe the relation; they are not quality dimensions.
+
+    Driven through a real read-backed dossier so both records carry genuinely
+    different labels — an evidenced issuer is what lets a role or a transport
+    relation be recorded at all, so a variant without one would normalise both
+    sides to ``unknown`` and assert nothing.
+    """
+    read = _read()
+    dossier = build_read_dossiers([read])[0]
+    group = _group(url=read.resolved_url)
+    plain = build_scored_source(
+        group,
+        _lab_draft(url=read.resolved_url),
+        reputation=None,
+        dossier=dossier,
+    )
     labelled = build_scored_source(
         group,
-        _lab_draft(source_role="derivative", transport_relation="mirror",
-                   self_interest="evidenced"),
+        _lab_draft(
+            url=read.resolved_url,
+            source_role="derivative",
+            transport_relation="mirror",
+            self_interest="evidenced",
+        ),
         reputation=None,
+        dossier=dossier,
     )
 
+    # The differential really reached the records.
+    assert plain.source_role == "original_report"
+    assert plain.transport_relation == "original"
+    assert plain.self_interest == "none"
+    assert labelled.source_role == "derivative"
+    assert labelled.transport_relation == "mirror"
+    assert labelled.self_interest == "evidenced"
+    # The dependence judgement moved: one is an origin, the other is not.
+    assert source_origin_id(plain) is not None
+    assert source_origin_id(labelled) is None
+
+    # And none of it moved a single number.
     assert plain.overall_score == pytest.approx(labelled.overall_score)
     assert plain.authority_score == pytest.approx(labelled.authority_score)
+    assert plain.recency_score == pytest.approx(labelled.recency_score)
+    assert plain.relevance_score == pytest.approx(labelled.relevance_score)
+    assert plain.low_confidence is False
+    assert labelled.low_confidence is False
 
 
 def test_the_assessment_revision_is_content_metadata_and_time() -> None:
@@ -1668,6 +1789,41 @@ async def test_a_provider_failure_keeps_identity_and_an_unscored_status() -> Non
     assert source.assessment_revision.startswith("assess-")
     assert source.assessment_revision == read_assessment_revision(read)
     # And an unscored source can never be half of an independent pair.
+    assert source_origin_id(source) is None
+
+
+@pytest.mark.asyncio
+async def test_a_changed_read_that_reassesses_unscored_drops_the_old_score() -> None:
+    """A score about content that no longer exists must not survive.
+
+    The prior assessment was computed from the old body. The new read is a
+    different document, and this pass could not score it, so keeping 0.87
+    would credit content the model never saw with a judgement about content
+    that is gone.
+    """
+    read = _read()
+    first, _ = await _assess([read], [_scores(_lab_draft())])
+    prior = first[0]
+    assert prior.evaluation_status == "scored"
+    assert prior.overall_score is not None
+
+    changed = _read(
+        text=LAB_REPORT_TEXT + " Revised: the 2024 figure was restated."
+    )
+    assert changed.content_sha256 != read.content_sha256
+    sources = await assess_new_sources(
+        ScriptedCompleter(outputs=[_output_limit_error()]),
+        [changed],
+        first,
+    )
+
+    source = sources[0]
+    assert source.assessment_revision != prior.assessment_revision
+    assert source.evaluation_status == "unscored_provider"
+    assert source.overall_score is None
+    assert source.authority_score is None
+    # The stale score is gone, and the record still names what it is about.
+    assert source.work_id == f"sha256:{changed.content_sha256}"
     assert source_origin_id(source) is None
 
 

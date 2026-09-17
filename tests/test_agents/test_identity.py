@@ -24,6 +24,7 @@ def source(
     url: str = "https://example.test/a",
     overall_score: float = 0.75,
     low_confidence: bool = False,
+    assessment_revision: str = "",
 ) -> ScoredSource:
     return ScoredSource(
         url=url,
@@ -34,6 +35,7 @@ def source(
         overall_score=overall_score,
         rationale="Relevant and independently corroborated.",
         low_confidence=low_confidence,
+        assessment_revision=assessment_revision,
     )
 
 
@@ -41,6 +43,7 @@ def unscored_source(
     *,
     url: str = "https://example.test/a",
     status: str = "unscored_provider",
+    assessment_revision: str = "",
 ) -> ScoredSource:
     return ScoredSource(
         url=url,
@@ -51,6 +54,7 @@ def unscored_source(
         overall_score=None,
         rationale="The source was not scored in this pass.",
         evaluation_status=status,
+        assessment_revision=assessment_revision,
     )
 
 
@@ -232,6 +236,57 @@ def test_a_new_score_replaces_a_prior_unscored_record() -> None:
     merged = merge_source_snapshot([failed], [scored])
 
     assert merged == [scored]
+
+
+def test_a_transient_status_preserves_a_score_of_the_same_revision() -> None:
+    """An unchanged document keeps its assessment through an outage.
+
+    A provider failure is an operational state, not a quality judgement, so a
+    score computed from exactly the content still in hand survives it.
+    """
+    scored = source(overall_score=0.75, assessment_revision="assess-same")
+    failed = unscored_source(assessment_revision="assess-same")
+
+    merged = merge_source_snapshot([scored], [failed])
+
+    assert merged == [scored]
+
+
+def test_a_changed_revision_is_not_preserved_through_a_transient_status() -> None:
+    """A stale score must not outlive the content it was computed from.
+
+    The document at this URL changed, so the new assessment is about content
+    the old score never saw. Keeping the old score would credit the new
+    content with a judgement made about the old one — the exact failure the
+    revision key exists to prevent.
+    """
+    scored = source(overall_score=0.87, assessment_revision="assess-old")
+    failed = unscored_source(assessment_revision="assess-new")
+
+    merged = merge_source_snapshot([scored], [failed])
+
+    assert merged == [failed]
+    assert merged[0].overall_score is None
+    assert merged[0].evaluation_status == "unscored_provider"
+
+
+def test_legacy_records_without_a_revision_keep_the_prior_behavior() -> None:
+    """No recorded revision cannot prove the content changed.
+
+    Every record written before this contract carries an empty revision, so
+    the preservation rule must stay in force for them; a transient state
+    drops no score it cannot show to be stale.
+    """
+    scored = source(overall_score=0.75)
+    failed = unscored_source()
+
+    assert merge_source_snapshot([scored], [failed]) == [scored]
+    # One side recording a revision is not evidence of a change either: the
+    # unscored record says nothing about which content it was about.
+    assert merge_source_snapshot(
+        [source(overall_score=0.75, assessment_revision="assess-a")],
+        [unscored_source()],
+    ) == [source(overall_score=0.75, assessment_revision="assess-a")]
 
 
 # --- claim snapshots ------------------------------------------------------

@@ -130,23 +130,44 @@ def merge_source_snapshot(
     losing sources this pass never revisited: the latest assessment for a
     canonical URL wins, a source first seen earlier keeps its position, and
     each canonical URL appears at most once.
+
+    A provider failure, source cap, or missing model row is an operational
+    status rather than a quality judgement, so a previously valid score is
+    preserved through those transient states — but only while it is still an
+    assessment of the same content. ``assessment_revision`` is the recorded
+    evidence of that: once both records carry one and they differ, the
+    document changed, the new record is about content the old score never saw,
+    and the stale score is dropped rather than credited to it. Two records
+    with no recorded revision cannot show a change, so they keep the historic
+    behavior and the earlier score survives.
     """
     merged: dict[str, ScoredSource] = {}
     for source in (*previous, *current):
         url = normalize_source_url(source.url)
         existing = merged.get(url)
-        # A provider failure, source cap, or missing model row is an
-        # operational status rather than a quality judgement. Preserve a
-        # previously valid score through those transient states; a new scored
-        # record still replaces any older unscored record.
         if (
             existing is not None
             and existing.evaluation_status == "scored"
             and source.evaluation_status != "scored"
+            and not _revision_changed(existing, source)
         ):
             continue
         merged[url] = source
     return list(merged.values())
+
+
+def _revision_changed(existing: ScoredSource, incoming: ScoredSource) -> bool:
+    """True when two assessments are demonstrably about different content.
+
+    An empty revision is not evidence of a change: every record written before
+    the revision contract existed carries none, and an unscored record built
+    without a read says nothing about which content it was about.
+    """
+    return (
+        bool(existing.assessment_revision)
+        and bool(incoming.assessment_revision)
+        and existing.assessment_revision != incoming.assessment_revision
+    )
 
 
 def merge_claim_snapshot(

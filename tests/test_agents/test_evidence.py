@@ -46,6 +46,7 @@ from deep_research.agents.evidence import (
     resolve_work_identities,
     retained_work_count,
     validate_cached_read,
+    validated_temporal,
 )
 from deep_research.agents.sources import (
     normalize_source_url,
@@ -1710,6 +1711,97 @@ def test_a_year_the_read_never_carries_is_rejected() -> None:
 
     assert "year" not in row
     assert read_metadata_row(read, anchors={"year": "2025"})["year"] == "2025"
+
+
+def test_a_body_mention_does_not_transfer_issuer_ownership() -> None:
+    """A quoted organization is not the publisher of the page quoting it.
+
+    "As reported by Acme" names whose figure is being repeated. Reading that
+    as Acme's own publication would hand every third-party article about a
+    company to that company, and would let it inherit the article's authority.
+    """
+    read = _web_read(
+        "https://lab.example/analysis",
+        title="Grid storage, analysed",
+        text=(
+            "Grid storage, analysed. As reported by Acme, 1,200 MW was "
+            "withheld during 2024. Published by Example Lab."
+        ),
+    )
+
+    proposed = {"issuer": "Acme"}
+    row = read_metadata_row(read, anchors=proposed)
+
+    assert "issuer" not in row
+    assert rejected_anchor_names(read, proposed) == ["issuer"]
+    assert (
+        read_metadata_row(read, anchors={"issuer": "Example Lab"})["issuer"]
+        == "Example Lab"
+    )
+
+
+def test_a_stated_attribution_phrase_is_accepted_with_its_fillers() -> None:
+    """Genuine publication phrasing still resolves, however it is written."""
+    for text in (
+        "Report. Published by Example Lab on 2026-01-15.",
+        "Report. Publisher: Example Lab.",
+        "Report. Issued by Example Lab.",
+        "Report. Prepared by Example Lab.",
+        "Report. Copyright 2026 Example Lab.",
+    ):
+        read = _web_read(text=text)
+        row = read_metadata_row(read, anchors={"issuer": "Example Lab"})
+        assert row.get("issuer") == "Example Lab", text
+
+
+def test_a_date_is_stored_at_the_precision_the_read_evidences() -> None:
+    """A document that says "2026" cannot be stamped "2026-12-31".
+
+    Only the year was read, so only the year may be recorded: a fabricated day
+    and month would make the freshness judgement look far more precise than
+    the evidence behind it.
+    """
+    year_only = _web_read(
+        "https://lab.example/yearly",
+        text="Yearly Report. Published by Example Lab in 2026.",
+    )
+    dated = _web_read(
+        "https://lab.example/dated",
+        text=(
+            "Dated Report. Published by Example Lab on 2026-01-15. "
+            "Example Lab measured 1,200 MW in 2024."
+        ),
+    )
+
+    coarse = validated_temporal(
+        year_only, publication_date="2026-12-31", status="current"
+    )
+    exact = validated_temporal(
+        dated, publication_date="2026-01-15", status="current"
+    )
+    partial = validated_temporal(
+        dated, publication_date="2026-06-01", status="current"
+    )
+
+    assert coarse.publication_date == "2026"
+    assert coarse.status == "current"
+    assert exact.publication_date == "2026-01-15"
+    # A month the read never states falls back to the year it does state.
+    assert partial.publication_date == "2026"
+    # A prose date is recorded at the precision the read supports, not as
+    # written: "January 2026" evidences 2026 and no particular day.
+    assert (
+        validated_temporal(
+            dated, publication_date="January 2026", status="current"
+        ).publication_date
+        == "2026"
+    )
+    assert (
+        validated_temporal(
+            year_only, publication_date="2019", status="current"
+        ).publication_date
+        is None
+    )
 
 
 def test_the_assessment_revision_tracks_content_metadata_and_time() -> None:

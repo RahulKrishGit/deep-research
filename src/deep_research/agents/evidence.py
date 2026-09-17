@@ -540,28 +540,34 @@ _FRESHNESS_DATES = {
     "effective": "effective_date",
 }
 
-# Phrases that attribute a document to a publisher. An organization merely
-# mentioned — in a headline, a quotation, or the body of someone else's
-# article — is not its publisher, so only a stated attribution transfers
-# ownership.
-_ATTRIBUTION_MARKERS = (
-    "published by",
-    "publisher",
-    "issued by",
-    "prepared by",
-    "produced by",
-    "released by",
-    "written by",
-    "reported by",
-    "copyright",
-    "author",
+# Phrases that publish or issue a document. Attribution is a statement *about*
+# the document, so only these phrases — and only immediately before the name —
+# transfer ownership. "As reported by Acme" repeats someone's figure and
+# "written by" is authorship; neither says who published this page, and a
+# headline naming an organization does not either.
+_ATTRIBUTION_PHRASES = (
+    r"published\s+by",
+    r"published\s+on\s+behalf\s+of",
+    r"publisher\s*:",
+    r"issued\s+by",
+    r"issuing\s+body\s*:",
+    r"prepared\s+by",
+    r"produced\s+by",
+    r"released\s+by",
+    r"copyright",
 )
+
+# Punctuation allowed between two words of one name, and between the
+# attribution phrase and the name it attributes.
+_NAME_GAP = r"[\W_]{0,4}"
+_ATTRIBUTION_GAP = r"[\s:,\u2013\u2014-]{0,4}"
 
 # The anchors a model may propose about a document. Each is accepted only when
 # the read itself carries it; everything else is dropped rather than recorded.
 ANCHOR_FIELDS = ("doi", "issuer", "report_number", "year")
 
 _YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_DATE_TOKEN_PATTERN = re.compile(r"(?<!\d)\d{4}(?:-\d{2}(?:-\d{2})?)?(?!\d)")
 
 # How much of one read's own text a dossier shows the model.
 DEFAULT_DOSSIER_EXCERPTS = 4
@@ -578,21 +584,27 @@ def read_serving_host(read: ReadRecord) -> str:
     return source_domain(read.resolved_url)
 
 
-def _folded_read_text(read: ReadRecord) -> str:
-    """Every dating signal the read carries, as foldable identity words.
+def _document_text(read: ReadRecord) -> str:
+    """The document's own words: its title and the text the reader extracted.
 
-    The title, the text the reader extracted, and the URL the bytes were
-    actually served from are folded together: a versioned path such as
-    ``/2024/report`` dates a document just as its title page does. The
-    *requested* URL is deliberately absent — identity and dating come from
-    what was served, never from what was asked for.
+    This is the haystack every attribution is read from. The URL is not part
+    of it: where a document was *served* from never publishes it.
     """
-    parts = [
-        read.title,
-        read.resolved_url,
-        *sorted(read.passages.values()),
-    ]
-    return _identity_words(" ".join(parts))
+    return " ".join([read.title, *sorted(read.passages.values())])
+
+
+def _dated_text(read: ReadRecord) -> str:
+    """The document text plus the URL the bytes were served from.
+
+    A versioned path such as ``/2024/report`` dates a document just as its
+    title page does, so dating (unlike attribution) reads the serving URL too.
+    """
+    return " ".join([_document_text(read), read.resolved_url])
+
+
+def _folded_read_text(read: ReadRecord) -> str:
+    """Every dating signal the read carries, as foldable identity words."""
+    return _identity_words(_dated_text(read))
 
 
 def read_dated_tokens(read: ReadRecord) -> list[str]:
@@ -605,30 +617,42 @@ def read_dated_tokens(read: ReadRecord) -> list[str]:
     return sorted(set(_YEAR_PATTERN.findall(_folded_read_text(read))))
 
 
+def _read_date_tokens(read: ReadRecord) -> set[str]:
+    """Every date the read states, with the coarser forms each one evidences.
+
+    "2026-01-15" evidences the year 2026 as well as that day, while a document
+    that only says "2026" evidences no month and no day at all.
+    """
+    tokens: set[str] = set()
+    for match in _DATE_TOKEN_PATTERN.findall(_dated_text(read)):
+        parts = match.split("-")
+        for length in range(1, len(parts) + 1):
+            tokens.add("-".join(parts[:length]))
+    return tokens
+
+
 def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
     """True when the read attributes the document to ``issuer``.
 
-    Attribution has to be stated — "Published by Example Lab", "Copyright
-    Example Lab" — and a bare mention is not attribution. This is what keeps
-    an article *about* a company from being recorded as that company's own
-    publication.
+    Attribution has to be stated — "Published by Example Lab", "Publisher:
+    Example Lab", "Copyright 2026 Example Lab" — and said about *this*
+    document. A body mention is not attribution, which is what keeps an
+    article about a company from being recorded as that company's own
+    publication and inheriting its authority.
     """
-    words = _identity_words(issuer)
+    words = _identity_words(issuer).split()
     if not words:
         return False
-    haystack = _folded_read_text(read)
-    for marker in _ATTRIBUTION_MARKERS:
-        start = 0
-        while True:
-            index = haystack.find(marker, start)
-            if index < 0:
-                break
-            start = index + 1
-            after = haystack[index + len(marker) :].strip()
-            if after.startswith("the "):
-                after = after[4:]
-            if after.startswith(words):
-                return True
+    name = _NAME_GAP.join(re.escape(word) for word in words)
+    haystack = _document_text(read)
+    for phrase in _ATTRIBUTION_PHRASES:
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9]){phrase}{_ATTRIBUTION_GAP}"
+            rf"(?:the\s+)?(?:\d{{4}}\s*)?{name}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+        if pattern.search(haystack):
+            return True
     return False
 
 
@@ -863,19 +887,39 @@ def source_origin_id(source: ScoredSource) -> str | None:
     ``None`` means the source may not be half of an independent pair: an
     unscored source carries no assessment, a derivative or mixed document
     repeats someone else's work, and an unknown issuer establishes neither
-    identity nor independence. A mirror is not ``None`` — it inherits the work
-    it mirrors, so it can be the first primary support while contributing no
-    second origin.
+    identity nor independence. A mirror is not ``None`` — it can be the first
+    primary support — but it must never present as a *second* origin beside
+    the work it mirrors.
+
+    The origin is the discriminator, so it may only separate sources that are
+    demonstrably different. A DOI or an issuer-namespaced report number is an
+    evidenced alias for a work, and the origin is that work. A bare content
+    hash is not: it names a set of bytes, and two copies of one report that
+    were re-typeset hash differently while remaining one work — so a
+    hash-only source contributes *its publisher's* origin instead. Two copies
+    from one publisher therefore share one origin however their bytes differ,
+    while two genuinely different documents from different publishers keep
+    theirs apart.
     """
     if source.evaluation_status != "scored":
         return None
     if source.source_role in ("derivative", "mixed", "unknown"):
         return None
-    if source.work_id:
+    if source.work_id and _strong_work_alias(source.work_id):
         return f"work:{source.work_id}"
     if source.publisher_id:
         return f"publisher:{source.publisher_id}"
     return None
+
+
+# Work aliases that name a work rather than a set of bytes. ``report:`` is
+# already namespaced by its issuer, so both separate two different works from
+# one publisher, and both are inherited by a copy that carries them.
+_STRONG_WORK_ALIASES = ("doi:", "report:")
+
+
+def _strong_work_alias(work_id: str) -> bool:
+    return work_id.startswith(_STRONG_WORK_ALIASES)
 
 
 def _vocabulary(value: object, allowed: Sequence[str], *, default: str) -> str:
@@ -958,13 +1002,26 @@ def validated_temporal(
 
 
 def _dated_anchor(read: ReadRecord | None, value: object) -> str | None:
+    """The part of a proposed date the read actually evidences.
+
+    A document that says only "2026" cannot be recorded as "2026-12-31": the
+    accepted anchor is the longest prefix of the proposed date that the read
+    states, so a fabricated day or month is dropped and the year it does state
+    is kept — at its own precision, never at the model's.
+    """
     text = " ".join(str(value or "").split())
     if not text or read is None:
         return None
-    years = _YEAR_PATTERN.findall(text)
-    if not years or not set(years) <= set(read_dated_tokens(read)):
+    match = re.search(r"\d{4}(?:-\d{2}(?:-\d{2})?)?", text)
+    if match is None:
         return None
-    return text
+    tokens = _read_date_tokens(read)
+    candidate = match.group(0)
+    while candidate:
+        if candidate in tokens:
+            return candidate
+        candidate = candidate.rsplit("-", 1)[0] if "-" in candidate else ""
+    return None
 
 
 class ReadDossier(ContractModel):
