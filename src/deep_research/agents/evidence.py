@@ -29,19 +29,29 @@ evidence, Task 6 adds ``eligible_independent_pair``.
 from __future__ import annotations
 
 import hashlib
+import re
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from deep_research.agents.sources import normalize_source_url, publisher_identity
+from pydantic import Field
+
+from deep_research.agents.sources import (
+    normalize_source_url,
+    publisher_identity,
+    source_domain,
+)
 from deep_research.utils.types import (
     INCOMPLETE_CONTENT_SHA256,
     QUALITY_CONTRACT_VERSION,
     BoundaryAudit,
+    ContractModel,
     EvidenceDisposition,
     EvidenceUnit,
     ReadRecord,
+    ScoredSource,
+    SourceTemporal,
     WorkIdentity,
 )
 
@@ -492,6 +502,556 @@ def _year_text(value: object) -> str:
         digits = "".join(char for char in value if char.isdigit())
         return digits if digits and len(digits) == 4 else ""
     return ""
+
+
+# ---------------------------------------------------------------------------
+# read-backed source identity, transport relation, and fitness signals
+# ---------------------------------------------------------------------------
+
+# The closed vocabularies a scored source's labels come from. ``unknown`` is a
+# member of each: absence of evidence is an answer, never a made-up label.
+SOURCE_ROLES = (
+    "original_report",
+    "independent_research",
+    "derivative",
+    "company_statement",
+    "mixed",
+    "unknown",
+)
+TRANSPORT_RELATIONS = ("original", "mirror", "syndication", "unknown")
+SELF_INTEREST_LEVELS = ("none", "potential", "evidenced", "unknown")
+FRESHNESS_STATUSES = (
+    "current",
+    "superseded",
+    "stale_data",
+    "projection",
+    "effective",
+    "unknown",
+)
+
+# The date that makes each freshness status checkable. A status whose date the
+# read does not carry is recorded ``unknown``: "newly published" cannot be
+# asserted from a document that never says when it was published.
+_FRESHNESS_DATES = {
+    "current": "publication_date",
+    "superseded": "publication_date",
+    "stale_data": "data_period",
+    "projection": "forecast_horizon",
+    "effective": "effective_date",
+}
+
+# Phrases that attribute a document to a publisher. An organization merely
+# mentioned — in a headline, a quotation, or the body of someone else's
+# article — is not its publisher, so only a stated attribution transfers
+# ownership.
+_ATTRIBUTION_MARKERS = (
+    "published by",
+    "publisher",
+    "issued by",
+    "prepared by",
+    "produced by",
+    "released by",
+    "written by",
+    "reported by",
+    "copyright",
+    "author",
+)
+
+# The anchors a model may propose about a document. Each is accepted only when
+# the read itself carries it; everything else is dropped rather than recorded.
+ANCHOR_FIELDS = ("doi", "issuer", "report_number", "year")
+
+_YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+
+# How much of one read's own text a dossier shows the model.
+DEFAULT_DOSSIER_EXCERPTS = 4
+DEFAULT_DOSSIER_EXCERPT_CHARS = 400
+
+
+def read_serving_host(read: ReadRecord) -> str:
+    """Return the host that served this read's bytes.
+
+    A transport fact, kept apart from the publisher: a mirror served from a
+    repository is still the work it mirrors, and this is the field that says
+    where the copy came from rather than who made it.
+    """
+    return source_domain(read.resolved_url)
+
+
+def _folded_read_text(read: ReadRecord) -> str:
+    """Every dating signal the read carries, as foldable identity words.
+
+    The title, the text the reader extracted, and the URL the bytes were
+    actually served from are folded together: a versioned path such as
+    ``/2024/report`` dates a document just as its title page does. The
+    *requested* URL is deliberately absent — identity and dating come from
+    what was served, never from what was asked for.
+    """
+    parts = [
+        read.title,
+        read.resolved_url,
+        *sorted(read.passages.values()),
+    ]
+    return _identity_words(" ".join(parts))
+
+
+def read_dated_tokens(read: ReadRecord) -> list[str]:
+    """Return the distinct years this read carries, in sorted order.
+
+    Deterministic and body-derived, so it is both the temporal component of
+    an assessment revision and the check that stops a model reporting a
+    publication year the document never states.
+    """
+    return sorted(set(_YEAR_PATTERN.findall(_folded_read_text(read))))
+
+
+def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
+    """True when the read attributes the document to ``issuer``.
+
+    Attribution has to be stated — "Published by Example Lab", "Copyright
+    Example Lab" — and a bare mention is not attribution. This is what keeps
+    an article *about* a company from being recorded as that company's own
+    publication.
+    """
+    words = _identity_words(issuer)
+    if not words:
+        return False
+    haystack = _folded_read_text(read)
+    for marker in _ATTRIBUTION_MARKERS:
+        start = 0
+        while True:
+            index = haystack.find(marker, start)
+            if index < 0:
+                break
+            start = index + 1
+            after = haystack[index + len(marker) :].strip()
+            if after.startswith("the "):
+                after = after[4:]
+            if after.startswith(words):
+                return True
+    return False
+
+
+def _literal_evidenced(read: ReadRecord, value: str) -> bool:
+    """True when the read carries ``value`` as identity words.
+
+    Folding both sides makes a line-broken or differently punctuated copy of
+    an identifier still the same identifier, while keeping the check a real
+    containment test rather than a similarity score.
+    """
+    words = _identity_words(value)
+    return bool(words) and words in _folded_read_text(read)
+
+
+def validate_metadata_anchors(
+    read: ReadRecord,
+    anchors: Mapping[str, object],
+) -> dict[str, object]:
+    """Return the proposed metadata anchors this read actually evidences.
+
+    A model may only report what the document shows: an issuer the read
+    attributes the document to, a DOI the read carries, a year the read
+    states, a report number the read prints. Everything else is dropped, so an
+    unsupported issuer, DOI, or year can never reach an identity.
+    """
+    accepted: dict[str, object] = {}
+    issuer = _text_field(anchors, "issuer")
+    if issuer and _issuer_evidenced(read, issuer):
+        accepted["issuer"] = issuer
+    doi = _normalized_doi(_text_field(anchors, "doi"))
+    if doi and _literal_evidenced(read, doi):
+        accepted["doi"] = doi
+    year = _year_text(anchors.get("year"))
+    if year and year in read_dated_tokens(read):
+        accepted["year"] = year
+    number = _identifier_text(_text_field(anchors, "report_number"))
+    if number and _literal_evidenced(read, number):
+        accepted["report_number"] = number
+    return accepted
+
+
+def rejected_anchor_names(
+    read: ReadRecord,
+    anchors: Mapping[str, object],
+) -> list[str]:
+    """The proposed anchor names this read did not evidence, sorted.
+
+    Recorded so a reviewer can tell "the model proposed nothing" from "the
+    model proposed a publisher and the document did not support it".
+    """
+    accepted = validate_metadata_anchors(read, anchors)
+    rejected = [
+        name
+        for name in ANCHOR_FIELDS
+        if name not in accepted and _anchor_proposed(anchors, name)
+    ]
+    return sorted(rejected)
+
+
+def _anchor_proposed(anchors: Mapping[str, object], name: str) -> bool:
+    value = anchors.get(name)
+    if name == "year":
+        return bool(_year_text(value))
+    return bool(_text_field(anchors, name))
+
+
+def read_metadata_row(
+    read: ReadRecord,
+    *,
+    anchors: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Build the identity row one read contributes, anchored to the read.
+
+    A complete read contributes its title, its serving host, its complete
+    content hash, and whichever proposed anchors the read evidences. A partial
+    read contributes nothing but its own id: it is admissible evidence for the
+    pages it read, but it is never an identity or equality edge, because the
+    pages it never saw could say anything.
+    """
+    if not read.extraction_complete:
+        return {"source_id": read.read_id}
+    row: dict[str, object] = {
+        "source_id": read.read_id,
+        "title": read.title,
+        "serving_host": read_serving_host(read),
+        "complete_content_sha256": read.content_sha256,
+        "extraction_complete": True,
+    }
+    row.update(validate_metadata_anchors(read, anchors or {}))
+    return row
+
+
+def read_identity(
+    read: ReadRecord,
+    *,
+    anchors: Mapping[str, object] | None = None,
+) -> tuple[str | None, str | None]:
+    """Return ``(publisher_id, work_id)`` for one read.
+
+    Both are ``None`` when the read establishes neither — an opaque URL with
+    no evidenced issuer, or a partial read. Unknown identity is preserved as
+    ``None`` rather than guessed, because unknown identity can establish
+    neither sameness nor independence.
+    """
+    row = read_metadata_row(read, anchors=anchors)
+    identity = resolve_work_identities([row]).get(read.read_id)
+    work_id = identity.key if identity is not None else None
+    return canonical_publisher_id(row), work_id
+
+
+def _content_fingerprint(read: ReadRecord) -> str:
+    """The read's content identity: its digest, or its partial-read body."""
+    if read.extraction_complete:
+        return read.content_sha256
+    return _fingerprint(
+        *(
+            f"{locator}\x1e{canonical_read_text(text)}"
+            for locator, text in sorted(read.passages.items())
+        )
+    )
+
+
+def compute_assessment_revision(
+    *,
+    content_sha256: str,
+    extraction_complete: bool,
+    metadata_fingerprint: str,
+    temporal_fingerprint: str,
+) -> str:
+    """Combine the three components of one source assessment's revision.
+
+    The revision is the reuse key: content, read-derived metadata, and the
+    dating signals must all be unchanged for a stored assessment to still
+    describe the source in front of it. A URL alone is not enough, which is
+    why no component may be dropped.
+    """
+    return "assess-" + _fingerprint(
+        content_sha256,
+        "complete" if extraction_complete else "partial",
+        metadata_fingerprint,
+        temporal_fingerprint,
+    )[: _DIGEST_LENGTH]
+
+
+def read_assessment_revision(
+    read: ReadRecord,
+    *,
+    anchors: Mapping[str, object] | None = None,
+) -> str:
+    """Return the assessment revision one read's content, metadata, and dates form."""
+    accepted = validate_metadata_anchors(read, anchors or {})
+    metadata_fingerprint = _fingerprint(
+        normalize_source_url(read.resolved_url),
+        read_serving_host(read),
+        _identity_words(read.title),
+        *(f"{name}={accepted[name]}" for name in sorted(accepted)),
+    )
+    temporal_fingerprint = _fingerprint(*read_dated_tokens(read))
+    return compute_assessment_revision(
+        content_sha256=_content_fingerprint(read),
+        extraction_complete=read.extraction_complete,
+        metadata_fingerprint=metadata_fingerprint,
+        temporal_fingerprint=temporal_fingerprint,
+    )
+
+
+def resolve_read_works(reads: Sequence[ReadRecord]) -> dict[str, str]:
+    """Resolve one work key per read, joining only on evidenced aliases.
+
+    Rows join exactly as :func:`resolve_work_identities` joins them — a shared
+    DOI, issuer-namespaced report number, or complete-content hash, or the
+    conservative title/year/issuer alias. A read whose identity cannot be
+    established keeps its own key instead of being merged with another
+    unknown, so the result never claims two documents are one work on the
+    strength of a URL.
+    """
+    parsed = [_parse_row(read_metadata_row(read)) for read in reads]
+    keys: dict[str, str] = {}
+    for group in _group_rows(parsed):
+        identity = _resolve_group(group)
+        key = identity.key or "unresolved-" + _fingerprint(
+            *(row.source_id for row in group)
+        )[: _DIGEST_LENGTH]
+        for row in group:
+            keys[row.source_id] = key
+    return keys
+
+
+def resolve_read_work_keys(
+    reads: Sequence[ReadRecord],
+) -> dict[str, str]:
+    """Map each read's canonical URLs to the work key it belongs to.
+
+    Both URLs are indexed so a caller holding either one — a finding names the
+    URL it cited — finds the read's work. This is a lookup alias only: the
+    work key itself comes from the read's own identity evidence, never from
+    the URL that was requested.
+    """
+    keys = resolve_read_works(reads)
+    by_url: dict[str, str] = {}
+    for read in reads:
+        key = keys.get(read.read_id)
+        if key is None:
+            continue
+        for url in (read.resolved_url, read.requested_url):
+            by_url.setdefault(normalize_source_url(url), key)
+    return by_url
+
+
+def retained_work_count(
+    source_urls: Sequence[str],
+    reads: Sequence[ReadRecord],
+) -> int:
+    """Count the distinct works behind already-retained sources.
+
+    A works count, not a URL count under a second name: two URLs serving the
+    same complete document are one work, and a finding whose read is not in
+    the registry counts as its own unresolved entry rather than being folded
+    into a neighbour it was never shown to match.
+    """
+    by_url = resolve_read_work_keys(reads)
+    distinct: set[str] = set()
+    for url in source_urls:
+        canonical = normalize_source_url(url)
+        distinct.add(by_url.get(canonical, f"unresolved:{canonical}"))
+    return len(distinct)
+
+
+def source_origin_id(source: ScoredSource) -> str | None:
+    """The claim-specific evidence origin this source can contribute, or ``None``.
+
+    ``None`` means the source may not be half of an independent pair: an
+    unscored source carries no assessment, a derivative or mixed document
+    repeats someone else's work, and an unknown issuer establishes neither
+    identity nor independence. A mirror is not ``None`` — it inherits the work
+    it mirrors, so it can be the first primary support while contributing no
+    second origin.
+    """
+    if source.evaluation_status != "scored":
+        return None
+    if source.source_role in ("derivative", "mixed", "unknown"):
+        return None
+    if source.work_id:
+        return f"work:{source.work_id}"
+    if source.publisher_id:
+        return f"publisher:{source.publisher_id}"
+    return None
+
+
+def _vocabulary(value: object, allowed: Sequence[str], *, default: str) -> str:
+    candidate = " ".join(str(value or "").split()).casefold()
+    return candidate if candidate in allowed else default
+
+
+def validated_source_role(claimed: object, *, issuer_evidenced: bool) -> str:
+    """The role this read can support, or ``unknown``.
+
+    Naming what a document is — its own report, someone else's statistic, a
+    company's statement — requires knowing who published it, so a role with no
+    evidenced issuer is recorded as unknown rather than believed.
+    """
+    role = _vocabulary(claimed, SOURCE_ROLES, default="unknown")
+    if role != "unknown" and not issuer_evidenced:
+        return "unknown"
+    return role
+
+
+def validated_transport_relation(
+    claimed: object,
+    *,
+    issuer_evidenced: bool,
+) -> str:
+    """The transport relation this read can support, or ``unknown``.
+
+    A mirror or a syndicated copy is a statement that the document came from
+    somewhere else, so it can only be recorded when the read names the
+    publisher it came from. Without that there is nothing to inherit and the
+    relation stays unknown.
+    """
+    relation = _vocabulary(claimed, TRANSPORT_RELATIONS, default="unknown")
+    if relation in ("mirror", "syndication") and not issuer_evidenced:
+        return "unknown"
+    return relation
+
+
+def validated_self_interest(claimed: object, *, role: str) -> str:
+    """The self-interest level this source carries.
+
+    A company's own statement about its own product is self-interested by
+    construction, so that role can never be recorded as disinterested — the
+    label is part of what the source is, not a quality a high score can
+    offset.
+    """
+    level = _vocabulary(claimed, SELF_INTEREST_LEVELS, default="unknown")
+    if role == "company_statement" and level != "evidenced":
+        return "evidenced"
+    return level
+
+
+def validated_temporal(
+    read: ReadRecord | None,
+    *,
+    publication_date: object = "",
+    data_period: object = "",
+    forecast_horizon: object = "",
+    effective_date: object = "",
+    status: object = "",
+) -> SourceTemporal:
+    """Keep the dates a read evidences apart, and name what freshness rests on.
+
+    Each date is recorded only when the read carries its year, and a claimed
+    status is kept only when the date that makes it checkable survived. With
+    no read at all — a source nothing in this run retrieved — no date is
+    recorded, because there is nothing to check one against.
+    """
+    dates = {
+        "publication_date": _dated_anchor(read, publication_date),
+        "data_period": _dated_anchor(read, data_period),
+        "forecast_horizon": _dated_anchor(read, forecast_horizon),
+        "effective_date": _dated_anchor(read, effective_date),
+    }
+    claimed = _vocabulary(status, FRESHNESS_STATUSES, default="unknown")
+    required = _FRESHNESS_DATES.get(claimed)
+    if required is None or dates.get(required) is None:
+        claimed = "unknown"
+    return SourceTemporal(**dates, status=claimed)  # type: ignore[arg-type]
+
+
+def _dated_anchor(read: ReadRecord | None, value: object) -> str | None:
+    text = " ".join(str(value or "").split())
+    if not text or read is None:
+        return None
+    years = _YEAR_PATTERN.findall(text)
+    if not years or not set(years) <= set(read_dated_tokens(read)):
+        return None
+    return text
+
+
+class ReadDossier(ContractModel):
+    """One read-backed dossier: everything the model may judge, all read-derived.
+
+    The read itself is carried so a caller can validate the model's proposed
+    anchors against the same bytes it was shown, and the revision is computed
+    before the call so a stored assessment can be reused without one.
+    """
+
+    read: ReadRecord
+    url: str = Field(min_length=1)
+    serving_host: str = Field(min_length=1)
+    excerpts: list[str] = Field(default_factory=list)
+    assessment_revision: str = Field(min_length=1)
+    cited_sub_topics: list[str] = Field(default_factory=list)
+
+
+def build_read_dossiers(
+    reads: Sequence[ReadRecord],
+    *,
+    cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
+    excerpt_chars: int = DEFAULT_DOSSIER_EXCERPT_CHARS,
+    max_excerpts: int = DEFAULT_DOSSIER_EXCERPTS,
+) -> list[ReadDossier]:
+    """Build one read-backed dossier per canonical URL, in first-seen order.
+
+    One URL has one current read: the complete read wins over a partial one,
+    and the latest observation wins over an earlier one, so a re-read that
+    recovered a lost page is assessed instead of the failure it replaced.
+    """
+    if excerpt_chars < 1 or max_excerpts < 1:
+        raise EvidenceContractError(
+            "a dossier requires at least one excerpt of at least one character"
+        )
+    cited = {
+        normalize_source_url(url): list(topics)
+        for url, topics in (cited_sub_topics or {}).items()
+    }
+    chosen: dict[str, ReadRecord] = {}
+    for read in reads:
+        url = normalize_source_url(read.resolved_url)
+        current = chosen.get(url)
+        if current is None or _prefer_read(read, current):
+            chosen[url] = read
+    return [
+        ReadDossier(
+            read=read,
+            url=url,
+            serving_host=read_serving_host(read),
+            excerpts=_dossier_excerpts(
+                read, excerpt_chars=excerpt_chars, max_excerpts=max_excerpts
+            ),
+            assessment_revision=read_assessment_revision(read),
+            cited_sub_topics=cited.get(url, []),
+        )
+        for url, read in chosen.items()
+    ]
+
+
+def _prefer_read(candidate: ReadRecord, current: ReadRecord) -> bool:
+    if candidate.extraction_complete != current.extraction_complete:
+        return candidate.extraction_complete
+    return candidate.retrieved_at >= current.retrieved_at
+
+
+def _dossier_excerpts(
+    read: ReadRecord,
+    *,
+    excerpt_chars: int,
+    max_excerpts: int,
+) -> list[str]:
+    """The read's own text at its first locators, bounded for the prompt.
+
+    Deliberately the document's words rather than a finding's paraphrase: the
+    judgement being asked for is about the document, and a paraphrase is the
+    model's own earlier summary of it.
+    """
+    excerpts: list[str] = []
+    for locator in sorted(read.passages):
+        text = " ".join(read.passages[locator].split())
+        if not text:
+            continue
+        excerpts.append(text[:excerpt_chars])
+        if len(excerpts) == max_excerpts:
+            break
+    return excerpts
 
 
 # ---------------------------------------------------------------------------

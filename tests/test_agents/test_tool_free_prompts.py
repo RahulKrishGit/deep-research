@@ -36,6 +36,7 @@ from deep_research.agents.critic import (
     CritiqueTask,
     critique_messages,
 )
+from deep_research.agents.evidence import build_read_dossiers, build_read_record
 from deep_research.agents.fact_checker import (
     _CLAIM_EXTRACTION_REPLY_EXAMPLES,
     _CLAIM_VERIFICATION_REPLY_EXAMPLES,
@@ -763,6 +764,86 @@ def test_the_source_scoring_pair_is_schema_valid_and_opposite() -> None:
         assert 0.0 <= low < high <= 1.0, dimension
     assert weak.sources[0].rationale.strip()
     assert strong.sources[0].rationale.strip()
+
+
+def _read_backed_scoring_messages() -> list:
+    """The source-scoring request for a dossier built from an actual read."""
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url="https://lab.example/report",
+        resolved_url="https://lab.example/report",
+        title="Grid Storage Outlook",
+        retrieved_at="2026-09-16T10:00:00+00:00",
+        text=(
+            "Grid Storage Outlook. Published by Example Lab on 2026-01-15. "
+            "Example Lab measured that 1,200 MW was withheld during 2024."
+        ),
+        passages={
+            "chunk-0": (
+                "Grid Storage Outlook. Published by Example Lab on "
+                "2026-01-15. Example Lab measured that 1,200 MW was withheld "
+                "during 2024."
+            )
+        },
+        target_ids=("target-1",),
+    )
+    dossier = build_read_dossiers(
+        [read], cited_sub_topics={read.resolved_url: ["Grid storage"]}
+    )[0]
+    return scoring_messages(
+        SourceEvaluationTask(
+            instruction="Score every source behind the findings.",
+            groups=[
+                SourceGroup(
+                    url=read.resolved_url,
+                    domain="lab.example",
+                    title=read.title,
+                    sub_topics=["Grid storage"],
+                )
+            ],
+            dossiers={read.resolved_url: dossier},
+        ),
+        excerpt_chars=200,
+    )
+
+
+def test_a_read_backed_scoring_request_shows_the_read_and_names_no_tool() -> None:
+    """The read-backed request is still a tool-free structured request.
+
+    It shows the model what the *document* says — the host that served it, the
+    text itself, and the register — so a role, a transport relation, and a
+    date are judged from the read rather than from a finding's paraphrase of
+    it.
+    """
+    messages = _read_backed_scoring_messages()
+    developer, body = messages[0].content, messages[1].content
+
+    for content in (developer, body):
+        assert _advertised_tools(content) == set()
+
+    assert body.count("JSON object") == 1
+    assert body.count("# Reply format") == 1
+    assert "https://lab.example/report" in body
+    assert "Serving host: lab.example" in body
+    assert "Example Lab measured that 1,200 MW was withheld" in body
+    assert "Grid storage" in body
+
+    contract = body[body.index("# Reply format") :]
+    for field in (
+        "source_role",
+        "transport_relation",
+        "self_interest",
+        "publication_date",
+        "data_period",
+        "forecast_horizon",
+        "effective_date",
+        "freshness_status",
+        "methods_score",
+        "issuer",
+        "doi",
+    ):
+        assert f'"{field}"' in contract, field
 
 
 def test_the_claim_verification_pair_is_schema_valid_and_opposite() -> None:

@@ -36,11 +36,22 @@ from deep_research.agents.evidence import (
     merge_read_records,
     normalized_content_sha256,
     passages_from_chunks,
+    read_assessment_revision,
+    read_dated_tokens,
+    read_metadata_row,
+    read_serving_host,
+    rejected_anchor_names,
     require_boundary_manifest,
+    resolve_read_works,
     resolve_work_identities,
+    retained_work_count,
     validate_cached_read,
 )
-from deep_research.agents.sources import normalize_source_url, source_domain
+from deep_research.agents.sources import (
+    normalize_source_url,
+    publisher_identity,
+    source_domain,
+)
 from deep_research.utils.types import (
     INCOMPLETE_CONTENT_SHA256,
     QUALITY_CONTRACT_VERSION,
@@ -1531,3 +1542,239 @@ def test_the_read_registry_keeps_ids_independent_of_assessments() -> None:
     }
     assert normalized_content_sha256(TEXT) not in unit.evidence_id
     assert normalize_source_url(stored.resolved_url) == stored.resolved_url
+
+
+# --------------------------------------------------------------------------
+# Task 4: read-derived metadata, transport relation, and retained works
+# --------------------------------------------------------------------------
+
+# One document that states its own publisher, year, and DOI the way a report's
+# title page does. Every anchor the model may propose has to be found in text
+# like this, never asserted from what the model believes it knows.
+REPORT_TEXT = (
+    "Grid Storage Outlook. Published by Example Lab. Example Lab measured "
+    "that 1,200 MW of interconnection capacity was withheld in 2024. "
+    "doi:10.1234/grid.2025"
+)
+REPORT_ANCHORS = {
+    "issuer": "Example Lab",
+    "doi": "10.1234/grid.2025",
+    "year": "2025",
+}
+
+
+def _web_read(
+    url: str = "https://lab.example/report",
+    *,
+    title: str = "Grid Storage Outlook",
+    text: str = REPORT_TEXT,
+    reader: str = "web_scraper",
+    request_url: str | None = None,
+    extraction_complete: bool = True,
+    passages: dict[str, str] | None = None,
+    target_ids: tuple[str, ...] = (),
+    retrieved_at: str = RETRIEVED_AT,
+) -> ReadRecord:
+    """One read of a document, built through the shared read producer."""
+    return build_read_record(
+        session_id=SESSION_ID,
+        reader=reader,
+        requested_url=request_url or url,
+        resolved_url=url,
+        title=title,
+        retrieved_at=retrieved_at,
+        text=text,
+        passages=passages or {"p-1": text},
+        extraction_complete=extraction_complete,
+        target_ids=target_ids,
+    )
+
+
+def test_a_mirror_read_keeps_the_issuer_it_evidences() -> None:
+    """The serving host is not the publisher when the document names one."""
+    original = _web_read("https://lab.example/report")
+    mirror = _web_read("https://repository.example/mirror/report")
+
+    assert read_serving_host(original) == "lab.example"
+    assert read_serving_host(mirror) == "repository.example"
+    assert canonical_publisher_id(
+        read_metadata_row(original, anchors=REPORT_ANCHORS)
+    ) == canonical_publisher_id(
+        read_metadata_row(mirror, anchors=REPORT_ANCHORS)
+    )
+
+
+def test_identical_complete_content_resolves_one_work_across_hosts() -> None:
+    """A copied report is one work, however many hosts serve it."""
+    original = _web_read("https://lab.example/report")
+    mirror = _web_read("https://repository.example/mirror/report")
+
+    works = resolve_read_works([original, mirror])
+
+    assert works[original.read_id] == works[mirror.read_id]
+    assert works[original.read_id] == f"sha256:{original.content_sha256}"
+
+
+def test_a_different_document_is_a_different_work() -> None:
+    first = _web_read("https://lab.example/report")
+    second = _web_read(
+        "https://lab.example/other",
+        title="Interconnection Queue",
+        text="Interconnection Queue. Published by Example Lab. A different "
+        "document about 800 MW of capacity in 2024.",
+    )
+
+    works = resolve_read_works([first, second])
+
+    assert works[first.read_id] != works[second.read_id]
+
+
+def test_a_partial_read_establishes_no_publisher_and_no_work() -> None:
+    """Section 2.2/2.3: an incomplete extraction is never an identity edge.
+
+    It stays admissible evidence for the pages it read, but it may not join a
+    work or mint a publisher, because the pages it never saw could say
+    anything — including that it is a different document from the one it looks
+    like.
+    """
+    partial = _web_read(extraction_complete=False, reader="document_reader")
+    complete = _web_read()
+
+    partial_row = read_metadata_row(partial, anchors=REPORT_ANCHORS)
+
+    assert partial_row == {"source_id": partial.read_id}
+    assert canonical_publisher_id(partial_row) is None
+    works = resolve_read_works([partial, complete])
+    assert works[partial.read_id] != works[complete.read_id]
+    assert works[partial.read_id].startswith("unresolved-")
+
+
+def test_an_issuer_the_read_never_states_is_rejected() -> None:
+    """A model-proposed anchor is only accepted when the document shows it."""
+    read = _web_read()
+
+    row = read_metadata_row(
+        read,
+        anchors={"issuer": "Acme Corporation", "doi": "10.9999/invented"},
+    )
+
+    assert "issuer" not in row
+    assert "doi" not in row
+    assert rejected_anchor_names(
+        read, {"issuer": "Acme Corporation", "doi": "10.9999/invented"}
+    ) == ["doi", "issuer"]
+
+
+def test_an_evidenced_alias_is_accepted_and_names_the_work() -> None:
+    read = _web_read()
+
+    row = read_metadata_row(read, anchors=REPORT_ANCHORS)
+    identity = resolve_work_identities([row])[read.read_id]
+
+    assert row["issuer"] == "Example Lab"
+    assert identity.key == "doi:10.1234/grid.2025"
+    assert identity.basis == "shared normalized DOI"
+
+
+def test_a_title_mention_does_not_transfer_issuer_ownership() -> None:
+    """Naming an organization is not publishing: attribution must be stated.
+
+    The article below is published by Example Lab and is *about* Acme. A model
+    that reads "Acme" in the headline and returns it as the issuer would hand
+    every publisher's article about a company to that company — which is how a
+    third-party page becomes "the company's own statement".
+    """
+    read = _web_read(
+        "https://news.example/analysis",
+        title="Acme's battery recall, analysed by Example Lab",
+        text=(
+            "Acme's battery recall, analysed by Example Lab. Acme recalled "
+            "4,000 packs in 2024. Published by Example Lab. doi:10.1234/"
+            "grid.2025"
+        ),
+    )
+
+    proposed = {"issuer": "Acme", "doi": "10.1234/grid.2025"}
+    row = read_metadata_row(read, anchors=proposed)
+
+    assert "issuer" not in row
+    assert rejected_anchor_names(read, proposed) == ["issuer"]
+    # The blog that served it is the only publisher identity there is.
+    assert canonical_publisher_id(row) == publisher_identity(read.resolved_url)
+
+
+def test_a_year_the_read_never_carries_is_rejected() -> None:
+    read = _web_read()
+
+    row = read_metadata_row(read, anchors={"year": "2019"})
+
+    assert "year" not in row
+    assert read_metadata_row(read, anchors={"year": "2025"})["year"] == "2025"
+
+
+def test_the_assessment_revision_tracks_content_metadata_and_time() -> None:
+    """The reuse key is content, metadata *and* the dates the read carries."""
+    baseline = _web_read()
+    same = _web_read()
+    other_title = _web_read(title="Grid Storage Outlook (revised)")
+    other_text = _web_read(
+        text=REPORT_TEXT.replace("2024", "2019").replace(
+            "doi:10.1234/grid.2025", "doi:10.1234/grid.2019"
+        )
+    )
+
+    revision = read_assessment_revision(baseline)
+
+    assert revision.startswith("assess-")
+    # Reuse is not URL-keyed: only an identical read may share a revision.
+    assert read_assessment_revision(same) == revision
+    assert read_assessment_revision(other_title) != revision
+    assert read_assessment_revision(other_text) != revision
+
+
+def test_a_url_alone_never_shares_an_assessment_revision() -> None:
+    """Two reads of one URL with different bodies are two assessments."""
+    first = _web_read()
+    second = _web_read(
+        text=REPORT_TEXT + " The 2026 edition revised the 2024 figure."
+    )
+
+    assert first.read_id != second.read_id
+    assert read_assessment_revision(first) != read_assessment_revision(second)
+
+
+def test_retained_works_collapse_mirrors_and_never_invent_identity() -> None:
+    """A works count that is derived from identity, not from URLs."""
+    original = _web_read("https://lab.example/report")
+    mirror = _web_read("https://repository.example/mirror/report")
+    other = _web_read(
+        "https://lab.example/other",
+        title="Interconnection Queue",
+        text="Interconnection Queue. Published by Example Lab. Different.",
+    )
+
+    assert (
+        retained_work_count(
+            [original.resolved_url, mirror.resolved_url],
+            [original, mirror],
+        )
+        == 1
+    )
+    assert (
+        retained_work_count(
+            [
+                original.resolved_url,
+                mirror.resolved_url,
+                other.resolved_url,
+                "https://unread.example/never-read",
+            ],
+            [original, mirror, other],
+        )
+        == 3
+    )
+
+
+def test_the_dated_signals_are_read_from_the_document() -> None:
+    read = _web_read()
+
+    assert read_dated_tokens(read) == ["2024", "2025"]

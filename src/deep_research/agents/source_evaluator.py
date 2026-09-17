@@ -17,8 +17,8 @@ instead of a fabricated floor.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Protocol
+from collections.abc import Mapping, Sequence
+from typing import NamedTuple, Protocol
 
 from pydantic import Field
 
@@ -29,11 +29,24 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.events import agent_event
+from deep_research.agents.evidence import (
+    ReadDossier,
+    build_read_dossiers,
+    read_identity,
+    read_serving_host,
+    rejected_anchor_names,
+    validate_metadata_anchors,
+    validated_self_interest,
+    validated_source_role,
+    validated_temporal,
+    validated_transport_relation,
+)
 from deep_research.agents.identity import merge_source_snapshot
 from deep_research.agents.prompts import (
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
     AgentTask,
+    render_read_dossier,
     render_source_dossier,
     render_structured_reply_format,
 )
@@ -51,6 +64,7 @@ from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     ContractModel,
+    ReadRecord,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -105,6 +119,12 @@ class SourceScoreDraft(ContractModel):
     schema. ``overall_score``, ``evaluation_status``, and
     ``low_confidence`` are deliberately absent — this project computes those,
     not the model.
+
+    The fitness fields beyond the three scores are all optional, and an
+    omitted field is recorded as ``unknown`` rather than defaulted to a
+    judgement the model never made. The metadata anchors (``issuer``,
+    ``doi``, ``year``, ``report_number``) are proposals: each is accepted only
+    when the read the model was shown actually evidences it.
     """
 
     url: str
@@ -112,6 +132,19 @@ class SourceScoreDraft(ContractModel):
     recency_score: float
     relevance_score: float
     rationale: str
+    methods_score: float | None = None
+    source_role: str = ""
+    transport_relation: str = ""
+    self_interest: str = ""
+    publication_date: str = ""
+    data_period: str = ""
+    forecast_horizon: str = ""
+    effective_date: str = ""
+    freshness_status: str = ""
+    issuer: str = ""
+    doi: str = ""
+    year: str = ""
+    report_number: str = ""
 
 
 class SourceScoresDraft(ContractModel):
@@ -122,13 +155,21 @@ class SourceScoresDraft(ContractModel):
 
 # Two examples, because scoring chooses a value on a continuous scale: the
 # weak and strong cases are the opposite ends of the same 0.0-1.0 direction,
-# and each is internally consistent with its own synthetic dossier.
+# and each is internally consistent with its own synthetic dossier. Both are
+# complete, so the model sees every field the record needs — including that a
+# document which states nothing gets ``unknown`` and empty dates rather than
+# an invented publisher or date.
 _SOURCE_SCORE_REPLY_EXAMPLES = (
     (
         "Weak example input: an anonymous, undated post at "
         "https://weak.example.test/post only mentions the topic.",
         '{"sources":[{"url":"https://weak.example.test/post",'
         '"authority_score":0.1,"recency_score":0.5,"relevance_score":0.2,'
+        '"methods_score":null,"source_role":"unknown",'
+        '"transport_relation":"unknown","self_interest":"unknown",'
+        '"publication_date":"","data_period":"","forecast_horizon":"",'
+        '"effective_date":"","freshness_status":"unknown","issuer":"",'
+        '"doi":"","year":"","report_number":"",'
         '"rationale":"The publisher is unidentified, there is no dating '
         'signal, and the excerpt only mentions the topic."}]}',
     ),
@@ -137,6 +178,12 @@ _SOURCE_SCORE_REPLY_EXAMPLES = (
         "https://strong.example.test/standard directly answers the topic.",
         '{"sources":[{"url":"https://strong.example.test/standard",'
         '"authority_score":0.95,"recency_score":0.9,"relevance_score":0.95,'
+        '"methods_score":0.9,"source_role":"original_report",'
+        '"transport_relation":"original","self_interest":"none",'
+        '"publication_date":"2026-01-15","data_period":"2024",'
+        '"forecast_horizon":"","effective_date":"","freshness_status":'
+        '"current","issuer":"Example Standards Body",'
+        '"doi":"10.1234/standard.2026","year":"2026","report_number":"",'
         '"rationale":"A current standards body publication directly answers '
         'the topic with primary material."}]}',
     ),
@@ -193,18 +240,27 @@ def build_rationale(
     *,
     reputation: float | None,
     sub_topics: Sequence[str],
+    signals: Sequence[str] = (),
 ) -> str:
     """Extend the model's rationale with facts this project computed.
 
     Always returns a non-blank string: ``ScoredSource.rationale`` requires
     one, and a model that returned a blank rationale must not be able to
-    fail validation for a whole source.
+    fail validation for a whole source. ``signals`` are the read-derived
+    identity and dating facts the assessment rested on, so a reviewer can see
+    what the judgement was anchored to rather than only what the model said.
     """
     parts: list[str] = []
     text = " ".join(model_rationale.split())
     if text:
         parts.append(summarize_text(text, limit=_RATIONALE_CHARS))
     parts.append(f"Cited for: {', '.join(sub_topics) or 'no sub-topic'}.")
+    if signals:
+        parts.append(
+            "Signals: "
+            + summarize_text("; ".join(signals), limit=_RATIONALE_CHARS)
+            + "."
+        )
     if reputation is None:
         parts.append("No prior reputation on record.")
     else:
@@ -214,13 +270,121 @@ def build_rationale(
     return " ".join(parts)
 
 
+class SourceFitness(NamedTuple):
+    """The read-backed identity and fitness fields of one source record."""
+
+    fields: dict[str, object]
+    signals: list[str]
+
+
+def source_fitness(
+    group: SourceGroup,
+    draft: SourceScoreDraft,
+    *,
+    dossier: ReadDossier | None,
+) -> SourceFitness:
+    """Derive the identity, transport, role, and dating fields of one source.
+
+    Every field that is a claim about the world outside the model's head is
+    validated against the read the model was shown: the issuer anchor must be
+    an attribution the document states, the dates must be years the document
+    carries, and a role or a non-original transport relation requires an
+    evidenced publisher to be about. Without a read there is nothing to
+    validate against, so no identity and no dating is recorded at all — the
+    three quality scores are model judgements and are recorded regardless,
+    because that is what they are.
+    """
+    read: ReadRecord | None = dossier.read if dossier is not None else None
+    anchors = {
+        "issuer": draft.issuer,
+        "doi": draft.doi,
+        "year": draft.year,
+        "report_number": draft.report_number,
+    }
+    if read is None:
+        publisher_id: str | None = None
+        work_id: str | None = None
+        issuer_evidenced = False
+        rejected: list[str] = []
+    else:
+        publisher_id, work_id = read_identity(read, anchors=anchors)
+        issuer_evidenced = "issuer" in validate_metadata_anchors(read, anchors)
+        rejected = rejected_anchor_names(read, anchors)
+    role = validated_source_role(
+        draft.source_role, issuer_evidenced=issuer_evidenced
+    )
+    transport = validated_transport_relation(
+        draft.transport_relation, issuer_evidenced=issuer_evidenced
+    )
+    self_interest = validated_self_interest(draft.self_interest, role=role)
+    temporal = validated_temporal(
+        read,
+        publication_date=draft.publication_date,
+        data_period=draft.data_period,
+        forecast_horizon=draft.forecast_horizon,
+        effective_date=draft.effective_date,
+        status=draft.freshness_status,
+    )
+    fields: dict[str, object] = {
+        "serving_host": read_serving_host(read) if read is not None else None,
+        "publisher_id": publisher_id,
+        "work_id": work_id,
+        "transport_relation": transport,
+        "source_role": role,
+        "self_interest": self_interest,
+        "temporal": temporal,
+        "cited_sub_topics": list(group.sub_topics),
+        "target_ids": list(read.target_ids) if read is not None else [],
+        "assessment_revision": (
+            dossier.assessment_revision if dossier is not None else ""
+        ),
+    }
+    return SourceFitness(
+        fields=fields,
+        signals=_fitness_signals(fields, rejected=rejected),
+    )
+
+
+def _fitness_signals(
+    fields: Mapping[str, object],
+    *,
+    rejected: Sequence[str],
+) -> list[str]:
+    """One reviewable line per read-derived judgement, for the rationale."""
+    temporal = fields["temporal"]
+    signals = [
+        f"role={fields['source_role']}",
+        f"transport={fields['transport_relation']}",
+        f"self_interest={fields['self_interest']}",
+        f"freshness={temporal.status}",  # type: ignore[union-attr]
+    ]
+    if fields["publisher_id"]:
+        signals.append(f"publisher={fields['publisher_id']}")
+    if fields["serving_host"]:
+        signals.append(f"served_from={fields['serving_host']}")
+    if fields["work_id"]:
+        signals.append(f"work={fields['work_id']}")
+    if rejected:
+        signals.append(
+            "anchors not evidenced in the read: " + ", ".join(rejected)
+        )
+    return signals
+
+
 def build_scored_source(
     group: SourceGroup,
     draft: SourceScoreDraft,
     *,
     reputation: float | None,
+    dossier: ReadDossier | None = None,
 ) -> ScoredSource:
-    """Stamp one model score into a validated ``ScoredSource`` record."""
+    """Stamp one model score into a validated ``ScoredSource`` record.
+
+    ``overall_score`` remains a pure function of the three quality dimensions.
+    Role, transport relation, self-interest, and dates are recorded beside it
+    and never blended into it: they constrain what the source may be used for
+    downstream, which is not something a higher score can buy.
+    """
     authority = blend_authority(draft.authority_score, reputation)
     recency = clamp_unit(draft.recency_score)
     relevance = clamp_unit(draft.relevance_score)
@@ -229,6 +393,7 @@ def build_scored_source(
         recency=recency,
         relevance=relevance,
     )
+    fitness = source_fitness(group, draft, dossier=dossier)
     return ScoredSource(
         url=group.url,
         title=group.title,
@@ -237,12 +402,17 @@ def build_scored_source(
         relevance_score=relevance,
         overall_score=overall,
         evaluation_status="scored",
+        methods_score=(
+            None if draft.methods_score is None else clamp_unit(draft.methods_score)
+        ),
         rationale=build_rationale(
             draft.rationale,
             reputation=reputation,
             sub_topics=group.sub_topics,
+            signals=fitness.signals,
         ),
         low_confidence=overall < LOW_CONFIDENCE_THRESHOLD,
+        **fitness.fields,  # type: ignore[arg-type]
     )
 
 
@@ -250,12 +420,17 @@ def fallback_scored_source(
     group: SourceGroup,
     *,
     reason: str,
+    dossier: ReadDossier | None = None,
 ) -> ScoredSource:
     """Record a source that could not be scored by the model.
 
     No quality number is inferred for an operationally unscored source. The
     explicit status lets reports and metrics distinguish a cap, provider
     failure, and missing model row from a genuinely low-quality judgement.
+    What survives a failure is the deterministic identity the read itself
+    establishes — where it was served from, and which work its complete
+    content hash names — so refinement can target the missing assessment
+    without re-reading the document.
     """
     explanation = FALLBACK_REASONS.get(reason)
     if explanation is None:
@@ -271,12 +446,26 @@ def fallback_scored_source(
         "unscored_cap",
     }:
         raise ValueError(f"unknown fallback reason: {reason}")
-    rationale = " ".join(
-        (
-            explanation,
-            f"Cited for: {', '.join(group.sub_topics) or 'no sub-topic'}.",
+    parts = [
+        explanation,
+        f"Cited for: {', '.join(group.sub_topics) or 'no sub-topic'}.",
+    ]
+    identity: dict[str, object] = {}
+    if dossier is not None:
+        read = dossier.read
+        publisher_id, work_id = read_identity(read)
+        identity = {
+            "serving_host": dossier.serving_host,
+            "publisher_id": publisher_id,
+            "work_id": work_id,
+            "cited_sub_topics": list(group.sub_topics),
+            "target_ids": list(read.target_ids),
+            "assessment_revision": dossier.assessment_revision,
+        }
+        parts.append(
+            f"Serving host: {dossier.serving_host}. Work: "
+            f"{work_id or 'not established'}."
         )
-    )
     return ScoredSource(
         url=group.url,
         title=group.title,
@@ -284,9 +473,10 @@ def fallback_scored_source(
         recency_score=None,
         relevance_score=None,
         overall_score=None,
-        rationale=rationale,
+        rationale=" ".join(parts),
         evaluation_status=status,
         low_confidence=False,
+        **identity,  # type: ignore[arg-type]
     )
 
 
@@ -333,6 +523,181 @@ def evaluation_status_counts(
     return counts
 
 
+def dossier_group(dossier: ReadDossier) -> SourceGroup:
+    """The one-source group a read-backed dossier is scored as.
+
+    The service has reads where the agent has finding groups. Synthesizing the
+    group keeps one record builder for both paths, so a read-backed source
+    cannot be assembled by different rules than an agent-scored one.
+    """
+    return SourceGroup(
+        url=dossier.url,
+        domain=dossier.serving_host,
+        title=dossier.read.title,
+        sub_topics=list(dossier.cited_sub_topics),
+    )
+
+
+def reused_assessment(
+    previous: ScoredSource | None,
+    dossier: ReadDossier | None,
+) -> bool:
+    """True when a stored assessment still describes the source in hand.
+
+    A record with no read behind it can only be keyed by its canonical URL,
+    which is the legacy behavior. A read-backed source is keyed by its
+    assessment revision, so changed content, metadata, or dating signals
+    invalidate the stored judgement instead of surviving it.
+    """
+    if previous is None or previous.evaluation_status != "scored":
+        return False
+    if dossier is None:
+        return True
+    return bool(previous.assessment_revision) and (
+        previous.assessment_revision == dossier.assessment_revision
+    )
+
+
+async def assess_new_sources(
+    provider: AgentCompleter,
+    reads: Sequence[ReadRecord],
+    existing: Sequence[ScoredSource] = (),
+    *,
+    cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
+    reputations: Mapping[str, float] | None = None,
+    instruction: str = "Score each source on its fitness for the research.",
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    max_total_sources: int = DEFAULT_MAX_TOTAL_SOURCES,
+    excerpt_chars: int = DEFAULT_EXCERPT_CHARS,
+) -> list[ScoredSource]:
+    """Assess newly read sources and return the cumulative source snapshot.
+
+    The one assessment service both the Source Evaluator and the Fact Checker
+    use, so a document retrieved during verification is scored before it may
+    carry a report statement and no graph trip back to the evaluator is
+    needed to score it. It is async and tool-free: it calls the provider and
+    nothing else, and it performs no I/O.
+
+    Order of work, which is also the order the guarantees are made in:
+    validate the read-backed dossiers; reuse the assessments whose content,
+    metadata, and dating fingerprint is unchanged; ask the model only about
+    what is left; validate every proposed metadata anchor against the read it
+    was shown; resolve publisher and work identity across the reads; and
+    return ``merge_source_snapshot(existing, new)`` so the snapshot stays
+    cumulative and every earlier source survives.
+
+    A provider or schema failure is never a quality judgement: the affected
+    sources keep the identity their read establishes, carry an explicit
+    unscored status, and are returned so refinement can target the missing
+    assessment.
+    """
+    if batch_size < 1 or max_total_sources < 1 or excerpt_chars < 1:
+        raise ValueError(
+            "batch_size, max_total_sources, and excerpt_chars must be at least 1"
+        )
+    dossiers = build_read_dossiers(
+        reads,
+        cited_sub_topics=cited_sub_topics,
+        excerpt_chars=excerpt_chars,
+    )
+    if not dossiers:
+        return merge_source_snapshot(existing, [])
+
+    prior = {normalize_source_url(source.url): source for source in existing}
+    seeds = {
+        normalize_source_url(url): clamp_unit(score)
+        for url, score in (reputations or {}).items()
+    }
+    reused: dict[str, ScoredSource] = {}
+    pending: list[ReadDossier] = []
+    for dossier in dossiers:
+        previous = prior.get(dossier.url)
+        if reused_assessment(previous, dossier):
+            reused[dossier.url] = previous  # type: ignore[assignment]
+        else:
+            pending.append(dossier)
+
+    to_score = pending[:max_total_sources]
+    capped = {dossier.url for dossier in pending[max_total_sources:]}
+    assessed: dict[str, ScoredSource] = {}
+    for start in range(0, len(to_score), batch_size):
+        batch = to_score[start : start + batch_size]
+        request = SourceEvaluationTask(
+            instruction=instruction,
+            groups=[dossier_group(dossier) for dossier in batch],
+            reputations={
+                dossier.url: seeds[dossier.url]
+                for dossier in batch
+                if dossier.url in seeds
+            },
+            dossiers={dossier.url: dossier for dossier in batch},
+        )
+        try:
+            response = await provider.complete_structured(
+                scoring_messages(request, excerpt_chars=excerpt_chars),
+                SourceScoresDraft,
+                agent_name=SOURCE_EVALUATOR_NAME,
+            )
+        except ProviderError:
+            for remaining in to_score[start:]:
+                assessed[remaining.url] = fallback_scored_source(
+                    dossier_group(remaining),
+                    reason="unscored_provider",
+                    dossier=remaining,
+                )
+            break
+
+        drafts: dict[str, SourceScoreDraft] = {}
+        allowed = {dossier.url for dossier in batch}
+        for draft in response.sources:
+            url = normalize_source_url(draft.url)
+            if url in allowed:
+                drafts[url] = draft
+        for dossier in batch:
+            draft = drafts.get(dossier.url)
+            if draft is None:
+                assessed[dossier.url] = fallback_scored_source(
+                    dossier_group(dossier),
+                    reason="unscored_missing",
+                    dossier=dossier,
+                )
+            else:
+                assessed[dossier.url] = build_scored_source(
+                    dossier_group(dossier),
+                    draft,
+                    reputation=seeds.get(dossier.url),
+                    dossier=dossier,
+                )
+
+    records: list[ScoredSource] = []
+    for dossier in dossiers:
+        if dossier.url in reused:
+            records.append(reused[dossier.url])
+        elif dossier.url in assessed:
+            records.append(assessed[dossier.url])
+        elif dossier.url in capped:
+            # Past this run's cap: recorded, never dropped, and still carrying
+            # the identity its read establishes.
+            records.append(
+                fallback_scored_source(
+                    dossier_group(dossier),
+                    reason="unscored_cap",
+                    dossier=dossier,
+                )
+            )
+        else:
+            # Unreachable for a well-formed dossier list; preserving an
+            # explicit state is better than silently dropping the record.
+            records.append(
+                fallback_scored_source(
+                    dossier_group(dossier),
+                    reason="unscored_missing",
+                    dossier=dossier,
+                )
+            )
+    return merge_source_snapshot(existing, records)
+
+
 class ReputationSource(Protocol):
     """The one long-term-memory capability this agent needs.
 
@@ -352,11 +717,15 @@ class SourceEvaluationTask(AgentTask):
 
     Carrying the groups on the task is what lets ``finalize(task, run)``
     score without the agent holding mutable state across await points —
-    the same reason ``researcher.SubTopicTask`` exists.
+    the same reason ``researcher.SubTopicTask`` exists. ``dossiers`` carries
+    the read-backed view of any group whose URL this run actually read, keyed
+    by canonical URL; a group without one is scored from its finding excerpts
+    alone and records no identity.
     """
 
     groups: list[SourceGroup] = Field(default_factory=list)
     reputations: dict[str, float] = Field(default_factory=dict)
+    dossiers: dict[str, ReadDossier] = Field(default_factory=dict)
 
 
 def scoring_messages(
@@ -364,13 +733,28 @@ def scoring_messages(
     *,
     excerpt_chars: int,
 ) -> list[ChatMessage]:
-    """Build the messages that request one structured scoring draft."""
+    """Build the messages that request one structured scoring draft.
+
+    A group this run read is rendered from the read itself — the host that
+    served it, the document's own text, what it was cited for — so the
+    judgement is about the document rather than about a finding's paraphrase
+    of it. A group with no read keeps the findings-derived dossier.
+    """
     dossiers = [
-        render_source_dossier(
-            group,
-            index=index,
-            reputation=task.reputations.get(group.url),
-            excerpt_chars=excerpt_chars,
+        (
+            render_source_dossier(
+                group,
+                index=index,
+                reputation=task.reputations.get(group.url),
+                excerpt_chars=excerpt_chars,
+            )
+            if task.dossiers.get(group.url) is None
+            else render_read_dossier(
+                task.dossiers[group.url],
+                index=index,
+                reputation=task.reputations.get(group.url),
+                excerpt_chars=excerpt_chars,
+            )
         )
         for index, group in enumerate(task.groups, start=1)
     ]
@@ -572,7 +956,14 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         return SOURCE_EVALUATOR_SYSTEM_PROMPT
 
     def build_task(self, state: ResearchState) -> SourceEvaluationTask:
-        """Group findings once and seed remembered reputations."""
+        """Group findings once, seed reputations, and attach the reads.
+
+        A group whose canonical URL this run actually read is scored from the
+        read — its title, its serving host, its own text — so its record can
+        carry a publisher, a work, and an assessment revision instead of only
+        a URL a model reported. A group with no read keeps the findings-derived
+        dossier and records no identity.
+        """
         groups = group_findings_by_url(state.raw_findings)
         seeded = {
             normalize_source_url(url): float(score)
@@ -583,10 +974,21 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             for group in groups
             if group.url in seeded
         }
+        dossiers = {
+            dossier.url: dossier
+            for dossier in build_read_dossiers(
+                list(state.read_records.values()),
+                cited_sub_topics={
+                    group.url: group.sub_topics for group in groups
+                },
+                excerpt_chars=self._excerpt_chars,
+            )
+        }
         return SourceEvaluationTask(
             instruction=state.original_question,
             groups=groups,
             reputations=reputations,
+            dossiers=dossiers,
         )
 
     async def lookup_reputations(
@@ -635,9 +1037,12 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         """Score canonical sources in deterministic batches.
 
         Previously scored sources are reused, so refinement only spends
-        provider calls on new or unscored URLs. A provider failure stops the
-        current batch and marks that batch plus later unscored URLs with an
-        explicit status; successful earlier batches remain intact.
+        provider calls on new or unscored URLs — or on a source whose
+        read-backed assessment revision changed, which is what keeps a
+        revised document from being credited with its earlier score. A
+        provider failure stops the current batch and marks that batch plus
+        later unscored URLs with an explicit status; successful earlier
+        batches remain intact.
         """
         if not task.groups:
             return [], [], False
@@ -651,8 +1056,9 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         # current pass's budget; unscored records remain eligible for retry.
         eligible_groups: list[SourceGroup] = []
         for group in task.groups:
-            previous = prior.get(group.url)
-            if previous is None or previous.evaluation_status != "scored":
+            if not reused_assessment(
+                prior.get(group.url), task.dossiers.get(group.url)
+            ):
                 eligible_groups.append(group)
         groups_to_score = eligible_groups[: self._max_total_sources]
         capped = {
@@ -679,6 +1085,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                     assessed[remaining.url] = fallback_scored_source(
                         remaining,
                         reason="unscored_provider",
+                        dossier=task.dossiers.get(remaining.url),
                     )
                 break
 
@@ -696,31 +1103,41 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                     assessed[group.url] = fallback_scored_source(
                         group,
                         reason="unscored_missing",
+                        dossier=task.dossiers.get(group.url),
                     )
                 else:
                     assessed[group.url] = build_scored_source(
                         group,
                         draft,
                         reputation=task.reputations.get(group.url),
+                        dossier=task.dossiers.get(group.url),
                     )
 
         sources: list[ScoredSource] = []
         for group in task.groups:
             previous = prior.get(group.url)
-            if previous is not None and previous.evaluation_status == "scored":
-                sources.append(previous)
+            if reused_assessment(previous, task.dossiers.get(group.url)):
+                sources.append(previous)  # type: ignore[arg-type]
             elif group.url in assessed:
                 sources.append(assessed[group.url])
             elif group.url in capped:
                 sources.append(
-                    fallback_scored_source(group, reason="unscored_cap")
+                    fallback_scored_source(
+                        group,
+                        reason="unscored_cap",
+                        dossier=task.dossiers.get(group.url),
+                    )
                 )
             else:
                 # This branch is reachable only for a malformed task with a
                 # duplicate canonical URL; preserve an explicit state rather
                 # than silently dropping the record.
                 sources.append(
-                    fallback_scored_source(group, reason="unscored_missing")
+                    fallback_scored_source(
+                        group,
+                        reason="unscored_missing",
+                        dossier=task.dossiers.get(group.url),
+                    )
                 )
         return sources, errors, provider_failed
 

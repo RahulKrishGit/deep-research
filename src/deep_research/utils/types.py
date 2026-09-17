@@ -66,6 +66,41 @@ SourceEvaluationStatus: TypeAlias = Literal[
     "unscored_provider",
     "unscored_missing",
 ]
+# How a source's bytes reached this run. A transport relation is not a
+# quality dimension: a mirror is the work it mirrors, served from somewhere
+# else, so it inherits that work's issuer and contributes no second origin.
+TransportRelation: TypeAlias = Literal[
+    "original",
+    "mirror",
+    "syndication",
+    "unknown",
+]
+# What kind of document this is. ``mixed`` is the honest label for one
+# article that repeats someone else's statistic *and* adds its own reporting,
+# which is why the source level may not decide its dependence.
+SourceRole: TypeAlias = Literal[
+    "original_report",
+    "independent_research",
+    "derivative",
+    "company_statement",
+    "mixed",
+    "unknown",
+]
+# Whether the publisher stands to gain from the claim it makes. ``evidenced``
+# is a stated stake (a company's statement about its own product), which
+# establishes what the company said and never the truth of it.
+SelfInterest: TypeAlias = Literal["none", "potential", "evidenced", "unknown"]
+# Which of the source's dates the recency judgement rests on. ``effective``
+# is an old rule that still governs; ``stale_data`` is a new publication
+# repeating old figures; ``projection`` is a forecast beyond its data.
+FreshnessStatus: TypeAlias = Literal[
+    "current",
+    "superseded",
+    "stale_data",
+    "projection",
+    "effective",
+    "unknown",
+]
 
 
 class ContractModel(BaseModel):
@@ -287,6 +322,28 @@ class Finding(ContractModel):
     related_sub_topic: str = Field(min_length=1)
 
 
+class SourceTemporal(ContractModel):
+    """The dates one source carries, kept apart because they mean different things.
+
+    Section 2.3: a publication date, the period the data actually covers, the
+    horizon a projection refers to, and the date a rule took effect are four
+    different facts. Collapsing them is how a 2035 projection becomes today's
+    cost and how a newly published article repeating 2019 figures reads as
+    current, so each is recorded separately and ``status`` names which one the
+    recency judgement rested on.
+    """
+
+    publication_date: str | None = None
+    data_period: str | None = None
+    """The observation period the source's data cover, which is not its date."""
+    forecast_horizon: str | None = None
+    """The future period a projection refers to, which is not an observation."""
+    effective_date: str | None = None
+    """When a rule, standard, or version took effect."""
+    status: FreshnessStatus = "unknown"
+    """``unknown`` whenever the read cannot support the claimed status."""
+
+
 class ScoredSource(ContractModel):
     url: str = Field(min_length=1)
     title: str = Field(min_length=1)
@@ -303,6 +360,41 @@ class ScoredSource(ContractModel):
     under its threshold. An unscored source uses ``evaluation_status`` to
     explain why it has no quality judgement and never carries this flag.
     """
+    methods_score: UnitScore | None = None
+    """How well the source documents how its result was produced.
+
+    Recorded beside the three blended dimensions rather than folded into
+    ``overall_score``: the convex combination is a frozen contract, and a
+    well-documented method on an off-target source must not rescue it.
+    """
+    serving_host: str | None = None
+    """The host the bytes were served from — a transport fact, not a publisher."""
+    publisher_id: str | None = None
+    """The publisher the read evidences, or the serving host's identity.
+
+    ``None`` whenever identity is not established — an unresolved issuer on an
+    opaque URL, or a partial read, which is never an identity edge. Consumers
+    must read ``None`` as "cannot establish this publisher", never as "a new
+    one".
+    """
+    work_id: str | None = None
+    """The intellectual work this source is a copy of, or ``None``."""
+    transport_relation: TransportRelation = "unknown"
+    source_role: SourceRole = "unknown"
+    self_interest: SelfInterest = "unknown"
+    temporal: SourceTemporal = Field(default_factory=SourceTemporal)
+    cited_sub_topics: list[str] = Field(default_factory=list)
+    """The sub-topics this source was cited for — its target relevance."""
+    target_ids: list[str] = Field(default_factory=list)
+    """The evidence targets the read behind this source was associated with."""
+    assessment_revision: str = ""
+    """The content/metadata/temporal revision this assessment was made from.
+
+    Empty means no revision was recorded, which is the honest value for a
+    record built without a read. Task 5's reverification cache key includes
+    this field, so a changed body, title, or dating signal invalidates a
+    cached verdict instead of surviving as a stale judgement.
+    """
 
     @model_validator(mode="after")
     def validate_evaluation_status(self) -> ScoredSource:
@@ -317,7 +409,9 @@ class ScoredSource(ContractModel):
                 raise ValueError(
                     "scored sources require all quality scores"
                 )
-        elif any(score is not None for score in scores):
+        elif any(score is not None for score in scores) or (
+            self.methods_score is not None
+        ):
             raise ValueError(
                 "unscored sources must not carry quality scores"
             )

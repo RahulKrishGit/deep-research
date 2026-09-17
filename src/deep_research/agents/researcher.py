@@ -29,7 +29,7 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.events import agent_event
-from deep_research.agents.evidence import excerpt_matches
+from deep_research.agents.evidence import excerpt_matches, retained_work_count
 from deep_research.agents.identity import deduplicate_findings
 from deep_research.agents.prompts import (
     AgentTask,
@@ -731,11 +731,13 @@ class BoundedFindings(NamedTuple):
     publishers_retained: int
     source_urls_retained: int
     findings_retained: int
+    works_retained: int
 
 
 def bound_sub_topic_findings(
     findings: Sequence[Finding],
     *,
+    reads: Sequence[ReadRecord] = (),
     max_findings: int = MAX_FINDINGS_PER_SUB_TOPIC,
     max_sources: int = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC,
 ) -> BoundedFindings:
@@ -757,6 +759,11 @@ def bound_sub_topic_findings(
     ``max_sources`` and leave a genuinely independent publisher out. That is a
     corroboration problem, not a tidiness one — downstream, a claim can only be
     verified by a publisher other than the ones that made it.
+
+    ``reads`` is the run's read registry. It is what makes ``works_retained`` a
+    work count rather than a URL count under a second name: two URLs serving
+    the same complete document resolve to one work, while a finding with no
+    read in the registry stays its own unresolved entry.
     """
     if max_findings < 1 or max_sources < 1:
         raise ValueError("max_findings and max_sources must be at least 1")
@@ -804,11 +811,9 @@ def bound_sub_topic_findings(
             {normalize_source_url(finding.source_url) for finding in retained}
         ),
         findings_retained=len(retained),
-        # No ``works_retained`` here on purpose. A finding carries a URL and a
-        # title, and nothing in Task 3 can establish the intellectual work
-        # behind them, so any work count computed here would be the URL count
-        # under a second name. Task 4's ``WorkIdentity`` (aliases, version
-        # relationships) owns that count; it is deferred, not approximated.
+        works_retained=retained_work_count(
+            [finding.source_url for finding in retained], reads
+        ),
     )
 
 
@@ -872,6 +877,7 @@ def sub_topic_completed_event(
     publishers_retained: int,
     source_urls_retained: int,
     findings_retained: int,
+    works_retained: int = 0,
     successful_reads: int = 0,
     useful_evidence_yield: int = 0,
     acquired_work_count: int = 0,
@@ -879,14 +885,16 @@ def sub_topic_completed_event(
 ) -> ResearchEvent:
     """Report one sub-topic's stop reason, counts, and finding total.
 
-    ``findings`` is what entered research state; the three bounded-evidence
+    ``findings`` is what entered research state; the four bounded-evidence
     counts say what extraction produced that did not, and why — restatements
-    folded into an existing finding, and distinct findings or sources past the
-    per-sub-topic cap. ``successful_reads`` counts reads whose body was
-    admitted this pass, ``useful_evidence_yield`` counts selected units for the
-    active target, and ``acquired_work_count`` counts the unique network bodies
-    this run actually downloaded — ``cache_hits`` (from ``run``) is reported
-    beside it so a reused body is never read as new acquisition.
+    folded into an existing finding, distinct findings or sources past the
+    per-sub-topic cap, and how many distinct intellectual works those sources
+    actually are, which is not their URL count. ``successful_reads`` counts
+    reads whose body was admitted this pass, ``useful_evidence_yield`` counts
+    selected units for the active target, and ``acquired_work_count`` counts
+    the unique network bodies this run actually downloaded — ``cache_hits``
+    (from ``run``) is reported beside it so a reused body is never read as new
+    acquisition.
 
     ``target_obligation_completed`` is the Task 3 signal that the active
     target's obligation advanced: at least one registry-admitted finding was
@@ -912,6 +920,7 @@ def sub_topic_completed_event(
             "publishers_retained": publishers_retained,
             "source_urls_retained": source_urls_retained,
             "findings_retained": findings_retained,
+            "works_retained": works_retained,
             "successful_reads": successful_reads,
             "useful_evidence_yield": useful_evidence_yield,
             "acquired_work_count": acquired_work_count,
@@ -1540,7 +1549,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     react = react.model_copy(
                         update={"stop_reason": "provider_error"}
                     )
-                bounded = bound_sub_topic_findings(sub_findings)
+                bounded = bound_sub_topic_findings(
+                    sub_findings, reads=list(self._run_reads.values())
+                )
                 span.set_outputs(
                     {
                         "agent_name": self.name,
@@ -1569,6 +1580,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     publishers_retained=bounded.publishers_retained,
                     source_urls_retained=bounded.source_urls_retained,
                     findings_retained=bounded.findings_retained,
+                    works_retained=bounded.works_retained,
                     successful_reads=self._last_successful_reads,
                     useful_evidence_yield=self._last_useful_evidence_yield,
                     acquired_work_count=self._last_acquired_work_count,

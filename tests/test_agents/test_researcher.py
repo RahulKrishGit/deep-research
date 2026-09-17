@@ -56,6 +56,7 @@ from deep_research.utils.types import (
     CritiqueGap,
     Finding,
     MemorySnapshot,
+    ReadRecord,
     ResearchError,
     ResearchState,
     SubTopic,
@@ -1962,10 +1963,12 @@ async def test_the_completed_event_reports_work_and_target_obligation(
 ) -> None:
     """Yield counters must not restate one another.
 
-    ``works_retained`` is gone — a URL count under a second name is not a work
-    count, and Task 4's ``WorkIdentity`` owns the real one. What the event does
-    report is the acquisition that actually happened (one network body, no
-    cache reuse) and whether the active target's obligation advanced.
+    ``works_retained`` is back, now that Task 4 can derive it from real work
+    identity instead of from a URL count wearing a second name: the one
+    finding kept here came from one read, so one source URL is one work. What
+    the event also reports is the acquisition that actually happened (one
+    network body, no cache reuse) and whether the active target's obligation
+    advanced.
     """
     completer = ScriptedCompleter(
         decisions=_search_and_scrape_decisions(),
@@ -1982,15 +1985,75 @@ async def test_the_completed_event_reports_work_and_target_obligation(
         if event.event_type == "researcher.sub_topic.completed"
     )
     metadata = completed.metadata
-    assert "works_retained" not in metadata
     assert metadata["source_urls_retained"] == 1
     assert metadata["publishers_retained"] == 1
     assert metadata["findings_retained"] == 1
+    assert metadata["works_retained"] == 1
     assert metadata["successful_reads"] == 1
     assert metadata["useful_evidence_yield"] == 1
     assert metadata["acquired_work_count"] == 1
     assert metadata["cache_hits"] == 0
     assert metadata["target_obligation_completed"] is True
+
+
+def _retained_read(url: str, text: str) -> ReadRecord:
+    """One complete read of ``text`` served from ``url``."""
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title="QEC 2025",
+        retrieved_at=EXTRACTED_AT,
+        text=text,
+        passages={"chunk-0": text},
+    )
+
+
+def test_retained_works_count_identity_not_source_urls() -> None:
+    """Two URLs serving one report are one work and two source URLs.
+
+    This is the counter Task 3 deleted rather than ship as a URL count: it is
+    now derived from the reads' own complete-content identity, so a mirrored
+    copy collapses onto its original while a genuinely different document
+    stays a second work.
+    """
+    text = "Logical error rates fell below break-even in 2025."
+    original = _retained_read("https://example.test/qec", text)
+    mirror = _retained_read("https://mirror.test/qec", text)
+    other = _retained_read(
+        "https://other.test/review", "An independent review reports 2024 data."
+    )
+    findings = [
+        _finding("Alpha", original.resolved_url),
+        _finding("Alpha", mirror.resolved_url),
+        _finding("Alpha", other.resolved_url),
+    ]
+
+    bounded = bound_sub_topic_findings(
+        findings[:2], reads=[original, mirror]
+    )
+    assert bounded.source_urls_retained == 2
+    assert bounded.publishers_retained == 2
+    assert bounded.works_retained == 1
+
+    distinct = bound_sub_topic_findings(
+        findings, reads=[original, mirror, other]
+    )
+    assert distinct.source_urls_retained == 3
+    assert distinct.works_retained == 2
+
+
+def test_a_retained_finding_with_no_read_is_not_merged_with_another() -> None:
+    """Nothing is invented for a finding whose read is not in the registry."""
+    findings = [
+        _finding("Alpha", "https://one.test/a"),
+        _finding("Alpha", "https://two.test/b"),
+    ]
+
+    bounded = bound_sub_topic_findings(findings, reads=[])
+
+    assert bounded.works_retained == 2
 
 
 @pytest.mark.asyncio

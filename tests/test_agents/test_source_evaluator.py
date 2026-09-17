@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.evidence import (
+    build_read_record,
+    compute_assessment_revision,
+    read_assessment_revision,
+    read_dated_tokens,
+    source_origin_id,
+)
 from deep_research.agents.source_evaluator import (
     AUTHORITY_WEIGHT,
     FALLBACK_REASONS,
@@ -16,6 +23,7 @@ from deep_research.agents.source_evaluator import (
     SourceEvaluatorAgent,
     SourceScoreDraft,
     SourceScoresDraft,
+    assess_new_sources,
     average_score,
     blend_authority,
     build_rationale,
@@ -38,6 +46,7 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     Finding,
     MemorySnapshot,
+    ReadRecord,
     ResearchState,
     ScoredSource,
     merge_research_state,
@@ -91,6 +100,18 @@ def _draft(
     recency: float = 0.6,
     relevance: float = 0.9,
     rationale: str = "Peer-reviewed venue with dated results.",
+    source_role: str = "",
+    transport_relation: str = "",
+    self_interest: str = "",
+    publication_date: str = "",
+    data_period: str = "",
+    forecast_horizon: str = "",
+    effective_date: str = "",
+    freshness_status: str = "",
+    methods_score: float | None = None,
+    issuer: str = "",
+    doi: str = "",
+    year: str = "",
 ) -> SourceScoreDraft:
     return SourceScoreDraft(
         url=url,
@@ -98,6 +119,18 @@ def _draft(
         recency_score=recency,
         relevance_score=relevance,
         rationale=rationale,
+        source_role=source_role,
+        transport_relation=transport_relation,
+        self_interest=self_interest,
+        publication_date=publication_date,
+        data_period=data_period,
+        forecast_horizon=forecast_horizon,
+        effective_date=effective_date,
+        freshness_status=freshness_status,
+        methods_score=methods_score,
+        issuer=issuer,
+        doi=doi,
+        year=year,
     )
 
 
@@ -951,3 +984,820 @@ async def test_a_score_returned_for_an_example_url_is_ignored(
     assert real.low_confidence is False
     assert real.evaluation_status == "unscored_missing"
     assert real.rationale.startswith(FALLBACK_REASONS["unscored_missing"])
+
+
+# --------------------------------------------------------------------------
+# Task 4: the shared read-backed assessment service
+# --------------------------------------------------------------------------
+
+READ_SESSION = "session-1"
+READ_AT = "2026-09-16T10:00:00+00:00"
+LAB_REPORT_URL = "https://lab.example/report"
+MIRROR_REPORT_URL = "https://repository.example/mirror/report"
+NEWS_URL = "https://news.example/statistic"
+REVIEW_URL = "https://review.example/analysis"
+COMPANY_URL = "https://acme.example/statement"
+
+# The report names its own publisher, dates, and DOI, the way a title page
+# does — which is what makes every one of those an evidenced anchor rather
+# than something the model asserted about a page nobody checked.
+LAB_REPORT_TEXT = (
+    "Grid Storage Outlook. Published by Example Lab on 2026-01-15. "
+    "Example Lab measured that 1,200 MW of interconnection capacity was "
+    "withheld during 2024. doi:10.1234/grid.2025"
+)
+FORECAST_TEXT = (
+    "Grid Storage Outlook. Published by Example Lab on 2026-01-15. "
+    "Observed data cover 2024; the projection runs to 2035. "
+    "doi:10.1234/grid.2025"
+)
+OLD_RULE_TEXT = (
+    "Interconnection Rule. Published by Example Lab on 1998-05-14. "
+    "The rule took effect on 1998-07-01 and still governs filings. "
+    "doi:10.1234/rule.1998"
+)
+OBSOLETE_TEXT = (
+    "Capacity Update. Published by Example Lab on 2026-03-02. "
+    "The figures repeat the 2019 survey. doi:10.1234/capacity.2026"
+)
+
+
+def _read(
+    url: str = LAB_REPORT_URL,
+    *,
+    title: str = "Grid Storage Outlook",
+    text: str = LAB_REPORT_TEXT,
+    request_url: str | None = None,
+    reader: str = "web_scraper",
+    extraction_complete: bool = True,
+    target_ids: tuple[str, ...] = (),
+) -> ReadRecord:
+    """One successful read, through the shared strict read producer."""
+    return build_read_record(
+        session_id=READ_SESSION,
+        reader=reader,
+        requested_url=request_url or url,
+        resolved_url=url,
+        title=title,
+        retrieved_at=READ_AT,
+        text=text,
+        passages={"chunk-0": text},
+        extraction_complete=extraction_complete,
+        target_ids=target_ids,
+    )
+
+
+def _scores(*drafts: SourceScoreDraft) -> SourceScoresDraft:
+    """The one provider response shape the scoring call returns."""
+    return SourceScoresDraft(sources=list(drafts))
+
+
+async def _assess(
+    reads: list[ReadRecord],
+    outputs: list[object],
+    *,
+    existing: list[ScoredSource] | None = None,
+    cited: dict[str, list[str]] | None = None,
+    reputations: dict[str, float] | None = None,
+) -> tuple[list[ScoredSource], ScriptedCompleter]:
+    """Run the service once and hand back what it produced next to its calls."""
+    completer = ScriptedCompleter(outputs=outputs)
+    sources = await assess_new_sources(
+        completer,
+        reads,
+        existing or [],
+        cited_sub_topics=cited,
+        reputations=reputations,
+    )
+    return sources, completer
+
+
+def _lab_draft(**overrides: object) -> SourceScoreDraft:
+    fields: dict[str, object] = {
+        "url": LAB_REPORT_URL,
+        "authority": 0.9,
+        "recency": 0.8,
+        "relevance": 0.95,
+        "rationale": "A dated primary report from the laboratory itself.",
+        "source_role": "original_report",
+        "transport_relation": "original",
+        "self_interest": "none",
+        "issuer": "Example Lab",
+        "doi": "10.1234/grid.2025",
+        "year": "2025",
+    }
+    fields.update(overrides)
+    return _draft(**fields)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_the_original_report_becomes_a_read_backed_origin() -> None:
+    read = _read()
+
+    sources, completer = await _assess([read], [_scores(_lab_draft())])
+
+    assert len(completer.calls) == 1
+    assert completer.calls[0][0] == "SourceScoresDraft"
+    source = sources[0]
+    assert source.evaluation_status == "scored"
+    assert source.source_role == "original_report"
+    assert source.transport_relation == "original"
+    assert source.self_interest == "none"
+    assert source.serving_host == "lab.example"
+    assert source.publisher_id == "example lab"
+    assert source.work_id == "doi:10.1234/grid.2025"
+    assert source.assessment_revision.startswith("assess-")
+    assert source_origin_id(source) == "work:doi:10.1234/grid.2025"
+    assert source.cited_sub_topics == []
+
+
+@pytest.mark.asyncio
+async def test_the_official_mirror_is_usable_but_adds_no_origin() -> None:
+    """A mirror is evidence; it is not a second publisher or a second work."""
+    original = _read(LAB_REPORT_URL)
+    mirror = _read(MIRROR_REPORT_URL)
+    drafts = [
+        _lab_draft(),
+        _lab_draft(url=MIRROR_REPORT_URL, transport_relation="mirror"),
+    ]
+
+    sources, _ = await _assess([original, mirror], [_scores(*drafts)])
+
+    by_url = {source.url: source for source in sources}
+    first = by_url[LAB_REPORT_URL]
+    copied = by_url[MIRROR_REPORT_URL]
+    assert first.transport_relation == "original"
+    assert copied.transport_relation == "mirror"
+    assert copied.publisher_id == first.publisher_id
+    assert copied.work_id == first.work_id
+    # Still usable: it carries the same assessment as the document it serves.
+    assert copied.evaluation_status == "scored"
+    assert copied.overall_score == pytest.approx(first.overall_score)
+    # But it contributes exactly the origin its original already contributes.
+    assert source_origin_id(copied) == source_origin_id(first)
+
+
+@pytest.mark.asyncio
+async def test_a_derivative_news_statistic_is_not_an_origin() -> None:
+    """Repeating one report is not independent evidence for what it reports."""
+    read = _read(
+        NEWS_URL,
+        title="Grid capacity withheld, report says",
+        text=(
+            "Grid capacity withheld, report says. Published by News Daily on "
+            "2026-02-02. The outlet repeats Example Lab's figure of 1,200 MW "
+            "for 2024."
+        ),
+    )
+    draft = _draft(
+        url=NEWS_URL,
+        authority=0.6,
+        relevance=0.7,
+        rationale="A news report repeating the laboratory's figure.",
+        source_role="derivative",
+        transport_relation="original",
+        issuer="News Daily",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    source = sources[0]
+    assert source.source_role == "derivative"
+    assert source.publisher_id == "news daily"
+    assert source.evaluation_status == "scored"
+    # It is support for "News Daily reported this", never an independent origin
+    # for the measurement it repeats.
+    assert source_origin_id(source) is None
+
+
+@pytest.mark.asyncio
+async def test_an_independently_researched_article_is_an_origin() -> None:
+    read = _read(
+        REVIEW_URL,
+        title="We measured the queue ourselves",
+        text=(
+            "We measured the queue ourselves. Published by Review Weekly on "
+            "2026-02-10. This outlet ran its own measurement of 1,180 MW "
+            "during 2024."
+        ),
+    )
+    draft = _draft(
+        url=REVIEW_URL,
+        authority=0.75,
+        relevance=0.9,
+        rationale="Original measurement published by the outlet.",
+        source_role="independent_research",
+        transport_relation="original",
+        issuer="Review Weekly",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    source = sources[0]
+    assert source.source_role == "independent_research"
+    assert source_origin_id(source) == f"work:sha256:{read.content_sha256}"
+
+
+@pytest.mark.asyncio
+async def test_a_company_statement_stays_attributed_and_self_interested() -> None:
+    """Section 2.1: it establishes what the company said, and nothing more."""
+    read = _read(
+        COMPANY_URL,
+        title="Acme statement on its own recall",
+        text=(
+            "Acme statement on its own recall. Published by Acme on "
+            "2026-02-11. Acme said its own packs were safe."
+        ),
+    )
+    draft = _draft(
+        url=COMPANY_URL,
+        authority=0.5,
+        relevance=0.8,
+        rationale="The manufacturer's own statement about its product.",
+        source_role="company_statement",
+        transport_relation="original",
+        self_interest="evidenced",
+        issuer="Acme",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    source = sources[0]
+    assert source.publisher_id == "acme"
+    assert source.source_role == "company_statement"
+    # The typed self-interest constraint survives; the score never absorbs it.
+    assert source.self_interest == "evidenced"
+
+
+@pytest.mark.asyncio
+async def test_a_company_statement_cannot_lose_its_self_interest() -> None:
+    read = _read(
+        COMPANY_URL,
+        title="Acme statement on its own recall",
+        text=(
+            "Acme statement on its own recall. Published by Acme on "
+            "2026-02-11. Acme said its own packs were safe."
+        ),
+    )
+    draft = _draft(
+        url=COMPANY_URL,
+        rationale="The manufacturer's own statement about its product.",
+        source_role="company_statement",
+        issuer="Acme",
+        self_interest="none",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    assert sources[0].self_interest == "evidenced"
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_role_article_cannot_claim_a_clean_origin() -> None:
+    """Derivative statistics and original interviews in one article.
+
+    The article really is partly original work, which is exactly why the
+    source-level label may not decide it: it repeats someone else's figure
+    *and* adds its own reporting, so only the claim-specific assessment can
+    say which part supports what.
+    """
+    read = _read(
+        REVIEW_URL,
+        title="Capacity withheld, and what operators say",
+        text=(
+            "Capacity withheld, and what operators say. Published by Review "
+            "Weekly on 2026-02-10. It repeats Example Lab's 1,200 MW figure "
+            "for 2024 and adds its own interviews with three operators."
+        ),
+    )
+    draft = _draft(
+        url=REVIEW_URL,
+        authority=0.8,
+        relevance=0.85,
+        rationale="Parts repeat the laboratory's figure; parts are original.",
+        source_role="mixed",
+        transport_relation="original",
+        issuer="Review Weekly",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    source = sources[0]
+    assert source.source_role == "mixed"
+    assert source_origin_id(source) is None
+    assert source.evaluation_status == "scored"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_issuer_records_no_origin() -> None:
+    """Unknown identity cannot establish independence."""
+    read = _read(
+        "https://anonymous.test/post",
+        title="A post about capacity",
+        text="A post about capacity. 1,200 MW was withheld during 2024.",
+    )
+    draft = _draft(
+        url="https://anonymous.test/post",
+        authority=0.9,
+        relevance=0.9,
+        rationale="The post claims a laboratory produced the figure.",
+        source_role="original_report",
+        issuer="Example Lab",
+        doi="10.1234/grid.2025",
+        year="2025",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    source = sources[0]
+    # The proposed issuer and DOI are nowhere in the read, so neither is taken.
+    assert source.source_role == "unknown"
+    assert source.work_id == f"sha256:{read.content_sha256}"
+    assert source.publisher_id == "anonymous.test"
+    assert source_origin_id(source) is None
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_transport_claim_is_downgraded() -> None:
+    """A mirror with no evidenced issuer inherits nothing to mirror."""
+    read = _read(
+        "https://anonymous.test/post",
+        title="A post about capacity",
+        text="A post about capacity. 1,200 MW was withheld during 2024.",
+    )
+    draft = _draft(
+        url="https://anonymous.test/post",
+        transport_relation="mirror",
+        source_role="original_report",
+        rationale="Claims to be a mirror copy.",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    assert sources[0].transport_relation == "unknown"
+    assert sources[0].source_role == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_publication_date_observation_period_and_horizon_stay_separate() -> None:
+    """Section 2.3: three different dates, and none may stand for another."""
+    read = _read(text=FORECAST_TEXT)
+    draft = _lab_draft(
+        publication_date="2026-01-15",
+        data_period="2024",
+        forecast_horizon="2035",
+        freshness_status="projection",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    temporal = sources[0].temporal
+    assert temporal.publication_date == "2026-01-15"
+    assert temporal.data_period == "2024"
+    assert temporal.forecast_horizon == "2035"
+    assert temporal.status == "projection"
+    assert len(
+        {
+            temporal.publication_date,
+            temporal.data_period,
+            temporal.forecast_horizon,
+        }
+    ) == 3
+
+
+@pytest.mark.asyncio
+async def test_an_old_official_rule_that_still_applies_is_not_stale() -> None:
+    """An old effective date is not a stale source."""
+    read = _read(
+        "https://lab.example/rule",
+        title="Interconnection Rule",
+        text=OLD_RULE_TEXT,
+    )
+    draft = _draft(
+        url="https://lab.example/rule",
+        authority=0.9,
+        recency=0.3,
+        relevance=0.9,
+        rationale="The rule still governs filings.",
+        source_role="original_report",
+        transport_relation="original",
+        issuer="Example Lab",
+        publication_date="1998-05-14",
+        effective_date="1998-07-01",
+        freshness_status="effective",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    temporal = sources[0].temporal
+    assert temporal.status == "effective"
+    assert temporal.publication_date == "1998-05-14"
+    assert temporal.effective_date == "1998-07-01"
+    assert temporal.data_period is None
+    assert sources[0].evaluation_status == "scored"
+
+
+@pytest.mark.asyncio
+async def test_a_new_article_repeating_obsolete_data_is_not_current() -> None:
+    """A 2026 publication date does not make 2019 figures current."""
+    read = _read(
+        "https://lab.example/capacity",
+        title="Capacity Update",
+        text=OBSOLETE_TEXT,
+    )
+    draft = _draft(
+        url="https://lab.example/capacity",
+        authority=0.8,
+        recency=0.9,
+        relevance=0.9,
+        rationale="Newly published, but the figures are from 2019.",
+        source_role="derivative",
+        transport_relation="original",
+        issuer="Example Lab",
+        publication_date="2026-03-02",
+        data_period="2019",
+        freshness_status="stale_data",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    temporal = sources[0].temporal
+    assert temporal.publication_date == "2026-03-02"
+    assert temporal.data_period == "2019"
+    assert temporal.status == "stale_data"
+
+
+@pytest.mark.asyncio
+async def test_an_unfounded_freshness_status_is_not_recorded() -> None:
+    """A status the read cannot support is recorded as unknown, not guessed."""
+    read = _read()
+    draft = _lab_draft(
+        freshness_status="projection",
+        forecast_horizon="2035",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    assert sources[0].temporal.status == "unknown"
+    assert sources[0].temporal.forecast_horizon is None
+
+
+@pytest.mark.asyncio
+async def test_a_current_authority_that_does_not_answer_the_target() -> None:
+    """A high authority score cannot wash relevance, dates, or role away."""
+    read = _read(
+        "https://lab.example/other",
+        title="Unrelated standards note",
+        text=(
+            "Unrelated standards note. Published by Example Lab on "
+            "2026-01-15. doi:10.1234/note.2025"
+        ),
+    )
+    draft = _draft(
+        url="https://lab.example/other",
+        authority=0.99,
+        recency=0.99,
+        relevance=0.05,
+        rationale="A current, authoritative document about something else.",
+        source_role="original_report",
+        transport_relation="original",
+        issuer="Example Lab",
+        publication_date="2026-01-15",
+        freshness_status="current",
+        methods_score=0.95,
+    )
+
+    sources, _ = await _assess(
+        [read],
+        [_scores(draft)],
+        cited={read.resolved_url: ["Grid storage"]},
+    )
+
+    source = sources[0]
+    assert source.authority_score == pytest.approx(0.99)
+    assert source.relevance_score == pytest.approx(0.05)
+    # No single dimension carries the source. Authority and recency together
+    # are worth at most 0.60 of the combination, so an off-target source
+    # cannot reach a high overall however authoritative it is, and the
+    # relevance that would have made it useful is worth more than 0.30 here.
+    assert source.overall_score < source.authority_score
+    assert source.overall_score < 0.65
+    assert overall_score(
+        authority=0.99, recency=0.99, relevance=0.99
+    ) - source.overall_score > 0.3
+    assert source.cited_sub_topics == ["Grid storage"]
+    assert source.temporal.status == "current"
+    # The methods judgement is recorded beside the score, not blended into it.
+    assert source.methods_score == pytest.approx(0.95)
+
+
+@pytest.mark.asyncio
+async def test_a_high_authority_score_cannot_override_unsupported_content() -> None:
+    """Quality and dependence are different fields, and neither substitutes."""
+    read = _read(
+        REVIEW_URL,
+        title="Capacity withheld, and what operators say",
+        text=(
+            "Capacity withheld, and what operators say. Published by Review "
+            "Weekly on 2026-02-10. It repeats Example Lab's 1,200 MW figure "
+            "for 2024."
+        ),
+    )
+    draft = _draft(
+        url=REVIEW_URL,
+        authority=0.99,
+        recency=0.99,
+        relevance=0.99,
+        rationale="Authoritative, current, and on topic.",
+        source_role="derivative",
+        transport_relation="original",
+        issuer="Review Weekly",
+    )
+
+    sources, _ = await _assess(
+        [read],
+        [_scores(draft)],
+        cited={read.resolved_url: ["Grid storage"]},
+    )
+
+    source = sources[0]
+    assert source.overall_score > 0.9
+    # The same record still cannot contribute an origin: the independence
+    # judgement is not a quality threshold that a high score can buy.
+    assert source_origin_id(source) is None
+    assert source.source_role == "derivative"
+    assert source.cited_sub_topics == ["Grid storage"]
+
+
+def test_role_and_transport_never_change_the_overall_score() -> None:
+    """Labels describe the relation; they are not quality dimensions."""
+    group = _group()
+    plain = build_scored_source(group, _lab_draft(source_role="original_report",
+                                                 transport_relation="original"),
+                                reputation=None)
+    labelled = build_scored_source(
+        group,
+        _lab_draft(source_role="derivative", transport_relation="mirror",
+                   self_interest="evidenced"),
+        reputation=None,
+    )
+
+    assert plain.overall_score == pytest.approx(labelled.overall_score)
+    assert plain.authority_score == pytest.approx(labelled.authority_score)
+
+
+def test_the_assessment_revision_is_content_metadata_and_time() -> None:
+    """The reuse key names all three: no component may be dropped."""
+    base = compute_assessment_revision(
+        content_sha256="a" * 64,
+        extraction_complete=True,
+        metadata_fingerprint="m-1",
+        temporal_fingerprint="t-1",
+    )
+
+    assert base.startswith("assess-")
+    assert base == compute_assessment_revision(
+        content_sha256="a" * 64,
+        extraction_complete=True,
+        metadata_fingerprint="m-1",
+        temporal_fingerprint="t-1",
+    )
+    assert base != compute_assessment_revision(
+        content_sha256="b" * 64,
+        extraction_complete=True,
+        metadata_fingerprint="m-1",
+        temporal_fingerprint="t-1",
+    )
+    assert base != compute_assessment_revision(
+        content_sha256="a" * 64,
+        extraction_complete=True,
+        metadata_fingerprint="m-2",
+        temporal_fingerprint="t-1",
+    )
+    assert base != compute_assessment_revision(
+        content_sha256="a" * 64,
+        extraction_complete=True,
+        metadata_fingerprint="m-1",
+        temporal_fingerprint="t-2",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_read_reuses_its_assessment_without_a_model_call() -> None:
+    read = _read()
+
+    first, completer = await _assess([read], [_scores(_lab_draft())])
+    assert len(completer.calls) == 1
+
+    # An empty script: any second model call raises instead of being counted.
+    second = await assess_new_sources(ScriptedCompleter(outputs=[]), [read], first)
+
+    assert [source.model_dump() for source in second] == [
+        source.model_dump() for source in first
+    ]
+
+
+@pytest.mark.asyncio
+async def test_changed_content_at_one_url_is_reassessed() -> None:
+    read = _read()
+    first, _ = await _assess([read], [_scores(_lab_draft())])
+    revised = _read(text=LAB_REPORT_TEXT + " Revised in the 2026 edition.")
+    assert read.read_id != revised.read_id
+
+    second = await assess_new_sources(
+        ScriptedCompleter(outputs=[_scores(_lab_draft(authority=0.4))]),
+        [revised],
+        first,
+    )
+
+    assert len(second) == 1
+    assert second[0].authority_score == pytest.approx(0.4)
+    assert second[0].assessment_revision != first[0].assessment_revision
+
+
+@pytest.mark.asyncio
+async def test_a_changed_title_at_one_url_is_reassessed() -> None:
+    read = _read()
+    first, _ = await _assess([read], [_scores(_lab_draft())])
+    retitled = _read(title="Grid Storage Outlook (revised)")
+    assert retitled.content_sha256 == read.content_sha256
+
+    second = await assess_new_sources(
+        ScriptedCompleter(outputs=[_scores(_lab_draft(authority=0.3))]),
+        [retitled],
+        first,
+    )
+
+    assert second[0].authority_score == pytest.approx(0.3)
+
+
+@pytest.mark.asyncio
+async def test_changed_dates_at_one_url_are_reassessed() -> None:
+    read = _read()
+    first, _ = await _assess([read], [_scores(_lab_draft())])
+    redated = _read(
+        text=LAB_REPORT_TEXT.replace("2024", "2019").replace(
+            "doi:10.1234/grid.2025", "doi:10.1234/grid.2019"
+        )
+    )
+
+    assert read_dated_tokens(read) != read_dated_tokens(redated)
+    second = await assess_new_sources(
+        ScriptedCompleter(outputs=[_scores(_lab_draft(authority=0.2))]),
+        [redated],
+        first,
+    )
+
+    assert second[0].authority_score == pytest.approx(0.2)
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_keeps_identity_and_an_unscored_status() -> None:
+    read = _read()
+    completer = ScriptedCompleter(outputs=[_output_limit_error()])
+
+    sources = await assess_new_sources(completer, [read], [])
+
+    source = sources[0]
+    assert source.evaluation_status == "unscored_provider"
+    assert source.overall_score is None
+    assert source.low_confidence is False
+    # Deterministic identity survives the outage; no score is invented.
+    assert source.serving_host == "lab.example"
+    assert source.work_id == f"sha256:{read.content_sha256}"
+    assert source.assessment_revision.startswith("assess-")
+    assert source.assessment_revision == read_assessment_revision(read)
+    # And an unscored source can never be half of an independent pair.
+    assert source_origin_id(source) is None
+
+
+@pytest.mark.asyncio
+async def test_a_missing_model_row_is_unscored_rather_than_invented() -> None:
+    read = _read()
+    completer = ScriptedCompleter(outputs=[SourceScoresDraft(sources=[])])
+
+    sources = await assess_new_sources(completer, [read], [])
+
+    assert sources[0].evaluation_status == "unscored_missing"
+    assert sources[0].overall_score is None
+    assert source_origin_id(sources[0]) is None
+
+
+@pytest.mark.asyncio
+async def test_a_partial_read_is_assessed_but_never_an_identity_edge() -> None:
+    incomplete = _read(
+        "https://lab.example/report.pdf",
+        reader="document_reader",
+        extraction_complete=False,
+    )
+    draft = _draft(
+        url=incomplete.resolved_url,
+        source_role="original_report",
+        issuer="Example Lab",
+        rationale="Only part of the document could be extracted.",
+    )
+
+    sources, _ = await _assess([incomplete], [_scores(draft)])
+
+    source = sources[0]
+    assert source.evaluation_status == "scored"
+    assert source.overall_score is not None
+    # Admissible for the pages it read, never an identity/equality edge: the
+    # pages it never saw could say anything, including that this is another
+    # document or another publisher's copy of one.
+    assert source.serving_host == "lab.example"
+    assert source.publisher_id is None
+    assert source.work_id is None
+    assert source_origin_id(source) is None
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_stays_cumulative_across_assessments() -> None:
+    earlier = ScoredSource(
+        url="https://earlier.test/z",
+        title="Assessed before this run",
+        authority_score=0.5,
+        recency_score=0.5,
+        relevance_score=0.5,
+        overall_score=0.45,
+        rationale="Recorded by an earlier pass.",
+    )
+    read = _read()
+
+    sources, _ = await _assess([read], [_scores(_lab_draft())], existing=[earlier])
+
+    assert [source.url for source in sources] == [
+        "https://earlier.test/z",
+        LAB_REPORT_URL,
+    ]
+    assert sources[0] == earlier
+
+
+@pytest.mark.asyncio
+async def test_reassessment_replaces_only_the_source_whose_read_changed() -> None:
+    read = _read()
+    first, _ = await _assess([read], [_scores(_lab_draft())])
+    other = build_scored_source(
+        _group(url="https://other.test/b"),
+        _draft(url="https://other.test/b"),
+        reputation=None,
+    )
+
+    second = await assess_new_sources(
+        ScriptedCompleter(outputs=[_scores(_lab_draft(authority=0.25))]),
+        [_read(text=LAB_REPORT_TEXT + " Extra paragraph.")],
+        [*first, other],
+    )
+
+    by_url = {source.url: source for source in second}
+    assert by_url["https://other.test/b"] == other
+    assert by_url[LAB_REPORT_URL].authority_score == pytest.approx(0.25)
+
+
+@pytest.mark.asyncio
+async def test_scoring_a_read_never_mutates_it_or_its_evidence() -> None:
+    from deep_research.agents.evidence import build_evidence_unit
+
+    read = _read(target_ids=("target-1",))
+    unit = build_evidence_unit(
+        read=read,
+        locator="chunk-0",
+        excerpt=read.passages["chunk-0"],
+        origin="researcher",
+        target_ids=["target-1"],
+    )
+    before_read = read.model_dump()
+    before_unit = unit.model_dump()
+
+    sources, _ = await _assess(
+        [read],
+        [_scores(_lab_draft())],
+        cited={read.resolved_url: ["Grid storage"]},
+    )
+
+    assert read.model_dump() == before_read
+    assert unit.model_dump() == before_unit
+    assert sources[0].target_ids == ["target-1"]
+    assert "evidence_id" not in ScoredSource.model_fields
+
+
+@pytest.mark.asyncio
+async def test_the_total_cap_records_unscored_identity_not_a_dropped_source() -> None:
+    first = _read(LAB_REPORT_URL)
+    second = _read(MIRROR_REPORT_URL)
+
+    completer = ScriptedCompleter(outputs=[_scores(_lab_draft())])
+    sources = await assess_new_sources(
+        completer,
+        [first, second],
+        [],
+        max_total_sources=1,
+    )
+
+    assert [source.evaluation_status for source in sources] == [
+        "scored",
+        "unscored_cap",
+    ]
+    assert sources[1].overall_score is None
+    assert sources[1].work_id == f"sha256:{second.content_sha256}"
+    assert source_origin_id(sources[1]) is None

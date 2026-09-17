@@ -154,6 +154,19 @@ async def test_findings_flow_through_scoring_into_verified_claims(
     assert state.evaluated_sources[0].low_confidence is False
     assert 0.0 <= state.evaluated_sources[0].overall_score <= 1.0
 
+    # The assessment is read-backed: the source carries the identity and the
+    # revision the read registry evidences, not just the URL a model reported.
+    assessed = state.evaluated_sources[0]
+    stored = next(
+        read
+        for read in state.read_records.values()
+        if read.resolved_url == SOURCE_URL
+    )
+    assert assessed.serving_host == "example.test"
+    assert assessed.work_id == f"sha256:{stored.content_sha256}"
+    assert assessed.assessment_revision.startswith("assess-")
+    assert assessed.cited_sub_topics == ["Alpha"]
+
     checker = FactCheckerAgent(
         provider=ScriptedCompleter(
             decisions=[

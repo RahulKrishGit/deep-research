@@ -162,7 +162,20 @@ from deep_research.utils.config import (
 # ``60ffff5a3558``, when the Critic's own ``run_react_loop`` call site began
 # resolving its per-agent tool budget through ``tool_budget_for`` — a
 # module-source move with no prompt edit.
-CRITIC_PROMPT_FINGERPRINT = "29176f9c39df"
+# Task 4 moved all six values together, and the Critic's with them. The shared
+# ``agents/prompts.py`` gained ``render_read_dossier`` and a scoring contract
+# that asks for the role, transport relation, self-interest, dates, and
+# metadata anchors the source record now carries, so every agent whose
+# fingerprint hashes that module moved even though only the Source Evaluator's
+# request changed meaning. The Source Evaluator moved for a second reason as
+# well: its own module gained ``assess_new_sources`` and the extended
+# ``SourceScoreDraft``. The exact moves were planner ``7e43f342910c`` ->
+# ``948c6015646c``, researcher ``0628475cb810`` -> ``81f0ec215feb``, source
+# evaluator ``9528b1099f3f`` -> ``b2ce33c07533``, Fact Checker
+# ``518464aa4cee`` -> ``6425f37345c4``, Synthesizer ``758ea76a8c0c`` ->
+# ``c3daf199e75d``, and Critic ``29176f9c39df`` -> ``4f8e2cac55a1``. The Judge
+# pin did **not** move: no judge prompt or template changed.
+CRITIC_PROMPT_FINGERPRINT = "4f8e2cac55a1"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -412,13 +425,19 @@ CRITIC_PROMPT_FINGERPRINT = "29176f9c39df"
 # source changed (the extraction response contract now requires the registry
 # fields, the reply example demonstrates that shape, and the acquisition
 # counters changed). Only that agent's source changed, so no other pin moves.
+# Task 4's re-pin is recorded against ``CRITIC_PROMPT_FINGERPRINT`` above: all
+# six moved with the shared prompt module, and the source evaluator moved for
+# its own module change as well — ``b2ce33c07533`` -> ``4dbe292964d2``, an
+# import-order fix in its own module with no further prompt edit, which is the
+# documented false positive of hashing a module's whole source rather than its
+# prompt text. The other five are unchanged from the first Task 4 pin.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "7e43f342910c",
-    "researcher": "0628475cb810",
-    "source_evaluator": "9528b1099f3f",
-    "fact_checker": "518464aa4cee",
-    "synthesizer": "758ea76a8c0c",
-    "critic": "29176f9c39df",
+    "planner": "948c6015646c",
+    "researcher": "81f0ec215feb",
+    "source_evaluator": "4dbe292964d2",
+    "fact_checker": "6425f37345c4",
+    "synthesizer": "c3daf199e75d",
+    "critic": "4f8e2cac55a1",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

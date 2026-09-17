@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
+from deep_research.agents.evidence import ReadDossier
 from deep_research.agents.identity import merge_source_snapshot
 from deep_research.agents.sources import SourceGroup, normalize_source_url
 from deep_research.agents.steps import summarize_text
@@ -114,9 +115,43 @@ SOURCE_SCORING_INSTRUCTION = (
     "judged from the dates, versions, and events its excerpts mention — "
     "not from when this system retrieved it. Use 0.5 when the excerpts "
     "carry no dating signal at all. A clearly current version scores high; "
-    "a demonstrably superseded source on a time-sensitive topic scores low.\n"
+    "a demonstrably superseded source on a time-sensitive topic scores low. "
+    "A newly published document repeating old figures is not current, and an "
+    "older rule that still governs is not stale.\n"
     "relevance: how directly the excerpts answer the sub-topics the source "
     "was cited for, rather than merely mentioning them.\n"
+    "Then describe the source itself, from the dossier alone:\n"
+    "source_role: original_report, independent_research, derivative, "
+    "company_statement, mixed, or unknown — what the document is. Use "
+    "derivative when it repeats another organisation's statistic, study, or "
+    "dataset without adding its own measurement; independent_research when "
+    "it did its own; mixed when it does both; and unknown when the dossier "
+    "does not show who published it.\n"
+    "transport_relation: original, mirror, syndication, or unknown — how the "
+    "copy you were shown reached its host. A mirror is the same work served "
+    "from elsewhere: it is still usable evidence and it is not a second "
+    "publisher.\n"
+    "self_interest: none, potential, evidenced, or unknown — whether the "
+    "publisher stands to gain from what the document asserts. A company "
+    "writing about its own product is evidenced.\n"
+    "publication_date, data_period, forecast_horizon, effective_date: copy "
+    "only the dates the document states, each in its own field. "
+    "publication_date is when it was published, data_period is the period "
+    "its data cover, forecast_horizon is the future period a projection "
+    "refers to, and effective_date is when a rule or version took effect. "
+    "Leave a field empty when the document does not state it, and never copy "
+    "one date into another.\n"
+    "freshness_status: current, superseded, stale_data, projection, "
+    "effective, or unknown — which of those dates the recency judgement "
+    "rests on. Use effective for an old rule that still governs, stale_data "
+    "for a new publication repeating old figures, and projection for a "
+    "forecast beyond its data.\n"
+    "methods_score: 0.0 to 1.0 for how well the document explains how its "
+    "result was produced, or null when the dossier does not show it.\n"
+    "issuer, doi, year, report_number: the publisher, identifier, and year "
+    "the document itself states. Copy them only from the dossier. A name "
+    "that is merely mentioned — the subject of the article — is not its "
+    "publisher, and an identifier you were not shown is not evidence.\n"
     "The combined score is computed for you and is not yours to return.\n"
     "rationale: name the concrete signals you used. Never restate the "
     "numbers alone."
@@ -437,6 +472,47 @@ def render_source_dossier(
         lines.append("- (no findings)")
     for finding in group.findings:
         lines.append(f"- {summarize_text(finding.content, limit=excerpt_chars)}")
+    return "\n".join(lines)
+
+
+def render_read_dossier(
+    dossier: ReadDossier,
+    *,
+    index: int,
+    reputation: float | None,
+    excerpt_chars: int = 400,
+) -> str:
+    """Render one source from the read itself, not from a finding's summary.
+
+    The model is shown where the bytes were served from, when this run read
+    them, whether the extraction was complete, and the document's own words.
+    That is the whole authority for the identity, transport, role, and dating
+    fields it is asked to report: a judgement about the document has to be
+    about the document, and an assertion the dossier does not carry stays
+    empty rather than becoming a recorded fact.
+    """
+    read = dossier.read
+    lines = [
+        f"Source {index}: {dossier.url}",
+        f"Title: {read.title}",
+        f"Serving host: {dossier.serving_host}",
+        f"Cited for: {', '.join(dossier.cited_sub_topics) or 'no sub-topic'}",
+        f"Read at: {read.retrieved_at}",
+        (
+            "Extraction: complete"
+            if read.extraction_complete
+            else "Extraction: partial - only some of this document could be read"
+        ),
+    ]
+    if reputation is None:
+        lines.append("Known reputation: none on record")
+    else:
+        lines.append(f"Known reputation: {reputation:.2f}")
+    lines.append("Text read:")
+    if not dossier.excerpts:
+        lines.append("- (no excerpt)")
+    for excerpt in dossier.excerpts:
+        lines.append(f"- {summarize_text(excerpt, limit=excerpt_chars)}")
     return "\n".join(lines)
 
 
