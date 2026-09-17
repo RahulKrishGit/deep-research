@@ -47,6 +47,17 @@ OriginName = Literal["researcher", "fact_checker"]
 # allowed to exist at all, and never a sliced record.
 _CONTEXT_OVERFLOW = "continuation_ids=packet_overflow"
 
+# How much text a page may carry and still be read as an automated-access
+# shell. A browser check, a consent wall, or a denial page is always a few
+# hundred characters; a real document is not, which is what keeps a report
+# that merely mentions "access denied" from losing its read record.
+_SHELL_CONTENT_MAX_CHARS = 2000
+
+# Candidate discoveries that may still be read after they leave the queue.
+# ``document_link`` is deliberately absent: it is the manifest of a URL the
+# model followed, never a claim that the run was given that URL.
+_DISCOVERED_VIA = frozenset({"search", "memory"})
+
 
 def next_acquisition_action(state: AcquisitionState) -> AcquisitionAction:
     """Return the next deterministic local acquisition action."""
@@ -156,19 +167,33 @@ def _payload_read_parts(
 
 
 def _content_limitation(text: str, title: str = "") -> str | None:
-    """Classify short automated-access shells without length-gating facts."""
-    lowered = f"{title} {text}".casefold()
+    """Classify an automated-access shell without length-gating real sources.
+
+    A shell page is *short* and says one of a few things: a browser check, a
+    consent wall, or an outright denial. The marker words alone cannot say
+    that — a genuine report that *discusses* access denial, captchas, or
+    consent management is a document, and refusing it a read record would
+    invert the rule that a short authoritative page is never classified
+    unusable by length alone. A marker therefore only classifies a shell when
+    the body could not have carried a document in the first place.
+    """
     markers = (
         "enable javascript",
         "checking your browser",
         "please verify you are human",
+        "are you a robot",
         "captcha",
         "robot check",
         "accept cookies to continue",
         "consent management",
         "access denied",
         "automated access",
+        "just a moment",
     )
+    body = " ".join(text.split()).casefold()
+    if len(body) > _SHELL_CONTENT_MAX_CHARS:
+        return None
+    lowered = f"{' '.join(title.split()).casefold()} {body}"
     if any(marker in lowered for marker in markers):
         return "unusable_content_shell"
     return None
@@ -398,34 +423,60 @@ def _required_reader(url: str) -> str | None:
     return None
 
 
-def _same_known_publisher(
-    url: str,
-    candidate_records: Mapping[str, CandidateRecord],
-) -> bool:
-    """Allow a same-publisher path refinement from a search result.
-
-    Search snippets commonly point at a landing page while the model chooses
-    the publisher's canonical report path.  That refinement still stays
-    inside the source boundary: it must share a hostname with a queued
-    candidate, and an explicitly denied URL is checked separately by the
-    caller.  A different host remains an unqueued guess.
-    """
+def _url_stem(url: str) -> str:
+    """The URL with its final path suffix removed, or ``""`` when unusable."""
     try:
-        host = (urlsplit(url).hostname or "").casefold()
+        parts = urlsplit(url)
     except ValueError:
+        return ""
+    if not parts.hostname:
+        return ""
+    path = parts.path
+    head, _separator, _tail = path.rpartition(".")
+    if "/" in head:
+        path = head
+    return f"{parts.scheme.casefold()}://{parts.netloc.casefold()}{path.casefold()}"
+
+
+def _synthesized_from_failed_page(url: str, state: AcquisitionState) -> bool:
+    """True when ``url`` is a failed page with a different suffix swapped on.
+
+    A model that could not read ``report.html`` habitually proposes
+    ``report.pdf`` next. That is a guess about the publisher's file naming,
+    not a discovered document, and it may not be attempted — not even when a
+    discovery call just failed and the model is otherwise allowed to fall
+    back to a URL it already had.
+    """
+    stem = _url_stem(url)
+    if not stem:
         return False
-    if not host:
-        return False
-    for candidate in candidate_records.values():
-        try:
-            candidate_host = (
-                urlsplit(candidate.url).hostname or ""
-            ).casefold()
-        except ValueError:
-            continue
-        if candidate_host == host:
+    failed: list[str] = list(state.denied_urls)
+    failed.extend(
+        record.url
+        for record in state.candidate_records.values()
+        if record.status in {"denied", "unusable"}
+    )
+    for other in failed:
+        if other != url and _url_stem(other) == stem:
             return True
     return False
+
+
+def _url_was_discovered(url: str, state: AcquisitionState) -> bool:
+    """True when the run was actually given this URL, not asked to guess it.
+
+    A searched or remembered candidate stays readable after it leaves the
+    queue, and a URL the run already attempted may be retried while its call
+    budget lasts (a denial is checked separately). Anything else is the
+    model's guess about the publisher's file layout, and guessing is how a
+    denied landing page turns into a fabricated document URL. There is no
+    publisher-wide circuit here: a *discovered* document on a denied host
+    stays readable.
+    """
+    if url in state.candidate_urls or url in state.attempted_urls:
+        return True
+    record = state.candidate_records.get(url)
+    return record is not None and record.discovered_via in _DISCOVERED_VIA
 
 
 def _cached_payload(record: ReadRecord, tool_name: str) -> dict[str, JsonValue]:
@@ -683,15 +734,17 @@ class AcquisitionPolicy:
                     result=result,
                     charge_tool_budget=False,
                 )
-        if url not in self.state.candidate_urls:
-            record = self.state.candidate_records.get(url)
-            if (
-                (record is None or record.status != "queued")
-                and not self._last_search_failed
-                and not _same_known_publisher(
-                    url, self.state.candidate_records
+        if not _url_was_discovered(url, self.state):
+            if _synthesized_from_failed_page(url, self.state):
+                return ToolPolicyDecision(
+                    allowed=False,
+                    reason=(
+                        "the URL was synthesized by swapping a suffix onto a "
+                        "denied or failed page; only a discovered document "
+                        "may be read"
+                    ),
                 )
-            ):
+            if not self._last_search_failed:
                 return ToolPolicyDecision(
                     allowed=False,
                     reason="the URL was not returned as a queued candidate",

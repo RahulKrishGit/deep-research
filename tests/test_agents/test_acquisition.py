@@ -332,3 +332,162 @@ async def _decisions(
             use_tool("Try echo", "echo", json.dumps({"value": "x"})),
         )
     return (finish("Done", "No call needed."),)
+
+
+# ---------------------------------------------------------------------------
+# document routing: discovered sources only
+# ---------------------------------------------------------------------------
+
+
+def _search_result(*results: tuple[str, str]) -> ToolResult:
+    return ToolResult(
+        tool_name="web_search",
+        success=True,
+        data={
+            "results": [
+                {"url": url, "title": title} for url, title in results
+            ]
+        },
+        latency_ms=0,
+    )
+
+
+def _search_step(*results: tuple[str, str]) -> ReActStep:
+    return ReActStep(
+        iteration=1,
+        thought="Discover candidates.",
+        action="use_tool",
+        tool_name="web_search",
+        tool_input={"query": "agency port capacity report"},
+        observation=ReActObservation(
+            tool_name="web_search", success=True, summary="search"
+        ),
+        tool_result=_search_result(*results),
+    )
+
+
+def _denied_step(url: str) -> ReActStep:
+    return ReActStep(
+        iteration=2,
+        thought="Read the landing page.",
+        action="use_tool",
+        tool_name="web_scraper",
+        tool_input={"url": url},
+        observation=ReActObservation(
+            tool_name="web_scraper",
+            success=False,
+            summary="denied",
+            error_type="access_denied",
+        ),
+        tool_result=ToolResult(
+            tool_name="web_scraper",
+            success=False,
+            data=None,
+            error=ToolError(type="access_denied", message="403 forbidden"),
+            latency_ms=0,
+        ),
+    )
+
+
+def _read_decision(tool_name: str, url: str) -> ReActDecision:
+    return ReActDecision(
+        thought="Read it.",
+        action="use_tool",
+        tool_name=tool_name,
+        tool_input_json=json.dumps({"url": url}),
+    )
+
+
+def test_denied_html_allows_the_discovered_official_pdf_and_no_guess() -> None:
+    """A denial is not a publisher-wide circuit; a guess is still a guess.
+
+    The acceptance case is denied HTML -> DISCOVERED official PDF. A PDF the
+    search actually returned is readable even though its host was just denied,
+    while a URL the model synthesised by swapping a suffix onto that denied
+    page must never be attempted, and the denied URL itself is not retried.
+    """
+    landing = "https://agency.example/queue-report.html"
+    pdf = "https://agency.example/queue-report.pdf"
+    guessed = "https://agency.example/queue-report-2024.pdf"
+    policy = AcquisitionPolicy(
+        state=AcquisitionState(remaining_calls=5),
+        session_id="session-1",
+        target_id="target-1",
+    )
+
+    policy.after_action(_search_step((landing, "Queue report")))
+    policy.after_action(_denied_step(landing))
+    assert landing in policy.state.denied_urls
+
+    policy.after_action(_search_step((pdf, "Queue report (PDF)")))
+
+    allowed = policy.before_action(
+        _read_decision("document_reader", pdf), {"url": pdf}
+    )
+    assert allowed.allowed is True
+
+    guessed_result = policy.before_action(
+        _read_decision("document_reader", guessed), {"url": guessed}
+    )
+    assert guessed_result.allowed is False
+    assert "synthes" in guessed_result.reason
+
+    retried = policy.before_action(
+        _read_decision("web_scraper", landing), {"url": landing}
+    )
+    assert retried.allowed is False
+    assert "denied" in retried.reason
+
+
+def test_a_long_document_that_discusses_access_denial_keeps_its_read() -> None:
+    """A genuine report is not a shell just because it names one.
+
+    The historical failure mode is the inverse: a real document that talks
+    about denials, captchas, or consent walls losing its read record to a
+    substring match, which refuses citable evidence outright.
+    """
+    paragraph = (
+        "Section 4. Access denied responses. Twelve percent of automated "
+        "requests to the public portal received an access denied response, "
+        "and the captcha challenge rate rose after the portal migration. "
+    )
+    text = paragraph * 20
+    result = ToolResult(
+        tool_name="web_scraper",
+        success=True,
+        data={
+            "url": "https://agency.example/portal-study",
+            "requested_url": "https://agency.example/portal-study",
+            "resolved_url": "https://agency.example/portal-study",
+            "title": "Public records portal study",
+            "text": text,
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+
+    assert read is not None
+    assert read.extraction_complete is True
+
+
+def test_a_short_shell_body_is_still_refused_its_read() -> None:
+    """The length gate narrows the marker match; it does not remove it."""
+    result = ToolResult(
+        tool_name="web_scraper",
+        success=True,
+        data={
+            "url": "https://agency.example/blocked",
+            "requested_url": "https://agency.example/blocked",
+            "resolved_url": "https://agency.example/blocked",
+            "title": "Just a moment",
+            "text": "Access denied. Automated access is not permitted here.",
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+    assert (
+        build_read_record_from_tool_result(result, session_id="session-1") is None
+    )
