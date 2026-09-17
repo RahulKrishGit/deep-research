@@ -126,8 +126,6 @@ _COMPARISON_MARKERS = (
     "trade-off",
     "tradeoff",
     "which is better",
-    "cheaper",
-    "more expensive",
     "relative to",
 )
 
@@ -181,21 +179,31 @@ _COMPARATIVE_ANAPHOR_PATTERN = re.compile(
 )
 _COMPARATIVE_PARALLEL_YEAR_WORK_PATTERN = re.compile(
     rf"(?<![a-z0-9])(?P<left_year>(?:19|20)\d{{2}})\s+"
-    rf"(?P<work>[a-z][a-z-]*)[^.;?!]{{0,40}}?"
-    rf"{_COMPARATIVE_THAN_PREFIX}(?P<right_year>(?:19|20)\d{{2}})\s+"
+    rf"(?P<work>[a-z][a-z-]*(?:\s+[a-z][a-z-]*){{0,5}}?)\s+"
+    rf"[^.;?!]{{0,40}}?{_COMPARATIVE_THAN_PREFIX}(?:the\s+)?"
+    rf"(?P<right_year>(?:19|20)\d{{2}})\s+"
     rf"(?P=work)[.?!]?\s*$",
     re.IGNORECASE,
 )
-_COMPARATIVE_DIRECT_QUESTION_PATTERN = re.compile(
+_COMPARATIVE_DIRECT_CANDIDATE_PATTERN = re.compile(
     rf"^(?:is|are|was|were|do|does|did|has|have|had|can|could|will|would|should)"
     rf"(?![a-z0-9])[^.;?!]{{0,80}}?{_COMPARATIVE_THAN_PREFIX}"
-    rf"[a-z][a-z0-9-]*[.?!]?\s*$",
+    rf"(?P<referent>[a-z][a-z0-9-]*)[.?!]?\s*$",
     re.IGNORECASE,
 )
-_COMPARATIVE_FOUR_DIGIT_QUANTITY_PATTERN = re.compile(
-    rf"{_COMPARATIVE_THAN_PREFIX}"
-    rf"(?P<quantity>(?:19|20)\d{{2}})(?=\s+[a-z])",
-    re.IGNORECASE,
+_COMPARATIVE_COUNT_YEAR_PATTERNS = (
+    re.compile(
+        rf"^(?:how\s+(?:many|much)|what\s+number\s+of)(?![a-z0-9])"
+        rf"[^.;?!]{{0,120}}?{_COMPARATIVE_THAN_PREFIX}"
+        rf"(?P<quantity>(?:19|20)\d{{2}})(?=\s+[a-z])",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"^(?:is|are|was|were)\s+there(?![a-z0-9])"
+        rf"[^.;?!]{{0,80}}?{_COMPARATIVE_THAN_PREFIX}"
+        rf"(?P<quantity>(?:19|20)\d{{2}})(?=\s+[a-z])",
+        re.IGNORECASE,
+    ),
 )
 _CONSTRAINTS_MARKERS = (
     "constraint",
@@ -814,14 +822,62 @@ class _QuestionClassification:
     support_policy: _SupportPolicy
 
 
+_INITIALISM_SHAPE_PATTERN = re.compile(r"[bcdfghjklmnpqrstvwxyz]{2,6}")
+
+
+def _has_regular_plural_shape(token: str) -> bool:
+    """Whether ``token`` is a complete regular English plural form.
+
+    A plural alternative is positive grammatical evidence of a set of
+    referents (``more than competitors``). Reusing the module's plural rule
+    keeps this bounded to complete inflections; it does not accept an
+    arbitrary token merely because an exclusion vocabulary missed it.
+    """
+    candidates: list[str] = []
+    if token.endswith("ies") and len(token) > 3:
+        candidates.append(token[:-3] + "y")
+    if token.endswith("es") and len(token) > 2:
+        candidates.extend((token[:-2], token[:-1]))
+    if token.endswith("s") and len(token) > 1:
+        candidates.append(token[:-1])
+    return any(
+        len(candidate) >= 2 and _regular_plural(candidate) == token
+        for candidate in candidates
+    )
+
+
+def _is_direct_referent(token: str) -> bool:
+    """Recognize bounded one-token referent structures.
+
+    Known one-token jurisdiction aliases use the same semantic vocabulary as
+    scope stamping. Vowelless 2--6 letter tokens are a case-insensitive
+    initialism shape (``PJM``/``pJm``), not a capitalization proxy. Complete
+    regular plurals denote alternative sets. An otherwise undifferentiated
+    singular token remains ambiguous.
+    """
+    normalized = token.casefold()
+    is_jurisdiction = any(
+        normalized == alias
+        for _, aliases in _GEOGRAPHIES
+        for alias in aliases
+        if " " not in alias
+    )
+    return (
+        is_jurisdiction
+        or _INITIALISM_SHAPE_PATTERN.fullmatch(normalized) is not None
+        or _has_regular_plural_shape(normalized)
+    )
+
+
 def _comparison_evidence_for(question: str) -> _ComparisonEvidence:
     """Return positive comparison evidence, uncertainty, or no relation.
 
     Explicit comparison words (``compare``, ``versus``, ``relative to``) are
     sufficient on their own. Inequalities require a complete grammatical
     shape: an introduced referent, an anaphor, parallel year/work phrases, or
-    a closed yes/no question with one terminal direct referent. A remaining
-    cue-plus-``than`` relation is deliberately ambiguous rather than guessed.
+    a closed yes/no question whose terminal token has a bounded referent
+    structure. A remaining cue-plus-``than`` relation is deliberately
+    ambiguous rather than guessed.
     """
     normalized = _normalized_question(question)
     if _mentions(normalized, _COMPARISON_MARKERS) or any(
@@ -830,13 +886,32 @@ def _comparison_evidence_for(question: str) -> _ComparisonEvidence:
             _COMPARATIVE_INTRODUCED_PATTERN,
             _COMPARATIVE_ANAPHOR_PATTERN,
             _COMPARATIVE_PARALLEL_YEAR_WORK_PATTERN,
-            _COMPARATIVE_DIRECT_QUESTION_PATTERN,
         )
     ):
+        return "explicit"
+    direct = _COMPARATIVE_DIRECT_CANDIDATE_PATTERN.search(normalized)
+    if direct is not None and _is_direct_referent(direct.group("referent")):
         return "explicit"
     if _COMPARATIVE_RELATION_PATTERN.search(normalized) is not None:
         return "ambiguous"
     return "absent"
+
+
+def _support_policy_from(
+    normalized: str,
+    *,
+    comparison_evidence: _ComparisonEvidence,
+) -> _SupportPolicy:
+    """Classify evidence policy without a clock-dependent answer kind."""
+    if comparison_evidence == "explicit":
+        return "independent_pair"
+    if _mentions(normalized, _DERIVATION_MARKERS):
+        return "derivation"
+    if _mentions(normalized, _CONSTRAINTS_MARKERS) or _mentions(
+        normalized, _PRIMARY_ATTRIBUTION_MARKERS
+    ):
+        return "primary_attribution"
+    return "independent_pair"
 
 
 def _question_classification(
@@ -869,16 +944,10 @@ def _question_classification(
     else:
         answer_kind = "factual"
 
-    if comparison_evidence == "explicit":
-        support_policy: _SupportPolicy = "independent_pair"
-    elif _mentions(normalized, _DERIVATION_MARKERS):
-        support_policy = "derivation"
-    elif answer_kind == "constraints" or _mentions(
-        normalized, _PRIMARY_ATTRIBUTION_MARKERS
-    ):
-        support_policy = "primary_attribution"
-    else:
-        support_policy = "independent_pair"
+    support_policy = _support_policy_from(
+        normalized,
+        comparison_evidence=comparison_evidence,
+    )
 
     return _QuestionClassification(
         comparison_evidence=comparison_evidence,
@@ -923,19 +992,16 @@ def answer_form_requirement(kind: AnswerKind) -> str:
 def _comparative_quantity_year_spans(normalized: str) -> set[tuple[int, int]]:
     """Four-digit inequality quantities that must not re-anchor the clock.
 
-    A four-digit token is not enough evidence of a year. In ``more than 2000
-    projects`` it is a count, while a parallel ``2024 regulation ... than 2019
-    regulation`` supplies positive year/work comparison syntax. Spans are used
-    instead of values so the same number can still appear elsewhere as a date.
+    A four-digit token is not enough evidence of a count. Positive count syntax
+    (``how many ... more than 2000 projects`` or ``are there more than 2000
+    projects``) excludes that operand. Historical comparisons keep every year,
+    including repeated multiword year/work pairs. Spans are used instead of
+    values so the same number can still appear elsewhere as a date.
     """
-    parallel_years = {
-        match.span("right_year")
-        for match in _COMPARATIVE_PARALLEL_YEAR_WORK_PATTERN.finditer(normalized)
-    }
     return {
         match.span("quantity")
-        for match in _COMPARATIVE_FOUR_DIGIT_QUANTITY_PATTERN.finditer(normalized)
-        if match.span("quantity") not in parallel_years
+        for pattern in _COMPARATIVE_COUNT_YEAR_PATTERNS
+        for match in pattern.finditer(normalized)
     }
 
 

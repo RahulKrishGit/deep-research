@@ -397,8 +397,11 @@ CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
 # ``43b054f87eaa`` for the typed conservative comparison boundary and
 # four-digit inequality-count handling. The planner prompt string is unchanged;
 # the existing fingerprint contract hashes the whole planner module source.
+# The follow-up review-finding fix moves planner to ``de043421bb47`` for
+# structural terminal referents, positive count syntax, repeated multiword
+# year/work pairs, and clock-independent constraint evidence policy.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "43b054f87eaa",
+    "planner": "de043421bb47",
     "researcher": "711b4d414515",
     "source_evaluator": "c50282e1dd42",
     "fact_checker": "675fa5aea904",

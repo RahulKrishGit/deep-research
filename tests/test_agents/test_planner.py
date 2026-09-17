@@ -1862,6 +1862,27 @@ def test_counts_and_named_limits_keep_noncomparison_contracts(
     ) == (expected_kind, expected_policy)
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Is the rate greater than maximum?",
+        "IS THE RATE GREATER THAN MINIMUM?",
+        "Is the rate greater than LiMiT?",
+        "Is the temperature lower than floor?",
+        "IS THE SCORE HIGHER THAN CEILING?",
+        "Is the score higher than first?",
+        "Is the rate cheaper than minimum?",
+        "Is the rate more expensive than ceiling?",
+    ],
+)
+def test_bare_terminal_bounds_remain_ambiguous(question: str) -> None:
+    """A singular bound is not positive evidence of a second referent."""
+    assert (
+        answer_kind_for(question, clock_year=2026),
+        support_policy_for(question=question),
+    ) == ("factual", "independent_pair")
+
+
 def test_a_four_digit_count_does_not_reanchor_the_frozen_contract() -> None:
     """A count shaped like a year remains a current quantity obligation."""
     contract = _contract(
@@ -1874,6 +1895,64 @@ def test_a_four_digit_count_does_not_reanchor_the_frozen_contract() -> None:
         contract.evidence_period_requirement
     )
     assert "2000" not in contract.evidence_period_requirement
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How many portfolios contain more than 2000 projects?",
+        "Are there more than 2000 projects?",
+    ],
+)
+def test_four_digit_count_syntax_keeps_a_current_contract(
+    question: str,
+) -> None:
+    """Positive count syntax, rather than token width, identifies a count."""
+    contract = _contract(question)
+
+    assert contract.answer_kind == "factual"
+    assert contract.as_of_date == "2026-09-16"
+    assert contract.evidence_period_requirement == (
+        "evidence available as of 2026-09-16"
+    )
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_as_of", "expected_years"),
+    [
+        (
+            "Did the 2024 federal regulation cost more than 2019 federal regulation?",
+            "2024-12-31",
+            ("2019", "2024"),
+        ),
+        (
+            "Was the 2022 regional capacity market rule more costly than the 2018 "
+            "regional capacity market rule?",
+            "2022-12-31",
+            ("2018", "2022"),
+        ),
+        (
+            "Did the 2023 state permit requirement cost more than the 2020 state "
+            "permit requirement?",
+            "2023-12-31",
+            ("2020", "2023"),
+        ),
+    ],
+)
+def test_parallel_multiword_year_work_keeps_both_historical_periods(
+    question: str,
+    expected_as_of: str,
+    expected_years: tuple[str, str],
+) -> None:
+    """A repeated year/work pair is a comparison, not a count-shaped date loss."""
+    contract = _contract(question)
+
+    assert contract.answer_kind == "comparison"
+    assert contract.as_of_date == expected_as_of
+    assert all(
+        year in contract.evidence_period_requirement for year in expected_years
+    )
+    assert support_policy_for(question=question) == "independent_pair"
 
 
 @pytest.mark.parametrize(
@@ -1905,6 +1984,59 @@ def test_a_causal_marker_without_than_keeps_explanation_contract() -> None:
         answer_kind_for(question, clock_year=2026),
         support_policy_for(question=question),
     ) == ("explanation", "independent_pair")
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What legal obligations applied above the legal maximum in 2019?",
+        "What minimum permit requirements applied in 2018?",
+        "Which regulatory requirements were in force below the legal minimum in 2020?",
+    ],
+)
+def test_dated_legal_constraints_keep_primary_attribution(
+    question: str,
+) -> None:
+    """Historical answer form must not erase the legal evidence policy."""
+    contract = _contract(question)
+    sub_topics, problems = validate_plan_draft(
+        ResearchPlanDraft(
+            sub_topics=[
+                _draft(
+                    title,
+                    priority=index,
+                    evidence_targets=[_target(question)],
+                )
+                for index, title in enumerate(
+                    ("Legal text", "Administrative record", "Implementation"),
+                    start=1,
+                )
+            ]
+        )
+    )
+
+    assert problems == []
+    assert contract.answer_kind == "historical"
+    assert support_policy_for(question=question) == "primary_attribution"
+    assert {
+        target.support_policy
+        for topic in apply_answer_contract(sub_topics, contract)
+        for target in topic.evidence_targets
+    } == {"primary_attribution"}
+
+
+def test_historical_nonconstraint_and_dated_derivation_keep_policy_precedence() -> None:
+    historical = "How many projects operated in 2019?"
+    derived = "What was the calculated cost per unit above the legal maximum in 2019?"
+
+    assert (
+        answer_kind_for(historical, clock_year=2026),
+        support_policy_for(question=historical),
+    ) == ("historical", "independent_pair")
+    assert (
+        answer_kind_for(derived, clock_year=2026),
+        support_policy_for(question=derived),
+    ) == ("historical", "derivation")
 
 
 def test_a_threshold_rule_keeps_its_primary_attribution_policy() -> None:
