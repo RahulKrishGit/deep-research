@@ -1710,7 +1710,13 @@ def test_a_year_the_read_never_carries_is_rejected() -> None:
     row = read_metadata_row(read, anchors={"year": "2019"})
 
     assert "year" not in row
-    assert read_metadata_row(read, anchors={"year": "2025"})["year"] == "2025"
+    # The read states 2024 on its own title text; that is the year it carries.
+    assert read_metadata_row(read, anchors={"year": "2024"})["year"] == "2024"
+    # The year inside its DOI is the identifier's own number, not the
+    # document's date: "doi:10.1234/grid.2025" registers a work, and reading
+    # 2025 from it would date the document from an identifier (the same
+    # fabrication class as reading 2026 from a product code).
+    assert read_metadata_row(read, anchors={"year": "2025"}).get("year") is None
 
 
 def test_a_body_mention_does_not_transfer_issuer_ownership() -> None:
@@ -1987,6 +1993,204 @@ def test_a_year_and_month_is_not_read_as_a_period() -> None:
     assert ambiguous.status == "unknown"
 
 
+def test_a_labelled_period_value_is_still_a_period() -> None:
+    """A value that states a period is a period however it is introduced.
+
+    "Data period: 2022 to 24" states the same period as "2022-2024"; a label,
+    a prefix, surrounding punctuation and a trailing clause are all normal ways
+    for a document to write a value, and none of them is a reason to collapse
+    the period to its first year. A value that mentions a period *and* other
+    numbers names two periods, so it is read as nothing rather than guessed at.
+    """
+    read = _web_read(
+        "https://lab.example/labelled",
+        text=(
+            "Labelled Report. Published by Example Lab on 2026-01-15. "
+            "The survey covers 2022 to 24."
+        ),
+    )
+
+    labelled = validated_temporal(
+        read, data_period="Data period: 2022 to 24", status="stale_data"
+    )
+    prefixed = validated_temporal(
+        read, data_period="Observation period 2022-2024", status="stale_data"
+    )
+    trailed = validated_temporal(
+        read, data_period="2022-2024 (revised)", status="stale_data"
+    )
+
+    for temporal in (labelled, prefixed, trailed):
+        assert temporal.data_period == "2022-2024"
+        assert temporal.status == "stale_data"
+
+    # Two periods in one value is a value that names a period twice, not a
+    # period; N ends is never the first two of them.
+    ambiguous = validated_temporal(
+        read, data_period="2022-2024 and 2019-2020", status="stale_data"
+    )
+    assert ambiguous.data_period is None
+    assert ambiguous.status == "unknown"
+
+
+def test_an_abbreviated_period_end_must_expand_to_a_plausible_year() -> None:
+    """A fabricated year is worse than a dropped period.
+
+    "2026-13" is not the period 2026 through 2113: the two-digit end would
+    have to roll into the next century to stay forward, and a document that
+    wrote it meant a month it never spelled. "9999 to 00" has no year after it
+    at all. Both are dropped, and a dropped period sets no freshness status.
+    The positive direction still works: "1998 to 02" is genuinely 2002.
+    """
+    for text, value in (
+        (
+            "Odd Report. Published by Example Lab on 2026-01-15. "
+            "The table reads 2026-13.",
+            "2026-13",
+        ),
+        (
+            "Edge Report. Published by Example Lab on 2026-01-15. "
+            "The edge reads 9999 to 00.",
+            "9999 to 00",
+        ),
+    ):
+        temporal = validated_temporal(
+            _web_read("https://lab.example/implausible", text=text),
+            data_period=value,
+            status="stale_data",
+        )
+        assert temporal.data_period is None, value
+        assert temporal.status == "unknown", value
+
+    rolled = _web_read(
+        "https://lab.example/rolled-year",
+        text=(
+            "Rolled Report. Published by Example Lab on 2026-01-15. "
+            "The rule applied from 1998 to 02."
+        ),
+    )
+    assert (
+        validated_temporal(
+            rolled, data_period="1998 to 02", status="stale_data"
+        ).data_period
+        == "1998-2002"
+    )
+
+
+def test_only_a_year_the_read_states_with_token_boundaries_dates_it() -> None:
+    """A year inside a longer word is not a year the document states.
+
+    "ABC2026XYZ" evidences no publication year, and recording 2026 from it
+    would date the document from a product code. A year notation is a
+    different thing: "FY2026" is how a fiscal document writes its year, so the
+    documented notations still date a document while every other embedded year
+    does not.
+    """
+    embedded = _web_read(
+        "https://lab.example/embedded-year",
+        text="Embedded Report. Published by Example Lab. ABC2026XYZ in the index.",
+    )
+    fiscal = _web_read(
+        "https://lab.example/fiscal",
+        text="Fiscal Year Report FY2026. Published by Example Lab.",
+    )
+    calendar = _web_read(
+        "https://lab.example/calendar",
+        text="Calendar Year Report CY2026. Published by Example Lab.",
+    )
+
+    unreachable = validated_temporal(
+        embedded, publication_date="2026", status="current"
+    )
+    asserted = validated_temporal(
+        fiscal, publication_date="2026", status="current"
+    )
+    calendar_dated = validated_temporal(
+        calendar, publication_date="2026", status="current"
+    )
+
+    assert unreachable.publication_date is None
+    assert unreachable.status == "unknown"
+    assert asserted.publication_date == "2026"
+    assert asserted.status == "current"
+    assert calendar_dated.publication_date == "2026"
+    assert calendar_dated.status == "current"
+    # The read's own dating signal moves with the notation: the notation is
+    # what is stated, and what is not stated is not there.
+    assert "2026" in read_dated_tokens(fiscal)
+    assert "2026" not in read_dated_tokens(embedded)
+
+
+def test_an_identifier_digit_run_never_dates_the_document() -> None:
+    """A DOI and a URL path carry numbers, and none of them is a date.
+
+    "10.1234/grid.2025" registers a work; "/2024/report" says where a file was
+    filed. Reading either as the document's year would date it from an
+    identifier, so no period and no date may be built out of them.
+    """
+    read = _web_read(
+        "https://lab.example/2024/report",
+        text=(
+            "Registered Report. Published by Example Lab. "
+            "doi:10.1234/grid.2025"
+        ),
+    )
+
+    assert read_dated_tokens(read) == []
+
+
+def test_a_value_the_read_never_states_keeps_no_part_of_itself() -> None:
+    """A rejected value contributes nothing, not even its first component.
+
+    "2026/12" is ambiguous between a year and a month and a period, so it is
+    dropped whole. "2026-13" and "9999 to 00" name numbers no calendar has,
+    so they are dropped whole too — none of the three leaves its first year
+    behind with a freshness judgement resting on it.
+    """
+    read = _web_read(
+        "https://lab.example/yearly",
+        text="Yearly Report. Published by Example Lab in 2026.",
+    )
+
+    for value in ("2026/12", "2026-13", "9999 to 00"):
+        temporal = validated_temporal(
+            read, data_period=value, status="stale_data"
+        )
+        assert temporal.data_period is None, value
+        assert temporal.status == "unknown", value
+
+
+def test_a_sentence_final_dot_does_not_block_a_date() -> None:
+    """"in 2026." ends a sentence and still states the year 2026.
+
+    A dot is punctuation of an identifier ("10.1234/grid.2025"), and it is
+    also how a sentence ends. Only the first kind may keep a date from being
+    read, so the token boundary has to look at what follows the dot.
+    """
+    year = _web_read(
+        "https://lab.example/period-end",
+        text="Year end. Published by Example Lab in 2026.",
+    )
+    month = _web_read(
+        "https://lab.example/month-end",
+        text="Month end. Published by Example Lab in 2026-12.",
+    )
+
+    assert validated_temporal(
+        year, publication_date="2026", status="current"
+    ).publication_date == "2026"
+    assert validated_temporal(
+        month, publication_date="2026-12", status="current"
+    ).publication_date == "2026-12"
+    # A versioned number is not a sentence: the dot there is the identifier's.
+    assert read_dated_tokens(
+        _web_read(
+            "https://lab.example/versioned",
+            text="Versioned Report. Release 2026-12.5 is current.",
+        )
+    ) == []
+
+
 def test_a_freshness_status_follows_the_period_it_was_computed_from() -> None:
     """The status is judged against the value that was kept, not a truncation.
 
@@ -2079,6 +2283,13 @@ def test_retained_works_collapse_mirrors_and_never_invent_identity() -> None:
 
 
 def test_the_dated_signals_are_read_from_the_document() -> None:
+    """The read's years are tokens it states, never numbers inside an identifier.
+
+    "2024" is the year the document states about itself. The "2025" in its DOI
+    is the identifier's own number and the "1234" beside it is a registered
+    prefix: neither is the document dating itself, so neither is read as a
+    year the read carries.
+    """
     read = _web_read()
 
-    assert read_dated_tokens(read) == ["2024", "2025"]
+    assert read_dated_tokens(read) == ["2024"]

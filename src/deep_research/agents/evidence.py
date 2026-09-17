@@ -569,10 +569,32 @@ _ATTRIBUTION_GAP = r"[\s:,\u2013\u2014-]{0,4}"
 # the read itself carries it; everything else is dropped rather than recorded.
 ANCHOR_FIELDS = ("doi", "issuer", "report_number", "year")
 
-_YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 # One date atom: a year, a year and month, or a full day.
 _DATE_ATOM = r"\d{4}(?:-\d{2}(?:-\d{2})?)?"
-_DATE_TOKEN_PATTERN = re.compile(rf"(?<!\d){_DATE_ATOM}(?!\d)")
+# The notations a document uses to *name* a year, which still date a document
+# while every other embedded year does not. The positive lookbehind consumes
+# the two notation letters, so it can only match the letters named here.
+_YEAR_NOTATION = r"(?:FY|CY)"
+_PERIOD_BOUNDARY_BEFORE = r"(?<![\w\-+])"
+_PERIOD_BOUNDARY_AFTER = r"(?![\w\-+])"
+# A date atom the read really states, with real token boundaries rather than
+# digit-only ones: a year embedded in a longer alphanumeric word
+# ("ABC2026XYZ" — a product code) is not a date, and neither is a digit run
+# inside a dotted identifier ("10.1234/grid.2025"), where the dot is the
+# identifier's own punctuation. A dot that merely ends a sentence is not that,
+# so "reported in 2026." still dates the document; a dot counts as punctuation
+# of the identifier only when it follows a letter or a digit.
+_TOKEN_BOUNDARY_BEFORE = r"(?<!\d\.)(?<![A-Za-z]\.)(?<![\w\-+])"
+# A token ends at a word character, a sign, or a date continuation: "2026-12"
+# is one token, not the year 2026 followed by a number. A dot ends it only
+# when nothing non-blank follows, so the dot that ends the sentence does not
+# block the date while the fuller date still wins over its own prefix.
+_TOKEN_BOUNDARY_AFTER = r"(?![A-Za-z0-9_])(?![.\-+](?:[A-Za-z0-9_]|\d))"
+_DATE_TOKEN_PATTERN = re.compile(
+    rf"(?:(?<={_YEAR_NOTATION})|{_TOKEN_BOUNDARY_BEFORE})"
+    rf"{_DATE_ATOM}{_TOKEN_BOUNDARY_AFTER}",
+    re.IGNORECASE,
+)
 # How a document joins the two ends of a period it states.
 _RANGE_SEPARATOR = (
     r"\s*(?:-|\u2013|\u2014|/|(?:to|through|until|thru)(?![A-Za-z]))\s*"
@@ -583,8 +605,6 @@ _RANGE_SEPARATOR = (
 # of a longer chain ("2022-2024-2026") are rejected rather than read as a
 # period the document never stated. A falsely accepted period is worse than a
 # dropped one: it stamps a freshness judgement against a value nobody wrote.
-_PERIOD_BOUNDARY_BEFORE = r"(?<![\w\-+])"
-_PERIOD_BOUNDARY_AFTER = r"(?![\w\-+])"
 _FULL_PERIOD_PATTERN = re.compile(
     rf"{_PERIOD_BOUNDARY_BEFORE}({_DATE_ATOM}){_RANGE_SEPARATOR}"
     rf"({_DATE_ATOM}){_PERIOD_BOUNDARY_AFTER}",
@@ -600,22 +620,38 @@ _PUNCTUATION_RANGE_SEPARATOR = r"\s*(?:-|\u2013|\u2014|/)\s*"
 # "2022/12" is a year and a month rather than the period 2022 through 2012.
 # It is left unread rather than expanded into a year nobody wrote.
 _NOT_A_MONTH = r"(?!0[1-9]|1[0-2])\d{2}"
-_ABBREVIATED_PERIOD_PATTERNS = (
-    re.compile(
-        rf"{_PERIOD_BOUNDARY_BEFORE}(\d{{4}}){_VERBAL_RANGE_SEPARATOR}"
-        rf"(\d{{2}}){_PERIOD_BOUNDARY_AFTER}",
-        re.IGNORECASE,
+# A period whose second end is abbreviated, carrying the separator that
+# introduced it: the separator decides what the abbreviation may expand to.
+_ABBREVIATED_PERIOD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "verbal",
+        re.compile(
+            rf"{_PERIOD_BOUNDARY_BEFORE}(\d{{4}}){_VERBAL_RANGE_SEPARATOR}"
+            rf"(\d{{2}}){_PERIOD_BOUNDARY_AFTER}",
+            re.IGNORECASE,
+        ),
     ),
-    re.compile(
-        rf"{_PERIOD_BOUNDARY_BEFORE}(\d{{4}}){_PUNCTUATION_RANGE_SEPARATOR}"
-        rf"({_NOT_A_MONTH}){_PERIOD_BOUNDARY_AFTER}",
-        re.IGNORECASE,
+    (
+        "punctuation",
+        re.compile(
+            rf"{_PERIOD_BOUNDARY_BEFORE}(\d{{4}}){_PUNCTUATION_RANGE_SEPARATOR}"
+            rf"({_NOT_A_MONTH}){_PERIOD_BOUNDARY_AFTER}",
+            re.IGNORECASE,
+        ),
     ),
 )
-# A bare year the value continues past: a period whose abbreviated end was
-# not read. It is never recorded as the bare year alone.
-_YEAR_CONTINUES_PATTERN = re.compile(
-    rf"^\d{{4}}{_RANGE_SEPARATOR}\d", re.IGNORECASE
+# A year and a month, written the way a hyphen writes it. The trailing
+# component of a *slash* form could equally have been an abbreviated year —
+# 2026/12 reads as a year and a month before it reads as the period 2026
+# through 2012, and nothing in the digits says which — so that ambiguous form
+# is dropped rather than expanded into a year nobody wrote. The hyphen form is
+# unambiguous: it is a year and a month, and whether the read states it is a
+# question for the read's own tokens.
+_YEAR_AND_MONTH_PATTERN = re.compile(
+    r"^\d{4}\s*[-\u2013\u2014]\s*(?:0[1-9]|1[0-2])(?!\d)"
+)
+_AMBIGUOUS_PERIOD_PATTERN = re.compile(
+    r"^\d{4}\s*/\s*(?:0[1-9]|1[0-2])(?!\d)"
 )
 
 # How much of one read's own text a dossier shows the model.
@@ -659,25 +695,77 @@ def _folded_read_text(read: ReadRecord) -> str:
 def read_dated_tokens(read: ReadRecord) -> list[str]:
     """Return the distinct years this read carries, in sorted order.
 
-    Deterministic and body-derived, so it is both the temporal component of
-    an assessment revision and the check that stops a model reporting a
-    publication year the document never states.
+    Deterministic and body-derived, so it is both the temporal component of an
+    assessment revision and the check that stops a model reporting a
+    publication year the document never states. A year has to be something the
+    read states: the digits inside a product code ("ABC2026XYZ") date nothing
+    and neither does the numeric part of a DOI, while the allowlisted year
+    notations ("FY2026", "CY2026") are how a document writes its own year.
     """
-    return sorted(set(_YEAR_PATTERN.findall(_folded_read_text(read))))
+    return sorted(_read_date_tokens(read))
+
+
+# Punctuation is what makes an identifier an identifier, and "10.1234" names a
+# work rather than an event, so an identifier's digits are never dates.
+# Masking them keeps the numeric part of "doi:10.1234/grid.2025" from reading
+# as the year 1234. The mask keeps the text's length, so every other offset
+# stays where it was.
+_DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/\S+")
+_PATH_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+
+
+def _read_date_text(read: ReadRecord) -> str:
+    """The read's dating haystack with its identifiers' digits masked out."""
+    return _PATH_PATTERN.sub(
+        _mask_digits, _DOI_PATTERN.sub(_mask_digits, _dated_text(read))
+    )
+
+
+def _mask_digits(match: re.Match[str]) -> str:
+    """One identifier, with its digits removed and its shape kept."""
+    return re.sub(r"\d", " ", match.group(0))
+
+
+def _is_date_atom(atom: str) -> bool:
+    """True when ``atom`` is a real date, not a number shaped like one.
+
+    "2026-13" has the shape of a year and a month and is neither: there is no
+    thirteenth month, so the digits are a number that merely looks like a date
+    and nothing may be read from them.
+    """
+    parts = atom.split("-")
+    if any(not part.isdigit() for part in parts):
+        return False
+    if len(parts) > 1 and not 1 <= int(parts[1]) <= 12:
+        return False
+    return len(parts) < 3 or 1 <= int(parts[2]) <= 31
 
 
 def _read_date_tokens(read: ReadRecord) -> set[str]:
     """Every date the read states, with the coarser forms each one evidences.
 
     "2026-01-15" evidences the year 2026 as well as that day, while a document
-    that only says "2026" evidences no month and no day at all.
+    that only says "2026" evidences no month and no day at all. The boundaries
+    are the same real ones the rest of the dating uses, so a year inside a
+    longer alphanumeric word dates nothing. A period the read states is two
+    dates it states, so both its ends evidence their own coarser forms too.
     """
     tokens: set[str] = set()
-    for match in _DATE_TOKEN_PATTERN.findall(_dated_text(read)):
-        parts = match.split("-")
-        for length in range(1, len(parts) + 1):
-            tokens.add("-".join(parts[:length]))
+    for match in _DATE_TOKEN_PATTERN.finditer(_read_date_text(read)):
+        if _is_date_atom(match.group(0)):
+            tokens |= _token_forms(match.group(0))
+    for start, end in _read_periods(read):
+        tokens |= _token_forms(start)
+        tokens |= _token_forms(end)
     return tokens
+
+
+def _token_forms(atom: str) -> set[str]:
+    """One date atom, and every coarser date it evidences."""
+    parts = atom.split("-")
+    return {
+        "-".join(parts[:length]) for length in range(1, len(parts) + 1)
+    }
 
 
 def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
@@ -1059,28 +1147,41 @@ def _dated_anchor(read: ReadRecord | None, value: object) -> str | None:
     — "2022-2024" is a period, not a date to be truncated to its first year,
     and neither is "2022 to 24" — so a period is kept whole, normalised to one
     spelling, or dropped entirely when the read does not state it as a period.
+
+    A period is found *inside* the proposed value, on real token boundaries,
+    not only when the value is nothing but a period: a label ("Data period:"),
+    a prefix, surrounding punctuation and a trailing clause are all normal
+    ways a value is written, and none of them may cost the period its second
+    end. A value that names a period more than once is not read as the first
+    of them, and a period form whose end cannot be expanded is dropped rather
+    than collapsed to the year that introduced it.
     """
     text = " ".join(str(value or "").split())
     if not text or read is None:
         return None
+    if _AMBIGUOUS_PERIOD_PATTERN.match(text):
+        # A slash writes a year and a month before it writes a rolled-over
+        # year, and nothing in the digits says which was meant.
+        return None
+    stated, shaped = _stated_period(read, text)
+    if stated is not None:
+        return f"{stated[0]}-{stated[1]}"
+    if shaped:
+        # The value writes a period and it is not one the read states — an end
+        # that expands to no real year ("9999 to 00"), an ambiguous form, or a
+        # period the read never wrote. Report nothing rather than its first
+        # year.
+        return None
     parts = [match.group(0) for match in _DATE_TOKEN_PATTERN.finditer(text)]
-    if len(parts) > 2:
+    if not all(_is_date_atom(part) for part in parts):
+        # A number shaped like a date and not one: "2026-13" names the month 13
+        # and the read states nothing of the sort, so nothing is read from it.
+        return None
+    if len(parts) > 1:
         # More ends than a period has: keep nothing rather than invent a
         # period spanning a chain of them.
         return None
-    if len(parts) == 2:
-        return _evidenced_period(read, parts[0], parts[1])
     if parts:
-        abbreviated = _abbreviated_period(text)
-        if abbreviated is not None:
-            start, end = abbreviated
-            return _evidenced_period(
-                read, start, _expand_period_end(start, end)
-            )
-        if len(parts[0]) == 4 and _YEAR_CONTINUES_PATTERN.match(text):
-            # A period form whose abbreviated end could not be read. Report
-            # nothing rather than its first year.
-            return None
         tokens = _read_date_tokens(read)
         candidate = parts[0]
         while candidate:
@@ -1089,61 +1190,122 @@ def _dated_anchor(read: ReadRecord | None, value: object) -> str | None:
             candidate = (
                 candidate.rsplit("-", 1)[0] if "-" in candidate else ""
             )
-        return None
+        if _YEAR_AND_MONTH_PATTERN.match(text):
+            # A year and a month the read never states. Its year is not a
+            # coarser form the read evidences, so nothing is read from it.
+            return None
     return None
 
 
-def _abbreviated_period(text: str) -> tuple[str, str] | None:
-    """The (start, abbreviated end) a value states, if it states a period."""
-    for pattern in _ABBREVIATED_PERIOD_PATTERNS:
-        match = pattern.fullmatch(text)
-        if match is not None:
-            return match.group(1), match.group(2)
-    return None
-
-
-def _evidenced_period(
+def _stated_period(
     read: ReadRecord,
-    start: str,
-    end: str,
-) -> str | None:
-    """The period ``start``-``end`` as one value, or ``None`` if not stated."""
-    if (start, end) not in _read_periods(read):
-        return None
-    return f"{start}-{end}"
+    text: str,
+) -> tuple[tuple[str, str] | None, bool]:
+    """The period a value states, and whether it states a period shape at all.
+
+    The first item is the period the read also states; the second is whether
+    the value has the shape of a period even when that period was rejected.
+    The distinction is what stops a rejected period from collapsing into the
+    year that introduced it.
+    """
+    periods, shaped = _period_spans(text)
+    if len(periods) != 1:
+        return None, shaped
+    period = periods.pop()
+    if period not in _read_periods(read):
+        return None, True
+    return period, True
+
+
+def _period_spans(
+    text: str,
+) -> tuple[set[tuple[str, str]], bool]:
+    """Every period ``text`` writes, and whether it writes a period shape.
+
+    The period may sit anywhere in the value: a label ("Data period:"), a
+    prefix, surrounding punctuation and a trailing clause are all normal ways
+    a value is written. A value naming two periods is a value about two
+    periods, so a caller gets both and decides rather than being handed the
+    first.
+    """
+    spans: set[tuple[str, str]] = set()
+    shaped = False
+    for match in _FULL_PERIOD_PATTERN.finditer(text):
+        shaped = True
+        start, end = match.group(1), match.group(2)
+        if _is_date_atom(start) and _is_date_atom(end):
+            spans.add((start, end))
+    for separator, pattern in _ABBREVIATED_PERIOD_PATTERNS:
+        for match in pattern.finditer(text):
+            shaped = True
+            end = _expand_period_end(
+                match.group(1), match.group(2), separator=separator
+            )
+            if end is not None:
+                spans.add((match.group(1), end))
+    return spans, shaped
 
 
 def _read_periods(read: ReadRecord) -> set[tuple[str, str]]:
-    """Every period the read states, as (start, expanded end) pairs."""
-    haystack = _dated_text(read)
-    periods = {
-        (match.group(1), match.group(2))
-        for match in _FULL_PERIOD_PATTERN.finditer(haystack)
-    }
-    for pattern in _ABBREVIATED_PERIOD_PATTERNS:
-        for match in pattern.finditer(haystack):
-            periods.add(
-                (
-                    match.group(1),
-                    _expand_period_end(match.group(1), match.group(2)),
-                )
-            )
+    """Every period the read states, as (start, expanded end) pairs.
+
+    A period whose abbreviated end cannot be expanded to a plausible year is
+    not a period the read states, so it is not recorded here either: the same
+    rule that drops it from a proposal drops it from the haystack.
+    """
+    periods, _ = _period_spans(_dated_text(read))
     return periods
 
 
-def _expand_period_end(start: str, end: str) -> str:
+# The plausible span of a period: a year that stands at or after the year that
+# began it (a period never runs backwards) and no more than a century later.
+# An end outside it is a fabricated year, not a reading, so the period is
+# rejected rather than recorded against a year nobody wrote.
+_PERIOD_END_WINDOW = 100
+_PERIOD_END_LIMIT = 9999
+_VERBAL_SEPARATOR = "verbal"
+
+
+def _expand_period_end(start: str, end: str, *, separator: str) -> str | None:
     """The second end of a period, with an abbreviated year expanded.
 
-    "2022 to 24" is 2024: a period cannot end before it starts, so a
-    two-digit year belongs to the start's century — or the next one when that
-    century would run backwards, as in "1998 to 02". An end that is already a
-    full date is returned as the document wrote it.
+    "2022 to 24" is 2024: a period cannot end before it starts, so a two-digit
+    year belongs to the start's century — or the next one when that century
+    would run backwards, as in "1998 to 02". An end that is already a full
+    date is returned as the document wrote it.
+
+    An expansion that would produce no real year — "9999 to 00" has no year
+    after 9999 — or an implausible one — "2026-13" is not 2113, and the
+    hyphenated form reads as a month the document never spelled — is ``None``:
+    the period is rejected rather than guessed at.
     """
     if len(end) != 2:
-        return end
-    start_year = int(start[:4])
-    candidate = (start_year // 100) * 100 + int(end)
-    return str(candidate + 100 if candidate < start_year else candidate)
+        return end if end.isdigit() else None
+    return _expanded_year(int(start[:4]), int(end), separator=separator)
+
+
+def _expanded_year(
+    start_year: int,
+    end: int,
+    *,
+    separator: str,
+) -> str | None:
+    """The four-digit year a two-digit end expands to, or ``None``."""
+    same_century = (start_year // 100) * 100 + end
+    candidate = same_century
+    if candidate < start_year:
+        if separator != _VERBAL_SEPARATOR:
+            # A hyphen or slash writes a year and a month before it writes a
+            # rolled-over year, and "2026-13" spells no month at all. The
+            # abbreviation is not read rather than rolled into the next
+            # century, which would invent 2113.
+            return None
+        candidate += 100
+    if not start_year <= candidate <= _PERIOD_END_LIMIT:
+        return None
+    if candidate - start_year > _PERIOD_END_WINDOW:
+        return None
+    return str(candidate)
 
 
 class ReadDossier(ContractModel):
