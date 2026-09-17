@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 
@@ -152,164 +153,49 @@ _COMPARATIVE_CUES = (
     "cheaper",
     "costlier",
 )
-_COMPARATIVE_REFERENTS = (
-    "the",
-    "in",
-    "for",
-    "at",
-    "on",
-    "those",
-    "that",
-    "its",
-    "their",
-    "other",
-    "another",
-    "each",
-)
-# "a"/"an"/"any" are deliberately absent: "waited more than a year" is a
-# threshold, not a comparison.
-_COMPARATIVE_THRESHOLD_NOUNS = (
-    "threshold",
-    "limit",
-    "cap",
-    "minimum",
-    "maximum",
-    "floor",
-    "ceiling",
-)
-_COMPARATIVE_THRESHOLD_PATTERN = (
-    rf"(?:the\s+)?"
-    rf"(?:\d+(?:\.\d+)?\s*(?:%|percent|percentage points?|pp\b)\s+)?"
-    rf"(?:{'|'.join(_COMPARATIVE_THRESHOLD_NOUNS)})\b"
-)
-_COMPARATIVE_NUMERIC_QUANTITY = (
-    # Four-digit years stay available to the direct-year comparison path. A
-    # non-year number followed by a token is the bounded shape of a quantity
-    # threshold ("5 years", "10 percent", or "5 MW").
-    r"(?!(?:19|20)\d{2}(?![0-9]))\d+(?:,\d{3})*(?:\.\d+)?"
-)
-_COMPARATIVE_CARDINAL_WORDS = (
-    "zero",
-    "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
-    "eight",
-    "nine",
-    "ten",
-    "eleven",
-    "twelve",
-    "thirteen",
-    "fourteen",
-    "fifteen",
-    "sixteen",
-    "seventeen",
-    "eighteen",
-    "nineteen",
-    "twenty",
-    "thirty",
-    "forty",
-    "fifty",
-    "sixty",
-    "seventy",
-    "eighty",
-    "ninety",
-    "hundred",
-    "thousand",
-    "million",
-    "billion",
-    "dozen",
-)
-_COMPARATIVE_FRACTION_WORDS = (
-    "half",
-    "halves",
-    "quarter",
-    "quarters",
-    "third",
-    "thirds",
-    "fourth",
-    "fourths",
-    "fifth",
-    "fifths",
-    "sixth",
-    "sixths",
-    "seventh",
-    "sevenths",
-    "eighth",
-    "eighths",
-    "ninth",
-    "ninths",
-    "tenth",
-    "tenths",
-)
-_COMPARATIVE_QUANTITY_WORDS = (
-    "a",
-    "an",
-    "any",
-    "several",
-    "many",
-    "few",
-    "multiple",
-    "single",
-    "double",
-    "triple",
-    "twice",
-    "thrice",
-    *_COMPARATIVE_CARDINAL_WORDS,
-    *_COMPARATIVE_FRACTION_WORDS,
-)
-_COMPARATIVE_QUANTITY_WORD = (
-    rf"(?:{'|'.join(_COMPARATIVE_QUANTITY_WORDS)}"
-    rf"|(?:{'|'.join(_COMPARATIVE_CARDINAL_WORDS)})-"
-    rf"(?:{'|'.join(_COMPARATIVE_FRACTION_WORDS)}))"
-)
-_COMPARATIVE_QUANTITY_SUFFIX = r"(?:\s+(?:the\s+)?[a-z][a-z-]*)"
-_COMPARATIVE_THRESHOLD_QUANTITY_PATTERN = (
-    rf"(?:"
-    rf"{_COMPARATIVE_NUMERIC_QUANTITY}"
-    rf"(?:\s*(?:%|percent(?:age)?|percentage points?|pp\b)"
-    rf"|{_COMPARATIVE_QUANTITY_SUFFIX})"
-    rf"|{_COMPARATIVE_QUANTITY_WORD}"
-    rf"(?:{_COMPARATIVE_QUANTITY_SUFFIX})?"
-    # Keep "than the 2019 one" on the direct-year path: a leading determiner
-    # only denotes a threshold when it is followed by a quantity and unit.
-    rf"|the\s+(?:{_COMPARATIVE_NUMERIC_QUANTITY}|"
-    rf"{_COMPARATIVE_QUANTITY_WORD}){_COMPARATIVE_QUANTITY_SUFFIX}"
-    rf")(?![a-z0-9])"
-)
-_COMPARATIVE_PATTERN = re.compile(
+_COMPARATIVE_CUE_PATTERN = (
     rf"(?<![a-z0-9])(?:{'|'.join(_COMPARATIVE_CUES)})(?![a-z0-9])"
-    rf"[^.;?!]{{0,40}}?"
+)
+_COMPARATIVE_THAN_PREFIX = (
+    rf"{_COMPARATIVE_CUE_PATTERN}[^.;?!]{{0,40}}?"
     rf"(?<![a-z0-9])than\s+"
-    rf"(?!{_COMPARATIVE_THRESHOLD_PATTERN}\b)"
-    rf"(?!{_COMPARATIVE_THRESHOLD_QUANTITY_PATTERN})"
-    rf"(?:{'|'.join(_COMPARATIVE_REFERENTS)})(?![a-z0-9])",
+)
+
+# Comparison is proved by positive, complete syntax. It is never inferred from
+# a token merely because a finite quantity vocabulary failed to recognize it.
+# Each pattern consumes the complete right-hand side of the question, so
+# ``first percentile`` cannot be accepted at ``first`` and ``the statutory
+# limit`` cannot be accepted at ``the``.
+_COMPARATIVE_RELATION_PATTERN = re.compile(
+    _COMPARATIVE_THAN_PREFIX,
     re.IGNORECASE,
 )
-_COMPARATIVE_DIRECT_PATTERN = re.compile(
-    rf"(?<![a-z0-9])(?:{'|'.join(_COMPARATIVE_CUES)})(?![a-z0-9])"
-    rf"[^.;?!]{{0,40}}?"
-    rf"(?<![a-z0-9])than\s+"
-    rf"(?!{_COMPARATIVE_THRESHOLD_PATTERN}\b)"
-    # A numeric year is a direct referent; other quantities are handled by the
-    # case-insensitive direct-referent path below.
-    rf"(?:19|20)\d{{2}}(?![a-z0-9])",
+_COMPARATIVE_INTRODUCED_PATTERN = re.compile(
+    rf"{_COMPARATIVE_THAN_PREFIX}(?:in|for|at|on)\s+[^.;?!]+[.?!]?\s*$",
     re.IGNORECASE,
 )
-_COMPARATIVE_DIRECT_REFERENT_PATTERN = re.compile(
-    rf"(?i:(?<![a-z0-9])(?:{'|'.join(_COMPARATIVE_CUES)})(?![a-z0-9])"
-    rf"[^.;?!]{{0,40}}?(?<![a-z0-9])than)\s+"
-    # A quantity plus a unit/measure is a threshold, regardless of case. Any
-    # other single token is a direct referent, including lowercase names,
-    # acronyms, and common nouns. The trailing boundary prevents a partial
-    # token from being treated as a referent.
-    rf"(?!{_COMPARATIVE_THRESHOLD_PATTERN}\b)"
-    rf"(?!{_COMPARATIVE_THRESHOLD_QUANTITY_PATTERN})"
-    rf"(?!(?:a|an|any)\b)"
-    rf"[a-z](?:[a-z-]*[a-z])?(?![a-z0-9-])"
+_COMPARATIVE_ANAPHOR_PATTERN = re.compile(
+    rf"{_COMPARATIVE_THAN_PREFIX}the\s+(?:(?:19|20)\d{{2}}\s+)?"
+    rf"(?:one|ones|other|others|alternative|alternatives)[.?!]?\s*$",
+    re.IGNORECASE,
+)
+_COMPARATIVE_PARALLEL_YEAR_WORK_PATTERN = re.compile(
+    rf"(?<![a-z0-9])(?P<left_year>(?:19|20)\d{{2}})\s+"
+    rf"(?P<work>[a-z][a-z-]*)[^.;?!]{{0,40}}?"
+    rf"{_COMPARATIVE_THAN_PREFIX}(?P<right_year>(?:19|20)\d{{2}})\s+"
+    rf"(?P=work)[.?!]?\s*$",
+    re.IGNORECASE,
+)
+_COMPARATIVE_DIRECT_QUESTION_PATTERN = re.compile(
+    rf"^(?:is|are|was|were|do|does|did|has|have|had|can|could|will|would|should)"
+    rf"(?![a-z0-9])[^.;?!]{{0,80}}?{_COMPARATIVE_THAN_PREFIX}"
+    rf"[a-z][a-z0-9-]*[.?!]?\s*$",
+    re.IGNORECASE,
+)
+_COMPARATIVE_FOUR_DIGIT_QUANTITY_PATTERN = re.compile(
+    rf"{_COMPARATIVE_THAN_PREFIX}"
+    rf"(?P<quantity>(?:19|20)\d{{2}})(?=\s+[a-z])",
+    re.IGNORECASE,
 )
 _CONSTRAINTS_MARKERS = (
     "constraint",
@@ -905,25 +791,99 @@ def _marker_pattern(
     return pattern
 
 
-def _is_comparative(question: str) -> bool:
-    """True for a comparison: a comparison verb, or an inequality with a
-    referent.
+_ComparisonEvidence: TypeAlias = Literal["explicit", "ambiguous", "absent"]
+_SupportPolicy: TypeAlias = Literal[
+    "independent_pair",
+    "primary_attribution",
+    "derivation",
+]
 
-    "Is permitting slower in California than in Texas?" and "did the 2023
-    regulation cost more than the 2019 one?" compare; "waited more than 5
-    years" and "tariffs of more than 10%" are thresholds about one quantity.
+
+@dataclass(frozen=True)
+class _QuestionClassification:
+    """One deterministic result consumed by both Planner stamping paths.
+
+    ``ambiguous`` preserves uncertainty inside the local classifier without
+    widening the persisted Task 2 contract. Only ``explicit`` earns the
+    comparison answer form and its independent-pair burden; ambiguous
+    inequality language follows the ordinary answer-form and policy rules.
+    """
+
+    comparison_evidence: _ComparisonEvidence
+    answer_kind: AnswerKind
+    support_policy: _SupportPolicy
+
+
+def _comparison_evidence_for(question: str) -> _ComparisonEvidence:
+    """Return positive comparison evidence, uncertainty, or no relation.
+
+    Explicit comparison words (``compare``, ``versus``, ``relative to``) are
+    sufficient on their own. Inequalities require a complete grammatical
+    shape: an introduced referent, an anaphor, parallel year/work phrases, or
+    a closed yes/no question with one terminal direct referent. A remaining
+    cue-plus-``than`` relation is deliberately ambiguous rather than guessed.
     """
     normalized = _normalized_question(question)
-    return (
-        _mentions(normalized, _COMPARISON_MARKERS)
-        or any(
-            pattern.search(normalized) is not None
-            for pattern in (
-                _COMPARATIVE_PATTERN,
-                _COMPARATIVE_DIRECT_PATTERN,
-                _COMPARATIVE_DIRECT_REFERENT_PATTERN,
-            )
+    if _mentions(normalized, _COMPARISON_MARKERS) or any(
+        pattern.search(normalized) is not None
+        for pattern in (
+            _COMPARATIVE_INTRODUCED_PATTERN,
+            _COMPARATIVE_ANAPHOR_PATTERN,
+            _COMPARATIVE_PARALLEL_YEAR_WORK_PATTERN,
+            _COMPARATIVE_DIRECT_QUESTION_PATTERN,
         )
+    ):
+        return "explicit"
+    if _COMPARATIVE_RELATION_PATTERN.search(normalized) is not None:
+        return "ambiguous"
+    return "absent"
+
+
+def _question_classification(
+    question: str,
+    *,
+    clock_year: int | None,
+) -> _QuestionClassification:
+    """Classify answer form and support policy from one semantic result."""
+    normalized = _normalized_question(question)
+    comparison_evidence = _comparison_evidence_for(question)
+    years = _past_years(question)
+    clock_year_is_stated = clock_year is not None and clock_year in years
+    asks_for_currency = (
+        _mentions(normalized, _CURRENCY_MARKERS) or clock_year_is_stated
+    )
+    past_years = [
+        year for year in years if clock_year is None or year < clock_year
+    ]
+
+    if comparison_evidence == "explicit":
+        answer_kind: AnswerKind = "comparison"
+    elif _mentions(normalized, _EXPLANATION_MARKERS):
+        answer_kind = "explanation"
+    elif past_years and not asks_for_currency:
+        answer_kind = "historical"
+    elif _mentions(normalized, _CONSTRAINTS_MARKERS):
+        answer_kind = "constraints"
+    elif _mentions(normalized, _HISTORICAL_MARKERS):
+        answer_kind = "historical"
+    else:
+        answer_kind = "factual"
+
+    if comparison_evidence == "explicit":
+        support_policy: _SupportPolicy = "independent_pair"
+    elif _mentions(normalized, _DERIVATION_MARKERS):
+        support_policy = "derivation"
+    elif answer_kind == "constraints" or _mentions(
+        normalized, _PRIMARY_ATTRIBUTION_MARKERS
+    ):
+        support_policy = "primary_attribution"
+    else:
+        support_policy = "independent_pair"
+
+    return _QuestionClassification(
+        comparison_evidence=comparison_evidence,
+        answer_kind=answer_kind,
+        support_policy=support_policy,
     )
 
 
@@ -949,32 +909,10 @@ def answer_kind_for(question: str, *, clock_year: int | None = None) -> AnswerKi
     request for a number, not for 2024's state of affairs. A question that
     asks for currency at all is never classified historical.
     """
-    normalized = _normalized_question(question)
-    years = _past_years(question)
-    clock_year_is_stated = clock_year is not None and clock_year in years
-    asks_for_currency = (
-        _mentions(normalized, _CURRENCY_MARKERS) or clock_year_is_stated
-    )
-    past_years = [
-        year for year in years if clock_year is None or year < clock_year
-    ]
-    if _is_comparative(question):
-        return "comparison"
-    # A question that asks *why* is answered by a mechanism whatever period it
-    # is about; the period travels in the as-of date, not in the answer form.
-    if _mentions(normalized, _EXPLANATION_MARKERS):
-        return "explanation"
-    # A question anchored in a period the clock has left behind is answered
-    # about that period: the answer form is "the state of affairs then", and
-    # the as-of date says which period that is. Naming the clock's own year is
-    # not such a period — it is a currency frame.
-    if past_years and not asks_for_currency:
-        return "historical"
-    if _mentions(normalized, _CONSTRAINTS_MARKERS):
-        return "constraints"
-    if _mentions(normalized, _HISTORICAL_MARKERS):
-        return "historical"
-    return "factual"
+    return _question_classification(
+        question,
+        clock_year=clock_year,
+    ).answer_kind
 
 
 def answer_form_requirement(kind: AnswerKind) -> str:
@@ -982,9 +920,36 @@ def answer_form_requirement(kind: AnswerKind) -> str:
     return _ANSWER_FORM_REQUIREMENTS[kind]
 
 
+def _comparative_quantity_year_spans(normalized: str) -> set[tuple[int, int]]:
+    """Four-digit inequality quantities that must not re-anchor the clock.
+
+    A four-digit token is not enough evidence of a year. In ``more than 2000
+    projects`` it is a count, while a parallel ``2024 regulation ... than 2019
+    regulation`` supplies positive year/work comparison syntax. Spans are used
+    instead of values so the same number can still appear elsewhere as a date.
+    """
+    parallel_years = {
+        match.span("right_year")
+        for match in _COMPARATIVE_PARALLEL_YEAR_WORK_PATTERN.finditer(normalized)
+    }
+    return {
+        match.span("quantity")
+        for match in _COMPARATIVE_FOUR_DIGIT_QUANTITY_PATTERN.finditer(normalized)
+        if match.span("quantity") not in parallel_years
+    }
+
+
 def _past_years(question: str) -> list[int]:
-    """Four-digit years the question states, oldest first."""
-    return sorted({int(match) for match in _YEAR_PATTERN.findall(question)})
+    """Four-digit years the question states, excluding inequality counts."""
+    normalized = _normalized_question(question)
+    quantity_spans = _comparative_quantity_year_spans(normalized)
+    return sorted(
+        {
+            int(match.group(0))
+            for match in _YEAR_PATTERN.finditer(normalized)
+            if match.span() not in quantity_spans
+        }
+    )
 
 
 def geographic_scope_for(question: str) -> tuple[str, list[str]]:
@@ -1299,21 +1264,18 @@ def support_policy_for(*, question: str) -> str:
       slower in California than in Texas?" is a comparison first.
     - a target that asks for a computed quantity is ``derivation``: its
       premises must be supported and its arithmetic reproducible;
-    - a target about an official rule, definition, or measurement is
-      ``primary_attribution``: the issuing body's own instrument settles it,
-      and requiring a second organization to independently model the same
-      official date would make an official date unanswerable;
+    - a constraints target, or a target about an official rule, definition,
+      or measurement, is ``primary_attribution``: the issuing body's own
+      instrument settles it, and requiring a second organization to
+      independently model the same official date would make an official date
+      unanswerable;
     - everything else — causal and empirical conclusions — is
       ``independent_pair``.
     """
-    normalized = _normalized_question(question)
-    if _is_comparative(question):
-        return "independent_pair"
-    if _mentions(normalized, _DERIVATION_MARKERS):
-        return "derivation"
-    if _mentions(normalized, _PRIMARY_ATTRIBUTION_MARKERS):
-        return "primary_attribution"
-    return "independent_pair"
+    return _question_classification(
+        question,
+        clock_year=None,
+    ).support_policy
 
 
 def stale_year_anchors(text: str, *, as_of_year: int) -> list[int]:

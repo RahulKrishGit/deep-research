@@ -393,8 +393,12 @@ CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
 # proper-name referent rule that keeps spelled-out quantity thresholds factual.
 # Fix round 5 moves planner to ``027ca133b2da`` for the case-insensitive
 # quantity-structure guard and direct referent matching.
+# The GPT-5.6 Sol xhigh breaker remediation moves planner to
+# ``43b054f87eaa`` for the typed conservative comparison boundary and
+# four-digit inequality-count handling. The planner prompt string is unchanged;
+# the existing fingerprint contract hashes the whole planner module source.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "027ca133b2da",
+    "planner": "43b054f87eaa",
     "researcher": "711b4d414515",
     "source_evaluator": "c50282e1dd42",
     "fact_checker": "675fa5aea904",

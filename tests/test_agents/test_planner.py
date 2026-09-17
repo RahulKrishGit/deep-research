@@ -1799,6 +1799,114 @@ def test_case_insensitive_direct_referents_select_comparison_and_pair_policy(
     assert support_policy_for(question=question) == "independent_pair"
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How many projects ranked higher than first percentile?",
+        "How Many Projects Ranked Higher Than Second Percentile?",
+        "How many projects ranked hIgHeR tHaN eLeVeNtH pErCeNtIlE?",
+        "HOW MANY PROJECTS RANKED HIGHER THAN TWELFTH PERCENTILE?",
+        "How many projects ranked higher than twenty-first percentile?",
+        "How many projects ranked higher than 95th percentile?",
+    ],
+)
+def test_ordinal_percentile_thresholds_are_not_comparisons(
+    question: str,
+) -> None:
+    """An unknown ordinal is a threshold, not an inferred direct referent."""
+    assert (
+        answer_kind_for(question, clock_year=2026),
+        support_policy_for(question=question),
+    ) == ("factual", "independent_pair")
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_kind", "expected_policy"),
+    [
+        (
+            "How many portfolios contain more than 2000 projects?",
+            "factual",
+            "independent_pair",
+        ),
+        (
+            "How Many Portfolios Contain More Than 2000 Projects?",
+            "factual",
+            "independent_pair",
+        ),
+        (
+            "What tariff requirements apply to rates greater than the statutory limit?",
+            "constraints",
+            "primary_attribution",
+        ),
+        (
+            "What Legal Obligations Apply Above the Legal Maximum?",
+            "constraints",
+            "primary_attribution",
+        ),
+        (
+            "What requirements apply bElOw tHe MiNiMuM rEqUiReMeNt?",
+            "constraints",
+            "primary_attribution",
+        ),
+    ],
+)
+def test_counts_and_named_limits_keep_noncomparison_contracts(
+    question: str,
+    expected_kind: str,
+    expected_policy: str,
+) -> None:
+    """A count or named bound cannot become a comparison by lexical fallback."""
+    assert (
+        answer_kind_for(question, clock_year=2026),
+        support_policy_for(question=question),
+    ) == (expected_kind, expected_policy)
+
+
+def test_a_four_digit_count_does_not_reanchor_the_frozen_contract() -> None:
+    """A count shaped like a year remains a current quantity obligation."""
+    contract = _contract(
+        "How many portfolios contain more than 2000 projects?"
+    )
+
+    assert contract.answer_kind == "factual"
+    assert contract.as_of_date == "2026-09-16"
+    assert "evidence available as of 2026-09-16" in (
+        contract.evidence_period_requirement
+    )
+    assert "2000" not in contract.evidence_period_requirement
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Did the 2024 regulation cost more than 2019 regulation?",
+        "Is permitting slower than texas?",
+        "IS PERMITTING SLOWER THAN TEXAS?",
+        "Is interconnection slower than pJm?",
+        "Did the project cost more than competitors?",
+        "Is permitting slower in California than in Texas?",
+        "Did the 2023 regulation cost more than the 2019 one?",
+        "How do solar and wind compare on cost?",
+        "Is solar cheaper relative to wind?",
+    ],
+)
+def test_explicit_comparison_shapes_keep_pair_contracts(question: str) -> None:
+    """Positive comparison syntax survives the conservative fallback."""
+    assert (
+        answer_kind_for(question, clock_year=2026),
+        support_policy_for(question=question),
+    ) == ("comparison", "independent_pair")
+
+
+def test_a_causal_marker_without_than_keeps_explanation_contract() -> None:
+    question = "Why did queue times grow after 2019?"
+
+    assert (
+        answer_kind_for(question, clock_year=2026),
+        support_policy_for(question=question),
+    ) == ("explanation", "independent_pair")
+
+
 def test_a_threshold_rule_keeps_its_primary_attribution_policy() -> None:
     """"Tariffs of more than 10%" is an official threshold, not a comparison."""
     assert (
