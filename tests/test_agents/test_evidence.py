@@ -1866,6 +1866,127 @@ def test_a_stated_period_stays_a_period() -> None:
     ).data_period == "2022-2024"
 
 
+def test_a_period_written_with_an_abbreviated_end_stays_a_period() -> None:
+    """An abbreviation is still an end, and never a reason to drop it.
+
+    "2022 to 24" is a period of two years, not the single year 2022. A
+    two-digit year is unambiguous from the start's century — a period cannot
+    end before it starts — so it is expanded to the full year and the value
+    stays a period of two ends.
+    """
+    spelled = _web_read(
+        "https://lab.example/abbreviated",
+        text=(
+            "Abbreviated Report. Published by Example Lab on 2026-01-15. "
+            "The survey covers 2022 to 24."
+        ),
+    )
+    slashed = _web_read(
+        "https://lab.example/slashed",
+        text=(
+            "Slashed Report. Published by Example Lab on 2026-01-15. "
+            "The survey covers 2022/24."
+        ),
+    )
+    rolled = _web_read(
+        "https://lab.example/rolled",
+        text=(
+            "Rolled Report. Published by Example Lab on 2026-01-15. "
+            "The rule applied from 1998 to 02."
+        ),
+    )
+
+    same_spelling = validated_temporal(
+        spelled, data_period="2022 to 24", status="stale_data"
+    )
+    four_digits = validated_temporal(
+        spelled, data_period="2022-2024", status="stale_data"
+    )
+    slashed_value = validated_temporal(
+        slashed, data_period="2022/24", status="stale_data"
+    )
+
+    assert same_spelling.data_period == "2022-2024"
+    assert four_digits.data_period == "2022-2024"
+    assert slashed_value.data_period == "2022-2024"
+    # The status follows the period that was preserved, both ends and all.
+    assert same_spelling.status == "stale_data"
+    assert four_digits.status == "stale_data"
+    assert slashed_value.status == "stale_data"
+    # "1998 to 02" is 2002, not 1902: the expansion never runs backwards.
+    assert (
+        validated_temporal(
+            rolled, data_period="1998 to 02", status="stale_data"
+        ).data_period
+        == "1998-2002"
+    )
+
+
+def test_a_period_the_read_does_not_state_is_not_accepted() -> None:
+    """A falsely accepted period is worse than a dropped one.
+
+    Each of these contains digits that look like a period and is not one: a
+    range embedded in a longer alphanumeric word, the first two ends of a
+    longer chain, and a signed value. Reading any of them as the period would
+    stamp a freshness judgement against a value the document never stated.
+    """
+    embedded = _web_read(
+        "https://lab.example/embedded",
+        text=(
+            "Embedded Report. Published by Example Lab on 2026-01-15. "
+            "The token ABC2022-2024XYZ appears in the index."
+        ),
+    )
+    chained = _web_read(
+        "https://lab.example/chained",
+        text=(
+            "Chained Report. Published by Example Lab on 2026-01-15. "
+            "The index lists 2022-2024-2026."
+        ),
+    )
+    signed = _web_read(
+        "https://lab.example/signed",
+        text=(
+            "Signed Report. Published by Example Lab on 2026-01-15. "
+            "The offset -2022-2024 is not a period."
+        ),
+    )
+
+    for read in (embedded, chained, signed):
+        temporal = validated_temporal(
+            read, data_period="2022-2024", status="stale_data"
+        )
+        assert temporal.data_period is None, read.resolved_url
+        assert temporal.status != "stale_data", read.resolved_url
+        assert temporal.status == "unknown", read.resolved_url
+
+
+def test_a_year_and_month_is_not_read_as_a_period() -> None:
+    """``2026-12`` is December 2026, not the period 2026 through 2012.
+
+    A two-digit component that can be a month is a month, and the distinction
+    is never resolved by inventing a year: an abbreviated end is only read
+    where the digits cannot be a month, and an ambiguous form the read does
+    not disambiguate is dropped rather than expanded.
+    """
+    read = _web_read(
+        "https://lab.example/monthly",
+        text="Monthly Report. Published by Example Lab in 2026-12.",
+    )
+
+    dated = validated_temporal(
+        read, publication_date="2026-12", status="current"
+    )
+    ambiguous = validated_temporal(
+        read, data_period="2026/12", status="stale_data"
+    )
+
+    assert dated.publication_date == "2026-12"
+    assert dated.status == "current"
+    assert ambiguous.data_period is None
+    assert ambiguous.status == "unknown"
+
+
 def test_a_freshness_status_follows_the_period_it_was_computed_from() -> None:
     """The status is judged against the value that was kept, not a truncation.
 

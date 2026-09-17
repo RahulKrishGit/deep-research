@@ -571,10 +571,51 @@ ANCHOR_FIELDS = ("doi", "issuer", "report_number", "year")
 
 _YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 # One date atom: a year, a year and month, or a full day.
-_DATE_TOKEN_PATTERN = re.compile(r"(?<!\d)\d{4}(?:-\d{2}(?:-\d{2})?)?(?!\d)")
+_DATE_ATOM = r"\d{4}(?:-\d{2}(?:-\d{2})?)?"
+_DATE_TOKEN_PATTERN = re.compile(rf"(?<!\d){_DATE_ATOM}(?!\d)")
 # How a document joins the two ends of a period it states.
 _RANGE_SEPARATOR = (
     r"\s*(?:-|\u2013|\u2014|/|(?:to|through|until|thru)(?![A-Za-z]))\s*"
+)
+# One period the document states: two ends joined by a separator. Both ends
+# need real token boundaries, so digits embedded in a longer alphanumeric word
+# ("ABC2022-2024XYZ"), a signed value ("-2022-2024"), and the first two ends
+# of a longer chain ("2022-2024-2026") are rejected rather than read as a
+# period the document never stated. A falsely accepted period is worse than a
+# dropped one: it stamps a freshness judgement against a value nobody wrote.
+_PERIOD_BOUNDARY_BEFORE = r"(?<![\w\-+])"
+_PERIOD_BOUNDARY_AFTER = r"(?![\w\-+])"
+_FULL_PERIOD_PATTERN = re.compile(
+    rf"{_PERIOD_BOUNDARY_BEFORE}({_DATE_ATOM}){_RANGE_SEPARATOR}"
+    rf"({_DATE_ATOM}){_PERIOD_BOUNDARY_AFTER}",
+    re.IGNORECASE,
+)
+# The same period with its second end abbreviated to a two-digit year. The
+# first end is a bare year and the tail may not continue into another date
+# component, so a full date ("2026-12-31") is never misread as the period
+# "2026" through "12".
+_VERBAL_RANGE_SEPARATOR = r"\s*(?:to|through|until|thru)(?![A-Za-z])\s*"
+_PUNCTUATION_RANGE_SEPARATOR = r"\s*(?:-|\u2013|\u2014|/)\s*"
+# After a hyphen or slash a two-digit end could equally be a month, and
+# "2022/12" is a year and a month rather than the period 2022 through 2012.
+# It is left unread rather than expanded into a year nobody wrote.
+_NOT_A_MONTH = r"(?!0[1-9]|1[0-2])\d{2}"
+_ABBREVIATED_PERIOD_PATTERNS = (
+    re.compile(
+        rf"{_PERIOD_BOUNDARY_BEFORE}(\d{{4}}){_VERBAL_RANGE_SEPARATOR}"
+        rf"(\d{{2}}){_PERIOD_BOUNDARY_AFTER}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_PERIOD_BOUNDARY_BEFORE}(\d{{4}}){_PUNCTUATION_RANGE_SEPARATOR}"
+        rf"({_NOT_A_MONTH}){_PERIOD_BOUNDARY_AFTER}",
+        re.IGNORECASE,
+    ),
+)
+# A bare year the value continues past: a period whose abbreviated end was
+# not read. It is never recorded as the bare year alone.
+_YEAR_CONTINUES_PATTERN = re.compile(
+    rf"^\d{{4}}{_RANGE_SEPARATOR}\d", re.IGNORECASE
 )
 
 # How much of one read's own text a dossier shows the model.
@@ -1014,42 +1055,95 @@ def _dated_anchor(read: ReadRecord | None, value: object) -> str | None:
 
     A date is never more precise than the document: a read saying "2026"
     cannot be recorded as "2026-12-31", so a single date keeps only the
-    leading components the read states. A period is never less precise
-    either — "2022-2024" is a period, not a date to be truncated to its first
-    year — so a proposed range is kept whole, normalised to one spelling, or
-    dropped entirely when the read does not state it as a period.
+    leading components the read states. A period is never less precise either
+    — "2022-2024" is a period, not a date to be truncated to its first year,
+    and neither is "2022 to 24" — so a period is kept whole, normalised to one
+    spelling, or dropped entirely when the read does not state it as a period.
     """
     text = " ".join(str(value or "").split())
     if not text or read is None:
         return None
-    parts = [
-        match.group(0) for match in _DATE_TOKEN_PATTERN.finditer(text)
-    ]
-    if not parts:
+    parts = [match.group(0) for match in _DATE_TOKEN_PATTERN.finditer(text)]
+    if len(parts) > 2:
+        # More ends than a period has: keep nothing rather than invent a
+        # period spanning a chain of them.
         return None
-    if len(parts) > 1:
-        stated = f"{parts[0]}-{parts[-1]}"
-        return (
-            stated
-            if _period_evidenced(_dated_text(read), parts[0], parts[-1])
-            else None
-        )
-    tokens = _read_date_tokens(read)
-    candidate = parts[0]
-    while candidate:
-        if candidate in tokens:
-            return candidate
-        candidate = candidate.rsplit("-", 1)[0] if "-" in candidate else ""
+    if len(parts) == 2:
+        return _evidenced_period(read, parts[0], parts[1])
+    if parts:
+        abbreviated = _abbreviated_period(text)
+        if abbreviated is not None:
+            start, end = abbreviated
+            return _evidenced_period(
+                read, start, _expand_period_end(start, end)
+            )
+        if len(parts[0]) == 4 and _YEAR_CONTINUES_PATTERN.match(text):
+            # A period form whose abbreviated end could not be read. Report
+            # nothing rather than its first year.
+            return None
+        tokens = _read_date_tokens(read)
+        candidate = parts[0]
+        while candidate:
+            if candidate in tokens:
+                return candidate
+            candidate = (
+                candidate.rsplit("-", 1)[0] if "-" in candidate else ""
+            )
+        return None
     return None
 
 
-def _period_evidenced(haystack: str, start: str, end: str) -> bool:
-    """True when the read states ``start`` through ``end`` as one period."""
-    pattern = re.compile(
-        rf"(?<!\d){re.escape(start)}{_RANGE_SEPARATOR}{re.escape(end)}(?!\d)",
-        re.IGNORECASE,
-    )
-    return pattern.search(haystack) is not None
+def _abbreviated_period(text: str) -> tuple[str, str] | None:
+    """The (start, abbreviated end) a value states, if it states a period."""
+    for pattern in _ABBREVIATED_PERIOD_PATTERNS:
+        match = pattern.fullmatch(text)
+        if match is not None:
+            return match.group(1), match.group(2)
+    return None
+
+
+def _evidenced_period(
+    read: ReadRecord,
+    start: str,
+    end: str,
+) -> str | None:
+    """The period ``start``-``end`` as one value, or ``None`` if not stated."""
+    if (start, end) not in _read_periods(read):
+        return None
+    return f"{start}-{end}"
+
+
+def _read_periods(read: ReadRecord) -> set[tuple[str, str]]:
+    """Every period the read states, as (start, expanded end) pairs."""
+    haystack = _dated_text(read)
+    periods = {
+        (match.group(1), match.group(2))
+        for match in _FULL_PERIOD_PATTERN.finditer(haystack)
+    }
+    for pattern in _ABBREVIATED_PERIOD_PATTERNS:
+        for match in pattern.finditer(haystack):
+            periods.add(
+                (
+                    match.group(1),
+                    _expand_period_end(match.group(1), match.group(2)),
+                )
+            )
+    return periods
+
+
+def _expand_period_end(start: str, end: str) -> str:
+    """The second end of a period, with an abbreviated year expanded.
+
+    "2022 to 24" is 2024: a period cannot end before it starts, so a
+    two-digit year belongs to the start's century — or the next one when that
+    century would run backwards, as in "1998 to 02". An end that is already a
+    full date is returned as the document wrote it.
+    """
+    if len(end) != 2:
+        return end
+    start_year = int(start[:4])
+    candidate = (start_year // 100) * 100 + int(end)
+    return str(candidate + 100 if candidate < start_year else candidate)
 
 
 class ReadDossier(ContractModel):
