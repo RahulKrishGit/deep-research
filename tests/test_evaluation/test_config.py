@@ -384,12 +384,13 @@ CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
 # review instruction. Review round 2 moved it once more as well
 # (``cd8a2ce1c58e`` -> ``a8bee2f61af6``) for the comparison-referent rule, the
 # derived-form marker matching, and the tolerance-unit comparison. Final Task 2
-# pins: planner ``a8bee2f61af6``, researcher ``711b4d414515``,
+# pins before this fix round: planner ``a8bee2f61af6``, researcher ``711b4d414515``,
 # source_evaluator ``c50282e1dd42``, fact_checker ``675fa5aea904``,
 # synthesizer ``a7fe09fe50c7``, critic ``7e0d97508b00``. The Judge pin is
-# unchanged.
+# unchanged. Fix round 3 moved planner to ``863f670c4f5a`` for direct
+# comparison referents, the threshold guard, and bounded marker variants.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "a8bee2f61af6",
+    "planner": "863f670c4f5a",
     "researcher": "711b4d414515",
     "source_evaluator": "c50282e1dd42",
     "fact_checker": "675fa5aea904",

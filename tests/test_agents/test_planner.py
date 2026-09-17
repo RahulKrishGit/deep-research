@@ -1966,6 +1966,82 @@ def test_a_comparative_regulatory_question_is_an_independent_pair() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_kind"),
+    [
+        (
+            "Did the 2024 regulation cost more than 2019 regulation?",
+            "comparison",
+        ),
+        ("Is permitting slower than Texas?", "comparison"),
+    ],
+)
+def test_direct_comparison_referents_keep_comparison_answer_and_pair_policy(
+    question: str, expected_kind: str
+) -> None:
+    """Direct noun referents after ``than`` are comparisons.
+
+    The production classifier must recognize a named year or jurisdiction as
+    the second item in a comparison even when it is not introduced by ``the``
+    or ``in``.  The answer form then needs the same dimension for both items,
+    and its evidence policy must require an independent pair rather than one
+    primary authority.
+    """
+    assert answer_kind_for(question, clock_year=2026) == expected_kind
+    assert support_policy_for(question=question) == "independent_pair"
+
+
+def test_a_definite_threshold_noun_stays_constraints_and_primary_attribution() -> None:
+    """A definite threshold noun is one rule, not a comparison.
+
+    ``greater than the 10% threshold`` names the threshold that defines a
+    tariff condition; it does not compare two options.  The production
+    classifier must preserve the constraints answer form and the primary
+    attribution policy for this official rule question.
+    """
+    question = "What are the requirements for tariffs greater than the 10% threshold?"
+
+    assert answer_kind_for(question, clock_year=2026) == "constraints"
+    assert support_policy_for(question=question) == "primary_attribution"
+
+
+def test_an_unrelated_derived_word_does_not_match_standard_constraint_marker() -> None:
+    """``standardized`` must not be treated as the ``standard`` marker.
+
+    The production marker matcher must bound derived forms to explicit semantic
+    variants.  Otherwise an unrelated ``-ized`` word can silently stamp the
+    constraints answer form onto a factual cost question.
+    """
+    question = "What did standardized testing cost?"
+
+    assert answer_kind_for(question, clock_year=2026) == "factual"
+
+
+def test_lowercase_eu_and_uk_aliases_resolve_without_us_substring_matches() -> None:
+    """Lowercase ``eu``/``uk`` aliases return jurisdictions safely.
+
+    The production geography matcher must restore the ordinary lowercase
+    aliases while keeping the case-sensitive ``US`` abbreviation: the pronoun
+    ``us``, the word ``uses``, and the state name ``Indiana`` must remain
+    unspecified rather than turning into country scopes.
+    """
+    assert geographic_scope_for("What are the rules in eu?")[0] == (
+        "European Union"
+    )
+    assert geographic_scope_for("What are the rules in uk?")[0] == (
+        "United Kingdom"
+    )
+    assert geographic_scope_for("Can you tell us about the rules?")[0] == (
+        "unspecified"
+    )
+    assert geographic_scope_for("What are the uses of storage?")[0] == (
+        "unspecified"
+    )
+    assert geographic_scope_for("What are the siting rules in Indiana?")[0] == (
+        "unspecified"
+    )
+
+
 def test_a_bare_percentage_is_not_an_invented_tolerance() -> None:
     """A number is not a tolerance; an agreement frame is what makes one.
 

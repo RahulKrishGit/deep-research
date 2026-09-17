@@ -131,12 +131,13 @@ _COMPARISON_MARKERS = (
 )
 
 # A comparative claim names a *referent*: "cost more than the 2019 one",
-# "slower in California than in Texas". A bare inequality does not — "waited
-# more than 5 years", "tariffs of more than 10%" are threshold questions — and
-# treating those as comparisons stamped the comparison answer form ("the same
-# measured dimension for every option compared") onto a quantity question,
-# which Section 2.3 then judges the target unanswered against. So an inequality
-# counts only when the word after "than" introduces the thing compared.
+# "cost more than 2019 regulation", or "slower in California than in Texas".
+# A bare inequality does not — "waited more than 5 years", "tariffs of more
+# than 10%" are threshold questions — and treating those as comparisons
+# stamped the comparison answer form ("the same measured dimension for every
+# option compared") onto a quantity question, which Section 2.3 then judges
+# the target unanswered against. A definite threshold noun is also not a
+# referent: "greater than the 10% threshold" still asks about one rule.
 _COMPARATIVE_CUES = (
     "more",
     "less",
@@ -167,10 +168,38 @@ _COMPARATIVE_REFERENTS = (
 )
 # "a"/"an"/"any" are deliberately absent: "waited more than a year" is a
 # threshold, not a comparison.
+_COMPARATIVE_THRESHOLD_NOUNS = (
+    "threshold",
+    "limit",
+    "cap",
+    "minimum",
+    "maximum",
+    "floor",
+    "ceiling",
+)
+_COMPARATIVE_THRESHOLD_PATTERN = (
+    rf"(?:the\s+)?"
+    rf"(?:\d+(?:\.\d+)?\s*(?:%|percent|percentage points?|pp\b)\s+)?"
+    rf"(?:{'|'.join(_COMPARATIVE_THRESHOLD_NOUNS)})\b"
+)
 _COMPARATIVE_PATTERN = re.compile(
     rf"(?<![a-z0-9])(?:{'|'.join(_COMPARATIVE_CUES)})(?![a-z0-9])"
     rf"[^.;?!]{{0,40}}?"
-    rf"(?<![a-z0-9])than\s+(?:{'|'.join(_COMPARATIVE_REFERENTS)})(?![a-z0-9])",
+    rf"(?<![a-z0-9])than\s+"
+    rf"(?!{_COMPARATIVE_THRESHOLD_PATTERN}\b)"
+    rf"(?:{'|'.join(_COMPARATIVE_REFERENTS)})(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_COMPARATIVE_DIRECT_PATTERN = re.compile(
+    rf"(?<![a-z0-9])(?:{'|'.join(_COMPARATIVE_CUES)})(?![a-z0-9])"
+    rf"[^.;?!]{{0,40}}?"
+    rf"(?<![a-z0-9])than\s+"
+    rf"(?!{_COMPARATIVE_THRESHOLD_PATTERN}\b)"
+    # Numeric years and an unintroduced noun/proper name are direct referents.
+    # Determiners excluded here are thresholds ("more than a year") or are
+    # already handled by _COMPARATIVE_PATTERN above.
+    rf"(?:(?:19|20)\d{{2}}(?![a-z0-9])|"
+    rf"(?!(?:a|an|any|the)\b)[a-z][a-z-]*(?![a-z0-9]))",
     re.IGNORECASE,
 )
 _CONSTRAINTS_MARKERS = (
@@ -225,8 +254,8 @@ _GEOGRAPHIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("California", ("california",)),
     ("Texas", ("texas",)),
     ("New York", ("new york",)),
-    ("European Union", ("european union", "e.u.")),
-    ("United Kingdom", ("united kingdom", "britain", "british")),
+    ("European Union", ("european union", "e.u.", "eu")),
+    ("United Kingdom", ("united kingdom", "britain", "british", "uk")),
     ("Germany", ("germany", "german")),
     ("France", ("france", "french")),
     ("China", ("china", "chinese")),
@@ -719,11 +748,23 @@ def _mentions(
     )
 
 
-# A single-word semantic marker at least this long may match its derived forms;
-# short markers are matched exactly, because a two- or three-letter marker is a
-# prefix of far too many unrelated words.
-_DERIVED_FORM_MIN_LENGTH = 6
-_DERIVED_FORM_SUFFIX = 4
+# Only forms with a known semantic relationship are added to a marker. The
+# previous marker + ``[a-z]{0,4}`` heuristic made ``standardized`` satisfy the
+# ``standard`` constraint marker. Regular plurals are generated below, while
+# the few non-plural forms used by the planner are explicit and bounded.
+_EXPLICIT_MARKER_VARIANTS: dict[str, tuple[str, ...]] = {
+    "permit": ("permitted", "permitting"),
+    "recent": ("recently",),
+}
+
+
+def _regular_plural(marker: str) -> str:
+    """Return the regular plural for one single-word marker."""
+    if marker.endswith(("s", "x", "z", "ch", "sh")):
+        return marker + "es"
+    if len(marker) > 1 and marker.endswith("y") and marker[-2] not in "aeiou":
+        return marker[:-1] + "ies"
+    return marker + "s"
 
 
 def _marker_pattern(
@@ -741,15 +782,13 @@ def _marker_pattern(
             alternatives = [
                 r"\s+".join(re.escape(word) for word in marker.split())
             ]
-        elif derived_forms and len(marker) >= _DERIVED_FORM_MIN_LENGTH:
-            alternatives = [
-                re.escape(marker) + rf"[a-z]{{0,{_DERIVED_FORM_SUFFIX}}}"
-            ]
-            if marker.endswith("y"):
-                # The stem changes too: "policy"/"policies".
-                alternatives.append(re.escape(marker[:-1]) + "ies")
         else:
-            alternatives = [re.escape(marker) + "(?:es|s)?"]
+            alternatives = [re.escape(marker), re.escape(_regular_plural(marker))]
+            if derived_forms:
+                alternatives.extend(
+                    re.escape(variant)
+                    for variant in _EXPLICIT_MARKER_VARIANTS.get(marker, ())
+                )
         pattern = re.compile(
             "(?<![a-z0-9])(?:" + "|".join(alternatives) + ")(?![a-z0-9])"
         )
@@ -765,8 +804,9 @@ def _is_comparative(normalized: str) -> bool:
     regulation cost more than the 2019 one?" compare; "waited more than 5
     years" and "tariffs of more than 10%" are thresholds about one quantity.
     """
-    return _mentions(normalized, _COMPARISON_MARKERS) or (
-        _COMPARATIVE_PATTERN.search(normalized) is not None
+    return _mentions(normalized, _COMPARISON_MARKERS) or any(
+        pattern.search(normalized) is not None
+        for pattern in (_COMPARATIVE_PATTERN, _COMPARATIVE_DIRECT_PATTERN)
     )
 
 
