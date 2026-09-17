@@ -846,6 +846,27 @@ def test_a_read_backed_scoring_request_shows_the_read_and_names_no_tool() -> Non
         assert f'"{field}"' in contract, field
 
 
+def test_the_scoring_contract_asks_for_a_verbatim_quote_per_date() -> None:
+    """A date is admitted only through its quote, so the request must ask.
+
+    The local check is containment: the model's value survives only when the
+    document's own words state it. The prompt therefore has to ask for the
+    words and for a null when the document states nothing.
+    """
+    body = _read_backed_scoring_messages()[1].content
+    contract = body[body.index("# Scoring contract") : body.index("# Reply format")]
+
+    assert "verbatim" in contract
+    assert '"quote"' in contract
+    assert "never infer a date" in contract
+    assert "Return null" in contract
+    # The reply shape shows the same thing, so the example cannot teach the
+    # model to send a bare date string.
+    reply = body[body.index("# Reply format") :]
+    assert '"publication_date":{"quote":' in reply
+    assert '"publication_date":null' in reply
+
+
 def test_the_claim_verification_pair_is_schema_valid_and_opposite() -> None:
     """Step 3: the populated and the empty verdict shapes, both valid."""
     labelled = {

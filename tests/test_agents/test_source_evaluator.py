@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from deep_research.agents.evidence import (
+    TemporalClaim,
     build_read_dossiers,
     build_read_record,
     compute_assessment_revision,
@@ -104,10 +105,10 @@ def _draft(
     source_role: str = "",
     transport_relation: str = "",
     self_interest: str = "",
-    publication_date: str = "",
-    data_period: str = "",
-    forecast_horizon: str = "",
-    effective_date: str = "",
+    publication_date: TemporalClaim | None = None,
+    data_period: TemporalClaim | None = None,
+    forecast_horizon: TemporalClaim | None = None,
+    effective_date: TemporalClaim | None = None,
     freshness_status: str = "",
     methods_score: float | None = None,
     issuer: str = "",
@@ -1073,6 +1074,11 @@ async def _assess(
     return sources, completer
 
 
+def _claim(value: str, quote: str) -> TemporalClaim:
+    """One model-proposed date with the document's own words for it."""
+    return TemporalClaim(value=value, quote=quote)
+
+
 def _lab_draft(**overrides: object) -> SourceScoreDraft:
     fields: dict[str, object] = {
         "url": LAB_REPORT_URL,
@@ -1432,9 +1438,11 @@ async def test_publication_date_observation_period_and_horizon_stay_separate() -
     """Section 2.3: three different dates, and none may stand for another."""
     read = _read(text=FORECAST_TEXT)
     draft = _lab_draft(
-        publication_date="2026-01-15",
-        data_period="2024",
-        forecast_horizon="2035",
+        publication_date=_claim(
+            "2026-01-15", "Published by Example Lab on 2026-01-15."
+        ),
+        data_period=_claim("2024", "Observed data cover 2024;"),
+        forecast_horizon=_claim("2035", "the projection runs to 2035."),
         freshness_status="projection",
     )
 
@@ -1471,8 +1479,12 @@ async def test_an_old_official_rule_that_still_applies_is_not_stale() -> None:
         source_role="original_report",
         transport_relation="original",
         issuer="Example Lab",
-        publication_date="1998-05-14",
-        effective_date="1998-07-01",
+        publication_date=_claim(
+            "1998-05-14", "Published by Example Lab on 1998-05-14."
+        ),
+        effective_date=_claim(
+            "1998-07-01", "The rule took effect on 1998-07-01"
+        ),
         freshness_status="effective",
     )
 
@@ -1503,8 +1515,10 @@ async def test_a_new_article_repeating_obsolete_data_is_not_current() -> None:
         source_role="derivative",
         transport_relation="original",
         issuer="Example Lab",
-        publication_date="2026-03-02",
-        data_period="2019",
+        publication_date=_claim(
+            "2026-03-02", "Published by Example Lab on 2026-03-02."
+        ),
+        data_period=_claim("2019", "The figures repeat the 2019 survey."),
         freshness_status="stale_data",
     )
 
@@ -1517,12 +1531,41 @@ async def test_a_new_article_repeating_obsolete_data_is_not_current() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_date_whose_quote_is_not_in_the_read_is_not_admitted() -> None:
+    """The scoring call proposes; only the read's own words admit a date.
+
+    The model returns a February 2026 date the document never states, with a
+    plausible-looking quote nobody wrote. It is not a date this source carries,
+    and no freshness judgement may rest on it — the status goes back to
+    unknown rather than describing a revision the model imagined.
+    """
+    read = _read()
+    draft = _lab_draft(
+        publication_date=_claim(
+            "2026-02-01", "Published by Example Lab on 2026-02-01."
+        ),
+        data_period=_claim("2019", "Observed data cover 2019."),
+        freshness_status="current",
+    )
+
+    sources, _ = await _assess([read], [_scores(draft)])
+
+    temporal = sources[0].temporal
+    assert temporal.publication_date is None
+    assert temporal.data_period is None
+    assert temporal.status == "unknown"
+    # The scoring judgement itself is still recorded: it is the missing
+    # evidence that decides the dates, not the model's opinion of them.
+    assert sources[0].evaluation_status == "scored"
+
+
+@pytest.mark.asyncio
 async def test_an_unfounded_freshness_status_is_not_recorded() -> None:
     """A status the read cannot support is recorded as unknown, not guessed."""
     read = _read()
     draft = _lab_draft(
         freshness_status="projection",
-        forecast_horizon="2035",
+        forecast_horizon=_claim("2035", "the projection runs to 2035."),
     )
 
     sources, _ = await _assess([read], [_scores(draft)])
@@ -1551,7 +1594,9 @@ async def test_a_current_authority_that_does_not_answer_the_target() -> None:
         source_role="original_report",
         transport_relation="original",
         issuer="Example Lab",
-        publication_date="2026-01-15",
+        publication_date=_claim(
+            "2026-01-15", "Published by Example Lab on 2026-01-15."
+        ),
         freshness_status="current",
         methods_score=0.95,
     )

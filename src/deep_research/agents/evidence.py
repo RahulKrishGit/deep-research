@@ -575,83 +575,44 @@ _DATE_ATOM = r"\d{4}(?:-\d{2}(?:-\d{2})?)?"
 # while every other embedded year does not. The positive lookbehind consumes
 # the two notation letters, so it can only match the letters named here.
 _YEAR_NOTATION = r"(?:FY|CY)"
-_PERIOD_BOUNDARY_BEFORE = r"(?<![\w\-+])"
-_PERIOD_BOUNDARY_AFTER = r"(?![\w\-+])"
-# A date atom the read really states, with real token boundaries rather than
-# digit-only ones: a year embedded in a longer alphanumeric word
-# ("ABC2026XYZ" — a product code) is not a date, and neither is a digit run
-# inside a dotted identifier ("10.1234/grid.2025"), where the dot is the
-# identifier's own punctuation. A dot that merely ends a sentence is not that,
-# so "reported in 2026." still dates the document; a dot counts as punctuation
-# of the identifier only when it follows a letter or a digit.
-_TOKEN_BOUNDARY_BEFORE = r"(?<!\d\.)(?<![A-Za-z]\.)(?<![\w\-+])"
-# A token ends at a word character, a sign, or a date continuation: "2026-12"
-# is one token, not the year 2026 followed by a number. A dot ends it only
-# when nothing non-blank follows, so the dot that ends the sentence does not
-# block the date while the fuller date still wins over its own prefix.
-_TOKEN_BOUNDARY_AFTER = r"(?![A-Za-z0-9_])(?![.\-+](?:[A-Za-z0-9_]|\d))"
+# A date is a token a document writes, not a fragment of a longer one:
+# "ABC2026XYZ" is a product code, "10.1234/grid.2025" is a registered
+# identifier, "/2024/report" is a path, and "Release 2026-12.5" is a version.
+# None of them dates anything, and the boundary is what says so — an identifier
+# can never be a verified verbatim quote, so no digit masking is needed. Only
+# the documented year notations may precede a date; nothing may precede it by
+# the punctuation an identifier joins its own parts with.
+_TOKEN_BEFORE = rf"(?:(?<={_YEAR_NOTATION})|(?<![\w\-+./:?=&#]))"
+# What may follow a date: a full stop that ends a sentence, a comma, a
+# semicolon, a closing bracket, a colon — and nothing that continues it. A word
+# character continues a longer word, an identifier's punctuation continues an
+# identifier, and a range separator continues a period: "2022" is not a token
+# of "2022-2024", because that document states a period and a period keeps both
+# its ends.
+_TOKEN_AFTER = (
+    r"(?![A-Za-z0-9_])"
+    r"(?![.\-+/:?=&#][A-Za-z0-9])"
+    r"(?!\s*(?:-|\u2013|\u2014|/|to|through|until|thru)\s*\d)"
+)
+# How a document joins the two ends of a period it states. The second end is a
+# date of its own: an abbreviated year is a spelling local code would have to
+# guess at, and guessing dates is what this contract removes.
+_RANGE_JOIN = r"\s*(?:-|\u2013|\u2014|/|to|through|until|thru)\s*"
+# One date, or one period, the document states. A period is two dates it
+# states, so both of its ends are read and neither is ever inferred.
 _DATE_TOKEN_PATTERN = re.compile(
-    rf"(?:(?<={_YEAR_NOTATION})|{_TOKEN_BOUNDARY_BEFORE})"
-    rf"{_DATE_ATOM}{_TOKEN_BOUNDARY_AFTER}",
+    rf"{_TOKEN_BEFORE}(?P<atom>{_DATE_ATOM})"
+    rf"(?:{_RANGE_JOIN}(?P<end>{_DATE_ATOM}))?"
+    rf"{_TOKEN_AFTER}",
     re.IGNORECASE,
 )
-# How a document joins the two ends of a period it states.
-_RANGE_SEPARATOR = (
-    r"\s*(?:-|\u2013|\u2014|/|(?:to|through|until|thru)(?![A-Za-z]))\s*"
-)
-# One period the document states: two ends joined by a separator. Both ends
-# need real token boundaries, so digits embedded in a longer alphanumeric word
-# ("ABC2022-2024XYZ"), a signed value ("-2022-2024"), and the first two ends
-# of a longer chain ("2022-2024-2026") are rejected rather than read as a
-# period the document never stated. A falsely accepted period is worse than a
-# dropped one: it stamps a freshness judgement against a value nobody wrote.
-_FULL_PERIOD_PATTERN = re.compile(
-    rf"{_PERIOD_BOUNDARY_BEFORE}({_DATE_ATOM}){_RANGE_SEPARATOR}"
-    rf"({_DATE_ATOM}){_PERIOD_BOUNDARY_AFTER}",
+# The two shapes a temporal value may have, and no others: one date, or two
+# dates joined by a separator. Anything else is not a date a document can
+# state, so it is dropped rather than interpreted.
+_VALUE_DATE_PATTERN = re.compile(rf"^(?P<atom>{_DATE_ATOM})$")
+_VALUE_PERIOD_PATTERN = re.compile(
+    rf"^(?P<start>{_DATE_ATOM}){_RANGE_JOIN}(?P<end>{_DATE_ATOM})$",
     re.IGNORECASE,
-)
-# The same period with its second end abbreviated to a two-digit year. The
-# first end is a bare year and the tail may not continue into another date
-# component, so a full date ("2026-12-31") is never misread as the period
-# "2026" through "12".
-_VERBAL_RANGE_SEPARATOR = r"\s*(?:to|through|until|thru)(?![A-Za-z])\s*"
-_PUNCTUATION_RANGE_SEPARATOR = r"\s*(?:-|\u2013|\u2014|/)\s*"
-# After a hyphen or slash a two-digit end could equally be a month, and
-# "2022/12" is a year and a month rather than the period 2022 through 2012.
-# It is left unread rather than expanded into a year nobody wrote.
-_NOT_A_MONTH = r"(?!0[1-9]|1[0-2])\d{2}"
-# A period whose second end is abbreviated, carrying the separator that
-# introduced it: the separator decides what the abbreviation may expand to.
-_ABBREVIATED_PERIOD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "verbal",
-        re.compile(
-            rf"{_PERIOD_BOUNDARY_BEFORE}(\d{{4}}){_VERBAL_RANGE_SEPARATOR}"
-            rf"(\d{{2}}){_PERIOD_BOUNDARY_AFTER}",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "punctuation",
-        re.compile(
-            rf"{_PERIOD_BOUNDARY_BEFORE}(\d{{4}}){_PUNCTUATION_RANGE_SEPARATOR}"
-            rf"({_NOT_A_MONTH}){_PERIOD_BOUNDARY_AFTER}",
-            re.IGNORECASE,
-        ),
-    ),
-)
-# A year and a month, written the way a hyphen writes it. The trailing
-# component of a *slash* form could equally have been an abbreviated year —
-# 2026/12 reads as a year and a month before it reads as the period 2026
-# through 2012, and nothing in the digits says which — so that ambiguous form
-# is dropped rather than expanded into a year nobody wrote. The hyphen form is
-# unambiguous: it is a year and a month, and whether the read states it is a
-# question for the read's own tokens.
-_YEAR_AND_MONTH_PATTERN = re.compile(
-    r"^\d{4}\s*[-\u2013\u2014]\s*(?:0[1-9]|1[0-2])(?!\d)"
-)
-_AMBIGUOUS_PERIOD_PATTERN = re.compile(
-    r"^\d{4}\s*/\s*(?:0[1-9]|1[0-2])(?!\d)"
 )
 
 # How much of one read's own text a dossier shows the model.
@@ -699,31 +660,11 @@ def read_dated_tokens(read: ReadRecord) -> list[str]:
     assessment revision and the check that stops a model reporting a
     publication year the document never states. A year has to be something the
     read states: the digits inside a product code ("ABC2026XYZ") date nothing
-    and neither does the numeric part of a DOI, while the allowlisted year
-    notations ("FY2026", "CY2026") are how a document writes its own year.
+    and neither does the numeric part of a DOI or a URL path, while the
+    allowlisted year notations ("FY2026", "CY2026") are how a document writes
+    its own year.
     """
     return sorted(_read_date_tokens(read))
-
-
-# Punctuation is what makes an identifier an identifier, and "10.1234" names a
-# work rather than an event, so an identifier's digits are never dates.
-# Masking them keeps the numeric part of "doi:10.1234/grid.2025" from reading
-# as the year 1234. The mask keeps the text's length, so every other offset
-# stays where it was.
-_DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/\S+")
-_PATH_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
-
-
-def _read_date_text(read: ReadRecord) -> str:
-    """The read's dating haystack with its identifiers' digits masked out."""
-    return _PATH_PATTERN.sub(
-        _mask_digits, _DOI_PATTERN.sub(_mask_digits, _dated_text(read))
-    )
-
-
-def _mask_digits(match: re.Match[str]) -> str:
-    """One identifier, with its digits removed and its shape kept."""
-    return re.sub(r"\d", " ", match.group(0))
 
 
 def _is_date_atom(atom: str) -> bool:
@@ -746,17 +687,16 @@ def _read_date_tokens(read: ReadRecord) -> set[str]:
 
     "2026-01-15" evidences the year 2026 as well as that day, while a document
     that only says "2026" evidences no month and no day at all. The boundaries
-    are the same real ones the rest of the dating uses, so a year inside a
-    longer alphanumeric word dates nothing. A period the read states is two
-    dates it states, so both its ends evidence their own coarser forms too.
+    are the same real ones every date in this module is read with, so a year
+    inside a longer alphanumeric word, the digits of an identifier, and a URL
+    path all date nothing. A period the read states is two dates it states, so
+    both of its ends evidence their own coarser forms too.
     """
     tokens: set[str] = set()
-    for match in _DATE_TOKEN_PATTERN.finditer(_read_date_text(read)):
-        if _is_date_atom(match.group(0)):
-            tokens |= _token_forms(match.group(0))
-    for start, end in _read_periods(read):
-        tokens |= _token_forms(start)
-        tokens |= _token_forms(end)
+    for match in _DATE_TOKEN_PATTERN.finditer(_dated_text(read)):
+        for atom in (match.group("atom"), match.group("end")):
+            if atom is not None and _is_date_atom(atom):
+                tokens |= _token_forms(atom)
     return tokens
 
 
@@ -1109,27 +1049,43 @@ def validated_self_interest(claimed: object, *, role: str) -> str:
     return level
 
 
+class TemporalClaim(ContractModel):
+    """One temporal value a model proposes, with the quote it read it from.
+
+    Both halves are needed for the claim to mean anything: ``value`` is the
+    model's own normalisation of a date and ``quote`` is the document's words.
+    Either one empty is a field the document does not state, which is recorded
+    as no value at all rather than as a date the model believed.
+    """
+
+    value: str = ""
+    quote: str = ""
+
+
 def validated_temporal(
     read: ReadRecord | None,
     *,
-    publication_date: object = "",
-    data_period: object = "",
-    forecast_horizon: object = "",
-    effective_date: object = "",
+    publication_date: object = None,
+    data_period: object = None,
+    forecast_horizon: object = None,
+    effective_date: object = None,
     status: object = "",
 ) -> SourceTemporal:
-    """Keep the dates a read evidences apart, and name what freshness rests on.
+    """Keep the dates a quoted read evidences apart, and what freshness rests on.
 
-    Each date is recorded only when the read carries its year, and a claimed
-    status is kept only when the date that makes it checkable survived. With
-    no read at all — a source nothing in this run retrieved — no date is
-    recorded, because there is nothing to check one against.
+    Each field is admitted the way an evidence excerpt is: the model proposes a
+    value *and* the document's own phrase for it, and the read admits the claim
+    only when that phrase is in the document verbatim and states exactly the
+    value it was attached to. A field whose quote does not verify is not
+    admitted at all — no value, and no freshness judgement resting on it —
+    because a date the model inferred is not a date the document wrote. With no
+    read there is nothing to verify against, so nothing is recorded.
     """
     dates = {
-        "publication_date": _dated_anchor(read, publication_date),
-        "data_period": _dated_anchor(read, data_period),
-        "forecast_horizon": _dated_anchor(read, forecast_horizon),
-        "effective_date": _dated_anchor(read, effective_date),
+        "publication_date": _quoted_date(read, publication_date),
+        "data_period": _quoted_date(read, data_period),
+        "forecast_horizon": _quoted_date(read, forecast_horizon),
+        "effective_date": _quoted_date(read, effective_date),
     }
     claimed = _vocabulary(status, FRESHNESS_STATUSES, default="unknown")
     required = _FRESHNESS_DATES.get(claimed)
@@ -1138,174 +1094,108 @@ def validated_temporal(
     return SourceTemporal(**dates, status=claimed)  # type: ignore[arg-type]
 
 
-def _dated_anchor(read: ReadRecord | None, value: object) -> str | None:
-    """The temporal value the read actually evidences, at its own precision.
+def _quoted_date(read: ReadRecord | None, claimed: object) -> str | None:
+    """The temporal value a verbatim quote in the read states, or ``None``.
 
-    A date is never more precise than the document: a read saying "2026"
-    cannot be recorded as "2026-12-31", so a single date keeps only the
-    leading components the read states. A period is never less precise either
-    — "2022-2024" is a period, not a date to be truncated to its first year,
-    and neither is "2022 to 24" — so a period is kept whole, normalised to one
-    spelling, or dropped entirely when the read does not state it as a period.
-
-    A period is found *inside* the proposed value, on real token boundaries,
-    not only when the value is nothing but a period: a label ("Data period:"),
-    a prefix, surrounding punctuation and a trailing clause are all normal
-    ways a value is written, and none of them may cost the period its second
-    end. A value that names a period more than once is not read as the first
-    of them, and a period form whose end cannot be expanded is dropped rather
-    than collapsed to the year that introduced it.
+    Containment is exact — the quote has to be the document's own words, not a
+    paraphrase of them — and consistency is local to that quote: the value is
+    admitted only when the quote states it. Nothing here scans the document for
+    a date the model was expected to find, which is where a fabricated year
+    came from.
     """
-    text = " ".join(str(value or "").split())
-    if not text or read is None:
+    claim = _temporal_claim(claimed)
+    if read is None or claim is None:
         return None
-    if _AMBIGUOUS_PERIOD_PATTERN.match(text):
-        # A slash writes a year and a month before it writes a rolled-over
-        # year, and nothing in the digits says which was meant.
+    value = canonical_read_text(claim.value)
+    quote = canonical_read_text(claim.quote)
+    if not value or not quote:
         return None
-    stated, shaped = _stated_period(read, text)
-    if stated is not None:
-        return f"{stated[0]}-{stated[1]}"
-    if shaped:
-        # The value writes a period and it is not one the read states — an end
-        # that expands to no real year ("9999 to 00"), an ambiguous form, or a
-        # period the read never wrote. Report nothing rather than its first
-        # year.
+    if not excerpt_matches(_document_text(read), quote):
         return None
-    parts = [match.group(0) for match in _DATE_TOKEN_PATTERN.finditer(text)]
-    if not all(_is_date_atom(part) for part in parts):
-        # A number shaped like a date and not one: "2026-13" names the month 13
-        # and the read states nothing of the sort, so nothing is read from it.
-        return None
-    if len(parts) > 1:
-        # More ends than a period has: keep nothing rather than invent a
-        # period spanning a chain of them.
-        return None
-    if parts:
-        tokens = _read_date_tokens(read)
-        candidate = parts[0]
-        while candidate:
-            if candidate in tokens:
-                return candidate
-            candidate = (
-                candidate.rsplit("-", 1)[0] if "-" in candidate else ""
-            )
-        if _YEAR_AND_MONTH_PATTERN.match(text):
-            # A year and a month the read never states. Its year is not a
-            # coarser form the read evidences, so nothing is read from it.
-            return None
+    return _stated_value(quote, value)
+
+
+def _temporal_claim(claimed: object) -> TemporalClaim | None:
+    """``claimed`` as a quoted claim, or ``None`` when it is not one.
+
+    A bare date with no quote behind it is what this contract replaced: it is a
+    claim nothing can verify, so it is dropped rather than trusted.
+    """
+    if claimed is None or isinstance(claimed, TemporalClaim):
+        return claimed
+    if isinstance(claimed, Mapping):
+        return TemporalClaim.model_validate(dict(claimed))
     return None
 
 
-def _stated_period(
-    read: ReadRecord,
-    text: str,
-) -> tuple[tuple[str, str] | None, bool]:
-    """The period a value states, and whether it states a period shape at all.
+def _stated_value(quote: str, value: str) -> str | None:
+    """The value a verified quote states, normalised, or ``None``.
 
-    The first item is the period the read also states; the second is whether
-    the value has the shape of a period even when that period was rejected.
-    The distinction is what stops a rejected period from collapsing into the
-    year that introduced it.
+    The model reads the date; this only checks that the document says what the
+    model says it says. One verification serves the whole contract: the quote
+    must state the value's own date — or, for a period, both of its ends in
+    order — as its own token rather than as a fragment of an identifier that
+    happens to contain the same digits.
     """
-    periods, shaped = _period_spans(text)
-    if len(periods) != 1:
-        return None, shaped
-    period = periods.pop()
-    if period not in _read_periods(read):
-        return None, True
-    return period, True
-
-
-def _period_spans(
-    text: str,
-) -> tuple[set[tuple[str, str]], bool]:
-    """Every period ``text`` writes, and whether it writes a period shape.
-
-    The period may sit anywhere in the value: a label ("Data period:"), a
-    prefix, surrounding punctuation and a trailing clause are all normal ways
-    a value is written. A value naming two periods is a value about two
-    periods, so a caller gets both and decides rather than being handed the
-    first.
-    """
-    spans: set[tuple[str, str]] = set()
-    shaped = False
-    for match in _FULL_PERIOD_PATTERN.finditer(text):
-        shaped = True
-        start, end = match.group(1), match.group(2)
-        if _is_date_atom(start) and _is_date_atom(end):
-            spans.add((start, end))
-    for separator, pattern in _ABBREVIATED_PERIOD_PATTERNS:
-        for match in pattern.finditer(text):
-            shaped = True
-            end = _expand_period_end(
-                match.group(1), match.group(2), separator=separator
-            )
-            if end is not None:
-                spans.add((match.group(1), end))
-    return spans, shaped
-
-
-def _read_periods(read: ReadRecord) -> set[tuple[str, str]]:
-    """Every period the read states, as (start, expanded end) pairs.
-
-    A period whose abbreviated end cannot be expanded to a plausible year is
-    not a period the read states, so it is not recorded here either: the same
-    rule that drops it from a proposal drops it from the haystack.
-    """
-    periods, _ = _period_spans(_dated_text(read))
-    return periods
-
-
-# The plausible span of a period: a year that stands at or after the year that
-# began it (a period never runs backwards) and no more than a century later.
-# An end outside it is a fabricated year, not a reading, so the period is
-# rejected rather than recorded against a year nobody wrote.
-_PERIOD_END_WINDOW = 100
-_PERIOD_END_LIMIT = 9999
-_VERBAL_SEPARATOR = "verbal"
-
-
-def _expand_period_end(start: str, end: str, *, separator: str) -> str | None:
-    """The second end of a period, with an abbreviated year expanded.
-
-    "2022 to 24" is 2024: a period cannot end before it starts, so a two-digit
-    year belongs to the start's century — or the next one when that century
-    would run backwards, as in "1998 to 02". An end that is already a full
-    date is returned as the document wrote it.
-
-    An expansion that would produce no real year — "9999 to 00" has no year
-    after 9999 — or an implausible one — "2026-13" is not 2113, and the
-    hyphenated form reads as a month the document never spelled — is ``None``:
-    the period is rejected rather than guessed at.
-    """
-    if len(end) != 2:
-        return end if end.isdigit() else None
-    return _expanded_year(int(start[:4]), int(end), separator=separator)
-
-
-def _expanded_year(
-    start_year: int,
-    end: int,
-    *,
-    separator: str,
-) -> str | None:
-    """The four-digit year a two-digit end expands to, or ``None``."""
-    same_century = (start_year // 100) * 100 + end
-    candidate = same_century
-    if candidate < start_year:
-        if separator != _VERBAL_SEPARATOR:
-            # A hyphen or slash writes a year and a month before it writes a
-            # rolled-over year, and "2026-13" spells no month at all. The
-            # abbreviation is not read rather than rolled into the next
-            # century, which would invent 2113.
+    single = _VALUE_DATE_PATTERN.match(value)
+    if single is not None:
+        atom = single.group("atom")
+        if not _is_date_atom(atom):
             return None
-        candidate += 100
-    if not start_year <= candidate <= _PERIOD_END_LIMIT:
+        return atom if _quote_states(quote, (atom,)) else None
+    period = _VALUE_PERIOD_PATTERN.match(value)
+    if period is None:
         return None
-    if candidate - start_year > _PERIOD_END_WINDOW:
+    start, end = period.group("start"), period.group("end")
+    if not (_is_date_atom(start) and _is_date_atom(end)) or end < start:
+        # A period never runs backwards, and a thirteenth month is not an end
+        # a calendar has, so neither is a period the document stated.
         return None
-    return str(candidate)
+    if not _quote_states(quote, (start, end)):
+        return None
+    return f"{start}-{end}"
+
+
+def _quote_states(quote: str, atoms: tuple[str, ...]) -> bool:
+    """True when ``quote`` states exactly this date, or exactly this period.
+
+    One date is admitted from a date token the quote writes at the same
+    precision or a finer one: the year 2026 is what "2026-01-15" states about a
+    date nobody wrote a month or a day for. A period is admitted only from a
+    period the quote writes with those two ends, so two years a document never
+    joined are not a period, and a stated period is never recorded as one of
+    its ends.
+    """
+    for stated in _stated_dates(quote):
+        if len(atoms) == 1:
+            (atom,) = atoms
+            if len(stated) == 1 and (
+                stated[0] == atom or stated[0].startswith(f"{atom}-")
+            ):
+                return True
+        elif stated == atoms:
+            return True
+    return False
+
+
+def _stated_dates(quote: str) -> list[tuple[str, ...]]:
+    """Every date and period the quote states, each as its own token.
+
+    A number shaped like a date and not one — "2026-13" — is not a date the
+    quote states, and neither is a fragment of an identifier: the digits of
+    "doi:10.1234/grid.2025" are the identifier's own numbers, and the boundary
+    is what says so.
+    """
+    stated: list[tuple[str, ...]] = []
+    for match in _DATE_TOKEN_PATTERN.finditer(quote):
+        atoms = tuple(
+            atom
+            for atom in (match.group("atom"), match.group("end"))
+            if atom is not None
+        )
+        if all(_is_date_atom(atom) for atom in atoms):
+            stated.append(atoms)
+    return stated
 
 
 class ReadDossier(ContractModel):

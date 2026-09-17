@@ -31,6 +31,7 @@ from deep_research.agents.errors import (
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence import (
     ReadDossier,
+    TemporalClaim,
     build_read_dossiers,
     read_identity,
     read_serving_host,
@@ -124,7 +125,10 @@ class SourceScoreDraft(ContractModel):
     omitted field is recorded as ``unknown`` rather than defaulted to a
     judgement the model never made. The metadata anchors (``issuer``,
     ``doi``, ``year``, ``report_number``) are proposals: each is accepted only
-    when the read the model was shown actually evidences it.
+    when the read the model was shown actually evidences it. The four temporal
+    fields are quoted claims — a value *and* the document's own words for it —
+    and a field the document does not state is ``null`` rather than a date the
+    model inferred.
     """
 
     url: str
@@ -136,10 +140,10 @@ class SourceScoreDraft(ContractModel):
     source_role: str = ""
     transport_relation: str = ""
     self_interest: str = ""
-    publication_date: str = ""
-    data_period: str = ""
-    forecast_horizon: str = ""
-    effective_date: str = ""
+    publication_date: TemporalClaim | None = None
+    data_period: TemporalClaim | None = None
+    forecast_horizon: TemporalClaim | None = None
+    effective_date: TemporalClaim | None = None
     freshness_status: str = ""
     issuer: str = ""
     doi: str = ""
@@ -157,8 +161,8 @@ class SourceScoresDraft(ContractModel):
 # weak and strong cases are the opposite ends of the same 0.0-1.0 direction,
 # and each is internally consistent with its own synthetic dossier. Both are
 # complete, so the model sees every field the record needs — including that a
-# document which states nothing gets ``unknown`` and empty dates rather than
-# an invented publisher or date.
+# document which states nothing gets ``unknown``, empty anchors, and ``null``
+# rather than an invented publisher or date.
 _SOURCE_SCORE_REPLY_EXAMPLES = (
     (
         "Weak example input: an anonymous, undated post at "
@@ -167,8 +171,8 @@ _SOURCE_SCORE_REPLY_EXAMPLES = (
         '"authority_score":0.1,"recency_score":0.5,"relevance_score":0.2,'
         '"methods_score":null,"source_role":"unknown",'
         '"transport_relation":"unknown","self_interest":"unknown",'
-        '"publication_date":"","data_period":"","forecast_horizon":"",'
-        '"effective_date":"","freshness_status":"unknown","issuer":"",'
+        '"publication_date":null,"data_period":null,"forecast_horizon":null,'
+        '"effective_date":null,"freshness_status":"unknown","issuer":"",'
         '"doi":"","year":"","report_number":"",'
         '"rationale":"The publisher is unidentified, there is no dating '
         'signal, and the excerpt only mentions the topic."}]}',
@@ -180,8 +184,10 @@ _SOURCE_SCORE_REPLY_EXAMPLES = (
         '"authority_score":0.95,"recency_score":0.9,"relevance_score":0.95,'
         '"methods_score":0.9,"source_role":"original_report",'
         '"transport_relation":"original","self_interest":"none",'
-        '"publication_date":"2026-01-15","data_period":"2024",'
-        '"forecast_horizon":"","effective_date":"","freshness_status":'
+        '"publication_date":{"value":"2026-01-15","quote":"Published by '
+        'Example Standards Body on 2026-01-15."},'
+        '"data_period":{"value":"2024","quote":"Observed data cover 2024."},'
+        '"forecast_horizon":null,"effective_date":null,"freshness_status":'
         '"current","issuer":"Example Standards Body",'
         '"doi":"10.1234/standard.2026","year":"2026","report_number":"",'
         '"rationale":"A current standards body publication directly answers '
