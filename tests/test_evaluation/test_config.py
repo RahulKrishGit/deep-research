@@ -391,8 +391,10 @@ CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
 # comparison referents, the threshold guard, and bounded marker variants.
 # Fix round 4 moves planner to ``b3bfe9127cae`` for the bounded direct
 # proper-name referent rule that keeps spelled-out quantity thresholds factual.
+# Fix round 5 moves planner to ``027ca133b2da`` for the case-insensitive
+# quantity-structure guard and direct referent matching.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "b3bfe9127cae",
+    "planner": "027ca133b2da",
     "researcher": "711b4d414515",
     "source_evaluator": "c50282e1dd42",
     "fact_checker": "675fa5aea904",

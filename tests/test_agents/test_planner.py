@@ -1757,6 +1757,48 @@ def test_spelled_out_quantity_thresholds_keep_answer_form_and_support_policy(
     ) == (expected_kind, expected_policy)
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_kind", "expected_policy"),
+    [
+        (
+            "How Many Projects Waited More Than Five Years?",
+            "factual",
+            "independent_pair",
+        ),
+        (
+            "What Are the Requirements for Tariffs Greater Than Ten Percent?",
+            "constraints",
+            "primary_attribution",
+        ),
+    ],
+)
+def test_title_case_quantity_thresholds_keep_answer_form_and_support_policy(
+    question: str, expected_kind: str, expected_policy: str
+) -> None:
+    """Case must not turn title-cased quantities into comparison referents."""
+    assert (
+        answer_kind_for(question, clock_year=2026),
+        support_policy_for(question=question),
+    ) == (expected_kind, expected_policy)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Is permitting slower than texas?",
+        "Is permitting slower than EU?",
+        "Is interconnection slower than PJM?",
+        "Did the project cost more than competitors?",
+    ],
+)
+def test_case_insensitive_direct_referents_select_comparison_and_pair_policy(
+    question: str,
+) -> None:
+    """Direct names, acronyms, and common-noun referents are comparisons."""
+    assert answer_kind_for(question, clock_year=2026) == "comparison"
+    assert support_policy_for(question=question) == "independent_pair"
+
+
 def test_a_threshold_rule_keeps_its_primary_attribution_policy() -> None:
     """"Tariffs of more than 10%" is an official threshold, not a comparison."""
     assert (

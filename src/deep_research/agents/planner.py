@@ -182,11 +182,110 @@ _COMPARATIVE_THRESHOLD_PATTERN = (
     rf"(?:\d+(?:\.\d+)?\s*(?:%|percent|percentage points?|pp\b)\s+)?"
     rf"(?:{'|'.join(_COMPARATIVE_THRESHOLD_NOUNS)})\b"
 )
+_COMPARATIVE_NUMERIC_QUANTITY = (
+    # Four-digit years stay available to the direct-year comparison path. A
+    # non-year number followed by a token is the bounded shape of a quantity
+    # threshold ("5 years", "10 percent", or "5 MW").
+    r"(?!(?:19|20)\d{2}(?![0-9]))\d+(?:,\d{3})*(?:\.\d+)?"
+)
+_COMPARATIVE_CARDINAL_WORDS = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+    "hundred",
+    "thousand",
+    "million",
+    "billion",
+    "dozen",
+)
+_COMPARATIVE_FRACTION_WORDS = (
+    "half",
+    "halves",
+    "quarter",
+    "quarters",
+    "third",
+    "thirds",
+    "fourth",
+    "fourths",
+    "fifth",
+    "fifths",
+    "sixth",
+    "sixths",
+    "seventh",
+    "sevenths",
+    "eighth",
+    "eighths",
+    "ninth",
+    "ninths",
+    "tenth",
+    "tenths",
+)
+_COMPARATIVE_QUANTITY_WORDS = (
+    "a",
+    "an",
+    "any",
+    "several",
+    "many",
+    "few",
+    "multiple",
+    "single",
+    "double",
+    "triple",
+    "twice",
+    "thrice",
+    *_COMPARATIVE_CARDINAL_WORDS,
+    *_COMPARATIVE_FRACTION_WORDS,
+)
+_COMPARATIVE_QUANTITY_WORD = (
+    rf"(?:{'|'.join(_COMPARATIVE_QUANTITY_WORDS)}"
+    rf"|(?:{'|'.join(_COMPARATIVE_CARDINAL_WORDS)})-"
+    rf"(?:{'|'.join(_COMPARATIVE_FRACTION_WORDS)}))"
+)
+_COMPARATIVE_QUANTITY_SUFFIX = r"(?:\s+(?:the\s+)?[a-z][a-z-]*)"
+_COMPARATIVE_THRESHOLD_QUANTITY_PATTERN = (
+    rf"(?:"
+    rf"{_COMPARATIVE_NUMERIC_QUANTITY}"
+    rf"(?:\s*(?:%|percent(?:age)?|percentage points?|pp\b)"
+    rf"|{_COMPARATIVE_QUANTITY_SUFFIX})"
+    rf"|{_COMPARATIVE_QUANTITY_WORD}"
+    rf"(?:{_COMPARATIVE_QUANTITY_SUFFIX})?"
+    # Keep "than the 2019 one" on the direct-year path: a leading determiner
+    # only denotes a threshold when it is followed by a quantity and unit.
+    rf"|the\s+(?:{_COMPARATIVE_NUMERIC_QUANTITY}|"
+    rf"{_COMPARATIVE_QUANTITY_WORD}){_COMPARATIVE_QUANTITY_SUFFIX}"
+    rf")(?![a-z0-9])"
+)
 _COMPARATIVE_PATTERN = re.compile(
     rf"(?<![a-z0-9])(?:{'|'.join(_COMPARATIVE_CUES)})(?![a-z0-9])"
     rf"[^.;?!]{{0,40}}?"
     rf"(?<![a-z0-9])than\s+"
     rf"(?!{_COMPARATIVE_THRESHOLD_PATTERN}\b)"
+    rf"(?!{_COMPARATIVE_THRESHOLD_QUANTITY_PATTERN})"
     rf"(?:{'|'.join(_COMPARATIVE_REFERENTS)})(?![a-z0-9])",
     re.IGNORECASE,
 )
@@ -195,20 +294,22 @@ _COMPARATIVE_DIRECT_PATTERN = re.compile(
     rf"[^.;?!]{{0,40}}?"
     rf"(?<![a-z0-9])than\s+"
     rf"(?!{_COMPARATIVE_THRESHOLD_PATTERN}\b)"
-    # A numeric year is a direct referent. Word referents use the
-    # case-preserved proper-name pattern below; accepting any alphabetic token
-    # here would turn spelled-out quantities ("one", "five", "ten", "half")
-    # into comparisons.
+    # A numeric year is a direct referent; other quantities are handled by the
+    # case-insensitive direct-referent path below.
     rf"(?:19|20)\d{{2}}(?![a-z0-9])",
     re.IGNORECASE,
 )
-_COMPARATIVE_DIRECT_NAME_PATTERN = re.compile(
+_COMPARATIVE_DIRECT_REFERENT_PATTERN = re.compile(
     rf"(?i:(?<![a-z0-9])(?:{'|'.join(_COMPARATIVE_CUES)})(?![a-z0-9])"
     rf"[^.;?!]{{0,40}}?(?<![a-z0-9])than)\s+"
-    # A capitalized token is the smallest bounded shape for an unintroduced
-    # proper-name referent ("than Texas"), while lowercase quantity words do
-    # not qualify. The trailing boundary prevents partial acronym matches.
-    rf"[A-Z][a-z-]*(?![A-Za-z0-9])"
+    # A quantity plus a unit/measure is a threshold, regardless of case. Any
+    # other single token is a direct referent, including lowercase names,
+    # acronyms, and common nouns. The trailing boundary prevents a partial
+    # token from being treated as a referent.
+    rf"(?!{_COMPARATIVE_THRESHOLD_PATTERN}\b)"
+    rf"(?!{_COMPARATIVE_THRESHOLD_QUANTITY_PATTERN})"
+    rf"(?!(?:a|an|any)\b)"
+    rf"[a-z](?:[a-z-]*[a-z])?(?![a-z0-9-])"
 )
 _CONSTRAINTS_MARKERS = (
     "constraint",
@@ -817,12 +918,12 @@ def _is_comparative(question: str) -> bool:
         _mentions(normalized, _COMPARISON_MARKERS)
         or any(
             pattern.search(normalized) is not None
-            for pattern in (_COMPARATIVE_PATTERN, _COMPARATIVE_DIRECT_PATTERN)
+            for pattern in (
+                _COMPARATIVE_PATTERN,
+                _COMPARATIVE_DIRECT_PATTERN,
+                _COMPARATIVE_DIRECT_REFERENT_PATTERN,
+            )
         )
-        or _COMPARATIVE_DIRECT_NAME_PATTERN.search(
-            collapse_whitespace(question)
-        )
-        is not None
     )
 
 
