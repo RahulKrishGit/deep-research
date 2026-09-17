@@ -163,7 +163,11 @@ await sleep(700);
 await shot('01-idle', 'idle');
 
 await evaluate(`window.drConsole.submit(${JSON.stringify(QUESTION)})`);
-if (await waitForStage('submitted')) { await sleep(450); await shot('02-submitted', 'submitted'); }
+/* The submitted stage is a 2170ms beat, and the model/effort pills only finish
+   entering near the end of it. Sampling early catches them mid-entrance and
+   yields a capture that looks like the read-back is missing when it is not.
+   Land near the end of the beat instead. */
+if (await waitForStage('submitted')) { await sleep(1900); await shot('02-submitted', 'submitted'); }
 else console.log('FAIL  02-submitted   never reached "submitted" (beat is ~2.2s; it may have passed)');
 
 if (await waitForStage('running')) { await sleep(1800); await shot('03-running', 'running'); }
