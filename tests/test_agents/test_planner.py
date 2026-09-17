@@ -28,11 +28,11 @@ from deep_research.agents.planner import (
     derive_answer_contract,
     extend_plan,
     format_plan_problems,
+    frozen_contract_for,
     geographic_scope_for,
     has_startup_guidance,
     invented_tolerances,
     inventory_target_ids,
-    merge_frozen_contract,
     plan_messages,
     plan_review_messages,
     stale_year_anchors,
@@ -1690,6 +1690,150 @@ def test_a_support_policy_is_assigned_before_any_verdict_exists() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        (
+            "How many projects waited more than 5 years?",
+            "factual",
+        ),
+        (
+            "What are the requirements for projects more than 5 MW?",
+            "constraints",
+        ),
+        (
+            "What share of the queue withdrew less than 15%?",
+            "factual",
+        ),
+    ],
+)
+def test_a_threshold_question_is_not_a_comparison(
+    question: str, expected: str
+) -> None:
+    """A bare inequality is a threshold, not a comparison.
+
+    The comparison answer form ("the same measured dimension for every option
+    compared, on one shared basis and unit") is stamped into every target's
+    binding dimensions, and Section 2.3 judges a target answered only when
+    those dimensions are satisfied. Stamping it onto "how many projects waited
+    more than 5 years?" makes an ordinary quantity question unsatisfiable, so
+    an inequality counts as a comparison only when it names a referent.
+    """
+    assert answer_kind_for(question, clock_year=2026) == expected
+
+
+def test_a_threshold_rule_keeps_its_primary_attribution_policy() -> None:
+    """"Tariffs of more than 10%" is an official threshold, not a comparison."""
+    assert (
+        support_policy_for(
+            question="What are the rules for tariffs of more than 10%?"
+        )
+        == "primary_attribution"
+    )
+    # A comparison that *does* name a referent still outranks attribution.
+    assert (
+        support_policy_for(
+            question="Is permitting slower in California than in Texas?"
+        )
+        == "independent_pair"
+    )
+    assert (
+        support_policy_for(
+            question="Did the 2023 regulation cost more than the 2019 one?"
+        )
+        == "independent_pair"
+    )
+
+
+def test_a_derived_marker_form_still_classifies() -> None:
+    """Derived forms of a semantic marker match; jurisdiction names do not.
+
+    "permit" must still reach "permitting" and "recent" must still reach
+    "recently", while "indian" must never reach "Indiana" — one switch decides
+    both.
+    """
+    assert (
+        support_policy_for(
+            question=(
+                "What are the effective dates of the 2023 and 2024 "
+                "interconnection rules?"
+            )
+        )
+        == "primary_attribution"
+    )
+    assert (
+        support_policy_for(question="What do the FERC fee schedules require?")
+        == "primary_attribution"
+    )
+    assert (
+        support_policy_for(
+            question="What are the permitting requirements in California?"
+        )
+        == "primary_attribution"
+    )
+    assert stale_year_anchors(
+        "the recently revised 2024 figures", as_of_year=2026
+    ) == [2024]
+    assert (
+        answer_kind_for(
+            "What are the recently revised 2024 figures?", clock_year=2026
+        )
+        == "factual"
+    )
+
+
+def test_a_method_based_tolerance_is_not_invented() -> None:
+    """A plural method phrase is still a method."""
+    assert invented_tolerances(
+        "The two figures agree within 5 percentage points; the error bars "
+        "are reported.",
+        question="How much capacity was withheld?",
+    ) == []
+
+
+def test_a_standalone_uppercase_abbreviation_names_the_country() -> None:
+    """"US federal permitting rules" is the country; "tell us" is a pronoun."""
+    assert geographic_scope_for("What are US federal permitting rules?")[0] == (
+        "United States"
+    )
+    assert geographic_scope_for("What are the US federal rules?")[0] == (
+        "United States"
+    )
+    assert geographic_scope_for("Can you tell us about the rules?")[0] == (
+        "unspecified"
+    )
+    assert geographic_scope_for("What are the uses of storage?")[0] == (
+        "unspecified"
+    )
+
+
+def test_a_question_stated_tolerance_must_match_the_unit_too() -> None:
+    """A relative band does not satisfy an absolute requirement.
+
+    "Within 3%" and "within 3 percentage points" are different tolerances, so
+    a criterion may not satisfy the question's precision by restating its
+    number in another unit.
+    """
+    assert invented_tolerances(
+        "Both agree within 3%.",
+        question="Do the estimates agree within 3 percentage points?",
+    ) == ["3%"]
+    assert invented_tolerances(
+        "Both agree within 10%.",
+        question="Do the estimates agree within 10 percentage points?",
+    ) == ["10%"]
+    # The same number in the same unit is the question's own precision.
+    assert invented_tolerances(
+        "Both agree within 3 percentage points.",
+        question="Do the estimates agree within 3 percentage points?",
+    ) == []
+    # "%" and "percent" are the same unit spelled two ways.
+    assert invented_tolerances(
+        "Both agree within 3 percent.",
+        question="Do the estimates agree within 3%?",
+    ) == []
+
+
 def test_stale_year_anchors_are_reported_only_in_a_currency_frame() -> None:
     assert stale_year_anchors(
         "The current 2024 figures settle it.", as_of_year=2026
@@ -2651,29 +2795,33 @@ async def test_a_second_planning_pass_cannot_re_anchor_the_frozen_contract(
     assert "- Scope: United States" in plan_request
 
 
-def test_merging_a_frozen_contract_fills_only_what_it_never_had() -> None:
-    """A word limit nobody had requested is the only fillable field today."""
+def test_a_frozen_contract_is_returned_unchanged_and_nothing_is_filled() -> None:
+    """A field the frozen question never asked for is not a hole to fill.
+
+    ``requested_word_limit = None`` records that the frozen question asked for
+    no particular length. A word limit can only appear in the new derivation by
+    coming from a *different* question, so adopting it would answer a request
+    this session never received — and the only thing the round-one "fill absent
+    fields" rule could ever fill was exactly that, which is why the fill is
+    gone rather than made to persist.
+    """
     frozen = _contract("What are the current constraints?")
     later = derive_answer_contract(
         question="What are the constraints in California?",
         now=_CLOCK_NOW,
     )
-
-    assert merge_frozen_contract(frozen, later) == frozen
-
     with_limit = derive_answer_contract(
         question="What are the constraints?",
         now=_CLOCK_NOW,
         requested_word_limit=400,
     )
 
-    merged = merge_frozen_contract(frozen, with_limit)
-
-    assert merged.requested_word_limit == 400
-    assert merged.question == frozen.question
-    assert merged.geographic_scope == frozen.geographic_scope
-    assert merged.as_of_date == frozen.as_of_date
-    assert merged.scope_statement == frozen.scope_statement
+    assert frozen_contract_for(frozen, later) == frozen
+    assert frozen_contract_for(frozen, with_limit) == frozen
+    assert frozen_contract_for(frozen, with_limit).requested_word_limit is None
+    assert frozen_contract_for(frozen, with_limit).geographic_scope == (
+        frozen.geographic_scope
+    )
 
 
 @pytest.mark.asyncio

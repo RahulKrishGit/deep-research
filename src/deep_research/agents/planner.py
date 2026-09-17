@@ -128,17 +128,50 @@ _COMPARISON_MARKERS = (
     "cheaper",
     "more expensive",
     "relative to",
-    # Comparative inequalities. "Did the 2023 regulation cost more than the
-    # 2019 one?" is a comparison even though it names no comparison verb, and
-    # the attribution rule otherwise claimed it for "regulation".
-    "more than",
-    "less than",
-    "faster than",
-    "slower than",
-    "higher than",
-    "lower than",
-    "greater than",
-    "smaller than",
+)
+
+# A comparative claim names a *referent*: "cost more than the 2019 one",
+# "slower in California than in Texas". A bare inequality does not — "waited
+# more than 5 years", "tariffs of more than 10%" are threshold questions — and
+# treating those as comparisons stamped the comparison answer form ("the same
+# measured dimension for every option compared") onto a quantity question,
+# which Section 2.3 then judges the target unanswered against. So an inequality
+# counts only when the word after "than" introduces the thing compared.
+_COMPARATIVE_CUES = (
+    "more",
+    "less",
+    "fewer",
+    "faster",
+    "slower",
+    "higher",
+    "lower",
+    "greater",
+    "smaller",
+    "larger",
+    "cheaper",
+    "costlier",
+)
+_COMPARATIVE_REFERENTS = (
+    "the",
+    "in",
+    "for",
+    "at",
+    "on",
+    "those",
+    "that",
+    "its",
+    "their",
+    "other",
+    "another",
+    "each",
+)
+# "a"/"an"/"any" are deliberately absent: "waited more than a year" is a
+# threshold, not a comparison.
+_COMPARATIVE_PATTERN = re.compile(
+    rf"(?<![a-z0-9])(?:{'|'.join(_COMPARATIVE_CUES)})(?![a-z0-9])"
+    rf"[^.;?!]{{0,40}}?"
+    rf"(?<![a-z0-9])than\s+(?:{'|'.join(_COMPARATIVE_REFERENTS)})(?![a-z0-9])",
+    re.IGNORECASE,
 )
 _CONSTRAINTS_MARKERS = (
     "constraint",
@@ -180,19 +213,20 @@ _HISTORICAL_MARKERS = (
 # the scope is unspecified and names that as an assumption — which is honest,
 # while a wrong guess is not.
 #
-# The bare pronoun "us" is deliberately absent. "Can you tell us about the
-# permitting rules?" names no jurisdiction, and a two-letter alias that also
-# occurs as an English word turned that question into a United States scope
-# stamped into every target's geography dimension. The abbreviations that
-# remain are unambiguous as whole tokens ("u.s.", "the us"), and every alias is
-# matched on token boundaries so "Indiana" cannot be read as "India".
+# Geography aliases are matched *exactly* (regular plurals aside) and never with
+# derived forms: "indian" is an alias for India, so a derived-form match would
+# read "Indiana" as India, and "us" as a country would read "tell us about the
+# rules" as the United States. The bare pronoun is absent for that reason; the
+# standalone abbreviation is matched case-sensitively by
+# ``_GEOGRAPHY_ABBREVIATION_PATTERN`` instead, so "US federal rules" resolves
+# while "tell us about" does not.
 _GEOGRAPHIES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("United States", ("united states", "u.s.", "usa", "the us", "american")),
+    ("United States", ("united states", "u.s.", "usa", "american")),
     ("California", ("california",)),
     ("Texas", ("texas",)),
     ("New York", ("new york",)),
-    ("European Union", ("european union", "e.u.", "eu")),
-    ("United Kingdom", ("united kingdom", "britain", "british", "uk")),
+    ("European Union", ("european union", "e.u.")),
+    ("United Kingdom", ("united kingdom", "britain", "british")),
     ("Germany", ("germany", "german")),
     ("France", ("france", "french")),
     ("China", ("china", "chinese")),
@@ -204,7 +238,22 @@ _GEOGRAPHIES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 _GLOBAL_MARKERS = ("global", "worldwide", "world-wide", "internationally")
 
+# Standalone two-letter country abbreviations, matched **case-sensitively**
+# against the raw question: "US federal permitting rules" names the United
+# States, while "tell us about the permitting rules" is the pronoun. Folding
+# case here is what turned that question into a United States scope.
+_GEOGRAPHY_ABBREVIATIONS = {
+    "US": "United States",
+    "EU": "European Union",
+    "UK": "United Kingdom",
+}
+_GEOGRAPHY_ABBREVIATION_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(US|EU|UK)(?![A-Za-z0-9])"
+)
+
 # A phrase that asks for the newest material rather than a fixed year.
+# "recently" is listed because the derived-form rule only reaches single-word
+# markers: "most recent" and "as of" are phrases.
 _CURRENCY_MARKERS = (
     "current",
     "currently",
@@ -214,6 +263,7 @@ _CURRENCY_MARKERS = (
     "now",
     "as of",
     "recent",
+    "recently",
 )
 
 # ``10%``, ``5 percentage points``, ``3 pp``. A cross-publisher agreement
@@ -235,6 +285,9 @@ _AGREEMENT_FRAME = re.compile(
 )
 _AGREEMENT_WINDOW = 40
 _TOLERANCE_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
+_PERCENTAGE_POINTS_PATTERN = re.compile(
+    r"percentage points?|pp\b", re.IGNORECASE
+)
 _YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
 _ISO_DATE_PATTERN = re.compile(r"\b(?:19|20)\d{2}-\d{2}-\d{2}\b")
 _WORD_LIMIT_PATTERN = re.compile(r"\b(\d{2,7})[- ]words?\b", re.IGNORECASE)
@@ -256,17 +309,22 @@ _DERIVATION_MARKERS = (
     "per unit",
     "ratio",
     "rate of",
+    "rates of",
     "convert",
     "normalize",
     "normalised",
     "normalized",
 )
 _PRIMARY_ATTRIBUTION_MARKERS = (
+    # Phrases are listed in the forms questions use; a phrase never takes a
+    # derived suffix, because the suffix would attach to its last word.
     "effective date",
+    "effective dates",
     "in force",
     "came into force",
     "official",
     "definition of",
+    "definitions of",
     "defined as",
     "regulator",
     "regulatory",
@@ -275,6 +333,7 @@ _PRIMARY_ATTRIBUTION_MARKERS = (
     "standard specifies",
     "tariff",
     "fee schedule",
+    "fee schedules",
     "permit",
     "licence",
     "license",
@@ -292,7 +351,9 @@ _BASIS_MARKERS = (
     "resolution",
     "tolerance",
     "error bar",
+    "error bars",
     "margin of error",
+    "margins of error",
     "rounding",
     "significant figures",
     "as reported",
@@ -624,7 +685,12 @@ def _normalized_question(question: str) -> str:
     return collapse_whitespace(question).casefold()
 
 
-def _mentions(normalized: str, markers: Sequence[str]) -> bool:
+def _mentions(
+    normalized: str,
+    markers: Sequence[str],
+    *,
+    derived_forms: bool = True,
+) -> bool:
     """True when one of ``markers`` appears in ``normalized`` as a whole token.
 
     Substring matching is wrong for every list in this module: it read "tell us
@@ -633,39 +699,75 @@ def _mentions(normalized: str, markers: Sequence[str]) -> bool:
     jurisdiction or currency frame is stamped into every target's binding
     dimensions, where nothing downstream can see the error. Each marker is
     matched against a token boundary on both sides, so a marker only fires when
-    the question actually contains that word or phrase.
+    the text actually contains that word or phrase.
 
-    A single-word marker also matches its regular plural ("rule"/"rules",
-    "policy"/"policies", "methodology"/"methodologies"), because a question
-    asks about rules far more often than about one rule. Multi-word markers are
-    matched exactly: the suffix would attach to their last word and turn "the
-    us" into "the uses".
+    ``derived_forms`` is what keeps a whole class of markers working without
+    reopening that hole. A *semantic* marker ("permit", "recent", "policy")
+    also matches its derived forms — "permitting", "recently", "policies" —
+    because a question asks about permitting far more often than about one
+    permit, and a marker that only matches its base form silently stops
+    classifying. A *name* (a jurisdiction alias) passes
+    ``derived_forms=False``: "indian" would otherwise match "Indiana", which is
+    the wrong-jurisdiction failure this boundary work exists to prevent.
 
     ``normalized`` must already be collapsed and casefolded.
     """
     return any(
-        _marker_pattern(marker).search(normalized) is not None
+        _marker_pattern(marker, derived_forms=derived_forms).search(normalized)
+        is not None
         for marker in markers
     )
 
 
-def _marker_pattern(marker: str) -> re.Pattern[str]:
+# A single-word semantic marker at least this long may match its derived forms;
+# short markers are matched exactly, because a two- or three-letter marker is a
+# prefix of far too many unrelated words.
+_DERIVED_FORM_MIN_LENGTH = 6
+_DERIVED_FORM_SUFFIX = 4
+
+
+def _marker_pattern(
+    marker: str,
+    *,
+    derived_forms: bool = True,
+) -> re.Pattern[str]:
     """One compiled token-boundary pattern per marker, built on first use."""
-    pattern = _MARKER_PATTERNS.get(marker)
+    key = f"{marker}\x00{derived_forms}"
+    pattern = _MARKER_PATTERNS.get(key)
     if pattern is None:
         if " " in marker:
-            alternatives = [re.escape(marker)]
-        elif marker.endswith("y"):
-            # "policy"/"policies", "methodology"/"methodologies": the plural
-            # changes the stem, so the regular-suffix branch cannot reach it.
-            alternatives = [re.escape(marker), re.escape(marker[:-1]) + "ies"]
+            # A phrase is matched exactly, with flexible whitespace: a suffix
+            # would attach to its last word and turn "as of" into "as ofs".
+            alternatives = [
+                r"\s+".join(re.escape(word) for word in marker.split())
+            ]
+        elif derived_forms and len(marker) >= _DERIVED_FORM_MIN_LENGTH:
+            alternatives = [
+                re.escape(marker) + rf"[a-z]{{0,{_DERIVED_FORM_SUFFIX}}}"
+            ]
+            if marker.endswith("y"):
+                # The stem changes too: "policy"/"policies".
+                alternatives.append(re.escape(marker[:-1]) + "ies")
         else:
             alternatives = [re.escape(marker) + "(?:es|s)?"]
         pattern = re.compile(
             "(?<![a-z0-9])(?:" + "|".join(alternatives) + ")(?![a-z0-9])"
         )
-        _MARKER_PATTERNS[marker] = pattern
+        _MARKER_PATTERNS[key] = pattern
     return pattern
+
+
+def _is_comparative(normalized: str) -> bool:
+    """True for a comparison: a comparison verb, or an inequality with a
+    referent.
+
+    "Is permitting slower in California than in Texas?" and "did the 2023
+    regulation cost more than the 2019 one?" compare; "waited more than 5
+    years" and "tariffs of more than 10%" are thresholds about one quantity.
+    """
+    return _mentions(normalized, _COMPARISON_MARKERS) or (
+        _COMPARATIVE_PATTERN.search(normalized) is not None
+    )
 
 
 # Compiled once per marker string; the marker vocabulary is a module constant,
@@ -699,7 +801,7 @@ def answer_kind_for(question: str, *, clock_year: int | None = None) -> AnswerKi
     past_years = [
         year for year in years if clock_year is None or year < clock_year
     ]
-    if _mentions(normalized, _COMPARISON_MARKERS):
+    if _is_comparative(normalized):
         return "comparison"
     # A question that asks *why* is answered by a mechanism whatever period it
     # is about; the period travels in the as-of date, not in the answer form.
@@ -732,16 +834,22 @@ def geographic_scope_for(question: str) -> tuple[str, list[str]]:
     """The scope the question states, and the assumption when it states none.
 
     A named jurisdiction is read from a short explicit vocabulary, matched on
-    token boundaries so "Indiana" is not read as "India" and the pronoun "us"
-    is not read as the United States. Anything else — including a jurisdiction
-    this list does not know — resolves to ``"unspecified"`` with an explicit
-    assumption, because a wrong jurisdiction stamped into every target's
-    geography dimension is worse than an admitted gap.
+    token boundaries and without derived forms, so "Indiana" is not read as
+    "India" and the pronoun "us" is not read as the United States. A standalone
+    uppercase abbreviation ("US", "EU", "UK") is read case-sensitively from the
+    raw question, because that is the only way "US federal rules" resolves
+    without "tell us about the rules" resolving too. Anything else — including
+    a jurisdiction this list does not know — resolves to ``"unspecified"`` with
+    an explicit assumption, because a wrong jurisdiction stamped into every
+    target's geography dimension is worse than an admitted gap.
     """
     normalized = _normalized_question(question)
     for canonical, aliases in _GEOGRAPHIES:
-        if _mentions(normalized, aliases):
+        if _mentions(normalized, aliases, derived_forms=False):
             return canonical, []
+    abbreviation = _GEOGRAPHY_ABBREVIATION_PATTERN.search(question)
+    if abbreviation is not None:
+        return _GEOGRAPHY_ABBREVIATIONS[abbreviation.group(1)], []
     if _mentions(normalized, _GLOBAL_MARKERS):
         return "global", []
     return (
@@ -904,27 +1012,28 @@ def geographic_obligation(contract: AnswerContract) -> str:
     return f"geography: {contract.geographic_scope}"
 
 
-def merge_frozen_contract(
+def frozen_contract_for(
     existing: AnswerContract,
     derived: AnswerContract,
 ) -> AnswerContract:
-    """Keep what a session already froze; fill only what it never had.
+    """Return the contract a session is bound by: the one it already froze.
 
     Section 2.3 freezes the original question, the scope, and the as-of date
     for the session. A later planning pass may plan more work, but it may not
-    re-anchor the period or widen the scope: an as-of date that moves between
-    passes would silently change what "current" means for every target
-    already stamped. So the existing contract wins field by field, and the
-    only thing taken from the new derivation is a field the frozen contract
-    genuinely lacks — today, a reader word limit nobody had requested yet.
+    re-anchor the period or widen the scope: an as-of date or geography that
+    moves between passes silently changes what every already-stamped target's
+    binding dimensions mean.
+
+    Nothing is taken from ``derived``, including a field the frozen contract
+    leaves empty. ``requested_word_limit = None`` is not a hole to fill: it
+    records that *the frozen question* asked for no particular length, and a
+    word limit can only appear in ``derived`` by coming from a different
+    question — which this session is not answering. ``derived`` is passed (and
+    ignored) so the call site reads as the decision it is: two candidate
+    contracts, and the frozen one wins.
     """
-    fill: dict[str, object] = {}
-    if (
-        existing.requested_word_limit is None
-        and derived.requested_word_limit is not None
-    ):
-        fill["requested_word_limit"] = derived.requested_word_limit
-    return existing.model_copy(update=fill) if fill else existing
+    del derived
+    return existing
 
 
 def _normalized_title(title: str) -> str:
@@ -1041,7 +1150,7 @@ def support_policy_for(*, question: str) -> str:
       ``independent_pair``.
     """
     normalized = _normalized_question(question)
-    if _mentions(normalized, _COMPARISON_MARKERS):
+    if _is_comparative(normalized):
         return "independent_pair"
     if _mentions(normalized, _DERIVATION_MARKERS):
         return "derivation"
@@ -1091,6 +1200,26 @@ def _agreement_tolerances(text: str) -> list[str]:
     return found
 
 
+def _tolerance_key(value: str) -> tuple[str, str] | None:
+    """The (number, unit) a tolerance states, for comparing two of them.
+
+    The unit matters as much as the number. "Within 3%" and "within 3
+    percentage points" are different requirements — one is a relative band, the
+    other an absolute one — so a criterion may not satisfy a question's "within
+    3 percentage points" by writing "within 3%". "%" and "percent" are the same
+    unit spelled two ways and are folded together.
+    """
+    number = _TOLERANCE_NUMBER_PATTERN.search(value)
+    if number is None:
+        return None
+    unit = (
+        "percentage_points"
+        if _PERCENTAGE_POINTS_PATTERN.search(value)
+        else "percent"
+    )
+    return number.group(0), unit
+
+
 def invented_tolerances(text: str, *, question: str) -> list[str]:
     """Numeric agreement tolerances in ``text`` with no basis in the question.
 
@@ -1101,22 +1230,23 @@ def invented_tolerances(text: str, *, question: str) -> list[str]:
     plan invented 10%, 5 percentage points, 15%, and 3 percentage points
     (baseline TR-04) — and it is reported so the repair prompt can remove it.
     A number with no agreement frame is not a tolerance at all and is never
-    reported; see ``_agreement_tolerances``.
+    reported; see ``_agreement_tolerances``. "The question states it" means the
+    same number *and* the same unit.
     """
     found = _agreement_tolerances(text)
     if not found:
         return []
-    question_numbers = {
-        number
+    question_tolerances = {
+        key
         for value in _agreement_tolerances(question)
-        for number in _TOLERANCE_NUMBER_PATTERN.findall(value)
+        if (key := _tolerance_key(value)) is not None
     }
     if _mentions(_normalized_question(text), _BASIS_MARKERS):
         return []
     return [
         value
         for value in found
-        if not set(_TOLERANCE_NUMBER_PATTERN.findall(value)) & question_numbers
+        if _tolerance_key(value) not in question_tolerances
     ]
 
 
@@ -1844,15 +1974,15 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     def answer_contract_for(self, question: str) -> AnswerContract:
         """Freeze this run's answer contract from the injected clock.
 
-        A session that already froze one keeps it: the new derivation is
-        merged in only to fill a field the frozen contract genuinely lacks
-        (``merge_frozen_contract``), so a later planning pass cannot re-anchor
-        the as-of date or widen the scope of a session already under way.
+        A session that already froze one is bound by it, unchanged: the new
+        derivation is not merged into it at all (``frozen_contract_for``), so a
+        later planning pass cannot re-anchor the as-of date, widen the scope,
+        or fill a field the frozen question never asked for.
         """
         derived = derive_answer_contract(question=question, now=self._clock())
         if self._frozen_contract is None:
             return derived
-        return merge_frozen_contract(self._frozen_contract, derived)
+        return frozen_contract_for(self._frozen_contract, derived)
 
     async def _request_plan(
         self,
@@ -2021,8 +2151,8 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         The contract is stamped only when the session has none. A later
         non-extension plan therefore cannot re-anchor a session's as-of date
         or scope: the state keeps the contract it froze, and the pass's own
-        ``result.answer_contract`` is already the merged, frozen one
-        (``merge_frozen_contract``), so a replay of the same plan is a no-op
+        ``result.answer_contract`` is already that frozen one
+        (``frozen_contract_for``), so a replay of the same plan is a no-op
         rather than a rewrite.
         """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
