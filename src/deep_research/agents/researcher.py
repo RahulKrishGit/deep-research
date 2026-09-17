@@ -1393,13 +1393,16 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._run_acquisition_states = dict(state.acquisition_state_by_target)
         self._run_seen_target_ids = set()
         self._run_cache = self._shared_cache
-        self._run_cache.update(
-            {
-                key: read
-                for key, read in self._run_reads.items()
-                if read.acquisition_kind == "network"
-            }
-        )
+        # The cache is keyed by URL, never by read id: a lookup happens before
+        # any body download and only knows the URL it is about to request.
+        # Seeding it with read ids worked by accident (nothing looks a read id
+        # up here) and would have silently polluted the shared cache Task 6
+        # wires for the Fact Checker.
+        for read in self._run_reads.values():
+            if read.acquisition_kind != "network":
+                continue
+            self._run_cache.setdefault(read.resolved_url, read)
+            self._run_cache.setdefault(read.requested_url, read)
         self._run_network_read_ids = self._shared_network_read_ids
         self._run_network_read_ids.update(
             {

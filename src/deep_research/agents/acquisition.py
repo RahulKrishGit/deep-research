@@ -42,6 +42,11 @@ from deep_research.utils.types import (
 AcquisitionAction = Literal["search", "read", "extract", "finish"]
 OriginName = Literal["researcher", "fact_checker"]
 
+# The single line a packet falls back to when even the continuation list cannot
+# fit inside the configured budget. Kept short so it fits wherever a packet is
+# allowed to exist at all, and never a sliced record.
+_CONTEXT_OVERFLOW = "continuation_ids=packet_overflow"
+
 
 def next_acquisition_action(state: AcquisitionState) -> AcquisitionAction:
     """Return the next deterministic local acquisition action."""
@@ -215,9 +220,6 @@ def build_read_record_from_tool_result(
     except (TypeError, ValueError):
         return None
 
-
-read_record_from_tool_result = build_read_record_from_tool_result
-admit_read_from_tool_result = build_read_record_from_tool_result
 
 
 @dataclass(frozen=True, slots=True)
@@ -720,10 +722,7 @@ class AcquisitionPolicy:
                     "read_id": existing.read_id,
                 }
             )
-        else:
-            records[url] = candidate
-        if existing is None:
-            records[url] = candidate
+        records[url] = candidate
         queue = list(self.state.candidate_urls)
         if candidate.status == "queued" and url not in queue:
             queue.append(url)
@@ -1213,29 +1212,6 @@ class AcquisitionPolicy:
         )
 
 
-def normalize_tool_policy_result(value: object) -> ToolPolicyDecision:
-    """Accept a concise bool/string callback result or a typed decision."""
-    if isinstance(value, ToolPolicyDecision):
-        return value
-    if value is None or value is True:
-        return ToolPolicyDecision()
-    if value is False:
-        return ToolPolicyDecision(
-            allowed=False, reason="the requested action was rejected by policy"
-        )
-    if isinstance(value, str):
-        return ToolPolicyDecision(allowed=False, reason=value)
-    if isinstance(value, tuple) and value:
-        allowed = bool(value[0])
-        reason = (
-            str(value[1])
-            if len(value) > 1
-            else "the requested action was rejected by policy"
-        )
-        return ToolPolicyDecision(allowed=allowed, reason=reason)
-    raise TypeError("tool_policy must return a policy decision, bool, or reason")
-
-
 def _render_candidate(record: CandidateRecord) -> str:
     targets = ",".join(record.target_ids) or "-"
     title = record.title or "(untitled)"
@@ -1268,12 +1244,18 @@ def build_acquisition_context(
 ) -> str:
     """Render complete acquisition records, with explicit continuation IDs.
 
+    The returned body carries no section heading of its own: the decision
+    prompt's renderer adds ``## Acquisition context`` exactly once, so the
+    packet never spends budget on a duplicated header.
+
     A record is atomic for packet purposes: if it does not fit, its complete
     text is omitted and its ID is listed for continuation. No serialized
     search/PDF payload is sliced into a misleading prefix.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
+    if limit < len(_CONTEXT_OVERFLOW):
+        return _CONTEXT_OVERFLOW[:limit]
     selected_evidence = {
         evidence_id: unit
         for evidence_id, unit in evidence.items()
@@ -1365,11 +1347,8 @@ def build_acquisition_context(
             )
         )
 
-    prefix = "## Acquisition context\n"
-    if limit < len(prefix):
-        return "continuation_ids=packet_overflow"[:limit]
-    lines: list[str] = [prefix.rstrip("\n")]
-    used = len(prefix)
+    lines: list[str] = []
+    used = 0
     omitted: list[str] = []
     for identifier, row in rows:
         rendered = f"- {row}\n"
@@ -1383,7 +1362,7 @@ def build_acquisition_context(
         if used + len(continuation) + 1 <= limit:
             lines.append(continuation)
         else:
-            lines.append("- continuation_ids=packet_overflow")
+            lines.append("- " + _CONTEXT_OVERFLOW)
     return "\n".join(lines)
 
 
@@ -1392,12 +1371,9 @@ __all__ = [
     "AcquisitionPolicy",
     "ReadAdmission",
     "ToolPolicyDecision",
-    "admit_read_from_tool_result",
     "admit_read_result",
     "build_acquisition_context",
     "build_read_record_from_tool_result",
     "next_acquisition_action",
-    "normalize_tool_policy_result",
-    "read_record_from_tool_result",
     "select_relevant_passages",
 ]
