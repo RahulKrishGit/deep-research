@@ -403,6 +403,11 @@ CRITIC_PROMPT_FINGERPRINT = "29176f9c39df"
 # The interaction-finding fix moves planner to ``3de57a6c78cf`` after removing
 # shape-only acronym/plural positives, adding explicit contrastive-set syntax,
 # and preserving overlapping repeated year/work spans inside count frames.
+# Task 3's decision-context hook moves planner to ``7e43f342910c`` although no
+# planner prompt string changed: ``agent_prompt_fingerprint`` hashes the whole
+# shared ``agents/prompts.py``, which gained the ``decision_context`` parameter
+# and its single ``## Acquisition context`` section. The same shared-module
+# move is why every other target pin below advanced in this task.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "7e43f342910c",
     "researcher": "bebb16cebfe9",

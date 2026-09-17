@@ -168,6 +168,13 @@ async def test_run_renders_the_task_tools_and_scratchpad_into_the_prompt(
     assert "- echo:" not in first_call.messages[1].content
     assert "echo" not in first_call.messages[0].content
 
+    second_messages = completer.react_calls[1].messages
+    assert "- [thought] Selected tool through provider-native calling." in (
+        second_messages[1].content
+    )
+    assert "- [observation] echo succeeded" in second_messages[1].content
+    assert "Iteration 2 of 3." in second_messages[1].content
+
 
 @pytest.mark.asyncio
 async def test_react_decision_prompt_receives_fresh_complete_decision_context(
@@ -191,13 +198,12 @@ async def test_react_decision_prompt_receives_fresh_complete_decision_context(
     assert "## Acquisition context" in completer.react_calls[0].messages[1].content
     assert "target=target-1" in completer.react_calls[0].messages[1].content
     assert "target=target-2" in completer.react_calls[1].messages[1].content
-
-    second_messages = completer.react_calls[1].messages
-    assert "- [thought] Selected tool through provider-native calling." in (
-        second_messages[1].content
-    )
-    assert "- [observation] echo succeeded" in second_messages[1].content
-    assert "Iteration 2 of 3." in second_messages[1].content
+    # The context is rebuilt per turn, never reused from the previous prompt,
+    # and the section heading appears exactly once in each turn.
+    assert "target=target-1" not in completer.react_calls[1].messages[1].content
+    assert completer.react_calls[1].messages[1].content.count(
+        "## Acquisition context"
+    ) == 1
 
 
 @pytest.mark.asyncio
