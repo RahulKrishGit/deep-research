@@ -1787,16 +1787,57 @@ def test_title_case_quantity_thresholds_keep_answer_form_and_support_policy(
     [
         "Is permitting slower than texas?",
         "Is permitting slower than EU?",
-        "Is interconnection slower than PJM?",
-        "Did the project cost more than competitors?",
+        "Is interconnection slower than in PJM?",
+        "Is interconnection slower than in pJm?",
+        "Did the project cost more than other competitors?",
+        "Did the project cost more than other alternatives?",
     ],
 )
-def test_case_insensitive_direct_referents_select_comparison_and_pair_policy(
+def test_case_insensitive_explicit_referents_select_comparison_and_pair_policy(
     question: str,
 ) -> None:
-    """Direct names, acronyms, and common-noun referents are comparisons."""
+    """Named scopes and explicitly contrasted sets are comparisons."""
     assert answer_kind_for(question, clock_year=2026) == "comparison"
     assert support_policy_for(question=question) == "independent_pair"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Is the score higher than nth?",
+        "Is the rate greater than limits?",
+    ],
+)
+def test_bare_underspecified_tokens_do_not_create_comparison_contracts(
+    question: str,
+) -> None:
+    """Token shape alone cannot prove that a second referent was supplied."""
+    assert (
+        answer_kind_for(question, clock_year=2026),
+        support_policy_for(question=question),
+    ) == ("factual", "independent_pair")
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Is the score higher than kth?",
+        "Is the rate greater than thresholds?",
+        "Is the rate greater than ceilings?",
+        "Is the rate greater than bounds?",
+        "Is interconnection slower than pJm?",
+        "Did the project cost more than competitors?",
+        "Did the project cost more than alternatives?",
+    ],
+)
+def test_bare_acronym_and_plural_shapes_remain_ambiguous_without_a_signal(
+    question: str,
+) -> None:
+    """Ambiguous bare tokens need a named scope or contrastive-set signal."""
+    assert (
+        answer_kind_for(question, clock_year=2026),
+        support_policy_for(question=question),
+    ) == ("factual", "independent_pair")
 
 
 @pytest.mark.parametrize(
@@ -1956,13 +1997,57 @@ def test_parallel_multiword_year_work_keeps_both_historical_periods(
 
 
 @pytest.mark.parametrize(
+    ("question", "expected_as_of", "expected_years"),
+    [
+        (
+            "How many 2024 projects cost more than 2019 projects?",
+            "2024-12-31",
+            ("2019", "2024"),
+        ),
+        (
+            "How many 2024 federal regulation projects cost more than 2019 "
+            "federal regulation projects?",
+            "2024-12-31",
+            ("2019", "2024"),
+        ),
+        (
+            "How many 2024 regional capacity market projects cost more than the "
+            "2019 regional capacity market projects?",
+            "2024-12-31",
+            ("2019", "2024"),
+        ),
+        (
+            "What number of 2023 state permit projects cost more than the 2020 "
+            "state permit projects?",
+            "2023-12-31",
+            ("2020", "2023"),
+        ),
+    ],
+)
+def test_count_framed_parallel_year_work_keeps_every_historical_period(
+    question: str,
+    expected_as_of: str,
+    expected_years: tuple[str, str],
+) -> None:
+    """Parallel year/work evidence outranks an overlapping count operand."""
+    contract = _contract(question)
+
+    assert contract.answer_kind == "comparison"
+    assert contract.as_of_date == expected_as_of
+    assert all(
+        year in contract.evidence_period_requirement for year in expected_years
+    )
+    assert support_policy_for(question=question) == "independent_pair"
+
+
+@pytest.mark.parametrize(
     "question",
     [
         "Did the 2024 regulation cost more than 2019 regulation?",
         "Is permitting slower than texas?",
         "IS PERMITTING SLOWER THAN TEXAS?",
-        "Is interconnection slower than pJm?",
-        "Did the project cost more than competitors?",
+        "Is interconnection slower than in pJm?",
+        "Did the project cost more than other competitors?",
         "Is permitting slower in California than in Texas?",
         "Did the 2023 regulation cost more than the 2019 one?",
         "How do solar and wind compare on cost?",

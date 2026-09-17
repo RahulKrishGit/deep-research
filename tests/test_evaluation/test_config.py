@@ -400,8 +400,11 @@ CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
 # The follow-up review-finding fix moves planner to ``de043421bb47`` for
 # structural terminal referents, positive count syntax, repeated multiword
 # year/work pairs, and clock-independent constraint evidence policy.
+# The interaction-finding fix moves planner to ``3de57a6c78cf`` after removing
+# shape-only acronym/plural positives, adding explicit contrastive-set syntax,
+# and preserving overlapping repeated year/work spans inside count frames.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "de043421bb47",
+    "planner": "3de57a6c78cf",
     "researcher": "711b4d414515",
     "source_evaluator": "c50282e1dd42",
     "fact_checker": "675fa5aea904",

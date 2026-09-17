@@ -177,6 +177,11 @@ _COMPARATIVE_ANAPHOR_PATTERN = re.compile(
     rf"(?:one|ones|other|others|alternative|alternatives)[.?!]?\s*$",
     re.IGNORECASE,
 )
+_COMPARATIVE_OTHER_SET_PATTERN = re.compile(
+    rf"{_COMPARATIVE_THAN_PREFIX}(?:the\s+)?other\s+"
+    rf"[a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*){{0,5}}[.?!]?\s*$",
+    re.IGNORECASE,
+)
 _COMPARATIVE_PARALLEL_YEAR_WORK_PATTERN = re.compile(
     rf"(?<![a-z0-9])(?P<left_year>(?:19|20)\d{{2}})\s+"
     rf"(?P<work>[a-z][a-z-]*(?:\s+[a-z][a-z-]*){{0,5}}?)\s+"
@@ -822,50 +827,21 @@ class _QuestionClassification:
     support_policy: _SupportPolicy
 
 
-_INITIALISM_SHAPE_PATTERN = re.compile(r"[bcdfghjklmnpqrstvwxyz]{2,6}")
-
-
-def _has_regular_plural_shape(token: str) -> bool:
-    """Whether ``token`` is a complete regular English plural form.
-
-    A plural alternative is positive grammatical evidence of a set of
-    referents (``more than competitors``). Reusing the module's plural rule
-    keeps this bounded to complete inflections; it does not accept an
-    arbitrary token merely because an exclusion vocabulary missed it.
-    """
-    candidates: list[str] = []
-    if token.endswith("ies") and len(token) > 3:
-        candidates.append(token[:-3] + "y")
-    if token.endswith("es") and len(token) > 2:
-        candidates.extend((token[:-2], token[:-1]))
-    if token.endswith("s") and len(token) > 1:
-        candidates.append(token[:-1])
-    return any(
-        len(candidate) >= 2 and _regular_plural(candidate) == token
-        for candidate in candidates
-    )
-
-
 def _is_direct_referent(token: str) -> bool:
     """Recognize bounded one-token referent structures.
 
     Known one-token jurisdiction aliases use the same semantic vocabulary as
-    scope stamping. Vowelless 2--6 letter tokens are a case-insensitive
-    initialism shape (``PJM``/``pJm``), not a capitalization proxy. Complete
-    regular plurals denote alternative sets. An otherwise undifferentiated
-    singular token remains ambiguous.
+    scope stamping. Shape alone cannot distinguish an initialism from an
+    ordinal variable or an alternative set from plural bounds, so every other
+    bare token remains ambiguous. Named acronyms use introduced syntax (for
+    example, ``than in PJM``), and sets use a contrastive ``other`` phrase.
     """
     normalized = token.casefold()
-    is_jurisdiction = any(
+    return any(
         normalized == alias
         for _, aliases in _GEOGRAPHIES
         for alias in aliases
         if " " not in alias
-    )
-    return (
-        is_jurisdiction
-        or _INITIALISM_SHAPE_PATTERN.fullmatch(normalized) is not None
-        or _has_regular_plural_shape(normalized)
     )
 
 
@@ -885,6 +861,7 @@ def _comparison_evidence_for(question: str) -> _ComparisonEvidence:
         for pattern in (
             _COMPARATIVE_INTRODUCED_PATTERN,
             _COMPARATIVE_ANAPHOR_PATTERN,
+            _COMPARATIVE_OTHER_SET_PATTERN,
             _COMPARATIVE_PARALLEL_YEAR_WORK_PATTERN,
         )
     ):
@@ -998,10 +975,16 @@ def _comparative_quantity_year_spans(normalized: str) -> set[tuple[int, int]]:
     including repeated multiword year/work pairs. Spans are used instead of
     values so the same number can still appear elsewhere as a date.
     """
+    parallel_year_spans = {
+        match.span(group)
+        for match in _COMPARATIVE_PARALLEL_YEAR_WORK_PATTERN.finditer(normalized)
+        for group in ("left_year", "right_year")
+    }
     return {
-        match.span("quantity")
+        span
         for pattern in _COMPARATIVE_COUNT_YEAR_PATTERNS
         for match in pattern.finditer(normalized)
+        if (span := match.span("quantity")) not in parallel_year_spans
     }
 
 
