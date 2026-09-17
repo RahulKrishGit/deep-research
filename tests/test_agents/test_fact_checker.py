@@ -8,7 +8,10 @@ import pytest
 
 from deep_research.agents.base import AgentRun
 from deep_research.agents.fact_checker import (
+    DEFAULT_CLAIM_BATCH_SIZE,
+    DEFAULT_CLAIM_BATCHES_PER_PASS,
     DEFAULT_FINDING_DIGEST,
+    DEFAULT_MAX_CLAIMS,
     MAX_PASSAGE_EXCERPT_CHARS,
     MAX_PASSAGE_LOCATOR_CHARS,
     VERDICT_VALUES,
@@ -66,6 +69,7 @@ from deep_research.utils.types import (
     Critique,
     CritiqueGap,
     EvidencePassage,
+    EvidenceTarget,
     Finding,
     MemorySnapshot,
     ResearchState,
@@ -921,6 +925,7 @@ def _checker(
     *,
     tools: list[object] | None = None,
     max_claims: int = 5,
+    batches_per_pass: int = DEFAULT_CLAIM_BATCHES_PER_PASS,
 ) -> FactCheckerAgent:
     return FactCheckerAgent(
         provider=completer,
@@ -931,6 +936,7 @@ def _checker(
         tools=tools if tools is not None else fact_checker_tools(tracker),
         config=AgentRuntimeConfig(max_iterations=3, tool_budget=3),
         max_claims=max_claims,
+        batches_per_pass=batches_per_pass,
     )
 
 
@@ -2323,3 +2329,321 @@ def test_build_claim_drafts_drops_the_example_url() -> None:
     assert rejected == [
         "claim 1: no source url from the collected findings"
     ]
+
+
+# --------------------------------------------------------------------------
+# The explicit claim batch, and what happens to everything it leaves out
+# --------------------------------------------------------------------------
+#
+# ``DEFAULT_MAX_CLAIMS = 5`` used to be a hidden prefix: the sixth claim the
+# model returned simply did not exist. It is now the explicit, configurable
+# ``claim_batch_size``, a pass runs a bounded number of batches, and every
+# claim a pass does not adjudicate stays pending — reported as pending, and
+# resumable by the next pass. Consumed means adjudicated: a claim that only
+# reached a prompt has consumed nothing.
+
+
+def _targeted_topic(
+    coverage_id: str, title: str, target_id: str
+) -> SubTopic:
+    return SubTopic(
+        coverage_id=coverage_id,
+        title=title,
+        rationale="It answers part of the question.",
+        search_queries=[f"{title} query"],
+        success_criteria=["A value is stated."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id=target_id,
+                coverage_id=coverage_id,
+                question=f"What does {title} show?",
+                required_dimensions=["value"],
+                required=True,
+                critical=True,
+                support_policy="independent_pair",
+            )
+        ],
+    )
+
+
+def _obligated_state() -> ResearchState:
+    """Two planned topics, three findings, and two evidence targets."""
+    return ResearchState(
+        session_id="session-1",
+        original_question="How mature is quantum error correction?",
+        initial_target_ids=["target-1", "target-2"],
+        sub_topics=[
+            _targeted_topic("topic-01", "Alpha", "target-1"),
+            _targeted_topic("topic-02", "Beta", "target-2"),
+        ],
+        raw_findings=[
+            _check_finding(
+                "https://example.org/a",
+                content="Alpha reported the first measured value in 2025.",
+                sub_topic="Alpha",
+            ),
+            _check_finding(
+                "https://example.org/b",
+                content="Alpha reported a second measured value in 2025.",
+                sub_topic="Alpha",
+            ),
+            _check_finding(
+                "https://example.org/c",
+                content="Beta reported its own measured value in 2025.",
+                sub_topic="Beta",
+            ),
+        ],
+        evaluated_sources=[
+            _scored("https://example.org/a"),
+            _scored("https://example.org/b"),
+            _scored("https://example.org/c"),
+        ],
+        memory_context=MemorySnapshot(),
+    )
+
+
+def _obligated_draft() -> ClaimsDraft:
+    """Three claims, in an order that puts two of one topic before the other."""
+    return ClaimsDraft(
+        claims=[
+            ClaimDraft(
+                text="Alpha reported the first measured value in 2025.",
+                source_urls=["https://example.org/a"],
+            ),
+            ClaimDraft(
+                text="Alpha reported a second measured value in 2025.",
+                source_urls=["https://example.org/b"],
+            ),
+            ClaimDraft(
+                text="Beta reported its own measured value in 2025.",
+                source_urls=["https://example.org/c"],
+            ),
+        ]
+    )
+
+
+def _three_claim_decisions() -> list[object]:
+    return [*_check_decisions(), *_check_decisions()]
+
+
+def test_the_claim_batch_size_is_the_legacy_prefix_made_explicit() -> None:
+    """The old constant still works, and now names what it always did."""
+    defaults = AgentRuntimeConfig()
+
+    assert DEFAULT_MAX_CLAIMS == 5
+    assert DEFAULT_CLAIM_BATCH_SIZE == DEFAULT_MAX_CLAIMS
+    assert DEFAULT_CLAIM_BATCHES_PER_PASS == 6
+    assert defaults.claim_batch_size == DEFAULT_CLAIM_BATCH_SIZE
+    assert defaults.claim_batches_per_pass == DEFAULT_CLAIM_BATCHES_PER_PASS
+
+
+@pytest.mark.asyncio
+async def test_extraction_no_longer_hides_a_five_claim_prefix(
+    tracker: Tracker,
+) -> None:
+    """A model that returns seven checkable claims gets all seven kept."""
+    findings = [
+        _check_finding(f"https://example.org/{letter}", sub_topic="Alpha")
+        for letter in "abcdefg"
+    ]
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(
+                        text=f"Finding {letter} was measured in 2025.",
+                        source_urls=[f"https://example.org/{letter}"],
+                    )
+                    for letter in "abcdefg"
+                ]
+            )
+        ]
+    )
+    agent = _checker(tracker, completer)
+    state = _check_state(findings)
+
+    claims, errors, provider_failed = await agent.extract_claims(state)
+
+    assert provider_failed is False
+    assert errors == []
+    assert len(claims) == 7
+
+
+@pytest.mark.asyncio
+async def test_a_batch_takes_one_claim_per_target_before_extra_slots(
+    tracker: Tracker,
+) -> None:
+    """Topic two is served in the first batch, not starved behind topic one."""
+    completer = ScriptedCompleter(
+        decisions=_three_claim_decisions(),
+        outputs=[_obligated_draft(), _verdict_draft(), _verdict_draft()],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+        max_claims=2,
+        batches_per_pass=1,
+    )
+    state = _obligated_state()
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [claim.text for claim in outcome.result.claims] == [
+        "Alpha reported the first measured value in 2025.",
+        "Beta reported its own measured value in 2025.",
+    ]
+    assert [claim.text for claim in outcome.result.pending_claims] == [
+        "Alpha reported a second measured value in 2025."
+    ]
+    targets = {
+        target
+        for claim in outcome.result.claims
+        for target in claim.target_ids
+    }
+    assert targets == {"target-1", "target-2"}
+
+
+@pytest.mark.asyncio
+async def test_a_claim_that_only_reached_the_batch_is_never_marked_consumed(
+    tracker: Tracker,
+) -> None:
+    """Consumed means adjudicated. The pending claim consumed nothing."""
+    completer = ScriptedCompleter(
+        decisions=_three_claim_decisions(),
+        outputs=[_obligated_draft(), _verdict_draft(), _verdict_draft()],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+        max_claims=2,
+        batches_per_pass=1,
+    )
+    state = _obligated_state()
+    pending_finding = finding_fingerprint(
+        _check_finding(
+            "https://example.org/b",
+            content="Alpha reported a second measured value in 2025.",
+            sub_topic="Alpha",
+        )
+    )
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    consumed = {
+        fingerprint
+        for claim in outcome.result.claims
+        for fingerprint in claim.consumed_finding_fingerprints
+    }
+    assert pending_finding not in consumed
+    assert all(
+        claim.text != "Alpha reported a second measured value in 2025."
+        for claim in outcome.result.claims
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_completed_event_reports_the_batch_bounds_and_pending_claims(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=_three_claim_decisions(),
+        outputs=[_obligated_draft(), _verdict_draft(), _verdict_draft()],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+        max_claims=2,
+        batches_per_pass=1,
+    )
+    state = _obligated_state()
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    completed = outcome.state_update["events"][-1]
+    assert completed.metadata["claim_batch_size"] == 2
+    assert completed.metadata["claim_batches_per_pass"] == 1
+    assert completed.metadata["batches_run"] == 1
+    assert completed.metadata["pending_claim_count"] == 1
+    assert completed.metadata["adjudicated_claim_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_claim_resumes_on_the_next_pass(
+    tracker: Tracker,
+) -> None:
+    """A pending claim is a continuation, never a deletion."""
+    completer = ScriptedCompleter(
+        decisions=[
+            *_three_claim_decisions(),
+            *_three_claim_decisions(),
+        ],
+        outputs=[
+            _obligated_draft(),
+            _verdict_draft(),
+            _verdict_draft(),
+            _obligated_draft(),
+            _verdict_draft(),
+            _verdict_draft(),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+        max_claims=2,
+        batches_per_pass=1,
+    )
+    state = _obligated_state()
+    deferred = "Alpha reported a second measured value in 2025."
+
+    async with tracker.session_span("session-1", state.original_question):
+        first = await agent.run(state)
+        assert first.result is not None
+        assert deferred in [
+            claim.text for claim in first.result.pending_claims
+        ]
+
+        second = await agent.run(state)
+
+    assert second.result is not None
+    assert deferred not in [
+        claim.text for claim in second.result.pending_claims
+    ]
+
+
+def test_the_pending_queue_is_bounded_by_the_extraction_it_came_from(
+    tracker: Tracker,
+) -> None:
+    """The continuation queue holds claim work, and holds each claim once."""
+    agent = _checker(tracker, ScriptedCompleter())
+
+    assert agent.pending_claims == []

@@ -522,6 +522,39 @@ def test_the_production_researcher_receives_the_configured_sub_topic_cap(
     assert agent._max_sub_topics == 2
 
 
+def test_the_production_fact_checker_receives_the_configured_claim_batch(
+    tracker,
+) -> None:
+    """The batch bounds must reach the agent, not just the settings object.
+
+    ``agents.claim_batch_size`` and ``agents.claim_batches_per_pass`` exist so
+    a deployment can decide how much claim work one pass adjudicates; values
+    nothing passes to the Fact Checker are knobs that silently do nothing.
+    """
+    settings = ConfigSettings.model_validate(
+        {"agents": {"claim_batch_size": 3, "claim_batches_per_pass": 2}}
+    )
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    agent = build_agent(
+        "fact_checker",
+        settings,
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    assert agent.claim_batch_size == 3
+    assert agent.claim_batches_per_pass == 2
+
+
 def test_an_agent_without_a_sub_topic_cap_is_not_given_one(tracker) -> None:
     """The four sub-topic cap belongs to the Researcher alone."""
     tools = build_tools(

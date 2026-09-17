@@ -473,6 +473,18 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             "12288",
             12288,
         ),
+        (
+            "AGENTS_CLAIM_BATCH_SIZE",
+            ("agents", "claim_batch_size"),
+            "3",
+            3,
+        ),
+        (
+            "AGENTS_CLAIM_BATCHES_PER_PASS",
+            ("agents", "claim_batches_per_pass"),
+            "2",
+            2,
+        ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
     ],
@@ -728,6 +740,37 @@ def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
 
     assert settings.agents.source_evaluator.batch_size == 12
     assert settings.agents.source_evaluator.max_total_sources == 36
+
+
+def test_the_claim_batch_bounds_default_to_the_ruled_values(
+    config_path: Path,
+) -> None:
+    """``DEFAULT_MAX_CLAIMS`` stops being a hidden prefix and becomes a setting."""
+    from deep_research.agents.fact_checker import DEFAULT_MAX_CLAIMS
+
+    settings = load_config(str(config_path))
+
+    assert settings.agents.claim_batch_size == 5
+    assert settings.agents.claim_batch_size == DEFAULT_MAX_CLAIMS
+    assert settings.agents.claim_batches_per_pass == 6
+
+
+def test_the_shipped_config_file_carries_the_claim_batch_bounds() -> None:
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["claim_batch_size"] == 5
+    assert raw["agents"]["claim_batches_per_pass"] == 6
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"claim_batch_size": 0}, {"claim_batches_per_pass": 0}],
+)
+def test_a_claim_batch_bound_below_one_is_rejected(
+    overrides: dict[str, int],
+) -> None:
+    with pytest.raises(ValidationError):
+        AgentRuntimeConfig(**overrides)
 
 
 def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:

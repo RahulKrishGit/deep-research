@@ -103,6 +103,15 @@ agents:
   evidence_packet_chars: 24000
   prompt_context_entries: 8
   observation_summary_chars: 200
+  # How many claims one Fact Checker adjudication batch takes, and how many
+  # batches one pass runs. These replace the hidden five-claim prefix that used
+  # to be fact_checker.DEFAULT_MAX_CLAIMS: a measured run accepted exactly five
+  # claims in every extraction batch, so a sixth claim the model returned did
+  # not exist and the topics behind it were starved. Everything a pass does not
+  # adjudicate stays pending and is reported as pending, never dropped.
+  # (AGENTS_CLAIM_BATCH_SIZE / AGENTS_CLAIM_BATCHES_PER_PASS override these.)
+  claim_batch_size: 5
+  claim_batches_per_pass: 6
   # Operation-specific output budget for the planner's final
   # ResearchPlanDraft request only; ReAct decisions and judge calls keep
   # llm.max_tokens (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).

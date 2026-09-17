@@ -145,7 +145,11 @@ _AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
     "source_evaluator": lambda reputation, **shared: SourceEvaluatorAgent(
         reputation=reputation, **shared
     ),
-    "fact_checker": lambda reputation, **shared: FactCheckerAgent(**shared),
+    "fact_checker": lambda reputation, **shared: FactCheckerAgent(
+        max_claims=shared["config"].claim_batch_size,
+        batches_per_pass=shared["config"].claim_batches_per_pass,
+        **shared,
+    ),
     "synthesizer": lambda reputation, **shared: SynthesizerAgent(**shared),
     "critic": lambda reputation, **shared: CriticAgent(**shared),
 }

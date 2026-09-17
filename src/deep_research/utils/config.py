@@ -225,6 +225,15 @@ class AgentRuntimeConfig(BaseModel):
     the six production agent names — a misspelled key would leave the agent
     on the global budget while the configuration read as bound, so an
     unknown key is rejected rather than ignored.
+
+    ``claim_batch_size`` and ``claim_batches_per_pass`` bound the Fact
+    Checker's claim work. They replace the hidden five-claim prefix that used
+    to be ``fact_checker.DEFAULT_MAX_CLAIMS``: every extraction batch of one
+    measured run accepted exactly five claims, so a sixth claim the model
+    returned did not exist and the topics behind it were starved. The batch
+    size is now an explicit setting, a pass runs a bounded number of batches,
+    and every claim a pass does not adjudicate stays pending and reported
+    rather than silently dropped.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -238,6 +247,11 @@ class AgentRuntimeConfig(BaseModel):
     evidence_packet_chars: int = Field(default=24000, ge=1)
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
+    # The legacy default for this bound is ``fact_checker.DEFAULT_MAX_CLAIMS``
+    # (5). The two modules must agree, and a test pins them together rather
+    # than one importing the agent layer from the contract layer.
+    claim_batch_size: int = Field(default=5, ge=1)
+    claim_batches_per_pass: int = Field(default=6, ge=1)
     planner_final_max_tokens: int = Field(default=32768, ge=1)
     critic_review_max_tokens: int = Field(default=32768, ge=1)
     judge_max_tokens: int = Field(default=32768, ge=1)
@@ -466,6 +480,8 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
+    "AGENTS_CLAIM_BATCH_SIZE": ("agents", "claim_batch_size"),
+    "AGENTS_CLAIM_BATCHES_PER_PASS": ("agents", "claim_batches_per_pass"),
     "AGENTS_PLANNER_FINAL_MAX_TOKENS": (
         "agents",
         "planner_final_max_tokens",
