@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.planner import (
+    MAX_PLAN_REVIEW_CALLS,
     MAX_SUB_TOPICS,
     MIN_SUB_TOPICS,
     PLAN_INSTRUCTION,
@@ -22,12 +23,16 @@ from deep_research.agents.planner import (
     ResearchPlan,
     ResearchPlanDraft,
     SubTopicDraft,
-    apply_answer_contract,
     answer_kind_for,
+    apply_answer_contract,
     derive_answer_contract,
     extend_plan,
     format_plan_problems,
+    geographic_scope_for,
+    has_startup_guidance,
     invented_tolerances,
+    inventory_target_ids,
+    merge_frozen_contract,
     plan_messages,
     plan_review_messages,
     stale_year_anchors,
@@ -49,6 +54,8 @@ from deep_research.providers import (
 )
 from deep_research.utils.config import AgentRuntimeConfig, load_config
 from deep_research.utils.types import (
+    ORIGINAL_QUESTION_OMISSION_REFERENCE,
+    EvidenceTarget,
     Finding,
     MemorySnapshot,
     ResearchState,
@@ -1581,7 +1588,9 @@ def test_a_named_jurisdiction_is_recorded_and_an_unqualified_one_assumes() -> No
 
 
 def test_a_requested_word_limit_is_recorded() -> None:
-    assert _contract("Summarize the rules in under 500 words.").requested_word_limit == 500
+    limited = _contract("Summarize the rules in under 500 words.")
+
+    assert limited.requested_word_limit == 500
     assert _contract("What are the rules?").requested_word_limit is None
 
 
@@ -1629,7 +1638,8 @@ def test_targets_carry_locally_stamped_ids_and_the_contract_dimensions() -> None
     assert first.required is True
     assert first.critical is True
     assert any(
-        dimension.startswith("evidence period:") for dimension in first.required_dimensions
+        dimension.startswith("evidence period:")
+        for dimension in first.required_dimensions
     )
     assert any(
         dimension.startswith("geography:") for dimension in first.required_dimensions
@@ -1697,16 +1707,153 @@ def test_stale_year_anchors_are_reported_only_in_a_currency_frame() -> None:
     ) == []
 
 
-def test_invented_tolerances_are_rejected_unless_the_question_or_a_basis_sets_them() -> None:
+def test_a_question_about_the_clock_year_is_answered_as_of_today() -> None:
+    """Naming the clock's own year is a currency frame, not a closed period.
+
+    A 2026 question asked on 2026-09-16 was being stamped
+    ``as_of_date = 2026-12-31`` — a date three and a half months in the future,
+    frozen into the contract and copied into every target's binding evidence
+    period. That is the defect class this contract exists to remove, so the
+    regression is pinned with the probe that found it.
+    """
+    contract = _contract("What are the 2026 interconnection rules?")
+
+    assert contract.as_of_date == "2026-09-16"
+    assert "the latest available evidence as of 2026-09-16" in (
+        contract.evidence_period_requirement
+    )
+    assert "never substitute today's figures" not in (
+        contract.evidence_period_requirement
+    )
+    assert "2026-12-31" not in contract.scope_statement
+    assert contract.answer_kind == "constraints"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What are the 2026 interconnection rules?",
+        "What are the current rules?",
+        "What did the 2021 rules require?",
+        "What will storage cost in 2035?",
+        "How much capacity was withheld as of 2026-06-01?",
+        "How much will be added between 2027 and 2030?",
+    ],
+)
+def test_no_question_can_be_stamped_with_a_future_as_of_date(
+    question: str,
+) -> None:
+    """The as-of date never moves past the run clock, on any branch."""
+    contract = _contract(question)
+
+    assert contract.as_of_date <= _CLOCK_NOW.date().isoformat()
+
+
+def test_a_geography_alias_is_matched_on_token_boundaries() -> None:
+    """The reviewer's probes: "tell us", "Indiana", and the "us" pronoun.
+
+    A wrong jurisdiction is stamped into every target's geography dimension,
+    where nothing downstream can see the error, so an unrecognized name must
+    fall to the explicit-assumption path rather than to a guessed country.
+    """
+    unspecified = geographic_scope_for("Can you tell us about the permitting rules?")
+    assert unspecified[0] == "unspecified"
+    assert unspecified[1]
+
+    indiana = geographic_scope_for("What are the siting rules in Indiana?")
+    assert indiana[0] == "unspecified"
+    assert geographic_scope_for("What are the uses of storage?")[0] == "unspecified"
+
+    # Positive controls: the aliases that should still resolve.
+    assert geographic_scope_for("What are the rules in India?")[0] == "India"
+    assert geographic_scope_for("What are the rules in the US?")[0] == (
+        "United States"
+    )
+    assert geographic_scope_for("What are the U.S. rules?")[0] == "United States"
+    assert geographic_scope_for("What are the rules in the EU?")[0] == (
+        "European Union"
+    )
+
+
+def test_a_marker_is_matched_on_token_boundaries() -> None:
+    """"known" is not the currency word "now"; plurals still match."""
+    assert answer_kind_for(
+        "What is known about the 2015 capacity rules?", clock_year=2026
+    ) == "historical"
+    # A plural marker still matches its singular: "rules"/"policies" are
+    # constraints questions, and "rule"/"policy" alone never covered them.
+    assert answer_kind_for("What are the 2026 rules?", clock_year=2026) == (
+        "constraints"
+    )
+    assert answer_kind_for("What are the current policies?", clock_year=2026) == (
+        "constraints"
+    )
+
+
+def test_a_comparative_regulatory_question_is_an_independent_pair() -> None:
+    """Comparison outranks attribution: a comparison needs two sources.
+
+    "Is permitting slower in California than in Texas?" contains "permit", and
+    the attribution rule captured it — a comparative conclusion downgraded to
+    citing one authority, which is the opposite of Section 2.1.
+    """
+    assert (
+        support_policy_for(
+            question="Is permitting slower in California than in Texas?"
+        )
+        == "independent_pair"
+    )
+    assert (
+        support_policy_for(
+            question="Did the 2023 regulation cost more than the 2019 one?"
+        )
+        == "independent_pair"
+    )
+    # The attribution rule still owns the non-comparative cases.
+    assert (
+        support_policy_for(question="What is the fee schedule for a permit?")
+        == "primary_attribution"
+    )
+    assert (
+        support_policy_for(
+            question="What is the effective date of the 2023 rule?"
+        )
+        == "primary_attribution"
+    )
+
+
+def test_a_bare_percentage_is_not_an_invented_tolerance() -> None:
+    """A number is not a tolerance; an agreement frame is what makes one.
+
+    Reporting a bare "15%" forced a repair on a perfectly ordinary question and
+    then failed the planning pass when the model kept its correct number.
+    """
+    question = "How much capacity was withheld?"
+
+    assert invented_tolerances(
+        "Did withdrawals exceed 15% in 2025?", question=question
+    ) == []
+    assert invented_tolerances(
+        "At least 15% of the queue withdrew.", question=question
+    ) == []
+    assert invented_tolerances(
+        "Growth was 10% year over year.", question=question
+    ) == []
+
+
+def test_an_invented_tolerance_needs_no_basis_in_the_question() -> None:
     """The last measured plan invented 10%, 5 pp, 15%, and 3 pp."""
     question = "How much capacity was withheld in 2024?"
 
     assert invented_tolerances(
         "Two publishers agree within 10%.", question=question
-    ) == ["within 10%"]
+    ) == ["10%"]
     assert invented_tolerances(
         "The two figures agree within 5 percentage points.", question=question
-    ) == ["within 5 percentage points"]
+    ) == ["5 percentage points"]
+    assert invented_tolerances(
+        "Both sources agree to within 3 pp.", question=question
+    ) == ["3 pp"]
     # The question itself sets the precision.
     assert invented_tolerances(
         "Both agree within 3 percentage points.",
@@ -1838,10 +1985,17 @@ def test_a_compound_target_is_found_by_the_review_not_by_a_regex() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_plan_review_is_one_tool_free_call_that_can_fail_the_plan(
+async def test_the_bounded_plan_review_repairs_once_and_can_fail_the_plan(
     tracker: Tracker,
 ) -> None:
-    """A review that stays unsound fails the session with its named defects."""
+    """The review/repair cycle is bounded, and a stuck plan fails the session.
+
+    The bound is four plan-side calls: plan, review, repaired plan, confirming
+    review. It is deliberately *two* reviews rather than one — a repair that is
+    never re-reviewed is a plan accepted on hope — so the bound is asserted
+    here rather than left to drift, and a plan that stays unsound raises with
+    the reviewer's own defect list instead of being accepted.
+    """
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
         outputs=[
@@ -1872,6 +2026,11 @@ async def test_the_plan_review_is_one_tool_free_call_that_can_fail_the_plan(
         "ResearchPlanDraft",
         "PlanReviewDraft",
     ]
+    review_calls = [
+        call for call in completer.calls if call[0] == "PlanReviewDraft"
+    ]
+    assert MAX_PLAN_REVIEW_CALLS == 2
+    assert len(review_calls) <= MAX_PLAN_REVIEW_CALLS
     assert any(
         "target-01-01 combines two measures" in problem
         for problem in caught.value.problems
@@ -1881,6 +2040,150 @@ async def test_the_plan_review_is_one_tool_free_call_that_can_fail_the_plan(
     assert "What limits grid-scale battery storage deployment?" in review_request
     for tool_name in ("web_search", "query_memory", "web_scraper"):
         assert tool_name not in review_request
+
+
+@pytest.mark.asyncio
+async def test_a_biased_premise_is_named_by_the_review_and_fails_the_plan(
+    tracker: Tracker,
+) -> None:
+    """A query or criterion that assumes the answer is repaired, then refused.
+
+    "The plan is biased" is a meaning defect, so the review is what names it;
+    the repair prompt must carry the reviewer's finding rather than a generic
+    complaint, and a plan that keeps the premise must not be accepted.
+    """
+    premise = "the query assumes storage already caused the outage"
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(
+                sound=False,
+                unsupported_premises=[premise],
+                repair_instruction="Ask which causes are established.",
+            ),
+            _sorting_plan(),
+            _review(sound=False, unsupported_premises=[premise]),
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as caught:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(
+                _state("What limits grid-scale battery storage deployment?")
+            )
+
+    repair_request = completer.calls[2][2][1].content
+    assert premise in repair_request
+    assert any(
+        f"plan review found an unsupported premise: {premise}" in problem
+        for problem in caught.value.problems
+    )
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_scope_widening_target_is_named_by_the_review_and_fails(
+    tracker: Tracker,
+) -> None:
+    """A target that widens the frozen scope cannot be accepted.
+
+    The review can only judge the scope if the request carries the frozen
+    contract, so the request is inspected as well as the outcome: the reviewer
+    must see the contract's geography and as-of date beside the plan.
+    """
+    widening = "What is the global effect of the United States rule?"
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(
+                sound=False,
+                unsupported_premises=[
+                    f"target-01-01 widens the frozen scope: {widening}"
+                ],
+                repair_instruction="Keep every target inside the scope.",
+            ),
+            _sorting_plan(),
+            _review(
+                sound=False,
+                unsupported_premises=[
+                    f"target-01-01 widens the frozen scope: {widening}"
+                ],
+            ),
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as caught:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(
+                _state("What are the storage rules in the United States?")
+            )
+
+    review_request = completer.calls[1][2][1].content
+    assert "- Scope: United States" in review_request
+    assert "- As of: 2026-09-16" in review_request
+    assert "widen" in review_request
+    assert any(
+        "widens the frozen scope" in problem
+        for problem in caught.value.problems
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_infeasible_target_batch_is_repaired_once_then_refused(
+    tracker: Tracker,
+) -> None:
+    """More than four obligations on one sub-topic is caught structurally.
+
+    Feasibility has a structural half (a sub-topic carries at most four
+    obligations; a pass that has to settle eight is not a pass) and a semantic
+    half the review owns. This pins the structural half: the batch is rejected,
+    the repair is asked for, and a model that keeps the oversized batch fails
+    the session by name rather than producing a plan no pass could finish.
+    """
+    oversized = ResearchPlanDraft(
+        sub_topics=[
+            _draft(
+                title,
+                priority=index,
+                evidence_targets=[
+                    _target(f"What does {title} report as measure {measure}?")
+                    for measure in range(1, 6)
+                ],
+            )
+            for index, title in enumerate(
+                ("Queue totals", "Withdrawn capacity", "Reforms"), start=1
+            )
+        ]
+    )
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[oversized, oversized],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as caught:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(
+                _state("What limits grid-scale battery storage deployment?")
+            )
+
+    # Two plan requests and no review: the batch never became reviewable.
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "ResearchPlanDraft",
+    ]
+    repair_request = completer.calls[1][2][1].content
+    assert "evidence_targets" in repair_request
+    assert any("evidence_targets" in problem for problem in caught.value.problems)
 
 
 @pytest.mark.asyncio
@@ -2146,6 +2449,231 @@ def test_a_narrowed_toolset_can_only_remove_tools(tracker: Tracker) -> None:
 
     assert narrowed.names == ("web_search",)
     assert agent.toolset.names == ("query_memory", "web_search")
+
+
+@pytest.mark.asyncio
+async def test_an_unguided_planner_is_refused_a_second_memory_lookup(
+    tracker: Tracker,
+) -> None:
+    """The one-lookup cap is enforced on the production class, not by config.
+
+    ``tool_budget_for("planner") == 1`` alone would allow one lookup per loop
+    decision; what "a run totals no more than one procedural lookup" needs is
+    the loop actually stopping on the second attempt, which only a run of the
+    real ``PlannerAgent`` can show.
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool(
+                "Recall procedural guidance.",
+                "query_memory",
+                '{"query": "quantum"}',
+            ),
+            use_tool(
+                "Recall once more.",
+                "query_memory",
+                '{"query": "quantum again"}',
+            ),
+            finish("No further lookup.", "Three angles matter."),
+        ],
+        outputs=[_sorting_plan(), _review()],
+    )
+    agent = _planner(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=4,
+            tool_budget=10,
+            tool_budget_overrides={"planner": 1},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert outcome.react.tool_calls == 1
+    assert outcome.react.stop_reason == "tool_budget_exhausted"
+    # The loop records the refusal it stopped on; what matters is that the
+    # second lookup never executed, which the executed-call count above says.
+    assert "agent_tool_budget_exhausted" in {
+        error.error_type for error in outcome.errors
+    }
+
+
+def test_recalled_leads_alone_do_not_suppress_the_procedural_lookup() -> None:
+    """A findings-only snapshot is not procedural guidance.
+
+    ``has_startup_guidance`` keys on ``suggested_strategies`` alone. A resumed
+    session whose snapshot carries recalled leads but no strategies has been
+    given no procedural guidance, so it keeps its one lookup rather than being
+    denied both the startup guidance and the tool that could replace it.
+    """
+    leads_only = MemorySnapshot(
+        similar_findings=[
+            Finding(
+                content="Shor's algorithm breaks RSA.",
+                source_url="https://example.test/shor",
+                source_title="Shor 1994",
+                extracted_at="2026-01-01T00:00:00+00:00",
+                confidence=0.99,
+                related_sub_topic="Cryptography",
+            )
+        ]
+    )
+
+    assert has_startup_guidance(leads_only) is False
+    assert (
+        has_startup_guidance(
+            MemorySnapshot(suggested_strategies=["Prefer primary filings."])
+        )
+        is True
+    )
+    assert has_startup_guidance(MemorySnapshot()) is False
+
+
+@pytest.mark.asyncio
+async def test_a_leads_only_session_still_offers_the_procedural_lookup(
+    tracker: Tracker,
+) -> None:
+    """The same rule as it reaches the provider request."""
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool(
+                "Recall procedural guidance.",
+                "query_memory",
+                '{"query": "quantum"}',
+            ),
+            finish("No further lookup.", "Three angles matter."),
+        ],
+        outputs=[_sorting_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+    state = _state(
+        memory_context=MemorySnapshot(
+            similar_findings=[
+                Finding(
+                    content="Shor's algorithm breaks RSA.",
+                    source_url="https://example.test/shor",
+                    source_title="Shor 1994",
+                    extracted_at="2026-01-01T00:00:00+00:00",
+                    confidence=0.99,
+                    related_sub_topic="Cryptography",
+                )
+            ]
+        )
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(state)
+
+    assert [
+        definition.name for definition in completer.react_calls[0].tools
+    ] == ["query_memory", "web_search"]
+
+
+def test_the_inventory_excludes_the_reserved_omission_reference() -> None:
+    """The frozen denominator counts evidence targets, not recorded gaps."""
+    omission = EvidenceTarget(
+        target_id="topic-03-target-01",
+        coverage_id="topic-03",
+        question=ORIGINAL_QUESTION_OMISSION_REFERENCE,
+        required_dimensions=["original question coverage"],
+        required=True,
+        critical=True,
+        support_policy="independent_pair",
+    )
+    real = EvidenceTarget(
+        target_id="topic-03-target-02",
+        coverage_id="topic-03",
+        question="What does the third topic report?",
+        required_dimensions=["fact"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    sub_topic = SubTopic(
+        coverage_id="topic-03",
+        title="Reforms",
+        rationale="Reforms are load-bearing.",
+        search_queries=["reforms 2026"],
+        success_criteria=["A named source about reforms."],
+        priority=1,
+        evidence_targets=[omission, real],
+    )
+
+    assert inventory_target_ids([sub_topic]) == ["topic-03-target-02"]
+
+
+@pytest.mark.asyncio
+async def test_a_second_planning_pass_cannot_re_anchor_the_frozen_contract(
+    tracker: Tracker,
+) -> None:
+    """Section 2.3: the question, scope, and as-of date are frozen.
+
+    A later planning pass — a refinement, a resume, a replan after a failure —
+    must not move a session's as-of date or widen its scope: every target
+    already stamped carries the original obligation, and re-anchoring would
+    silently change what "current" means for all of them.
+    """
+    frozen = _contract("What are the storage rules in the United States?")
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_sorting_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+    state = merge_research_state(
+        _state("What are the storage rules in the United States?"),
+        {
+            "answer_contract": frozen,
+            "initial_target_ids": ["topic-01-target-01"],
+        },
+    )
+    # The later pass is asked a *different* question with no geography and no
+    # clock-relative anchor; neither may reach the contract.
+    state = state.model_copy(
+        update={"original_question": "What are the storage rules?"}
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert "answer_contract" not in outcome.state_update
+    assert outcome.result is not None
+    assert outcome.result.answer_contract == frozen
+    assert outcome.result.answer_contract.geographic_scope == "United States"
+    assert outcome.result.answer_contract.as_of_date == "2026-09-16"
+    # Every newly stamped obligation carries the frozen period and geography.
+    for sub_topic in outcome.result.sub_topics:
+        for target in sub_topic.evidence_targets:
+            assert "geography: United States" in target.required_dimensions
+    plan_request = completer.calls[0][2][1].content
+    assert "- Scope: United States" in plan_request
+
+
+def test_merging_a_frozen_contract_fills_only_what_it_never_had() -> None:
+    """A word limit nobody had requested is the only fillable field today."""
+    frozen = _contract("What are the current constraints?")
+    later = derive_answer_contract(
+        question="What are the constraints in California?",
+        now=_CLOCK_NOW,
+    )
+
+    assert merge_frozen_contract(frozen, later) == frozen
+
+    with_limit = derive_answer_contract(
+        question="What are the constraints?",
+        now=_CLOCK_NOW,
+        requested_word_limit=400,
+    )
+
+    merged = merge_frozen_contract(frozen, with_limit)
+
+    assert merged.requested_word_limit == 400
+    assert merged.question == frozen.question
+    assert merged.geographic_scope == frozen.geographic_scope
+    assert merged.as_of_date == frozen.as_of_date
+    assert merged.scope_statement == frozen.scope_statement
 
 
 @pytest.mark.asyncio

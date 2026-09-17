@@ -17,6 +17,7 @@ from typing import Literal
 from deep_research.memory.entries import MemoryEntry
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
+from deep_research.utils.text import unique_phrases
 from deep_research.utils.types import Finding, MemorySnapshot
 
 # What a recalled finding is filed under when the entry that produced it
@@ -61,35 +62,21 @@ def _recalled_finding(entry: MemoryEntry) -> Finding | None:
         return None
 
 
-def _deduplicated(values: list[str]) -> list[str]:
-    """Whitespace-collapsed, case-insensitively unique, first-seen order.
+def _recalled_strategies(procedural: ProceduralMemory | None) -> list[str]:
+    """Every procedural query template the store holds, deduplicated.
 
-    A strategy recorded twice — or recorded once by two sessions with
-    different spacing — is one piece of guidance. Handing the planner the
+    Deduplication is ``utils.text.unique_phrases`` — the same rule the planner
+    applies to a target's dimensions, so "the same phrase" means one thing in
+    this codebase. A strategy recorded twice, or recorded once by two sessions
+    with different spacing, is one piece of guidance; handing the planner the
     same line five times spends its attention on nothing.
     """
-    seen: set[str] = set()
-    unique: list[str] = []
-    for value in values:
-        cleaned = " ".join(value.split())
-        if not cleaned:
-            continue
-        key = cleaned.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(cleaned)
-    return unique
-
-
-def _recalled_strategies(procedural: ProceduralMemory | None) -> list[str]:
-    """Every procedural query template the store holds, deduplicated."""
     if procedural is None:
         return []
     templates: list[str] = []
     for record in procedural.strategies:
         templates.extend(record.query_templates)
-    return _deduplicated(templates)[:MAX_SUGGESTED_STRATEGIES]
+    return unique_phrases(templates)[:MAX_SUGGESTED_STRATEGIES]
 
 
 async def recall_memory_context(

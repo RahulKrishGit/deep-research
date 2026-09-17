@@ -376,13 +376,17 @@ CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
 # twice more: once for ``PROMPT_VERSION`` in the shared ``agents.prompts``
 # module, and once for the per-call configuration fingerprint added to each
 # agent's ``AgentRun``. Both are the documented false positive of hashing
-# module source rather than prompt text — any module edit moves the value.
-# Final Task 2 pins: planner ``88026ce6be52``, researcher ``711b4d414515``,
-# source_evaluator ``c50282e1dd42``, fact_checker ``675fa5aea904``,
-# synthesizer ``a7fe09fe50c7``, critic ``7e0d97508b00``. The Judge pin is
-# unchanged.
+# module source rather than prompt text — any module edit moves the value. The
+# Task 2 review round moved the planner's alone a fourth time
+# (``88026ce6be52`` -> ``cd8a2ce1c58e``) for the token-boundary marker
+# matching, the agreement-frame tolerance check, and the frozen-contract
+# guard: module-source moves with no prompt-string edit beyond the tightened
+# review instruction. Final Task 2 pins: planner ``cd8a2ce1c58e``, researcher
+# ``711b4d414515``, source_evaluator ``c50282e1dd42``, fact_checker
+# ``675fa5aea904``, synthesizer ``a7fe09fe50c7``, critic ``7e0d97508b00``. The
+# Judge pin is unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "88026ce6be52",
+    "planner": "cd8a2ce1c58e",
     "researcher": "711b4d414515",
     "source_evaluator": "c50282e1dd42",
     "fact_checker": "675fa5aea904",

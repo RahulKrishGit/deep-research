@@ -41,6 +41,7 @@ from deep_research.providers import (
 )
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
+from deep_research.utils.text import collapse_whitespace, unique_phrases
 from deep_research.utils.types import (
     MAX_TARGETS_PER_TOPIC,
     AnswerContract,
@@ -52,6 +53,7 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     SubTopic,
+    counted_evidence_targets,
 )
 
 PLANNER_NAME = "planner"
@@ -59,6 +61,14 @@ MIN_SUB_TOPICS = 3
 MAX_SUB_TOPICS = 7
 MIN_TARGETS_PER_TOPIC = 1
 _COVERAGE_ID_WIDTH = 2
+
+# How many times one planning run may ask the semantic review for a verdict:
+# the initial verdict, and one confirming verdict on the plan repaired from it.
+# Two rather than one because a repair nobody re-reviews is a plan accepted on
+# hope; bounded at two because an unbounded review loop is a planning pass that
+# never ends. ``_review_plan`` enforces it, so the flow cannot quietly grow a
+# third call.
+MAX_PLAN_REVIEW_CALLS = 2
 
 # Mirrors the Researcher's injected clock: a callable returning a
 # timezone-aware datetime. The planner stamps its as-of date from this and
@@ -110,7 +120,7 @@ _COMPARISON_MARKERS = (
     "compared with",
     "compared to",
     "versus",
-    " vs ",
+    "vs",
     "difference between",
     "trade-off",
     "tradeoff",
@@ -118,6 +128,17 @@ _COMPARISON_MARKERS = (
     "cheaper",
     "more expensive",
     "relative to",
+    # Comparative inequalities. "Did the 2023 regulation cost more than the
+    # 2019 one?" is a comparison even though it names no comparison verb, and
+    # the attribution rule otherwise claimed it for "regulation".
+    "more than",
+    "less than",
+    "faster than",
+    "slower than",
+    "higher than",
+    "lower than",
+    "greater than",
+    "smaller than",
 )
 _CONSTRAINTS_MARKERS = (
     "constraint",
@@ -158,13 +179,20 @@ _HISTORICAL_MARKERS = (
 # question states a scope, and an unrecognized name simply means the plan says
 # the scope is unspecified and names that as an assumption — which is honest,
 # while a wrong guess is not.
+#
+# The bare pronoun "us" is deliberately absent. "Can you tell us about the
+# permitting rules?" names no jurisdiction, and a two-letter alias that also
+# occurs as an English word turned that question into a United States scope
+# stamped into every target's geography dimension. The abbreviations that
+# remain are unambiguous as whole tokens ("u.s.", "the us"), and every alias is
+# matched on token boundaries so "Indiana" cannot be read as "India".
 _GEOGRAPHIES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("United States", ("united states", "u.s.", "us ", "usa", "american")),
+    ("United States", ("united states", "u.s.", "usa", "the us", "american")),
     ("California", ("california",)),
     ("Texas", ("texas",)),
     ("New York", ("new york",)),
-    ("European Union", ("european union", "eu ", "e.u.")),
-    ("United Kingdom", ("united kingdom", "uk ", "britain", "british")),
+    ("European Union", ("european union", "e.u.", "eu")),
+    ("United Kingdom", ("united kingdom", "britain", "british", "uk")),
     ("Germany", ("germany", "german")),
     ("France", ("france", "french")),
     ("China", ("china", "chinese")),
@@ -188,17 +216,25 @@ _CURRENCY_MARKERS = (
     "recent",
 )
 
-# ``10%``, ``5 percentage points``, ``3 pp``, ``within 15 percent``. A
-# cross-publisher agreement tolerance is a measurement claim: without a basis
-# in the question or a named method it is invented, and the last measured plan
-# invented four of them (baseline TR-04).
-_TOLERANCE_PATTERN = re.compile(
-    r"(?:\bwithin\b|\bplus or minus\b|\+/-|±)?\s*"
+# ``10%``, ``5 percentage points``, ``3 pp``. A cross-publisher agreement
+# tolerance is a measurement claim: without a basis in the question or a named
+# method it is invented, and the last measured plan invented four of them
+# (baseline TR-04). The amount alone is not the defect — "did withdrawals
+# exceed 15%?" is a perfectly ordinary question — so a tolerance is reported
+# only when an *agreement frame* governs it (``_AGREEMENT_FRAME`` within
+# ``_AGREEMENT_WINDOW`` characters before the amount). The frame is what makes
+# the number a claim about how closely two sources must match.
+_TOLERANCE_AMOUNT_PATTERN = re.compile(
     r"\d+(?:\.\d+)?\s*(?:percentage points?|percent|pp\b|%)",
     re.IGNORECASE,
 )
-# Only a percentage tolerance carries the "these two sources agree to within
-# X" risk; ``5 percentage points`` and ``10%`` both match the pattern above.
+_AGREEMENT_FRAME = re.compile(
+    r"\b(?:within|agrees?|agreed|agreement|consistent|plus or minus)\b"
+    r"|\+/-|±",
+    re.IGNORECASE,
+)
+_AGREEMENT_WINDOW = 40
+_TOLERANCE_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 _YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
 _ISO_DATE_PATTERN = re.compile(r"\b(?:19|20)\d{2}-\d{2}-\d{2}\b")
 _WORD_LIMIT_PATTERN = re.compile(r"\b(\d{2,7})[- ]words?\b", re.IGNORECASE)
@@ -211,7 +247,10 @@ _DERIVATION_MARKERS = (
     "computed",
     "derive",
     "derived",
-    " per ",
+    # "per" as a whole word, never " per ": a marker with its own surrounding
+    # spaces cannot satisfy a token-boundary lookaround, so "cost per megawatt"
+    # stopped matching at all.
+    "per",
     "per capita",
     "per year",
     "per unit",
@@ -503,12 +542,16 @@ def planner_guidance(memory_context: MemorySnapshot) -> str:
 
 
 def has_startup_guidance(memory_context: MemorySnapshot) -> bool:
-    """True when this session's startup recall produced usable guidance.
+    """True when this session's startup recall produced procedural guidance.
 
-    The planner's own tool lookup is permitted only when this is false, so
-    the run totals at most one procedural lookup.
+    Keyed on ``suggested_strategies`` alone, and that is the whole ruling: the
+    planner's own tool lookup is permitted only when startup recall returned
+    nothing. A resumed session whose snapshot carries recalled leads but no
+    strategies has *not* been given procedural guidance, so it keeps its one
+    lookup — otherwise the planner would be denied both the startup guidance
+    and the tool that could replace it.
     """
-    return bool(planner_guidance(memory_context).strip())
+    return bool(memory_context.suggested_strategies)
 
 
 class PlanReviewDraft(ContractModel):
@@ -578,7 +621,56 @@ class ResearchPlan(ContractModel):
 
 def _normalized_question(question: str) -> str:
     """Collapse whitespace and casefold, for marker matching only."""
-    return " ".join(question.split()).casefold()
+    return collapse_whitespace(question).casefold()
+
+
+def _mentions(normalized: str, markers: Sequence[str]) -> bool:
+    """True when one of ``markers`` appears in ``normalized`` as a whole token.
+
+    Substring matching is wrong for every list in this module: it read "tell us
+    about the permitting rules" as a United States scope (the ``us`` alias),
+    "Indiana" as India, and "known" as the currency word "now" — and a wrong
+    jurisdiction or currency frame is stamped into every target's binding
+    dimensions, where nothing downstream can see the error. Each marker is
+    matched against a token boundary on both sides, so a marker only fires when
+    the question actually contains that word or phrase.
+
+    A single-word marker also matches its regular plural ("rule"/"rules",
+    "policy"/"policies", "methodology"/"methodologies"), because a question
+    asks about rules far more often than about one rule. Multi-word markers are
+    matched exactly: the suffix would attach to their last word and turn "the
+    us" into "the uses".
+
+    ``normalized`` must already be collapsed and casefolded.
+    """
+    return any(
+        _marker_pattern(marker).search(normalized) is not None
+        for marker in markers
+    )
+
+
+def _marker_pattern(marker: str) -> re.Pattern[str]:
+    """One compiled token-boundary pattern per marker, built on first use."""
+    pattern = _MARKER_PATTERNS.get(marker)
+    if pattern is None:
+        if " " in marker:
+            alternatives = [re.escape(marker)]
+        elif marker.endswith("y"):
+            # "policy"/"policies", "methodology"/"methodologies": the plural
+            # changes the stem, so the regular-suffix branch cannot reach it.
+            alternatives = [re.escape(marker), re.escape(marker[:-1]) + "ies"]
+        else:
+            alternatives = [re.escape(marker) + "(?:es|s)?"]
+        pattern = re.compile(
+            "(?<![a-z0-9])(?:" + "|".join(alternatives) + ")(?![a-z0-9])"
+        )
+        _MARKER_PATTERNS[marker] = pattern
+    return pattern
+
+
+# Compiled once per marker string; the marker vocabulary is a module constant,
+# so the cache is bounded by it.
+_MARKER_PATTERNS: dict[str, re.Pattern[str]] = {}
 
 
 def answer_kind_for(question: str, *, clock_year: int | None = None) -> AnswerKind:
@@ -598,26 +690,30 @@ def answer_kind_for(question: str, *, clock_year: int | None = None) -> AnswerKi
     request for a number, not for 2024's state of affairs. A question that
     asks for currency at all is never classified historical.
     """
-    normalized = f" {_normalized_question(question)} "
+    normalized = _normalized_question(question)
     years = _past_years(question)
-    asks_for_currency = any(marker in normalized for marker in _CURRENCY_MARKERS)
+    clock_year_is_stated = clock_year is not None and clock_year in years
+    asks_for_currency = (
+        _mentions(normalized, _CURRENCY_MARKERS) or clock_year_is_stated
+    )
     past_years = [
         year for year in years if clock_year is None or year < clock_year
     ]
-    if any(marker in normalized for marker in _COMPARISON_MARKERS):
+    if _mentions(normalized, _COMPARISON_MARKERS):
         return "comparison"
     # A question that asks *why* is answered by a mechanism whatever period it
     # is about; the period travels in the as-of date, not in the answer form.
-    if any(marker in normalized for marker in _EXPLANATION_MARKERS):
+    if _mentions(normalized, _EXPLANATION_MARKERS):
         return "explanation"
     # A question anchored in a period the clock has left behind is answered
     # about that period: the answer form is "the state of affairs then", and
-    # the as-of date says which period that is.
+    # the as-of date says which period that is. Naming the clock's own year is
+    # not such a period — it is a currency frame.
     if past_years and not asks_for_currency:
         return "historical"
-    if any(marker in normalized for marker in _CONSTRAINTS_MARKERS):
+    if _mentions(normalized, _CONSTRAINTS_MARKERS):
         return "constraints"
-    if any(marker in normalized for marker in _HISTORICAL_MARKERS):
+    if _mentions(normalized, _HISTORICAL_MARKERS):
         return "historical"
     return "factual"
 
@@ -635,16 +731,18 @@ def _past_years(question: str) -> list[int]:
 def geographic_scope_for(question: str) -> tuple[str, list[str]]:
     """The scope the question states, and the assumption when it states none.
 
-    A named jurisdiction is read from a short explicit vocabulary. Anything
-    else — including a jurisdiction this list does not know — resolves to
-    ``"unspecified"`` with an explicit assumption, because a regional sample
-    silently presented as the world is worse than an admitted gap.
+    A named jurisdiction is read from a short explicit vocabulary, matched on
+    token boundaries so "Indiana" is not read as "India" and the pronoun "us"
+    is not read as the United States. Anything else — including a jurisdiction
+    this list does not know — resolves to ``"unspecified"`` with an explicit
+    assumption, because a wrong jurisdiction stamped into every target's
+    geography dimension is worse than an admitted gap.
     """
-    normalized = f" {_normalized_question(question)} "
+    normalized = _normalized_question(question)
     for canonical, aliases in _GEOGRAPHIES:
-        if any(alias in normalized for alias in aliases):
+        if _mentions(normalized, aliases):
             return canonical, []
-    if any(marker in normalized for marker in _GLOBAL_MARKERS):
+    if _mentions(normalized, _GLOBAL_MARKERS):
         return "global", []
     return (
         "unspecified",
@@ -711,11 +809,17 @@ def derive_answer_contract(
     """Freeze the question, its scope, its as-of date, and its answer form.
 
     ``as_of_date`` comes from ``now`` — the run's injected clock — and never
-    from model knowledge or memory. The one exception is a date the question
-    itself supplies: a question about 2021 is answered as of 2021, and the
-    contract says so rather than silently re-anchoring it to today. Years
-    later than the clock's are treated as forecast horizons, not as-of dates,
-    so a 2035 projection cannot become today's cost.
+    from model knowledge or memory. The one exception is a period the question
+    itself supplies and the clock has already passed: a question about 2021 is
+    answered as of 2021, and the contract says so rather than silently
+    re-anchoring it to today. Years later than the clock's are forecast
+    horizons, not as-of dates, so a 2035 projection cannot become today's cost.
+
+    Naming the clock's *own* year is a currency frame, not a closed period: a
+    question about "the 2026 rules" asked on 2026-09-16 is answered as of
+    2026-09-16, not as of 2026-12-31. Freezing a future date into the contract
+    would put a date nobody has lived through into every target's binding
+    obligation — the very defect class this contract exists to remove.
     """
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError(
@@ -725,21 +829,28 @@ def derive_answer_contract(
         raise ValueError("derive_answer_contract requires a question")
 
     clock_year = now.year
+    clock_date = now.date().isoformat()
     years = _past_years(question)
-    past_years = [year for year in years if year <= clock_year]
+    current_years = [year for year in years if year == clock_year]
+    past_years = [year for year in years if year < clock_year]
     future_years = [year for year in years if year > clock_year]
     iso_dates = _ISO_DATE_PATTERN.findall(question)
-    historical_iso = [value for value in iso_dates if value <= now.date().isoformat()]
+    historical_iso = [value for value in iso_dates if value <= clock_date]
 
     if historical_iso:
         as_of_date = max(historical_iso)
     elif past_years:
-        as_of_date = f"{max(past_years)}-12-31"
+        # Capped at the clock as well as at the year's end: a question about
+        # the current year cannot reach this branch, and if a future one ever
+        # did, the cap keeps the contract's date from moving past today.
+        as_of_date = min(f"{max(past_years)}-12-31", clock_date)
     else:
-        as_of_date = now.date().isoformat()
+        as_of_date = clock_date
 
     normalized = _normalized_question(question)
-    asks_for_currency = any(marker in normalized for marker in _CURRENCY_MARKERS)
+    asks_for_currency = _mentions(normalized, _CURRENCY_MARKERS) or bool(
+        current_years
+    )
     scope, assumptions = geographic_scope_for(question)
     kind = answer_kind_for(question, clock_year=clock_year)
     limit = (
@@ -793,8 +904,31 @@ def geographic_obligation(contract: AnswerContract) -> str:
     return f"geography: {contract.geographic_scope}"
 
 
+def merge_frozen_contract(
+    existing: AnswerContract,
+    derived: AnswerContract,
+) -> AnswerContract:
+    """Keep what a session already froze; fill only what it never had.
+
+    Section 2.3 freezes the original question, the scope, and the as-of date
+    for the session. A later planning pass may plan more work, but it may not
+    re-anchor the period or widen the scope: an as-of date that moves between
+    passes would silently change what "current" means for every target
+    already stamped. So the existing contract wins field by field, and the
+    only thing taken from the new derivation is a field the frozen contract
+    genuinely lacks — today, a reader word limit nobody had requested yet.
+    """
+    fill: dict[str, object] = {}
+    if (
+        existing.requested_word_limit is None
+        and derived.requested_word_limit is not None
+    ):
+        fill["requested_word_limit"] = derived.requested_word_limit
+    return existing.model_copy(update=fill) if fill else existing
+
+
 def _normalized_title(title: str) -> str:
-    return " ".join(title.split()).casefold()
+    return collapse_whitespace(title).casefold()
 
 
 def coverage_id_for(position: int) -> str:
@@ -891,19 +1025,27 @@ def support_policy_for(*, question: str) -> str:
     so the planner assigns it here and no later stage may downgrade it to
     pass a coverage gate. The rules, in precedence order:
 
+    - a target that compares two things is ``independent_pair``: a comparative
+      conclusion is exactly what Section 2.1 says needs independent evidence,
+      and it must not be downgraded to citing one authority because the
+      comparison happens to be about permits or regulations. The comparison
+      test therefore comes *before* the attribution test — "is permitting
+      slower in California than in Texas?" is a comparison first.
     - a target that asks for a computed quantity is ``derivation``: its
       premises must be supported and its arithmetic reproducible;
     - a target about an official rule, definition, or measurement is
       ``primary_attribution``: the issuing body's own instrument settles it,
       and requiring a second organization to independently model the same
       official date would make an official date unanswerable;
-    - everything else — comparative, causal, and empirical conclusions — is
+    - everything else — causal and empirical conclusions — is
       ``independent_pair``.
     """
-    normalized = f" {_normalized_question(question)} "
-    if any(marker in normalized for marker in _DERIVATION_MARKERS):
+    normalized = _normalized_question(question)
+    if _mentions(normalized, _COMPARISON_MARKERS):
+        return "independent_pair"
+    if _mentions(normalized, _DERIVATION_MARKERS):
         return "derivation"
-    if any(marker in normalized for marker in _PRIMARY_ATTRIBUTION_MARKERS):
+    if _mentions(normalized, _PRIMARY_ATTRIBUTION_MARKERS):
         return "primary_attribution"
     return "independent_pair"
 
@@ -919,7 +1061,7 @@ def stale_year_anchors(text: str, *, as_of_year: int) -> list[int]:
     judges meaning, and this only refuses an explicitly stale anchor.
     """
     normalized = _normalized_question(text)
-    if not any(marker in normalized for marker in _CURRENCY_MARKERS):
+    if not _mentions(normalized, _CURRENCY_MARKERS):
         return []
     return sorted(
         {
@@ -928,6 +1070,25 @@ def stale_year_anchors(text: str, *, as_of_year: int) -> list[int]:
             if int(match) < as_of_year
         }
     )
+
+
+def _agreement_tolerances(text: str) -> list[str]:
+    """The numeric tolerances in ``text`` that an agreement frame governs.
+
+    The amount alone is not the defect: "did withdrawals exceed 15%?" is an
+    ordinary question, and reporting it forced a repair — and then a failed
+    planning pass when the model kept its correct number. What *is* a defect is
+    a tolerance: a claim about how closely two sources must match, which is
+    present only when a frame word ("within", "plus or minus", "agree", "±")
+    governs the number.
+    """
+    found: list[str] = []
+    for match in _TOLERANCE_AMOUNT_PATTERN.finditer(text):
+        window = text[max(0, match.start() - _AGREEMENT_WINDOW):match.start()]
+        if _AGREEMENT_FRAME.search(window) is None:
+            continue
+        found.append(" ".join(match.group(0).split()))
+    return found
 
 
 def invented_tolerances(text: str, *, question: str) -> list[str]:
@@ -939,21 +1100,24 @@ def invented_tolerances(text: str, *, question: str) -> list[str]:
     establishes it. Otherwise the planner invented it — the last measured
     plan invented 10%, 5 percentage points, 15%, and 3 percentage points
     (baseline TR-04) — and it is reported so the repair prompt can remove it.
+    A number with no agreement frame is not a tolerance at all and is never
+    reported; see ``_agreement_tolerances``.
     """
-    found = [
-        match.group(0).strip()
-        for match in _TOLERANCE_PATTERN.finditer(text)
-    ]
+    found = _agreement_tolerances(text)
     if not found:
         return []
-    question_tolerances = {
-        match.group(0).strip()
-        for match in _TOLERANCE_PATTERN.finditer(question)
+    question_numbers = {
+        number
+        for value in _agreement_tolerances(question)
+        for number in _TOLERANCE_NUMBER_PATTERN.findall(value)
     }
-    basis = any(marker in _normalized_question(text) for marker in _BASIS_MARKERS)
-    if basis:
+    if _mentions(_normalized_question(text), _BASIS_MARKERS):
         return []
-    return [value for value in found if value not in question_tolerances]
+    return [
+        value
+        for value in found
+        if not set(_TOLERANCE_NUMBER_PATTERN.findall(value)) & question_numbers
+    ]
 
 
 def target_problems(
@@ -1056,7 +1220,7 @@ def apply_answer_contract(
                 target_id=target_id_for(sub_topic.coverage_id, position),
                 coverage_id=sub_topic.coverage_id,
                 question=target.question,
-                required_dimensions=_unique_phrases(
+                required_dimensions=unique_phrases(
                     [*target.required_dimensions, form, period, geography]
                 ),
                 required=True,
@@ -1071,23 +1235,6 @@ def apply_answer_contract(
             sub_topic.model_copy(update={"evidence_targets": targets})
         )
     return stamped
-
-
-def _unique_phrases(values: Sequence[str]) -> list[str]:
-    """First-seen order with blanks dropped and case-insensitive duplicates
-    removed, so the same dimension is never listed twice."""
-    seen: set[str] = set()
-    unique: list[str] = []
-    for value in values:
-        cleaned = " ".join(value.split())
-        if not cleaned:
-            continue
-        key = cleaned.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(cleaned)
-    return unique
 
 
 def targets_requiring_replanning(
@@ -1108,11 +1255,17 @@ def targets_requiring_replanning(
 
 
 def inventory_target_ids(sub_topics: Sequence[SubTopic]) -> list[str]:
-    """Every counted target id in plan order."""
+    """Every counted target id in plan order.
+
+    Filtered through ``counted_evidence_targets`` because these ids populate
+    the frozen coverage denominator: the reserved omission reference records a
+    gap and is not an evidence obligation, so counting it would inflate the
+    inventory Section 2.3 makes load-bearing.
+    """
     return [
         target.target_id
         for sub_topic in sub_topics
-        for target in sub_topic.evidence_targets
+        for target in counted_evidence_targets(sub_topic.evidence_targets)
     ]
 
 
@@ -1600,6 +1753,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         # Set for the duration of one run by ``run``: the tools this run
         # offers, or ``None`` when the inherited toolset applies unchanged.
         self._restricted_toolset: AgentToolset | None = None
+        # Set for the duration of one run by ``run`` from the state it was
+        # handed: the contract this session already froze, if any.
+        self._frozen_contract: AnswerContract | None = None
+        # Counted per run so the review/repair cycle stays bounded.
+        self._review_calls = 0
 
     @property
     def output_schema(self) -> type[ResearchPlan]:
@@ -1623,6 +1781,16 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         )
 
     @property
+    def frozen_contract(self) -> AnswerContract | None:
+        """The contract this session already froze, if any.
+
+        ``None`` until ``run`` has been handed a state; set from the state's
+        own ``answer_contract`` so both ``finalize`` and ``state_update`` can
+        honour it.
+        """
+        return self._frozen_contract
+
+    @property
     def toolset(self) -> AgentToolset:
         """The tools this run offers, with the planner's lookup rule applied.
 
@@ -1638,12 +1806,21 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
 
     async def run(self, state: ResearchState) -> AgentRun[ResearchPlan]:
         """Run the inherited loop, bracketed by planning progress events.
+
+        Two per-run facts are settled here because ``finalize`` and
+        ``state_update`` receive only the task and the loop: whether the
+        session's startup recall produced guidance (which decides whether
+        ``query_memory`` is offered at all), and whether the session already
+        has a frozen answer contract (which decides whether this pass may
+        stamp one).
         """
         self._restricted_toolset = (
             self._toolset.without("query_memory")
             if has_startup_guidance(state.memory_context)
             else None
         )
+        self._frozen_contract = state.answer_contract
+        self._review_calls = 0
         events = [
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
@@ -1665,8 +1842,17 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         )
 
     def answer_contract_for(self, question: str) -> AnswerContract:
-        """Freeze this run's answer contract from the injected clock."""
-        return derive_answer_contract(question=question, now=self._clock())
+        """Freeze this run's answer contract from the injected clock.
+
+        A session that already froze one keeps it: the new derivation is
+        merged in only to fill a field the frozen contract genuinely lacks
+        (``merge_frozen_contract``), so a later planning pass cannot re-anchor
+        the as-of date or widen the scope of a session already under way.
+        """
+        derived = derive_answer_contract(question=question, now=self._clock())
+        if self._frozen_contract is None:
+            return derived
+        return merge_frozen_contract(self._frozen_contract, derived)
 
     async def _request_plan(
         self,
@@ -1717,8 +1903,19 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         """Ask the one tool-free semantic review call about this plan.
 
         The review is a review problem like any other, so a provider failure
-        here is reported the same way a failed plan draft is.
+        here is reported the same way a failed plan draft is. The call count
+        is bounded at ``MAX_PLAN_REVIEW_CALLS`` for the whole run: exceeding it
+        is a defect in the flow, not a reason to keep asking.
         """
+        if self._review_calls >= MAX_PLAN_REVIEW_CALLS:
+            raise PlanningError(
+                "The planner's bounded plan-review cycle was exceeded.",
+                problems=[
+                    f"more than {MAX_PLAN_REVIEW_CALLS} plan reviews were "
+                    "requested in one planning run"
+                ],
+            )
+        self._review_calls += 1
         try:
             self.fingerprint_call(
                 PlanReviewDraft.__name__,
@@ -1820,6 +2017,13 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         plan already in state, and its targets belong to the *expanded*
         inventory, so neither the frozen contract nor the initial inventory is
         rewritten by a later pass.
+
+        The contract is stamped only when the session has none. A later
+        non-extension plan therefore cannot re-anchor a session's as-of date
+        or scope: the state keeps the contract it froze, and the pass's own
+        ``result.answer_contract`` is already the merged, frozen one
+        (``merge_frozen_contract``), so a replay of the same plan is a no-op
+        rather than a rewrite.
         """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is None:
@@ -1829,7 +2033,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         if result.extension:
             update["expanded_target_ids"] = target_ids
             return update
-        if result.answer_contract is not None:
+        if self._frozen_contract is None and result.answer_contract is not None:
             update["answer_contract"] = result.answer_contract
         update["initial_target_ids"] = target_ids
         return update
