@@ -49,26 +49,35 @@ from deep_research.utils.types import (
     ClaimCluster,
     ContractModel,
     EvidencePassage,
+    EvidenceTarget,
     EvidenceUnit,
     ResearchState,
 )
 
 __all__ = [
+    "LEGACY_COVERAGE_DIMENSION",
     "MAX_EQUIVALENCE_ATOMS",
     "METADATA_DIMENSIONS",
     "AtomicPairDraft",
     "ClaimConsolidation",
     "ClaimEquivalenceDraft",
+    "atom_answers_dimensions",
+    "atom_answers_target",
+    "atom_satisfies_policy",
     "atomic_compatible",
+    "checkable_dimensions",
     "claim_cluster_id",
     "cluster_for_atom",
     "consolidate_claims",
+    "critical_target_ids",
     "dimension_is_answered",
     "equivalence_messages",
     "equivalence_strength",
     "extract_atoms",
+    "extract_text_atoms",
     "merge_claim_clusters",
     "metadata_dimension_asked_for",
+    "resolved_verdict",
     "reverification_cache_key",
     "select_claim_batch",
     "select_claim_batch_indices",
@@ -80,6 +89,13 @@ __all__ = [
 # asked for. One bounded call, whatever the pass extracted.
 MAX_EQUIVALENCE_ATOMS = 40
 MAX_EQUIVALENCE_PAIRS = 40
+
+# The obligation a plan written before the target inventory states: one per
+# sub-topic, named by its coverage id. The dimension text is deliberately one
+# this contract cannot check, because such a plan declared no dimensions to
+# check — the claim is credited with the topic's one obligation without a
+# dimension test the model never asked for.
+LEGACY_COVERAGE_DIMENSION = "coverage: the plan predates evidence targets"
 
 # Which agent's span records the consolidation request. The Fact Checker is
 # the claim agent; consolidation is its second phase, not a seventh agent.
@@ -173,15 +189,46 @@ def _canonical_unit(unit: str) -> str:
 # The dimensions compared as written text. ``text`` is deliberately absent: it
 # is the surface paraphrase, and comparing it would refuse the duplicate this
 # contract exists to find.
+#
+# ``subject`` and ``predicate`` are absent for the same reason. They are
+# *wording*: one assertion writes its subject first and another writes it after
+# the value, and a surface derivation that read them as identity would refuse
+# exactly the paraphrases this module exists to join. They are still extracted
+# and reported, because a consumer inspecting an atom wants to see them.
 _COMPARED_DIMENSIONS = (
-    "subject",
-    "predicate",
     "observation_period",
     "geography",
     "population",
     "denominator",
     "attribution",
     "forecast_status",
+)
+
+# Every dimension an atom can be asked to state, by the name a plan or a
+# question uses for it.
+_DIMENSION_NAMES = frozenset(
+    {
+        *_COMPARED_DIMENSIONS,
+        "value",
+        "unit",
+        "negated",
+        "publication_date",
+        "data_period",
+        "forecast_horizon",
+        "effective_date",
+        "retrieval_date",
+        "generation_date",
+    }
+)
+
+# The dimension names that are fields of ``AtomicProposition`` itself, which is
+# what a prompt can print.
+_RENDERED_DIMENSIONS = frozenset(
+    {
+        *_COMPARED_DIMENSIONS,
+        "value",
+        "unit",
+    }
 )
 
 _NUMBER_TOKEN = re.compile(r"(?<![\w.])(?P<number>\d[\d,]*(?:\.\d+)?)")
@@ -273,20 +320,47 @@ def cluster_for_atom(
     atom: AtomicProposition,
     *,
     claim_id: str = "",
+    claim: Claim | None = None,
     status: str = "canonical",
 ) -> ClaimCluster:
-    """Mint the cluster one atom anchors, with everything the atom carries."""
+    """Mint the cluster one atom anchors, with everything the atom carries.
+
+    ``claim`` supplies the provenance the cluster persists — its citations,
+    its passages, its verdict, and what it consumed. A later pass reconstructs
+    all of that from the cluster, so only the run that produced the claim has
+    to hand it over.
+    """
     members = set(atom.member_claim_ids)
     if claim_id:
         members.add(claim_id)
     elif atom.parent_claim_id:
         members.add(atom.parent_claim_id)
+    verdicts = sorted({claim.verdict}) if claim is not None else []
     return ClaimCluster(
         cluster_id=claim_cluster_id(atom),
         proposition=atom,
         evidence_ids=sorted(set(atom.evidence_ids)),
         member_claim_ids=sorted(members),
         target_ids=sorted(set(atom.target_ids)),
+        source_urls=(
+            list(claim.source_urls) if claim is not None else []
+        ),
+        verification_evidence=(
+            list(claim.verification_evidence) if claim is not None else []
+        ),
+        verdicts=verdicts,  # type: ignore[arg-type]
+        confidence=claim.confidence if claim is not None else None,
+        insufficient_reason=(
+            claim.insufficient_reason if claim is not None else None
+        ),
+        consumed_finding_fingerprints=(
+            list(claim.consumed_finding_fingerprints)
+            if claim is not None
+            else []
+        ),
+        consumed_coverage_ids=(
+            list(claim.consumed_coverage_ids) if claim is not None else []
+        ),
         status=status,  # type: ignore[arg-type]
     )
 
@@ -302,13 +376,18 @@ def merge_claim_clusters(
     the anchor is what the identity was minted from, and letting a later
     paraphrase rewrite it would drift the cluster away from its own id.
 
-    ``evidence_ids``, ``member_claim_ids``, and ``target_ids`` are unioned and
-    sorted, so the result is a deterministic function of the two inputs and
-    two passes that saw the same atoms in a different order agree.
+    Every unioned field is sorted or first-seen ordered, so the result is a
+    deterministic function of the two inputs and two passes that saw the same
+    atoms in a different order agree.
     """
     aliases = set(existing.cluster_aliases) | set(incoming.cluster_aliases)
     if incoming.cluster_id != existing.cluster_id:
         aliases.add(incoming.cluster_id)
+    confidences = [
+        value
+        for value in (existing.confidence, incoming.confidence)
+        if value is not None
+    ]
     return existing.model_copy(
         update={
             "evidence_ids": sorted(
@@ -321,11 +400,96 @@ def merge_claim_clusters(
                 set(existing.target_ids) | set(incoming.target_ids)
             ),
             "cluster_aliases": sorted(aliases),
+            "source_urls": sorted(
+                set(existing.source_urls) | set(incoming.source_urls)
+            ),
+            "verification_evidence": _union_passages(
+                existing.verification_evidence, incoming.verification_evidence
+            ),
+            "verdicts": sorted(set(existing.verdicts) | set(incoming.verdicts)),
+            "confidence": min(confidences) if confidences else None,
+            "insufficient_reason": (
+                existing.insufficient_reason or incoming.insufficient_reason
+            ),
+            "consumed_finding_fingerprints": _union(
+                [
+                    *existing.consumed_finding_fingerprints,
+                    *incoming.consumed_finding_fingerprints,
+                ]
+            ),
+            "consumed_coverage_ids": _union(
+                [
+                    *existing.consumed_coverage_ids,
+                    *incoming.consumed_coverage_ids,
+                ]
+            ),
             "diagnostics": sorted(
                 set(existing.diagnostics) | set(incoming.diagnostics)
             ),
         }
     )
+
+
+def _union_passages(
+    first: Sequence[EvidencePassage], second: Sequence[EvidencePassage]
+) -> list[EvidencePassage]:
+    """Both passage lists, first-seen order, without an exact duplicate."""
+    union: list[EvidencePassage] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for passage in (*first, *second):
+        key = (
+            passage.source_url,
+            passage.locator,
+            passage.excerpt,
+            passage.stance,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        union.append(passage)
+    return union
+
+
+# The order a disagreement resolves in. A contradiction is the strongest
+# negative evidence there is, so it survives every other verdict; `verified`
+# survives only when nothing disagrees with it. This is the plan's "zero false
+# settled claims" bar expressed as a total order over the verdict vocabulary.
+_VERDICT_PRECEDENCE: tuple[str, ...] = (
+    "contradicted",
+    "unverified",
+    "insufficient_evidence",
+    "verified",
+)
+
+
+def resolved_verdict(verdicts: Sequence[str]) -> str:
+    """The one verdict a cluster may publish, given every verdict in it.
+
+    A cluster whose members disagree never resolves to ``verified``: it takes
+    the strongest disagreement, so a contradiction is never laundered into a
+    settled fact.
+    """
+    for verdict in _VERDICT_PRECEDENCE:
+        if verdict in verdicts:
+            return verdict
+    return "insufficient_evidence"
+
+
+def _verdict_disagreements(
+    cluster: ClaimCluster,
+) -> list[str]:
+    """One diagnostic per verdict in a disagreeing cluster, with its citations."""
+    if len(cluster.verdicts) < 2:
+        return []
+    urls = sorted(
+        set(cluster.source_urls)
+        | {passage.source_url for passage in cluster.verification_evidence}
+    )
+    citations = ",".join(urls)
+    return [
+        f"cluster_verdict_disagreement:{verdict}:{citations}"
+        for verdict in cluster.verdicts
+    ]
 
 
 # How a document joins the two ends of a period it states. An abbreviated
@@ -399,9 +563,12 @@ _DENOMINATOR = re.compile(
     r"(?=[.,;]|\s+(?:was|were|is|are|in|during|for|reported|grew|fell)\b|$)",
     re.IGNORECASE,
 )
+# The attribution phrase is matched case-insensitively — "According to …" opens
+# a sentence and is the most common spelling of it — while the name it
+# attributes stays a proper noun, because that is what makes it a name.
 _ATTRIBUTION = re.compile(
-    r"\b(?:according to|published by|reported by|per)\s+(?P<attribution>"
-    r"[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4})"
+    r"(?i:\b(?:according to|published by|reported by|per)\s+)"
+    r"(?P<attribution>[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4})"
 )
 _GEOGRAPHY = re.compile(
     r"\b(?:in|across|within|for)\s+(?P<geography>"
@@ -412,6 +579,41 @@ _FORECAST = re.compile(
     r"anticipated|estimated|observed|measured|actual)\b",
     re.IGNORECASE,
 )
+
+# What a clause does to its subject. A closed vocabulary, because the point is
+# to name the relation the assertion states — "held", "fell by", "reached" —
+# and not to tag parts of speech. A clause whose relation is not named here
+# simply states no predicate, which is an honest empty.
+_PREDICATE = re.compile(
+    r"\b(?P<predicate>"
+    r"held|holds|hold|sat|sits|sit|stood|stands|remained|stayed|"
+    r"carried|carries|reached|reaches|rose|rises|fell|falls|"
+    r"grew|grows|increased|increases|decreased|decreases|added|adds|"
+    r"dropped|drops|climbed|climbs|doubled|halved|peaked|hit|"
+    r"withheld|withholds|reported|reports|showed|shows|found|"
+    r"measured|measures|estimated|estimates|projected|projects|"
+    r"totals?|equalled|equaled|equals|cost|costs|"
+    r"requires?|required|connects?|connected|uses?|used|approved|approves|"
+    r"accounts? for|represents?|indicated|indicates|"
+    r"was|were|is|are|has|have|had"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Words that carry no identity: determiners, prepositions, conjunctions, and
+# pronouns. The subject is the run of words before the predicate that survives
+# them.
+_SUBJECT_STOPWORDS = frozenset(
+    {
+        "a", "an", "the", "this", "that", "these", "those", "of", "in", "on",
+        "at", "by", "for", "from", "to", "with", "and", "or", "but", "as",
+        "during", "since", "over", "under", "between", "across", "within",
+        "its", "their", "his", "her", "our", "your", "it", "they", "we",
+        "according", "reported", "published",
+    }
+)
+_WORD_TOKEN = re.compile(r"[A-Za-z][\w'-]*")
+MAX_SUBJECT_WORDS = 6
 
 
 def _split_clauses(text: str) -> list[str]:
@@ -434,13 +636,6 @@ def _split_clauses(text: str) -> list[str]:
         if stripped:
             cleaned.append(stripped)
     return cleaned
-
-
-def _observation_period(clause: str) -> str:
-    match = _PERIOD_PATTERN.search(clause)
-    if match is None:
-        return ""
-    return " ".join(match.group("period").split())
 
 
 def _value_and_unit(clause: str, *, period: str) -> tuple[str, str]:
@@ -471,6 +666,64 @@ def _first_group(pattern: re.Pattern[str], clause: str) -> str:
     return " ".join(match.group(1).split())
 
 
+def _predicate(clause: str) -> str:
+    """The relation the clause states, from the closed vocabulary above."""
+    match = _PREDICATE.search(clause)
+    if match is None:
+        return ""
+    return " ".join(match.group("predicate").split()).casefold()
+
+
+def _subject(
+    clause: str,
+    *,
+    anchor: re.Match[str] | None,
+    excluded: Sequence[tuple[int, int]],
+) -> str:
+    """The noun phrase the clause predicates over.
+
+    Read as the run of words immediately before the clause's predicate — or,
+    failing that, before its first stated value or period — that is not a
+    stopword. A word inside an excluded span (the period, the value) ends the
+    run rather than being read as the subject, so "the 2024 interconnection
+    queue held 10 GW" yields "interconnection queue" and not the year.
+    """
+    if anchor is not None:
+        cutoff = anchor.start()
+    elif excluded:
+        cutoff = min(start for start, _ in excluded)
+    else:
+        cutoff = len(clause)
+
+    def is_excluded(position: int) -> bool:
+        return any(start <= position < end for start, end in excluded)
+
+    words = [
+        (match.start(), match.group(0))
+        for match in _WORD_TOKEN.finditer(clause)
+        if match.end() <= cutoff
+    ]
+    collected: list[str] = []
+    for start, word in reversed(words):
+        if is_excluded(start):
+            break
+        if word.casefold() in _SUBJECT_STOPWORDS:
+            if collected:
+                break
+            continue
+        collected.append(word)
+        if len(collected) >= MAX_SUBJECT_WORDS:
+            break
+    if not collected:
+        return ""
+    return " ".join(reversed(collected))
+
+
+def _of_phrase(pattern: re.Pattern[str], clause: str) -> str:
+    """The noun phrase after "of", when the clause states one."""
+    return _first_group(pattern, clause)
+
+
 def _evidence_ids_for(
     claim: Claim, evidence: tuple[EvidenceUnit, ...]
 ) -> list[str]:
@@ -494,51 +747,99 @@ def _evidence_ids_for(
     return found
 
 
-def extract_atoms(
-    claim: Claim,
-    evidence: tuple[EvidenceUnit, ...] | list[EvidenceUnit] = (),
+def extract_text_atoms(
+    text: str,
+    *,
+    claim_id: str = "",
+    evidence_ids: Sequence[str] = (),
+    target_ids: Sequence[str] = (),
 ) -> list[AtomicProposition]:
     """Reduce one claim's prose to one proposition per assertion it makes.
 
-    Every qualifier the clause carries travels with it: the number, its unit,
-    the observation period, a share's denominator, an attribution, a stated
-    geography or population, a forecast status, and a negation. Every evidence
-    id the claim's cited passages resolve to travels with it too, so an atom
-    can be traced back to the read it came from, and the parent and member
-    claim ids keep the original claim addressable from either side.
+    Every qualifier the clause carries is populated: the subject and the
+    relation, the number and its unit, the observation period, a share's
+    denominator or a count's population, an attribution, a stated geography, a
+    forecast status, and a negation. Every evidence id the claim's cited
+    passages resolve to travels with it too, so an atom can be traced back to
+    the read it came from, and the parent and member claim ids keep the
+    original claim addressable from either side.
+
+    Each atom also gets a stable ``atom_id``: a compound claim becomes several
+    rows, and two rows with the same text and the same id are exactly the
+    ledger duplication this contract removes.
     """
-    units = tuple(evidence)
-    shared_evidence = _evidence_ids_for(claim, units)
+    shared_evidence = list(evidence_ids)
+    shared_targets = list(target_ids)
     atoms: list[AtomicProposition] = []
-    for clause in _split_clauses(claim.text):
-        period = _observation_period(clause)
+    for index, clause in enumerate(_split_clauses(text), start=1):
+        period_match = _PERIOD_PATTERN.search(clause)
+        period = (
+            " ".join(period_match.group("period").split())
+            if period_match is not None
+            else ""
+        )
         value, unit = _value_and_unit(clause, period=period)
+        value_match = _VALUE_UNIT_PATTERN.search(clause)
+        predicate_match = _PREDICATE.search(clause)
+        present = [
+            match
+            for match in (predicate_match, value_match, period_match)
+            if match is not None
+        ]
+        excluded = [match.span() for match in present]
         forecast = _first_group(_FORECAST, clause)
-        # A denominator is the base a *share* is taken of. "10 GW of capacity"
-        # states a quantity and its subject, not a percentage of anything, so
-        # reading "capacity" as a denominator there would refuse a genuine
-        # paraphrase for a qualifier neither claim made.
+        # "of X" means two different things depending on what is asserted. For
+        # a share it is the base the percentage is taken of. For a plain count
+        # it is the population that was counted. For a measurement it is
+        # neither — "10 GW of capacity" is one quantity phrase, and reading
+        # "capacity" as a qualifier there would refuse a paraphrase that
+        # simply did not repeat the unit's noun.
         share = _canonical_unit(unit) in ("%", "pp")
+        phrase = _of_phrase(_DENOMINATOR, clause)
+        measured = bool(unit) and not share
         atoms.append(
             AtomicProposition(
                 text=clause,
+                atom_id=(f"{claim_id}#{index}" if claim_id else ""),
+                subject=_subject(
+                    clause,
+                    anchor=predicate_match or value_match or period_match,
+                    excluded=excluded,
+                ),
+                predicate=(
+                    predicate_match.group("predicate").casefold()
+                    if predicate_match is not None
+                    else ""
+                ),
                 value=value,
                 unit=unit,
                 observation_period=period,
                 geography=_first_group(_GEOGRAPHY, clause),
-                denominator=(
-                    _first_group(_DENOMINATOR, clause) if share else ""
-                ),
+                population="" if (share or measured) else phrase,
+                denominator=phrase if share else "",
                 attribution=_first_group(_ATTRIBUTION, clause),
                 forecast_status=forecast.casefold(),
                 negated=_NEGATION.search(clause) is not None,
-                parent_claim_id=claim.claim_id,
-                member_claim_ids=[claim.claim_id],
+                parent_claim_id=claim_id,
+                member_claim_ids=[claim_id] if claim_id else [],
                 evidence_ids=list(shared_evidence),
-                target_ids=list(claim.target_ids),
+                target_ids=list(shared_targets),
             )
         )
     return atoms
+
+
+def extract_atoms(
+    claim: Claim,
+    evidence: tuple[EvidenceUnit, ...] | list[EvidenceUnit] = (),
+) -> list[AtomicProposition]:
+    """Reduce one adjudicated claim to its atomic propositions."""
+    return extract_text_atoms(
+        claim.text,
+        claim_id=claim.claim_id,
+        evidence_ids=_evidence_ids_for(claim, tuple(evidence)),
+        target_ids=claim.target_ids,
+    )
 
 
 def target_order_for(state: ResearchState) -> list[str]:
@@ -576,65 +877,112 @@ def select_claim_batch_indices(
     obligations: Sequence[Sequence[str]],
     target_order: Sequence[str],
     limit: int,
-) -> list[int]:
-    """Choose at most ``limit`` items, one per outstanding target first.
+    *,
+    cursor: int = 0,
+    priority: Sequence[str] = (),
+) -> tuple[list[int], int]:
+    """Choose at most ``limit`` items and the cursor the next batch starts at.
 
-    ``obligations[i]`` is the set of targets item ``i`` discharges, and the
-    returned indices are in the order they were chosen: the first pass walks
-    ``target_order`` and takes the earliest unselected item for each target,
-    and only then does a second pass fill the remaining slots from items that
-    obligate nothing (or whose target never appears in the order).
+    ``obligations[i]`` is the set of targets item ``i`` discharges. Three
+    passes, in order:
 
-    That ordering is the whole point. A rare-but-critical target's only claim
-    is chosen in the first pass, while a second low-value claim about an
-    already-served topic can only ever be an extra slot — so a batch can never
-    spend its whole allowance on the first topic and leave a later one
-    untouched. Everything not chosen is left where it was: the caller keeps it
-    pending, and the next batch sees it again.
+    1. every target in ``priority`` — the critical and still-unanswered ones —
+       takes its earliest unselected item;
+    2. ``target_order`` is walked from ``cursor``, wrapping, taking the
+       earliest unselected item for each target it has not served yet;
+    3. any remaining slot is filled from items that obligate nothing.
+
+    The cursor is what stops a finite pass from starving a late target. A pass
+    always starts its second pass where the previous batch stopped, so thirty
+    slots handed out five at a time reach a target that only ever sits last,
+    which restarting at the first target every time never would. Everything not
+    chosen stays where it is: the caller keeps it pending and the next batch
+    sees it again.
     """
     if limit < 1:
         raise ValueError("a claim batch must hold at least one claim")
     chosen: list[int] = []
     taken: set[int] = set()
     served: set[str] = set()
-    for target_id in target_order:
-        if len(chosen) >= limit:
-            return chosen
-        if target_id in served:
-            continue
+
+    def take(target_id: str) -> bool:
         for index, ids in enumerate(obligations):
             if index in taken or target_id not in ids:
                 continue
             chosen.append(index)
             taken.add(index)
             served.add(target_id)
+            return True
+        return False
+
+    for target_id in priority:
+        if len(chosen) >= limit:
+            return chosen, cursor
+        take(target_id)
+
+    order = list(target_order)
+    start = cursor % len(order) if order else 0
+    served_position: int | None = None
+    for offset in range(len(order)):
+        if len(chosen) >= limit:
             break
+        position = (start + offset) % len(order)
+        target_id = order[position]
+        if target_id in served:
+            continue
+        if take(target_id):
+            served_position = position
+    next_cursor = (
+        (served_position + 1) % len(order)
+        if served_position is not None and order
+        else start
+    )
+
     for index, _ in enumerate(obligations):
         if len(chosen) >= limit:
             break
         if index not in taken:
             chosen.append(index)
             taken.add(index)
-    return chosen
+    return chosen, next_cursor
 
 
 def select_claim_batch(
     claims: Sequence[Claim],
     target_order: Sequence[str],
     limit: int,
+    *,
+    priority: Sequence[str] = (),
 ) -> list[Claim]:
     """One outstanding obligation per target, then extra slots, then the rest pending.
 
-    The ``Claim``-typed entry point to :func:`select_claim_batch_indices`. A
-    caller that schedules claim *work* the same way — the Fact Checker
-    schedules adjudicated and unadjudicated claims alike — passes the same
-    obligation lists to the index form and keeps the items it did not get
-    back.
+    The ``Claim``-typed entry point to :func:`select_claim_batch_indices`, for
+    a caller scheduling one independent batch. A caller scheduling a *sequence*
+    of batches keeps the cursor the index form returns and passes it back, so
+    no target can be starved by a finite pass.
     """
-    picked = select_claim_batch_indices(
-        [claim.target_ids for claim in claims], target_order, limit
+    picked, _ = select_claim_batch_indices(
+        [claim.target_ids for claim in claims],
+        target_order,
+        limit,
+        priority=priority,
     )
     return [claims[index] for index in picked]
+
+
+def critical_target_ids(state: ResearchState) -> list[str]:
+    """The targets the plan marked critical, in plan order.
+
+    A critical obligation is one the question cannot be answered without, so
+    the scheduler serves it ahead of the rotation. A plan written before the
+    target inventory carries no critical flag at all, and contributes none.
+    """
+    critical: list[str] = []
+    for topic in state.sub_topics:
+        for target in topic.evidence_targets:
+            if target.critical and target.target_id not in critical:
+                critical.append(target.target_id)
+    return critical
 
 
 def stated_dimensions(proposition: AtomicProposition) -> frozenset[str]:
@@ -644,11 +992,15 @@ def stated_dimensions(proposition: AtomicProposition) -> frozenset[str]:
     still not be provably the same claim: "delays are growing" and "delays are
     increasing" agree on every dimension because neither states one. That is
     what ``uncertain`` records.
+
+    A stated observation period is also this atom's data period — the period
+    the assertion's data cover is exactly what it states — which is what makes
+    a data-period obligation answerable from prose, and only when the question
+    asks for it.
     """
     stated = {
         name
         for name in _COMPARED_DIMENSIONS
-        if name != "subject" and name != "predicate"
         if _canonical(getattr(proposition, name))
     }
     if _canonical_number(proposition.value):
@@ -657,6 +1009,8 @@ def stated_dimensions(proposition: AtomicProposition) -> frozenset[str]:
         stated.add("unit")
     if proposition.negated:
         stated.add("negated")
+    if _canonical(proposition.observation_period):
+        stated.add("data_period")
     return frozenset(stated)
 
 
@@ -676,6 +1030,125 @@ def equivalence_strength(
     return "identical" if stated_dimensions(a) else "uncertain"
 
 
+# How a planned obligation's ``required_dimensions`` phrase maps onto the
+# dimensions an atom can be checked for. The Planner writes them either as a
+# bare dimension name or as "<kind>: <detail>", so the kind is read as the
+# dimension it names. Longest-first, so "percentage points" is never read as
+# "points" and "geography" never as "graph".
+_DIMENSION_KINDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("measure", "value", "quantity", "amount", "number", "count", "cost",
+      "capacity", "level", "rate", "total", "size", "price", "volume"),
+     "value"),
+    (("denominator", "base"), "denominator"),
+    (("geography", "location", "region", "jurisdiction", "country", "area",
+      "place", "market"), "geography"),
+    (("population", "cohort", "sample", "subject"), "population"),
+    (("source", "attribution", "issuer", "publisher", "authority", "origin"),
+     "attribution"),
+    (("forecast", "projection", "projected", "outlook", "horizon"),
+     "forecast_status"),
+    (("period", "year", "date", "vintage", "timeframe"), "observation_period"),
+)
+
+# The obligations the *contract* fixes are not prose dimensions. The evidence
+# period is a currency requirement on the sourcing, discharged by the source
+# assessment and its temporal status, and the answer form is a shape the reader
+# report has to take. Neither is something a claim's clause spells, and reading
+# either as one would strip every claim of every target.
+_NON_PROSE_DIMENSION_PREFIXES = ("evidence period:", "answer form:")
+
+
+def checkable_dimensions(required_dimension: str) -> tuple[str, ...]:
+    """The atom dimensions one planned requirement can be checked against.
+
+    A requirement this contract has no counterpart for maps to nothing, and
+    :func:`atom_answers_dimensions` treats that as *unmet*: an atom is not
+    shown to state a dimension it cannot state. That is the conservative
+    direction Section 2.3 asks for — a target stays unattributed rather than
+    being credited to prose that never met it.
+    """
+    folded = _canonical(required_dimension)
+    if not folded or folded.startswith(_NON_PROSE_DIMENSION_PREFIXES):
+        return ()
+    found: list[str] = []
+    for name in sorted(METADATA_DIMENSIONS, key=len, reverse=True):
+        if name.replace("_", " ") in folded and name not in found:
+            found.append(name)
+    if found:
+        return tuple(found)
+    head = folded.split(":", 1)[0]
+    for keywords, dimension in _DIMENSION_KINDS:
+        if any(keyword in head for keyword in keywords):
+            return (dimension,)
+    if folded in _DIMENSION_NAMES:
+        return (folded,)
+    return ()
+
+
+def atom_answers_dimensions(
+    atom: AtomicProposition,
+    required_dimensions: Sequence[str],
+    *,
+    question: str,
+) -> bool:
+    """True when the atom states every required dimension this contract checks.
+
+    Section 2.3: a target is answered only when its reader statement satisfies
+    its required dimensions. The contract's own currency and answer-form
+    obligations are not prose dimensions and are skipped; a required dimension
+    the atom cannot state at all is *not* satisfied. A metadata dimension
+    counts only when the question itself asks for that metadata, so a
+    publication date can never stand in for a deployment mechanism.
+    """
+    stated = stated_dimensions(atom)
+    for required in required_dimensions:
+        folded = _canonical(required)
+        if folded == _canonical(LEGACY_COVERAGE_DIMENSION):
+            continue
+        if folded.startswith(_NON_PROSE_DIMENSION_PREFIXES):
+            continue
+        dimensions = checkable_dimensions(required)
+        if not dimensions:
+            return False
+        for dimension in dimensions:
+            if not dimension_is_answered(
+                question=question,
+                dimension=dimension,
+                stated_dimensions=stated,
+            ):
+                return False
+    return True
+
+
+def atom_satisfies_policy(atom: AtomicProposition, support_policy: str) -> bool:
+    """True when the atom could carry this target's support policy.
+
+    ``independent_pair`` needs two independent passages, which only exist after
+    verification, so an atom can neither earn nor fail it here.
+    ``primary_attribution`` needs the issuing body named — a claim that
+    attributes nothing can never become precise primary attribution.
+    ``derivation`` needs a quantity to derive from.
+    """
+    if support_policy == "primary_attribution":
+        return bool(atom.attribution)
+    if support_policy == "derivation":
+        return bool(atom.value)
+    return True
+
+
+def atom_answers_target(
+    atom: AtomicProposition, target: EvidenceTarget, *, question: str
+) -> bool:
+    """True when this atom could answer this target's obligation.
+
+    Both halves have to hold: the atom states every required dimension this
+    contract can check, and it could carry the target's support policy.
+    """
+    return atom_answers_dimensions(
+        atom, target.required_dimensions, question=question
+    ) and atom_satisfies_policy(atom, target.support_policy)
+
+
 def equivalence_messages(
     atoms: Sequence[AtomicProposition],
 ) -> list[ChatMessage]:
@@ -690,10 +1163,13 @@ def equivalence_messages(
     listed = atoms[:MAX_EQUIVALENCE_ATOMS]
     lines: list[str] = []
     for position, atom in enumerate(listed, start=1):
+        # The dimension names that are fields of the proposition itself. A
+        # derived name (``data_period``, which an atom states through its
+        # observation period) is reported by the field it comes from.
         stated = ", ".join(
             f"{name}={getattr(atom, name)}"
             for name in sorted(stated_dimensions(atom))
-            if name != "negated"
+            if name in _RENDERED_DIMENSIONS
         )
         suffix = f" ({stated})" if stated else ""
         lines.append(f"{position}. {atom.text}{suffix}")
@@ -749,30 +1225,34 @@ def _accepted_pairs(
 ) -> list[tuple[int, int]]:
     """The proposed pairs local validation did not refuse.
 
-    A pair is refused when it names an atom outside the list, when it pairs an
-    atom with itself, and when :func:`atomic_compatible` says the two differ
-    in a qualifier. Each refusal is recorded: an uncertain or wrong proposal
-    is a diagnostic, not a failure, and the claims behind it publish
-    separately.
+    The provider answers with the numbers the prompt showed it, which start at
+    one; they are converted to positions here, once, so the prompt and this
+    validator cannot disagree about where the list starts. A pair is refused
+    when it names an atom outside the list, when it pairs an atom with itself,
+    and when :func:`atomic_compatible` says the two differ in a qualifier. Each
+    refusal is recorded — in the provider's own numbering, so the diagnostic
+    names what it actually said — and the claims behind it publish separately.
     """
     accepted: list[tuple[int, int]] = []
     seen: set[tuple[int, int]] = set()
     for pair in proposal.pairs:
         left, right = pair.left, pair.right
         if (
-            not 0 <= left < len(atoms)
-            or not 0 <= right < len(atoms)
+            not 1 <= left <= len(atoms)
+            or not 1 <= right <= len(atoms)
             or left == right
         ):
-            diagnostics.append(f"equivalence_candidate_out_of_range:{left}:{right}")
+            diagnostics.append(
+                f"equivalence_candidate_out_of_range:{left}:{right}"
+            )
             continue
-        key = (min(left, right), max(left, right))
+        key = (min(left, right) - 1, max(left, right) - 1)
         if key in seen:
             continue
         seen.add(key)
         if not atomic_compatible(atoms[key[0]], atoms[key[1]]):
             diagnostics.append(
-                f"equivalence_candidate_incompatible:{key[0]}:{key[1]}"
+                f"equivalence_candidate_incompatible:{key[0] + 1}:{key[1] + 1}"
             )
             continue
         accepted.append(key)
@@ -823,70 +1303,46 @@ def _union(values: Sequence[str]) -> list[str]:
     return union
 
 
-def _canonical_claim(
-    anchor: Claim, members: Sequence[Claim], cluster: ClaimCluster
-) -> Claim:
-    """One claim snapshot per cluster, carrying the union of its provenance.
+def _canonical_claim(cluster: ClaimCluster) -> Claim:
+    """The one claim snapshot a cluster publishes.
 
-    The anchor supplies the verdict, because a cluster is one assertion and
-    the first record of it is the one that was judged; everything behind it —
-    citation URLs, verificaton passages, the findings it consumed, the
-    obligations it answers — is unioned, so a known duplicate can never inflate
-    a supporting-fact count by publishing as a second row.
+    Built from the cluster rather than from one member, because the cluster is
+    what survives a pass: its proposition supplies the atom-specific text and
+    its persisted provenance supplies the citations, passages, consumed
+    identities, and obligations of every member, including the ones a later
+    pass never resubmitted. The verdict is the conservative resolution over
+    every verdict recorded, so a disagreement cannot read as a settled fact.
     """
-    source_urls: list[str] = []
-    passages: list[EvidencePassage] = []
-    seen: set[tuple[str, str, str, str]] = set()
-    for claim in members:
-        source_urls.extend(claim.source_urls)
-        for passage in claim.verification_evidence:
-            key = (
-                passage.source_url,
-                passage.locator,
-                passage.excerpt,
-                passage.stance,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            passages.append(passage)
-    return anchor.model_copy(
-        update={
-            "source_urls": sorted(set(source_urls)),
-            "verification_evidence": passages,
-            "evidence": [
-                passage.excerpt
-                for passage in passages
-                if passage.stance == "supports"
-            ],
-            "contradictions": [
-                passage.excerpt
-                for passage in passages
-                if passage.stance == "contradicts"
-            ],
-            "consumed_finding_fingerprints": _union(
-                [
-                    fingerprint
-                    for claim in members
-                    for fingerprint in claim.consumed_finding_fingerprints
-                ]
-            ),
-            "consumed_coverage_ids": _union(
-                [
-                    coverage_id
-                    for claim in members
-                    for coverage_id in claim.consumed_coverage_ids
-                ]
-            ),
-            "target_ids": sorted(
-                {
-                    *cluster.target_ids,
-                    *(t for claim in members for t in claim.target_ids),
-                }
-            ),
-            "cluster_id": cluster.cluster_id,
-            "cluster_aliases": list(cluster.cluster_aliases),
-        }
+    verdict = resolved_verdict(cluster.verdicts)
+    return Claim(
+        claim_id=cluster.cluster_id,
+        text=cluster.proposition.text,
+        source_urls=list(cluster.source_urls),
+        verdict=verdict,  # type: ignore[arg-type]
+        confidence=cluster.confidence if cluster.confidence is not None else 0.0,
+        evidence=[
+            passage.excerpt
+            for passage in cluster.verification_evidence
+            if passage.stance == "supports"
+        ],
+        contradictions=[
+            passage.excerpt
+            for passage in cluster.verification_evidence
+            if passage.stance == "contradicts"
+        ],
+        verification_evidence=list(cluster.verification_evidence),
+        insufficient_reason=(
+            cluster.insufficient_reason
+            if verdict == "insufficient_evidence"
+            else None
+        ),
+        consumed_finding_fingerprints=list(
+            cluster.consumed_finding_fingerprints
+        ),
+        consumed_coverage_ids=list(cluster.consumed_coverage_ids),
+        target_ids=list(cluster.target_ids),
+        cluster_id=cluster.cluster_id,
+        cluster_aliases=list(cluster.cluster_aliases),
     )
 
 
@@ -905,17 +1361,24 @@ async def consolidate_claims(
     refusal) or publish once through a conservative representative carrying
     the union of their provenance (uncertainty).
 
-    A cluster this run already stored keeps its identity: the stored cluster's
-    id survives the merge and the new one becomes an alias, so a later pass
-    recognises its own work instead of minting a second row.
+    The candidate list is the stored clusters' own propositions followed by
+    this pass's atoms, so a refinement that submits only the NEW claim can
+    still be recognised as the same fact: the merge keeps the stored cluster's
+    identity and reconstructs its citations from the cluster itself.
     """
     claims = list(drafts)
     atoms: list[AtomicProposition] = []
-    owners: list[int] = []
+    owners: list[int | None] = []
+    stored_for: list[ClaimCluster | None] = []
+    for cluster in existing:
+        atoms.append(cluster.proposition)
+        owners.append(None)
+        stored_for.append(cluster)
     for position, claim in enumerate(claims):
         for atom in extract_atoms(claim, evidence):
             atoms.append(atom)
             owners.append(position)
+            stored_for.append(None)
 
     diagnostics: list[str] = []
     provider_failed = False
@@ -940,8 +1403,12 @@ async def consolidate_claims(
     canonical: list[Claim] = []
     for group in groups:
         anchor_atom = atoms[group[0]]
-        cluster = cluster_for_atom(anchor_atom)
-        members = [claims[owners[index]] for index in group]
+        anchor_claim = (
+            claims[owners[group[0]]]
+            if owners[group[0]] is not None
+            else None
+        )
+        cluster = cluster_for_atom(anchor_atom, claim=anchor_claim)
         for index in group[1:]:
             if equivalence_strength(anchor_atom, atoms[index]) == "uncertain":
                 cluster = cluster.model_copy(
@@ -951,24 +1418,44 @@ async def consolidate_claims(
                             {
                                 *cluster.diagnostics,
                                 "equivalence_candidate_uncertain:"
-                                f"{group[0]}:{index}",
+                                f"{group[0] + 1}:{index + 1}",
                             }
                         ),
                     }
                 )
-            cluster = merge_claim_clusters(
-                cluster, cluster_for_atom(atoms[index])
+            member_claim = (
+                claims[owners[index]] if owners[index] is not None else None
             )
-        stored = _resolve_stored_cluster(cluster.cluster_id, existing)
-        if stored is not None:
-            for alias in (*stored.cluster_aliases, cluster.cluster_id):
-                if alias != stored.cluster_id:
-                    aliases[alias] = stored.cluster_id
-            cluster = merge_claim_clusters(stored, cluster)
+            cluster = merge_claim_clusters(
+                cluster, cluster_for_atom(atoms[index], claim=member_claim)
+            )
+        # A stored cluster in this group is older than anything this pass
+        # built, so its identity and everything it persists survive.
+        for index in group:
+            source = stored_for[index]
+            if source is not None:
+                cluster = merge_claim_clusters(source, cluster)
+        if len(cluster.verdicts) > 1:
+            cluster = cluster.model_copy(
+                update={
+                    "status": "contested",
+                    "diagnostics": sorted(
+                        {
+                            *cluster.diagnostics,
+                            *_verdict_disagreements(cluster),
+                        }
+                    ),
+                }
+            )
         for alias in cluster.cluster_aliases:
             aliases[alias] = cluster.cluster_id
         clusters.append(cluster)
-        canonical.append(_canonical_claim(members[0], members, cluster))
+        if not cluster.source_urls:
+            diagnostics.append(
+                f"cluster_without_citations:{cluster.cluster_id}"
+            )
+            continue
+        canonical.append(_canonical_claim(cluster))
 
     return ClaimConsolidation(
         claims=canonical,
@@ -1029,58 +1516,58 @@ METADATA_DIMENSIONS = frozenset(
     }
 )
 
-# How a question asks for each metadata dimension. Deliberately a small,
-# explicit marker list rather than a similarity score: this decides whether a
-# date may be used as an ANSWER, and a wrong yes here lets a publication date
-# stand in for a mechanism.
-_METADATA_QUESTION_MARKERS: dict[str, tuple[str, ...]] = {
+# How a question asks for each metadata dimension, as (temporal intent, the
+# dimension's own words). Both have to be present. A question that merely
+# *names* the dimension's subject — "Who published the report?" — is not asking
+# when it was published, and a substring test on "publish" alone read it as
+# one. Deliberately a small explicit marker list rather than a similarity
+# score: this decides whether a date may be used as an ANSWER, and a wrong yes
+# here lets a publication date stand in for a mechanism.
+_METADATA_QUESTION_MARKERS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "publication_date": (
-        "publish",
-        "publication",
-        "release date",
-        "released",
-        "issued",
+        ("when", "what date", "which date", "date of", "publication date",
+         "release date", "how recent", "how old", "as of what date"),
+        ("publish", "publication", "release", "released", "issued", "issue"),
     ),
     "data_period": (
-        "data period",
-        "data cover",
-        "period the data",
-        "vintage",
-        "as of",
+        ("when", "what period", "which period", "what date", "date of",
+         "data period", "as of", "timeframe", "time frame", "how recent"),
+        ("data", "period", "cover", "covers", "vintage"),
     ),
     "forecast_horizon": (
-        "forecast horizon",
-        "projection horizon",
-        "forecast period",
-        "how far ahead",
+        ("when", "what period", "which period", "what year", "how far ahead",
+         "forecast horizon", "projection horizon", "horizon", "date of"),
+        ("forecast", "projection", "projected", "outlook", "horizon"),
     ),
     "effective_date": (
-        "effective date",
-        "take effect",
-        "takes effect",
-        "took effect",
-        "in force",
+        ("when", "what date", "which date", "date of", "effective date",
+         "as of what date"),
+        ("effective", "effect", "in force", "govern", "governs", "appl"),
     ),
     "retrieval_date": (
-        "retrieval date",
-        "retrieved",
-        "when was it read",
-        "when was it fetched",
+        ("when", "what date", "which date", "date of", "retrieval date"),
+        ("retriev", "read", "fetch", "accessed"),
     ),
     "generation_date": (
-        "generation date",
-        "generated",
-        "when was the report produced",
+        ("when", "what date", "which date", "date of", "generation date"),
+        ("generat", "produced", "written", "created"),
     ),
 }
 
 
 def metadata_dimension_asked_for(question: str, dimension: str) -> bool:
-    """True when the question itself asks for this metadata dimension."""
+    """True when the question asks for this metadata dimension *as a date*.
+
+    Naming the dimension's subject is not enough: "Who published the report?"
+    asks who, not when, and a question that only mentions a publisher must not
+    be answered with the publication date.
+    """
+    intent, words = _METADATA_QUESTION_MARKERS.get(dimension, ((), ()))
+    if not intent:
+        return False
     folded = _canonical(question)
-    return any(
-        marker in folded
-        for marker in _METADATA_QUESTION_MARKERS.get(dimension, ())
+    return any(cue in folded for cue in intent) and any(
+        word in folded for word in words
     )
 
 

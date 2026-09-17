@@ -736,6 +736,14 @@ class AtomicProposition(ContractModel):
     """
 
     text: str = Field(min_length=1)
+    atom_id: str = ""
+    """The stable identity of this atom within the claim it was split from.
+
+    A compound claim becomes several atoms, and each has to stay addressable
+    on its own: without an id, two atoms of one claim publish as two rows with
+    the same compound text and the same claim id, which is the ledger defect
+    atomizing exists to remove.
+    """
     subject: str = ""
     predicate: str = ""
     value: str = ""
@@ -767,6 +775,12 @@ class ClaimCluster(ContractModel):
     claims, and rehashing the growing member set would mint a new identity on
     every pass. ``proposition`` is that same first anchor, so the cluster's own
     wording does not drift as paraphrases join it.
+
+    The provenance a later pass needs is *persisted here*, not re-derived: a
+    refinement that submits only the new claim has to reconstruct the
+    citations, passages, verdicts, and consumed identities of everything
+    already in the cluster, and the cluster itself is the only place that has
+    them.
     """
 
     cluster_id: str = Field(min_length=1)
@@ -776,10 +790,27 @@ class ClaimCluster(ContractModel):
     target_ids: list[str] = Field(default_factory=list)
     cluster_aliases: list[str] = Field(default_factory=list)
     """The cluster ids a merge absorbed, so either id resolves here."""
-    status: Literal["canonical", "duplicate_representative"] = "canonical"
+    source_urls: list[str] = Field(default_factory=list)
+    """Every citation URL behind this cluster, unioned across its members."""
+    verification_evidence: list[EvidencePassage] = Field(default_factory=list)
+    verdicts: list[ClaimVerdict] = Field(default_factory=list)
+    """Every verdict recorded for this proposition, sorted and distinct.
+
+    A set rather than one value because members of one cluster can disagree,
+    and a disagreement may never read as a settled fact.
+    """
+    confidence: float | None = None
+    """The lowest confidence any member recorded — the conservative one."""
+    insufficient_reason: str | None = None
+    consumed_finding_fingerprints: list[str] = Field(default_factory=list)
+    consumed_coverage_ids: list[str] = Field(default_factory=list)
+    status: Literal[
+        "canonical", "duplicate_representative", "contested"
+    ] = "canonical"
     """``duplicate_representative`` when only one of two near-duplicates may
-    publish. The representative carries the union provenance, so a known
-    duplicate cannot inflate a supporting-fact count."""
+    publish. ``contested`` when its members were adjudicated differently: such
+    a cluster can never be a settled supporting fact, and it cannot count as
+    independent corroboration for anything else."""
     diagnostics: list[str] = Field(default_factory=list)
 
 

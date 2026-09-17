@@ -24,6 +24,10 @@ from pydantic import Field
 
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.claim_clusters import (
+    LEGACY_COVERAGE_DIMENSION,
+    atom_answers_target,
+    critical_target_ids,
+    extract_text_atoms,
     select_claim_batch_indices,
     target_order_for,
 )
@@ -72,6 +76,7 @@ from deep_research.utils.types import (
     ClaimVerdict,
     ContractModel,
     EvidencePassage,
+    EvidenceTarget,
     Finding,
     ResearchError,
     ResearchEvent,
@@ -90,6 +95,12 @@ DEFAULT_CLAIM_BATCH_SIZE = DEFAULT_MAX_CLAIMS
 # How many batches one pass runs. The pass's total allowance is the product of
 # the two bounds; everything beyond it stays pending and is reported.
 DEFAULT_CLAIM_BATCHES_PER_PASS = 6
+# How much unadjudicated claim work one pass keeps in its resume window. The
+# bound is explicit because ``ClaimsDraft.claims`` is not: nothing about the
+# provider's reply limits how many claims it may carry. Work past the window is
+# *not* dropped — it is persisted as deferred and resumed once the window
+# drains, so the bound never deletes anything.
+MAX_PENDING_CLAIMS = 64
 DEFAULT_FINDING_DIGEST = 40
 # How many pending claim identities one event reports. The count is exact; the
 # identities are bounded so an event never grows with the queue.
@@ -166,13 +177,15 @@ class PendingClaim(ContractModel):
     Reported so a caller can see the work that exists rather than infer it
     from a count: a claim only ever *placed in a prompt* has consumed
     nothing, and its absence from the verified snapshot must read as pending,
-    not as done.
+    not as done. ``deferred`` distinguishes the claims in the resume window
+    from the overflow past it — both are pending, and neither is deleted.
     """
 
     claim_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     source_urls: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
+    deferred: bool = False
 
 
 class VerifiedClaims(ContractModel):
@@ -281,23 +294,60 @@ def coverage_ids_by_title(state: ResearchState) -> dict[str, str]:
     return coverage_ids
 
 
-def target_ids_by_title(state: ResearchState) -> dict[str, list[str]]:
+def evidence_targets_by_title(
+    state: ResearchState,
+) -> dict[str, list[EvidenceTarget]]:
     """Map each planned sub-topic's collapsed title to its evidence targets.
 
-    The claim scheduler reads these, so a batch can take one outstanding
-    obligation per target instead of a positional prefix. A plan written
-    before the target inventory existed carries none, and falls back to its
-    coverage id — the same id ``target_order_for`` falls back to — so a legacy
-    snapshot still schedules one obligation per topic.
+    The claim scheduler and the attribution check both read these, so a claim
+    can be credited with an obligation only when its own prose answers that
+    obligation's required dimensions and support policy. A plan written before
+    the target inventory existed states its obligations as coverage ids, and
+    gets one synthesized target per topic carrying a dimension this contract
+    cannot check — which is exactly what keeps such a plan schedulable without
+    inventing a dimension the model never declared.
     """
-    targets: dict[str, list[str]] = {}
+    targets: dict[str, list[EvidenceTarget]] = {}
     for topic in state.sub_topics:
         key = _collapsed(topic.title)
         if key in targets:
             continue
-        ids = [target.target_id for target in topic.evidence_targets]
-        targets[key] = ids or [topic.coverage_id]
+        if topic.evidence_targets:
+            targets[key] = list(topic.evidence_targets)
+            continue
+        targets[key] = [
+            EvidenceTarget(
+                target_id=topic.coverage_id,
+                coverage_id=topic.coverage_id,
+                question=topic.title,
+                required_dimensions=[LEGACY_COVERAGE_DIMENSION],
+                required=True,
+                critical=False,
+                support_policy="independent_pair",
+            )
+        ]
     return targets
+
+
+def target_ids_by_title(state: ResearchState) -> dict[str, list[str]]:
+    """The target ids behind each planned sub-topic, in plan order."""
+    return {
+        key: [target.target_id for target in targets]
+        for key, targets in evidence_targets_by_title(state).items()
+    }
+
+
+def obligation_question(state: ResearchState) -> str:
+    """The question a target's dimensions are judged against.
+
+    The frozen answer contract's question when a plan has been produced —
+    Section 2.3 freezes it, and a later refinement may not re-anchor what the
+    obligations mean — and the run's own question before that.
+    """
+    contract = state.answer_contract
+    if contract is not None:
+        return contract.question
+    return state.original_question
 
 
 def _attributed_findings(
@@ -362,24 +412,32 @@ def claim_attribution(
     *,
     findings: Sequence[Finding],
     coverage_ids: Mapping[str, str],
-    target_ids: Mapping[str, Sequence[str]],
+    targets: Mapping[str, Sequence[EvidenceTarget]],
+    question: str,
 ) -> ClaimAttribution:
     """Everything one extraction pass attributes to one accepted claim.
 
     ``consumed_provenance`` answers what the claim already consumed;
-    ``target_ids`` answers which planned obligations it answers, which is what
-    the claim scheduler reads. Both are derived from the same consumed
-    findings, so a claim can never answer a topic it cited nothing from.
+    ``target_ids`` answers which planned obligations it actually answers, which
+    is what the claim scheduler reads. An obligation is earned, not inherited
+    from the topic a finding came from: the claim's own prose has to satisfy
+    that target's required dimensions and support policy (Section 2.3), so a
+    claim can never be credited with an obligation it does not meet. Both are
+    derived from the same consumed findings, so a claim can never answer a
+    topic it cited nothing from either.
     """
     fingerprints, consumed_coverage = consumed_provenance(
         draft, findings=findings, coverage_ids=coverage_ids
     )
+    atoms = extract_text_atoms(draft.text)
     obligations: list[str] = []
     for finding in _attributed_findings(draft, findings=findings).values():
-        for target_id in target_ids.get(
-            _collapsed(finding.related_sub_topic), ()
-        ):
-            _append_unique(obligations, target_id)
+        for target in targets.get(_collapsed(finding.related_sub_topic), ()):
+            if any(
+                atom_answers_target(atom, target, question=question)
+                for atom in atoms
+            ):
+                _append_unique(obligations, target.target_id)
     return ClaimAttribution(
         consumed_finding_fingerprints=fingerprints,
         consumed_coverage_ids=consumed_coverage,
@@ -930,7 +988,10 @@ def _unique_drafts(drafts: Sequence[ClaimDraft]) -> list[ClaimDraft]:
 
 
 def _pending_claim(
-    draft: ClaimDraft, target_ids: Sequence[str]
+    draft: ClaimDraft,
+    target_ids: Sequence[str],
+    *,
+    deferred: bool = False,
 ) -> PendingClaim:
     """One unadjudicated draft as the caller sees it."""
     return PendingClaim(
@@ -938,7 +999,23 @@ def _pending_claim(
         text=draft.text,
         source_urls=list(draft.source_urls),
         target_ids=list(target_ids),
+        deferred=deferred,
     )
+
+
+def partition_pending_claims(
+    drafts: Sequence[ClaimDraft],
+) -> tuple[list[ClaimDraft], list[ClaimDraft]]:
+    """Split pending work into the resume window and the deferred overflow.
+
+    The window is bounded so a pass cannot hold unbounded unadjudicated work
+    in one structure; the overflow is returned rather than discarded, and the
+    next pass drains both. Order is preserved across the split, so a claim's
+    position in the queue never depends on which half it landed in.
+    """
+    window = list(drafts[:MAX_PENDING_CLAIMS])
+    deferred = list(drafts[MAX_PENDING_CLAIMS:])
+    return window, deferred
 
 
 def union_claim_provenance(
@@ -1075,6 +1152,7 @@ def claims_pending_event(
     batches_run: int,
     claim_batch_size: int,
     claim_batches_per_pass: int,
+    deferred_claim_count: int = 0,
 ) -> ResearchEvent:
     """Report the claims this pass extracted and did not adjudicate.
 
@@ -1093,6 +1171,7 @@ def claims_pending_event(
                 claim_fingerprint(draft.text)[:16]
                 for draft in pending[:MAX_REPORTED_PENDING_CLAIMS]
             ],
+            "deferred_claim_count": deferred_claim_count,
             "batches_run": batches_run,
             "claim_batch_size": claim_batch_size,
             "claim_batches_per_pass": claim_batches_per_pass,
@@ -1159,6 +1238,7 @@ def fact_check_completed_event(
     claim_batches_per_pass: int = DEFAULT_CLAIM_BATCHES_PER_PASS,
     batches_run: int = 0,
     pending_claim_count: int = 0,
+    deferred_claim_count: int = 0,
 ) -> ResearchEvent:
     """Report the whole fact-checking pass.
 
@@ -1199,6 +1279,7 @@ def fact_check_completed_event(
             "batches_run": batches_run,
             "adjudicated_claim_count": len(claims),
             "pending_claim_count": pending_claim_count,
+            "deferred_claim_count": deferred_claim_count,
         },
     )
 
@@ -1276,6 +1357,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # and the next pass drains them before it extracts anything, so a
         # deferred claim resumes instead of disappearing.
         self._continuation: list[ClaimDraft] = []
+        self._deferred: list[ClaimDraft] = []
         # The identities of the drafts this run drained from the queue. They
         # are work this run will do, so the provenance reset must keep their
         # attribution: a resumed claim that the model does not restate has no
@@ -1294,10 +1376,23 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
 
     @property
     def pending_claims(self) -> list[PendingClaim]:
-        """The claims this agent extracted and has not adjudicated yet."""
+        """The claims this agent extracted and has not adjudicated yet.
+
+        The resume window first, then the deferred overflow, both reported:
+        the bound is on how much one structure holds, never on what the agent
+        remembers.
+        """
         return [
-            _pending_claim(draft, self._obligations_for(draft))
-            for draft in self._continuation
+            *(
+                _pending_claim(draft, self._obligations_for(draft))
+                for draft in self._continuation
+            ),
+            *(
+                _pending_claim(
+                    draft, self._obligations_for(draft), deferred=True
+                )
+                for draft in self._deferred
+            ),
         ]
 
     @property
@@ -1389,13 +1484,24 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         }
 
     def _drain_continuation(self) -> list[ClaimDraft]:
-        """Take the deferred claims this pass resumes, and remember their identities."""
-        resumed = list(self._continuation)
+        """Take every deferred claim this pass resumes, and remember its identity.
+
+        The window drains first and the persisted overflow after it, so the
+        order the claims were extracted in survives the split.
+        """
+        resumed = [*self._continuation, *self._deferred]
         self._continuation = []
+        self._deferred = []
         self._resumed_fingerprints = {
             claim_fingerprint(draft.text) for draft in resumed
         }
         return resumed
+
+    def _remember_pending(self, drafts: Sequence[ClaimDraft]) -> None:
+        """Persist this pass's leftover work inside the explicit bound."""
+        window, deferred = partition_pending_claims(drafts)
+        self._continuation = window
+        self._deferred = deferred
 
     async def extract_claims(
         self,
@@ -1481,14 +1587,16 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         errors = [invalid_claim_error(rejected)] if rejected else []
         self._reset_provenance()
         coverage_ids = coverage_ids_by_title(state)
-        targets = target_ids_by_title(state)
+        targets = evidence_targets_by_title(state)
+        question = obligation_question(state)
         self._pending_provenance.update(
             {
                 claim_fingerprint(item.text): claim_attribution(
                     item,
                     findings=visible_findings,
                     coverage_ids=coverage_ids,
-                    target_ids=targets,
+                    targets=targets,
+                    question=question,
                 )
                 for item in claims
             }
@@ -1499,28 +1607,30 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self,
         task: ClaimTask,
         run: ReActRun,
-    ) -> tuple[Claim, str | None, list[ResearchError], bool]:
+    ) -> tuple[Claim | None, str | None, list[ResearchError], bool]:
         """Judge one claim from one finished loop.
 
         Returns ``(claim, reason, errors, provider_failed)``. ``reason`` is
         an ``INSUFFICIENT_REASONS`` key when the claim could not be judged
-        and ``None`` otherwise. No provider call is made when the loop
-        failed or retrieved nothing independent, so a verdict can never be
-        invented over an empty evidence section.
+        and ``None`` otherwise.
+
+        ``None`` for the claim means **nothing was adjudicated**. A provider or
+        schema failure is not an evidence verdict: the model never answered, so
+        recording ``insufficient_evidence`` would make an outage read as a
+        finding about the claim, and would mark the claim's findings consumed
+        on the strength of a failure. The claim stays outstanding instead, and
+        the caller returns it to the continuation queue.
+
+        A *definitive local* verdict is different and is still recorded: when
+        the loop succeeded and read material, and none of what it read is
+        independent of the claim's own publisher, that is a settled fact about
+        the evidence this pass gathered.
         """
         if not run.succeeded:
             # No model ever looked at this finding: the loop died before the
-            # verdict was requested. Recording provenance here would make
-            # ``_finding_is_new`` call it consumed and let a transient outage
-            # suppress its re-extraction for the rest of the run, so the two
-            # lists are deliberately left empty.
-            return insufficient_claim(
-                task.claim,
-                reason="loop_failed",
-                target_ids=task.target_ids,
-            ), (
-                "loop_failed"
-            ), [], False
+            # verdict was requested. Nothing was judged and nothing may look
+            # consumed, so no claim is produced at all.
+            return None, "loop_failed", [], False
 
         retrieved_urls = retrieved_source_urls(run)
         independent = independent_domains(
@@ -1554,14 +1664,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 agent_name=self.name,
             )
         except ProviderError as error:
-            # Same reasoning as ``loop_failed``: the verdict was never read,
-            # so nothing was judged and nothing may look consumed.
+            # A provider failure, including a structured-output schema
+            # failure: the verdict was never read, so nothing was judged and
+            # nothing may look consumed.
             return (
-                insufficient_claim(
-                    task.claim,
-                    reason="provider_unavailable",
-                    target_ids=task.target_ids,
-                ),
+                None,
                 "provider_unavailable",
                 [claim_verification_provider_error(error)],
                 True,
@@ -1601,6 +1708,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 "FactCheckerAgent.finalize requires a ClaimTask"
             )
         claim, _, _, _ = await self.verify_claim(task, run)
+        if claim is None:
+            # Nothing was adjudicated, so this hook has no validated claim to
+            # report. The run path keeps the claim in its continuation queue.
+            return None
         return VerifiedClaims(claims=[claim])
 
     def state_update(
@@ -1714,6 +1825,9 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         )
 
         adjudicated: set[str] = set()
+        answered_targets: set[str] = set()
+        critical_targets = critical_target_ids(state)
+        cursor = 0
         batches_run = 0
         index = 0
         for batch_number in range(1, self._batches_per_pass + 1):
@@ -1724,10 +1838,16 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             ]
             if not outstanding:
                 break
-            picked = select_claim_batch_indices(
+            picked, cursor = select_claim_batch_indices(
                 [self._obligations_for(draft) for draft in outstanding],
                 target_order,
                 self._max_claims,
+                cursor=cursor,
+                priority=[
+                    target
+                    for target in critical_targets
+                    if target not in answered_targets
+                ],
             )
             batches_run = batch_number
             stopped = False
@@ -1757,7 +1877,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                             "agent_name": self.name,
                             "claim_index": index,
                             "batch_index": batch_number,
-                            "verdict": claim.verdict,
+                            "adjudicated": claim is not None,
+                            "verdict": claim.verdict if claim is not None else None,
                             "independent_sources": independent,
                             "tool_calls": react.tool_calls,
                             "stop_reason": react.stop_reason,
@@ -1765,12 +1886,19 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                     )
 
                 runs.append(react)
+                errors.extend(react.errors)
+                errors.extend(verify_errors)
+                if claim is None:
+                    # A provider or schema failure is not an evidence verdict.
+                    # The claim consumed nothing, is not published, and stays
+                    # in the continuation queue for the next pass.
+                    stopped = True
+                    break
                 claims.append(claim)
                 # Adjudicated, and only now: the verdict exists, so this
                 # claim's findings are genuinely consumed.
                 adjudicated.add(claim_fingerprint(draft.text))
-                errors.extend(react.errors)
-                errors.extend(verify_errors)
+                answered_targets.update(self._obligations_for(draft))
                 events.append(
                     claim_checked_event(
                         claim,
@@ -1796,7 +1924,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             for draft in pool
             if claim_fingerprint(draft.text) not in adjudicated
         ]
-        self._continuation = list(pending)
+        self._remember_pending(pending)
+        deferred_count = len(self._deferred)
         if pending:
             events.append(
                 claims_pending_event(
@@ -1804,6 +1933,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                     batches_run=batches_run,
                     claim_batch_size=self._max_claims,
                     claim_batches_per_pass=self._batches_per_pass,
+                    deferred_claim_count=deferred_count,
                 )
             )
 
@@ -1822,14 +1952,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 claim_batches_per_pass=self._batches_per_pass,
                 batches_run=batches_run,
                 pending_claim_count=len(pending),
+                deferred_claim_count=deferred_count,
             )
         )
         result = VerifiedClaims(
             claims=canonical_claims,
-            pending_claims=[
-                _pending_claim(draft, self._obligations_for(draft))
-                for draft in pending
-            ],
+            pending_claims=self.pending_claims,
         )
         return AgentRun(
             agent_name=self.name,

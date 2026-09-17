@@ -6,6 +6,7 @@ from typing import get_args
 
 import pytest
 
+from deep_research.agents import fact_checker as fact_checker_module
 from deep_research.agents.base import AgentRun
 from deep_research.agents.fact_checker import (
     DEFAULT_CLAIM_BATCH_SIZE,
@@ -14,6 +15,7 @@ from deep_research.agents.fact_checker import (
     DEFAULT_MAX_CLAIMS,
     MAX_PASSAGE_EXCERPT_CHARS,
     MAX_PASSAGE_LOCATOR_CHARS,
+    MAX_PENDING_CLAIMS,
     VERDICT_VALUES,
     ClaimDraft,
     ClaimsDraft,
@@ -26,6 +28,7 @@ from deep_research.agents.fact_checker import (
     _finding_is_new,
     build_claim,
     build_claim_drafts,
+    claim_attribution,
     claim_checked_event,
     claim_extraction_messages,
     claim_verification_messages,
@@ -37,6 +40,7 @@ from deep_research.agents.fact_checker import (
     known_source_urls,
     normalize_verdict,
     ordered_findings_for_extraction,
+    partition_pending_claims,
     resolve_verdict,
     retrieved_source_urls,
     union_claim_provenance,
@@ -1043,9 +1047,10 @@ async def test_a_claim_with_only_its_own_domain_retrieved_is_insufficient(
 
 
 @pytest.mark.asyncio
-async def test_a_loop_that_died_to_the_provider_is_insufficient(
+async def test_a_loop_that_died_to_the_provider_is_not_a_verdict(
     tracker: Tracker,
 ) -> None:
+    """No model ever looked at this claim, so it is not judged at all."""
     completer = ScriptedCompleter()
     agent = _checker(tracker, completer)
     task = agent.claim_task(
@@ -1070,7 +1075,7 @@ async def test_a_loop_that_died_to_the_provider_is_insufficient(
 
     claim, reason, _, _ = await agent.verify_claim(task, run)
 
-    assert claim.verdict == "insufficient_evidence"
+    assert claim is None
     assert reason == "loop_failed"
     assert completer.calls == []
 
@@ -1268,9 +1273,15 @@ async def test_a_contradiction_survives_a_verified_model_answer(
 
 
 @pytest.mark.asyncio
-async def test_a_verification_provider_failure_is_insufficient_not_invented(
+async def test_a_verification_provider_failure_is_not_a_verdict(
     tracker: Tracker,
 ) -> None:
+    """The verdict request failed, so nothing was judged and nothing is invented.
+
+    A provider or schema failure is not evidence and not a verdict: the claim
+    is not published as ``insufficient_evidence``, which would make an outage
+    look like a finding about the claim.
+    """
     completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
     agent = _checker(tracker, completer)
     task = agent.claim_task(
@@ -1295,8 +1306,7 @@ async def test_a_verification_provider_failure_is_insufficient_not_invented(
 
     claim, reason, errors, provider_failed = await agent.verify_claim(task, run)
 
-    assert claim.verdict == "insufficient_evidence"
-    assert claim.confidence == pytest.approx(0.0)
+    assert claim is None
     assert reason == "provider_unavailable"
     assert provider_failed is True
     assert errors[0].error_type == "fact_checker_verification_provider_error"
@@ -1395,9 +1405,10 @@ async def test_a_provider_failure_records_no_consumed_provenance(
     ``consumed_finding_fingerprints`` is the only thing ``_finding_is_new``
     consults and ``extract_claims`` returns early once no finding is new, so
     recording provenance on a claim no model ever judged makes a transient
-    provider blip suppress that finding for the rest of the run. The recorded
-    rationale ("the finding was read and judged") is true for
-    ``no_independent_source`` and false for both failure reasons.
+    provider blip suppress that finding for the rest of the run. A provider or
+    schema failure yields no claim at all, so there is nothing that could carry
+    provenance; ``no_independent_source`` is a judgement about this finding and
+    does record it.
     """
     finding = _check_finding()
     independent_run = ReActRun(
@@ -1429,11 +1440,11 @@ async def test_a_provider_failure_records_no_consumed_provenance(
 
     assert reason == "loop_failed"
     assert outage_reason == "provider_unavailable"
+    # Neither failure produced a claim at all, so neither can have recorded
+    # anything consumed.
     for claim in (failed_loop, outage):
-        assert claim.verdict == "insufficient_evidence"
-        assert claim.consumed_finding_fingerprints == []
-        assert claim.consumed_coverage_ids == []
-        assert _finding_is_new(finding, [claim]) is True
+        assert claim is None
+    assert _finding_is_new(finding, []) is True
 
 
 @pytest.mark.asyncio
@@ -2222,10 +2233,10 @@ async def test_a_verification_provider_failure_stops_further_claims(
         outcome = await agent.run(state)
 
     assert outcome.result is not None
-    assert [claim.verdict for claim in outcome.result.claims] == [
-        "verified",
-        "insufficient_evidence",
-    ]
+    # The second claim was never judged: a failed verification is a
+    # continuation, not an insufficient-evidence row.
+    assert [claim.verdict for claim in outcome.result.claims] == ["verified"]
+    assert [claim.text for claim in outcome.result.pending_claims] == ["Second."]
     assert outcome.react.stop_reason == "provider_error"
     types = {error.error_type for error in outcome.errors}
     assert "fact_checker_verification_provider_error" in types
@@ -2247,6 +2258,12 @@ async def test_a_verification_provider_failure_stops_further_claims(
 async def test_react_decision_output_limit_remains_a_conservative_fallback(
     tracker: Tracker,
 ) -> None:
+    """A loop the provider truncated judges nothing, and is a continuation.
+
+    The decision request hit its output cap before any tool ran, so no model
+    ever looked at the claim. It is not published as insufficient evidence —
+    the run stops, and both claims stay pending for the next pass.
+    """
     completer = ScriptedCompleter(
         decisions=[_output_limit_error()],
         outputs=[
@@ -2269,12 +2286,11 @@ async def test_react_decision_output_limit_remains_a_conservative_fallback(
         outcome = await agent.run(state)
 
     assert outcome.result is not None
-    assert [claim.text for claim in outcome.result.claims] == ["First."]
-    claim = outcome.result.claims[0]
-    assert claim.verdict == "insufficient_evidence"
-    assert claim.confidence == pytest.approx(0.0)
-    assert claim.evidence == []
-    assert claim.contradictions == []
+    assert outcome.result.claims == []
+    assert [claim.text for claim in outcome.result.pending_claims] == [
+        "First.",
+        "Second.",
+    ]
 
     assert outcome.react.stop_reason == "provider_error"
     assert outcome.react.steps == []
@@ -2289,13 +2305,19 @@ async def test_react_decision_output_limit_remains_a_conservative_fallback(
     assert provider["configured_max_tokens"] == 4096
     assert provider["request_attempt"] == 1
 
-    checked = next(
-        event
+    # No claim was judged, so no claim-checked event was emitted: the loop
+    # failure is reported as a pending continuation instead.
+    assert [
+        event.event_type
         for event in outcome.state_update["events"]
         if event.event_type == "fact_checker.claim.checked"
+    ] == []
+    pending = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "fact_checker.claims.pending"
     )
-    assert checked.metadata["verdict"] == "insufficient_evidence"
-    assert checked.metadata["reason"] == "loop_failed"
+    assert pending.metadata["pending_claim_count"] == 2
 
     assert [schema for schema, _, _ in completer.calls] == [
         "ClaimsDraft",
@@ -2358,7 +2380,7 @@ def _targeted_topic(
                 target_id=target_id,
                 coverage_id=coverage_id,
                 question=f"What does {title} show?",
-                required_dimensions=["value"],
+                required_dimensions=["measure: the reported value"],
                 required=True,
                 critical=True,
                 support_policy="independent_pair",
@@ -2368,7 +2390,11 @@ def _targeted_topic(
 
 
 def _obligated_state() -> ResearchState:
-    """Two planned topics, three findings, and two evidence targets."""
+    """Two planned topics, three findings, and two evidence targets.
+
+    Every finding states a measured value, because a target that requires one
+    is only answered by a claim that states it.
+    """
     return ResearchState(
         session_id="session-1",
         original_question="How mature is quantum error correction?",
@@ -2380,17 +2406,17 @@ def _obligated_state() -> ResearchState:
         raw_findings=[
             _check_finding(
                 "https://example.org/a",
-                content="Alpha reported the first measured value in 2025.",
+                content="Alpha reported 1,200 MW in 2025.",
                 sub_topic="Alpha",
             ),
             _check_finding(
                 "https://example.org/b",
-                content="Alpha reported a second measured value in 2025.",
+                content="Alpha reported 2,400 MW in 2025.",
                 sub_topic="Alpha",
             ),
             _check_finding(
                 "https://example.org/c",
-                content="Beta reported its own measured value in 2025.",
+                content="Beta reported 3,600 MW in 2025.",
                 sub_topic="Beta",
             ),
         ],
@@ -2408,15 +2434,15 @@ def _obligated_draft() -> ClaimsDraft:
     return ClaimsDraft(
         claims=[
             ClaimDraft(
-                text="Alpha reported the first measured value in 2025.",
+                text="Alpha reported 1,200 MW in 2025.",
                 source_urls=["https://example.org/a"],
             ),
             ClaimDraft(
-                text="Alpha reported a second measured value in 2025.",
+                text="Alpha reported 2,400 MW in 2025.",
                 source_urls=["https://example.org/b"],
             ),
             ClaimDraft(
-                text="Beta reported its own measured value in 2025.",
+                text="Beta reported 3,600 MW in 2025.",
                 source_urls=["https://example.org/c"],
             ),
         ]
@@ -2498,11 +2524,11 @@ async def test_a_batch_takes_one_claim_per_target_before_extra_slots(
 
     assert outcome.result is not None
     assert [claim.text for claim in outcome.result.claims] == [
-        "Alpha reported the first measured value in 2025.",
-        "Beta reported its own measured value in 2025.",
+        "Alpha reported 1,200 MW in 2025.",
+        "Beta reported 3,600 MW in 2025.",
     ]
     assert [claim.text for claim in outcome.result.pending_claims] == [
-        "Alpha reported a second measured value in 2025."
+        "Alpha reported 2,400 MW in 2025."
     ]
     targets = {
         target
@@ -2537,7 +2563,7 @@ async def test_a_claim_that_only_reached_the_batch_is_never_marked_consumed(
     pending_finding = finding_fingerprint(
         _check_finding(
             "https://example.org/b",
-            content="Alpha reported a second measured value in 2025.",
+            content="Alpha reported 2,400 MW in 2025.",
             sub_topic="Alpha",
         )
     )
@@ -2553,7 +2579,7 @@ async def test_a_claim_that_only_reached_the_batch_is_never_marked_consumed(
     }
     assert pending_finding not in consumed
     assert all(
-        claim.text != "Alpha reported a second measured value in 2025."
+        claim.text != "Alpha reported 2,400 MW in 2025."
         for claim in outcome.result.claims
     )
 
@@ -2623,7 +2649,7 @@ async def test_a_deferred_claim_resumes_on_the_next_pass(
         batches_per_pass=1,
     )
     state = _obligated_state()
-    deferred = "Alpha reported a second measured value in 2025."
+    deferred = "Alpha reported 2,400 MW in 2025."
 
     async with tracker.session_span("session-1", state.original_question):
         first = await agent.run(state)
@@ -2683,7 +2709,7 @@ async def test_a_resumed_claim_keeps_the_obligation_it_was_extracted_for(
         batches_per_pass=1,
     )
     state = _obligated_state()
-    deferred = "Alpha reported a second measured value in 2025."
+    deferred = "Alpha reported 2,400 MW in 2025."
 
     async with tracker.session_span("session-1", state.original_question):
         first = await agent.run(state)
@@ -2702,3 +2728,215 @@ async def test_a_resumed_claim_keeps_the_obligation_it_was_extracted_for(
         claim for claim in second.result.claims if claim.text == deferred
     ]
     assert [claim.target_ids for claim in resumed] == [["target-1"]]
+
+
+# --------------------------------------------------------------------------
+# Target attribution is earned, not inherited
+# --------------------------------------------------------------------------
+#
+# Section 2.3: a target is answered only when its reader statement satisfies
+# its required dimensions and support policy. Inheriting every target of the
+# topic a finding came from credits a claim with obligations its prose never
+# met, and lets evidence carrying only metadata claim a substantive one.
+
+
+def _attribution_target(**overrides: object) -> EvidenceTarget:
+    fields: dict[str, object] = {
+        "target_id": "target-1",
+        "coverage_id": "topic-01",
+        "question": "What capacity was withheld in Texas?",
+        "required_dimensions": [
+            "measure: withheld capacity",
+            "geography: Texas",
+        ],
+        "required": True,
+        "critical": True,
+        "support_policy": "independent_pair",
+    }
+    fields.update(overrides)
+    return EvidenceTarget(**fields)
+
+
+def _attribution_finding() -> Finding:
+    return _check_finding(
+        "https://example.org/a",
+        content="1,200 MW was withheld in Texas in 2024.",
+        sub_topic="Alpha",
+    )
+
+
+def _attributed(draft: ClaimDraft, target: EvidenceTarget, *, question: str):
+    return claim_attribution(
+        draft,
+        findings=[_attribution_finding()],
+        coverage_ids={"alpha": "topic-01"},
+        targets={"alpha": [target]},
+        question=question,
+    )
+
+
+def test_target_attribution_requires_the_targets_own_dimensions() -> None:
+    target = _attribution_target()
+    matching = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+    missing_geography = ClaimDraft(
+        text="1,200 MW was withheld in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    question = "How much capacity was withheld in Texas?"
+
+    assert _attributed(matching, target, question=question).target_ids == [
+        "target-1"
+    ]
+    assert (
+        _attributed(missing_geography, target, question=question).target_ids == []
+    )
+
+
+def test_a_dimension_this_contract_cannot_check_is_never_earned() -> None:
+    """A requirement the prose cannot be shown to state is not satisfied."""
+    target = _attribution_target(
+        required_dimensions=["deployment mechanism"],
+    )
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    assert (
+        _attributed(
+            draft, target, question="Which deployment mechanisms are approved?"
+        ).target_ids
+        == []
+    )
+
+
+def test_a_data_period_dimension_needs_the_question_to_ask_for_it() -> None:
+    """Metadata is context: the same evidence answers it only when asked."""
+    target = _attribution_target(required_dimensions=["data period"])
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    assert _attributed(
+        draft, target, question="What data period does the survey cover?"
+    ).target_ids == ["target-1"]
+    assert (
+        _attributed(
+            draft,
+            target,
+            question="How much capacity was withheld in Texas?",
+        ).target_ids
+        == []
+    )
+
+
+def test_a_primary_attribution_target_needs_a_named_issuer() -> None:
+    target = _attribution_target(
+        required_dimensions=["measure: withheld capacity"],
+        support_policy="primary_attribution",
+    )
+    unattributed = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+    attributed = ClaimDraft(
+        text="According to Example Lab, 1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    question = "How much capacity was withheld in Texas?"
+
+    assert _attributed(unattributed, target, question=question).target_ids == []
+    assert _attributed(attributed, target, question=question).target_ids == [
+        "target-1"
+    ]
+
+
+def test_the_evidence_period_obligation_does_not_veto_attribution() -> None:
+    """The contract's own currency requirement is not a prose dimension."""
+    target = _attribution_target(
+        required_dimensions=[
+            "measure: withheld capacity",
+            "geography: Texas",
+            "evidence period: the latest available evidence",
+            "answer form: the specific fact asked for",
+        ]
+    )
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    assert _attributed(
+        draft, target, question="How much capacity was withheld in Texas?"
+    ).target_ids == ["target-1"]
+
+
+# --------------------------------------------------------------------------
+# The continuation queue has a real bound
+# --------------------------------------------------------------------------
+
+
+def _pending_drafts(count: int) -> list[ClaimDraft]:
+    return [
+        ClaimDraft(
+            text=f"Claim number {number} was measured in 2025.",
+            source_urls=["https://example.org/a"],
+        )
+        for number in range(count)
+    ]
+
+
+def test_the_continuation_queue_is_bounded_with_the_overflow_persisted() -> None:
+    """The bound exists, and nothing past it is deleted."""
+    drafts = _pending_drafts(MAX_PENDING_CLAIMS + 3)
+
+    window, deferred = partition_pending_claims(drafts)
+
+    assert len(window) == MAX_PENDING_CLAIMS
+    assert len(deferred) == 3
+    assert [draft.text for draft in (*window, *deferred)] == [
+        draft.text for draft in drafts
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_run_reports_deferred_overflow_as_pending(
+    tracker: Tracker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overflow past the window is persisted, and reported as still pending."""
+    monkeypatch.setattr(fact_checker_module, "MAX_PENDING_CLAIMS", 1)
+    completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[_obligated_draft(), _verdict_draft()],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+        max_claims=1,
+        batches_per_pass=1,
+    )
+    state = _obligated_state()
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    pending = outcome.result.pending_claims
+    assert len(pending) == 2
+    assert [claim.deferred for claim in pending] == [False, True]
+    completed = outcome.state_update["events"][-1]
+    assert completed.metadata["pending_claim_count"] == 2
+    assert completed.metadata["deferred_claim_count"] == 1

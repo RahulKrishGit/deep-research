@@ -507,7 +507,7 @@ def test_six_topics_and_twelve_claims_reach_the_last_topic() -> None:
     batches = 0
 
     while pending and batches < 6:
-        picked = select_claim_batch_indices(
+        picked, _ = select_claim_batch_indices(
             [claims[index].target_ids for index in pending],
             SIX_TARGETS,
             limit=5,
@@ -677,7 +677,7 @@ def _output_limit_error() -> ProviderOutputLimitError:
 @pytest.mark.asyncio
 async def test_a_and_b_findings_become_one_proposition_with_both_evidence_ids() -> None:
     claims, evidence = _mergeable_claims()
-    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
 
     consolidation = await consolidate_claims(
         completer, claims, evidence=evidence
@@ -713,9 +713,9 @@ async def test_two_claims_from_one_source_stay_distinct() -> None:
 
     assert len(consolidation.claims) == 2
     assert len({claim.cluster_id for claim in consolidation.claims}) == 2
-    assert {claim.claim_id for claim in consolidation.claims} == {
-        "claim-2024",
-        "claim-2025",
+    assert {claim.text for claim in consolidation.claims} == {
+        "The 2024 queue held 10 GW",
+        "The 2025 queue held 10 GW",
     }
 
 
@@ -726,13 +726,13 @@ async def test_an_incompatible_candidate_pair_is_a_diagnostic_not_a_failure() ->
         _claim("The 2024 queue held 10 GW.", claim_id="claim-2024"),
         _claim("The 2025 queue held 10 GW.", claim_id="claim-2025"),
     ]
-    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
 
     consolidation = await consolidate_claims(completer, claims)
 
     assert len(consolidation.claims) == 2
     assert consolidation.diagnostics == [
-        "equivalence_candidate_incompatible:0:1"
+        "equivalence_candidate_incompatible:1:2"
     ]
     assert consolidation.provider_failed is False
 
@@ -754,7 +754,7 @@ async def test_a_provider_failure_never_merges_on_error() -> None:
 @pytest.mark.asyncio
 async def test_candidate_pairs_come_from_one_bounded_provider_call() -> None:
     claims, evidence = _mergeable_claims()
-    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
 
     await consolidate_claims(completer, claims, evidence=evidence)
 
@@ -782,6 +782,43 @@ def test_the_equivalence_prompt_lists_a_bounded_number_of_atoms() -> None:
     assert len(listed) == MAX_EQUIVALENCE_ATOMS
 
 
+def test_the_prompt_numbers_the_atoms_from_one() -> None:
+    """The numbers the provider is shown are the numbers it returns.
+
+    A provider answers with the numbers it was shown, so the prompt and the
+    validator have to agree on where the list starts. It starts at one.
+    """
+    atoms = [_queue_proposition(), _queue_proposition(text=TEXT_B)]
+
+    _, user = equivalence_messages(atoms)
+    listed = [
+        line
+        for line in user.content.splitlines()
+        if line[:2] in ("1.", "2.")
+    ]
+
+    assert listed[0].startswith("1. ")
+    assert listed[1].startswith("2. ")
+
+
+@pytest.mark.asyncio
+async def test_a_proposal_using_the_prompt_numbers_merges() -> None:
+    """End to end: the numbers the prompt displayed are the ones accepted."""
+    claims, evidence = _mergeable_claims()
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
+
+    consolidation = await consolidate_claims(
+        completer, claims, evidence=evidence
+    )
+
+    assert not [
+        diagnostic
+        for diagnostic in consolidation.diagnostics
+        if "out_of_range" in diagnostic
+    ]
+    assert len(consolidation.claims) == 1
+
+
 @pytest.mark.asyncio
 async def test_a_textual_duplicate_is_not_excluded_by_exact_number_matching() -> None:
     """The two claims write one number two ways, and they are still one fact."""
@@ -795,7 +832,7 @@ async def test_a_textual_duplicate_is_not_excluded_by_exact_number_matching() ->
             claim_id="claim-plain",
         ),
     ]
-    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
 
     consolidation = await consolidate_claims(completer, claims)
 
@@ -821,14 +858,14 @@ async def test_a_near_duplicate_publishes_one_representative_with_union() -> Non
             source_urls=[QUEUE_B],
         ),
     ]
-    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
 
     consolidation = await consolidate_claims(completer, claims)
 
     assert len(consolidation.claims) == 1
     (cluster,) = consolidation.clusters
     assert cluster.status == "duplicate_representative"
-    assert cluster.diagnostics == ["equivalence_candidate_uncertain:0:1"]
+    assert cluster.diagnostics == ["equivalence_candidate_uncertain:1:2"]
     assert consolidation.claims[0].source_urls == sorted({QUEUE_A, QUEUE_B})
 
 
@@ -848,10 +885,10 @@ async def test_consolidation_is_deterministic_for_the_same_atoms() -> None:
     claims, evidence = _mergeable_claims()
 
     first = await consolidate_claims(
-        ScriptedCompleter(outputs=[_pairs((0, 1))]), claims, evidence=evidence
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims, evidence=evidence
     )
     second = await consolidate_claims(
-        ScriptedCompleter(outputs=[_pairs((0, 1))]), claims, evidence=evidence
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims, evidence=evidence
     )
 
     assert [claim.cluster_id for claim in first.claims] == [
@@ -865,7 +902,7 @@ async def test_a_refinement_reuses_the_stored_cluster_identity() -> None:
     """A cluster already on the state keeps its id when a third claim joins."""
     claims, evidence = _mergeable_claims()
     first = await consolidate_claims(
-        ScriptedCompleter(outputs=[_pairs((0, 1))]), claims, evidence=evidence
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims, evidence=evidence
     )
     stored = first.clusters[0]
     third = _claim(
@@ -875,7 +912,7 @@ async def test_a_refinement_reuses_the_stored_cluster_identity() -> None:
     )
 
     refined = await consolidate_claims(
-        ScriptedCompleter(outputs=[_pairs((0, 1), (1, 2))]),
+        ScriptedCompleter(outputs=[_pairs((1, 2), (2, 3), (3, 4))]),
         [*claims, third],
         existing=[stored],
         evidence=evidence,
@@ -887,6 +924,282 @@ async def test_a_refinement_reuses_the_stored_cluster_identity() -> None:
         "claim-b",
         "claim-c",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_later_pass_adding_only_c_keeps_the_stored_citations() -> None:
+    """A refinement resubmits only the NEW claim.
+
+    The brief's requirement is that a later refinement adding C preserves the
+    cluster id and the old citations. A pass that restates A and B as well
+    would prove nothing: the stored cluster's own provenance has to be
+    reconstructed, and the stored proposition has to be offered to the
+    provider as a candidate, for the merge to be possible at all.
+    """
+    claims, evidence = _mergeable_claims()
+    first = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims, evidence=evidence
+    )
+    stored = first.clusters[0]
+    assert stored.source_urls == sorted({QUEUE_A, QUEUE_B})
+    third = _claim(
+        "The 2024 queue reported 10 GW of capacity.",
+        claim_id="claim-c",
+        source_urls=["https://c.test/queue"],
+        verification_evidence=[_passage("https://c.test/queue", "10 GW in 2024.")],
+    )
+
+    refined = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]),
+        [third],
+        existing=[stored],
+        evidence=evidence,
+    )
+
+    assert len(refined.claims) == 1
+    (cluster,) = refined.clusters
+    assert cluster.cluster_id == stored.cluster_id
+    assert cluster.member_claim_ids == ["claim-a", "claim-b", "claim-c"]
+    assert refined.claims[0].source_urls == sorted(
+        {QUEUE_A, QUEUE_B, "https://c.test/queue"}
+    )
+    assert refined.claims[0].cluster_id == stored.cluster_id
+
+
+@pytest.mark.asyncio
+async def test_a_cluster_whose_members_disagree_never_settles_verified() -> None:
+    """One contradiction is enough: a disagreement cannot read as settled."""
+    claims = [
+        _claim(TEXT_A, claim_id="claim-a", source_urls=[QUEUE_A]),
+        _claim(
+            TEXT_B,
+            claim_id="claim-b",
+            source_urls=[QUEUE_B],
+            verdict="contradicted",
+            evidence=[],
+            contradictions=["An independent meter recorded no such capacity."],
+        ),
+    ]
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
+
+    consolidation = await consolidate_claims(completer, claims)
+
+    assert len(consolidation.claims) == 1
+    (cluster,) = consolidation.clusters
+    assert consolidation.claims[0].verdict != "verified"
+    assert cluster.status == "contested"
+    assert cluster.verdicts == ["contradicted", "verified"]
+    # Both verdicts are recorded, each with the evidence standing behind the
+    # cluster — one cluster is one assertion, so its citations are the set the
+    # disagreement is over.
+    assert cluster.diagnostics == [
+        "cluster_verdict_disagreement:contradicted:"
+        "https://a.test/queue,https://b.test/queue",
+        "cluster_verdict_disagreement:verified:"
+        "https://a.test/queue,https://b.test/queue",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_cluster_whose_members_agree_keeps_its_verdict() -> None:
+    """The control: agreement is not a disagreement."""
+    claims, evidence = _mergeable_claims()
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
+
+    consolidation = await consolidate_claims(
+        completer, claims, evidence=evidence
+    )
+
+    (cluster,) = consolidation.clusters
+    assert consolidation.claims[0].verdict == "verified"
+    assert cluster.status == "canonical"
+    assert cluster.verdicts == ["verified"]
+
+
+@pytest.mark.asyncio
+async def test_a_compound_claim_yields_atom_specific_rows() -> None:
+    """Two assertions are two rows, not one row printed twice.
+
+    The reviewer's probe: a two-atom claim produced two rows with the SAME
+    compound text and claim id, which is exactly the ledger defect atomizing
+    is supposed to remove. Each row now carries its own text and its own
+    stable atomic id, while both keep the parent claim addressable.
+    """
+    compound = _claim(
+        "The 2024 queue held 10 GW; the 2025 queue reached 25 GW.",
+        claim_id="claim-compound",
+    )
+    completer = ScriptedCompleter(outputs=[_pairs()])
+
+    consolidation = await consolidate_claims(completer, [compound])
+
+    assert len(consolidation.claims) == 2
+    texts = [claim.text for claim in consolidation.claims]
+    assert texts == ["The 2024 queue held 10 GW", "the 2025 queue reached 25 GW"]
+    assert len({claim.claim_id for claim in consolidation.claims}) == 2
+    assert all(
+        "claim-compound" in cluster.member_claim_ids
+        for cluster in consolidation.clusters
+    )
+
+
+def test_every_atom_carries_its_own_stable_id() -> None:
+    claim = _claim(
+        "The 2024 queue held 10 GW; the 2025 queue reached 25 GW.",
+        claim_id="claim-compound",
+    )
+
+    first = extract_atoms(claim)
+    second = extract_atoms(claim)
+
+    assert [atom.atom_id for atom in first] == [
+        atom.atom_id for atom in second
+    ]
+    assert len({atom.atom_id for atom in first}) == 2
+    assert all(atom.parent_claim_id == "claim-compound" for atom in first)
+
+
+# --------------------------------------------------------------------------
+# Extraction populates the qualifiers the atom contract declares
+# --------------------------------------------------------------------------
+
+
+def test_extraction_populates_the_subject_and_predicate() -> None:
+    """The qualifier fields are filled, not left empty for a consumer to guess."""
+    claim = _claim(
+        "The 2024 interconnection queue held 10 GW of capacity.",
+        claim_id="claim-subject",
+    )
+
+    (atom,) = extract_atoms(claim)
+
+    assert atom.subject == "interconnection queue"
+    assert atom.predicate == "held"
+
+
+def test_extraction_reads_a_sentence_initial_attribution() -> None:
+    """"According to …" opens a sentence and still attributes the claim."""
+    claim = _claim(
+        "According to Example Lab, the 2024 queue held 10 GW.",
+        claim_id="claim-attribution",
+    )
+
+    (atom,) = extract_atoms(claim)
+
+    assert atom.attribution == "Example Lab"
+
+
+def test_extraction_reads_the_population_a_count_is_taken_from() -> None:
+    """A share states its base; a plain count states the population counted."""
+    counted = _claim(
+        "The 2024 survey counted 4,000 of the interconnection requests.",
+        claim_id="claim-counted",
+    )
+    shared = _claim(
+        "The 2024 survey measured 40 percent of installed capacity.",
+        claim_id="claim-shared",
+    )
+
+    (counted_atom,) = extract_atoms(counted)
+    (shared_atom,) = extract_atoms(shared)
+
+    assert counted_atom.population == "the interconnection requests"
+    assert counted_atom.denominator == ""
+    assert shared_atom.denominator == "installed capacity"
+    assert shared_atom.population == ""
+
+
+# --------------------------------------------------------------------------
+# Scheduling: no target can be starved by a finite pass
+# --------------------------------------------------------------------------
+
+
+def _many_claims_over_five_targets() -> list[Claim]:
+    """Twenty claims for each of targets 1-5, then the one target-6 claim."""
+    claims: list[Claim] = []
+    for target_id in ("target-1", "target-2", "target-3", "target-4", "target-5"):
+        for copy in range(20):
+            claims.append(_targeted_claim(f"{target_id}-claim-{copy}", target_id))
+    claims.append(_targeted_claim("target-6-claim-0", "target-6"))
+    return claims
+
+
+def test_a_round_robin_cursor_reaches_a_starved_critical_target() -> None:
+    """Six five-item batches must reach the last target.
+
+    Restarting at the first target every batch spends all thirty slots on
+    targets 1-5 and never reaches target 6. The cursor is what makes the
+    finite pass reach every target that has a claim.
+    """
+    claims = _many_claims_over_five_targets()
+    pending = list(range(len(claims)))
+    scheduled: list[int] = []
+    cursor = 0
+
+    for _ in range(6):
+        if not pending:
+            break
+        picked, cursor = select_claim_batch_indices(
+            [claims[index].target_ids for index in pending],
+            SIX_TARGETS,
+            limit=5,
+            cursor=cursor,
+        )
+        chosen = [pending[position] for position in picked]
+        scheduled.extend(chosen)
+        pending = [index for index in pending if index not in set(chosen)]
+
+    reached = {
+        target for index in scheduled for target in claims[index].target_ids
+    }
+    assert "target-6" in reached
+
+
+def test_a_critical_target_is_served_before_extra_low_value_claims() -> None:
+    """Priority targets are served first, whatever the cursor says."""
+    claims = [
+        _targeted_claim("extra-1", "topic-a"),
+        _targeted_claim("extra-2", "topic-a"),
+        _targeted_claim("extra-3", "topic-a"),
+        _targeted_claim("critical", "topic-z"),
+        _targeted_claim("plain", "topic-b"),
+    ]
+
+    picked, _ = select_claim_batch_indices(
+        [claim.target_ids for claim in claims],
+        ["topic-a", "topic-b", "topic-z"],
+        limit=2,
+        priority=["topic-z"],
+    )
+
+    assert [claims[index].claim_id for index in picked][0] == "critical"
+    assert "extra-2" not in {claims[index].claim_id for index in picked}
+
+
+def test_the_cursor_advances_so_the_next_batch_starts_after_it() -> None:
+    claims = [
+        _targeted_claim("one", "topic-1"),
+        _targeted_claim("two", "topic-2"),
+        _targeted_claim("three", "topic-3"),
+    ]
+
+    picked, cursor = select_claim_batch_indices(
+        [claim.target_ids for claim in claims],
+        ["topic-1", "topic-2", "topic-3"],
+        limit=2,
+    )
+    outstanding = [claim for claim in claims if claim.claim_id == "three"]
+    following, _ = select_claim_batch_indices(
+        [claim.target_ids for claim in outstanding],
+        ["topic-1", "topic-2", "topic-3"],
+        limit=2,
+        cursor=cursor,
+    )
+
+    assert [claims[index].claim_id for index in picked] == ["one", "two"]
+    assert cursor == 2
+    assert [outstanding[index].claim_id for index in following] == ["three"]
+
 
 
 # --------------------------------------------------------------------------
@@ -1053,14 +1366,30 @@ def test_a_substantive_dimension_is_answered_by_its_own_evidence() -> None:
     ("question", "dimension", "expected"),
     [
         ("When was the report released?", "publication_date", True),
-        ("Who published the report?", "publication_date", True),
+        # Naming a publisher is not asking when it published.
+        ("Who published the report?", "publication_date", False),
+        ("Who issued the permit, and under what authority?", "effective_date", False),
         ("How much capacity was withheld?", "publication_date", False),
         ("When did the rule take effect?", "effective_date", True),
         ("What is the forecast horizon?", "forecast_horizon", True),
     ],
 )
-def test_the_metadata_markers_follow_the_question(
+def test_the_metadata_markers_need_temporal_intent(
     question: str, dimension: str, expected: bool
 ) -> None:
     assert metadata_dimension_asked_for(question, dimension) is expected
 
+
+def test_a_publisher_question_does_not_unlock_a_publication_date() -> None:
+    """The reviewer's probe: "Who published the report?" is not a date request."""
+    assert not dimension_is_answered(
+        question="Who published the report?",
+        dimension="publication_date",
+        stated_dimensions={"publication_date"},
+    )
+    # The same evidence answers it once the question asks for the date.
+    assert dimension_is_answered(
+        question="When was the report published?",
+        dimension="publication_date",
+        stated_dimensions={"publication_date"},
+    )
