@@ -347,6 +347,7 @@ async def run_react_loop(
     stop_reason: StopReason | None = None
     tool_calls = 0
     charged_tool_calls = 0
+    cache_hits = 0
     iteration = 0
 
     while iteration < max_iterations and stop_reason is None:
@@ -480,13 +481,14 @@ async def run_react_loop(
                                     and not charge_budget
                                 ):
                                     # A local/cache result is an observation,
-                                    # not an external tool call. It still
-                                    # counts as a completed action in the run.
+                                    # not an external tool call. It is recorded
+                                    # as its own count: reporting it as a tool
+                                    # call inflated every acquired-work report.
                                     tool_result = policy_result
                                     observation = _tool_observation(
                                         tool_result, limit=summary_limit
                                     )
-                                    tool_calls += 1
+                                    cache_hits += 1
                                     if not tool_result.success:
                                         errors.append(
                                             agent_error(
@@ -697,6 +699,7 @@ async def run_react_loop(
         stop_reason=stop_reason,
         iterations=iteration,
         tool_calls=tool_calls,
+        cache_hits=cache_hits,
         # One loop: its own totals are also its per-loop maximum.
         max_loop_iterations=iteration,
         max_loop_tool_calls=tool_calls,

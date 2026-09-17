@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError
+from deep_research.agents.evidence import build_read_record
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
@@ -60,8 +63,10 @@ from deep_research.utils.types import (
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
 from tests.research_fakes import (
+    QEC_PASSAGE,
     FakeMemory,
     FakeSearchClient,
+    qec_read_record,
     research_tools,
     search_response,
 )
@@ -174,11 +179,21 @@ QEC_SCRAPE = {
     "text": "Logical error rates fell below break-even in 2025.",
 }
 
+# The read registry's own record of that page: the scraper's title, its single
+# extracted chunk, and the read id the registry derives from them. The
+# extraction contract requires those registry fields on the acquisition path,
+# so the scripted provider output has to carry the real ones — a draft naming
+# no admitted read is now dropped instead of admitted on its URL alone.
+QEC_READ = qec_read_record()
+
 _FINDING_EXAMPLE_OUTPUT = (
     "Example JSON output:\n"
     '{"findings":[{"confidence":0.8,"content":"The example report measured a '
-    '12 percent reduction.","source_title":"Example report","source_url":'
-    '"https://evidence.example.test/report"}]}'
+    '12 percent reduction.","excerpt":"The measured reduction was 12 '
+    'percent.","locator":"page-4-chunk-0","read_id":'
+    '"read-111111111111111111111111","source_title":"Example report",'
+    '"source_url":"https://evidence.example.test/report","target_ids":'
+    '["target-01"]}]}'
 )
 
 
@@ -1056,6 +1071,128 @@ def test_a_finding_citing_an_unretrieved_url_is_dropped_and_named() -> None:
     assert rejected == ["finding 1: source url was not retrieved"]
 
 
+def _registry_draft(**overrides: object) -> SubTopicFindingsDraft:
+    """One finding in the acquisition path's required registry shape."""
+    values: dict[str, object] = {
+        "content": "Logical error rates fell below break-even.",
+        "source_url": "https://example.test/qec",
+        "source_title": QEC_READ.title,
+        "confidence": 0.8,
+        "read_id": QEC_READ.read_id,
+        "locator": "chunk-0",
+        "excerpt": QEC_PASSAGE,
+        "target_ids": ["topic-01"],
+    }
+    values.update(overrides)
+    return SubTopicFindingsDraft(findings=[FindingDraft(**values)])
+
+
+def _build_admitted(
+    draft: SubTopicFindingsDraft,
+) -> tuple[list[Finding], list[str]]:
+    return build_findings(
+        draft,
+        sub_topic=_sub_topic("Alpha"),
+        extracted_at=EXTRACTED_AT,
+        known_urls=("https://example.test/qec",),
+        known_reads={QEC_READ.read_id: QEC_READ},
+        target_id="topic-01",
+    )
+
+
+def test_the_acquisition_path_requires_the_registry_fields() -> None:
+    """A finding that names no admitted read cannot be checked, so it is out."""
+    findings, rejected = _build_admitted(_registry_draft(read_id=None))
+
+    assert findings == []
+    assert rejected == [
+        "finding 1: the acquisition path requires an admitted read id"
+    ]
+
+
+def test_an_unadmitted_read_id_is_dropped() -> None:
+    findings, rejected = _build_admitted(
+        _registry_draft(read_id="read-ffffffffffffffffffffffff")
+    )
+
+    assert findings == []
+    assert rejected == ["finding 1: read id was not admitted"]
+
+
+def test_a_finding_naming_another_reads_url_or_title_is_dropped() -> None:
+    """The provider does not get to relabel the read it copied from."""
+    other_url, rejected_url = _build_admitted(
+        _registry_draft(source_url="https://elsewhere.example/report")
+    )
+    assert other_url == []
+    assert rejected_url == ["finding 1: source url did not match read"]
+
+    other_title, rejected_title = _build_admitted(
+        _registry_draft(source_title="Something the model preferred")
+    )
+    assert other_title == []
+    assert rejected_title == ["finding 1: source title did not match read"]
+
+
+def test_an_excerpt_the_locator_does_not_contain_is_dropped() -> None:
+    """An altered number or a paraphrase is not source text."""
+    findings, rejected = _build_admitted(
+        _registry_draft(excerpt="Logical error rates fell below 0.1 percent.")
+    )
+
+    assert findings == []
+    assert rejected == ["finding 1: excerpt was not admitted at locator"]
+
+
+def test_a_finding_missing_its_target_id_is_dropped() -> None:
+    findings, rejected = _build_admitted(_registry_draft(target_ids=[]))
+
+    assert findings == []
+    assert rejected == ["finding 1: target id was not admitted"]
+
+
+def test_a_registry_shaped_finding_is_still_admitted() -> None:
+    """The enforcement is a contract, not a wall: the right shape passes."""
+    findings, rejected = _build_admitted(_registry_draft())
+
+    assert rejected == []
+    assert [finding.content for finding in findings] == [
+        "Logical error rates fell below break-even."
+    ]
+    assert findings[0].source_title == QEC_READ.title
+
+
+def test_extraction_messages_require_the_registry_shape() -> None:
+    """The acquisition prompt demonstrates the shape it will accept."""
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.",
+        sub_topic=_sub_topic("Alpha"),
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    acquisition_body = extraction_messages(
+        task,
+        run,
+        evidence_chars=200,
+        acquisition_context="- evidence_id=ev-1 read_id=read-1 locator=chunk-0",
+    )[1].content
+    legacy_body = extraction_messages(task, run, evidence_chars=200)[1].content
+
+    assert "MUST copy the read_id, locator, and excerpt" in acquisition_body
+    assert '"read_id":"read-111111111111111111111111"' in acquisition_body
+    assert '"locator":"page-4-chunk-0"' in acquisition_body
+    # The conditional phrasing that let the model skip the registry is gone.
+    assert "When a read_id, locator, and excerpt are present" not in acquisition_body
+    # The legacy URL/title path keeps its own contract.
+    assert "MUST copy the read_id" not in legacy_body
+
+
 def _clock() -> datetime:
     return datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -1066,6 +1203,7 @@ def _researcher(
     *,
     search: FakeSearchClient | None = None,
     memory: FakeMemory | None = None,
+    http: httpx.AsyncClient | None = None,
     max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
     config: AgentRuntimeConfig | None = None,
 ) -> ResearcherAgent:
@@ -1075,7 +1213,7 @@ def _researcher(
         scratchpad=ScratchpadMemory(
             session_id="session-1", agent_name="researcher", max_entries=20
         ),
-        tools=research_tools(tracker, search=search, memory=memory),
+        tools=research_tools(tracker, search=search, memory=memory, http=http),
         config=config or AgentRuntimeConfig(max_iterations=4, tool_budget=4),
         max_sub_topics=max_sub_topics,
         clock=_clock,
@@ -1516,16 +1654,21 @@ def test_the_state_update_carries_findings_and_errors(tracker: Tracker) -> None:
     assert update == {"errors": [], "raw_findings": [finding]}
 
 
-def _findings_draft(content: str = "Logical error rates fell below break-even.") -> (
-    SubTopicFindingsDraft
-):
+def _findings_draft(
+    content: str = "Logical error rates fell below break-even.",
+) -> SubTopicFindingsDraft:
+    """One finding in the registry shape the acquisition path now requires."""
     return SubTopicFindingsDraft(
         findings=[
             FindingDraft(
                 content=content,
                 source_url="https://example.test/qec",
-                source_title="Quantum error correction in 2025",
+                source_title=QEC_READ.title,
                 confidence=0.8,
+                read_id=QEC_READ.read_id,
+                locator="chunk-0",
+                excerpt=QEC_PASSAGE,
+                target_ids=["topic-01"],
             )
         ]
     )
@@ -1661,8 +1804,12 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
             FindingDraft(
                 content="Duplicated claim.",
                 source_url="https://example.test/qec",
-                source_title="QEC 2025",
+                source_title=QEC_READ.title,
                 confidence=confidence,
+                read_id=QEC_READ.read_id,
+                locator="chunk-0",
+                excerpt=QEC_PASSAGE,
+                target_ids=["topic-01"],
             )
             for confidence in (0.4, 0.9, 0.6)
         ]
@@ -1670,8 +1817,12 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
             FindingDraft(
                 content=f"Distinct claim {index}.",
                 source_url="https://example.test/qec",
-                source_title="QEC 2025",
+                source_title=QEC_READ.title,
                 confidence=0.5,
+                read_id=QEC_READ.read_id,
+                locator="chunk-0",
+                excerpt=QEC_PASSAGE,
+                target_ids=["topic-01"],
             )
             for index in range(7)
         ]
@@ -1699,6 +1850,170 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
     assert max(
         finding.confidence for finding in outcome.result.findings
     ) == 0.9
+
+
+_LONG_BODY = (
+    "A named source about Alpha confirms queue delay commissioning cost. " * 130
+)
+_LONG_URL = "https://example.test/long-study.md"
+
+
+def _long_study_client() -> httpx.AsyncClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200, text="User-agent: *\nAllow: /", request=request
+            )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/markdown; charset=utf-8"},
+            text=_LONG_BODY,
+            request=request,
+        )
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_a_selected_passage_no_finding_used_gets_its_own_disposition(
+    tracker: Tracker,
+) -> None:
+    """Disposition follows the passage, not the URL the passage came from.
+
+    The document is split into two chunks and both are selected. The extracted
+    finding cites chunk 0 only, so chunk 1 is not "used" — the earlier
+    URL-level check would have called it used because a different passage of
+    the same read produced a finding.
+    """
+    draft = SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content="Queue delay commissioning cost is confirmed.",
+                source_url=_LONG_URL,
+                source_title="Alpha long study",
+                confidence=0.8,
+                read_id=build_read_record(
+                    session_id="session-1",
+                    reader="document_reader",
+                    requested_url=_LONG_URL,
+                    resolved_url=_LONG_URL,
+                    title="Alpha long study",
+                    retrieved_at=EXTRACTED_AT,
+                    text=_LONG_BODY,
+                    passages={
+                        "chunk-0": _LONG_BODY[:8000],
+                        "chunk-1": _LONG_BODY[8000:],
+                    },
+                    extraction_complete=True,
+                ).read_id,
+                locator="chunk-0",
+                excerpt=_LONG_BODY[:8000],
+                target_ids=["topic-01"],
+            )
+        ]
+    )
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Find the study.", "web_search", '{"query": "alpha 2025"}'),
+            use_tool(
+                "Read the study.",
+                "document_reader",
+                json.dumps({"source": _LONG_URL}),
+            ),
+            finish("Done.", "Answer."),
+        ],
+        outputs=[draft],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title="Alpha long study", url=_LONG_URL)]
+        ),
+        http=_long_study_client(),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    units = outcome.state_update["evidence_units"]
+    assert {unit.locator for unit in units.values()} == {"chunk-0", "chunk-1"}
+    used = next(
+        evidence_id
+        for evidence_id, unit in units.items()
+        if unit.locator == "chunk-0"
+    )
+    unused = next(
+        evidence_id
+        for evidence_id, unit in units.items()
+        if unit.locator == "chunk-1"
+    )
+    reasons = {
+        (item.stage, item.item_id): item.reason
+        for item in outcome.state_update["evidence_dispositions"]
+    }
+    assert reasons[("extraction", unused)] == "irrelevant"
+    assert ("extraction", used) not in reasons
+
+
+@pytest.mark.asyncio
+async def test_the_completed_event_reports_work_and_target_obligation(
+    tracker: Tracker,
+) -> None:
+    """Yield counters must not restate one another.
+
+    ``works_retained`` is gone — a URL count under a second name is not a work
+    count, and Task 4's ``WorkIdentity`` owns the real one. What the event does
+    report is the acquisition that actually happened (one network body, no
+    cache reuse) and whether the active target's obligation advanced.
+    """
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(),
+        outputs=[_findings_draft()],
+    )
+    agent = _researcher(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    completed = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+    )
+    metadata = completed.metadata
+    assert "works_retained" not in metadata
+    assert metadata["source_urls_retained"] == 1
+    assert metadata["publishers_retained"] == 1
+    assert metadata["findings_retained"] == 1
+    assert metadata["successful_reads"] == 1
+    assert metadata["useful_evidence_yield"] == 1
+    assert metadata["acquired_work_count"] == 1
+    assert metadata["cache_hits"] == 0
+    assert metadata["target_obligation_completed"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_empty_extraction_reports_no_completed_obligation(
+    tracker: Tracker,
+) -> None:
+    """No accepted finding means no completed target obligation, honestly."""
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(),
+        outputs=[SubTopicFindingsDraft(findings=[])],
+    )
+    agent = _researcher(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    completed = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+    )
+    assert completed.metadata["target_obligation_completed"] is False
+    assert completed.metadata["acquired_work_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -1741,7 +2056,12 @@ async def test_two_sub_topics_each_produce_findings_with_a_fresh_tool_budget(
         outcome = await agent.run(state)
 
     assert outcome.react.stop_reason == "finished"
-    assert outcome.react.tool_calls == 4
+    # Four completed read/search actions, three external calls: Beta's read of
+    # the same URL is served from the run's successful-read cache, which is a
+    # local reuse rather than a second acquisition. The external count is what
+    # the per-loop budget bounds, so it is the count that must stay split.
+    assert outcome.react.tool_calls == 3
+    assert outcome.react.cache_hits == 1
     assert [
         finding.related_sub_topic for finding in outcome.result.findings
     ] == ["Alpha", "Beta"]

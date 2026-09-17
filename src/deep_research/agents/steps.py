@@ -193,6 +193,15 @@ class ReActRun(ContractModel):
     stop_reason: StopReason
     iterations: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
+    cache_hits: int = Field(default=0, ge=0)
+    """Local reuse observations, kept out of ``tool_calls``.
+
+    A policy may answer a requested read from the run's shared successful-read
+    cache instead of spending an external call. That is a completed action with
+    an observation, but it is not a tool call: counting it in ``tool_calls``
+    reported acquired work that never happened, and corroboration that never
+    happened either.
+    """
     max_loop_iterations: int = Field(default=0, ge=0)
     max_loop_tool_calls: int = Field(default=0, ge=0)
     final_answer: str | None = Field(default=None, min_length=1)

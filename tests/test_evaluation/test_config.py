@@ -408,9 +408,13 @@ CRITIC_PROMPT_FINGERPRINT = "29176f9c39df"
 # shared ``agents/prompts.py``, which gained the ``decision_context`` parameter
 # and its single ``## Acquisition context`` section. The same shared-module
 # move is why every other target pin below advanced in this task.
+# Task 3's fix round moves researcher to ``0628475cb810``: its own module
+# source changed (the extraction response contract now requires the registry
+# fields, the reply example demonstrates that shape, and the acquisition
+# counters changed). Only that agent's source changed, so no other pin moves.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "7e43f342910c",
-    "researcher": "bebb16cebfe9",
+    "researcher": "0628475cb810",
     "source_evaluator": "9528b1099f3f",
     "fact_checker": "518464aa4cee",
     "synthesizer": "758ea76a8c0c",

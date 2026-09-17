@@ -151,9 +151,23 @@ class DocumentReaderTool(BaseTool):
                 details={"suffix": suffix, "content_type": content_type},
             )
 
-        chunks, failures, extraction_complete = _extract(
-            document_format, payload, self._chunk_chars, self._csv_rows_per_chunk
-        )
+        try:
+            chunks, failures, extraction_complete = _extract(
+                document_format, payload, self._chunk_chars, self._csv_rows_per_chunk
+            )
+        except Exception as error:
+            # A document the format's parser cannot read — a truncated PDF, a
+            # malformed JSON body — is an extraction limitation, not a
+            # transport failure: the bytes arrived successfully and could not
+            # be turned into text. Naming it here is what lets the acquisition
+            # policy record "this document had no usable content" instead of
+            # mislabelling it as a failed request. Only the exception's type
+            # name is published, never its message or the payload.
+            raise ToolExecutionError(
+                "document extraction failed",
+                error_type="document_extraction_failed",
+                details={"format": document_format, "error_type": type(error).__name__},
+            ) from error
         document_text = _document_text(chunks)
         data = {
             "source": source,

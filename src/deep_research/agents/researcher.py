@@ -142,9 +142,12 @@ class FindingDraft(ContractModel):
     source_url: str
     source_title: str
     confidence: float
-    # Newer extraction callers may identify the exact registry item. These
-    # remain optional for compatibility with the original URL/title schema;
-    # when supplied, build_findings verifies every field against the read.
+    # The registry identity of the passage a finding came from. ``build_findings``
+    # REQUIRES these whenever the acquisition path is active (``known_reads is
+    # not None``): an optional membership check is one the model can skip, and
+    # the reply example demonstrates the required shape rather than the
+    # URL/title shape that no longer admits anything. They stay optional on the
+    # model so a snapshot written for the legacy URL/title path still loads.
     read_id: str | None = None
     locator: str | None = None
     excerpt: str | None = None
@@ -358,6 +361,7 @@ def merge_react_runs(
         stop_reason=stop_reason,
         iterations=sum(run.iterations for run in runs),
         tool_calls=sum(run.tool_calls for run in runs),
+        cache_hits=sum(run.cache_hits for run in runs),
         # The totals above are whole-case sums; these are the largest single
         # loop's own totals. ``tool_budget`` is enforced per loop, so a budget
         # gate must compare against the per-loop maximum. A merged sum can
@@ -553,15 +557,22 @@ def retrieved_finding_urls(run: ReActRun) -> tuple[str, ...]:
 
 
 # One evidence-backed example. The response contract above still states the
-# empty-list case, which is valid and is not the opposite end of a scale.
+# empty-list case, which is valid and is not the opposite end of a scale. On
+# the acquisition path every finding must carry the registry fields it copied
+# from the packet, so the example demonstrates that shape instead of the
+# URL/title shape that no longer admits anything: the prompt must never show
+# a bypass of the membership checks.
 _FINDING_REPLY_EXAMPLES = (
     (
-        "Example input: an example report at "
-        "https://evidence.example.test/report states that the measured "
-        "reduction was 12 percent.",
+        "Example input: passage read-111111111111111111111111 locator page-4-"
+        "chunk-0 of the example report at "
+        "https://evidence.example.test/report (target-01).",
         '{"findings":[{"content":"The example report measured a 12 percent '
         'reduction.","source_url":"https://evidence.example.test/report",'
-        '"source_title":"Example report","confidence":0.8}]}',
+        '"source_title":"Example report","confidence":0.8,'
+        '"read_id":"read-111111111111111111111111","locator":"page-4-chunk-0",'
+        '"excerpt":"The measured reduction was 12 percent.",'
+        '"target_ids":["target-01"]}]}',
     ),
 )
 
@@ -577,6 +588,20 @@ def extraction_messages(
     criteria = "\n".join(
         f"- {criterion}" for criterion in task.sub_topic.success_criteria
     )
+    registry_contract = (
+        "Return one finding per distinct, source-backed claim. Every finding "
+        "MUST copy the read_id, locator, and excerpt of the passage it came "
+        "from, and the target id it serves, exactly as the acquisition "
+        "context above prints them; a finding without them, or with an "
+        "excerpt the locator does not contain, is dropped. Copy source_url "
+        "and source_title from the same read record, never from memory, a "
+        "search snippet, or another finding's text; never invent a content "
+        "hash. Return an empty list when the evidence supports nothing."
+        if acquisition_context is not None
+        else "Return one finding per distinct, source-backed claim. Use the "
+        "exact source_url and source_title from the evidence above. Return "
+        "an empty list when the evidence supports nothing."
+    )
     sections = [
         f"# Sub-topic\n{task.sub_topic.title}",
             f"# Success criteria\n{criteria}",
@@ -590,14 +615,7 @@ def extraction_messages(
                 )
             )
         ),
-        (
-            "# Response contract\nReturn one finding per distinct, "
-            "source-backed claim. Use the exact source_url and source_title "
-            "from the evidence above. When a read_id, locator, and excerpt "
-            "are present, copy those registry fields exactly; never invent a "
-            "content hash. Return an empty list when the evidence supports "
-            "nothing."
-        ),
+        f"# Response contract\n{registry_contract}",
         (
             "# Reply format\n"
             f"{render_structured_reply_format(_FINDING_REPLY_EXAMPLES)}"
@@ -617,6 +635,7 @@ def build_findings(
     known_urls: Sequence[str],
     known_reads: Mapping[str, ReadRecord] | None = None,
     target_id: str | None = None,
+    admitted_evidence_keys: list[tuple[str, str]] | None = None,
 ) -> tuple[list[Finding], list[str]]:
     """Stamp drafts into ``Finding`` values, naming the ones that were dropped.
 
@@ -627,6 +646,14 @@ def build_findings(
     retrieved. A syntactically valid URL that was never retrieved — most
     plausibly a copied prompt example — is dropped rather than entering
     research state, which closes a gap the earlier shape-only check left open.
+
+    ``known_reads`` non-``None`` means the acquisition path is active, and
+    there the registry fields are REQUIRED, not opt-in: a finding that names no
+    admitted read id cannot be checked against the read registry at all, and an
+    optional check is a check the model can skip. Every accepted finding is
+    also appended to ``admitted_evidence_keys`` as its ``(read_id, locator)``
+    when the caller passes a list, which is how the caller can tell a passage
+    that produced a finding from a different passage of the same read.
     """
     findings: list[Finding] = []
     rejected: list[str] = []
@@ -635,6 +662,12 @@ def build_findings(
         read = None
         source_url = item.source_url
         source_title = item.source_title
+        if known_reads is not None and item.read_id is None:
+            rejected.append(
+                f"finding {index}: the acquisition path requires an admitted "
+                "read id"
+            )
+            continue
         if item.read_id is not None:
             read = None if known_reads is None else known_reads.get(item.read_id)
             if read is None:
@@ -678,6 +711,13 @@ def build_findings(
             )
         except ValidationError as error:
             rejected.append(f"finding {index}: invalid {_invalid_fields(error)}")
+            continue
+        if (
+            admitted_evidence_keys is not None
+            and item.read_id is not None
+            and item.locator
+        ):
+            admitted_evidence_keys.append((item.read_id, item.locator))
     return findings, rejected
 
 
@@ -691,7 +731,6 @@ class BoundedFindings(NamedTuple):
     publishers_retained: int
     source_urls_retained: int
     findings_retained: int
-    works_retained: int
 
 
 def bound_sub_topic_findings(
@@ -765,11 +804,11 @@ def bound_sub_topic_findings(
             {normalize_source_url(finding.source_url) for finding in retained}
         ),
         findings_retained=len(retained),
-        # Task 4 enriches findings with explicit work identities. Until then,
-        # a distinct retained source is the conservative work-count alias.
-        works_retained=len(
-            {normalize_source_url(finding.source_url) for finding in retained}
-        ),
+        # No ``works_retained`` here on purpose. A finding carries a URL and a
+        # title, and nothing in Task 3 can establish the intellectual work
+        # behind them, so any work count computed here would be the URL count
+        # under a second name. Task 4's ``WorkIdentity`` (aliases, version
+        # relationships) owns that count; it is deferred, not approximated.
     )
 
 
@@ -833,16 +872,27 @@ def sub_topic_completed_event(
     publishers_retained: int,
     source_urls_retained: int,
     findings_retained: int,
-    works_retained: int,
     successful_reads: int = 0,
     useful_evidence_yield: int = 0,
+    acquired_work_count: int = 0,
+    target_obligation_completed: bool = False,
 ) -> ResearchEvent:
     """Report one sub-topic's stop reason, counts, and finding total.
 
     ``findings`` is what entered research state; the three bounded-evidence
     counts say what extraction produced that did not, and why — restatements
     folded into an existing finding, and distinct findings or sources past the
-    per-sub-topic cap.
+    per-sub-topic cap. ``successful_reads`` counts reads whose body was
+    admitted this pass, ``useful_evidence_yield`` counts selected units for the
+    active target, and ``acquired_work_count`` counts the unique network bodies
+    this run actually downloaded — ``cache_hits`` (from ``run``) is reported
+    beside it so a reused body is never read as new acquisition.
+
+    ``target_obligation_completed`` is the Task 3 signal that the active
+    target's obligation advanced: at least one registry-admitted finding was
+    extracted for it. The reader-level completion verdict (required
+    dimensions, support policy) belongs to Task 5's claim machinery and is not
+    claimed here.
     """
     return agent_event(
         agent_name=RESEARCHER_NAME,
@@ -854,6 +904,7 @@ def sub_topic_completed_event(
             "stop_reason": run.stop_reason,
             "iterations": run.iterations,
             "tool_calls": run.tool_calls,
+            "cache_hits": run.cache_hits,
             "findings": findings,
             "findings_dropped_duplicate": dropped_duplicate,
             "findings_dropped_cap": dropped_cap,
@@ -861,9 +912,10 @@ def sub_topic_completed_event(
             "publishers_retained": publishers_retained,
             "source_urls_retained": source_urls_retained,
             "findings_retained": findings_retained,
-            "works_retained": works_retained,
             "successful_reads": successful_reads,
             "useful_evidence_yield": useful_evidence_yield,
+            "acquired_work_count": acquired_work_count,
+            "target_obligation_completed": target_obligation_completed,
         },
     )
 
@@ -1090,6 +1142,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._run_source_state: ResearchState | None = None
         self._last_successful_reads = 0
         self._last_useful_evidence_yield = 0
+        self._last_acquired_work_count = 0
+        self._last_target_obligation_completed = False
 
     @property
     def output_schema(self) -> type[ResearchFindings]:
@@ -1221,6 +1275,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # One call, two consumers: the same tuple gates the provider call and
         # becomes the provenance allow-list, so "did this loop read anything"
         # and "which URLs may a finding cite" cannot disagree.
+        self._last_target_obligation_completed = False
         policy = self._active_acquisition
         retrieved = (
             tuple(
@@ -1235,6 +1290,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         )
         if not run.succeeded or not retrieved:
             return [], [], False
+
+        if policy is not None:
+            # The local extract step, taken before the provider call so the
+            # continuation batch is part of the packet. Bounded and idempotent:
+            # a batch already handed over inside the loop is not repeated, and
+            # the batch bound drains the pending list instead of leaving a
+            # gate acquisition can never pass.
+            policy.extract_passage_batch()
 
         try:
             draft = await self.provider.complete_structured(
@@ -1254,6 +1317,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         except ProviderError as error:
             return [], [extraction_provider_error(run, error)], True
 
+        admitted_keys: list[tuple[str, str]] = []
         findings, rejected = build_findings(
             draft,
             sub_topic=task.sub_topic,
@@ -1269,10 +1333,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 else None
             ),
             target_id=(policy.target_id if policy is not None else None),
+            admitted_evidence_keys=admitted_keys,
         )
         if policy is not None:
-            policy.record_extraction_dispositions(
-                [finding.source_url for finding in findings]
+            # Unit-level, so a passage is "used" only when that exact passage
+            # produced an admitted finding.
+            policy.record_extraction_dispositions(admitted_keys)
+            self._last_target_obligation_completed = (
+                policy.target_id is not None and bool(admitted_keys)
             )
         if not rejected:
             if policy is not None:
@@ -1454,6 +1522,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         policy.target_id in unit.target_ids
                         for unit in policy.evidence.values()
                     )
+                    self._last_acquired_work_count = policy.acquired_work_count
                     policy.complete_extraction()
                     target_id = policy.target_id
                     if target_id is not None:
@@ -1500,9 +1569,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     publishers_retained=bounded.publishers_retained,
                     source_urls_retained=bounded.source_urls_retained,
                     findings_retained=bounded.findings_retained,
-                    works_retained=bounded.works_retained,
                     successful_reads=self._last_successful_reads,
                     useful_evidence_yield=self._last_useful_evidence_yield,
+                    acquired_work_count=self._last_acquired_work_count,
+                    target_obligation_completed=(
+                        self._last_target_obligation_completed
+                    ),
                 )
             )
             if not react.succeeded:

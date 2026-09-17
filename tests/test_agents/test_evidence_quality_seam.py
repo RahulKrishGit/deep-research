@@ -43,12 +43,14 @@ from tests.research_fakes import (
     FakeReputationSource,
     FakeSearchClient,
     fact_checker_tools,
+    qec_read_record,
     research_tools,
     search_response,
 )
 
 SOURCE_URL = "https://example.test/qec"
 INDEPENDENT_URL = "https://third.test/review"
+SOURCE_READ = qec_read_record()
 
 
 def _state() -> ResearchState:
@@ -98,8 +100,12 @@ async def test_findings_flow_through_scoring_into_verified_claims(
                         FindingDraft(
                             content="Break-even was crossed in 2025.",
                             source_url=SOURCE_URL,
-                            source_title="Quantum error correction in 2025",
+                            source_title=SOURCE_READ.title,
                             confidence=0.8,
+                            read_id=SOURCE_READ.read_id,
+                            locator="chunk-0",
+                            excerpt=SOURCE_READ.passages["chunk-0"],
+                            target_ids=["topic-01"],
                         )
                     ]
                 )

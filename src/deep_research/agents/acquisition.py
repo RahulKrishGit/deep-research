@@ -24,6 +24,7 @@ from deep_research.agents.evidence import (
     build_boundary_audit,
     build_evidence_unit,
     build_read_record,
+    merge_evidence_units,
     passages_from_chunks,
     validate_cached_read,
 )
@@ -53,10 +54,18 @@ _CONTEXT_OVERFLOW = "continuation_ids=packet_overflow"
 # that merely mentions "access denied" from losing its read record.
 _SHELL_CONTENT_MAX_CHARS = 2000
 
-# Candidate discoveries that may still be read after they leave the queue.
-# ``document_link`` is deliberately absent: it is the manifest of a URL the
-# model followed, never a claim that the run was given that URL.
-_DISCOVERED_VIA = frozenset({"search", "memory"})
+# Candidate discoveries a URL may be read on. Any URL the run was actually
+# given — by a search result, a memory lead, or a document link it followed —
+# stays readable after it leaves the queue, including on a host that denied a
+# different page: a denial is never a publisher-wide circuit. A URL with no
+# such record is the model's guess about the publisher's file layout.
+_DISCOVERED_VIA = frozenset({"search", "memory", "document_link"})
+
+# Bounded continuation batches per read. Batch one is the selection taken at
+# admission; one further batch is the plan's "second bounded passage batch".
+# The bound is what makes the local extract handoff terminate instead of
+# growing a pending list acquisition can never leave.
+_DEFAULT_PASSAGE_BATCH_LIMIT = 2
 
 
 def next_acquisition_action(state: AcquisitionState) -> AcquisitionAction:
@@ -465,13 +474,13 @@ def _synthesized_from_failed_page(url: str, state: AcquisitionState) -> bool:
 def _url_was_discovered(url: str, state: AcquisitionState) -> bool:
     """True when the run was actually given this URL, not asked to guess it.
 
-    A searched or remembered candidate stays readable after it leaves the
-    queue, and a URL the run already attempted may be retried while its call
-    budget lasts (a denial is checked separately). Anything else is the
-    model's guess about the publisher's file layout, and guessing is how a
-    denied landing page turns into a fabricated document URL. There is no
-    publisher-wide circuit here: a *discovered* document on a denied host
-    stays readable.
+    A searched, remembered, or followed-document candidate stays readable after
+    it leaves the queue, and a URL the run already attempted may be retried
+    while its call budget lasts (a denial is checked separately). Anything else
+    is the model's guess about the publisher's file layout, and guessing is how
+    a denied landing page turns into a fabricated document URL. There is no
+    publisher-wide circuit here: a *discovered* document on a denied host stays
+    readable.
     """
     if url in state.candidate_urls or url in state.attempted_urls:
         return True
@@ -539,6 +548,7 @@ class AcquisitionPolicy:
     boundary_audits: dict[str, Any] = field(default_factory=dict)
     retrieved_at: Callable[[], str] = _utc_now_iso
     selected_passages_per_read: int = 4
+    passage_batch_limit: int = _DEFAULT_PASSAGE_BATCH_LIMIT
     configuration_fingerprint: str = "acquisition-v1"
     cache: MutableMapping[str, ReadRecord] | None = None
     network_read_ids: set[str] | None = None
@@ -548,10 +558,14 @@ class AcquisitionPolicy:
     _sequence: int = field(default=0, init=False)
     _cache: dict[str, ReadRecord] = field(default_factory=dict, init=False)
     _document_fallback_urls: set[str] = field(default_factory=set, init=False)
+    _read_titles: dict[str, str] = field(default_factory=dict, init=False)
+    _passage_batches: dict[str, int] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         if self.selected_passages_per_read < 1:
             raise ValueError("selected_passages_per_read must be at least 1")
+        if self.passage_batch_limit < 1:
+            raise ValueError("passage_batch_limit must be at least 1")
         if self.state.target_id is None and self.target_id is not None:
             self.state = self.state.model_copy(update={"target_id": self.target_id})
         if self.cache is not None:
@@ -564,6 +578,11 @@ class AcquisitionPolicy:
             if record.acquisition_kind == "network" and record.extraction_complete:
                 self._cache.setdefault(record.resolved_url, record)
                 self._cache.setdefault(record.requested_url, record)
+        # Every read already admitted by this or an earlier consumer keeps the
+        # title it was first stored under. Re-resolving it here is what keeps
+        # two admissions of one body from disagreeing about its title.
+        for record in (*self.reads.values(), *self._cache.values()):
+            self._read_titles.setdefault(record.read_id, record.title)
 
     @property
     def acquired_work_count(self) -> int:
@@ -579,13 +598,16 @@ class AcquisitionPolicy:
             )
 
     def complete_extraction(self) -> None:
-        """Consume the local extraction handoff while keeping deferred IDs.
+        """Terminate the local extraction handoff.
 
-        ``pending_passage_ids`` are deliberately not cleared here.  They name
-        exact locators omitted by the current bounded packet and must survive
-        the handoff so a continuation can select them later.  Only the read
-        IDs whose current batch was handed to the extractor are consumed.
+        ``pending_extraction_ids`` are the reads whose current batch was handed
+        to the extractor. A passage batch still owed is taken now — bounded,
+        at most once per read — and whatever the bound leaves over is recorded
+        in that batch's selection manifest and dropped from the pending list,
+        so persisted state can never re-enter "extract" for the rest of the
+        run. Only the read IDs whose batch was handed over are consumed here.
         """
+        self.extract_passage_batch()
         self.state = self.state.model_copy(
             update={
                 "pending_extraction_ids": [],
@@ -594,30 +616,27 @@ class AcquisitionPolicy:
 
     def record_extraction_dispositions(
         self,
-        source_urls: Sequence[str],
+        admitted: Sequence[tuple[str, str]],
     ) -> None:
-        """Account for selected units that yielded no extracted finding."""
-        allowed_urls = {normalize_source_url(url) for url in source_urls}
-        # A finding may preserve the requested landing URL while the read
-        # registry correctly attributes the body to its resolved/serving URL.
-        # Treat the two URLs as one provenance pair without trusting either
-        # value as evidence on its own.
-        for read in self.reads.values():
-            if (
-                normalize_source_url(read.resolved_url) in allowed_urls
-                or normalize_source_url(read.requested_url) in allowed_urls
-            ):
-                allowed_urls.update(
-                    {
-                        normalize_source_url(read.resolved_url),
-                        normalize_source_url(read.requested_url),
-                    }
-                )
+        """Account for exactly the selected units no accepted finding used.
+
+        Unit-level, never URL-level: ``admitted`` is the ``(read_id, locator)``
+        of every extracted finding that was admitted against the registry. A
+        selected passage is "used" only when *that* passage produced a finding —
+        matching on ``source_url`` marked a passage used because a different
+        passage of the same read did, which is the approximation this replaces.
+        Every other selected unit for the active target gets its explicit
+        reason here, so no selected passage can disappear unaccounted for.
+        """
+        used = {(read_id, locator) for read_id, locator in admitted}
         target_id = self.target_id
+        known = {(item.stage, item.item_id) for item in self.dispositions}
         for evidence_id, unit in self.evidence.items():
             if target_id is not None and target_id not in unit.target_ids:
                 continue
-            if normalize_source_url(unit.source_url) in allowed_urls:
+            if (unit.read_id, unit.locator) in used:
+                continue
+            if ("extraction", evidence_id) in known:
                 continue
             self.dispositions.append(
                 EvidenceDisposition(
@@ -627,6 +646,160 @@ class AcquisitionPolicy:
                     target_ids=list(() if target_id is None else (target_id,)),
                 )
             )
+
+    def _pending_groups(self) -> tuple[dict[str, list[str]], list[str]]:
+        """Split pending locator ids into resolvable reads and orphaned ids."""
+        groups: dict[str, list[str]] = {}
+        unresolved: list[str] = []
+        for item in self.state.pending_passage_ids:
+            read_id, _separator, locator = item.partition("/")
+            read = self.reads.get(read_id)
+            if read is None or locator not in read.passages:
+                unresolved.append(item)
+                continue
+            locators = groups.setdefault(read_id, [])
+            if locator not in locators:
+                locators.append(locator)
+        return groups, unresolved
+
+    def extract_passage_batch(self) -> int:
+        """Hand over the second bounded passage batch, then terminate.
+
+        The plan's decision order reads a non-empty ``pending_passage_ids`` as
+        "extract". A pending list that only ever grew froze the target out of
+        acquisition for the rest of the pass: every later tool call is
+        correctly rejected, and no local step ever consumed the ids. The
+        handoff is therefore bounded — ``passage_batch_limit`` batches per
+        read, the second being the plan's continuation batch — and
+        terminating: whatever the bound leaves over is recorded in this
+        batch's selection manifest and dropped from the pending list.
+
+        A batch whose locators do not lexically match the query is still handed
+        over, in reader order: a selection miss is not "there is no evidence".
+        Returns the number of new evidence units admitted.
+        """
+        groups, unresolved = self._pending_groups()
+        if not groups:
+            if unresolved:
+                # Nothing resolvable is left, so the gate closes rather than
+                # naming locators no stored read can supply.
+                self.state = self.state.model_copy(
+                    update={"pending_passage_ids": []}
+                )
+            return 0
+        target_ids = () if self.target_id is None else (self.target_id,)
+        selected_ids: list[str] = []
+        terminal: list[str] = [*unresolved]
+        carried: list[str] = []
+        admitted = 0
+        for read_id, locators in groups.items():
+            read = self.reads[read_id]
+            taken = self._passage_batches.get(read_id, 1)
+            if taken >= self.passage_batch_limit:
+                terminal.extend(
+                    f"{read_id}/{locator}" for locator in locators
+                )
+                continue
+            texts = {locator: read.passages[locator] for locator in locators}
+            selected = select_relevant_passages(
+                texts, self.query, self.selected_passages_per_read
+            )
+            if not selected:
+                selected = locators[: self.selected_passages_per_read]
+            self._passage_batches[read_id] = taken + 1
+            units: dict[str, EvidenceUnit] = {}
+            for locator in selected:
+                unit = build_evidence_unit(
+                    read=read,
+                    locator=locator,
+                    excerpt=read.passages[locator],
+                    origin=self.origin,
+                    target_ids=target_ids,
+                )
+                units[unit.evidence_id] = unit
+            self._assign_evidence(units)
+            admitted += len(units)
+            selected_ids.extend(sorted(units))
+            chosen = set(selected)
+            leftovers = [
+                f"{read_id}/{locator}"
+                for locator in locators
+                if locator not in chosen
+            ]
+            if self._passage_batches[read_id] >= self.passage_batch_limit:
+                terminal.extend(leftovers)
+            else:
+                carried.extend(leftovers)
+        audit = build_boundary_audit(
+            operation=PASSAGE_SELECTION_OPERATION,
+            job_id=self.session_id,
+            agent_name=self.origin,
+            sequence=self._sequence,
+            target_ids=target_ids,
+            input_ids=tuple(self.state.pending_passage_ids),
+            selected_ids=tuple(selected_ids),
+            returned_ids=tuple(selected_ids),
+            accepted_ids=tuple(selected_ids),
+            deferred_ids=tuple(terminal),
+            disposition_ids=tuple(terminal),
+            packet_fingerprint=_fingerprint(
+                "continuation-batch", self.query, selected_ids, terminal
+            ),
+            configuration_fingerprint=self.configuration_fingerprint,
+            status="deferred" if terminal else "completed",
+        )
+        self.boundary_audits[audit.audit_id] = audit
+        self._sequence += 1
+        self.state = self.state.model_copy(
+            update={"pending_passage_ids": list(dict.fromkeys(carried))}
+        )
+        return admitted
+
+    def _resolve_read_title(self, read: ReadRecord, requested: str) -> ReadRecord:
+        """Resolve one read's title once per read id; the first value wins.
+
+        A search snippet title is a *lead* label, and the reader's own title for
+        the same body can differ between two admissions of the same URL. Both
+        admissions mint the same evidence identity ``(read_id, locator,
+        excerpt)``, and the shared merge refuses two different ``source_title``
+        values for one identity — so a later admission re-labelling an
+        already-cited passage raised. The first stored title therefore stands
+        for every later admission of the same ``read_id``.
+        """
+        known = self._read_titles.get(read.read_id)
+        if known is not None:
+            return read.model_copy(update={"title": known})
+        candidate = self.state.candidate_records.get(
+            normalize_source_url(requested)
+        )
+        title = read.title
+        if (
+            candidate is not None
+            and candidate.title
+            and read.title == read.resolved_url
+        ):
+            title = candidate.title
+        self._read_titles[read.read_id] = title
+        return read.model_copy(update={"title": title})
+
+    def _assign_evidence(self, units: Mapping[str, EvidenceUnit]) -> None:
+        """Add units to the shared registry, unioning target associations.
+
+        One passage has one evidence identity per ``(read_id, locator,
+        excerpt)`` and the registry is shared across targets, so a plain
+        assignment lets the last target to select a passage erase the earlier
+        target's association. The shared merge keeps the first origin, unions
+        targets, and still refuses a genuine rewrite. Mutation stays in place:
+        sibling policies hold this same mapping.
+        """
+        for evidence_id, unit in units.items():
+            existing = self.evidence.get(evidence_id)
+            if existing is None:
+                self.evidence[evidence_id] = unit
+                continue
+            self.evidence[evidence_id] = merge_evidence_units(
+                {evidence_id: existing}, {evidence_id: unit}
+            )[evidence_id]
 
     def _expected_for_tool(self, tool_name: str) -> AcquisitionAction:
         if tool_name in {"web_search", "query_memory"}:
@@ -653,10 +826,22 @@ class AcquisitionPolicy:
                 reason="the requested tool is outside the acquisition boundary",
             )
         if expected == "extract":
-            return ToolPolicyDecision(
-                allowed=False,
-                reason="acquisition policy requires local extract before another tool",
-            )
+            # The local extract step is bounded and terminating, so it runs
+            # here instead of only rejecting: the continuation batch is handed
+            # over now (no tool call, no budget charge) and the pending list is
+            # drained when the batch bound is reached. A refusal that never
+            # consumed anything froze the target out of acquisition for the
+            # rest of the pass.
+            self.extract_passage_batch()
+            expected = next_acquisition_action(self.state)
+            if expected == "extract":
+                return ToolPolicyDecision(
+                    allowed=False,
+                    reason=(
+                        "acquisition policy requires local extract before "
+                        "another tool"
+                    ),
+                )
         # Let the loop's own budget gate produce the canonical exhausted
         # observation when this persisted state is paired with a loop that
         # has already spent its configured external budget.  The normal
@@ -747,7 +932,11 @@ class AcquisitionPolicy:
             if not self._last_search_failed:
                 return ToolPolicyDecision(
                     allowed=False,
-                    reason="the URL was not returned as a queued candidate",
+                    reason=(
+                        "the URL was not discovered by a search result, a "
+                        "memory lead, or a document link; a synthesized or "
+                        "guessed URL may not be read"
+                    ),
                 )
         return ToolPolicyDecision()
 
@@ -936,6 +1125,7 @@ class AcquisitionPolicy:
                     # Keep the original network record as the canonical body;
                     # a cache hit is a local admission, not a second read.
                     self.reads.setdefault(validated.read_id, original)
+                    validated = self._resolve_read_title(validated, requested)
                     selected = select_relevant_passages(
                         validated.passages,
                         self.query,
@@ -944,6 +1134,7 @@ class AcquisitionPolicy:
                     target_ids = (
                         () if self.target_id is None else (self.target_id,)
                     )
+                    units: dict[str, EvidenceUnit] = {}
                     for locator in selected:
                         unit = build_evidence_unit(
                             read=validated,
@@ -952,7 +1143,8 @@ class AcquisitionPolicy:
                             origin=self.origin,
                             target_ids=target_ids,
                         )
-                        self.evidence[unit.evidence_id] = unit
+                        units[unit.evidence_id] = unit
+                    self._assign_evidence(units)
                     omitted = [
                         locator
                         for locator in validated.passages
@@ -1008,15 +1200,8 @@ class AcquisitionPolicy:
         )
         self._sequence += 1
         if admission is not None:
-            read = admission.read
-            prior = self._cache.get(read.resolved_url) or self._cache.get(
-                read.requested_url
-            )
-            candidate = self.state.candidate_records.get(requested)
-            if candidate is not None and candidate.title and (
-                read.title == read.resolved_url
-            ):
-                read = read.model_copy(update={"title": candidate.title})
+            read = self._resolve_read_title(admission.read, requested)
+            if read.title != admission.read.title:
                 # Rebuild the units so the preserved title crosses the same
                 # admission boundary as the body, without changing identity.
                 admission = ReadAdmission(
@@ -1030,8 +1215,11 @@ class AcquisitionPolicy:
                     dispositions=admission.dispositions,
                     boundary_audits=admission.boundary_audits,
                 )
+            prior = self._cache.get(read.resolved_url) or self._cache.get(
+                read.requested_url
+            )
             self.reads[read.read_id] = read
-            self.evidence.update(admission.evidence)
+            self._assign_evidence(admission.evidence)
             self.dispositions.extend(admission.dispositions)
             if (
                 prior is not None

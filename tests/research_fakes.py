@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from deep_research.agents.evidence import build_read_record
 from deep_research.memory.entries import SourceReputation
 from deep_research.observability import Tracker
 from deep_research.tools.base import BaseTool
@@ -24,6 +25,7 @@ from deep_research.tools.memory_tools import QueryMemoryTool, SaveToMemoryTool
 from deep_research.tools.web_scraper import WebScraperTool
 from deep_research.tools.web_search import WebSearchTool
 from deep_research.tools.write_document import WriteDocumentTool
+from deep_research.utils.types import ReadRecord
 
 
 class FakeSearchClient:
@@ -119,6 +121,38 @@ def search_response(
             {"title": title, "url": url, "content": content, "score": 0.9}
         ]
     }
+
+
+# The read registry's record of the page the fake read tools serve by default.
+# ``page_client`` reports this title and this one paragraph, so the scraper
+# extracts exactly one chunk of it. Any scripted extraction output standing in
+# for the provider has to carry these registry fields: the acquisition path
+# requires them, and an optional membership check is one a model can skip.
+QEC_SOURCE_URL = "https://example.test/qec"
+QEC_TITLE = "Quantum error correction in 2025"
+QEC_PASSAGE = (
+    "Quantum error correction in 2025 Logical error rates fell below "
+    "break-even in 2025."
+)
+
+
+def qec_read_record(*, session_id: str = "session-1") -> ReadRecord:
+    """The read record the fake tools produce for that page.
+
+    Derived through the shared builder rather than copied as constants, so the
+    fixture cannot drift away from the contract it stands in for.
+    """
+    return build_read_record(
+        session_id=session_id,
+        reader="web_scraper",
+        requested_url=QEC_SOURCE_URL,
+        resolved_url=QEC_SOURCE_URL,
+        title=QEC_TITLE,
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text=QEC_PASSAGE,
+        passages={"chunk-0": QEC_PASSAGE},
+        extraction_complete=True,
+    )
 
 
 def page_client(
