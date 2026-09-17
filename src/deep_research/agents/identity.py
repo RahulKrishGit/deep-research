@@ -28,7 +28,12 @@ import unicodedata
 from collections.abc import Sequence
 
 from deep_research.agents.sources import normalize_source_url
-from deep_research.utils.types import Claim, Finding, ScoredSource
+from deep_research.utils.types import (
+    AtomicProposition,
+    Claim,
+    Finding,
+    ScoredSource,
+)
 
 # Punctuation and symbols that survive normalization because they can change
 # what a claim asserts: units and ranges ("km/h", "40%", "3-5 kg"), comparisons
@@ -186,3 +191,49 @@ def merge_claim_snapshot(
     for claim in (*previous, *current):
         merged[claim_fingerprint(claim.text)] = claim
     return list(merged.values())
+
+
+# The fields of an :class:`AtomicProposition` that say WHAT it asserts. The
+# anchor identity is the digest of these and nothing else: ``evidence_ids``,
+# ``member_claim_ids``, and ``target_ids`` grow as a cluster is refined, and
+# rehashing them would mint a new identity on every pass — the defect this
+# identity exists to remove.
+_ASSERTION_FIELDS = (
+    "text",
+    "subject",
+    "predicate",
+    "value",
+    "unit",
+    "observation_period",
+    "geography",
+    "population",
+    "denominator",
+    "attribution",
+    "forecast_status",
+)
+
+
+def atomic_fingerprint(proposition: AtomicProposition) -> str:
+    """Return the stable identity of one atomic proposition's assertion.
+
+    Formatting only is folded — Unicode form, case, whitespace, and prose
+    punctuation — so two spellings of one assertion share a fingerprint while
+    two assertions that differ in a number, unit, period, qualifier, or
+    negation never do.
+    """
+    parts = [
+        _normalized_text(getattr(proposition, name))
+        for name in _ASSERTION_FIELDS
+    ]
+    parts.append("negated" if proposition.negated else "asserted")
+    return _digest(_FIELD_SEPARATOR.join(parts))
+
+
+def claim_cluster_id(proposition: AtomicProposition) -> str:
+    """Return the id a cluster anchored on ``proposition`` is minted with.
+
+    Derived from the anchor's assertion alone, so it is a deterministic
+    function of what the cluster says and never of how much evidence has
+    accumulated behind it.
+    """
+    return f"cluster-{atomic_fingerprint(proposition)[:32]}"

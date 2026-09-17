@@ -706,6 +706,81 @@ class Claim(ContractModel):
         default_factory=list,
         max_length=MAX_CONSUMED_COVERAGE_IDS,
     )
+    # The evidence targets whose obligation this claim discharges. Task 2
+    # stamped a target id and its required dimensions on every planned
+    # obligation, so this is the typed link the claim scheduler reads: a batch
+    # takes one outstanding obligation per target before it takes extra
+    # low-value claims, and a claim that names no target can only ever fill an
+    # extra slot.
+    target_ids: list[str] = Field(default_factory=list)
+    # The stable identity of the atomic proposition this claim states. Minted
+    # once from the cluster's first canonical anchor and persisted through
+    # every refinement, so a restatement of one fact is one identity and never
+    # a second row in the ledger. ``cluster_aliases`` carries the identities a
+    # merge absorbed, so a consumer holding either id resolves to the same
+    # cluster.
+    cluster_id: str | None = None
+    cluster_aliases: list[str] = Field(default_factory=list)
+
+
+class AtomicProposition(ContractModel):
+    """One checkable assertion, with every qualifier that changes its meaning.
+
+    A claim's prose can carry several assertions, and two claims can state one
+    assertion in two ways. This is the unit both are reduced to: the clause
+    itself, plus the dimensions that decide whether two clauses assert the
+    same thing. An empty dimension means the clause does not state it, which
+    is deliberately not the same as "states none" — a proposition that states
+    nothing about geography is not evidence that it applies everywhere, only
+    that this contract cannot tell.
+    """
+
+    text: str = Field(min_length=1)
+    subject: str = ""
+    predicate: str = ""
+    value: str = ""
+    unit: str = ""
+    observation_period: str = ""
+    """The period the assertion's data cover, which is not its publication."""
+    geography: str = ""
+    population: str = ""
+    """The measured population, when the assertion quantifies over one."""
+    denominator: str = ""
+    """The base a share is taken of — a percentage without one is ambiguous."""
+    attribution: str = ""
+    forecast_status: str = ""
+    """``observed``, ``projected``, ``forecast``, ``estimated``, or empty."""
+    negated: bool = False
+    parent_claim_id: str = ""
+    """The claim whose prose this atom was split out of."""
+    member_claim_ids: list[str] = Field(default_factory=list)
+    """Every claim whose prose asserts this atom, so both stay addressable."""
+    evidence_ids: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+
+
+class ClaimCluster(ContractModel):
+    """One atomic proposition, its stable identity, and everything behind it.
+
+    ``cluster_id`` is minted once from the cluster's first canonical anchor and
+    is never recomputed from its members: refinement adds evidence and member
+    claims, and rehashing the growing member set would mint a new identity on
+    every pass. ``proposition`` is that same first anchor, so the cluster's own
+    wording does not drift as paraphrases join it.
+    """
+
+    cluster_id: str = Field(min_length=1)
+    proposition: AtomicProposition
+    evidence_ids: list[str] = Field(default_factory=list)
+    member_claim_ids: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    cluster_aliases: list[str] = Field(default_factory=list)
+    """The cluster ids a merge absorbed, so either id resolves here."""
+    status: Literal["canonical", "duplicate_representative"] = "canonical"
+    """``duplicate_representative`` when only one of two near-duplicates may
+    publish. The representative carries the union provenance, so a known
+    duplicate cannot inflate a supporting-fact count."""
+    diagnostics: list[str] = Field(default_factory=list)
 
 
 class ReportQualitySnapshot(ContractModel):
