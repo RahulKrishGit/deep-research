@@ -1,0 +1,1853 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Deep Research â€” single-page console</title>
+<style>
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   TOKENS â€” Perplexity AI design system. The only literal colour values in
+   this file live in this :root block; everything below reads var().
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+:root{
+  --bg:#0f0f10; --surface:#19191a; --surface-warm:var(--surface);
+  --fg:#f0f0f0; --fg-2:var(--fg); --muted:#9b9b9b; --meta:#5c5c5e;
+  --border:#2e2e30; --border-soft:#232325;
+  --accent:#a855f7; --accent-on:#ffffff; --accent-hover:#c084fc; --accent-active:#9333ea;
+  --success:#22c55e; --warn:#f59e0b; --danger:#ef4444;
+  --font-display:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-body:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"Cascadia Code",Menlo,Monaco,Consolas,monospace;
+  --text-xs:11px; --text-sm:13px; --text-base:15px; --text-lg:16px;
+  --text-xl:18px; --text-2xl:22px; --text-3xl:28px; --text-4xl:32px;
+  --leading-body:1.65; --leading-tight:1.2; --tracking-display:-0.01em;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:20px; --space-6:24px; --space-8:32px; --space-12:48px;
+  --radius-sm:4px; --radius-md:8px; --radius-lg:12px; --radius-pill:9999px;
+  --elev-ring:0 0 0 1px var(--border);
+  --focus-ring:0 0 0 2px var(--accent);
+  --motion-fast:120ms; --motion-base:200ms; --ease-standard:cubic-bezier(0.2,0,0,1);
+  /* Pipeline motion. Longer than the design system's UI durations on purpose:
+     this is a progress indicator, not a control response, and it is watched for
+     minutes rather than glanced at. The easing is a long settle rather than an
+     ease-out, so a filled step arrives instead of stopping. */
+  --motion-halo:2200ms;
+  --fill-solid:700ms;
+  --fill-line:620ms;
+  --motion-fluid:420ms;
+  --ease-entrance:cubic-bezier(0.32,0.72,0,1);
+  --container-gutter-desktop:24px; --container-gutter-phone:16px;
+
+  /* Derived for this product â€” docs/design/DESIGN.md Â§5. */
+  --status-ok:oklch(72% 0.19 145);
+  --status-warn:oklch(74% 0.17 72);
+  --status-danger:oklch(71% 0.17 22);
+  --reading-max:720px;
+  --rail:300px;
+  --sidebar:296px;
+  --sidebar-collapsed:64px;
+  --topbar:56px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font-family:var(--font-body);font-size:var(--text-base);
+  line-height:var(--leading-body);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+body.is-locked{overflow:hidden}
+img,svg{display:block;max-width:100%}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+p{margin:0;text-wrap:pretty}
+h1,h2,h3{text-wrap:balance}
+hr{border:0;border-top:1px solid var(--border);margin:0}
+::selection{background:color-mix(in oklch,var(--accent) 30%,transparent);color:var(--fg)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius-sm)}
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* â•â•â• app frame â•â•â• */
+.app{
+  display:grid;grid-template-columns:var(--sidebar) minmax(0,1fr);min-height:100vh;
+  transition:grid-template-columns var(--motion-base) var(--ease-standard);
+}
+.app[data-sidebar="collapsed"]{grid-template-columns:var(--sidebar-collapsed) minmax(0,1fr)}
+
+/* â•â•â• sidebar â•â•â• */
+.sidebar{
+  background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;min-width:0;
+  position:sticky;top:0;height:100vh;overflow:hidden;
+}
+.sb-head{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3);min-height:var(--topbar)}
+.mark{width:15px;height:15px;border:1.5px solid var(--muted);border-radius:2px;position:relative;flex:none}
+.mark::after{content:"";position:absolute;inset:3px;background:var(--muted);border-radius:1px}
+.sb-wordmark{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:var(--tracking-display);white-space:nowrap}
+.sb-new{margin:0 var(--space-3) var(--space-3);justify-content:flex-start}
+.sb-label{
+  font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);padding:0 var(--space-3) var(--space-2);
+  display:flex;justify-content:space-between;align-items:center;gap:var(--space-2);white-space:nowrap;
+}
+.sb-list{list-style:none;margin:0;padding:0 var(--space-2) var(--space-4);overflow-y:auto;flex:1;scrollbar-width:thin}
+.sb-list::-webkit-scrollbar{width:8px}
+.sb-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:var(--radius-pill)}
+.sb-group{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--meta);padding:var(--space-3) var(--space-3) var(--space-1);letter-spacing:.04em}
+.sb-item{
+  display:block;width:100%;text-align:left;padding:var(--space-3);
+  border-radius:var(--radius-md);border:1px solid transparent;
+  transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard);
+}
+.sb-item:hover{background:var(--border-soft);border-color:var(--border)}
+.sb-item[aria-current="true"]{background:var(--border-soft);border-color:var(--border)}
+.sb-item .q{display:block;font-size:var(--text-sm);color:var(--fg);line-height:1.4;overflow-wrap:anywhere}
+.sb-item .m{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;margin-top:5px}
+.sb-item .when{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+.sb-foot{border-top:1px solid var(--border);padding:var(--space-3)}
+.sb-foot p{font-size:var(--text-xs);color:var(--muted);line-height:1.5}
+.app[data-sidebar="collapsed"] .sb-wordmark,
+.app[data-sidebar="collapsed"] .sb-label span,
+.app[data-sidebar="collapsed"] .sb-list,
+.app[data-sidebar="collapsed"] .sb-foot,
+.app[data-sidebar="collapsed"] .sb-new span{display:none}
+.app[data-sidebar="collapsed"] .sb-new{padding-inline:0;justify-content:center;width:36px;margin-inline:auto}
+.app[data-sidebar="collapsed"] .sb-head{justify-content:center;padding-inline:0}
+
+/* â•â•â• main â•â•â• */
+.main{display:flex;flex-direction:column;min-width:0}
+.topbar{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--border)}
+.topbar-in{display:flex;align-items:center;gap:var(--space-4);padding:var(--space-2) var(--container-gutter-desktop);min-height:var(--topbar)}
+.icon-btn{
+  width:36px;height:36px;border-radius:var(--radius-md);border:1px solid transparent;
+  display:grid;place-items:center;color:var(--muted);flex:none;
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard);
+}
+.icon-btn:hover{background:var(--border-soft);color:var(--fg);border-color:var(--border)}
+.crumb{font-size:var(--text-sm);color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;justify-content:flex-end}
+
+/* â•â•â• status chip â•â•â• */
+.chip{
+  display:inline-flex;align-items:center;gap:6px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:4px 9px;font-size:var(--text-sm);color:var(--fg);line-height:1.35;white-space:nowrap;
+}
+.chip .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
+.chip .dot-ok{background:var(--status-ok)}
+.chip .dot-warn{background:var(--status-warn)}
+.chip .dot-danger{background:var(--status-danger)}
+.chip .dot-live{background:var(--status-ok);animation:halo var(--motion-halo) var(--ease-entrance) infinite}
+.chip .kind{color:var(--muted)}
+.chip-lg{font-size:var(--text-base);padding:6px 12px}
+
+/* â•â•â• staged body â•â•â• */
+.viewport{padding:var(--space-8) var(--container-gutter-desktop) var(--space-12);flex:1}
+.stage{display:none}
+.stage.is-on{display:block;animation:enter var(--motion-base) var(--ease-standard) 1}
+@keyframes enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.stage:focus{outline:none}
+.with-rail{display:grid;grid-template-columns:minmax(0,1fr) var(--rail);gap:var(--space-8);align-items:start}
+.rail{display:flex;flex-direction:column;gap:var(--space-5)}
+@media (max-width:1120px){ .with-rail{grid-template-columns:minmax(0,1fr)} }
+
+/* â•â•â• run stage â€” the pipeline leads â•â•â• */
+.run-wrap{max-width:var(--reading-max);margin-inline:auto;width:100%;display:flex;flex-direction:column;gap:var(--space-6)}
+.ask-head{display:flex;flex-direction:column;gap:var(--space-3);text-align:center;align-items:center}
+.ask-q{font-family:var(--font-display);font-size:var(--text-3xl);font-weight:600;line-height:1.25;margin:0;max-width:34ch}
+.ask-meta{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;justify-content:center}
+.opts{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center;justify-content:center}
+.opt{
+  display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 var(--space-3);
+  border:1px solid var(--border);border-radius:var(--radius-md);
+  font-family:var(--font-mono);font-size:var(--text-xs);color:var(--fg);white-space:nowrap;
+}
+.opt .k{color:var(--muted)}
+/* The question after submission is a record, not a field: same type, but set
+   in a bordered block so it reads as fixed. Nothing here accepts focus or
+   typing, and no disabled input stands in for one. */
+.ask-locked{
+  padding:var(--space-3) var(--space-4);
+  border:1px dashed var(--border);border-radius:var(--radius-md);
+  background:color-mix(in oklch,var(--surface) 60%,transparent);
+}
+.pipe{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:var(--space-8);align-items:start}
+@media (max-width:1000px){ .pipe{grid-template-columns:minmax(0,1fr)} }
+
+/* â•â•â• the pipeline â•â•â•
+   Progress is carried by the step number and the connector line; the row surface
+   stays nearly neutral so the colour that means something is not competing with
+   a tint that means nothing.
+
+   The active step does not blink. A blink is the wrong tool here: it changes the
+   one thing the eye is tracking, it competes with the fills travelling past it,
+   and it has a low-contrast half of its cycle. Instead the current step is a
+   distinct, steady state that reads in a single frame, and the motion lives in
+   one slow halo that travels down the list â€” the same top-to-bottom direction as
+   the fills, so the two reinforce each other instead of fighting. */
+.spine-lg{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.spine-lg li{
+  display:grid;grid-template-columns:34px minmax(0,1fr);gap:var(--space-4);position:relative;
+  padding:var(--space-3);border-radius:var(--radius-md);border:1px solid transparent;
+  transition:background var(--motion-fluid) var(--ease-entrance);
+}
+/* the connector spans the gap between this row and the one above, so its filled
+   part reads as "the step above me finished" */
+.spine-lg li + li::before{
+  content:"";position:absolute;left:31px;top:calc(-1 * var(--space-2) - 2px);height:calc(var(--space-2) + 4px);
+  width:1px;background:var(--border);
+}
+.spine-lg li + li::after{
+  content:"";position:absolute;left:31px;top:calc(-1 * var(--space-2) - 2px);height:0;
+  width:1px;background:var(--status-ok);
+  transition:height var(--fill-line) var(--ease-entrance) calc(var(--base, 0) * 1ms);
+}
+.spine-lg li[data-fed="1"]::after{height:calc(var(--space-2) + 4px)}
+.spine-lg .bullet{
+  width:33px;height:33px;border-radius:50%;border:1px solid var(--border);background:var(--surface);
+  display:grid;place-items:center;font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted);
+  position:relative;z-index:1;flex:none;
+  transition:background var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             border-color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             box-shadow var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms);
+}
+.spine-lg .stage-name{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;color:var(--muted);display:block;line-height:1.35;transition:color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms)}
+.spine-lg .stage-meta{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);display:block;margin-top:2px;transition:color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms)}
+.spine-lg .loops{color:var(--status-ok)}
+
+/* pending â€” a hollow ring */
+
+/* in progress â€” solid fill and a soft halo. The halo is what separates
+   "running now" from "already finished" at a glance; no animation is required
+   to read it, and the slow halo ease is only a presence cue on top of that. */
+.spine-lg li[data-state="active"]{background:color-mix(in oklch,var(--status-ok) 6%,transparent)}
+.spine-lg li[data-state="active"] .bullet{
+  background:var(--status-ok);border-color:var(--status-ok);color:var(--bg);
+  box-shadow:0 0 0 5px color-mix(in oklch,var(--status-ok) 16%,transparent);
+  animation:halo var(--motion-halo) var(--ease-entrance) infinite;
+}
+.spine-lg li[data-state="active"] .stage-name{color:var(--fg)}
+.spine-lg li[data-state="active"] .stage-meta{color:var(--status-ok)}
+
+/* done â€” the fill settles, and a quiet ring keeps it in the same family as
+   "running" without competing with it */
+.spine-lg li[data-state="done"] .bullet,
+.spine-lg li[data-state="loop"] .bullet{
+  background:var(--status-ok);border-color:var(--status-ok);color:var(--bg);
+  box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 9%,transparent);
+}
+.spine-lg li[data-state="done"] .stage-name,
+.spine-lg li[data-state="loop"] .stage-name{color:var(--fg)}
+.spine-lg li[data-state="loop"] .stage-meta{color:var(--status-ok)}
+
+/* halted before this step ever ran */
+.spine-lg li[data-state="skipped"]{background:color-mix(in oklch,var(--status-danger) 9%,transparent)}
+.spine-lg li[data-state="skipped"] .bullet{border-color:var(--status-danger);color:var(--status-danger)}
+.spine-lg li[data-state="skipped"] .stage-name{color:var(--fg)}
+.spine-lg li[data-state="skipped"] .stage-meta{color:var(--status-danger)}
+
+/* One loop on this screen, and it is a ring rather than a shape: the halo eases
+   between two radii on the same node. A travelling blob was tried here and
+   removed â€” a blurred radial-gradient moving down the row has no clean edge, so
+   it read as a smear against the hairline connectors instead of as progress.
+   The halo never changes the contrast of anything the operator has to read. */
+@keyframes halo{
+  0%,100%{box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 13%,transparent)}
+  50%{box-shadow:0 0 0 7px color-mix(in oklch,var(--status-ok) 20%,transparent)}
+}
+.pipe-now{display:flex;flex-direction:column;gap:var(--space-2);padding-bottom:var(--space-5);border-bottom:1px solid var(--border);margin-bottom:var(--space-5)}
+.pipe-now .now-stage{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;line-height:1.35}
+.details{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-5);align-items:start}
+@media (max-width:900px){ .details{grid-template-columns:minmax(0,1fr)} }
+.ask-note{text-align:center}
+
+/* ═══ refinement passes ═══
+   A pass is one full run of all seven steps. The critic can send the report back,
+   and each return starts a fresh pass — so the pipeline legitimately begins at
+   step 1 again, and saying so is the whole job of this block. Without it, a reset
+   pipeline reads as progress moving backwards. */
+.passtrack{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-2)}
+.pass{
+  border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3);
+  background:var(--bg);display:flex;flex-direction:column;gap:2px;min-height:64px;
+  transition:background var(--motion-fluid) var(--ease-entrance),border-color var(--motion-fluid) var(--ease-entrance);
+}
+.pass .pass-n{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+.pass .pass-s{font-size:var(--text-sm);color:var(--muted);line-height:1.35}
+.pass .pass-n b{color:var(--fg);font-weight:600}
+/* a finished pass keeps the same tint as a finished step */
+.pass[data-state="done"]{background:color-mix(in oklch,var(--status-ok) 8%,transparent);border-color:color-mix(in oklch,var(--status-ok) 28%,var(--border))}
+.pass[data-state="done"] .pass-s{color:var(--status-ok)}
+/* the pass running now gets the halo treatment, matching the active step */
+.pass[data-state="active"]{
+  background:color-mix(in oklch,var(--status-ok) 6%,transparent);
+  border-color:color-mix(in oklch,var(--status-ok) 45%,var(--border));
+  box-shadow:0 0 0 3px color-mix(in oklch,var(--status-ok) 12%,transparent);
+}
+.pass[data-state="active"] .pass-n,
+.pass[data-state="active"] .pass-n b,
+.pass[data-state="active"] .pass-s{color:var(--fg)}
+
+/* â•â•â• type â•â•â• */
+h1.display{font-family:var(--font-display);font-size:var(--text-4xl);font-weight:600;line-height:var(--leading-tight);letter-spacing:var(--tracking-display);margin:0}
+h2.sect{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;line-height:1.3;margin:0}
+h3.sub{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;line-height:1.4;margin:0}
+.card-title{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;line-height:1.4;margin:0}
+.lead{font-size:var(--text-lg);color:var(--muted);max-width:62ch}
+.eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.sm{font-size:var(--text-sm);color:var(--muted)}
+.cap{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.avail{color:var(--muted);font-size:var(--text-sm)}
+.avail-mono{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+
+/* â•â•â• surfaces â•â•â• */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-5)}
+.card.flat{background:transparent}
+.stack{display:flex;flex-direction:column;gap:var(--space-4)}
+.stack-2{display:flex;flex-direction:column;gap:var(--space-2)}
+.row{display:flex;align-items:center;gap:var(--space-3)}
+.row-between{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+.wrap{flex-wrap:wrap}
+
+/* â•â•â• buttons â•â•â• */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
+  height:36px;padding:0 var(--space-5);border-radius:var(--radius-md);border:1px solid transparent;
+  font-size:var(--text-base);font-weight:500;white-space:nowrap;
+  transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.btn-primary{background:var(--accent);color:var(--accent-on);font-weight:600}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-primary:active{background:var(--accent-active)}
+.btn-ghost{border-color:var(--border);color:var(--fg)}
+.btn-ghost:hover{background:var(--border-soft);border-color:var(--muted)}
+.btn-quiet{color:var(--muted);padding-inline:var(--space-3)}
+.btn-quiet:hover{color:var(--fg);background:var(--border-soft)}
+.btn-sm{height:30px;font-size:var(--text-sm);padding:0 var(--space-4)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+
+/* â•â•â• composer â•â•â• */
+.composer-wrap{max-width:var(--reading-max);margin-inline:auto;width:100%}
+.composer{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:var(--space-3);display:flex;flex-direction:column;gap:var(--space-3);
+}
+.composer textarea{
+  width:100%;background:transparent;border:0;color:var(--fg);font:inherit;
+  font-size:var(--text-base);line-height:var(--leading-body);resize:none;outline:none;
+  padding:var(--space-1) var(--space-2) 0;min-height:48px;
+}
+.composer textarea::placeholder{color:var(--meta)}
+.composer textarea[aria-invalid="true"]{color:var(--fg)}
+.composer-bar{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.composer-bar .spacer{flex:1}
+.plus{
+  width:32px;height:32px;border-radius:var(--radius-md);border:1px solid var(--border);
+  display:grid;place-items:center;color:var(--muted);flex:none;
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard);
+}
+.plus:hover{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
+.plus[aria-expanded="true"]{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
+.plus svg{width:15px;height:15px}
+.setting-pill{
+  display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 var(--space-3);
+  border:1px solid var(--border);border-radius:var(--radius-md);
+  font-size:var(--text-sm);color:var(--muted);cursor:default;
+}
+.setting-pill .k{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--meta)}
+.setting-pill .v{color:var(--fg)}
+.send{
+  width:36px;height:36px;border-radius:var(--radius-md);background:var(--accent);color:var(--accent-on);
+  display:grid;place-items:center;flex:none;
+  transition:background var(--motion-fast) var(--ease-standard);
+}
+.send:hover{background:var(--accent-hover)}
+.send:active{background:var(--accent-active)}
+.send[disabled]{background:var(--border);color:var(--meta);cursor:not-allowed}
+.send svg{width:16px;height:16px}
+.composer-hint{display:flex;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;padding:0 var(--space-2)}
+.hint{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted)}
+.hint.err{color:var(--status-danger);font-family:var(--font-body);font-size:var(--text-sm)}
+
+/* â•â•â• popover â•â•â• */
+.pop-anchor{position:relative;display:inline-flex}
+.popover{
+  position:absolute;bottom:calc(100% + 10px);left:0;z-index:40;
+  width:344px;max-width:min(344px,calc(100vw - 48px));
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:var(--space-4);display:none;
+}
+.popover[data-open="true"]{display:block;animation:enter var(--motion-base) var(--ease-standard) 1}
+.pop-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-4)}
+.pop-row{margin-bottom:var(--space-4)}
+.pop-row:last-of-type{margin-bottom:0}
+.pop-row .lbl{font-size:var(--text-sm);color:var(--muted);margin-bottom:var(--space-2);display:block}
+.seg{display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:2px;flex-wrap:wrap}
+.seg button{
+  flex:1;min-width:62px;min-height:30px;padding:5px 10px;border-radius:var(--radius-sm);
+  font-size:var(--text-sm);color:var(--muted);font-family:var(--font-mono);
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.seg button:hover:not([disabled]){background:var(--border-soft);color:var(--fg)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:var(--elev-ring)}
+.seg button[disabled]{opacity:.4;cursor:not-allowed}
+.pop-note{font-size:var(--text-xs);color:var(--muted);line-height:1.5;margin-top:var(--space-2)}
+.pop-note.warn{color:var(--status-warn)}
+
+/* â•â•â• fields â•â•â• */
+.input{
+  width:100%;background:var(--surface);border:1px solid var(--border);color:var(--fg);
+  font-family:var(--font-body);font-size:var(--text-base);border-radius:var(--radius-md);
+  padding:10px var(--space-4);min-height:44px;transition:border-color var(--motion-fast) var(--ease-standard);
+}
+.input::placeholder{color:var(--meta)}
+.input:hover{border-color:var(--muted)}
+.input:focus{outline:2px solid var(--accent);outline-offset:0;border-color:var(--accent)}
+.input.mono-in{font-family:var(--font-mono);font-size:var(--text-sm)}
+
+/* â•â•â• key/value â•â•â• */
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--space-2) var(--space-4);font-size:var(--text-sm);align-items:baseline;margin:0}
+.kv dt{color:var(--muted);white-space:nowrap}
+.kv dd{margin:0;text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.kv dd.plain{font-family:var(--font-body)}
+.kv dd.avail{font-family:var(--font-body);color:var(--muted)}
+
+/* â•â•â• metrics â•â•â• */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:var(--space-4)}
+.metric .val{font-family:var(--font-mono);font-size:var(--text-2xl);font-variant-numeric:tabular-nums;line-height:1.1}
+.metric .lbl{font-size:var(--text-sm);color:var(--muted);margin-top:2px}
+
+/* â•â•â• running head â•â•â• */
+.run-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-5);flex-wrap:wrap;margin-bottom:var(--space-6)}
+.run-q{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;line-height:1.3;max-width:46ch;margin:0}
+.progress-line{display:flex;align-items:center;gap:var(--space-3);margin-top:var(--space-3);flex-wrap:wrap}
+.track{height:4px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden;flex:1;min-width:120px;display:block}
+.track span{display:block;height:100%;background:var(--status-ok);border-radius:var(--radius-pill);width:0;transition:width var(--motion-fluid) var(--ease-entrance)}
+
+/* â•â•â• report â•â•â• */
+.prose{max-width:var(--reading-max)}
+.prose p{margin-bottom:var(--space-4);line-height:var(--leading-body)}
+.prose h2{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;margin:var(--space-8) 0 var(--space-4);line-height:1.3}
+.prose h3{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;margin:var(--space-6) 0 var(--space-3);line-height:1.4}
+.prose ul{margin:0 0 var(--space-4);padding-left:var(--space-5)}
+.prose li{margin-bottom:var(--space-2);line-height:var(--leading-body)}
+.prose strong{font-weight:600}
+.cite{font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted);white-space:nowrap}
+.cite:hover{color:var(--fg)}
+.report-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-5);flex-wrap:wrap;margin-bottom:var(--space-6)}
+.report-q{font-family:var(--font-display);font-size:var(--text-3xl);font-weight:600;line-height:1.25;margin:0;max-width:32ch}
+.tbl{width:100%;border-collapse:collapse;font-size:var(--text-sm)}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+.tbl th{color:var(--muted);font-weight:500;font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.04em;text-transform:uppercase}
+.tbl tbody tr:hover{background:var(--border-soft)}
+.tbl .n{font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;width:1%}
+.tbl td.wrapcell{overflow-wrap:anywhere}
+.tbl .tlink{color:var(--fg)}
+.tbl .tlink:hover{color:var(--accent)}
+.tbl-foot{font-size:var(--text-sm);color:var(--muted);padding-top:var(--space-3)}
+.bars{display:flex;flex-direction:column;gap:var(--space-3)}
+.bar-row{display:grid;grid-template-columns:136px minmax(0,1fr) 46px;gap:var(--space-3);align-items:center;font-size:var(--text-sm)}
+.bar-row .bar{height:6px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden}
+.bar-row .bar span{display:block;height:100%;background:var(--muted);border-radius:var(--radius-pill)}
+.bar-row .bar span.ok{background:var(--status-ok)}
+.bar-row .n{text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* â•â•â• notes â•â•â• */
+.note{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-4)}
+.note .note-head{display:flex;gap:var(--space-2);align-items:center;font-size:var(--text-sm);color:var(--fg);margin-bottom:var(--space-2);overflow-wrap:anywhere}
+.note .note-head .mk{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 5px;flex:none}
+.note p{font-size:var(--text-sm);color:var(--muted);line-height:1.6}
+.note.bad{border-color:color-mix(in oklch,var(--status-danger) 44%,var(--border))}
+.note.bad .note-head{color:var(--status-danger)}
+
+/* â•â•â• disclosures â•â•â• */
+details.disc{border-top:1px solid var(--border)}
+details.disc:first-of-type{border-top:0}
+details.disc summary{
+  cursor:pointer;padding:var(--space-3) 0;font-size:var(--text-sm);color:var(--muted);
+  list-style:none;display:flex;justify-content:space-between;gap:var(--space-3);align-items:center;min-height:40px;
+}
+details.disc summary::-webkit-details-marker{display:none}
+details.disc summary::after{content:"+";font-family:var(--font-mono);color:var(--muted)}
+details.disc[open] summary::after{content:"â€“"}
+details.disc summary:hover{color:var(--fg)}
+details.disc .disc-body{padding-bottom:var(--space-4)}
+
+/* â•â•â• scrim â•â•â• */
+.scrim{display:none;position:fixed;inset:0;background:color-mix(in oklch,var(--bg) 74%,transparent);z-index:28;border:0;padding:0}
+
+@media (max-width:1080px){
+  .app,.app[data-sidebar="collapsed"]{grid-template-columns:minmax(0,1fr)}
+  .sidebar{
+    position:fixed;top:0;left:0;bottom:0;width:min(320px,88vw);height:100dvh;z-index:30;
+    transform:translateX(-100%);transition:transform var(--motion-base) var(--ease-standard);
+  }
+  .app[data-sidebar="expanded"] .sidebar{transform:none}
+  .app[data-sidebar="expanded"] .scrim{display:block}
+  /* the collapsed treatment is desktop chrome only */
+  .app[data-sidebar="collapsed"] .sb-wordmark,
+  .app[data-sidebar="collapsed"] .sb-label span,
+  .app[data-sidebar="collapsed"] .sb-list,
+  .app[data-sidebar="collapsed"] .sb-foot,
+  .app[data-sidebar="collapsed"] .sb-new span{display:revert}
+  .app[data-sidebar="collapsed"] .sb-new{width:100%;margin:0 var(--space-3) var(--space-3);padding-inline:var(--space-4)}
+}
+@media (max-width:900px){
+  .viewport{padding:var(--space-6) var(--container-gutter-phone) var(--space-12)}
+  .topbar-in{padding-inline:var(--container-gutter-phone)}
+  .metrics{grid-template-columns:repeat(auto-fit,minmax(100px,1fr))}
+  .bar-row{grid-template-columns:112px minmax(0,1fr) 40px}
+  .popover{width:min(344px,calc(100vw - 32px))}
+  /* touch targets */
+  .send{width:44px;height:44px}
+  .plus{width:44px;height:44px}
+  .plus svg{width:18px;height:18px}
+  .setting-pill{height:44px}
+  .btn{height:44px}
+  .btn-sm{height:38px}
+  .icon-btn{width:44px;height:44px}
+  .sb-item{padding:var(--space-4) var(--space-3)}
+  .seg button{min-height:40px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:0ms !important;animation-iteration-count:1 !important;transition-duration:0ms !important}
+  /* Nothing here needs motion to be read: the running step is a solid node with
+     a halo, done steps are solid with a quieter ring, and the connector arrives
+     filled. Pin the halo to its resting radius rather than letting a stopped
+     animation freeze it at whatever frame it happened to reach. */
+  .spine-lg li[data-state="active"] .bullet{
+    box-shadow:0 0 0 5px color-mix(in oklch,var(--status-ok) 16%,transparent) !important;
+  }
+  .spine-lg li[data-fed="1"]::after{height:calc(var(--space-2) + 4px)}
+}
+</style>
+</head>
+<body>
+
+<div class="app" id="app" data-sidebar="expanded">
+
+  <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• SIDEBAR â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+  <aside class="sidebar" id="sidebar" data-od-id="sidebar" aria-label="Session history">
+    <div class="sb-head">
+      <span class="mark" aria-hidden="true"></span>
+      <span class="sb-wordmark">Deep Research</span>
+    </div>
+
+    <button class="btn btn-ghost sb-new" id="newResearch" data-od-id="cta-new-research" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" aria-hidden="true" style="width:14px;height:14px;flex:none"><path d="M12 5v14M5 12h14"/></svg>
+      <span>New research</span>
+    </button>
+
+    <div class="sb-label">
+      <span>Sessions</span>
+      <span class="mono" id="sbCount">0</span>
+    </div>
+
+    <!-- Populated on load from the client's own ledger. Empty in the source
+         because the list is runtime state, not content. -->
+    <ul class="sb-list" id="sessionList" data-od-id="session-history-list"></ul>
+
+    <div class="sb-foot">
+      <p>This list is assembled by the client. The API has no collection route and sessions live in the service process's memory.</p>
+    </div>
+  </aside>
+
+  <button class="scrim" id="scrim" type="button" tabindex="-1" aria-hidden="true"><span class="sr">Close session history</span></button>
+
+  <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• MAIN â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+  <div class="main">
+
+    <header class="topbar" data-od-id="topbar">
+      <div class="topbar-in">
+        <button class="icon-btn" id="sidebarToggle" type="button"
+                aria-controls="sidebar" aria-expanded="true" data-od-id="cta-toggle-sidebar">
+          <span class="sr">Toggle session history</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" aria-hidden="true" style="width:17px;height:17px"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <span class="crumb" id="crumb" data-od-id="session-crumb">New research</span>
+        <div class="topbar-right" id="topbarStatus"></div>
+      </div>
+    </header>
+
+    <div class="viewport" id="viewport">
+
+      <!-- â”€â”€ STAGE Â· idle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <section class="stage is-on" id="stage-idle" data-od-id="stage-idle" aria-labelledby="idle-h">
+        <div class="stack" style="gap:var(--space-8);max-width:var(--reading-max);margin-inline:auto">
+          <div class="stack-2" style="padding-top:var(--space-8)">
+            <h1 class="display" id="idle-h">Ask anything.</h1>
+            <p class="lead">A run takes minutes to tens of minutes. Leave this page if you like â€” this console rejoins a running session by its id.</p>
+          </div>
+          <div class="composer-wrap" id="composerIdleHost">
+            <!-- The composer is real markup, not injected by script, so the
+                 first page renders its primary control even where scripts are
+                 not executed. It is the only composer in the document and it
+                 lives on this stage (see docs/design/DESIGN.md Â§3.1). -->
+            <form class="composer" id="composer" data-od-id="composer" novalidate>
+              <label class="sr" for="prompt">Research question</label>
+              <textarea id="prompt" rows="2" placeholder="Ask anything." data-od-id="composer-input"></textarea>
+              <div class="composer-bar">
+                <span class="pop-anchor">
+                  <button class="plus" id="plusBtn" type="button" aria-expanded="false" aria-controls="settingsPop" data-od-id="cta-composer-settings">
+                    <span class="sr">Run settings</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                  </button>
+                  <div class="popover" id="settingsPop" role="dialog" aria-label="Run settings" data-od-id="composer-settings">
+                    <div class="pop-head">
+                      <h2 class="card-title" style="font-size:var(--text-base)">Run settings</h2>
+                      <button class="btn btn-quiet btn-sm" type="button" id="popClose">Close</button>
+                    </div>
+                    <div class="pop-row">
+                      <span class="lbl" id="lblModel">Model</span>
+                      <div class="seg" role="group" aria-labelledby="lblModel" id="segModel">
+                        <button type="button" data-model="deepseek-v4-flash" aria-pressed="true">v4-flash</button>
+                        <button type="button" data-model="deepseek-v4-pro" aria-pressed="false">v4-pro</button>
+                      </div>
+                      <p class="pop-note">Sent as <span class="mono">llm.model</span>.</p>
+                    </div>
+                    <div class="pop-row">
+                      <span class="lbl" id="lblThinking">Thinking</span>
+                      <div class="seg" role="group" aria-labelledby="lblThinking" id="segThinking">
+                        <button type="button" data-thinking="enabled" aria-pressed="true">enabled</button>
+                        <button type="button" data-thinking="disabled" aria-pressed="false">disabled</button>
+                      </div>
+                      <p class="pop-note">Sent as <span class="mono">llm.thinking_mode</span>. Temperature is only sent by this model family when thinking is disabled.</p>
+                    </div>
+                    <div class="pop-row">
+                      <span class="lbl" id="lblEffort">Reasoning effort</span>
+                      <div class="seg" role="group" aria-labelledby="lblEffort" id="segEffort">
+                        <button type="button" data-effort="high" aria-pressed="true">high</button>
+                        <button type="button" data-effort="max" aria-pressed="false">max</button>
+                      </div>
+                      <p class="pop-note" id="effortNote">Sent as <span class="mono">llm.reasoning_effort</span>.</p>
+                    </div>
+                    <div class="pop-row">
+                      <span class="lbl" for="outputDir">Output directory</span>
+                      <input class="input mono-in" id="outputDir" value="output/" />
+                      <p class="pop-note">Sent as <span class="mono">config_overrides.output.directory</span>.</p>
+                    </div>
+                    <p class="pop-note">These are the only run settings this console sends. Max iterations and output format keep their configured defaults: the API accepts both, but they are not surfaced here. There is no <span class="mono">llm.provider</span> override path, so the configured provider is used as-is.</p>
+                  </div>
+                </span>
+                <span class="setting-pill" id="pillModel"><span class="v" id="pillModelV">v4-flash</span></span>
+                <span class="setting-pill" id="pillEffort"><span class="k">effort</span><span class="v" id="pillEffortV">high</span></span>
+                <span class="spacer"></span>
+                <button class="send" id="sendBtn" type="submit" data-od-id="cta-send">
+                  <span class="sr">Start research</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+                </button>
+              </div>
+              <div class="composer-hint">
+                <span class="hint">POST /research Â· starts a background session</span>
+                <span class="hint err" id="composerError" role="alert"></span>
+              </div>
+            </form>
+          </div>
+          <div class="note" data-od-id="idle-note">
+            <div class="note-head"><span class="mk">note</span>Where earlier reports live</div>
+            <p>Open the session list for past runs. Because the API exposes no session collection, that list is this browser's own record; report bodies are fetched from <span class="mono">GET /research/{id}/report</span> when you open one.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- â”€â”€ STAGE Â· submitted (brief) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <section class="stage" id="stage-submitted" data-od-id="stage-submitted" aria-labelledby="submitted-h">
+        <div class="run-wrap" style="padding-top:var(--space-8)">
+          <div class="ask-head">
+            <p class="eyebrow" style="margin:0">Question locked in</p>
+            <h1 class="ask-q ask-locked" id="submitted-h" data-od-id="submitted-question" aria-describedby="submittedOpts">â€”</h1>
+            <div class="opts" id="submittedOpts" data-od-id="submitted-options"></div>
+          </div>
+
+          <div class="card stack" style="gap:var(--space-4)" data-od-id="submitted-next">
+            <div class="row-between">
+              <div class="row">
+                <span class="chip" data-od-id="submitted-status"><span class="dot dot-live" aria-hidden="true"></span>Starting session</span>
+                <span class="avail-mono" id="submittedId">â€”</span>
+              </div>
+              <span class="avail-mono">POST /research â†’ 202</span>
+            </div>
+            <hr />
+            <div class="stack-2">
+              <p class="sm" style="color:var(--fg)">Running the pipeline as configured. The question and these settings are fixed for the life of the session â€” overrides are read once, when the session is created.</p>
+              <p class="avail">A run takes minutes to tens of minutes. Leave this page if you like; this console rejoins the session by its id. When the session ends, its report replaces this view.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- â”€â”€ STAGE Â· running â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <section class="stage" id="stage-running" data-od-id="stage-running" aria-labelledby="running-h">
+        <div class="run-wrap">
+          <div class="ask-head">
+            <p class="eyebrow" style="margin:0">Session running</p>
+            <h1 class="ask-q ask-locked" id="running-h" data-od-id="running-question" aria-describedby="runningOpts">â€”</h1>
+            <div class="opts" id="runningOpts" data-od-id="running-options"></div>
+            <div class="ask-meta">
+              <span class="chip" data-od-id="running-status"><span class="dot dot-live" aria-hidden="true"></span>Running <span class="kind">Â· <span id="runStage">Planning</span></span></span>
+              <span class="avail-mono" id="runElapsed">00:00 elapsed</span>
+            </div>
+          </div>
+
+          <div class="pipe">
+            <div class="card stack" style="gap:var(--space-5)" data-od-id="running-pipeline">
+              <div class="pipe-now">
+                <div>
+                  <span class="cap">Now</span>
+                  <div class="now-stage" id="runNow">Planning</div>
+                  <p class="sm" id="runningBlurb">Planning the sub-topics.</p>
+                </div>
+                <div class="row-between">
+                  <span class="avail-mono" id="runProgressLabel">stage 1 of 7</span>
+                  <span class="avail-mono" id="runPasses">pass 1 of 3</span>
+                </div>
+                <span class="track" id="runTrack" role="progressbar" aria-label="Pipeline progress"
+                      aria-valuemin="1" aria-valuemax="7" aria-valuenow="1"><span id="runTrackFill"></span></span>
+              </div>
+              <ol class="spine-lg" id="spine" data-od-id="running-spine"></ol>
+            </div>
+
+            <div class="card stack" style="gap:var(--space-4)" data-od-id="running-passes">
+              <div class="row-between">
+                <h2 class="card-title">Refinement passes</h2>
+                <span class="avail-mono" id="passSummary">pass 1 of 3</span>
+              </div>
+              <p class="sm">Every pass runs the same seven steps. The critic can send the report back, and each return starts a fresh pass — which is why the pipeline begins at step 1 again.</p>
+              <div class="passtrack" id="passTrack"></div>
+              <p class="avail" id="passWhy">A pass ends when the critic accepts the report, or when the refinement budget runs out.</p>
+              <p class="avail">A pass that routes back stops after Reviewing, so it finishes six steps. Only the final pass publishes, and Publishing is the seventh.</p>
+            </div>
+
+            <aside class="stack" style="gap:var(--space-5)" aria-label="Run details">
+              <div class="card stack-2" data-od-id="running-facts">
+                <h2 class="card-title">Session facts</h2>
+                <dl class="kv">
+                  <dt>status</dt><dd>running</dd>
+                  <dt>current_agent</dt><dd id="factAgent">planner</dd>
+                  <dt>iteration</dt><dd id="factIteration">0</dd>
+                  <dt>started_at</dt><dd id="factStarted">â€”</dd>
+                  <dt>finished_at</dt><dd class="avail">Not yet</dd>
+                  <dt>report_path</dt><dd class="avail">Not yet</dd>
+                  <dt>trace_url</dt><dd class="avail">Not yet</dd>
+                </dl>
+              </div>
+
+              <div class="card stack-2" data-od-id="running-cost">
+                <h2 class="card-title">Cost and usage</h2>
+                <dl class="kv">
+                  <dt>tool calls</dt><dd id="costTools">0</dd>
+                  <dt>claims checked</dt><dd id="costClaims">0</dd>
+                  <dt>elapsed</dt><dd id="costElapsed">00:00</dd>
+                  <dt>input tokens</dt><dd class="avail">Not yet</dd>
+                  <dt>output tokens</dt><dd class="avail">Not yet</dd>
+                </dl>
+              </div>
+
+              <div class="card stack-2" data-od-id="running-errors">
+                <div class="row-between">
+                  <h2 class="card-title">Errors</h2>
+                  <span class="avail-mono" id="errCountLabel">0 rec Â· 0 non-rec</span>
+                </div>
+                <div class="stack-2" id="errList"><span class="avail">None recorded so far.</span></div>
+              </div>
+            </aside>
+          </div>
+
+          <p class="avail ask-note">Session facts, cost and usage come from <span class="mono">GET /research/{id}/status</span> and the event stream. Token totals are recorded by the runner and returned only with the finished outcome, so they are absent here rather than shown as zero.</p>
+        </div>
+      </section>
+
+      <!-- â”€â”€ STAGE Â· report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <section class="stage" id="stage-report" data-od-id="stage-report" aria-labelledby="report-h">
+        <div class="report-head">
+          <div style="min-width:0">
+            <p class="cap" id="reportMeta" data-od-id="report-meta">â€”</p>
+            <h1 class="report-q" id="report-h" data-od-id="report-question">â€”</h1>
+            <div class="row wrap" style="margin-top:var(--space-4)" id="reportStatusRow"></div>
+          </div>
+          <div class="row wrap">
+            <a class="btn btn-primary" href="#" id="downloadBtn" data-od-id="cta-download-report">Download report.md</a>
+            <a class="btn btn-ghost" href="#" id="traceBtn" data-od-id="cta-open-trace">Open LangSmith trace <span aria-hidden="true">â†—</span></a>
+          </div>
+        </div>
+
+        <div class="with-rail">
+          <div class="stack" style="gap:var(--space-6)">
+            <div class="ask-head" style="align-items:flex-start;text-align:left">
+              <div class="opts" id="reportOpts" data-od-id="report-options" style="justify-content:flex-start"></div>
+            </div>
+
+            <article class="card stack" style="gap:var(--space-5)" data-od-id="report-body">
+              <div class="note" data-od-id="report-sample-note">
+                <div class="note-head"><span class="mk">note</span>Report body is a static sample</div>
+                <p>The body below is the real published Markdown of one run, reused for every completed session in this prototype so the reading layout can be judged at full length. In the app it is replaced by the body returned from <span class="mono">GET /research/{id}/report</span>; the header, facts rail and quality panel above already switch per session.</p>
+              </div>
+              <div class="prose">
+                <h2 style="margin-top:0">Executive summary</h2>
+                <p>The constraints best supported by this pass's evidence are grid connection, documented almost entirely through U.S. data, and the concentration of battery supply chains in China. In the United States, 2,600 GW of proposed generation and storage projects were waiting for grid access at the end of 2023, typical waits stretch to five years or more, fewer than a quarter of queued projects are expected to reach completion at current rates, and delay carries quantified costs to consumers. <a class="cite" href="#">[8][10][13]</a></p>
+                <p>On the supply side, the IEA reports that China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024, is projected to remain dominant through 2035, and estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk. <a class="cite" href="#">[1][2][4]</a></p>
+                <p>FERC's Order 2023 and Order 2023-A introduced queue reform, including stronger financial and site-control requirements and improved storage modeling, and U.S. queue capacity fell for the first time in 2024, but the evidence does not show the bottleneck resolved. <a class="cite" href="#">[13]</a></p>
+                <p>Several constraint families raised in review remain unevidenced in this pass: tariffs and trade barriers, siting, permitting and fire-code compliance, wholesale market eligibility and accreditation rules, non-U.S. connection regimes, equipment lead times, and financing conditions.</p>
+
+                <h3>Grid connection as the binding timing constraint</h3>
+                <p>Grid connection is the most fully evidenced constraint on grid-scale battery deployment in this pass, although the grid-side evidence is confined to the United States. As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. Research cited from Lawrence Berkeley National Laboratory puts the average wait in U.S. interconnection queues at five years and indicates that, at current rates, less than a quarter of the energy projects entering those queues will make it to completion. <a class="cite" href="#">[13]</a></p>
+                <p>Aggregated reporting across U.S. ISOs and RTOs places over 2,000 GW in queues, with delays stretching from three to seven years in some markets. The delay is not limited to generators, as Google has reported potential transmission grid connection delays of up to 12 years for new data centers. <a class="cite" href="#">[11]</a></p>
+
+                <h3>Critical minerals and supply-chain concentration</h3>
+                <p>Battery deployment also depends on a supply chain whose midstream is heavily concentrated in one country. The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70 to 95 percent of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#">[2]</a></p>
+                <p>The trend in the evidence runs toward more exposure, not less: excluding rare earths, the average share of mineral supply held by China rose to 72 percent in 2025 from 70 percent in 2023, and the number of mineral tariff categories covered by China's export controls has tripled since 2023. <a class="cite" href="#">[4][6]</a></p>
+
+                <h2>Verified claims</h2>
+                <ul>
+                  <li>As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. <a class="cite" href="#">[13]</a> <span class="cap">confidence 0.90</span></li>
+                  <li>The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70â€“95% of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#">[2]</a> <span class="cap">confidence 0.88</span></li>
+                  <li>FERC's Order 2023 mandated U.S. interconnection queue reform and included stronger financial and site control requirements to discourage speculative projects, plus improved storage modeling, with Order 2023-A reaffirming most of it. <a class="cite" href="#">[13]</a> <span class="cap">confidence 0.92</span></li>
+                  <li>For every $1 billion in transmission investments that is delayed, consumers lose between $150 million and $370 million in net benefits per year of delay. <a class="cite" href="#">[11]</a> <span class="cap">confidence 0.90</span></li>
+                </ul>
+
+                <h2>Uncertainty and conflicting evidence</h2>
+                <p>Several things should temper confidence in the picture above. The grid-side evidence is U.S.-only: non-U.S. connection regimes were sought in this pass but produced no verified claim or retrieved finding. One claim was contradicted: an assertion that the U.S. queue had swelled to a 2,600 GW backlog as of 2026 with median waits approaching five years was rejected, while a verified claim places 2,600 GW in the queue as of the end of 2023. Queue magnitude estimates also conflict, and several central numbers rest on sources this pass flagged low confidence.</p>
+
+                <h2>Limitations</h2>
+                <ul id="repLimitations"></ul>
+              </div>
+
+              <div data-od-id="citations-table">
+                <h2 class="sect" style="margin-bottom:var(--space-4)">Citations</h2>
+                <table class="tbl">
+                  <thead><tr><th class="n">#</th><th>Source</th><th class="n">Score</th><th>Band</th></tr></thead>
+                  <tbody>
+                    <tr><td class="n">1</td><td class="wrapcell"><a class="tlink" href="#">Resource Nationalism and the Resilience of Critical Mineral Supply Chains</a><br /><span class="cap">rff.org</span></td><td class="n">0.76</td><td>normal</td></tr>
+                    <tr><td class="n">2</td><td class="wrapcell"><a class="tlink" href="#">Global Critical Minerals Outlook 2025</a><br /><span class="cap">iea.blob.core.windows.net</span></td><td class="n">0.91</td><td>normal</td></tr>
+                    <tr><td class="n">4</td><td class="wrapcell"><a class="tlink" href="#">Why the IEA says critical minerals have become a $6.5 trillion economic security risk</a><br /><span class="cap">aa.com.tr</span></td><td class="n">0.74</td><td>normal</td></tr>
+                    <tr><td class="n">6</td><td class="wrapcell"><a class="tlink" href="#">Critical Minerals and Materials for Selected Energy Technologies</a><br /><span class="cap">congress.gov Â· CRS R48149</span></td><td class="n">0.78</td><td>normal</td></tr>
+                    <tr><td class="n">11</td><td class="wrapcell"><a class="tlink" href="#">Grid Interconnection Delays 2026: A Threat to US Energy</a><br /><span class="cap">enkiai.com Â· contradicted one claim</span></td><td class="n">0.67</td><td>normal</td></tr>
+                    <tr><td class="n">13</td><td class="wrapcell"><a class="tlink" href="#">Resolving the Interconnection Queue Bottleneck</a><br /><span class="cap">novoco.com</span></td><td class="n">0.20</td><td>low confidence</td></tr>
+                  </tbody>
+                </table>
+                <p class="tbl-foot">Six of the report's 80 citations. Row 13 was cited for verified claims and still scored 0.20 â€” past this run's scoring cap.</p>
+              </div>
+            </article>
+          </div>
+
+          <aside class="rail" data-od-id="report-rail" aria-label="Report details">
+            <div class="card stack-2" data-od-id="report-quality">
+              <h2 class="card-title">Quality snapshot</h2>
+              <p class="avail">Not served by the API. Transcribed from the published report's own evidence table.</p>
+              <div class="bars">
+                <div class="bar-row"><span style="color:var(--fg)">Claim confidence</span><span class="bar"><span class="ok" style="width:90%"></span></span><span class="n">0.90</span></div>
+                <div class="bar-row"><span style="color:var(--fg)">Source authority</span><span class="bar"><span style="width:91%"></span></span><span class="n">0.91</span></div>
+                <div class="bar-row"><span style="color:var(--fg)">Corroboration</span><span class="bar"><span style="width:100%"></span></span><span class="n">1.00</span></div>
+                <div class="bar-row"><span style="color:var(--fg)">Scored sources cited</span><span class="bar"><span style="width:20%"></span></span><span class="n">0.20</span></div>
+              </div>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-facts">
+              <h2 class="card-title">Session facts</h2>
+              <dl class="kv">
+                <dt>status</dt><dd id="repFactStatus">â€”</dd>
+                <dt>iteration</dt><dd id="repFactIteration">â€”</dd>
+                <dt>started_at</dt><dd id="repFactStarted">â€”</dd>
+                <dt>finished_at</dt><dd id="repFactFinished">â€”</dd>
+                <dt>report_path</dt><dd id="repFactPath">â€”</dd>
+                <dt>errors</dt><dd id="repFactErrors">â€”</dd>
+              </dl>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-cost">
+              <h2 class="card-title">Cost and usage</h2>
+              <dl class="kv">
+                <dt>tool calls</dt><dd class="avail">Not recorded</dd>
+                <dt>input tokens</dt><dd class="avail">Not recorded</dd>
+                <dt>output tokens</dt><dd class="avail">Not recorded</dd>
+              </dl>
+              <p class="avail">The runner holds these totals, but the session response carries neither. Nothing is rendered as <span class="mono">0</span>.</p>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-artifacts">
+              <h2 class="card-title">Artifacts</h2>
+              <dl class="kv">
+                <dt>report</dt><dd class="plain"><a href="#" style="color:var(--accent)">GET /report</a></dd>
+                <dt>evidence ledger</dt><dd class="avail">Not in response</dd>
+                <dt>trace</dt><dd class="plain"><a href="#" id="artifactTrace" style="color:var(--accent)">â€”</a></dd>
+              </dl>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-errors">
+              <h2 class="card-title">Errors</h2>
+              <details class="disc">
+                <summary><span id="repErrSummary">â€”</span></summary>
+                <div class="disc-body stack-2" id="repErrList"></div>
+              </details>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- â”€â”€ STAGE Â· failed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+      <section class="stage" id="stage-failed" data-od-id="stage-failed" aria-labelledby="failed-h">
+        <div class="report-head">
+          <div style="min-width:0">
+            <p class="cap" id="failedMeta" data-od-id="failed-meta">â€”</p>
+            <h1 class="report-q" id="failed-h" data-od-id="failed-question">â€”</h1>
+            <div class="row wrap" style="margin-top:var(--space-4)">
+              <span class="chip chip-lg" data-od-id="failed-status"><span class="dot dot-danger" aria-hidden="true"></span>Failed</span>
+            </div>
+          </div>
+          <div class="row wrap">
+            <a class="btn btn-ghost" href="#" id="failedTrace" data-od-id="cta-failed-trace">Open LangSmith trace <span aria-hidden="true">â†—</span></a>
+          </div>
+        </div>
+
+        <div class="with-rail">
+          <div class="stack" style="gap:var(--space-5)">
+            <div class="note bad" data-od-id="failed-panel">
+              <div class="note-head"><span class="mk">halt</span><span id="failedType">â€”</span></div>
+              <p id="failedMessage">The run stopped on a non-recoverable error. Everything collected before the halt survives in the session, but a halted run publishes no artifact.</p>
+            </div>
+
+            <div class="card stack" style="gap:var(--space-4)" data-od-id="failed-facts">
+              <h2 class="card-title">Why there is no report</h2>
+              <dl class="kv">
+                <dt>error_type</dt><dd id="failFactType">â€”</dd>
+                <dt>source</dt><dd id="failFactSource">â€”</dd>
+                <dt>recoverable</dt><dd id="failFactRecoverable">false</dd>
+                <dt>report_path</dt><dd class="avail">Not published</dd>
+                <dt>GET /report</dt><dd>409 report_unavailable</dd>
+              </dl>
+              <p class="avail">A finished session with no artifact answers <span class="mono">409 report_unavailable</span> â€” distinct from the <span class="mono">409 session_not_complete</span> a running session returns, and from the <span class="mono">404</span> an unknown id returns.</p>
+            </div>
+          </div>
+
+          <aside class="rail" data-od-id="failed-rail" aria-label="Run details">
+            <div class="card stack" style="gap:var(--space-4)">
+              <div class="row-between">
+                <h2 class="card-title">Pipeline</h2>
+                <span class="avail-mono">halted at stage 1</span>
+              </div>
+              <ol class="spine-lg" id="spineFailed"></ol>
+            </div>
+            <div class="card stack-2">
+              <h2 class="card-title">What survived the halt</h2>
+              <dl class="kv">
+                <dt>findings</dt><dd>0</dd>
+                <dt>sources evaluated</dt><dd>0</dd>
+                <dt>claims checked</dt><dd>0</dd>
+              </dl>
+              <p class="avail">Real counts read from state, not absences. An absent value reads <span class="mono">Not recorded</span> â€” the two look different on purpose.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var LS_SIDEBAR = "dr.console.sidebar";
+  var LS_ACTIVE  = "dr.console.active";
+
+  /* The composer is static markup on the idle stage; there is no template
+     string to keep in sync with it. See buildSpine for the same principle
+     applied to the pipeline. */
+
+  var app = document.getElementById("app");
+  var crumb = document.getElementById("crumb");
+  var topbarStatus = document.getElementById("topbarStatus");
+  var sidebarToggle = document.getElementById("sidebarToggle");
+  var scrim = document.getElementById("scrim");
+  var stages = {
+    idle:      document.getElementById("stage-idle"),
+    submitted: document.getElementById("stage-submitted"),
+    running:   document.getElementById("stage-running"),
+    report:    document.getElementById("stage-report"),
+    failed:    document.getElementById("stage-failed")
+  };
+
+  /* â•â•â• model capability registry, mirrored from providers/capabilities.py â•â•â•
+     deepseek: ^deepseek-v4-(flash|pro)$ â€” thinking enabled|disabled,
+     enabled efforts high,max, disabled_effort None. */
+  var MODELS = {
+    "deepseek-v4-flash": { label:"v4-flash", efforts:["high","max"] },
+    "deepseek-v4-pro":   { label:"v4-pro",   efforts:["high","max"] }
+  };
+  var settings = { model:"deepseek-v4-flash", thinking:"enabled", effort:"high", outputDir:"output/" };
+  var state = { stage:"idle", activeId:null };
+  /* how long the "question locked in" beat is held before the pipeline
+     takes the screen. Long enough to read the question and its settings
+     back, short enough not to feel like a gate. */
+  var SUBMIT_HOLD_MS = 1100;
+  var transitionTimer = null;
+
+  /* â•â•â• the client's own session ledger â•â•â• */
+  var SESSIONS = [
+    { id:"8f2c1d90", q:"What are the current constraints on grid-scale battery storage deployment?",
+      status:"running", iteration:0, started:"2026-09-16T14:02:11Z", finished:null,
+      reportPath:null, trace:null, group:"Today", playback:true,
+      errors:[{type:"researcher_sub_topic_without_findings", recoverable:true, source:"researcher"},
+              {type:"source_evaluator_reputation_unavailable", recoverable:true, source:"source_evaluator"}] },
+    { id:"b41e77aa", q:"How mature is quantum error correction?",
+      status:"completed", iteration:3, started:"2026-09-16T11:48:03Z", finished:"2026-09-16T11:57:15Z",
+      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/b41e77aa", group:"Today",
+      errors:[{type:"researcher_sub_topic_without_findings", recoverable:true, source:"researcher"}] },
+    { id:"7c0d13ff", q:"What limits solid-state electrolyte scale-up for EV cells?",
+      status:"max_iterations", iteration:3, started:"2026-09-16T09:15:40Z", finished:"2026-09-16T09:29:42Z",
+      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/7c0d13ff", group:"Today",
+      errors:[{type:"synthesizer_report_not_written", recoverable:true, source:"synthesizer"}] },
+    { id:"5ff1ab07", q:"Which fire-code standards govern BESS siting in the U.S.?",
+      status:"incomplete", iteration:1, started:"2026-09-15T13:40:02Z", finished:"2026-09-15T13:47:00Z",
+      reportPath:"api-output/report.md", trace:null, group:"Yesterday", errors:[] },
+    { id:"9ea4c220", q:"What is the measured cost of interconnection queue delay?",
+      status:"completed", iteration:2, started:"2026-09-15T15:04:10Z", finished:"2026-09-15T15:15:40Z",
+      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/9ea4c220", group:"Yesterday", errors:[] },
+    { id:"2ad900b1", q:"Compare EU and UK grid connection reform outcomes.",
+      status:"failed", iteration:0, started:"2026-09-15T17:22:27Z", finished:"2026-09-15T17:22:31Z",
+      reportPath:null, trace:"https://smith.langchain.com/o/example/r/2ad900b1", group:"Yesterday",
+      errors:[{type:"graph_provider_configuration_error", recoverable:false, source:"graph"}] }
+  ];
+
+  var STATUS = {
+    running:        { label:"Running",             dot:"dot-live",   note:"iteration {i} of 3" },
+    completed:      { label:"Completed",           dot:"dot-ok",     note:"quality gates accepted" },
+    max_iterations: { label:"Partially completed", dot:"dot-warn",   note:"budget exhausted" },
+    incomplete:     { label:"Partially completed", dot:"dot-warn",   note:"no critique recorded" },
+    failed:         { label:"Failed",              dot:"dot-danger", note:"halted" }
+  };
+  function chipHTML(s, large){
+    var m = STATUS[s.status] || STATUS.running;
+    return '<span class="chip' + (large ? " chip-lg" : "") + '">'
+      + '<span class="dot ' + m.dot + '" aria-hidden="true"></span>' + m.label
+      + ' <span class="kind">Â· ' + m.note.replace("{i}", s.iteration) + "</span></span>";
+  }
+  function fmtDur(a, b){
+    if(!a || !b) return null;
+    var ms = new Date(b) - new Date(a);
+    if(isNaN(ms) || ms < 0) return null;
+    var s = Math.round(ms / 1000);
+    return Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+  }
+  function fmtClock(iso){
+    if(!iso) return null;
+    var d = new Date(iso);
+    if(isNaN(d)) return null;
+    return String(d.getUTCHours()).padStart(2, "0") + ":" + String(d.getUTCMinutes()).padStart(2, "0") + "Z";
+  }
+  function fmtElapsed(sec){
+    return String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
+  }
+  function setText(id, v){ var el = document.getElementById(id); if(el) el.textContent = v; }
+  function activeSession(){
+    for(var i = 0; i < SESSIONS.length; i++) if(SESSIONS[i].id === state.activeId) return SESSIONS[i];
+    return null;
+  }
+  /* Settings actually used by a session. A session keeps its own copy because
+     the API echoes neither the query nor the overrides back. */
+  function sessionSettings(session){
+    return (session && session.settings) || settings;
+  }
+  function optionsHTML(session){
+    var s = sessionSettings(session);
+    var cap = MODELS[s.model];
+    var out = '<span class="opt"><span class="k">model</span>' + (cap ? cap.label : s.model) + "</span>"
+            + '<span class="opt"><span class="k">thinking</span>' + s.thinking + "</span>";
+    out += s.thinking === "disabled"
+      ? '<span class="opt"><span class="k">effort</span>not sent</span>'
+      : '<span class="opt"><span class="k">effort</span>' + s.effort + "</span>";
+    if(s.outputDir) out += '<span class="opt"><span class="k">out</span>' + s.outputDir + "</span>";
+    return out;
+  }
+  function renderLockedOptions(session){
+    ["submittedOpts", "runningOpts", "reportOpts"].forEach(function(id){
+      var el = document.getElementById(id);
+      if(el) el.innerHTML = session ? optionsHTML(session) : "";
+    });
+  }
+
+  /* â•â•â• sidebar â•â•â• */
+  function renderList(){
+    var ul = document.getElementById("sessionList");
+    ul.innerHTML = "";
+    var groups = [];
+    SESSIONS.forEach(function(s){ if(groups.indexOf(s.group) === -1) groups.push(s.group); });
+    groups.forEach(function(g){
+      var head = document.createElement("li");
+      head.className = "sb-group";
+      head.textContent = g.toLowerCase();
+      ul.appendChild(head);
+      SESSIONS.filter(function(s){ return s.group === g; }).forEach(function(s){
+        var dur = fmtDur(s.started, s.finished);
+        var li = document.createElement("li");
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "sb-item";
+        b.setAttribute("data-session", s.id);
+        b.setAttribute("aria-current", String(state.activeId === s.id));
+        b.innerHTML = '<span class="q"></span><span class="m">' + chipHTML(s)
+          + '<span class="when">' + s.id + (dur ? " Â· " + dur : "") + "</span></span>";
+        b.querySelector(".q").textContent = s.q;
+        b.addEventListener("click", function(){ openSession(s.id); });
+        li.appendChild(b);
+        ul.appendChild(li);
+      });
+    });
+    setText("sbCount", String(SESSIONS.length));
+  }
+
+  function isDrawer(){ return window.matchMedia("(max-width:1080px)").matches; }
+  function setSidebar(mode){
+    /* one attribute, two meanings: on desktop expanded/collapsed, on the
+       drawer breakpoint expanded means "open". */
+    app.setAttribute("data-sidebar", mode);
+    var open = mode === "expanded";
+    sidebarToggle.setAttribute("aria-expanded", String(open));
+    document.body.classList.toggle("is-locked", isDrawer() && open);
+    scrim.setAttribute("aria-hidden", String(!(isDrawer() && open)));
+  }
+  function toggleSidebar(){
+    var next = app.getAttribute("data-sidebar") === "expanded" ? "collapsed" : "expanded";
+    setSidebar(next);
+    if(!isDrawer()){ try { localStorage.setItem(LS_SIDEBAR, next); } catch(e){} }
+  }
+  sidebarToggle.addEventListener("click", toggleSidebar);
+  scrim.addEventListener("click", function(){ setSidebar("collapsed"); });
+  document.addEventListener("keydown", function(e){
+    if(e.key !== "Escape") return;
+    closePop();
+    if(isDrawer() && app.getAttribute("data-sidebar") === "expanded") setSidebar("collapsed");
+  });
+  var resizeTimer = null;
+  window.addEventListener("resize", function(){
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function(){
+      if(isDrawer()){ setSidebar("collapsed"); return; }
+      var saved = "expanded";
+      try { saved = localStorage.getItem(LS_SIDEBAR) || "expanded"; } catch(e){}
+      setSidebar(saved);
+    }, 120);
+  });
+
+  /* â•â•â• stage switching â•â•â• */
+  /* The composer is static markup on the idle stage and never moves, so
+     switching stages is only a visibility change. */
+  function showStage(name){
+    Object.keys(stages).forEach(function(k){ stages[k].classList.toggle("is-on", k === name); });
+    state.stage = name;
+    window.scrollTo({ top: 0 });
+    renderTopbar();
+  }
+  function renderTopbar(){
+    var s = activeSession();
+    if(state.stage === "idle" || !s){
+      crumb.textContent = "New research";
+      topbarStatus.innerHTML = '<span class="avail-mono">single operator Â· no auth</span>';
+      return;
+    }
+    var m = STATUS[s.status] || STATUS.running;
+    crumb.textContent = s.id + " Â· " + m.label;
+    var html = chipHTML(s);
+    if(state.stage === "report" && s.trace){
+      html += '<a class="btn btn-ghost btn-sm" href="' + s.trace + '">Trace <span aria-hidden="true">â†—</span></a>';
+    }
+    topbarStatus.innerHTML = html;
+  }
+
+  /* â•â•â• composer â•â•â• */
+  function closePop(){
+    var pop = document.getElementById("settingsPop");
+    var btn = document.getElementById("plusBtn");
+    if(pop) pop.setAttribute("data-open", "false");
+    if(btn) btn.setAttribute("aria-expanded", "false");
+  }
+  function togglePop(){
+    var pop = document.getElementById("settingsPop");
+    var btn = document.getElementById("plusBtn");
+    if(!pop || !btn) return;
+    var open = pop.getAttribute("data-open") === "true";
+    pop.setAttribute("data-open", open ? "false" : "true");
+    btn.setAttribute("aria-expanded", String(!open));
+    if(!open) syncEffort();
+  }
+  function syncSeg(id, attr, val){
+    var seg = document.getElementById(id);
+    if(!seg) return;
+    Array.prototype.forEach.call(seg.querySelectorAll("button[" + attr + "]"), function(b){
+      b.setAttribute("aria-pressed", String(b.getAttribute(attr) === val));
+    });
+  }
+  function syncEffort(){
+    var segE = document.getElementById("segEffort");
+    var note = document.getElementById("effortNote");
+    if(!segE) return;
+    var off = settings.thinking === "disabled";
+    var cap = MODELS[settings.model];
+    Array.prototype.forEach.call(segE.querySelectorAll("button"), function(b){ b.disabled = off; });
+    segE.style.opacity = off ? "0.5" : "1";
+    if(note){
+      note.classList.toggle("warn", off);
+      note.textContent = off
+        ? "Thinking is disabled, so no reasoning effort is valid. llm.reasoning_effort is omitted; sending it would be rejected as an unsupported pair."
+        : "Sent as llm.reasoning_effort. This model accepts " + cap.efforts.join(" and ") + " only.";
+    }
+  }
+  function syncPills(){
+    var cap = MODELS[settings.model];
+    setText("pillModelV", cap ? cap.label : settings.model);
+    setText("pillEffortV", settings.thinking === "disabled" ? "thinking off" : settings.effort);
+  }
+  function syncSettingsUI(){
+    syncSeg("segModel", "data-model", settings.model);
+    syncSeg("segThinking", "data-thinking", settings.thinking);
+    syncSeg("segEffort", "data-effort", settings.effort);
+    var dir = document.getElementById("outputDir");
+    if(dir && settings.outputDir) dir.value = settings.outputDir;
+    syncEffort();
+    syncPills();
+  }
+  function buildOverrides(){
+    var dirEl = document.getElementById("outputDir");
+    var o = { llm: { model: settings.model, thinking_mode: settings.thinking } };
+    if(settings.thinking !== "disabled") o.llm.reasoning_effort = settings.effort;
+    var dir = dirEl && dirEl.value ? dirEl.value.trim() : "";
+    if(dir) o.output = { directory: dir };
+    return o;
+  }
+  function wireComposer(){
+    var form = document.getElementById("composer");
+    if(!form || form.dataset.wired === "1") return;
+    form.dataset.wired = "1";
+    var prompt = form.querySelector("#prompt");
+
+    form.querySelector("#plusBtn").addEventListener("click", togglePop);
+    form.querySelector("#popClose").addEventListener("click", closePop);
+    form.querySelector("#segModel").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-model]"); if(!b) return;
+      settings.model = b.getAttribute("data-model"); syncSettingsUI();
+    });
+    form.querySelector("#segThinking").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-thinking]"); if(!b || b.disabled) return;
+      settings.thinking = b.getAttribute("data-thinking"); syncSettingsUI();
+    });
+    form.querySelector("#segEffort").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-effort]"); if(!b || b.disabled) return;
+      settings.effort = b.getAttribute("data-effort"); syncSettingsUI();
+    });
+    form.querySelector("#outputDir").addEventListener("input", function(e){
+      settings.outputDir = e.target.value;
+    });
+    form.addEventListener("submit", function(e){ e.preventDefault(); submitResearch(); });
+    prompt.addEventListener("keydown", function(e){
+      if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submitResearch(); }
+    });
+    prompt.addEventListener("input", function(){
+      setText("composerError", "");
+      prompt.removeAttribute("aria-invalid");
+    });
+    document.addEventListener("click", function(e){
+      var pop = document.getElementById("settingsPop");
+      var plus = document.getElementById("plusBtn");
+      if(!pop || !plus || pop.getAttribute("data-open") !== "true") return;
+      if(pop.contains(e.target) || plus.contains(e.target)) return;
+      closePop();
+    });
+  }
+
+  /* â•â•â• submit â•â•â• */
+  function submitResearch(){
+    var prompt = document.getElementById("prompt");
+    if(!prompt) return;
+    var q = (prompt.value || "").trim();
+    if(!q){
+      setText("composerError", "A question is required.");
+      prompt.setAttribute("aria-invalid", "true");
+      prompt.focus();
+      return;
+    }
+    closePop();
+    var session = {
+      id: Math.random().toString(16).slice(2, 10), q: q, status: "running", iteration: 0,
+      started: new Date().toISOString(), finished: null, reportPath: null, trace: null,
+      errors: [], group: "Today", playback: true,
+      settings: { model: settings.model, thinking: settings.thinking, effort: settings.effort, outputDir: settings.outputDir },
+      overrides: buildOverrides()
+    };
+    SESSIONS.unshift(session);
+    renderList();
+    prompt.value = "";
+    /* POST /research is not issued by this prototype; the session is driven
+       from the scripted event sequence. The 202 is acknowledged by the
+       "question locked in" beat, then the pipeline takes over. */
+    openSession(session.id, { hold: true });
+    clearTimeout(transitionTimer);
+    transitionTimer = setTimeout(function(){
+      if(state.activeId !== session.id) return;
+      showStage("running");
+      startPlayback(session);
+    }, SUBMIT_HOLD_MS);
+  }
+
+  /* â•â•â• pipeline â•â•â• */
+  var STAGES = [
+    { id:"planner",          label:"Planning",           meta:"3â€“7 sub-topics" },
+    { id:"researcher",       label:"Researching",        meta:"search Â· scrape Â· read Â· memory" },
+    { id:"source_evaluator", label:"Evaluating sources", meta:"authority Â· recency Â· relevance" },
+    { id:"fact_checker",     label:"Checking claims",    meta:"one loop per claim" },
+    { id:"synthesizer",      label:"Writing report",     meta:"skeleton rendered locally" },
+    { id:"critic",           label:"Reviewing",          meta:"acceptance score" },
+    { id:"finalize_report",  label:"Publishing",         meta:"report + evidence ledger" }
+  ];
+  /* The step number is the constant â€” 1 through 7, always â€” and the colour is
+     what changes: breathing while the step runs, filled solid once it is done.
+     A step only shows a glyph when it never ran at all (a halted run), because
+     there is no number left to fill in that case.
+
+     Building and updating are deliberately separate. Rebuilding the list on every
+     event would replace each row's node, and a fresh node has nothing to
+     transition from â€” every fill would snap. So rows are built once per
+     mountSpine and only their attributes change afterwards, which is what lets
+     the CSS transitions animate the fill.
+
+     `--base` is a shared offset applied to every connector, and `--delay` is a
+     per-number offset inside the bullet. Both exist so the fill reads as a wave
+     travelling down the list rather than seven simultaneous state changes. */
+  var SPINE = { host:null, rows:[] };
+
+  function buildSpine(hostEl){
+    if(!hostEl) return;
+    hostEl.innerHTML = "";
+    var rows = [];
+    STAGES.forEach(function(s, i){
+      var li = document.createElement("li");
+      li.setAttribute("data-state", "pending");
+      li.style.setProperty("--delay", String(i * 60));
+      var meta = "P" + (i + 1) + " Â· " + s.meta;
+      li.innerHTML = '<span class="bullet" aria-hidden="true">' + (i + 1) + "</span>"
+        + '<span><span class="stage-name">' + s.label
+        + '<span class="sr"></span></span>'
+        + '<span class="stage-meta">' + meta + "</span>"
+        + '<span class="stage-meta loops" hidden></span></span>';
+      hostEl.appendChild(li);
+      rows.push({
+        el: li,
+        name: li.querySelector(".stage-name .sr"),
+        loops: li.querySelector(".loops"),
+        state: "pending",
+        fed: null
+      });
+    });
+    SPINE.host = hostEl;
+    SPINE.rows = rows;
+  }
+
+  /* One pointer for the whole list; reset the instant the run starts. */
+  function resetFlow(){
+    if(SPINE.host) SPINE.host.style.setProperty("--base", "0");
+  }
+  function markFlow(){
+    if(SPINE.host) SPINE.host.style.setProperty("--base", "170");
+  }
+
+  function syncSpine(marks, loops){
+    if(!SPINE.rows.length) return;
+    var done = function(state){ return state === "done" || state === "loop"; };
+    SPINE.rows.forEach(function(row, i){
+      var st = (marks && marks[STAGES[i].id]) || "pending";
+      if(st !== row.state){
+        row.el.setAttribute("data-state", st);
+        row.state = st;
+      }
+      var prev = i > 0 ? ((marks && marks[STAGES[i - 1].id]) || "pending") : null;
+      var fed = prev === null ? null : (done(prev) ? "1" : "0");
+      if(fed !== row.fed && fed !== null){
+        row.el.setAttribute("data-fed", fed);
+        row.fed = fed;
+      }
+      if(row.name) row.name.textContent = st === "active" ? " (in progress)" : "";
+      if(row.loops){
+        var show = STAGES[i].id === "researcher" && loops > 0;
+        row.loops.hidden = !show;
+        if(show) row.loops.textContent = "refined " + loops + (loops === 1 ? " pass" : " passes");
+      }
+    });
+  }
+
+  /* Kept for the halted-run spine, which is static and never re-renders. */
+  /* The pass strip. It exists so the loop is visible as a loop: a pass that has
+     finished stays finished and keeps its count, the pass running now is marked,
+     and the ones not reached stay hollow. Without it, a pipeline that resets to
+     step 1 has no visible reason. */
+  function renderPassTrack(){
+    var host = document.getElementById("passTrack");
+    if(!host) return;
+    if(!passes.length){ resetPasses(); return; }
+    host.innerHTML = "";
+    passes.forEach(function(p, i){
+      var el = document.createElement("div");
+      el.className = "pass";
+      el.setAttribute("data-state", p.state);
+      var label = p.state === "done" ? "finished"
+                : p.state === "active" ? "running now"
+                : "not reached";
+      var count = p.state === "pending" ? "7 steps"
+                : p.done + " of 7 steps";
+      el.innerHTML = '<span class="pass-n">Pass <b>' + (i + 1) + "</b></span>"
+        + '<span class="pass-s">' + label + "</span>"
+        + '<span class="pass-n">' + count + "</span>";
+      host.appendChild(el);
+    });
+    var active = 0;
+    passes.forEach(function(p, i){ if(p.state === "active" || p.state === "done") active = i; });
+    setText("passSummary", "pass " + (active + 1) + " of " + passes.length);
+  }
+
+  function renderSpine(hostEl, marks, loops){
+    buildSpine(hostEl);
+    syncSpine(marks, loops);
+  }
+
+  /* â•â•â• scripted stream â€” shape taken from the documented event catalogue â•â•â• */
+  function buildEvents(){
+    var ev = [], toolCalls = 0;
+    function push(type, source, message, metadata){
+      ev.push({ type:type, source:source, message:message, metadata:metadata || {} });
+    }
+    push("graph.session.started", "graph", "Session started.", { max_iterations:3, checkpointing:false });
+    for(var pass = 0; pass < 3; pass++){
+      var last = pass === 2;
+      push("graph.node.started", "graph.planner", "Node planner started.", { node:"planner", iteration:pass });
+      push("planner.planning.started", "planner", "Planning started.", { iteration:pass, min_sub_topics:3, max_sub_topics:7 });
+      push("planner.planning.completed", "planner", "Plan validated.", { sub_topic_count: pass === 0 ? 6 : 4, repair_attempted:false, stop_reason:"finished" });
+      push("graph.node.completed", "graph.planner", "Node planner completed.", { node:"planner", iteration:pass });
+
+      push("graph.node.started", "graph.researcher", "Node researcher started.", { node:"researcher", iteration:pass });
+      var topics = pass === 0 ? 6 : 4;
+      for(var t = 0; t < topics; t++){
+        push("researcher.sub_topic.started", "researcher", "Sub-topic started.",
+          { sub_topic:"topic-" + (t + 1), priority: t < 2 ? 1 : 2, existing_sources: toolCalls });
+        var calls = pass === 0 ? 3 : 2;
+        for(var c = 0; c < calls; c++){
+          toolCalls++;
+          push("researcher.tool_call", "researcher", "Tool call completed.",
+            { tool: c % 2 === 0 ? "web_search" : "web_scraper", iteration:c + 1, success:true });
+        }
+        push("researcher.sub_topic.completed", "researcher", "Sub-topic completed.",
+          { stop_reason:"sufficient", iterations:calls, tool_calls:calls, findings: pass === 0 ? 4 : 2 });
+      }
+      push("researcher.research.completed", "researcher", "Research pass completed.",
+        { sub_topics_planned:6, sub_topics_researched:topics, findings: pass === 0 ? 17 : 11 });
+      push("graph.node.completed", "graph.researcher", "Node researcher completed.", { node:"researcher", iteration:pass });
+
+      ["source_evaluator","fact_checker","synthesizer"].forEach(function(n){
+        push("graph.node.started", "graph." + n, "Node " + n + " started.", { node:n, iteration:pass });
+        if(n === "source_evaluator"){
+          push("source_evaluator.evaluation.completed", "source_evaluator", "Sources scored.",
+            { source_count: pass === 0 ? 22 : 31, average_score:0.68, low_confidence_count:9 });
+        }
+        if(n === "fact_checker"){
+          push("fact_checker.claims.extracted", "fact_checker", "Claims extracted.", { claim_count:19 });
+          var verdicts = ["verified","verified","unverified","insufficient_evidence","verified"];
+          var conf = [0.9, 0.88, 0.6, 0.0, 0.92];
+          for(var k = 0; k < verdicts.length; k++){
+            push("fact_checker.claim.checked", "fact_checker", "Claim judged.", { verdict:verdicts[k], confidence:conf[k] });
+          }
+          push("fact_checker.fact_check.completed", "fact_checker", "Fact check completed.",
+            { claim_count:19, verified:12, unverified:4, contradicted:1, insufficient_evidence:2 });
+        }
+        if(n === "synthesizer"){
+          push("synthesizer.synthesis.completed", "synthesizer", "Reader report composed.",
+            { section_count:7, citation_count:80, report_chars:124880, limitations:6 });
+        }
+        push("graph.node.completed", "graph." + n, "Node " + n + " completed.", { node:n, iteration:pass });
+      });
+
+      push("graph.node.started", "graph.critic", "Node critic started.", { node:"critic", iteration:pass });
+      push("critic.critique.started", "critic", "Review started.", { iteration:pass, max_iterations:3 });
+      push("critic.critique.completed", "critic",
+        last ? "Critique accepted the report." : "Critique returned a refinement request.",
+        { score: last ? 8 : 6, gap_count: last ? 0 : 6, unsupported_claim_count: last ? 0 : 4, should_continue: !last });
+      push("graph.node.completed", "graph.critic", "Node critic completed.", { node:"critic", iteration:pass });
+
+      if(last){
+        push("graph.route.decided", "graph", "Route decided: finalize.",
+          { destination:"finalize", reason:"critique_satisfied", iteration:pass, max_iterations:3 });
+        push("graph.node.started", "graph.finalize_report", "Publishing artifacts.", { node:"finalize_report", iteration:pass });
+        push("graph.report.published", "graph", "Report published.",
+          { report_path:"api-output/report.md", evidence_path:"api-output/evidence-ledger.md" });
+        push("graph.node.completed", "graph.finalize_report", "Node finalize_report completed.", { node:"finalize_report", iteration:pass });
+        push("graph.session.completed", "graph", "Session completed.",
+          { status:"completed", iteration:pass, error_count:2, has_report:true });
+      } else {
+        push("graph.route.decided", "graph", "Route decided: refine.",
+          { destination:"refine", reason:"refinement_requested", iteration:pass, max_iterations:3 });
+        push("graph.refinement.started", "graph", "Refinement pass started.", { iteration:pass + 1, max_iterations:3 });
+      }
+    }
+    return ev;
+  }
+  var PLAYBACK = buildEvents();
+  /* Two rescalings, in order.
+
+     1. Per-stage weighting. Event density is wildly uneven â€” the researcher
+        emits a tool_call per tool per sub-topic, the rest emit a handful of
+        records each â€” so a wall-clock-proportional schedule flashes four steps
+        past in under a second and then sits on the last one. Weighting by node
+        gives every step comparable screen time, then the schedule is scaled back
+        to the session's real duration (12m 40s) so the elapsed clock still reads
+        true. The weighting changes only the prototype's pacing, never a value.
+     2. Rounding to whole seconds, so the timestamps render as real clock times. */
+  (function(){
+    var W = {
+      planner:0.7, researcher:1.4, source_evaluator:1.1, fact_checker:1.4,
+      synthesizer:1.0, critic:0.9, finalize_report:0.8
+    };
+    var totalW = 0, acc = 0;
+    PLAYBACK.forEach(function(e){
+      e.w = W[e.type] || 0.9;
+      totalW += e.w;
+    });
+    PLAYBACK.forEach(function(e){
+      acc += e.w / totalW * 760;
+      e.at = Math.round(acc);
+    });
+  })();
+
+  var play = { timer:null, idx:0, elapsed:0, loops:0, marks:{}, toolCalls:0, claims:0, session:null, pass:0 };
+  /* One entry per pass. `done` counts the steps a pass finished, which is what
+     the pass strip shows instead of leaving three bare numbered boxes. It is
+     counted from whichever pass is currently open, so the critic's own completion
+     record — which arrives after the route decision — still lands in the pass it
+     belongs to. */
+  var MAX_PASSES = 3;
+  var passes = [];
+  var openPass = 0;
+  function resetPasses(){
+    passes = [];
+    for(var i = 0; i < MAX_PASSES; i++) passes.push({ state:"pending", done:0, why:"" });
+    passes[0].state = "active";
+    openPass = 0;
+    renderPassTrack();
+  }
+  /* Watch time for a scripted run. Sized so every one of the seven steps holds
+     the highlight long enough to be read â€” a proportional 17s window left four
+     steps on screen for about a second each. */
+  var PLAY_MS = 30000;
+
+  function reducedMotion(){
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+  function applyEvent(ev, session){
+    var node = ev.metadata.node;
+    if(ev.type === "graph.node.started" && node){
+      Object.keys(play.marks).forEach(function(k){ if(play.marks[k] === "active") play.marks[k] = "done"; });
+      play.marks[node] = "active";
+      if(typeof ev.metadata.iteration === "number") session.iteration = ev.metadata.iteration;
+      if(passes[openPass]) passes[openPass].state = "active";
+      renderPassTrack();
+    }
+    if(ev.type === "graph.node.completed" && node && play.marks[node] === "active"){
+      play.marks[node] = "done";
+      if(passes[openPass]) passes[openPass].done++;
+      renderPassTrack();
+    }
+    if(ev.type === "graph.session.completed" && play.marks.finalize_report) play.marks.finalize_report = "done";
+    if(ev.type === "researcher.tool_call") play.toolCalls++;
+    if(ev.type === "fact_checker.claim.checked") play.claims++;
+    /* Publishing is the one step whose fill should lag, so the report's arrival
+       reads as the last thing that happens rather than one more tick. */
+    if(ev.type === "graph.node.started" && node === "finalize_report") markFlow();
+    /* A refinement pass is a NEW pass, not a step inside the old one. The reset
+       happens as soon as the critic routes back, so the spine is already hollow
+       by the time the next pass's step 1 lights up. Leaving the old marks in
+       place was a bug: it showed the pipeline at step 1 while steps 2-7 still
+       read "finished", which looks like progress running backwards. */
+    if(ev.type === "graph.route.decided" && ev.metadata.destination === "refine"){
+      play.marks = {};
+      resetFlow();
+      setText("passWhy", "The critic sent pass " + ((ev.metadata.iteration || 0) + 1)
+        + " back: six constraint families were still unsupported by any verified claim.");
+      renderPassTrack();
+    }
+    if(ev.type === "graph.refinement.started"){
+      var next = ev.metadata.iteration || 0;
+      if(passes[openPass]) passes[openPass].state = "done";
+      openPass = next;
+      play.pass = next;
+      play.loops = next;
+      if(passes[next]) passes[next].state = "active";
+      renderPassTrack();
+    }
+    syncSpine(play.marks, play.loops);
+  }
+  function currentStageIndex(){
+    var order = ["planner","researcher","source_evaluator","fact_checker","synthesizer","critic","finalize_report"];
+    var idx = 0;
+    order.forEach(function(n, i){
+      var st = play.marks[n];
+      if(st === "done" || st === "active" || st === "loop") idx = Math.max(idx, i);
+    });
+    return idx;
+  }
+  var BLURB = {
+    planner:"Planning the sub-topics and their search queries.",
+    researcher:"Searching, scraping and extracting findings per sub-topic.",
+    source_evaluator:"Scoring every source behind the findings.",
+    fact_checker:"Checking major claims against independent domains.",
+    synthesizer:"Composing the report from the locally rendered skeleton.",
+    critic:"Reviewing the report against the acceptance threshold.",
+    finalize_report:"Publishing the report and the evidence ledger."
+  };
+  function updateRunningChrome(session){
+    var idx = currentStageIndex();
+    var stage = STAGES[Math.min(idx, STAGES.length - 1)];
+    setText("runStage", stage.label);
+    setText("runNow", stage.label);
+    setText("runProgressLabel", "stage " + (idx + 1) + " of " + STAGES.length);
+    setText("runningBlurb", BLURB[stage.id] || "Working.");
+    setText("runElapsed", fmtElapsed(play.elapsed) + " elapsed");
+    setText("costElapsed", fmtElapsed(play.elapsed));
+    setText("costTools", String(play.toolCalls));
+    setText("costClaims", String(play.claims));
+    setText("factAgent", stage.id);
+    setText("factIteration", String(session.iteration || 0));
+    /* The pass number comes from the pass model, not from session.iteration:
+       iteration only advances when a refinement's started event arrives, so
+       reading it here would label the handoff with the pass that just ended. */
+    var passNo = Math.min(openPass + 1, MAX_PASSES);
+    setText("runPasses", "pass " + passNo + " of " + MAX_PASSES);
+    setText("factStarted", fmtClock(session.started) || session.started);
+    var fill = document.getElementById("runTrackFill");
+    if(fill) fill.style.width = Math.round(((idx + 1) / STAGES.length) * 100) + "%";
+    var track = document.getElementById("runTrack");
+    if(track) track.setAttribute("aria-valuenow", String(idx + 1));
+    var errs = session.errors || [];
+    var rec = errs.filter(function(x){ return x.recoverable; }).length;
+    setText("errCountLabel", rec + " rec Â· " + (errs.length - rec) + " non-rec");
+    var list = document.getElementById("errList");
+    if(list){
+      list.innerHTML = errs.length
+        ? errs.map(function(x){ return '<span class="avail-mono">' + x.type + "</span>"; }).join("")
+        : '<span class="avail">None recorded so far.</span>';
+    }
+  }
+  function startPlayback(session){
+    stopPlayback();
+    play.session = session;
+    play.idx = 0; play.elapsed = 0; play.loops = 0; play.toolCalls = 0; play.claims = 0; play.marks = {};
+    play.pass = 0;
+    session.status = "running";
+    session.iteration = 0;
+    resetPasses();
+    buildSpine(document.getElementById("spine"));
+    resetFlow();
+    syncSpine(play.marks, 0);
+    updateRunningChrome(session);
+    /* One frame per event on a fixed cadence, so a stage's screen time is its
+       share of the schedule rather than its share of the event count: the
+       researcher's ~70 tool calls would otherwise eat the whole run and the
+       synthesizer would flash past. Each event still carries its own virtual
+       timestamp for the elapsed clock and the timestamps shown. */
+    var stepMs = reducedMotion() ? 30 : Math.round(PLAY_MS / PLAYBACK.length);
+    play.timer = setInterval(function(){
+      if(play.idx >= PLAYBACK.length){ finishPlayback(session); return; }
+      var ev = PLAYBACK[play.idx++];
+      play.elapsed = ev.at;
+      applyEvent(ev, session);
+      updateRunningChrome(session);
+    }, stepMs);
+  }
+  function stopPlayback(){
+    if(play.timer){ clearInterval(play.timer); play.timer = null; }
+  }
+  function finishPlayback(session){
+    stopPlayback();
+    session.status = "completed";
+    session.iteration = 3;
+    session.finished = new Date().toISOString();
+    session.reportPath = "api-output/report.md";
+    session.trace = "https://smith.langchain.com/o/example/r/" + session.id;
+    session.playback = false;
+    renderList();
+    populateReport(session);
+    showStage("report");
+  }
+
+  /* â•â•â• report + failed population â•â•â• */
+  function populateReport(session){
+    var dur = fmtDur(session.started, session.finished);
+    setText("reportMeta", "session " + session.id + " Â· finished " + (fmtClock(session.finished) || "not recorded")
+      + (dur ? " Â· " + dur : "") + " Â· " + session.iteration + " passes");
+    setText("report-h", session.q);
+    var row = document.getElementById("reportStatusRow");
+    if(row) row.innerHTML = chipHTML(session, true);
+    setText("repFactStatus", session.status);
+    setText("repFactIteration", String(session.iteration));
+    setText("repFactStarted", session.started);
+    setText("repFactFinished", session.finished || "not recorded");
+    setText("repFactErrors", String((session.errors || []).length));
+
+    var path = document.getElementById("repFactPath");
+    if(path){
+      if(session.reportPath){ path.textContent = session.reportPath; path.className = ""; }
+      else { path.textContent = "Not published"; path.className = "avail"; }
+    }
+    var dl = document.getElementById("downloadBtn");
+    if(dl) dl.style.display = session.reportPath ? "" : "none";
+    var trace = document.getElementById("traceBtn");
+    if(trace){
+      if(session.trace){ trace.style.display = ""; trace.href = session.trace; }
+      else trace.style.display = "none";
+    }
+    var artTrace = document.getElementById("artifactTrace");
+    if(artTrace){
+      if(session.trace){ artTrace.textContent = "LangSmith â†—"; artTrace.href = session.trace; }
+      else { artTrace.textContent = "Not published"; artTrace.removeAttribute("href"); }
+    }
+    var errs = session.errors || [];
+    var rec = errs.filter(function(x){ return x.recoverable; }).length;
+    setText("repErrSummary", rec + " recoverable Â· " + (errs.length - rec) + " non-recoverable");
+    var rl = document.getElementById("repErrList");
+    if(rl){
+      rl.innerHTML = errs.length
+        ? errs.map(function(x){ return '<span class="avail-mono">' + x.type + "</span>"; }).join("")
+        : '<span class="avail">No errors recorded.</span>';
+    }
+    var lim = document.getElementById("repLimitations");
+    if(lim){
+      var partial = session.status === "max_iterations" || session.status === "incomplete";
+      var lines = ["Some steps of this research pass failed; sections of this report may be incomplete.",
+                   "Some sources behind these findings were flagged low confidence.",
+                   "At least one claim was contradicted by an independent source."];
+      if(partial){
+        lines.splice(1, 0, "The refinement budget was exhausted before the critic accepted the report.");
+        lines.push("Four planned sub-topics were never attempted because the cap truncated the plan.");
+      }
+      lim.innerHTML = lines.map(function(t){ return "<li>" + t + "</li>"; }).join("");
+    }
+  }
+  function populateFailed(session){
+    var hard = (session.errors || []).filter(function(x){ return !x.recoverable; })[0]
+            || { type:"api.research.failed", source:"api" };
+    setText("failedMeta", "session " + session.id + " Â· finished " + (fmtClock(session.finished) || "not recorded"));
+    setText("failed-h", session.q);
+    setText("failedType", hard.type);
+    setText("failFactType", hard.type);
+    setText("failFactSource", hard.source || "graph");
+    setText("failFactRecoverable", String(!!hard.recoverable));
+    var trace = document.getElementById("failedTrace");
+    if(trace){
+      if(session.trace){ trace.style.display = ""; trace.href = session.trace; }
+      else trace.style.display = "none";
+    }
+    /* halted in the planner: the node started, nothing after it ran */
+    renderSpine(document.getElementById("spineFailed"), { planner:"active" }, 0);
+  }
+
+  /* â•â•â• open a session â•â•â• */
+  function restoreSettings(session){
+    if(session.settings){
+      settings.model = session.settings.model;
+      settings.thinking = session.settings.thinking;
+      settings.effort = session.settings.effort;
+      settings.outputDir = session.settings.outputDir;
+    }
+    /* the composer only exists while idle, so only sync it there */
+    if(state.stage === "idle") syncSettingsUI();
+  }
+  function openSession(id, opts){
+    opts = opts || {};
+    var session = null;
+    for(var i = 0; i < SESSIONS.length; i++) if(SESSIONS[i].id === id) session = SESSIONS[i];
+    if(!session) return;
+    state.activeId = id;
+    try { localStorage.setItem(LS_ACTIVE, id); } catch(e){}
+    renderList();
+    renderLockedOptions(session);
+    restoreSettings(session);
+    /* the question is shown, read-only, on every stage after the composer */
+    setText("running-h", session.q);
+    setText("submitted-h", session.q);
+    setText("submittedId", "session " + session.id);
+    if(isDrawer()) setSidebar("collapsed");
+
+    if(session.playback && session.status === "running"){
+      if(opts.hold){
+        /* the "question locked in" beat: show what was sent before the
+           pipeline takes the screen. */
+        showStage("submitted");
+        return;
+      }
+      showStage("running");
+      startPlayback(session);
+      return;
+    }
+    stopPlayback();
+    if(session.status === "failed"){
+      populateFailed(session);
+      showStage("failed");
+    } else {
+      populateReport(session);
+      showStage("report");
+    }
+  }
+
+  /* â•â•â• new research â•â•â• */
+  document.getElementById("newResearch").addEventListener("click", function(){
+    clearTimeout(transitionTimer);
+    stopPlayback();
+    state.activeId = null;
+    try { localStorage.removeItem(LS_ACTIVE); } catch(e){}
+    renderList();
+    renderLockedOptions(null);
+    var prompt = document.getElementById("prompt");
+    if(prompt){ prompt.value = ""; prompt.removeAttribute("aria-invalid"); prompt.focus(); }
+    setText("composerError", "");
+    showStage("idle");
+  });
+
+  /* â•â•â• boot â•â•â• */
+  (function boot(){
+    /* The composer is already in the document as real markup. */
+    wireComposer();
+    syncSettingsUI();
+    renderList();
+
+    var savedSidebar = "expanded";
+    try { savedSidebar = localStorage.getItem(LS_SIDEBAR) || "expanded"; } catch(e){}
+    if(isDrawer()) savedSidebar = "collapsed";
+    setSidebar(savedSidebar);
+
+    /* Land on the first page. "New research" is the console's entry point, and
+       a first load has no session to rejoin; openSession() still restores a
+       session when the operator picks one from the sidebar, or when the app
+       rejoins a run after a reload with dr.console.active set. */
+    var resume = null;
+    try { resume = localStorage.getItem(LS_ACTIVE); } catch(e){}
+    var target = null;
+    for(var i = 0; i < SESSIONS.length; i++) if(SESSIONS[i].id === resume) target = SESSIONS[i];
+    if(target && target.playback && target.status === "running"){
+      openSession(target.id);          /* rejoin a run that was still going */
+    } else {
+      showStage("idle");
+    }
+  })();
+
+  /* small review hook */
+  Object.assign(window, {
+    drConsole: {
+      open: openSession,
+      sessions: SESSIONS,
+      settings: settings,
+      stage: function(){ return state.stage; },
+      submit: function(q){ document.getElementById("prompt").value = q; submitResearch(); },
+      finish: function(){ var s = activeSession(); if(s) finishPlayback(s); }
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,2908 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deep Research — single-page console</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════
+   TOKENS — Perplexity AI design system. The only literal colour values in
+   this file live in this :root block; everything below reads var().
+   ═══════════════════════════════════════════════════════════════════════ */
+:root{
+  --bg:#0f0f10; --surface:#19191a; --surface-warm:var(--surface);
+  --fg:#f0f0f0; --fg-2:var(--fg); --muted:#9b9b9b; --meta:#5c5c5e;
+  --border:#2e2e30; --border-soft:#232325;
+  --accent:#a855f7; --accent-on:#ffffff; --accent-hover:#c084fc; --accent-active:#9333ea;
+  --success:#22c55e; --warn:#f59e0b; --danger:#ef4444;
+  --font-display:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-body:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"Cascadia Code",Menlo,Monaco,Consolas,monospace;
+  --text-xs:11px; --text-sm:13px; --text-base:15px; --text-lg:16px;
+  --text-xl:18px; --text-2xl:22px; --text-3xl:28px; --text-4xl:32px;
+  --leading-body:1.65; --leading-tight:1.2; --tracking-display:-0.01em;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:20px; --space-6:24px; --space-8:32px; --space-12:48px;
+  --radius-sm:4px; --radius-md:8px; --radius-lg:12px; --radius-pill:9999px;
+  --elev-ring:0 0 0 1px var(--border);
+  --focus-ring:0 0 0 2px var(--accent);
+  --motion-fast:120ms; --motion-base:200ms; --ease-standard:cubic-bezier(0.2,0,0,1);
+  /* Pipeline motion. Longer than the design system's UI durations on purpose:
+     this is a progress indicator, not a control response, and it is watched for
+     minutes rather than glanced at. The easing is a long settle rather than an
+     ease-out, so a filled step arrives instead of stopping. */
+  --motion-halo:2200ms;
+  --fill-solid:700ms;
+  --fill-line:620ms;
+  --motion-fluid:420ms;
+  /* The two beats of the page 1 → 2 journey (DESIGN.md §5.6). The lift is longer
+     than anything else in the product because it is the one move the operator is
+     meant to watch rather than merely not notice. */
+  --motion-lift:900ms;
+  --motion-clear:320ms;
+  --motion-dissolve:200ms;
+  --ease-entrance:cubic-bezier(0.32,0.72,0,1);
+  --container-gutter-desktop:24px; --container-gutter-phone:16px;
+
+  /* Derived for this product — docs/design/DESIGN.md §5. */
+  --status-ok:oklch(72% 0.19 145);
+  --status-warn:oklch(74% 0.17 72);
+  --status-danger:oklch(71% 0.17 22);
+  --reading-max:720px;
+  --rail:300px;
+  --sidebar:296px;
+  --sidebar-collapsed:64px;
+  --topbar:56px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font-family:var(--font-body);font-size:var(--text-base);
+  line-height:var(--leading-body);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+body.is-locked{overflow:hidden}
+img,svg{display:block;max-width:100%}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+p{margin:0;text-wrap:pretty}
+h1,h2,h3{text-wrap:balance}
+hr{border:0;border-top:1px solid var(--border);margin:0}
+::selection{background:color-mix(in oklch,var(--accent) 30%,transparent);color:var(--fg)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius-sm)}
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ═══ app frame ═══ */
+.app{
+  display:grid;grid-template-columns:var(--sidebar) minmax(0,1fr);min-height:100vh;
+  transition:grid-template-columns var(--motion-base) var(--ease-standard);
+}
+.app[data-sidebar="collapsed"]{grid-template-columns:var(--sidebar-collapsed) minmax(0,1fr)}
+
+/* ═══ sidebar ═══ */
+.sidebar{
+  background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;min-width:0;
+  position:sticky;top:0;height:100vh;overflow:hidden;
+}
+.sb-head{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3);min-height:var(--topbar)}
+.mark{width:15px;height:15px;border:1.5px solid var(--muted);border-radius:2px;position:relative;flex:none}
+.mark::after{content:"";position:absolute;inset:3px;background:var(--muted);border-radius:1px}
+.sb-wordmark{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:var(--tracking-display);white-space:nowrap}
+.sb-new{margin:0 var(--space-3) var(--space-3);justify-content:flex-start}
+.sb-label{
+  font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);padding:0 var(--space-3) var(--space-2);
+  display:flex;justify-content:space-between;align-items:center;gap:var(--space-2);white-space:nowrap;
+}
+.sb-list{list-style:none;margin:0;padding:0 var(--space-2) var(--space-4);overflow-y:auto;flex:1;scrollbar-width:thin}
+.sb-list::-webkit-scrollbar{width:8px}
+.sb-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:var(--radius-pill)}
+/* Rows are separated by a hairline rule rather than by panels, so the list reads
+   as one continuous index of questions. Active is a solid hairline and full
+   foreground; hover is a soft background with no rule, which keeps a hovered row
+   from looking selected. */
+.sb-list{display:flex;flex-direction:column;gap:0}
+/* Sentence case, taken from the data. This used to be forced lowercase here *and* again in
+   the script, which is why "Today" and "Yesterday" rendered as lowercase fragments rather
+   than as the section headers they are — the only headers in the product whose first letter
+   was not capital. The design system asks for sentence case on section labels; this is it. */
+.sb-group{
+  font-family:var(--font-mono);font-size:var(--text-xs);color:var(--meta);
+  padding:var(--space-4) var(--space-3) var(--space-2);letter-spacing:.06em;
+}
+.sb-group:first-child{padding-top:var(--space-2)}
+.sb-item{
+  position:relative;display:flex;align-items:flex-start;gap:var(--space-2);
+  width:100%;text-align:left;padding:var(--space-4) var(--space-3) var(--space-4) var(--space-4);
+  border:0;border-top:1px solid var(--border-soft);border-radius:var(--radius-sm);
+  background:transparent;cursor:pointer;
+  transition:background var(--motion-fast) var(--ease-standard);
+}
+.sb-item:hover{background:var(--border-soft)}
+.sb-item[aria-current="true"]{border-top-color:var(--border)}
+.sb-item[aria-current="true"]::before{
+  content:"";position:absolute;left:0;top:var(--space-4);bottom:var(--space-4);width:2px;
+  border-radius:var(--radius-pill);background:var(--fg);
+}
+/* the question is the row. Line height and wrapping do the readability work — up to a
+   limit, and then the row ends in an ellipsis.
+
+   A row is a label, not the question. With no clamp a pasted summary set a single row
+   1677px tall, eighty-odd lines of it, which pushed every other session out of the list
+   and made the sidebar useless for the thing it is for. Two lines is what the sidebar
+   already gives an ordinary question, so a long one simply ends in an ellipsis where a
+   short one ends in a full stop.
+
+   `max-height` is the guarantee and `-webkit-line-clamp` is the refinement, the same
+   pairing the ask head uses: the clamp supplies the ellipsis, and where it does not take
+   effect the box still ends at exactly two lines rather than slicing the third through
+   its glyphs. */
+.sb-item .q{
+  flex:1;min-width:0;font-size:var(--text-sm);color:var(--muted);line-height:1.5;
+  overflow-wrap:anywhere;transition:color var(--motion-fast) var(--ease-standard);
+  max-height:calc(2 * 1.5em);
+  overflow:hidden;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+}
+.sb-item:hover .q{color:var(--fg)}
+.sb-item[aria-current="true"] .q{color:var(--fg)}
+.sb-foot{border-top:1px solid var(--border);padding:var(--space-3)}
+.sb-foot p{font-size:var(--text-xs);color:var(--muted);line-height:1.5}
+.app[data-sidebar="collapsed"] .sb-wordmark,
+.app[data-sidebar="collapsed"] .sb-label span,
+.app[data-sidebar="collapsed"] .sb-list,
+.app[data-sidebar="collapsed"] .sb-foot,
+.app[data-sidebar="collapsed"] .sb-new span{display:none}
+.app[data-sidebar="collapsed"] .sb-new{padding-inline:0;justify-content:center;width:36px;margin-inline:auto}
+.app[data-sidebar="collapsed"] .sb-head{justify-content:center;padding-inline:0}
+
+/* The only per-row indicator: a live mark on a session that is still running.
+   Finished and failed rows carry nothing — their state is readable once the row
+   is opened, so the index stays quiet.
+   Without animation the ring still sets the running row apart: it is the one row
+   with a mark and an emphasised question. */
+.sb-live{width:9px;height:9px;margin-top:5px;flex:none;border-radius:50%;border:1.5px solid var(--border)}
+.sb-item[data-run="1"] .sb-live{border-color:var(--status-ok)}
+.sb-item[data-run="1"] .sb-live{border-top-color:transparent;animation:spin .9s linear infinite}
+.sb-item[data-run="1"] .q{color:var(--fg)}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ═══ main ═══ */
+.main{display:flex;flex-direction:column;min-width:0}
+.topbar{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--border)}
+.topbar-in{display:flex;align-items:center;gap:var(--space-4);padding:var(--space-2) var(--container-gutter-desktop);min-height:var(--topbar)}
+.icon-btn{
+  width:36px;height:36px;border-radius:var(--radius-md);border:1px solid transparent;
+  display:grid;place-items:center;color:var(--muted);flex:none;
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard);
+}
+.icon-btn:hover{background:var(--border-soft);color:var(--fg);border-color:var(--border)}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;justify-content:flex-end}
+
+/* ═══ status chip ═══ */
+.chip{
+  display:inline-flex;align-items:center;gap:6px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:4px 9px;font-size:var(--text-sm);color:var(--fg);line-height:1.35;white-space:nowrap;
+}
+.chip .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
+.chip .dot-ok{background:var(--status-ok)}
+.chip .dot-warn{background:var(--status-warn)}
+.chip .dot-danger{background:var(--status-danger)}
+.chip .dot-live{background:var(--status-ok);animation:halo var(--motion-halo) var(--ease-entrance) infinite}
+.chip .kind{color:var(--muted)}
+.chip-lg{font-size:var(--text-base);padding:6px 12px}
+
+/* ═══ staged body ═══ */
+/* A stage change used to be a hard cut: the outgoing stage was set to display:none
+   in the same frame the incoming one appeared, so nothing was ever on screen at the
+   same time and the two could not be joined. The viewport is now a positioning
+   context, which lets a leaving stage stay in the layout as an overlay while the
+   incoming one takes the flow — so the pair cross-fade instead of cutting.
+
+   The overlay is why pages 2 and 3 can share a header: their headers sit in the same
+   place and cross-fading identical content at identical coordinates is invisible, so
+   only the parts that actually differ appear to change. */
+.viewport{padding:var(--space-8) var(--container-gutter-desktop) var(--space-12);flex:1;position:relative}
+.stage{display:none}
+.stage.is-on{display:block;animation:enter var(--motion-base) var(--ease-standard) 1}
+.stage.is-on.no-enter{animation:none}
+.stage.is-leaving{
+  display:block;position:absolute;top:0;left:0;width:100%;pointer-events:none;
+  animation:leave var(--motion-base) var(--ease-standard) both;
+}
+@keyframes enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes leave{from{opacity:1;transform:none}to{opacity:0;transform:none}}
+
+/* Page 2 arrives around a box that is still travelling: the header is held back
+   until the box lands, then it and the rest of the page come in behind it. */
+.stage.is-preparing .ask-head > *,
+.stage.is-preparing .card{opacity:0}
+.stage.is-revealing .ask-head > *,
+.stage.is-revealing .card{animation:arrive var(--motion-base) var(--ease-entrance) both}
+.stage.is-revealing .ask-head > *:nth-child(3){animation-delay:70ms}
+.stage.is-revealing .card{animation-delay:150ms}
+@keyframes arrive{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* Page 3 takes over from page 2 with the header already in place, so only the body
+   below it should move. */
+.stage.is-arriving .card{animation:arrive var(--motion-base) var(--ease-entrance) both;animation-delay:60ms}
+
+/* The box that carries the question from the composer to the record. It starts as a
+   pixel-for-pixel copy of the composer's frame and ends as the locked question, so
+   the operator sees one box that survives the page change and travels — never a box
+   that is replaced by a different box.
+
+   That only works because the text inset is 16px/20px at BOTH ends: the composer's
+   12px padding plus the textarea's own 4px/8px on top, and the locked block's
+   --space-4/--space-5. So the text sits in the same place relative to the frame at
+   every point of the journey, and neither the padding nor the wrap point has to move
+   — the frame travels and the type hands over, which is the split the rules below
+   implement.
+
+   This is also why the flight box is measured from the composer's frame and not from
+   the textarea: measuring the textarea would start the box 12px small and 12px off
+   its own text. */
+.q-flight{
+  position:fixed;z-index:60;pointer-events:none;box-sizing:border-box;
+  margin:0;padding:var(--space-4) var(--space-5);
+  font-family:var(--font-body);font-size:var(--text-base);line-height:var(--leading-body);
+  color:var(--fg);background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius-lg);
+  overflow:hidden;
+  /* Geometry only, and every property here interpolates cleanly. The type is
+     deliberately not transitioned — the rule below is where that is explained — and
+     neither is `width`. The frame keeps the composer's width for the whole flight so
+     the wrap point cannot move while the question is still legible: the record's box
+     is 36px narrower, and a question that happened to measure inside that band would
+     re-flow mid-journey, which is the exact artefact this is built to avoid. The
+     36px resolves in the landing dissolve, where nothing is being read. */
+  transition:left var(--motion-lift) var(--ease-entrance),top var(--motion-lift) var(--ease-entrance),
+             height var(--motion-lift) var(--ease-entrance),
+             border-radius var(--motion-lift) var(--ease-entrance),
+             background var(--motion-lift) var(--ease-entrance);
+}
+/* The question inside the travelling frame. It keeps the composer's typography — the
+   record is set at the same size now, so nothing about the text changes on arrival — and
+   when the frame is wider than the text, it slides across to the middle of it on the way.
+
+   It used to fade out over the second half of the journey and let the record fade in
+   underneath. That is a dissolve, and a dissolve is not a move: the operator read it as
+   the text disappearing and reappearing. It now stays visible for the whole flight and
+   arrives already where the record is, so the landing swaps two identical-looking texts
+   and cannot be seen at all.
+
+   `inline-block` is doing two jobs. It is what makes the slide measurable in the first
+   place, and it is what makes the slide conditional: a short question is narrower than
+   the frame and has an offset to travel, while one that fills the frame measures the same
+   either way and computes an offset of zero, so it does not move. That is the "only when
+   there is width to do so" rule, and it needs no separate test. */
+.q-flight-t{
+  display:inline-block;
+  transition:transform var(--motion-lift) var(--ease-entrance);
+}
+/* The destination's frame, radius and fill only. The dashed edge belongs to the record
+   and arrives with it under the dissolve: `border-style` cannot interpolate, and
+   snapping it at the top of the lift would pop underneath the operator's own cursor. */
+.q-flight.is-locked{
+  border-radius:var(--radius-md);
+  background:color-mix(in oklch,var(--surface) 60%,transparent);
+}
+.q-flight.is-gone{opacity:0;transition:opacity var(--motion-dissolve) linear}
+
+/* ── page 1 → 2, beat one: everything but the box goes ──────────────────────────
+   The box is the one thing that survives the page change, so it must not fade out
+   with the page it is leaving. The outgoing stage is held at full opacity and only
+   its content fades, leaving the composer alone on screen for one beat before it
+   starts to move. `animation:none` cancels the generic leave, which would otherwise
+   take the box down with everything else. That cancel works by source order rather
+   than specificity — both rules are two-class selectors — so this block has to stay
+   below `.stage.is-leaving`, or the box fades out with the page again. */
+.stage.is-clearing{animation:none}
+.stage.is-clearing .stack > *:not(.composer-wrap),
+.stage.is-clearing .composer-bar,
+.stage.is-clearing .composer-hint{
+  opacity:0;
+  transition:opacity var(--motion-clear) var(--ease-standard);
+}
+/* The real composer is hidden only once the flight box is standing on exactly the
+   same pixels, in the same frame, so there is never a moment with two boxes or
+   none. Opacity rather than display: the box must keep its geometry while it is
+   being shadowed. */
+.composer.is-handing-off{opacity:0}
+.stage:focus{outline:none}
+.with-rail{display:grid;grid-template-columns:minmax(0,1fr) var(--rail);gap:var(--space-8);align-items:start}
+.rail{display:flex;flex-direction:column;gap:var(--space-5)}
+@media (max-width:1120px){ .with-rail{grid-template-columns:minmax(0,1fr)} }
+/* The rail and the report column start level, and nothing compensates for anything.
+
+   The rail's first card used to carry a 52px offset to clear the settings chips that led
+   the report column — 28px of chip plus the stack's 24px gap. Those chips moved up into the
+   report head, so the column now opens with the report card itself, and the offset was
+   pushing the rail 52px *below* the report it annotates. `align-items: start` on
+   `.with-rail` already puts both columns at the row top, which is all this needs. */
+
+/* ═══ run stage — the pipeline leads ═══ */
+.run-wrap{max-width:var(--reading-max);margin-inline:auto;width:100%;display:flex;flex-direction:column;gap:var(--space-6)}
+.ask-head{display:flex;flex-direction:column;gap:var(--space-3);text-align:center;align-items:center}
+/* ═══ the question, on every stage ═══
+   One size, and it is the size the question was typed at.
+
+   It used to step through three sizes by length, which meant a short question arrived
+   from the composer *bigger* than it left — 15px in the box, 28px in the record — and
+   that reads as a different piece of text rather than the same one coming back. The
+   flight box carries the composer's type for the whole journey, so matching it on arrival
+   is also what turns the landing into a hand-over rather than a swap.
+
+   What a short question gets instead of a bigger size is the middle of the frame. The
+   frame is the width of the input box, so a single line leaves space on both sides and
+   centring uses it; a question that fills the width gets nothing, because centring it
+   would only make both edges ragged. `.q-center` is set by the script — see Q_CENTER_MAX
+   for why that is a character count rather than a measurement. */
+.ask-q{font-family:var(--font-display);font-size:var(--text-base);font-weight:400;line-height:var(--leading-body);margin:0}
+.ask-locked{text-align:start}
+.ask-locked.q-center,
+.report-q.q-center{text-align:center}
+/* Nothing clips the question, on any stage.
+
+   It was clamped to four lines in the ask head for a while, to stop a pasted paragraph
+   pushing the pipeline off the running stage, and the clamp was wrong three separate ways
+   — every one of them found by the operator rather than by the tests:
+
+     1. four lines hid most of a long question, and a `Show full question` control that
+        exists to reveal it is not the same thing as showing it;
+     2. the cap was measured against the border box, because `box-sizing: border-box` is
+        global, so "four lines" was really two and a half with the third sliced through;
+     3. it then relied on `-webkit-line-clamp`, which truncates the *rendered content* and
+        leaves the element with nothing to scroll — so `scrollHeight` came back equal to
+        `clientHeight` and the overflow test that reveals the control could never fire.
+        The text was hidden and the control meant to un-hide it was hidden with it.
+
+   A question is not a summary of itself. It is shown in full — one size, the size it was
+   typed at, the page scrolling — and nothing about it changes between the stages. */
+.ask-meta{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;justify-content:center}
+.opts{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center;justify-content:center}
+.opt{
+  display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 var(--space-3);
+  border:1px solid var(--border);border-radius:var(--radius-md);
+  font-family:var(--font-mono);font-size:var(--text-xs);color:var(--fg);white-space:nowrap;
+}
+.opt .k{color:var(--muted)}
+/* The question after submission is a record, not a field: same type, but set
+   in a bordered block so it reads as fixed. Nothing here accepts focus or
+   typing, and no disabled input stands in for one. */
+.ask-locked{
+  /* As wide as the box the question was typed into, and no wider.
+
+     This used to be a `ch` measure, and `ch` was the wrong tool twice over. It is
+     relative to the font size, so the frame came out *narrower* the longer the question
+     got: 44ch is ~684px at the display size and only ~366px at the passage size, and the
+     long tier's 60ch was the 485px the operator was looking at. They type into a 720px
+     box on the first page and then watch the same words re-set into a 485px frame with
+     dead space either side — the record was narrower than the thing it was recording.
+
+     `--reading-max` is that 720px. The frame on page 2 is now the frame the question was
+     typed into, which also means the travelling box no longer changes width at all: for a
+     long question `from` and `to` are the same 720px. */
+  max-width:min(100%, var(--reading-max));
+  /* The frame is that width whether or not the text fills it, so a short question has
+     somewhere to sit rather than the border hugging the words. Without this the box is
+     shrink-to-fit and there is no space inside it for the text to move into. */
+  width:100%;
+  padding:var(--space-4) var(--space-5);
+  border:1px dashed var(--border);border-radius:var(--radius-md);
+  background:color-mix(in oklch,var(--surface) 60%,transparent);
+  /* Nothing here needs a height or an overflow rule either: the frame is capped against
+     the reading measure and the question then grows downward, one line at a time, with
+     nothing to clip it. */
+  /* A single unbroken token is the one thing that would not fit. At the passage size the
+     frame is ~96 characters of content, so a pasted URL, a DOI or a long compound word ran
+     past the border and, on a narrow window, took the page with it. `anywhere` rather than
+     `break-word` because this is a centred flex item sized by its content: `anywhere`
+     lowers the min-content width too, so the box can shrink to the container instead of
+     being forced wider by the word it cannot break. */
+  overflow-wrap:anywhere;
+}
+
+/* ═══ the refinement loop ═══
+   When the critic sends the report back, the flow leaves Reviewing and returns to
+   Planning. That jump was the confusing part: a linear list cannot show a jump
+   backwards, and a reset pipeline on its own looks like progress was lost. So the
+   jump is drawn — a curved path down the left gutter from the Reviewing node back
+   up to the Planning node, with a dashed overlay that travels along it.
+
+   The overlay animates only during the handoff (`data-loop="flowing"`), then rests
+   filled while the new pass runs and disappears when that pass ends. The arc is
+   measured from the real node positions on every layout pass, so it stays attached
+   to the nodes rather than to a guessed geometry. */
+.spine-wrap{position:relative}
+.loop-layer{
+  position:absolute;left:0;top:0;pointer-events:none;overflow:visible;
+  opacity:0;transition:opacity var(--fill-solid) var(--ease-entrance);z-index:0;
+}
+.loop-layer .loop-base{fill:none;stroke:var(--status-ok);stroke-width:1.5;stroke-linecap:round;opacity:.28}
+.loop-layer .loop-flow{
+  fill:none;stroke:var(--status-ok);stroke-width:2;stroke-linecap:round;
+  stroke-dasharray:8 10;stroke-dashoffset:0;
+}
+.loop-layer .loop-head{fill:var(--status-ok)}
+.spine-wrap[data-loop="hot"] .loop-layer{opacity:1}
+.spine-wrap[data-loop="flowing"] .loop-layer{opacity:1}
+.spine-wrap[data-loop="flowing"] .loop-flow{animation:loopflow 1.1s linear infinite}
+.spine-wrap[data-loop="settled"] .loop-layer{opacity:.6}
+.spine-wrap[data-loop="settled"] .loop-flow{opacity:.35}
+@keyframes loopflow{to{stroke-dashoffset:-18}}
+
+/* ═══ the pipeline ═══
+   Progress is carried by the step number and the connector line; the row surface
+   stays nearly neutral so the colour that means something is not competing with
+   a tint that means nothing.
+
+   The active step does not blink. A blink is the wrong tool here: it changes the
+   one thing the eye is tracking, it competes with the fills travelling past it,
+   and it has a low-contrast half of its cycle. Instead the current step is a
+   distinct, steady state that reads in a single frame, and the motion lives in
+   one slow halo that travels down the list — the same top-to-bottom direction as
+   the fills, so the two reinforce each other instead of fighting. */
+.spine-lg{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.spine-lg li{
+  display:grid;grid-template-columns:34px minmax(0,1fr);gap:var(--space-4);position:relative;
+  align-items:center;
+  padding:var(--space-3);border-radius:var(--radius-md);border:1px solid transparent;
+  transition:background var(--motion-fluid) var(--ease-entrance);
+}
+/* The connector runs the whole distance between two number nodes, not just the gap
+   between their rows. Sized to the gap it was 12px long across a 42.75px span — 21px
+   of nothing above the dash and 10px below — so it read as a stray tick floating
+   between the steps instead of a joint, and it sat 3px off the nodes' axis.
+
+   It is anchored to the row's padding box, whose midpoint is exactly the node's
+   centre once the row centres its items: `-50% - gap` to `50%` therefore lands on the
+   two node centres with no magic numbers and no dependence on how tall a label is.
+   Both nodes are opaque and sit above the line (z-index 1), so the overlap at each
+   end is hidden and what shows is a hairline joining them — and the rail still starts
+   at the first node and stops at the last, with no overhang to clip. */
+.spine-lg li + li::before{
+  content:"";position:absolute;left:calc(var(--space-3) + 16px);top:calc(-50% - var(--space-2));height:calc(100% + var(--space-2));
+  width:1px;background:var(--border);
+}
+.spine-lg li + li::after{
+  content:"";position:absolute;left:calc(var(--space-3) + 16px);top:calc(-50% - var(--space-2));height:0;
+  width:1px;background:var(--status-ok);
+  transition:height var(--fill-line) var(--ease-entrance) calc(var(--base, 0) * 1ms);
+}
+.spine-lg li[data-fed="1"]::after{height:calc(100% + var(--space-2))}
+.spine-lg .bullet{
+  width:33px;height:33px;border-radius:50%;border:1px solid var(--border);background:var(--surface);
+  display:grid;place-items:center;font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted);
+  position:relative;z-index:1;flex:none;
+  transition:background var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             border-color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             box-shadow var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms);
+}
+.spine-lg .stage-name{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;color:var(--muted);display:block;line-height:1.35;transition:color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms)}
+.spine-lg .stage-meta{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);display:block;margin-top:2px;transition:color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms)}
+.spine-lg .loops{color:var(--status-ok)}
+
+/* pending — a hollow ring */
+
+/* in progress — solid fill and a soft halo. The halo is what separates
+   "running now" from "already finished" at a glance; no animation is required
+   to read it, and the slow halo ease is only a presence cue on top of that. */
+.spine-lg li[data-state="active"]{background:color-mix(in oklch,var(--status-ok) 6%,transparent)}
+.spine-lg li[data-state="active"] .bullet{
+  background:var(--status-ok);border-color:var(--status-ok);color:var(--bg);
+  box-shadow:0 0 0 5px color-mix(in oklch,var(--status-ok) 16%,transparent);
+  animation:halo var(--motion-halo) var(--ease-entrance) infinite;
+}
+.spine-lg li[data-state="active"] .stage-name{color:var(--fg)}
+.spine-lg li[data-state="active"] .stage-meta{color:var(--status-ok)}
+
+/* done — the fill settles, and a quiet ring keeps it in the same family as
+   "running" without competing with it */
+.spine-lg li[data-state="done"] .bullet,
+.spine-lg li[data-state="loop"] .bullet{
+  background:var(--status-ok);border-color:var(--status-ok);color:var(--bg);
+  box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 9%,transparent);
+}
+.spine-lg li[data-state="done"] .stage-name,
+.spine-lg li[data-state="loop"] .stage-name{color:var(--fg)}
+.spine-lg li[data-state="loop"] .stage-meta{color:var(--status-ok)}
+
+/* halted before this step ever ran */
+.spine-lg li[data-state="skipped"]{background:color-mix(in oklch,var(--status-danger) 9%,transparent)}
+.spine-lg li[data-state="skipped"] .bullet{border-color:var(--status-danger);color:var(--status-danger)}
+.spine-lg li[data-state="skipped"] .stage-name{color:var(--fg)}
+.spine-lg li[data-state="skipped"] .stage-meta{color:var(--status-danger)}
+
+/* One loop on this screen, and it is a ring rather than a shape: the halo eases
+   between two radii on the same node. A travelling blob was tried here and
+   removed — a blurred radial-gradient moving down the row has no clean edge, so
+   it read as a smear against the hairline connectors instead of as progress.
+   The halo never changes the contrast of anything the operator has to read. */
+@keyframes halo{
+  0%,100%{box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 13%,transparent)}
+  50%{box-shadow:0 0 0 7px color-mix(in oklch,var(--status-ok) 20%,transparent)}
+}
+.pipe-now{display:flex;flex-direction:column;gap:var(--space-2);padding-bottom:var(--space-5);border-bottom:1px solid var(--border);margin-bottom:var(--space-5)}
+.pipe-now .now-stage{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;line-height:1.35}
+.details{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-5);align-items:start}
+@media (max-width:900px){ .details{grid-template-columns:minmax(0,1fr)} }
+
+/* ═══ question starters ═══
+   What the first page offers under the composer is a set of questions to run,
+   not an explanation of how the console works. The questions are the ones this
+   project already uses in its own evaluation cases and published run, so a
+   starter is a query the engine is known to handle rather than invented copy. */
+.starters{display:flex;flex-direction:column;gap:var(--space-3)}
+.starters .cap{color:var(--meta)}
+.starter-list{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.starter{
+  display:inline-flex;align-items:flex-start;gap:var(--space-2);
+  max-width:100%;text-align:left;
+  padding:8px var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);
+  background:var(--surface);color:var(--muted);font-size:var(--text-sm);line-height:1.45;
+  transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.starter:hover{background:var(--border-soft);border-color:var(--muted);color:var(--fg)}
+.starter .arw{font-family:var(--font-mono);color:var(--meta);flex:none}
+.starter:hover .arw{color:var(--fg)}
+
+/* ═══ refinements ═══
+   No prose. A pass is one full run of the seven steps, and the critic can send the
+   report back, so the pipeline legitimately begins at step 1 again. That is shown
+   rather than described: a dot track says how many refinements the run has taken,
+   a connector between the dots says whether one is happening right now, and the
+   pipeline resetting under it is the loop itself. Nothing here explains the loop;
+   it is the loop. */
+/* Even spacing, not stretched items. Each pass is only as wide as its dot plus
+   its label, and the connectors take all the slack between them, so the labels
+   land at equal intervals. Before this, each pass was `flex:1` while its own
+   connector also grew, so the gap after each label varied with the text width and
+   P1/P2/P3 sat at visibly uneven distances. */
+.passtrack{list-style:none;margin:0;padding:0;display:flex;align-items:center;gap:var(--space-3);min-height:22px}
+.pass{
+  flex:0 0 auto;display:flex;align-items:center;gap:6px;min-width:0;
+  font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);
+}
+/* the connector between two passes: hairline when not yet traversed, filled once
+   the run has moved past it. It is the only flexible item, so the dots land at
+   equal intervals across the full width regardless of how wide the labels render.
+   No max-width: a cap would leave the row short at the end and make the last gap
+   look different from the others. */
+.pass + .pass::before{
+  content:"";flex:1 1 auto;width:var(--loop-span,40px);min-width:18px;height:1px;
+  margin-left:calc(-1 * var(--space-3));
+  background:var(--border);
+  transition:background var(--fill-line) var(--ease-entrance);
+}
+.pass[data-state="done"] + .pass::before,
+.pass[data-traversed="1"]::before{background:var(--status-ok)}
+.pass .dot{
+  width:9px;height:9px;border-radius:50%;flex:none;
+  border:1px solid var(--border);background:var(--surface);
+  transition:background var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             border-color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             box-shadow var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms);
+}
+.pass .pass-n{white-space:nowrap}
+.pass[data-state="done"] .dot{background:var(--status-ok);border-color:var(--status-ok);box-shadow:0 0 0 3px color-mix(in oklch,var(--status-ok) 9%,transparent)}
+.pass[data-state="done"] .pass-n{color:var(--fg)}
+/* the pass running now: solid with a halo, exactly as an active pipeline step */
+.pass[data-state="active"] .dot{
+  background:var(--status-ok);border-color:var(--status-ok);
+  box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 16%,transparent);
+  animation:halo var(--motion-halo) var(--ease-entrance) infinite;
+}
+.pass[data-state="active"] .pass-n{color:var(--fg)}
+/* a refinement in flight: the dot opens into a ring so the loop is visible at the
+   moment it happens, not only in a count afterwards */
+.passtrack[data-refining="1"] .pass[data-state="active"] .dot{
+  background:var(--surface);
+  box-shadow:0 0 0 3px color-mix(in oklch,var(--status-ok) 14%,transparent);
+}
+
+/* ═══ type ═══ */
+h1.display{font-family:var(--font-display);font-size:var(--text-4xl);font-weight:600;line-height:var(--leading-tight);letter-spacing:var(--tracking-display);margin:0}
+h2.sect{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;line-height:1.3;margin:0}
+h3.sub{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;line-height:1.4;margin:0}
+.card-title{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;line-height:1.4;margin:0}
+.lead{font-size:var(--text-lg);color:var(--muted);max-width:62ch}
+.eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.sm{font-size:var(--text-sm);color:var(--muted)}
+.cap{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.avail{color:var(--muted);font-size:var(--text-sm)}
+.avail-mono{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+
+/* ═══ surfaces ═══ */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-5)}
+.card.flat{background:transparent}
+.stack{display:flex;flex-direction:column;gap:var(--space-4)}
+.stack-2{display:flex;flex-direction:column;gap:var(--space-2)}
+.row{display:flex;align-items:center;gap:var(--space-3)}
+.row-between{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+.wrap{flex-wrap:wrap}
+
+/* ═══ buttons ═══ */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
+  height:36px;padding:0 var(--space-5);border-radius:var(--radius-md);border:1px solid transparent;
+  font-size:var(--text-base);font-weight:500;white-space:nowrap;
+  transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.btn-primary{background:var(--accent);color:var(--accent-on);font-weight:600}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-primary:active{background:var(--accent-active)}
+.btn-ghost{border-color:var(--border);color:var(--fg)}
+.btn-ghost:hover{background:var(--border-soft);border-color:var(--muted)}
+.btn-quiet{color:var(--muted);padding-inline:var(--space-3)}
+.btn-quiet:hover{color:var(--fg);background:var(--border-soft)}
+.btn-sm{height:30px;font-size:var(--text-sm);padding:0 var(--space-4)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+
+/* ═══ composer ═══ */
+.composer-wrap{max-width:var(--reading-max);margin-inline:auto;width:100%}
+.composer{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:var(--space-3);display:flex;flex-direction:column;gap:var(--space-3);
+}
+.composer textarea{
+  width:100%;background:transparent;border:0;color:var(--fg);font:inherit;
+  font-size:var(--text-base);line-height:var(--leading-body);resize:none;outline:none;
+  padding:var(--space-1) var(--space-2) 0;min-height:48px;
+  /* A long question grows this box instead of hiding inside it. The composer is the
+     only control on the page, so a two-row window that scrolls away what the operator
+     has already written is the worst place in the product to lose their text. It grows
+     to a cap and scrolls only past it, which keeps the run settings, the send control
+     and the starter questions on screen.
+
+     The cap is viewport-relative as well as absolute, so a short window cannot let the
+     box eat the page. `overflow-y` stays `auto` rather than `hidden` so the text is
+     reachable even if the script that does the growing never runs. */
+  max-height:min(232px,32vh);overflow-y:auto;
+}
+.composer textarea::placeholder{color:var(--meta)}
+.composer textarea[aria-invalid="true"]{color:var(--fg)}
+.composer-bar{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.composer-bar .spacer{flex:1}
+.plus{
+  width:32px;height:32px;border-radius:var(--radius-md);border:1px solid var(--border);
+  display:grid;place-items:center;color:var(--muted);flex:none;
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard);
+}
+.plus:hover{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
+.plus[aria-expanded="true"]{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
+.plus svg{width:15px;height:15px}
+/* Refinement stepper. A bounded numeric control rather than a segmented row: the
+   value has a minimum and a maximum, and the buttons disable at those bounds, so
+   the limit is visible instead of being enforced silently by a clamp. */
+.stepper{display:flex;align-items:center;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:2px;width:fit-content}
+.stepper button{
+  width:30px;height:30px;border-radius:var(--radius-sm);display:grid;place-items:center;color:var(--muted);
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.stepper button:hover:not(:disabled){background:var(--border-soft);color:var(--fg)}
+.stepper button:disabled{opacity:.35;cursor:not-allowed}
+.stepper button svg{width:14px;height:14px}
+.stepper-v{
+  min-width:38px;text-align:center;font-size:var(--text-base);color:var(--fg);
+  font-variant-numeric:tabular-nums;
+}
+.setting-pill{
+  display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 var(--space-3);
+  border:1px solid var(--border);border-radius:var(--radius-md);
+  font-size:var(--text-sm);color:var(--muted);cursor:default;
+}
+.setting-pill .k{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--meta)}
+.setting-pill .v{color:var(--fg)}
+.send{
+  width:36px;height:36px;border-radius:var(--radius-md);background:var(--accent);color:var(--accent-on);
+  display:grid;place-items:center;flex:none;
+  transition:background var(--motion-fast) var(--ease-standard);
+}
+.send:hover{background:var(--accent-hover)}
+.send:active{background:var(--accent-active)}
+.send[disabled]{background:var(--border);color:var(--meta);cursor:not-allowed}
+.send svg{width:16px;height:16px}
+.composer-hint{display:flex;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;padding:0 var(--space-2)}
+.hint.err{color:var(--status-danger);font-family:var(--font-body);font-size:var(--text-sm)}
+
+/* ═══ popover ═══ */
+.pop-anchor{position:relative;display:inline-flex}
+/* The panel opens upward by default, but the composer sits high enough on the
+   first page that a panel anchored above the bar would start above y=0. When
+   there is not enough room above, placement switches to fixed-below, measured at
+   open time; placePop() also caps the height to the room actually free on that
+   side, so no row can end up below the bottom of the viewport. */
+.popover{
+  position:absolute;bottom:calc(100% + 10px);left:0;z-index:40;
+  width:344px;max-width:min(344px,calc(100vw - 48px));
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:var(--space-4);display:none;
+  /* placePop() caps the panel to the room on whichever side it lands, so this
+     scrolling is the last resort for a very short viewport rather than the way
+     the panel is normally read. */
+  overflow-y:auto;overscroll-behavior:contain;
+}
+.popover[data-place="below"]{
+  position:fixed;bottom:auto;left:auto;top:auto;
+}
+.popover[data-open="true"]{display:block;animation:enter var(--motion-base) var(--ease-standard) 1}
+.pop-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-3)}
+/* Tighter than --space-4 between rows: with the API-mapping notes gone the panel
+   is five controls and a header, and five 16px gaps plus the header gap pushed it
+   past the bottom of an 853px viewport. --space-3 keeps every row separated while
+   letting the whole panel sit above the fold. */
+.pop-row{margin-bottom:var(--space-3)}
+.pop-row:last-of-type{margin-bottom:0}
+.pop-row .lbl{font-size:var(--text-sm);color:var(--muted);margin-bottom:var(--space-2);display:block}
+.seg{display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:2px;flex-wrap:wrap}
+.seg button{
+  flex:1;min-width:62px;min-height:30px;padding:5px 10px;border-radius:var(--radius-sm);
+  font-size:var(--text-sm);color:var(--muted);font-family:var(--font-mono);
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.seg button:hover:not([disabled]){background:var(--border-soft);color:var(--fg)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:var(--elev-ring)}
+.seg button[disabled]{opacity:.4;cursor:not-allowed}
+.pop-note{font-size:var(--text-xs);color:var(--muted);line-height:1.5;margin-top:var(--space-2)}
+/* The effort note is empty unless thinking is off, so it must not reserve its
+   margin in the common case. */
+.pop-note:empty{display:none}
+.pop-note.warn{color:var(--status-warn)}
+
+/* ═══ fields ═══ */
+.input{
+  width:100%;background:var(--surface);border:1px solid var(--border);color:var(--fg);
+  font-family:var(--font-body);font-size:var(--text-base);border-radius:var(--radius-md);
+  padding:10px var(--space-4);min-height:44px;transition:border-color var(--motion-fast) var(--ease-standard);
+}
+.input::placeholder{color:var(--meta)}
+.input:hover{border-color:var(--muted)}
+.input:focus{outline:2px solid var(--accent);outline-offset:0;border-color:var(--accent)}
+.input.mono-in{font-family:var(--font-mono);font-size:var(--text-sm)}
+
+/* ═══ key/value ═══ */
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--space-2) var(--space-4);font-size:var(--text-sm);align-items:baseline;margin:0}
+.kv dt{color:var(--muted);white-space:nowrap}
+.kv dd{margin:0;text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.kv dd.plain{font-family:var(--font-body)}
+.kv dd.avail{font-family:var(--font-body);color:var(--muted)}
+
+/* ═══ metrics ═══ */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:var(--space-4)}
+.metric .val{font-family:var(--font-mono);font-size:var(--text-2xl);font-variant-numeric:tabular-nums;line-height:1.1}
+.metric .lbl{font-size:var(--text-sm);color:var(--muted);margin-top:2px}
+
+/* ═══ running head ═══ */
+.run-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-5);flex-wrap:wrap;margin-bottom:var(--space-6)}
+.run-q{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;line-height:1.3;max-width:46ch;margin:0}
+.progress-line{display:flex;align-items:center;gap:var(--space-3);margin-top:var(--space-3);flex-wrap:wrap}
+.track{height:4px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden;flex:1;min-width:120px;display:block}
+.track span{display:block;height:100%;background:var(--status-ok);border-radius:var(--radius-pill);width:0;transition:width var(--motion-fluid) var(--ease-entrance)}
+
+/* ═══ report ═══ */
+.prose{max-width:var(--reading-max)}
+.prose p{margin-bottom:var(--space-4);line-height:var(--leading-body)}
+.prose h2{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;margin:var(--space-8) 0 var(--space-4);line-height:1.3}
+.prose h3{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;margin:var(--space-6) 0 var(--space-3);line-height:1.4}
+.prose ul{margin:0 0 var(--space-4);padding-left:var(--space-5)}
+.prose li{margin-bottom:var(--space-2);line-height:var(--leading-body)}
+.prose strong{font-weight:600}
+.cite{font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted);white-space:nowrap}
+.cite:hover{color:var(--fg)}
+.report-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-5);flex-wrap:wrap;margin-bottom:var(--space-6)}
+/* The report head stacks in three bands: provenance and actions share the first, the
+   question owns the second, the status badge the third. It used to be one wrapping
+   row, so a question wide enough to hold a two-line measure pushed the actions onto
+   a line of their own — and `justify-content` applies per line, so they landed at the
+   LEFT with the whole right half of the head empty beside them.
+
+   Each band asks for the full flex basis rather than the parent changing shape, so
+   `.report-head` is untouched and the halted-run head that shares it is unaffected.
+   Nothing here is a fixed height: a longer question simply takes more lines and
+   everything below it moves down, which is the dynamic behaviour the head needs. */
+.report-head-bar{flex:1 1 100%;display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+/* when the provenance line and the actions cannot share a band, the actions take the
+   next one and stay hard right rather than dropping to the left margin */
+.report-head-bar > .row{margin-left:auto}
+/* The title fills its line rather than stopping at a measure. An earlier pass capped
+   it at 46ch — ~715px inside an 893px head row — and the `text-wrap:balance` this
+   heading inherits from the global h1 rule then split it into two ~575px lines, so
+   the text ended 318px short of the row margin with nothing beside it. Two things
+   had to go for the line to fill: the cap, and balance.
+
+   `max-width:100%` hands the measure to the row, so the heading is as wide as the
+   space it sits in and each line wraps where the words actually run out. The wrap
+   is `pretty` rather than the inherited `balance`: balance deliberately shortens
+   every line to even them out, which is the opposite of filling the line. `pretty`
+   wraps greedily like normal text and only intervenes to stop a lone word being
+   left on the last line. Where `pretty` is unsupported the fallback is ordinary
+   wrapping, which is still the filled-line behaviour wanted here.
+
+   `overflow-wrap:anywhere` is what keeps an oversized question from breaking the
+   head open: without it a pasted URL or a long compound word runs past the column
+   and drags the page into horizontal scroll. `anywhere` rather than `break-word`
+   because it also lowers the min-content width, so the line can shrink to the
+   column instead of forcing the column wider. */
+/* The report's question wears the same frame as the running stage's.
+
+   It used to be bare text: same size, same width, but with nothing around it. That put it
+   on the page as one more line among the provenance meta above, the status badge and the
+   options below, and the operator said they might miss it. The question is the subject of
+   everything under it, so it is set as a fixed record the way §3.3 describes — dashed edge,
+   translucent surface, `--radius-md` — and reads as an object rather than a line.
+
+   `margin: 0 auto` is what centres it. `.report-head` is wider than the frame and lays its
+   children out with `justify-content: space-between`, which puts a lone full-width child at
+   the *left* edge; auto margins absorb that free space instead. Centring is not cosmetic
+   here: it puts the frame at the same x as the running stage's, which is centred in
+   `--reading-max` of the same column, so the handoff between the two is a purely vertical
+   move with no sideways component to reconcile. See `enterReport()`.
+
+   The frame is also what makes the two stages' question boxes geometrically identical:
+   720px wide with `16px/20px` inside, so a 678px measure on both. The travelling box lands
+   on that measure, so the two have to agree. */
+.report-q{
+  flex:1 1 100%;font-family:var(--font-display);font-size:var(--text-base);font-weight:400;line-height:var(--leading-body);
+  margin:0 auto;max-width:min(100%, var(--reading-max));text-wrap:pretty;overflow-wrap:anywhere;
+  padding:var(--space-4) var(--space-5);
+  border:1px dashed var(--border);border-radius:var(--radius-md);
+  background:color-mix(in oklch,var(--surface) 60%,transparent);
+}
+/* The run's settings get their own band in the head, so the actions above never crowd them,
+   and centre on the same axis as the question frame — which is the page's.
+
+   They used to live down in the report column, beside the report card. That column is narrower
+   than the stage by `--rail` plus the grid gap, so its axis sits exactly half that — 166px —
+   to the left of the frame's, and centring them where they were would have left them 166px off
+   it. They belong to the run's header, so they are in the header.
+
+   The status badge used to sit above them in its own band. It is gone: the topbar chip already
+   reports the same thing on this stage, and the running stage dropped its own copy for the same
+   reason. */
+#reportOpts{flex:1 1 100%}
+.tbl{width:100%;border-collapse:collapse;font-size:var(--text-sm)}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+.tbl th{color:var(--muted);font-weight:500;font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.04em;text-transform:uppercase}
+.tbl tbody tr:hover{background:var(--border-soft)}
+.tbl .n{font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;width:1%}
+.tbl td.wrapcell{overflow-wrap:anywhere}
+.tbl .tlink{color:var(--fg)}
+.tbl .tlink:hover{color:var(--accent)}
+.tbl-foot{font-size:var(--text-sm);color:var(--muted);padding-top:var(--space-3)}
+.bars{display:flex;flex-direction:column;gap:var(--space-3)}
+.bar-row{display:grid;grid-template-columns:136px minmax(0,1fr) 46px;gap:var(--space-3);align-items:center;font-size:var(--text-sm)}
+.bar-row .bar{height:6px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden}
+.bar-row .bar span{display:block;height:100%;background:var(--muted);border-radius:var(--radius-pill)}
+.bar-row .bar span.ok{background:var(--status-ok)}
+.bar-row .n{text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ═══ notes ═══ */
+.note{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-4)}
+.note .note-head{display:flex;gap:var(--space-2);align-items:center;font-size:var(--text-sm);color:var(--fg);margin-bottom:var(--space-2);overflow-wrap:anywhere}
+.note .note-head .mk{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 5px;flex:none}
+.note p{font-size:var(--text-sm);color:var(--muted);line-height:1.6}
+.note.bad{border-color:color-mix(in oklch,var(--status-danger) 44%,var(--border))}
+.note.bad .note-head{color:var(--status-danger)}
+
+/* ═══ disclosures ═══ */
+details.disc{border-top:1px solid var(--border)}
+details.disc:first-of-type{border-top:0}
+details.disc summary{
+  cursor:pointer;padding:var(--space-3) 0;font-size:var(--text-sm);color:var(--muted);
+  list-style:none;display:flex;justify-content:space-between;gap:var(--space-3);align-items:center;min-height:40px;
+}
+details.disc summary::-webkit-details-marker{display:none}
+details.disc summary::after{content:"+";font-family:var(--font-mono);color:var(--muted)}
+details.disc[open] summary::after{content:"–"}
+details.disc summary:hover{color:var(--fg)}
+details.disc .disc-body{padding-bottom:var(--space-4)}
+
+/* ═══ scrim ═══ */
+.scrim{display:none;position:fixed;inset:0;background:color-mix(in oklch,var(--bg) 74%,transparent);z-index:28;border:0;padding:0}
+
+@media (max-width:1080px){
+  .app,.app[data-sidebar="collapsed"]{grid-template-columns:minmax(0,1fr)}
+  .sidebar{
+    position:fixed;top:0;left:0;bottom:0;width:min(320px,88vw);height:100dvh;z-index:30;
+    transform:translateX(-100%);transition:transform var(--motion-base) var(--ease-standard);
+  }
+  .app[data-sidebar="expanded"] .sidebar{transform:none}
+  .app[data-sidebar="expanded"] .scrim{display:block}
+  /* the collapsed treatment is desktop chrome only */
+  .app[data-sidebar="collapsed"] .sb-wordmark,
+  .app[data-sidebar="collapsed"] .sb-label span,
+  .app[data-sidebar="collapsed"] .sb-list,
+  .app[data-sidebar="collapsed"] .sb-foot,
+  .app[data-sidebar="collapsed"] .sb-new span{display:revert}
+  .app[data-sidebar="collapsed"] .sb-new{width:100%;margin:0 var(--space-3) var(--space-3);padding-inline:var(--space-4)}
+}
+@media (max-width:900px){
+  .viewport{padding:var(--space-6) var(--container-gutter-phone) var(--space-12)}
+  .topbar-in{padding-inline:var(--container-gutter-phone)}
+  .metrics{grid-template-columns:repeat(auto-fit,minmax(100px,1fr))}
+  .bar-row{grid-template-columns:112px minmax(0,1fr) 40px}
+  .popover{width:min(344px,calc(100vw - 32px))}
+  /* touch targets */
+  .send{width:44px;height:44px}
+  .plus{width:44px;height:44px}
+  .plus svg{width:18px;height:18px}
+  .setting-pill{height:44px}
+  .btn{height:44px}
+  .btn-sm{height:38px}
+  .icon-btn{width:44px;height:44px}
+  .sb-item{padding:var(--space-4) var(--space-3)}
+  .seg button{min-height:40px}
+}
+@media (prefers-reduced-motion:reduce){
+  /* the delay matters as much as the duration: a staggered card keeps `both` fill,
+     so a surviving 60ms delay would hold it at opacity 0 before it snapped in */
+  *{animation-duration:0ms !important;animation-delay:0ms !important;animation-iteration-count:1 !important;transition-duration:0ms !important}
+  /* Restore a travel-free cross-fade between stages. Zeroing every duration above
+     turned each page change into a jump cut, which is not what this preference asks
+     for: what it targets is *travel*, and the translateY in enter/leave/arrive is the
+     part that has to go. Redefining the three names here drops the movement and keeps
+     the fade, and the rules that consume them get a duration back below — otherwise
+     the change from page 1 to page 2 has nothing left to show at all.
+     These win on specificity, not source order: `.stage.is-on` (0,2,0) outranks `*`
+     (0,0,0) even though both declarations are !important. */
+  @keyframes enter{from{opacity:0}to{opacity:1}}
+  @keyframes leave{from{opacity:1}to{opacity:0}}
+  @keyframes arrive{from{opacity:0}to{opacity:1}}
+  .stage.is-on,.stage.is-leaving,
+  .stage.is-revealing .ask-head > *,.stage.is-revealing .card,
+  .stage.is-arriving .card{animation-duration:240ms !important}
+  /* The drain in beat one is an opacity change, so it survives the preference: it
+     tells the operator that everything except their question has gone. Without this
+     the blanket rule above snaps the page instead of draining it. */
+  .stage.is-clearing .stack > *,
+  .stage.is-clearing .composer-bar,
+  .stage.is-clearing .composer-hint{transition-duration:var(--motion-clear) !important}
+  /* Nothing here needs motion to be read: the running step is a solid node with
+     a halo, done steps are solid with a quieter ring, and the connector arrives
+     filled. Pin the halo to its resting radius rather than letting a stopped
+     animation freeze it at whatever frame it happened to reach. */
+  .spine-lg li[data-state="active"] .bullet{
+    box-shadow:0 0 0 5px color-mix(in oklch,var(--status-ok) 16%,transparent) !important;
+  }
+  .spine-lg li[data-fed="1"]::after{height:calc(100% + var(--space-2))}
+  /* The return arc does not need to travel to be read: its presence, its
+     direction and its arrowhead are all static. Stop the dashes and show them
+     as a solid line instead of freezing them mid-offset. */
+  .loop-layer .loop-flow{animation:none !important;stroke-dasharray:none;opacity:1}
+  .spine-wrap[data-loop="settled"] .loop-layer{opacity:1}
+}
+</style>
+</head>
+<body>
+
+<div class="app" id="app" data-sidebar="expanded">
+
+  <!-- ═══════════════ SIDEBAR ═══════════════ -->
+  <aside class="sidebar" id="sidebar" data-od-id="sidebar" aria-label="Session history">
+    <div class="sb-head">
+      <span class="mark" aria-hidden="true"></span>
+      <span class="sb-wordmark">Deep Research</span>
+    </div>
+
+    <button class="btn btn-ghost sb-new" id="newResearch" data-od-id="cta-new-research" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" aria-hidden="true" style="width:14px;height:14px;flex:none"><path d="M12 5v14M5 12h14"></path></svg>
+      <span>New Research</span>
+    </button>
+
+    <div class="sb-label">
+      <span>Sessions</span>
+      <span class="mono" id="sbCount">0</span>
+    </div>
+
+    <!-- Populated on load from the client's own ledger. Empty in the source
+         because the list is runtime state, not content. -->
+    <ul class="sb-list" id="sessionList" data-od-id="session-history-list"></ul>
+
+    <div class="sb-foot">
+      <p>Sessions are held in the service process's memory, so this list is the client's own record of them.</p>
+    </div>
+  </aside>
+
+  <button class="scrim" id="scrim" type="button" tabindex="-1" aria-hidden="true"><span class="sr">Close session history</span></button>
+
+  <!-- ═══════════════ MAIN ═══════════════ -->
+  <div class="main">
+
+    <header class="topbar" data-od-id="topbar">
+      <div class="topbar-in">
+        <button class="icon-btn" id="sidebarToggle" type="button" aria-controls="sidebar" aria-expanded="true" data-od-id="cta-toggle-sidebar">
+          <span class="sr">Toggle session history</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" aria-hidden="true" style="width:17px;height:17px"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+        </button>
+        <div class="topbar-right" id="topbarStatus"></div>
+      </div>
+    </header>
+
+    <div class="viewport" id="viewport">
+
+      <!-- ── STAGE · idle ─────────────────────────────────────────── -->
+      <section class="stage is-on" id="stage-idle" data-od-id="stage-idle" aria-labelledby="idle-h">
+        <div class="stack" style="gap:var(--space-8);max-width:var(--reading-max);margin-inline:auto">
+          <div class="stack-2" style="padding-top:var(--space-8)">
+            <h1 class="display" id="idle-h">Ask anything.</h1>
+            <p class="lead">A run takes a few minutes; harder questions take longer. You can leave — the run keeps going, and its report will be here when you return.</p>
+          </div>
+          <div class="composer-wrap" id="composerIdleHost">
+            <!-- The composer is real markup, not injected by script, so the
+                 first page renders its primary control even where scripts are
+                 not executed. It is the only composer in the document and it
+                 lives on this stage (see docs/design/DESIGN.md §3.1). -->
+            <form class="composer" id="composer" data-od-id="composer" novalidate="">
+              <label class="sr" for="prompt">Research question</label>
+              <textarea id="prompt" rows="2" placeholder="Ask anything." data-od-id="composer-input"></textarea>
+              <div class="composer-bar">
+                <span class="pop-anchor">
+                  <button class="plus" id="plusBtn" type="button" aria-expanded="false" aria-controls="settingsPop" data-od-id="cta-composer-settings">
+                    <span class="sr">Run settings</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                  </button>
+                  <div class="popover" id="settingsPop" role="dialog" aria-label="Run settings" data-od-id="composer-settings">
+                    <div class="pop-head">
+                      <h2 class="card-title" style="font-size:var(--text-base)">Run settings</h2>
+                      <button class="btn btn-quiet btn-sm" type="button" id="popClose">Close</button>
+                    </div>
+                    <div class="pop-row">
+                      <span class="lbl" id="lblModel">Model</span>
+                      <div class="seg" role="group" aria-labelledby="lblModel" id="segModel">
+                        <button type="button" data-model="deepseek-v4-flash" aria-pressed="true">v4-flash</button>
+                        <button type="button" data-model="deepseek-v4-pro" aria-pressed="false">v4-pro</button>
+                      </div>
+                    </div>
+                    <div class="pop-row">
+                      <span class="lbl" id="lblThinking">Thinking</span>
+                      <div class="seg" role="group" aria-labelledby="lblThinking" id="segThinking">
+                        <button type="button" data-thinking="enabled" aria-pressed="true">enabled</button>
+                        <button type="button" data-thinking="disabled" aria-pressed="false">disabled</button>
+                      </div>
+                    </div>
+                    <div class="pop-row">
+                      <span class="lbl" id="lblEffort">Reasoning effort</span>
+                      <div class="seg" role="group" aria-labelledby="lblEffort" id="segEffort">
+                        <button type="button" data-effort="high" aria-pressed="true">high</button>
+                        <button type="button" data-effort="max" aria-pressed="false">max</button>
+                      </div>
+                      <p class="pop-note" id="effortNote"></p>
+                    </div>
+                    <div class="pop-row">
+                      <span class="lbl" for="outputDir">Output directory</span>
+                      <input class="input mono-in" id="outputDir" value="output/">
+                    </div>
+                    <div class="pop-row">
+                      <span class="lbl" id="lblRefine">Refinements</span>
+                      <div class="stepper" role="group" aria-labelledby="lblRefine">
+                        <button type="button" id="refineMinus" aria-label="Fewer refinements">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M5 12h14"></path></svg>
+                        </button>
+                        <span class="stepper-v mono" id="refineValue" role="status" aria-live="polite">3</span>
+                        <button type="button" id="refinePlus" aria-label="More refinements">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </span>
+                <span class="setting-pill" id="pillModel"><span class="v" id="pillModelV">v4-flash</span></span>
+                <span class="setting-pill" id="pillEffort"><span class="k">effort</span><span class="v" id="pillEffortV">high</span></span>
+                <span class="spacer"></span>
+                <button class="send" id="sendBtn" type="submit" data-od-id="cta-send">
+                  <span class="sr">Start research</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"></path></svg>
+                </button>
+              </div>
+              <div class="composer-hint">
+                <span class="hint err" id="composerError" role="alert"></span>
+              </div>
+            </form>
+          </div>
+          <div class="starters" data-od-id="idle-starters">
+            <p class="cap">Try</p>
+            <div class="starter-list" id="starterList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── STAGE · submitted (brief) ────────────────────────────── -->
+      <!-- No extra padding-top on the wrapper. It used to carry --space-8, which put
+           page 2's header 32px below page 3's — so the question, which is the same
+           element in the same place on both, visibly jumped upward at the handoff.
+           Both stages now share one header position, and the transition between them
+           becomes a change of content rather than a change of place. -->
+      <section class="stage" id="stage-submitted" data-od-id="stage-submitted" aria-labelledby="submitted-h">
+        <div class="run-wrap">
+          <div class="ask-head">
+            <p class="eyebrow" style="margin:0">Question locked in</p>
+            <h1 class="ask-q ask-locked" id="submitted-h" data-od-id="submitted-question" aria-describedby="submittedOpts">—</h1>
+            <div class="opts" id="submittedOpts" data-od-id="submitted-options"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── STAGE · running ──────────────────────────────────────── -->
+      <section class="stage" id="stage-running" data-od-id="stage-running" aria-labelledby="running-h">
+        <div class="run-wrap">
+          <div class="ask-head">
+            <p class="eyebrow" style="margin:0">Session running</p>
+            <h1 class="ask-q ask-locked" id="running-h" data-od-id="running-question" aria-describedby="runningOpts">—</h1>
+            <div class="opts" id="runningOpts" data-od-id="running-options"></div>
+            <div class="ask-meta">
+              <span class="avail-mono" id="runElapsed">00:00 elapsed</span>
+            </div>
+          </div>
+
+          <div class="card stack" style="gap:var(--space-5)" data-od-id="running-pipeline">
+            <div class="pipe-now">
+              <div>
+                <span class="cap">Now</span>
+                <div class="now-stage" id="runNow">Planning</div>
+                <p class="sm" id="runningBlurb">Planning the sub-topics.</p>
+              </div>
+              <div class="row-between">
+                <span class="avail-mono" id="runProgressLabel">stage 1 of 7</span>
+                <span class="avail-mono" id="runPasses">pass 1 of 3</span>
+              </div>
+              <span class="track" id="runTrack" role="progressbar" aria-label="Pipeline progress" aria-valuemin="1" aria-valuemax="7" aria-valuenow="1"><span id="runTrackFill"></span></span>
+            </div>
+            <div class="spine-wrap" id="spineWrap" data-loop="off">
+              <ol class="spine-lg" id="spine" data-od-id="running-spine"></ol>
+            </div>
+          </div>
+
+          <!-- The refinement track was removed from the interface: the running
+               stage now shows the loop only through the return arc on the
+               pipeline, and the pass count was a number nobody needed twice.
+               These two nodes stay in the document because the runtime writes
+               to them — keeping them here is what would let the track come back
+               without rewiring the event handling. Hidden with the existing
+               visually-hidden utility rather than a display rule, so nothing a
+               stylesheet says later can bring it back on screen by accident. -->
+          <div class="sr" aria-hidden="true">
+            <span id="passSummary">pass 1 of 3</span>
+            <ol class="passtrack" id="passTrack"></ol>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ── STAGE · report ───────────────────────────────────────── -->
+      <section class="stage" id="stage-report" data-od-id="stage-report" aria-labelledby="report-h">
+        <div class="report-head">
+          <div class="report-head-bar">
+            <p class="cap" id="reportMeta" data-od-id="report-meta">—</p>
+            <div class="row wrap">
+              <a class="btn btn-primary" href="#" id="downloadBtn" data-od-id="cta-download-report">Download Report</a>
+              <a class="btn btn-ghost" href="#" id="traceBtn" data-od-id="cta-open-trace">Open LangSmith trace <span aria-hidden="true">↗</span></a>
+            </div>
+          </div>
+          <h1 class="report-q" id="report-h" data-od-id="report-question">—</h1>
+          <div class="opts" id="reportOpts" data-od-id="report-options"></div>
+        </div>
+
+        <div class="with-rail">
+          <div class="stack" style="gap:var(--space-6)">
+            <article class="card stack" style="gap:var(--space-5)" data-od-id="report-body">
+              <div class="note" data-od-id="report-sample-note">
+                <div class="note-head"><span class="mk">note</span>Report body is a static sample</div>
+                <p>The body below is the real published Markdown of one run, reused for every completed session in this prototype so the reading layout can be judged at full length. In the app it is replaced by the body returned from <span class="mono">GET /research/{id}/report</span>; the header, facts rail and quality panel above already switch per session.</p>
+              </div>
+              <div class="prose">
+                <h2 style="margin-top:0">Executive summary</h2>
+                <p>The constraints best supported by this pass's evidence are grid connection, documented almost entirely through U.S. data, and the concentration of battery supply chains in China. In the United States, 2,600 GW of proposed generation and storage projects were waiting for grid access at the end of 2023, typical waits stretch to five years or more, fewer than a quarter of queued projects are expected to reach completion at current rates, and delay carries quantified costs to consumers. <a class="cite" href="#">[8][10][13]</a></p>
+                <p>On the supply side, the IEA reports that China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024, is projected to remain dominant through 2035, and estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk. <a class="cite" href="#">[1][2][4]</a></p>
+                <p>FERC's Order 2023 and Order 2023-A introduced queue reform, including stronger financial and site-control requirements and improved storage modeling, and U.S. queue capacity fell for the first time in 2024, but the evidence does not show the bottleneck resolved. <a class="cite" href="#">[13]</a></p>
+                <p>Several constraint families raised in review remain unevidenced in this pass: tariffs and trade barriers, siting, permitting and fire-code compliance, wholesale market eligibility and accreditation rules, non-U.S. connection regimes, equipment lead times, and financing conditions.</p>
+
+                <h3>Grid connection as the binding timing constraint</h3>
+                <p>Grid connection is the most fully evidenced constraint on grid-scale battery deployment in this pass, although the grid-side evidence is confined to the United States. As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. Research cited from Lawrence Berkeley National Laboratory puts the average wait in U.S. interconnection queues at five years and indicates that, at current rates, less than a quarter of the energy projects entering those queues will make it to completion. <a class="cite" href="#">[13]</a></p>
+                <p>Aggregated reporting across U.S. ISOs and RTOs places over 2,000 GW in queues, with delays stretching from three to seven years in some markets. The delay is not limited to generators, as Google has reported potential transmission grid connection delays of up to 12 years for new data centers. <a class="cite" href="#">[11]</a></p>
+
+                <h3>Critical minerals and supply-chain concentration</h3>
+                <p>Battery deployment also depends on a supply chain whose midstream is heavily concentrated in one country. The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70 to 95 percent of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#">[2]</a></p>
+                <p>The trend in the evidence runs toward more exposure, not less: excluding rare earths, the average share of mineral supply held by China rose to 72 percent in 2025 from 70 percent in 2023, and the number of mineral tariff categories covered by China's export controls has tripled since 2023. <a class="cite" href="#">[4][6]</a></p>
+
+                <h2>Verified claims</h2>
+                <ul>
+                  <li>As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. <a class="cite" href="#">[13]</a> <span class="cap">confidence 0.90</span></li>
+                  <li>The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70–95% of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#">[2]</a> <span class="cap">confidence 0.88</span></li>
+                  <li>FERC's Order 2023 mandated U.S. interconnection queue reform and included stronger financial and site control requirements to discourage speculative projects, plus improved storage modeling, with Order 2023-A reaffirming most of it. <a class="cite" href="#">[13]</a> <span class="cap">confidence 0.92</span></li>
+                  <li>For every $1 billion in transmission investments that is delayed, consumers lose between $150 million and $370 million in net benefits per year of delay. <a class="cite" href="#">[11]</a> <span class="cap">confidence 0.90</span></li>
+                </ul>
+
+                <h2>Uncertainty and conflicting evidence</h2>
+                <p>Several things should temper confidence in the picture above. The grid-side evidence is U.S.-only: non-U.S. connection regimes were sought in this pass but produced no verified claim or retrieved finding. One claim was contradicted: an assertion that the U.S. queue had swelled to a 2,600 GW backlog as of 2026 with median waits approaching five years was rejected, while a verified claim places 2,600 GW in the queue as of the end of 2023. Queue magnitude estimates also conflict, and several central numbers rest on sources this pass flagged low confidence.</p>
+
+                <h2>Limitations</h2>
+                <ul id="repLimitations"></ul>
+              </div>
+
+              <div data-od-id="citations-table">
+                <h2 class="sect" style="margin-bottom:var(--space-4)">Citations</h2>
+                <table class="tbl">
+                  <thead><tr><th class="n">#</th><th>Source</th><th class="n">Score</th><th>Band</th></tr></thead>
+                  <tbody>
+                    <tr><td class="n">1</td><td class="wrapcell"><a class="tlink" href="#">Resource Nationalism and the Resilience of Critical Mineral Supply Chains</a><br><span class="cap">rff.org</span></td><td class="n">0.76</td><td>normal</td></tr>
+                    <tr><td class="n">2</td><td class="wrapcell"><a class="tlink" href="#">Global Critical Minerals Outlook 2025</a><br><span class="cap">iea.blob.core.windows.net</span></td><td class="n">0.91</td><td>normal</td></tr>
+                    <tr><td class="n">4</td><td class="wrapcell"><a class="tlink" href="#">Why the IEA says critical minerals have become a $6.5 trillion economic security risk</a><br><span class="cap">aa.com.tr</span></td><td class="n">0.74</td><td>normal</td></tr>
+                    <tr><td class="n">6</td><td class="wrapcell"><a class="tlink" href="#">Critical Minerals and Materials for Selected Energy Technologies</a><br><span class="cap">congress.gov · CRS R48149</span></td><td class="n">0.78</td><td>normal</td></tr>
+                    <tr><td class="n">11</td><td class="wrapcell"><a class="tlink" href="#">Grid Interconnection Delays 2026: A Threat to US Energy</a><br><span class="cap">enkiai.com · contradicted one claim</span></td><td class="n">0.67</td><td>normal</td></tr>
+                    <tr><td class="n">13</td><td class="wrapcell"><a class="tlink" href="#">Resolving the Interconnection Queue Bottleneck</a><br><span class="cap">novoco.com</span></td><td class="n">0.20</td><td>low confidence</td></tr>
+                  </tbody>
+                </table>
+                <p class="tbl-foot">Six of the report's 80 citations. Row 13 was cited for verified claims and still scored 0.20 — past this run's scoring cap.</p>
+              </div>
+            </article>
+          </div>
+
+          <aside class="rail" data-od-id="report-rail" aria-label="Report details">
+            <div class="card stack-2" data-od-id="report-quality">
+              <h2 class="card-title">Quality Snapshot</h2>
+              <p class="avail">Not served by the API. Transcribed from the published report's own evidence table.</p>
+              <div class="bars">
+                <div class="bar-row"><span style="color:var(--fg)">Claim confidence</span><span class="bar"><span class="ok" style="width:90%"></span></span><span class="n">0.90</span></div>
+                <div class="bar-row"><span style="color:var(--fg)">Source authority</span><span class="bar"><span style="width:91%"></span></span><span class="n">0.91</span></div>
+                <div class="bar-row"><span style="color:var(--fg)">Corroboration</span><span class="bar"><span style="width:100%"></span></span><span class="n">1.00</span></div>
+                <div class="bar-row"><span style="color:var(--fg)">Scored sources cited</span><span class="bar"><span style="width:20%"></span></span><span class="n">0.20</span></div>
+              </div>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-facts">
+              <h2 class="card-title">Session Facts</h2>
+              <dl class="kv">
+                <dt>status</dt><dd id="repFactStatus">—</dd>
+                <dt>iteration</dt><dd id="repFactIteration">—</dd>
+                <dt>started_at</dt><dd id="repFactStarted">—</dd>
+                <dt>finished_at</dt><dd id="repFactFinished">—</dd>
+                <dt>report_path</dt><dd id="repFactPath">—</dd>
+                <dt>errors</dt><dd id="repFactErrors">—</dd>
+              </dl>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-cost">
+              <h2 class="card-title">Cost and Usage</h2>
+              <dl class="kv">
+                <dt>tool calls</dt><dd class="avail">Not recorded</dd>
+                <dt>input tokens</dt><dd class="avail">Not recorded</dd>
+                <dt>output tokens</dt><dd class="avail">Not recorded</dd>
+              </dl>
+              <p class="avail">The runner holds these totals, but the session response carries neither. Nothing is rendered as <span class="mono">0</span>.</p>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-errors">
+              <h2 class="card-title">Errors</h2>
+              <details class="disc">
+                <summary><span id="repErrSummary">—</span></summary>
+                <div class="disc-body stack-2" id="repErrList"></div>
+              </details>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ── STAGE · failed ───────────────────────────────────────── -->
+      <section class="stage" id="stage-failed" data-od-id="stage-failed" aria-labelledby="failed-h">
+        <div class="report-head">
+          <div style="min-width:0">
+            <p class="cap" id="failedMeta" data-od-id="failed-meta">—</p>
+            <h1 class="report-q" id="failed-h" data-od-id="failed-question">—</h1>
+            <div class="row wrap" style="margin-top:var(--space-4)">
+              <span class="chip chip-lg" data-od-id="failed-status"><span class="dot dot-danger" aria-hidden="true"></span>Failed</span>
+            </div>
+          </div>
+          <div class="row wrap">
+            <a class="btn btn-ghost" href="#" id="failedTrace" data-od-id="cta-failed-trace">Open LangSmith trace <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+
+        <div class="with-rail">
+          <div class="stack" style="gap:var(--space-5)">
+            <div class="note bad" data-od-id="failed-panel">
+              <div class="note-head"><span class="mk">halt</span><span id="failedType">—</span></div>
+              <p id="failedMessage">The run stopped on a non-recoverable error. Everything collected before the halt survives in the session, but a halted run publishes no artifact.</p>
+            </div>
+
+            <div class="card stack" style="gap:var(--space-4)" data-od-id="failed-facts">
+              <h2 class="card-title">Why there is no report</h2>
+              <dl class="kv">
+                <dt>error_type</dt><dd id="failFactType">—</dd>
+                <dt>source</dt><dd id="failFactSource">—</dd>
+                <dt>recoverable</dt><dd id="failFactRecoverable">false</dd>
+                <dt>report_path</dt><dd class="avail">Not published</dd>
+                <dt>GET /report</dt><dd>409 report_unavailable</dd>
+              </dl>
+              <p class="avail">A finished session with no artifact answers <span class="mono">409 report_unavailable</span> — distinct from the <span class="mono">409 session_not_complete</span> a running session returns, and from the <span class="mono">404</span> an unknown id returns.</p>
+            </div>
+          </div>
+
+          <aside class="rail" data-od-id="failed-rail" aria-label="Run details">
+            <div class="card stack" style="gap:var(--space-4)">
+              <div class="row-between">
+                <h2 class="card-title">Pipeline</h2>
+                <span class="avail-mono">halted at stage 1</span>
+              </div>
+              <ol class="spine-lg" id="spineFailed"></ol>
+            </div>
+            <div class="card stack-2">
+              <h2 class="card-title">What survived the halt</h2>
+              <dl class="kv">
+                <dt>findings</dt><dd>0</dd>
+                <dt>sources evaluated</dt><dd>0</dd>
+                <dt>claims checked</dt><dd>0</dd>
+              </dl>
+              <p class="avail">Real counts read from state, not absences. An absent value reads <span class="mono">Not recorded</span> — the two look different on purpose.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var LS_SIDEBAR = "dr.console.sidebar";
+  var LS_ACTIVE  = "dr.console.active";
+
+  /* The composer is static markup on the idle stage; there is no template
+     string to keep in sync with it. See buildSpine for the same principle
+     applied to the pipeline. */
+
+  var app = document.getElementById("app");
+  var topbarStatus = document.getElementById("topbarStatus");
+  var sidebarToggle = document.getElementById("sidebarToggle");
+  var scrim = document.getElementById("scrim");
+  var stages = {
+    idle:      document.getElementById("stage-idle"),
+    submitted: document.getElementById("stage-submitted"),
+    running:   document.getElementById("stage-running"),
+    report:    document.getElementById("stage-report"),
+    failed:    document.getElementById("stage-failed")
+  };
+
+  /* ═══ model capability registry, mirrored from providers/capabilities.py ═══
+     deepseek: ^deepseek-v4-(flash|pro)$ — thinking enabled|disabled,
+     enabled efforts high,max, disabled_effort None. */
+  var MODELS = {
+    "deepseek-v4-flash": { label:"v4-flash", efforts:["high","max"] },
+    "deepseek-v4-pro":   { label:"v4-pro",   efforts:["high","max"] }
+  };
+  var settings = { model:"deepseek-v4-flash", thinking:"enabled", effort:"high",
+                   outputDir:"output/", refinements:3 };
+  var state = { stage:"idle", activeId:null };
+  /* How long the "question locked in" beat is held before the pipeline takes the
+     screen. Under reduced motion there is no journey to sit through, so the whole
+     of it is read-back time. */
+  var SUBMIT_HOLD_MS = 1100;
+  /* With motion, the hold is the journey plus a pause on the settled page: page 2
+     has to finish assembling (the staggered rise behind the box) and then stand
+     still long enough to read before the pipeline replaces it. */
+  var PAGE2_HOLD_MS = 750;
+  var transitionTimer = null;
+
+  /* Durations live in the stylesheet so there is one source of truth for them; the
+     script only needs to know when a transition it started has finished. */
+  function motionMs(name, fallback){
+    var v = getComputedStyle(document.documentElement).getPropertyValue(name);
+    var n = parseFloat(v);
+    return isNaN(n) ? fallback : n;
+  }
+
+  /* ═══ the client's own session ledger ═══ */
+  var SESSIONS = [
+    { id:"8f2c1d90", q:"What are the current constraints on grid-scale battery storage deployment?",
+      status:"running", iteration:0, passes:3, started:"2026-09-16T14:02:11Z", finished:null,
+      reportPath:null, trace:null, group:"Today", playback:true,
+      errors:[{type:"researcher_sub_topic_without_findings", recoverable:true, source:"researcher"},
+              {type:"source_evaluator_reputation_unavailable", recoverable:true, source:"source_evaluator"}] },
+    { id:"b41e77aa", q:"How mature is quantum error correction?",
+      status:"completed", iteration:3, passes:3, started:"2026-09-16T11:48:03Z", finished:"2026-09-16T11:57:15Z",
+      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/b41e77aa", group:"Today",
+      errors:[{type:"researcher_sub_topic_without_findings", recoverable:true, source:"researcher"}] },
+    { id:"7c0d13ff", q:"What limits solid-state electrolyte scale-up for EV cells?",
+      status:"max_iterations", iteration:3, passes:3, started:"2026-09-16T09:15:40Z", finished:"2026-09-16T09:29:42Z",
+      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/7c0d13ff", group:"Today",
+      errors:[{type:"synthesizer_report_not_written", recoverable:true, source:"synthesizer"}] },
+    { id:"5ff1ab07", q:"Which fire-code standards govern BESS siting in the U.S.?",
+      status:"incomplete", iteration:1, passes:1, started:"2026-09-15T13:40:02Z", finished:"2026-09-15T13:47:00Z",
+      reportPath:"api-output/report.md", trace:null, group:"Yesterday", errors:[] },
+    { id:"9ea4c220", q:"What is the measured cost of interconnection queue delay?",
+      status:"completed", iteration:2, passes:2, started:"2026-09-15T15:04:10Z", finished:"2026-09-15T15:15:40Z",
+      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/9ea4c220", group:"Yesterday", errors:[] },
+    { id:"2ad900b1", q:"Compare EU and UK grid connection reform outcomes.",
+      status:"failed", iteration:0, passes:1, started:"2026-09-15T17:22:27Z", finished:"2026-09-15T17:22:31Z",
+      reportPath:null, trace:"https://smith.langchain.com/o/example/r/2ad900b1", group:"Yesterday",
+      errors:[{type:"graph_provider_configuration_error", recoverable:false, source:"graph"}] }
+  ];
+
+  var STATUS = {
+    running:        { label:"Running",             dot:"dot-live",   note:"iteration {i} of 3" },
+    completed:      { label:"Completed",           dot:"dot-ok",     note:"quality gates accepted" },
+    max_iterations: { label:"Partially completed", dot:"dot-warn",   note:"budget exhausted" },
+    incomplete:     { label:"Partially completed", dot:"dot-warn",   note:"no critique recorded" },
+    failed:         { label:"Failed",              dot:"dot-danger", note:"halted" }
+  };
+  /* `session.iteration` is the API value and is zero-based: the first pass carries
+     `iteration: 0`, and the router halts at `iteration >= max_iterations`. The
+     interface counts passes the way an operator does, from 1, so the display adds
+     one here rather than changing the stored value - the number on screen is a pass
+     number, the number in the session is an index. */
+  function passNumber(iteration){
+    var n = Number(iteration);
+    return (isFinite(n) ? n : 0) + 1;
+  }
+  /* One chip, in the topbar, and therefore no `large` variant: the report head used to draw
+     a second copy at 15px, and the parameter existed only for it. */
+  function chipHTML(s){
+    var m = STATUS[s.status] || STATUS.running;
+    return '<span class="chip">'
+      + '<span class="dot ' + m.dot + '" aria-hidden="true"></span>' + m.label
+      + ' <span class="kind">· ' + m.note.replace("{i}", passNumber(s.iteration)) + "</span></span>";
+  }
+  function fmtDur(a, b){
+    if(!a || !b) return null;
+    var ms = new Date(b) - new Date(a);
+    if(isNaN(ms) || ms < 0) return null;
+    var s = Math.round(ms / 1000);
+    return Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+  }
+  function fmtClock(iso){
+    if(!iso) return null;
+    var d = new Date(iso);
+    if(isNaN(d)) return null;
+    return String(d.getUTCHours()).padStart(2, "0") + ":" + String(d.getUTCMinutes()).padStart(2, "0") + "Z";
+  }
+  function fmtElapsed(sec){
+    return String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
+  }
+  /* ═══ the question, on every stage ═══
+     One size, set in the stylesheet, so nothing about the question changes as it moves
+     from the composer to the record. All the script decides is whether the frame has room
+     to centre it — see the rule in the stylesheet for the reasoning.
+
+     That decision is a character count and not a measurement, deliberately. The frame is
+     `--reading-max` (720px) of content at 15px, so a line holds roughly 95 characters, and
+     80 keeps every centred question comfortably clear of a wrap. Measuring the laid-out
+     text would mean reading geometry off an element that may still be `display: none`,
+     which is the ordering hazard that broke the old clamp control. */
+  var Q_CENTER_MAX = 80;
+  /* Every stage that can carry the question. Kept as one list so a new stage gets the
+     treatment for free rather than being remembered. */
+  var Q_HOSTS = { "submitted-h":1, "running-h":1, "report-h":1, "failed-h":1 };
+
+  function setQuestionFit(el, q){
+    el.classList.toggle("q-center", (q || "").length <= Q_CENTER_MAX);
+  }
+
+  function setText(id, v){
+    var el = document.getElementById(id);
+    if(!el) return;
+    el.textContent = v;
+    /* Every stage sets the question through here, so this is the one place that can
+       guarantee it gets the fit treatment — and the one place a new stage inherits it
+       without being told. */
+    if(Q_HOSTS[id]) setQuestionFit(el, v);
+  }
+  function activeSession(){
+    for(var i = 0; i < SESSIONS.length; i++) if(SESSIONS[i].id === state.activeId) return SESSIONS[i];
+    return null;
+  }
+  /* Settings actually used by a session. A session keeps its own copy because
+     the API echoes neither the query nor the overrides back. */
+  function sessionSettings(session){
+    return (session && session.settings) || settings;
+  }
+  function optionsHTML(session){
+    var s = sessionSettings(session);
+    var cap = MODELS[s.model];
+    var out = '<span class="opt"><span class="k">model</span>' + (cap ? cap.label : s.model) + "</span>"
+            + '<span class="opt"><span class="k">thinking</span>' + s.thinking + "</span>";
+    out += s.thinking === "disabled"
+      ? '<span class="opt"><span class="k">effort</span>not sent</span>'
+      : '<span class="opt"><span class="k">effort</span>' + s.effort + "</span>";
+    if(s.outputDir) out += '<span class="opt"><span class="k">out</span>' + s.outputDir + "</span>";
+    return out;
+  }
+  function renderLockedOptions(session){
+    ["submittedOpts", "runningOpts", "reportOpts"].forEach(function(id){
+      var el = document.getElementById(id);
+      if(el) el.innerHTML = session ? optionsHTML(session) : "";
+    });
+  }
+
+  /* ═══ sidebar ═══ */
+  function renderList(){
+    var ul = document.getElementById("sessionList");
+    ul.innerHTML = "";
+    var groups = [];
+    SESSIONS.forEach(function(s){ if(groups.indexOf(s.group) === -1) groups.push(s.group); });
+    groups.forEach(function(g){
+      var head = document.createElement("li");
+      head.className = "sb-group";
+      head.textContent = g;   /* the data is already sentence case: "Today", "Yesterday" */
+      ul.appendChild(head);
+      SESSIONS.filter(function(s){ return s.group === g; }).forEach(function(s){
+        var li = document.createElement("li");
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "sb-item";
+        b.setAttribute("data-session", s.id);
+        b.setAttribute("aria-current", String(state.activeId === s.id));
+        /* A running session is the only one that carries a mark, and it is the
+           only state this list shows. Status chips, iteration counts and durations
+           were removed: they made an index of questions read as a status table,
+           and every one of them is visible on the session itself.
+           The id stays on the button for code and assistive technology. */
+        var running = s.status === "running";
+        b.setAttribute("data-run", running ? "1" : "0");
+        b.setAttribute("title", s.id);
+        b.innerHTML = '<span class="q"></span><span class="sb-live" aria-hidden="true"></span>';
+        if(running) b.setAttribute("aria-label", s.q + " — running");
+        b.querySelector(".q").textContent = s.q;
+        b.addEventListener("click", function(){ openSession(s.id); });
+        li.appendChild(b);
+        ul.appendChild(li);
+      });
+    });
+    setText("sbCount", String(SESSIONS.length));
+  }
+
+  function isDrawer(){ return window.matchMedia("(max-width:1080px)").matches; }
+  function setSidebar(mode){
+    /* one attribute, two meanings: on desktop expanded/collapsed, on the
+       drawer breakpoint expanded means "open". */
+    app.setAttribute("data-sidebar", mode);
+    var open = mode === "expanded";
+    sidebarToggle.setAttribute("aria-expanded", String(open));
+    document.body.classList.toggle("is-locked", isDrawer() && open);
+    scrim.setAttribute("aria-hidden", String(!(isDrawer() && open)));
+  }
+  function toggleSidebar(){
+    var next = app.getAttribute("data-sidebar") === "expanded" ? "collapsed" : "expanded";
+    setSidebar(next);
+    if(!isDrawer()){ try { localStorage.setItem(LS_SIDEBAR, next); } catch(e){} }
+  }
+  sidebarToggle.addEventListener("click", toggleSidebar);
+  scrim.addEventListener("click", function(){ setSidebar("collapsed"); });
+  document.addEventListener("keydown", function(e){
+    if(e.key !== "Escape") return;
+    closePop();
+    if(isDrawer() && app.getAttribute("data-sidebar") === "expanded") setSidebar("collapsed");
+  });
+  var resizeTimer = null;
+  window.addEventListener("resize", function(){
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function(){
+      if(isDrawer()){ setSidebar("collapsed"); }
+      else {
+        var saved = "expanded";
+        try { saved = localStorage.getItem(LS_SIDEBAR) || "expanded"; } catch(e){}
+        setSidebar(saved);
+      }
+      /* the return arc is measured from node positions, so it has to be redrawn
+         whenever the list reflows */
+      drawLoop();
+      /* a flipped settings panel is positioned in viewport coordinates, so it
+         needs re-measuring too or it drifts away from its anchor */
+      var pop = document.getElementById("settingsPop");
+      if(pop && pop.getAttribute("data-open") === "true") placePop();
+    }, 120);
+  });
+
+  /* ═══ stage switching ═══ */
+  var stageTimer = null;
+  var beatTimer = null;
+  var flightBox = null;
+  var flightTimers = [];
+
+  /* Cancels the whole page 1 → 2 choreography: a pending beat, a box in flight, and
+     the composer hand-off, so the box is back in its own frame. */
+  function clearFlight(){
+    clearTimeout(beatTimer);
+    beatTimer = null;
+    flightTimers.forEach(function(t){ clearTimeout(t); });
+    flightTimers = [];
+    if(flightBox && flightBox.parentNode) flightBox.parentNode.removeChild(flightBox);
+    flightBox = null;
+    var composer = document.getElementById("composer");
+    if(composer) composer.classList.remove("is-handing-off");
+  }
+
+  /* opts.enter:false  hold the generic slide — the caller is animating the change
+     itself, and a header shared with the outgoing stage must not move at all.
+     opts.preparing    lay the stage out with its content hidden, so a travelling
+     element has somewhere to land before the rest of the page arrives.
+     opts.arriving     the header is already in place; only the body should rise.
+     opts.clearing     the outgoing stage is being drained of its content rather
+     than cross-faded, because one element inside it is about to travel out. */
+  function showStage(name, opts){
+    opts = opts || {};
+    var next = stages[name];
+    if(!next) return;
+    clearTimeout(stageTimer);
+    var prev = null;
+    Object.keys(stages).forEach(function(k){
+      if(k !== name && stages[k].classList.contains("is-on")) prev = stages[k];
+    });
+    Object.keys(stages).forEach(function(k){
+      var el = stages[k];
+      el.classList.remove("is-leaving", "is-revealing", "is-arriving", "no-enter", "is-clearing");
+      if(k !== name) el.classList.remove("is-preparing");
+      el.classList.toggle("is-on", k === name);
+    });
+    if(opts.preparing) next.classList.add("is-preparing");
+    if(opts.enter === false) next.classList.add("no-enter");
+    if(opts.arriving) next.classList.add("is-arriving");
+    if(prev){
+      /* The outgoing stage stays on screen as an overlay so the pair can cross-fade,
+         or so its remaining content can be drained while it is still laid out.
+         This used to be gated on !reducedMotion(), which made every stage change a
+         hard cut for anyone whose system asks for reduced motion — and a jump cut is
+         not what that preference asks for. It is honoured in the stylesheet instead:
+         the same keyframes drop their translateY and keep their fade. */
+      if(opts.clearing) prev.classList.add("is-clearing");
+      prev.classList.add("is-leaving");
+      stageTimer = setTimeout(function(){ prev.classList.remove("is-leaving"); },
+        (opts.leaveMs || motionMs("--motion-base", 200)) + 20);
+    }
+    state.stage = name;
+    window.scrollTo({ top: 0 });
+    renderTopbar();
+  }
+
+  /* ═══ page 1 → page 2: the box the operator typed into becomes the record ═══
+     Three beats, in this order and not overlapping:
+
+       1. clear   everything on page 1 except the box fades out, so the box is the
+                  only thing left on screen;
+       2. lift    the box rises to where the locked question sits, its frame
+                  interpolating from the composer's to the record's as it goes while
+                  the question inside hands over to the record's typography;
+       3. settle  it dissolves into the real locked question and page 2 assembles
+                  behind it, then holds still before the pipeline takes over.
+
+     The box is never duplicated and the composer is never seen to vanish: the flight
+     box is created at the composer's own measured frame and the real composer is
+     hidden in the same frame, so for that instant the two are indistinguishable and
+     there is exactly one box on screen throughout. */
+  function flyQuestionToLock(from, to, text, onLand){
+    if(!from || !to || !from.width || !from.height || !to.width || !to.height) return false;
+    clearFlight();
+    var box = document.createElement("div");
+    box.className = "q-flight";
+    box.setAttribute("aria-hidden", "true");
+    /* The question lives in its own element so it can hand over independently of the
+       frame carrying it — see the .q-flight-t rule for why it has to. */
+    var label = document.createElement("span");
+    label.className = "q-flight-t";
+    label.textContent = text;
+    box.appendChild(label);
+    box.style.left = from.left + "px";
+    box.style.top = from.top + "px";
+    box.style.width = from.width + "px";
+    box.style.height = from.height + "px";
+    document.body.appendChild(box);
+    flightBox = box;
+    /* commit the starting geometry before the class and the coordinates change, or
+       the transition has nothing to run from */
+    void box.offsetWidth;
+    box.classList.add("is-locked");
+    box.style.left = to.left + "px";
+    box.style.top = to.top + "px";
+    /* width is deliberately NOT moved to the record's: holding the composer's width for
+       the whole flight is what guarantees the question cannot re-wrap on the way. */
+    box.style.height = to.height + "px";
+    /* The slide to the middle, when there is room for one.
+
+       Measured rather than assumed: as a block the span is exactly the frame's content
+       width, as an inline-block it is the text's own width, and the difference between the
+       two is the space the text has to move through. A question that fills the frame
+       measures the same both ways, so its offset is zero and nothing moves — that is the
+       "only when there is width to do so" condition, read off the layout instead of guessed.
+
+       The threshold is the record's own, `Q_CENTER_MAX`, so the flight and the record
+       cannot disagree about which questions get the middle. Letting the measurement alone
+       decide would slide an 85-character question that the record then leaves at the left
+       edge, and it would jump back on landing. */
+    if(text.length <= Q_CENTER_MAX){
+      label.style.display = "block";
+      var frameW = label.offsetWidth;
+      label.style.display = "";
+      var textW = label.offsetWidth;
+      if(frameW > textW) label.style.transform = "translateX(" + ((frameW - textW) / 2) + "px)";
+    }
+    flightTimers.push(setTimeout(function(){
+      box.classList.add("is-gone");
+      if(onLand) onLand();
+      flightTimers.push(setTimeout(function(){
+        if(box.parentNode) box.parentNode.removeChild(box);
+        if(flightBox === box) flightBox = null;
+      }, motionMs("--motion-dissolve", 130)));
+    }, motionMs("--motion-lift", 540)));
+    return true;
+  }
+
+  /* The submitted beat. Returns how long the caller should hold before the pipeline
+     takes the screen, so the journey and the read-back pause are one budget rather
+     than two timers racing each other. */
+  function holdBeat(session){
+    var composerEl = document.getElementById("composer");
+    var target = document.getElementById("submitted-h");
+    var clearMs = motionMs("--motion-clear", 320);
+    var liftMs = motionMs("--motion-lift", 900);
+    var dissolveMs = motionMs("--motion-dissolve", 200);
+    /* Measured from the composer's frame, not the textarea: the frame is what the
+       flight box replicates, and its 16px/20px inset is what keeps the text in the
+       same place relative to it at both ends (see the .q-flight rule). Read now,
+       because the stage it belongs to is about to be drained. */
+    var from = composerEl ? composerEl.getBoundingClientRect() : null;
+    var travel = !reducedMotion() && from && from.height > 0;
+
+    /* Beat one runs in BOTH motion modes. Draining page 1 down to the box is a change
+       of opacity, not of position, so it is not the motion the preference targets —
+       and skipping it collapsed the whole handoff into a cross-fade between two
+       complete pages, which says nothing about what happened to the question. */
+    showStage("submitted", { preparing: true, enter: false, clearing: true, leaveMs: clearMs });
+    var to = target ? target.getBoundingClientRect() : null;
+
+    var landed = function(animated){
+      var el = stages.submitted;
+      el.classList.remove("is-preparing");
+      if(animated) el.classList.add("is-revealing");
+    };
+
+    /* No travel available: the box is replaced at its destination rather than moved
+       there. Beats one and three still run, so the change reads as a handoff and not a
+       swap — and the composer still hands off, so its frame cannot linger over page 2.
+       `landed` is scheduled unconditionally here: it is the only thing that clears
+       `is-preparing`, and leaving that set would hold page 2 at opacity 0 for good. */
+    if(!travel || !to || !to.height){
+      beatTimer = setTimeout(function(){
+        if(composerEl) composerEl.classList.add("is-handing-off");
+        landed(true);
+      }, clearMs);
+      return clearMs + dissolveMs + PAGE2_HOLD_MS;
+    }
+
+    /* Beat two starts only once beat one has finished: the box does not begin to
+       move while the page around it is still going. */
+    beatTimer = setTimeout(function(){
+      if(flyQuestionToLock(from, to, session.q, function(){ landed(true); })){
+        composerEl.classList.add("is-handing-off");
+      } else {
+        landed(false);
+      }
+    }, clearMs);
+    return clearMs + liftMs + dissolveMs + PAGE2_HOLD_MS;
+  }
+  function renderTopbar(){
+    var s = activeSession();
+    if(state.stage === "idle" || !s){
+      /* no status content on the first page: there is no session to report on */
+      topbarStatus.innerHTML = "";
+      return;
+    }
+    /* The trace link belongs to the report's own action row and nowhere else. It used to
+       be repeated here and a third time in the rail's Artifacts card, so one destination
+       appeared in three places on the same page. The status chip stays; the copy does not. */
+    topbarStatus.innerHTML = chipHTML(s);
+  }
+
+  /* ═══ composer ═══ */
+  function closePop(){
+    var pop = document.getElementById("settingsPop");
+    var btn = document.getElementById("plusBtn");
+    if(pop) pop.setAttribute("data-open", "false");
+    if(btn) btn.setAttribute("aria-expanded", "false");
+  }
+  /* Where the panel can actually be read. The default is anchored above the
+     composer bar, which is right when the composer sits low on the page (the
+     running and report stages) and wrong on the first page, where the panel's top
+     would land above y=0. Anchor to the composer's controls rather than the bar,
+     and never trust a geometry field to be a number — a missing one would have
+     produced `top: NaNpx` and left the panel unplaced.
+
+     The panel is also capped to the room on the side it lands on. It used to be
+     capped to the whole viewport height, so a panel taller than the space beneath
+     the bar ran off the bottom of the screen with its last rows unreachable. The
+     cap is measured against the natural height on every open, so a short viewport
+     cannot ratchet the panel smaller each time it is shown. */
+  function num(v, fallback){
+    v = Number(v);
+    return isFinite(v) ? v : fallback;
+  }
+  function placePop(){
+    var pop = document.getElementById("settingsPop");
+    var plus = document.getElementById("plusBtn");
+    var bar = plus && plus.closest ? plus.closest(".composer-bar") : null;
+    if(!pop || !bar || !bar.getBoundingClientRect) return;
+    var r = bar.getBoundingClientRect() || {};
+    var vh = num(window.innerHeight, 800);
+    var vw = num(window.innerWidth, 1024);
+    var top = num(r.top, vh / 2);
+    var bottom = num(r.bottom, top + 44);
+    var left = num(r.left, 16);
+    var GAP = 10;   /* between the bar and the panel */
+    var EDGE = 12;  /* clear space kept at the viewport edge */
+
+    /* measure the natural height, with any cap or offset from a previous open
+       cleared first */
+    pop.style.maxHeight = "";
+    pop.style.top = "";
+    pop.style.left = "";
+    pop.setAttribute("data-place", "above");
+    var h = num(pop.offsetHeight, 0);
+
+    var roomAbove = top - GAP - EDGE;
+    var roomBelow = vh - bottom - GAP - EDGE;
+    if(h <= roomAbove || roomAbove >= roomBelow){
+      /* above: the panel grows up from the bar, so capping the height also
+         guarantees its top stays below y=0 */
+      pop.style.maxHeight = Math.max(EDGE, Math.round(roomAbove)) + "px";
+      return;
+    }
+    pop.setAttribute("data-place", "below");
+    var w = num(pop.offsetWidth, 344);
+    pop.style.top = Math.round(bottom + GAP) + "px";
+    pop.style.left = Math.round(Math.max(EDGE, Math.min(left, vw - w - EDGE))) + "px";
+    pop.style.maxHeight = Math.max(EDGE, Math.round(roomBelow)) + "px";
+  }
+
+  function togglePop(){
+    var pop = document.getElementById("settingsPop");
+    var btn = document.getElementById("plusBtn");
+    if(!pop || !btn) return;
+    var open = pop.getAttribute("data-open") === "true";
+    if(open){
+      pop.setAttribute("data-open", "false");
+      btn.setAttribute("aria-expanded", "false");
+      return;
+    }
+    /* measure at open time: the panel's height depends on its notes, and the
+       anchor's position depends on which stage the composer is on */
+    pop.setAttribute("data-open", "true");
+    placePop();
+    btn.setAttribute("aria-expanded", "true");
+    syncEffort();
+  }
+  function syncSeg(id, attr, val){
+    var seg = document.getElementById(id);
+    if(!seg) return;
+    Array.prototype.forEach.call(seg.querySelectorAll("button[" + attr + "]"), function(b){
+      b.setAttribute("aria-pressed", String(b.getAttribute(attr) === val));
+    });
+  }
+  function syncEffort(){
+    var segE = document.getElementById("segEffort");
+    var note = document.getElementById("effortNote");
+    if(!segE) return;
+    var off = settings.thinking === "disabled";
+    Array.prototype.forEach.call(segE.querySelectorAll("button"), function(b){ b.disabled = off; });
+    segE.style.opacity = off ? "0.5" : "1";
+    /* Only the unavailable state needs a sentence: the buttons are greyed out and
+       the operator should not have to infer why. The enabled state says nothing,
+       because the options already are what they are. No API field names here. */
+    if(note){
+      note.classList.toggle("warn", off);
+      note.textContent = off ? "Not available while thinking is disabled." : "";
+    }
+  }
+  function syncPills(){
+    var cap = MODELS[settings.model];
+    setText("pillModelV", cap ? cap.label : settings.model);
+    setText("pillEffortV", settings.thinking === "disabled" ? "thinking off" : settings.effort);
+  }
+  /* Refinement budget bounds. `graph.max_iterations` accepts any integer >= 1, so
+     the floor is the schema's own. The ceiling is a UI decision: a refinement costs
+     a whole research pass, and the prototype's scripted run is a fixed length, so 5
+     is the largest budget it can present honestly. */
+  var REFINE_MIN = 1;
+  var REFINE_MAX = 5;
+  var REFINE_DEFAULT = 3;   /* matches graph.max_iterations in config.yaml */
+
+  function clampRefinements(n){
+    n = Math.round(Number(n));
+    if(!isFinite(n)) n = REFINE_DEFAULT;
+    return Math.max(REFINE_MIN, Math.min(REFINE_MAX, n));
+  }
+  /* The stepper is a bounded control: the buttons disable at the ends so the limit
+     is visible rather than silently enforced by a clamp. */
+  function syncRefineUI(){
+    var v = document.getElementById("refineValue");
+    var minus = document.getElementById("refineMinus");
+    var plus = document.getElementById("refinePlus");
+    settings.refinements = clampRefinements(settings.refinements);
+    if(v) v.textContent = String(settings.refinements);
+    /* The bounds are shown by the buttons disabling at each end, so they are not
+       also written out as a range in a note. */
+    if(minus) minus.disabled = settings.refinements <= REFINE_MIN;
+    if(plus) plus.disabled = settings.refinements >= REFINE_MAX;
+  }
+  function stepRefinements(delta){
+    settings.refinements = clampRefinements((settings.refinements || REFINE_DEFAULT) + delta);
+    syncRefineUI();
+  }
+
+  function syncSettingsUI(){
+    syncSeg("segModel", "data-model", settings.model);
+    syncSeg("segThinking", "data-thinking", settings.thinking);
+    syncSeg("segEffort", "data-effort", settings.effort);
+    var dir = document.getElementById("outputDir");
+    if(dir && settings.outputDir) dir.value = settings.outputDir;
+    syncEffort();
+    syncPills();
+    syncRefineUI();
+  }
+  function buildOverrides(){
+    var dirEl = document.getElementById("outputDir");
+    var o = { llm: { model: settings.model, thinking_mode: settings.thinking } };
+    if(settings.thinking !== "disabled") o.llm.reasoning_effort = settings.effort;
+    var dir = dirEl && dirEl.value ? dirEl.value.trim() : "";
+    if(dir) o.output = { directory: dir };
+    return o;
+  }
+  /* Real questions, taken from this project's own evaluation cases and its
+     published run — not invented example copy, and not questions chosen to make
+     the engine look good. They span the shapes a run is known to handle: a
+     constraint survey, a comparison, a state-of-the-art question, and one that
+     is deliberately contested. */
+  var STARTERS = [
+    "What are the current constraints on grid-scale battery storage deployment?",
+    "How mature is quantum error correction?",
+    "What is the current state of sodium-ion battery energy density?",
+    "What limits perovskite solar cell commercial lifetime?",
+    "Does congestion pricing reduce particulate pollution?",
+    "How reliable are consumer-grade air quality sensors?"
+  ];
+
+  /* The composer grows with the question. A textarea with rows="2" and no script
+     scrolls a long question away inside two lines, which is the one place in this
+     product where the operator would lose sight of their own text — so the box is
+     measured against its content on every input and set to fit, capped by the
+     `max-height` the stylesheet already declares.
+
+     That cap has one source of truth: it is read back from the computed style rather
+     than repeated here, so the viewport-relative half of it (`min(232px, 32vh)`) keeps
+     working without the script knowing anything about it. */
+  function autoGrowPrompt(){
+    var p = document.getElementById("prompt");
+    if(!p) return;
+    p.style.height = "auto";
+    var want = p.scrollHeight;
+    /* no layout engine, or the field is not being rendered: leave rows="2" alone */
+    if(!want) return;
+    var cap = parseFloat(getComputedStyle(p).maxHeight);
+    if(!isFinite(cap) || cap <= 0) cap = 232;
+    var edges = (p.offsetHeight - p.clientHeight) || 0;
+    p.style.height = Math.min(want + edges, cap) + "px";
+    /* the run-settings panel is anchored to the control row this box pushes down, so
+       an open panel has to be re-placed rather than left pointing at where the row was */
+    var pop = document.getElementById("settingsPop");
+    if(pop && pop.getAttribute("data-open") === "true") placePop();
+  }
+
+  function renderStarters(){
+    var host = document.getElementById("starterList");
+    if(!host) return;
+    host.innerHTML = "";
+    STARTERS.forEach(function(q){
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "starter";
+      b.setAttribute("data-question", q);
+      b.innerHTML = '<span class="arw" aria-hidden="true">&rarr;</span><span class="q"></span>';
+      b.querySelector(".q").textContent = q;
+      b.addEventListener("click", function(){
+        var prompt = document.getElementById("prompt");
+        if(!prompt) return;
+        prompt.value = q;
+        prompt.removeAttribute("aria-invalid");
+        setText("composerError", "");
+        autoGrowPrompt();
+        prompt.focus();
+      });
+      host.appendChild(b);
+    });
+  }
+
+  function wireComposer(){
+    var form = document.getElementById("composer");
+    if(!form || form.dataset.wired === "1") return;
+    form.dataset.wired = "1";
+    var prompt = form.querySelector("#prompt");
+
+    form.querySelector("#plusBtn").addEventListener("click", togglePop);
+    form.querySelector("#popClose").addEventListener("click", closePop);
+    form.querySelector("#segModel").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-model]"); if(!b) return;
+      settings.model = b.getAttribute("data-model"); syncSettingsUI();
+    });
+    form.querySelector("#segThinking").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-thinking]"); if(!b || b.disabled) return;
+      settings.thinking = b.getAttribute("data-thinking"); syncSettingsUI();
+    });
+    form.querySelector("#segEffort").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-effort]"); if(!b || b.disabled) return;
+      settings.effort = b.getAttribute("data-effort"); syncSettingsUI();
+    });
+    form.querySelector("#outputDir").addEventListener("input", function(e){
+      settings.outputDir = e.target.value;
+    });
+    form.querySelector("#refineMinus").addEventListener("click", function(){ stepRefinements(-1); });
+    form.querySelector("#refinePlus").addEventListener("click", function(){ stepRefinements(1); });
+    form.addEventListener("submit", function(e){ e.preventDefault(); submitResearch(); });
+    /* The send button carries its own handler rather than relying on form submission.
+       A preview pane is almost always a sandboxed iframe, and without `allow-forms`
+       the browser blocks the submission outright — no `submit` event ever fires, so a
+       type="submit" button does nothing at all and the first page looks inert. The
+       form's listener above still covers implicit submission, and the textarea's Enter
+       handler covers the keyboard path. */
+    var send = form.querySelector("#sendBtn");
+    if(send) send.addEventListener("click", function(e){ e.preventDefault(); submitResearch(); });
+    prompt.addEventListener("keydown", function(e){
+      if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submitResearch(); }
+    });
+    prompt.addEventListener("input", function(){
+      setText("composerError", "");
+      prompt.removeAttribute("aria-invalid");
+      autoGrowPrompt();
+    });
+    document.addEventListener("click", function(e){
+      var pop = document.getElementById("settingsPop");
+      var plus = document.getElementById("plusBtn");
+      if(!pop || !plus || pop.getAttribute("data-open") !== "true") return;
+      if(pop.contains(e.target) || plus.contains(e.target)) return;
+      closePop();
+    });
+  }
+
+  /* ═══ submit ═══ */
+  function submitResearch(){
+    var prompt = document.getElementById("prompt");
+    if(!prompt) return;
+    /* Only the first page can start a run. Once the journey has begun the stage is no
+       longer idle, so a second event — the send button's own click plus the implicit
+       submission it would otherwise also trigger — cannot mint a second session or
+       flash the empty-field error at a box the operator has already sent. */
+    if(state.stage !== "idle") return;
+    var q = (prompt.value || "").trim();
+    if(!q){
+      setText("composerError", "A question is required.");
+      prompt.setAttribute("aria-invalid", "true");
+      prompt.focus();
+      return;
+    }
+    closePop();
+    var budget = clampRefinements(settings.refinements);
+    var session = {
+      id: Math.random().toString(16).slice(2, 10), q: q, status: "running", iteration: 0,
+      /* the configured refinement budget becomes this run's pass ceiling, and the
+         scripted pipeline is built to that ceiling */
+      passes: budget,
+      started: new Date().toISOString(), finished: null, reportPath: null, trace: null,
+      errors: [], group: "Today", playback: true,
+      settings: { model: settings.model, thinking: settings.thinking, effort: settings.effort,
+                  outputDir: settings.outputDir, refinements: budget },
+      overrides: buildOverrides()
+    };
+    SESSIONS.unshift(session);
+    renderList();
+    prompt.value = "";
+    autoGrowPrompt();   /* the box goes back to two rows with the question it just sent */
+    /* POST /research is not issued by this prototype; the session is driven
+       from the scripted event sequence. The 202 is acknowledged by the
+       "question locked in" beat, then the pipeline takes over. The beat tells us
+       how long it needs, so the handoff is measured from the journey rather than
+       from a constant that has to be kept in step with it by hand. */
+    var hold = openSession(session.id, { hold: true }) || SUBMIT_HOLD_MS;
+    clearTimeout(transitionTimer);
+    transitionTimer = setTimeout(function(){
+      if(state.activeId !== session.id) return;
+      /* the header is the same element in the same place on both pages, so it is
+         held still and only the body below it changes */
+      showStage("running", { enter: false, arriving: true });
+      startPlayback(session);
+    }, hold);
+  }
+
+  /* ═══ pipeline ═══ */
+  /* Every description below is the engine's own behaviour, checked against the
+     source rather than invented: the planner's 3–7 sub-topics (MIN/MAX_SUB_TOPICS),
+     the researcher's four declared tools (web_search, web_scraper, document_reader,
+     query_memory), the evaluator's three weights (0.45 authority, 0.15 recency,
+     0.40 relevance), the fact checker verifying each claim in its own bounded ReAct
+     loop with a cleared scratchpad (`FactCheckerAgent._check_claim`), synthesis
+     refusing any point with no checked claim behind it, the critic's 1–10 score
+     against an acceptance threshold of 7, and the two published artifacts.
+
+     None of these say "loop". "Loop" is already this interface's word for the
+     refinement — the return arc, `data-loop`, and the ↺ on a re-armed step — so
+     using it for the fact checker's per-claim tool loop named two different things
+     the same way. Same reason the step numbers lost their "P" prefix. */
+  var STAGES = [
+    { id:"planner",          label:"Planning",           meta:"3–7 sub-topics" },
+    { id:"researcher",       label:"Researching",        meta:"search · scrape · read · memory" },
+    { id:"source_evaluator", label:"Evaluating sources", meta:"authority · recency · relevance" },
+    { id:"fact_checker",     label:"Checking claims",    meta:"each claim checked separately" },
+    { id:"synthesizer",      label:"Writing report",     meta:"checked claims only" },
+    { id:"critic",           label:"Reviewing",          meta:"score 1–10 · accept at 7" },
+    { id:"finalize_report",  label:"Publishing",         meta:"report + evidence ledger" }
+  ];
+  /* The step number is the constant — 1 through 7, always — and the colour is
+     what changes: breathing while the step runs, filled solid once it is done.
+     A step only shows a glyph when it never ran at all (a halted run), because
+     there is no number left to fill in that case.
+
+     Building and updating are deliberately separate. Rebuilding the list on every
+     event would replace each row's node, and a fresh node has nothing to
+     transition from — every fill would snap. So rows are built once per
+     mountSpine and only their attributes change afterwards, which is what lets
+     the CSS transitions animate the fill.
+
+     `--base` is a shared offset applied to every connector, and `--delay` is a
+     per-number offset inside the bullet. Both exist so the fill reads as a wave
+     travelling down the list rather than seven simultaneous state changes. */
+  var SPINE = { host:null, wrap:null, svg:null, rows:[], layout:{w:0,h:0} };
+
+  /* The SVG uses the container's pixel geometry as its own coordinate system, so
+     no viewBox is needed and nothing scales or letterboxes. */
+  function makeLoopLayer(){
+    var NS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "loop-layer");
+    svg.setAttribute("aria-hidden", "true");
+    ["loop-base", "loop-flow", "loop-head"].forEach(function(cls){
+      var p = document.createElementNS(NS, "path");
+      p.setAttribute("class", cls);
+      svg.appendChild(p);
+    });
+    return svg;
+  }
+
+  /* The loop leaves Reviewing and returns to Planning, because `graph_route` runs
+     after the critic: the refinement decision is the critic's, and the next pass
+     restarts the chain. Publishing is not part of the loop at all — it happens
+     once, after the last pass's critic accepts — so the arc must not be anchored
+     to the last row. Anchoring to `rows[length - 1]` drew a Publishing → Planning
+     arc, which read as "publishing finished, now refining".
+
+     Endpoints are measured from the real nodes, so the arc stays attached to the
+     list through resizes, wrapping and font changes rather than to a guess. */
+  function loopRows(){
+    var from = null, to = null;
+    for(var i = 0; i < SPINE.rows.length; i++){
+      var id = SPINE.rows[i].el.getAttribute("data-stage");
+      if(id === "critic") from = SPINE.rows[i];
+      if(id === "planner") to = SPINE.rows[i];
+    }
+    /* fall back to first/last only if the list is ever built without stage ids */
+    if(!from) from = SPINE.rows[SPINE.rows.length - 1];
+    if(!to) to = SPINE.rows[0];
+    return { from: from, to: to };
+  }
+
+  function drawLoop(){
+    if(!SPINE.wrap || !SPINE.svg || SPINE.rows.length < 2) return;
+    var hostRect = SPINE.wrap.getBoundingClientRect();
+    var w = Math.round(hostRect.width), h = Math.round(hostRect.height);
+    if(!w || !h) return;
+    if(SPINE.layout.w !== w || SPINE.layout.h !== h){
+      SPINE.layout = { w:w, h:h };
+      SPINE.svg.setAttribute("width", w);
+      SPINE.svg.setAttribute("height", h);
+    }
+    var pair = loopRows();
+    var review = pair.from.bullet.getBoundingClientRect();   /* where the loop leaves */
+    var plan   = pair.to.bullet.getBoundingClientRect();     /* where it returns */
+    var x1 = plan.left   - hostRect.left + plan.width / 2;
+    var y1 = plan.top    - hostRect.top  + plan.height / 2;
+    var x2 = review.left - hostRect.left + review.width / 2;
+    var y2 = review.top  - hostRect.top  + review.height / 2;
+    /* the vertical runs in the container's padding, left of every row, so rows
+       stay fully clickable and the arc never crosses a label */
+    var r = Math.max(2, x1 - plan.width / 2 - 8);
+    var d = "M " + x2 + " " + y2 + " H " + r + " V " + y1 + " H " + (x1 + 10);
+    var base = SPINE.svg.querySelector(".loop-base");
+    var flow = SPINE.svg.querySelector(".loop-flow");
+    var head = SPINE.svg.querySelector(".loop-head");
+    if(base) base.setAttribute("d", d);
+    if(flow) flow.setAttribute("d", d);
+    /* arrowhead pointing into Planning */
+    if(head) head.setAttribute("d", "M " + (x1 + 3) + " " + (y1 - 4)
+      + " L " + (x1 + 11) + " " + y1
+      + " L " + (x1 + 3) + " " + (y1 + 4) + " Z");
+  }
+
+  /* Three states for the return arc: off while a run has not looped, flowing
+     during the handoff (dashes travel from Reviewing to Planning), and settled
+     while the refined pass runs. */
+  function setLoopState(v){
+    var wrap = document.getElementById("spineWrap");
+    if(!wrap) return;
+    if(wrap.getAttribute("data-loop") !== v) wrap.setAttribute("data-loop", v);
+    if(v !== "off") drawLoop();
+  }
+
+  function buildSpine(hostEl){
+    if(!hostEl) return;
+    hostEl.innerHTML = "";
+    var rows = [];
+    STAGES.forEach(function(s, i){
+      var li = document.createElement("li");
+      li.setAttribute("data-state", "pending");
+      /* the stage id is what the return arc uses to find its two endpoints, so it
+         is bound to the node rather than to its position in the list */
+      li.setAttribute("data-stage", s.id);
+      li.style.setProperty("--delay", String(i * 60));
+      /* No "P1"…"P7" prefix any more. The bullet already numbers the step, and "P"
+         reads as *pass* — which this interface has a separate and real concept for
+         ("pass 1 of 3", and the refinement that re-runs the whole chain). Seven "P"
+         numbers down a list that restarts on every pass was the misleading part. */
+      var meta = s.meta;
+      li.innerHTML = '<span class="bullet" aria-hidden="true">' + (i + 1) + "</span>"
+        + '<span><span class="stage-name">' + s.label
+        + '<span class="sr"></span></span>'
+        + '<span class="stage-meta">' + meta + "</span>"
+        + '<span class="stage-meta loops" hidden></span></span>';
+      hostEl.appendChild(li);
+      rows.push({
+        el: li,
+        bullet: li.querySelector(".bullet"),
+        name: li.querySelector(".stage-name .sr"),
+        loops: li.querySelector(".loops"),
+        state: "pending",
+        fed: null
+      });
+    });
+    /* The arc layer belongs to the list it annotates, so it is resolved from the
+       host rather than from a global id. `buildSpine` also builds the halted-run
+       spine, which has no wrapper at all; looking that up by id dropped a second
+       arc layer into the *running* stage's wrapper and pointed the live arc's
+       endpoints at a hidden list.
+
+       Exactly one layer, always. The stylesheet reveals every `.loop-layer` under
+       the wrapper whenever `data-loop` is set, so the layer left behind by the
+       previous build kept its old path and reappeared next to the live one —
+       which is what made a single return read as two different lines to
+       Planning. Nothing may be inserted until the previous layer is gone. */
+    var wrap = hostEl.closest ? hostEl.closest(".spine-wrap") : null;
+    if(wrap){
+      Array.prototype.forEach.call(wrap.querySelectorAll(".loop-layer"), function(old){
+        if(old.parentNode) old.parentNode.removeChild(old);
+      });
+      var svg = makeLoopLayer();
+      wrap.insertBefore(svg, hostEl);
+      SPINE.svg = svg;
+    } else {
+      /* no wrapper means no return arc to draw (the halted-run spine) */
+      SPINE.svg = null;
+    }
+    SPINE.host = hostEl;
+    SPINE.wrap = wrap;
+    SPINE.rows = rows;
+    SPINE.layout = { w:0, h:0 };
+    drawLoop();
+  }
+
+  /* One pointer for the whole list; reset the instant the run starts. */
+  function resetFlow(){
+    if(SPINE.host) SPINE.host.style.setProperty("--base", "0");
+  }
+  function markFlow(){
+    if(SPINE.host) SPINE.host.style.setProperty("--base", "170");
+  }
+
+  function syncSpine(marks, loops){
+    if(!SPINE.rows.length) return;
+    var done = function(state){ return state === "done" || state === "loop"; };
+    SPINE.rows.forEach(function(row, i){
+      var st = (marks && marks[STAGES[i].id]) || "pending";
+      if(st !== row.state){
+        row.el.setAttribute("data-state", st);
+        row.state = st;
+      }
+      var prev = i > 0 ? ((marks && marks[STAGES[i - 1].id]) || "pending") : null;
+      var fed = prev === null ? null : (done(prev) ? "1" : "0");
+      if(fed !== row.fed && fed !== null){
+        row.el.setAttribute("data-fed", fed);
+        row.fed = fed;
+      }
+      if(row.name) row.name.textContent = st === "active" ? " (in progress)" : "";
+      /* A step re-armed by a refinement says so with a small loop mark rather
+         than a sentence. The count lives in the refinement strip. */
+      if(row.loops){
+        var show = STAGES[i].id === "researcher" && loops > 0;
+        row.loops.hidden = !show;
+        if(show) row.loops.textContent = "↺";
+      }
+    });
+  }
+
+  /* Kept for the halted-run spine, which is static and never re-renders. */
+
+  /* The refinement strip. One dot per pass the run may take: hollow before it
+     runs, filled with a halo while it runs, filled and quiet once it is done, and
+     the connectors between them fill as the run moves forward. A pass in flight
+     opens its dot into a ring, which is the moment the refinement is happening.
+     There is no prose — the count is the header label, and the track carries the
+     rest. */
+  function renderPassTrack(){
+    var host = document.getElementById("passTrack");
+    if(!host) return;
+    if(!passes.length){ resetPasses(); return; }
+    host.setAttribute("data-refining", play.refining ? "1" : "0");
+    host.innerHTML = "";
+    passes.forEach(function(p, i){
+      var el = document.createElement("li");
+      el.className = "pass";
+      el.setAttribute("data-state", p.state);
+      /* a connector is traversed once the run has moved past the pass before it */
+      if(i < openPass || (i === openPass && p.state === "active" && !play.refining)) el.setAttribute("data-traversed", "1");
+      el.style.setProperty("--delay", String(i * 60));
+      el.innerHTML = '<span class="dot" aria-hidden="true"></span>'
+        + '<span class="pass-n">P' + (i + 1) + "</span>"
+        + '<span class="sr">' + (p.state === "done" ? "complete"
+            : p.state === "active" ? "running now" : "not reached") + "</span>";
+      host.appendChild(el);
+    });
+    var active = 0;
+    passes.forEach(function(p, i){ if(p.state === "active" || p.state === "done") active = i; });
+    setText("passSummary", "pass " + (active + 1) + " of " + passes.length);
+  }
+
+  function renderSpine(hostEl, marks, loops){
+    buildSpine(hostEl);
+    syncSpine(marks, loops);
+  }
+
+  /* ═══ scripted stream — shape taken from the documented event catalogue ═══ */
+  function buildEvents(totalPasses){
+    totalPasses = Math.max(1, totalPasses || 3);
+    var ev = [], toolCalls = 0;
+    function push(type, source, message, metadata){
+      ev.push({ type:type, source:source, message:message, metadata:metadata || {} });
+    }
+    push("graph.session.started", "graph", "Session started.", { max_iterations:totalPasses, checkpointing:false });
+    for(var pass = 0; pass < totalPasses; pass++){
+      var last = pass === totalPasses - 1;
+      var first = pass === 0;
+      push("graph.node.started", "graph.planner", "Node planner started.", { node:"planner", iteration:pass });
+      push("planner.planning.started", "planner", "Planning started.", { iteration:pass, min_sub_topics:3, max_sub_topics:7 });
+      push("planner.planning.completed", "planner", "Plan validated.", { sub_topic_count: first ? 6 : 4, repair_attempted:false, stop_reason:"finished" });
+      push("graph.node.completed", "graph.planner", "Node planner completed.", { node:"planner", iteration:pass });
+
+      push("graph.node.started", "graph.researcher", "Node researcher started.", { node:"researcher", iteration:pass });
+      var topics = first ? 6 : 4;
+      for(var t = 0; t < topics; t++){
+        push("researcher.sub_topic.started", "researcher", "Sub-topic started.",
+          { sub_topic:"topic-" + (t + 1), priority: t < 2 ? 1 : 2, existing_sources: toolCalls });
+        var calls = first ? 3 : 2;
+        for(var c = 0; c < calls; c++){
+          toolCalls++;
+          push("researcher.tool_call", "researcher", "Tool call completed.",
+            { tool: c % 2 === 0 ? "web_search" : "web_scraper", iteration:c + 1, success:true });
+        }
+        push("researcher.sub_topic.completed", "researcher", "Sub-topic completed.",
+          { stop_reason:"sufficient", iterations:calls, tool_calls:calls, findings: first ? 4 : 2 });
+      }
+      push("researcher.research.completed", "researcher", "Research pass completed.",
+        { sub_topics_planned:6, sub_topics_researched:topics, findings: first ? 17 : 11 });
+      push("graph.node.completed", "graph.researcher", "Node researcher completed.", { node:"researcher", iteration:pass });
+
+      ["source_evaluator","fact_checker","synthesizer"].forEach(function(n){
+        push("graph.node.started", "graph." + n, "Node " + n + " started.", { node:n, iteration:pass });
+        if(n === "source_evaluator"){
+          push("source_evaluator.evaluation.completed", "source_evaluator", "Sources scored.",
+            { source_count: first ? 22 : 31, average_score:0.68, low_confidence_count:9 });
+        }
+        if(n === "fact_checker"){
+          push("fact_checker.claims.extracted", "fact_checker", "Claims extracted.", { claim_count:19 });
+          var verdicts = ["verified","verified","unverified","insufficient_evidence","verified"];
+          var conf = [0.9, 0.88, 0.6, 0.0, 0.92];
+          for(var k = 0; k < verdicts.length; k++){
+            push("fact_checker.claim.checked", "fact_checker", "Claim judged.", { verdict:verdicts[k], confidence:conf[k] });
+          }
+          push("fact_checker.fact_check.completed", "fact_checker", "Fact check completed.",
+            { claim_count:19, verified:12, unverified:4, contradicted:1, insufficient_evidence:2 });
+        }
+        if(n === "synthesizer"){
+          push("synthesizer.synthesis.completed", "synthesizer", "Reader report composed.",
+            { section_count:7, citation_count:80, report_chars:124880, limitations:6 });
+        }
+        push("graph.node.completed", "graph." + n, "Node " + n + " completed.", { node:n, iteration:pass });
+      });
+
+      push("graph.node.started", "graph.critic", "Node critic started.", { node:"critic", iteration:pass });
+      push("critic.critique.started", "critic", "Review started.", { iteration:pass, max_iterations:totalPasses });
+      push("critic.critique.completed", "critic",
+        last ? "Critique accepted the report." : "Critique returned a refinement request.",
+        { score: last ? 8 : 6, gap_count: last ? 0 : 6, unsupported_claim_count: last ? 0 : 4, should_continue: !last });
+      push("graph.node.completed", "graph.critic", "Node critic completed.", { node:"critic", iteration:pass });
+
+      if(last){
+        push("graph.route.decided", "graph", "Route decided: finalize.",
+          { destination:"finalize", reason:"critique_satisfied", iteration:pass, max_iterations:totalPasses });
+        push("graph.node.started", "graph.finalize_report", "Publishing artifacts.", { node:"finalize_report", iteration:pass });
+        push("graph.report.published", "graph", "Report published.",
+          { report_path:"api-output/report.md", evidence_path:"api-output/evidence-ledger.md" });
+        push("graph.node.completed", "graph.finalize_report", "Node finalize_report completed.", { node:"finalize_report", iteration:pass });
+        push("graph.session.completed", "graph", "Session completed.",
+          { status:"completed", iteration:pass, error_count:2, has_report:true });
+      } else {
+        push("graph.route.decided", "graph", "Route decided: refine.",
+          { destination:"refine", reason:"refinement_requested", iteration:pass, max_iterations:totalPasses });
+        push("graph.refinement.started", "graph", "Refinement pass started.", { iteration:pass + 1, max_iterations:totalPasses });
+      }
+    }
+    ev.passes = totalPasses;
+    return ev;
+  }
+  /* Per-stage weighting. Event density is wildly uneven — the researcher emits a
+     tool_call per tool per sub-topic while the rest emit a handful of records
+     each — so a wall-clock-proportional schedule flashes four steps past in under
+     a second and then sits on the last one. Weighting by node gives every step
+     comparable screen time, then the schedule is scaled to the session's real
+     duration so the elapsed clock still reads true. Pacing only: nothing the
+     interface states depends on it. */
+  function weigh(events){
+    var W = {
+      planner:0.7, researcher:1.4, source_evaluator:1.1, fact_checker:1.4,
+      synthesizer:1.0, critic:0.9, finalize_report:0.8
+    };
+    var totalW = 0, acc = 0;
+    events.forEach(function(e){ e.w = W[e.type] || 0.9; totalW += e.w; });
+    events.forEach(function(e){ acc += e.w / totalW * 760; e.at = Math.round(acc); });
+    return events;
+  }
+
+  /* Scripts are built per session, because how many passes a run takes is a
+     property of the run: the graph loops only while the critic recommends it,
+     and graph.max_iterations is a ceiling rather than a target. A session
+     submitted from the composer has no entry yet, so the script is built on
+     demand at its default ceiling. */
+  var SCRIPTS = {};
+  function scriptFor(session){
+    if(!SCRIPTS[session.id]) SCRIPTS[session.id] = weigh(buildEvents(session.passes || 3));
+    return SCRIPTS[session.id];
+  }
+  SESSIONS.forEach(function(s){ scriptFor(s); });
+  var PLAYBACK = scriptFor(SESSIONS[0]);
+  /* Watch time for a scripted run. Sized so every step holds the highlight long
+     enough to be read — a proportional 17s window left four steps on screen for
+     about a second each. */
+  var PLAY_MS = 30000;
+
+  var play = { timer:null, idx:0, elapsed:0, loops:0, marks:{}, refining:false,
+               toolCalls:0, claims:0, session:null, pass:0, maxPasses:3 };
+  /* One entry per pass, sized to the passes this run actually takes. Only the
+     state is tracked: the refinement track reads it as a dot's fill, so there is
+     no per-pass step count to maintain. */
+  var passes = [];
+  var openPass = 0;
+  function resetPasses(max){
+    play.maxPasses = Math.max(1, max || play.maxPasses || 3);
+    passes = [];
+    for(var i = 0; i < play.maxPasses; i++) passes.push({ state:"pending" });
+    passes[0].state = "active";
+    openPass = 0;
+    play.refining = false;
+    renderPassTrack();
+  }
+  var PLAY_MS = 30000;
+
+  function reducedMotion(){
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+  function applyEvent(ev, session){
+    var node = ev.metadata.node;
+    if(ev.type === "graph.node.started" && node){
+      Object.keys(play.marks).forEach(function(k){ if(play.marks[k] === "active") play.marks[k] = "done"; });
+      play.marks[node] = "active";
+      if(typeof ev.metadata.iteration === "number"){
+        session.iteration = ev.metadata.iteration;
+        /* The topbar chip carries the iteration, and the topbar is otherwise only
+           rebuilt on a stage change. Without this the chip kept whatever number it
+           was first rendered with, so it read "iteration 0 of 3" for the whole run
+           while the pipeline moved on. Rebuilt only when the number actually
+           changes, so the chip's live dot is not re-created on every event. */
+        if(play.iterationShown !== session.iteration){
+          play.iterationShown = session.iteration;
+          renderTopbar();
+        }
+      }
+      if(passes[openPass]) passes[openPass].state = "active";
+      renderPassTrack();
+    }
+    if(ev.type === "graph.node.completed" && node && play.marks[node] === "active"){
+      play.marks[node] = "done";
+    }
+    if(ev.type === "graph.session.completed" && play.marks.finalize_report) play.marks.finalize_report = "done";
+    if(ev.type === "researcher.tool_call") play.toolCalls++;
+    if(ev.type === "fact_checker.claim.checked") play.claims++;
+    /* Publishing is the one step whose fill should lag, so the report's arrival
+       reads as the last thing that happens rather than one more tick. */
+    if(ev.type === "graph.node.started" && node === "finalize_report") markFlow();
+    /* A refinement pass is a NEW pass, not a step inside the old one. The reset
+       happens as soon as the critic routes back, so the spine is already hollow
+       by the time the next pass's step 1 lights up. Leaving the old marks in
+       place was a bug: it showed the pipeline at step 1 while steps 2-7 still
+       read "finished", which looks like progress running backwards.
+
+       `refining` is the window between the critic routing back and the next pass
+       actually starting. During it the strip opens its active dot into a ring, so
+       the loop is visible at the moment it happens rather than only in a count. */
+    /* The handoff: the critic routes back, so the arc flows from Reviewing up to
+       Planning, the spine goes hollow, and the next pass starts at step 1. The arc
+       stays lit while that pass runs and clears when the pass ends, so a return is
+       never a silent jump. */
+    if(ev.type === "graph.route.decided" && ev.metadata.destination === "refine"){
+      play.marks = {};
+      resetFlow();
+      play.refining = true;
+      setLoopState("flowing");
+      renderPassTrack();
+    }
+    /* The run is over: nothing is in flight, and the last pass is complete. The
+       graph checks its own iteration bound before the critic's recommendation, so
+       the last pass is sealed here rather than by the critique's score. */
+    if(ev.type === "graph.session.completed"){
+      passes.forEach(function(p){ if(p.state === "active") p.state = "done"; });
+      play.refining = false;
+      setLoopState("off");
+      renderPassTrack();
+    }
+    if(ev.type === "graph.refinement.started"){
+      var next = ev.metadata.iteration || 0;
+      if(passes[openPass]) passes[openPass].state = "done";
+      openPass = next;
+      play.pass = next;
+      play.loops = next;
+      play.refining = false;
+      /* the beat has landed: the arc rests lit while this pass is the one running */
+      setLoopState("settled");
+      if(passes[next]) passes[next].state = "active";
+      renderPassTrack();
+    }
+    syncSpine(play.marks, play.loops);
+  }
+  function currentStageIndex(){
+    var order = ["planner","researcher","source_evaluator","fact_checker","synthesizer","critic","finalize_report"];
+    var idx = 0;
+    order.forEach(function(n, i){
+      var st = play.marks[n];
+      if(st === "done" || st === "active" || st === "loop") idx = Math.max(idx, i);
+    });
+    return idx;
+  }
+  var BLURB = {
+    planner:"Planning the sub-topics and their search queries.",
+    researcher:"Searching, scraping and extracting findings per sub-topic.",
+    source_evaluator:"Scoring every source behind the findings.",
+    fact_checker:"Checking major claims against independent domains.",
+    synthesizer:"Composing the report from the locally rendered skeleton.",
+    critic:"Reviewing the report against the acceptance threshold.",
+    finalize_report:"Publishing the report and the evidence ledger."
+  };
+  function updateRunningChrome(session){
+    var idx = currentStageIndex();
+    var stage = STAGES[Math.min(idx, STAGES.length - 1)];
+    /* The stage is named once, in the pipeline's own "Now" block. A status chip
+       repeating it above the question was a second statement of the same fact. */
+    setText("runNow", stage.label);
+    setText("runProgressLabel", "stage " + (idx + 1) + " of " + STAGES.length);
+    setText("runningBlurb", BLURB[stage.id] || "Working.");
+    setText("runElapsed", fmtElapsed(play.elapsed) + " elapsed");
+    /* The pass number comes from the pass model, not from session.iteration:
+       iteration only advances when a refinement's started event arrives, so
+       reading it here would label the handoff with the pass that just ended. */
+    var passNo = Math.min(openPass + 1, play.maxPasses);
+    setText("runPasses", "pass " + passNo + " of " + play.maxPasses);
+    var fill = document.getElementById("runTrackFill");
+    if(fill) fill.style.width = Math.round(((idx + 1) / STAGES.length) * 100) + "%";
+    var track = document.getElementById("runTrack");
+    if(track) track.setAttribute("aria-valuenow", String(idx + 1));
+  }
+  function startPlayback(session){
+    /* this session's own script: it may take one pass or several */
+    PLAYBACK = scriptFor(session);
+    stopPlayback();
+    play.session = session;
+    play.idx = 0; play.elapsed = 0; play.loops = 0; play.toolCalls = 0; play.claims = 0; play.marks = {};
+    play.pass = 0;
+    /* force the topbar chip to render for this session's first iteration */
+    play.iterationShown = null;
+    session.status = "running";
+    session.iteration = 0;
+    resetPasses(PLAYBACK.passes || 3);
+    buildSpine(document.getElementById("spine"));
+    resetFlow();
+    setLoopState("off");
+    syncSpine(play.marks, 0);
+    updateRunningChrome(session);
+    /* One frame per event on a fixed cadence, so a stage's screen time is its
+       share of the schedule rather than its share of the event count: the
+       researcher's ~70 tool calls would otherwise eat the whole run and the
+       synthesizer would flash past. Each event still carries its own virtual
+       timestamp for the elapsed clock and the timestamps shown. */
+    var stepMs = reducedMotion() ? 30 : Math.round(PLAY_MS / PLAYBACK.length);
+    play.timer = setInterval(function(){
+      if(play.idx >= PLAYBACK.length){ finishPlayback(session); return; }
+      var ev = PLAYBACK[play.idx++];
+      play.elapsed = ev.at;
+      applyEvent(ev, session);
+      updateRunningChrome(session);
+    }, stepMs);
+  }
+  function stopPlayback(){
+    if(play.timer){ clearInterval(play.timer); play.timer = null; }
+  }
+  /* ═══ running → report: the frame slides down into place ═══
+     The question frame is the same object on both stages, but the report puts the session
+     meta and the actions in a bar above it, so its frame sits lower. Cross-fading one frame
+     into a different place reads as the frame being replaced; sliding it reads as the same
+     frame moving down.
+
+     The report's frame is therefore placed where the running one was for a single frame and
+     then released to its own position, which the transform transitions. Three things make
+     that work, and all three are load-bearing:
+
+       - the two frames share an x, because both are centred in the same column, so the move
+         has no sideways component to reconcile;
+       - everything here is synchronous — measure, switch, apply — so the browser paints
+         once, and the frame is never seen sitting at its destination before the slide;
+       - the start position is read from the *running* stage while it is still laid out. From
+         any other stage there is nothing to come from, the measurement is empty, and the
+         frame is simply there. */
+  var reportSlideTimer = null;
+  function enterReport(session){
+    clearTimeout(reportSlideTimer);
+    var from = document.getElementById("running-h");
+    var to = document.getElementById("report-h");
+    /* never inherit a half-finished slide from a previous one */
+    if(to){ to.style.transition = ""; to.style.transform = ""; }
+    var a = from ? from.getBoundingClientRect() : null;
+    var start = (a && a.height) ? a : null;
+
+    populateReport(session);
+    showStage("report");
+
+    if(!start || !to || reducedMotion()) return;
+    var end = to.getBoundingClientRect();
+    if(!end.height) return;
+    var dy = start.top - end.top;
+    if(Math.abs(dy) < 2) return;              /* nothing to move: the two already agree */
+
+    to.style.transform = "translateY(" + dy + "px)";
+    void to.offsetWidth;                      /* commit the start before releasing it */
+    to.style.transition = "transform var(--motion-base) var(--ease-standard)";
+    to.style.transform = "";
+    reportSlideTimer = setTimeout(function(){
+      to.style.transition = "";
+      to.style.transform = "";
+    }, motionMs("--motion-base", 200) + 40);
+  }
+
+  function finishPlayback(session){
+    stopPlayback();
+    session.status = "completed";
+    /* The iteration a finished run reports is the number of the pass it ended on,
+       which is the last iteration its events carried — not the ceiling. Hardcoding
+       3 made a one-pass run claim it had refined twice. `play.pass` is that index;
+       fall back to the script's own pass count if it is ever unavailable. */
+    session.iteration = (typeof play.pass === "number" ? play.pass : (PLAYBACK.passes || 3) - 1) + 1;
+    session.finished = new Date().toISOString();
+    session.reportPath = "api-output/report.md";
+    session.trace = "https://smith.langchain.com/o/example/r/" + session.id;
+    session.playback = false;
+    renderList();
+    enterReport(session);
+  }
+
+  /* ═══ report + failed population ═══ */
+  function populateReport(session){
+    var dur = fmtDur(session.started, session.finished);
+    setText("reportMeta", "session " + session.id + " · finished " + (fmtClock(session.finished) || "not recorded")
+      + (dur ? " · " + dur : "") + " · " + session.iteration + " passes");
+    setText("report-h", session.q);
+    /* The status is not repeated here. The topbar chip is the one place it lives on this
+       stage — the same call the running stage made when its own status chip went, for the
+       same reason: a badge that says what the chrome already says is one more thing to read
+       and nothing to act on. */
+    setText("repFactStatus", session.status);
+    setText("repFactIteration", String(session.iteration));
+    setText("repFactStarted", session.started);
+    setText("repFactFinished", session.finished || "not recorded");
+    setText("repFactErrors", String((session.errors || []).length));
+
+    var path = document.getElementById("repFactPath");
+    if(path){
+      if(session.reportPath){ path.textContent = session.reportPath; path.className = ""; }
+      else { path.textContent = "Not published"; path.className = "avail"; }
+    }
+    var dl = document.getElementById("downloadBtn");
+    if(dl) dl.style.display = session.reportPath ? "" : "none";
+    var trace = document.getElementById("traceBtn");
+    if(trace){
+      if(session.trace){ trace.style.display = ""; trace.href = session.trace; }
+      else trace.style.display = "none";
+    }
+    var errs = session.errors || [];
+    var rec = errs.filter(function(x){ return x.recoverable; }).length;
+    setText("repErrSummary", rec + " recoverable · " + (errs.length - rec) + " non-recoverable");
+    var rl = document.getElementById("repErrList");
+    if(rl){
+      rl.innerHTML = errs.length
+        ? errs.map(function(x){ return '<span class="avail-mono">' + x.type + "</span>"; }).join("")
+        : '<span class="avail">No errors recorded.</span>';
+    }
+    var lim = document.getElementById("repLimitations");
+    if(lim){
+      var partial = session.status === "max_iterations" || session.status === "incomplete";
+      var lines = ["Some steps of this research pass failed; sections of this report may be incomplete.",
+                   "Some sources behind these findings were flagged low confidence.",
+                   "At least one claim was contradicted by an independent source."];
+      if(partial){
+        lines.splice(1, 0, "The refinement budget was exhausted before the critic accepted the report.");
+        lines.push("Four planned sub-topics were never attempted because the cap truncated the plan.");
+      }
+      lim.innerHTML = lines.map(function(t){ return "<li>" + t + "</li>"; }).join("");
+    }
+  }
+  function populateFailed(session){
+    var hard = (session.errors || []).filter(function(x){ return !x.recoverable; })[0]
+            || { type:"api.research.failed", source:"api" };
+    setText("failedMeta", "session " + session.id + " · finished " + (fmtClock(session.finished) || "not recorded"));
+    setText("failed-h", session.q);
+    setText("failedType", hard.type);
+    setText("failFactType", hard.type);
+    setText("failFactSource", hard.source || "graph");
+    setText("failFactRecoverable", String(!!hard.recoverable));
+    var trace = document.getElementById("failedTrace");
+    if(trace){
+      if(session.trace){ trace.style.display = ""; trace.href = session.trace; }
+      else trace.style.display = "none";
+    }
+    /* halted in the planner: the node started, nothing after it ran */
+    renderSpine(document.getElementById("spineFailed"), { planner:"active" }, 0);
+  }
+
+  /* ═══ open a session ═══ */
+  function restoreSettings(session){
+    if(session.settings){
+      settings.model = session.settings.model;
+      settings.thinking = session.settings.thinking;
+      settings.effort = session.settings.effort;
+      settings.outputDir = session.settings.outputDir;
+      /* the budget this session actually ran with, so reopening it shows its own
+         number rather than whatever the composer was last left on */
+      if(typeof session.settings.refinements === "number"){
+        settings.refinements = clampRefinements(session.settings.refinements);
+      } else if(typeof session.passes === "number"){
+        settings.refinements = clampRefinements(session.passes);
+      }
+    }
+    /* the composer only exists while idle, so only sync it there */
+    if(state.stage === "idle") syncSettingsUI();
+  }
+  function openSession(id, opts){
+    opts = opts || {};
+    var session = null;
+    for(var i = 0; i < SESSIONS.length; i++) if(SESSIONS[i].id === id) session = SESSIONS[i];
+    if(!session) return;
+    /* Switching sessions mid-journey abandons the journey: without this a pending
+       beat would drop a flight box onto whatever page the operator moved to. */
+    clearFlight();
+    state.activeId = id;
+    try { localStorage.setItem(LS_ACTIVE, id); } catch(e){}
+    renderList();
+    renderLockedOptions(session);
+    restoreSettings(session);
+    /* the question is shown, read-only, on every stage after the composer */
+    setText("running-h", session.q);
+    setText("submitted-h", session.q);
+    if(isDrawer()) setSidebar("collapsed");
+
+    if(session.playback && session.status === "running"){
+      /* Rewind before the first paint. showStage() renders the topbar, so a
+         session that is about to replay from the start must not briefly show the
+         iteration the previous session finished on — the chip carried "iteration
+         3 of 3" for one frame when switching between sessions. */
+      session.iteration = 0;
+      play.iterationShown = null;
+      if(opts.hold){
+        /* the "question locked in" beat: page 1 drains to the box, the box travels
+           up to where the locked question sits, and page 2 assembles behind it.
+           Returns how long the caller should hold before the pipeline appears. */
+        return holdBeat(session);
+      }
+      /* page 2 hands over to page 3 with the header already in place on both, so the
+         generic slide is suppressed and only the body below it rises in. */
+      showStage("running", { enter: false, arriving: true });
+      startPlayback(session);
+      return;
+    }
+    stopPlayback();
+    if(session.status === "failed"){
+      populateFailed(session);
+      showStage("failed");
+    } else {
+      enterReport(session);
+    }
+  }
+
+  /* ═══ new research ═══ */
+  document.getElementById("newResearch").addEventListener("click", function(){
+    clearTimeout(transitionTimer);
+    clearFlight();
+    stopPlayback();
+    state.activeId = null;
+    try { localStorage.removeItem(LS_ACTIVE); } catch(e){}
+    renderList();
+    renderLockedOptions(null);
+    var prompt = document.getElementById("prompt");
+    if(prompt){ prompt.value = ""; prompt.removeAttribute("aria-invalid"); autoGrowPrompt(); prompt.focus(); }
+    setText("composerError", "");
+    showStage("idle");
+  });
+
+  /* ═══ boot ═══ */
+  (function boot(){
+    /* The composer is already in the document as real markup. */
+    wireComposer();
+    /* a browser restores a textarea's value across a soft reload, so the box is fitted
+       to whatever is already in it rather than trusting rows="2" */
+    autoGrowPrompt();
+    syncSettingsUI();
+    renderStarters();
+    renderList();
+
+    var savedSidebar = "expanded";
+    try { savedSidebar = localStorage.getItem(LS_SIDEBAR) || "expanded"; } catch(e){}
+    if(isDrawer()) savedSidebar = "collapsed";
+    setSidebar(savedSidebar);
+
+    /* Land on the first page. "New research" is the console's entry point, and
+       a first load has no session to rejoin; openSession() still restores a
+       session when the operator picks one from the sidebar, or when the app
+       rejoins a run after a reload with dr.console.active set. */
+    var resume = null;
+    try { resume = localStorage.getItem(LS_ACTIVE); } catch(e){}
+    var target = null;
+    for(var i = 0; i < SESSIONS.length; i++) if(SESSIONS[i].id === resume) target = SESSIONS[i];
+    if(target && target.playback && target.status === "running"){
+      openSession(target.id);          /* rejoin a run that was still going */
+    } else {
+      showStage("idle");
+    }
+  })();
+
+  /* small review hook */
+  Object.assign(window, {
+    drConsole: {
+      open: openSession,
+      sessions: SESSIONS,
+      settings: settings,
+      stage: function(){ return state.stage; },
+      /* Which rendering of the page 1 → 2 journey this environment asks for. It is
+         the one input that cannot be read off the source and the only one that
+         removes the journey entirely, so it is worth being able to ask for. */
+      motion: function(){ return reducedMotion() ? "reduced" : "full"; },
+      submit: function(q){ document.getElementById("prompt").value = q; submitResearch(); },
+      finish: function(){ var s = activeSession(); if(s) finishPlayback(s); }
+    }
+  });
+})();
+</script>
+
+
+</body></html>
