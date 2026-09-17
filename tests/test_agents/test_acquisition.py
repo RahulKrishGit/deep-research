@@ -3,27 +3,46 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+from pathlib import Path
 
+import httpx
 import pytest
 
 from deep_research.agents.acquisition import (
+    PASSAGE_SELECTION_OPERATION,
     AcquisitionPolicy,
     build_acquisition_context,
     build_read_record_from_tool_result,
     next_acquisition_action,
 )
+from deep_research.agents.evidence import merge_evidence_units
 from deep_research.agents.react import run_react_loop
+from deep_research.agents.researcher import (
+    FindingDraft,
+    SubTopicFindingsDraft,
+    build_findings,
+)
 from deep_research.agents.steps import ReActDecision, ReActObservation, ReActStep
 from deep_research.agents.toolset import AgentToolset
-from deep_research.tools.base import ToolError, ToolResult
+from deep_research.tools.base import BaseTool, ToolError, ToolResult
+from deep_research.tools.document_reader import DocumentReaderTool
 from deep_research.tools.passage_selection import select_relevant_passages
 from deep_research.utils.types import (
     AcquisitionState,
     CandidateRecord,
+    EvidenceUnit,
+    ReadRecord,
     ResearchState,
+    SubTopic,
     merge_research_state,
 )
 from tests.agent_fakes import EchoTool, agent_scope, finish, use_tool
+from tests.research_fakes import (
+    FakeSearchClient,
+    page_client,
+    research_tools,
+)
 
 
 def test_two_searches_require_read_but_failed_reads_do_not_deadlock() -> None:
@@ -255,7 +274,17 @@ def test_shared_successful_read_cache_reselects_for_a_second_target() -> None:
 
 
 def test_acquisition_context_keeps_ids_when_a_complete_record_overflows() -> None:
-    result = _read_result(text="queue delay commissioning " + "x" * 120)
+    """An overflowing record is named for continuation, never sliced.
+
+    The passage carries a unique tail, so finding any part of it in the packet
+    would prove the packet had handed over a fragment of a record it could not
+    fit whole — the failure an atomic-record budget exists to prevent. The
+    record's own id must appear in the continuation list instead.
+    """
+    tail = "ZZZCONTINUATIONPROBE"
+    result = _read_result(
+        text="queue delay commissioning " + "x" * 1400 + tail
+    )
     read = build_read_record_from_tool_result(result, session_id="session-1")
     assert read is not None
     state = AcquisitionState(
@@ -265,10 +294,16 @@ def test_acquisition_context_keeps_ids_when_a_complete_record_overflows() -> Non
         remaining_calls=2,
         remaining_model_turns=1,
     )
-    context = build_acquisition_context(state, {read.read_id: read}, {}, limit=240)
+    context = build_acquisition_context(state, {read.read_id: read}, {}, limit=900)
     assert "target_id=target-1" in context
     assert "pending_passage_ids=" in context
     assert "continuation_ids=" in context
+    assert tail not in context
+    assert read.passages["page-80-chunk-0"] not in context
+    assert f"passage:{read.read_id}/page-80-chunk-0" in context
+    # The packet carries no heading of its own: the decision prompt's renderer
+    # adds "## Acquisition context" exactly once.
+    assert "## Acquisition context" not in context
 
 
 @pytest.mark.asyncio
@@ -491,3 +526,950 @@ def test_a_short_shell_body_is_still_refused_its_read() -> None:
     assert (
         build_read_record_from_tool_result(result, session_id="session-1") is None
     )
+
+
+# ---------------------------------------------------------------------------
+# the local extract gate: a bounded continuation batch that terminates
+# ---------------------------------------------------------------------------
+
+_STUDY_URL = "https://agency.example/queue-study.pdf"
+
+
+def _paged_result(pages: int, *, text: str) -> ToolResult:
+    """A document_reader payload carrying one extracted chunk per page."""
+    chunks = [
+        {"text": f"{text} page {page}", "chunk_index": 0, "page": page}
+        for page in range(1, pages + 1)
+    ]
+    return ToolResult(
+        tool_name="document_reader",
+        success=True,
+        data={
+            "source": _STUDY_URL,
+            "requested_source": _STUDY_URL,
+            "resolved_source": _STUDY_URL,
+            "title": "Queue study",
+            "chunks": chunks,
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+
+def _document_step(result: ToolResult, url: str = _STUDY_URL) -> ReActStep:
+    return ReActStep(
+        iteration=1,
+        thought="Read the document.",
+        action="use_tool",
+        tool_name="document_reader",
+        tool_input={"source": url},
+        observation=ReActObservation(
+            tool_name="document_reader", success=True, summary="read"
+        ),
+        tool_result=result,
+    )
+
+
+def _policy(
+    *,
+    query: str = "queue delay commissioning",
+    candidate_urls: Sequence[str] = (_STUDY_URL,),
+    remaining_calls: int = 5,
+    selected_passages_per_read: int = 4,
+    target_id: str | None = "target-1",
+    reads: dict[str, ReadRecord] | None = None,
+    evidence: dict[str, EvidenceUnit] | None = None,
+    dispositions: list | None = None,
+) -> AcquisitionPolicy:
+    return AcquisitionPolicy(
+        state=AcquisitionState(
+            target_id=target_id,
+            candidate_urls=list(candidate_urls),
+            remaining_calls=remaining_calls,
+        ),
+        session_id="session-1",
+        target_id=target_id,
+        query=query,
+        selected_passages_per_read=selected_passages_per_read,
+        reads=reads if reads is not None else {},
+        evidence=evidence if evidence is not None else {},
+        dispositions=dispositions if dispositions is not None else [],
+    )
+
+
+def test_a_selection_miss_hands_over_a_bounded_second_passage_batch() -> None:
+    """A page that matches no query term is not "there is no evidence".
+
+    The single chunk of a page whose text shares no term with the query is
+    omitted by the first (query-scored) batch. The gate then says "extract",
+    and the local step has to hand that chunk over anyway — in reader order —
+    or the target is frozen out of acquisition for the rest of the pass.
+    """
+    policy = _policy()
+    policy.after_action(
+        _document_step(_paged_result(1, text="An unrelated cover page."))
+    )
+    read_id = next(iter(policy.reads))
+    locator = f"{read_id}/page-1-chunk-0"
+
+    assert policy.state.pending_passage_ids == [locator]
+    assert next_acquisition_action(policy.state) == "extract"
+    assert policy.evidence == {}
+
+    decision = ReActDecision(
+        thought="Search again.",
+        action="use_tool",
+        tool_name="web_search",
+        tool_input_json='{"query": "another angle"}',
+    )
+    allowed = policy.before_action(decision, {"query": "another angle"})
+
+    assert allowed.allowed is True
+    assert policy.state.pending_passage_ids == []
+    assert next_acquisition_action(policy.state) != "extract"
+    (unit,) = policy.evidence.values()
+    assert unit.locator == "page-1-chunk-0"
+    assert unit.excerpt == policy.reads[read_id].passages["page-1-chunk-0"]
+
+
+def test_the_second_passage_batch_is_bounded_and_terminates() -> None:
+    """Two batches, then an explicit disposition — never a third batch.
+
+    Twelve scored passages, four per batch: batch one takes four, the
+    continuation batch takes four more, and the last four leave the pending
+    list for good. The persisted state can therefore never re-enter "extract",
+    which is what froze a target behind an append-only list.
+    """
+    policy = _policy(remaining_calls=3)
+    policy.after_action(
+        _document_step(_paged_result(12, text="queue delay commissioning"))
+    )
+    read_id = next(iter(policy.reads))
+
+    assert len(policy.evidence) == 4
+    assert len(policy.state.pending_passage_ids) == 8
+    assert next_acquisition_action(policy.state) == "extract"
+
+    policy.complete_extraction()
+
+    assert len(policy.evidence) == 8
+    assert policy.state.pending_passage_ids == []
+    assert policy.state.pending_extraction_ids == []
+    assert next_acquisition_action(policy.state) != "extract"
+
+    terminal = {
+        f"{read_id}/page-{page}-chunk-0" for page in range(9, 13)
+    }
+    assert not any(
+        item in policy.state.pending_passage_ids for item in terminal
+    )
+    # The terminal omissions are recorded, not dropped silently: every one has
+    # an explicit disposition, and the batch's selection manifest names them.
+    disposed = {item.item_id for item in policy.dispositions}
+    assert terminal <= disposed
+    manifests = [
+        audit
+        for audit in policy.boundary_audits.values()
+        if audit.operation == PASSAGE_SELECTION_OPERATION
+        and terminal <= set(audit.deferred_ids)
+    ]
+    assert manifests
+
+    # No third batch: the handoff is idempotent once the bound is reached.
+    assert policy.complete_extraction() is None
+    assert len(policy.evidence) == 8
+
+
+def test_a_bound_of_one_batch_hands_everything_over_immediately() -> None:
+    """The bound is a real parameter: one batch means no continuation."""
+    policy = AcquisitionPolicy(
+        state=AcquisitionState(
+            target_id="target-1",
+            candidate_urls=[_STUDY_URL],
+            remaining_calls=3,
+        ),
+        session_id="session-1",
+        target_id="target-1",
+        query="queue delay commissioning",
+        passage_batch_limit=1,
+    )
+    policy.after_action(
+        _document_step(_paged_result(6, text="queue delay commissioning"))
+    )
+    assert len(policy.evidence) == 4
+    assert len(policy.state.pending_passage_ids) == 2
+
+    policy.complete_extraction()
+
+    # No continuation batch exists at this bound, so the two omitted locators
+    # are terminated rather than left to gate acquisition forever.
+    assert len(policy.evidence) == 4
+    assert policy.state.pending_passage_ids == []
+    assert next_acquisition_action(policy.state) != "extract"
+
+
+def test_both_targets_survive_a_second_admission_of_one_body() -> None:
+    """Reuse adds an association; it never replaces the earlier target's."""
+    shared_reads: dict[str, ReadRecord] = {}
+    shared_evidence: dict[str, EvidenceUnit] = {}
+    shared_dispositions: list = []
+    shared_cache: dict[str, ReadRecord] = {}
+    shared_network: set[str] = set()
+    first = AcquisitionPolicy(
+        state=AcquisitionState(
+            target_id="target-1",
+            candidate_urls=[_STUDY_URL],
+            remaining_calls=2,
+        ),
+        session_id="session-1",
+        target_id="target-1",
+        query="queue delay commissioning",
+        reads=shared_reads,
+        evidence=shared_evidence,
+        dispositions=shared_dispositions,
+        cache=shared_cache,
+        network_read_ids=shared_network,
+    )
+    first.after_action(
+        _document_step(_paged_result(1, text="queue delay commissioning"))
+    )
+
+    second = AcquisitionPolicy(
+        state=AcquisitionState(
+            target_id="target-2",
+            candidate_urls=[_STUDY_URL],
+            remaining_calls=2,
+        ),
+        session_id="session-1",
+        target_id="target-2",
+        query="queue delay commissioning",
+        reads=shared_reads,
+        evidence=shared_evidence,
+        dispositions=shared_dispositions,
+        cache=shared_cache,
+        network_read_ids=shared_network,
+    )
+    cached = second.before_action(
+        _read_decision("document_reader", _STUDY_URL), {"source": _STUDY_URL}
+    )
+    assert cached.result is not None
+    second.after_action(_document_step(cached.result))
+
+    assert len(shared_evidence) == 1
+    (unit,) = shared_evidence.values()
+    assert unit.target_ids == ["target-1", "target-2"]
+    # The registry the state merge sees is conflict-free: one unit per
+    # (read_id, locator, excerpt), with additive targets.
+    assert merge_evidence_units({}, dict(shared_evidence)) == shared_evidence
+
+
+def test_one_read_keeps_one_title_across_two_admissions() -> None:
+    """A snippet title may label a read once; it may not relabel it later.
+
+    Both admissions mint the same evidence identity, and the shared merge
+    treats two different ``source_title`` values for one identity as an
+    identity conflict. The first stored title therefore stands.
+    """
+    shared_reads: dict[str, ReadRecord] = {}
+    first_url = "https://agency.example/queue-report"
+    titles = ("Queue report", "Queue report (updated edition)")
+
+    units: list[dict[str, EvidenceUnit]] = []
+    for index, title in enumerate(titles, start=1):
+        policy = AcquisitionPolicy(
+            state=AcquisitionState(
+                target_id=f"target-{index}",
+                candidate_urls=[first_url],
+                remaining_calls=2,
+            ),
+            session_id="session-1",
+            target_id=f"target-{index}",
+            query="queue delay",
+            reads=shared_reads,
+        )
+        policy.after_action(_search_step((first_url, title)))
+        result = ToolResult(
+            tool_name="web_scraper",
+            success=True,
+            data={
+                "url": first_url,
+                "requested_url": first_url,
+                "resolved_url": first_url,
+                "title": "",
+                "text": "Queue delay reached 34 months.",
+                "extraction_complete": True,
+            },
+            latency_ms=0,
+        )
+        policy.after_action(_document_step(result, first_url))
+        units.append(dict(policy.evidence))
+
+    assert len(units[0]) == 1 and len(units[1]) == 1
+    assert {unit.source_title for unit in units[0].values()} == {titles[0]}
+    assert {unit.source_title for unit in units[1].values()} == {titles[0]}
+    state = ResearchState(
+        session_id="session-1",
+        original_question="question",
+        evidence_units=units[0],
+    )
+    merged = merge_research_state(state, {"evidence_units": units[1]})
+    assert set(merged.evidence_units) == set(units[0])
+    assert {unit.source_title for unit in merged.evidence_units.values()} == {
+        titles[0]
+    }
+
+
+def test_a_selected_passage_is_not_marked_used_by_a_sibling_passage() -> None:
+    """Disposition is unit-level: a finding covers its own passage only.
+
+    Both chunks of this page were selected. A finding extracted from the first
+    says nothing about the second, so the second keeps its explicit
+    ``irrelevant`` disposition instead of being skipped because its URL — the
+    URL both passages share — produced a finding.
+    """
+    policy = _policy(selected_passages_per_read=2)
+    policy.after_action(
+        _document_step(_paged_result(2, text="queue delay commissioning"))
+    )
+    read = next(iter(policy.reads.values()))
+    locators = sorted(policy.evidence)
+    assert len(locators) == 2
+
+    policy.record_extraction_dispositions([(read.read_id, "page-1-chunk-0")])
+
+    reasons = {
+        item.item_id: item.reason
+        for item in policy.dispositions
+        if item.stage == "extraction"
+    }
+    used = next(
+        evidence_id
+        for evidence_id, unit in policy.evidence.items()
+        if unit.locator == "page-1-chunk-0"
+    )
+    unused = next(
+        evidence_id
+        for evidence_id, unit in policy.evidence.items()
+        if unit.locator == "page-2-chunk-0"
+    )
+    assert used not in reasons
+    assert reasons[unused] == "irrelevant"
+
+
+@pytest.mark.asyncio
+async def test_a_cache_hit_is_not_reported_as_an_external_tool_call(
+    tracker,
+) -> None:
+    """Reuse is a completed action, not a tool call, and not acquired work."""
+    shared_reads: dict[str, ReadRecord] = {}
+    shared_evidence: dict[str, EvidenceUnit] = {}
+    shared_cache: dict[str, ReadRecord] = {}
+    shared_network: set[str] = set()
+    first = AcquisitionPolicy(
+        state=AcquisitionState(
+            target_id="target-1",
+            candidate_urls=[_STUDY_URL],
+            remaining_calls=2,
+        ),
+        session_id="session-1",
+        target_id="target-1",
+        query="queue delay commissioning",
+        reads=shared_reads,
+        evidence=shared_evidence,
+        cache=shared_cache,
+        network_read_ids=shared_network,
+    )
+    first.after_action(
+        _document_step(_paged_result(1, text="queue delay commissioning"))
+    )
+    assert first.acquired_work_count == 1
+
+    second = AcquisitionPolicy(
+        state=AcquisitionState(
+            target_id="target-2",
+            candidate_urls=[_STUDY_URL],
+            remaining_calls=2,
+        ),
+        session_id="session-1",
+        target_id="target-2",
+        query="queue delay commissioning",
+        reads=shared_reads,
+        evidence=shared_evidence,
+        cache=shared_cache,
+        network_read_ids=shared_network,
+    )
+
+    async def decisions(
+        iteration: int, steps: tuple[object, ...]
+    ) -> tuple[ReActDecision, ...]:
+        del steps
+        if iteration == 1:
+            return (
+                use_tool(
+                    "Reuse the body.",
+                    "document_reader",
+                    json.dumps({"source": _STUDY_URL}),
+                ),
+            )
+        return (finish("Done.", "Reused."),)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset(
+                [_NeverExecutedDocumentTool(tracker)], allowed=["document_reader"]
+            ),
+            decide=decisions,
+            max_iterations=2,
+            tool_budget=2,
+            tool_policy=second,
+            job_id="job-1",
+        )
+
+    # The external count is what a budget or yield report reads: a reused body
+    # is not a second call. Checked before the local counter so a build that
+    # simply lacks the counter still fails on the reported acquisition.
+    assert run.tool_calls == 0
+    assert run.cache_hits == 1
+    assert second.acquired_work_count == 1
+    assert run.steps[0].observation is not None
+    assert run.steps[0].observation.success is True
+
+
+class _NeverExecutedDocumentTool(BaseTool):
+    """A tool named like the reader, so only a cache hit can satisfy it."""
+
+    name = "document_reader"
+    description = "Serve a scripted document read."
+    input_schema = {"source": "string", "url": "string"}
+    output_schema = {"text": "string"}
+
+    async def _execute(self, context, **kwargs):  # type: ignore[override]
+        del context, kwargs
+        raise AssertionError("a cache hit must never reach the tool")
+
+
+# ---------------------------------------------------------------------------
+# the named adversarial cases the brief lists
+# ---------------------------------------------------------------------------
+
+
+def _gateway_policy(
+    *,
+    candidate_urls: Sequence[str] = (),
+    remaining_calls: int = 4,
+    query: str = "queue delay commissioning",
+    selected_passages_per_read: int = 4,
+    cache: dict[str, ReadRecord] | None = None,
+    reads: dict[str, ReadRecord] | None = None,
+    evidence: dict[str, EvidenceUnit] | None = None,
+    network_read_ids: set[str] | None = None,
+    target_id: str = "topic-01",
+) -> AcquisitionPolicy:
+    return AcquisitionPolicy(
+        state=AcquisitionState(
+            target_id=target_id,
+            candidate_urls=list(candidate_urls),
+            remaining_calls=remaining_calls,
+        ),
+        session_id="session-1",
+        target_id=target_id,
+        query=query,
+        selected_passages_per_read=selected_passages_per_read,
+        reads=reads if reads is not None else {},
+        evidence=evidence if evidence is not None else {},
+        cache=cache,
+        network_read_ids=network_read_ids,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_three_search_batch_reserves_the_last_call_for_the_read(
+    tracker,
+) -> None:
+    """One native batch of [search, search, search, read] on the last call.
+
+    Every proposal gets its own observation: three policy rejections that cost
+    no external budget, and the reserved read, which is the only charged call.
+    """
+    policy = _gateway_policy(
+        candidate_urls=["https://example.test/qec"], remaining_calls=1
+    )
+
+    async def decisions(
+        iteration: int, steps: tuple[object, ...]
+    ) -> tuple[ReActDecision, ...]:
+        del steps
+        if iteration == 1:
+            return (
+                use_tool("Search one.", "web_search", '{"query": "qec 2024"}'),
+                use_tool("Search two.", "web_search", '{"query": "qec 2023"}'),
+                use_tool("Search three.", "web_search", '{"query": "qec 2022"}'),
+                use_tool(
+                    "Read the reserved candidate.",
+                    "web_scraper",
+                    '{"url": "https://example.test/qec"}',
+                ),
+            )
+        return (finish("Done.", "Answer."),)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset(
+                research_tools(tracker, http=page_client()),
+                allowed=["web_search", "web_scraper"],
+            ),
+            decide=decisions,
+            max_iterations=2,
+            tool_budget=1,
+            tool_policy=policy,
+            summary_limit=200,
+            job_id="job-1",
+        )
+
+    first_turn = run.steps[:4]
+    assert [step.tool_name for step in first_turn] == [
+        "web_search",
+        "web_search",
+        "web_search",
+        "web_scraper",
+    ]
+    assert [step.observation is not None for step in first_turn] == [True] * 4
+    assert [
+        step.observation.error_type for step in first_turn[:3]
+    ] == ["agent_tool_policy_rejected"] * 3
+    assert first_turn[3].observation.success is True
+    # Only the reserved read spent external budget.
+    assert run.tool_calls == 1
+    assert policy.state.remaining_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_the_third_search_result_reaches_the_next_decision_packet(
+    tracker,
+) -> None:
+    """The 200-character summary is a log; the packet is the decision input.
+
+    The third result sits after two long URLs, so the public observation
+    summary cannot carry it. The next complete_react request must name the
+    exact candidate URL with its state, or the model cannot read what it found.
+    """
+    long_first = "https://agency.example/" + "a-very-long-path-segment/" * 8
+    third = "https://agency.example/queue-report-2024.pdf"
+    policy = _gateway_policy()
+    search = FakeSearchClient(
+        [
+            {
+                "results": [
+                    {
+                        "title": "Long overview",
+                        "url": long_first,
+                        "content": "Queue " * 60,
+                    },
+                    {
+                        "title": "Background",
+                        "url": "https://agency.example/background",
+                        "content": "Delay " * 60,
+                    },
+                    {
+                        "title": "Queue report 2024",
+                        "url": third,
+                        "content": "Queue delay reached 34 months.",
+                    },
+                ]
+            }
+        ]
+    )
+    requests: list[tuple[object, ...]] = []
+
+    async def decisions(
+        iteration: int, steps: tuple[object, ...]
+    ) -> tuple[ReActDecision, ...]:
+        requests.append(steps)
+        if iteration == 1:
+            return (
+                use_tool(
+                    "Search for the report.",
+                    "web_search",
+                    '{"query": "interagency queue delay report"}',
+                ),
+            )
+        return (finish("Done.", "Answer."),)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset(
+                research_tools(tracker, search=search),
+                allowed=["web_search"],
+            ),
+            decide=decisions,
+            max_iterations=2,
+            tool_budget=1,
+            tool_policy=policy,
+            summary_limit=200,
+            job_id="job-1",
+        )
+
+    # The public summary is the truncated log; the decision packet is what the
+    # next request carries, and it must name the exact candidate.
+    assert len(run.steps[0].observation.summary) <= 200
+    assert len(requests) == 2
+    candidate = policy.state.candidate_records[third]
+    assert candidate.status == "queued"
+    packet = policy.context(limit=24000)
+    assert f"url={third}" in packet
+    assert f"candidate_id={candidate.candidate_id}" in packet
+    assert "status=queued" in packet
+    assert "attempted_urls=" in packet
+    assert "denied_urls=" in packet
+
+
+def test_two_empty_searches_end_with_no_candidate_instead_of_deadlock() -> None:
+    """The no-candidate path: two empty searches, then finish."""
+    policy = _gateway_policy(remaining_calls=4)
+    for _ in range(2):
+        policy.after_action(
+            _search_step_result(_search_result(), query="empty query")
+        )
+
+    assert policy.state.empty_searches == 2
+    assert policy.state.candidate_urls == []
+    assert next_acquisition_action(policy.state) == "finish"
+    rejection = policy.before_action(
+        ReActDecision(
+            thought="Search once more.",
+            action="use_tool",
+            tool_name="web_search",
+            tool_input_json='{"query": "yet another"}',
+        ),
+        {"query": "yet another"},
+    )
+    assert rejection.allowed is False
+    assert "no candidate work" in rejection.reason
+    # A finish decision is never gated: the loop can always stop.
+    assert (
+        policy.before_action(
+            finish("Nothing.", "No candidate source was found."), {}
+        ).allowed
+        is True
+    )
+
+
+def test_the_same_url_proposed_seven_times_keeps_every_target() -> None:
+    """Seven targets reuse one body, and all seven associations survive."""
+    url = "https://agency.example/queue-study.pdf"
+    shared_reads: dict[str, ReadRecord] = {}
+    shared_evidence: dict[str, EvidenceUnit] = {}
+    shared_cache: dict[str, ReadRecord] = {}
+    shared_network: set[str] = set()
+    policies = [
+        _gateway_policy(
+            candidate_urls=[url],
+            remaining_calls=2,
+            target_id=f"target-{index}",
+            reads=shared_reads,
+            evidence=shared_evidence,
+            cache=shared_cache,
+            network_read_ids=shared_network,
+        )
+        for index in range(1, 8)
+    ]
+
+    policies[0].after_action(
+        _document_step(_paged_result(1, text="queue delay commissioning"), url)
+    )
+    for policy in policies[1:]:
+        cached = policy.before_action(
+            _read_decision("document_reader", url), {"source": url}
+        )
+        assert cached.result is not None
+        policy.after_action(
+            _document_step(cached.result, url)
+        )
+
+    assert len(shared_reads) == 1
+    assert len(shared_network) == 1
+    assert policies[-1].acquired_work_count == 1
+    assert len(shared_evidence) == 1
+    (unit,) = shared_evidence.values()
+    assert unit.target_ids == [f"target-{index}" for index in range(1, 8)]
+
+
+def _search_step_result(
+    result: ToolResult, *, query: str, iteration: int = 1
+) -> ReActStep:
+    return ReActStep(
+        iteration=iteration,
+        thought="Search.",
+        action="use_tool",
+        tool_name="web_search",
+        tool_input={"query": query},
+        observation=ReActObservation(
+            tool_name="web_search", success=result.success, summary="search"
+        ),
+        tool_result=result,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_late_csv_row_reaches_the_extraction_packet(tracker) -> None:
+    """A CSV row past the first passage batch still reaches extraction.
+
+    The reader chunks rows two at a time, the first batch takes the two
+    highest-scoring chunks, and the row carrying the units and the footnote is
+    in neither. Only the bounded continuation batch can hand it over; without
+    one, the target is frozen and the measurement never reaches extraction.
+    """
+    body = (
+        "project,queue_delay_months,commissioning_cost_musd,note\n"
+        "Alpha,12,40,queue delay commissioning cost measured\n"
+        "Bravo,18,55,queue delay commissioning cost measured\n"
+        "Charlie,21,63,queue delay commissioning cost measured\n"
+        "Delta,25,71,queue delay commissioning cost measured\n"
+        "Echo,29,84,queue delay commissioning cost measured\n"
+        "Foxtrot,31,97,queue delay commissioning cost measured\n"
+        "Basin C,41,152,units are months and million USD; commissioning "
+        "cost measured\n"
+        "Footnote,3,,12 percent reported a negative net benefit\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/csv; charset=utf-8"},
+            text=body,
+            request=request,
+        )
+
+    url = "https://agency.example/queue-delay.csv"
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with client, tracker.session_span("session-1", "question"):
+        result = await DocumentReaderTool(
+            tracker, client=client, csv_rows_per_chunk=2
+        ).execute(source=url)
+
+    assert result.success is True
+    policy = _gateway_policy(
+        candidate_urls=[url], remaining_calls=3, selected_passages_per_read=2
+    )
+    policy.after_action(_document_step(result, url))
+
+    assert len(policy.state.pending_passage_ids) > 0
+    assert not any(
+        "Basin C,41,152" in unit.excerpt for unit in policy.evidence.values()
+    )
+
+    policy.complete_extraction()
+
+    selected = " ".join(unit.excerpt for unit in policy.evidence.values())
+    assert "Basin C,41,152" in selected
+    assert "units are months and million USD" in selected
+    assert "12 percent reported a negative net benefit" in selected
+    assert policy.state.pending_passage_ids == []
+    assert all(unit.excerpt in body for unit in policy.evidence.values())
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_or_unparseable_document_states_its_limitation(
+    tracker, monkeypatch
+) -> None:
+    """No fabricated text: the failure is named, and no read is minted."""
+    class ScannedPage:
+        def extract_text(self) -> str:
+            return ""
+
+    class ScannedPdf:
+        pages = [ScannedPage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/pdf"},
+            content=b"not a pdf at all",
+            request=request,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    scanned_url = "https://agency.example/scanned.pdf"
+    broken_url = "https://agency.example/broken.pdf"
+    async with client, tracker.session_span("session-1", "question"):
+        broken = await DocumentReaderTool(tracker, client=client).execute(
+            source=broken_url
+        )
+        monkeypatch.setattr(
+            "deep_research.tools.document_reader.pdfplumber.open",
+            lambda _: ScannedPdf(),
+        )
+        scanned = await DocumentReaderTool(tracker, client=client).execute(
+            source=scanned_url
+        )
+
+    assert scanned.success is False
+    assert scanned.error is not None
+    assert scanned.error.type == "document_extraction_failed"
+    assert broken.success is False
+    assert broken.error is not None
+    assert broken.error.type == "document_extraction_failed"
+
+    policy = _gateway_policy(
+        candidate_urls=[scanned_url, broken_url], remaining_calls=4
+    )
+    policy.after_action(_document_step(scanned, scanned_url))
+    policy.after_action(_document_step(broken, broken_url))
+
+    reasons = {
+        item.item_id: item.reason
+        for item in policy.dispositions
+        if item.stage == "read-selection"
+    }
+    assert reasons[scanned_url] == "document_extraction_failed"
+    assert reasons[broken_url] == "document_extraction_failed"
+    assert policy.reads == {}
+    assert policy.evidence == {}
+
+
+# ---------------------------------------------------------------------------
+# the mandated offline documents
+# ---------------------------------------------------------------------------
+
+_FIXTURE_QUERY = "interconnection queue delay commissioning cost"
+
+
+async def _read_fixture(tracker, filename: str) -> ToolResult:
+    """Serve one committed fixture through the real reader, offline."""
+    body = Path("tests/fixtures/documents", filename).read_bytes()
+    url = f"https://agency.example/{filename}"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/markdown; charset=utf-8"},
+            content=body,
+            request=request,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with client, tracker.session_span("session-1", "question"):
+        return await DocumentReaderTool(
+            tracker, client=client, chunk_chars=250
+        ).execute(source=url)
+
+
+def _fixture_sub_topic() -> SubTopic:
+    return SubTopic(
+        coverage_id="topic-01",
+        title="Queue delay cost",
+        rationale="The question asks what delay costs.",
+        search_queries=["interconnection queue delay commissioning cost"],
+        success_criteria=["A measured queue delay with its unit."],
+        priority=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_report_fixture_table_units_and_footnotes_reach_extraction(
+    tracker,
+) -> None:
+    """A cover/contents report's late table and footnotes reach the packet."""
+    filename = "usgs-shaped-report.md"
+    result = await _read_fixture(tracker, filename)
+
+    assert result.success is True
+    assert result.data is not None
+    assert result.data["extraction_complete"] is True
+    document = "".join(chunk["text"] for chunk in result.data["chunks"])
+    url = result.data["resolved_source"]
+    policy = _gateway_policy(
+        candidate_urls=[url], remaining_calls=3, query=_FIXTURE_QUERY
+    )
+    policy.after_action(_document_step(result, url))
+
+    first_units = " ".join(unit.excerpt for unit in policy.evidence.values())
+    assert policy.state.pending_passage_ids
+    assert "Basin C is withheld" not in first_units
+
+    first_packet = policy.context(limit=24000)
+    # The complete read record stays visible in the packet — it is truncated
+    # only as a whole record, never mid-passage — while the passage that no
+    # batch has selected yet is not yet citable evidence.
+    assert "Basin C is withheld" in first_packet
+
+    policy.complete_extraction()
+
+    packet = policy.context(limit=24000)
+    assert "Queue delay (months)" in packet
+    assert "Basin A | 34 | 128" in packet
+    assert "million USD" in packet
+    assert "Basin C is withheld" in packet
+    selected = " ".join(unit.excerpt for unit in policy.evidence.values())
+    assert "Basin C is withheld" in selected
+    assert policy.state.pending_passage_ids == []
+    # Every excerpt is verbatim text of the document that was actually read.
+    for unit in policy.evidence.values():
+        assert unit.excerpt in document
+
+
+@pytest.mark.asyncio
+async def test_a_contents_only_fixture_cannot_supply_a_measurement(
+    tracker,
+) -> None:
+    """Without the data release there is nothing to report, and nothing to add."""
+    filename = "usgs-shaped-contents-only.md"
+    result = await _read_fixture(tracker, filename)
+
+    assert result.success is True
+    assert result.data is not None
+    document = "".join(chunk["text"] for chunk in result.data["chunks"])
+    url = result.data["resolved_source"]
+    policy = _gateway_policy(
+        candidate_urls=[url], remaining_calls=3, query=_FIXTURE_QUERY
+    )
+    policy.after_action(_document_step(result, url))
+    policy.complete_extraction()
+
+    packet = policy.context(limit=24000)
+    assert "Basin A" not in packet
+    assert "34" not in packet
+    for unit in policy.evidence.values():
+        assert unit.excerpt in document
+
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+    assert read is not None
+    (locator,) = list(read.passages)[:1]
+    draft = SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content="Basin A's queue delay was 34 months.",
+                source_url=read.resolved_url,
+                source_title=read.title,
+                confidence=0.9,
+                read_id=read.read_id,
+                locator=locator,
+                excerpt="Basin A | 34 | 128",
+                target_ids=["topic-01"],
+            )
+        ]
+    )
+
+    findings, rejected = build_findings(
+        draft,
+        sub_topic=_fixture_sub_topic(),
+        extracted_at="2026-08-01T12:00:00+00:00",
+        known_urls=[read.resolved_url],
+        known_reads={read.read_id: read},
+        target_id="topic-01",
+    )
+
+    assert findings == []
+    assert rejected == ["finding 1: excerpt was not admitted at locator"]
