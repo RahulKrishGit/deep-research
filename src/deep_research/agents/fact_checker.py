@@ -1276,6 +1276,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # and the next pass drains them before it extracts anything, so a
         # deferred claim resumes instead of disappearing.
         self._continuation: list[ClaimDraft] = []
+        # The identities of the drafts this run drained from the queue. They
+        # are work this run will do, so the provenance reset must keep their
+        # attribution: a resumed claim that the model does not restate has no
+        # other source for the obligations it answers.
+        self._resumed_fingerprints: set[str] = set()
 
     @property
     def claim_batch_size(self) -> int:
@@ -1364,16 +1369,19 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         ).target_ids
 
     def _reset_provenance(self) -> None:
-        """Drop attribution for drafts this run will not resume.
+        """Drop attribution for drafts this run will not process.
 
         Provenance belongs to the extraction pass about to run, so anything
-        left over from an earlier run must not leak into it. A draft still in
-        the continuation queue is the exception: it is work this run will do,
-        and its attribution was derived from this same run's findings.
+        left over from an earlier run must not leak into it. A draft this run
+        resumes is the exception: it is work this run will do, and its
+        attribution was derived from this same run's findings. Both halves are
+        needed — the queue before it is drained, and the drained identities
+        afterwards, because ``extract_claims`` resets again once the queue is
+        empty.
         """
         resumable = {
             claim_fingerprint(draft.text) for draft in self._continuation
-        }
+        } | self._resumed_fingerprints
         self._pending_provenance = {
             fingerprint: attribution
             for fingerprint, attribution in self._pending_provenance.items()
@@ -1381,9 +1389,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         }
 
     def _drain_continuation(self) -> list[ClaimDraft]:
-        """Take the deferred claims this pass resumes, in their original order."""
+        """Take the deferred claims this pass resumes, and remember their identities."""
         resumed = list(self._continuation)
         self._continuation = []
+        self._resumed_fingerprints = {
+            claim_fingerprint(draft.text) for draft in resumed
+        }
         return resumed
 
     async def extract_claims(
@@ -1669,10 +1680,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._upstream_read_urls = known_source_urls(state)
         # Provenance belongs to the extraction pass about to run; anything
         # left from an earlier run must not leak into it, except the
-        # attribution of a claim this run is about to resume.
+        # attribution of a claim this run is about to resume. The queue is
+        # drained first so the reset can see which drafts it is keeping.
+        resumed = self._drain_continuation()
         self._reset_provenance()
         target_order = target_order_for(state)
-        resumed = self._drain_continuation()
         events: list[ResearchEvent] = []
         errors: list[ResearchError] = []
         claims: list[Claim] = []

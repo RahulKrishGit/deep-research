@@ -2647,3 +2647,58 @@ def test_the_pending_queue_is_bounded_by_the_extraction_it_came_from(
     agent = _checker(tracker, ScriptedCompleter())
 
     assert agent.pending_claims == []
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_claim_keeps_the_obligation_it_was_extracted_for(
+    tracker: Tracker,
+) -> None:
+    """A continuation resumes with its own attribution, not a blank one.
+
+    The second pass extracts nothing new, so the deferred claim is the only
+    work left. It still answers the target its findings were read for: the
+    attribution computed when it was extracted travels with the queue instead
+    of being dropped by the next pass's provenance reset.
+    """
+    completer = ScriptedCompleter(
+        decisions=[*_three_claim_decisions(), *_check_decisions()],
+        outputs=[
+            _obligated_draft(),
+            _verdict_draft(),
+            _verdict_draft(),
+            ClaimsDraft(claims=[]),
+            _verdict_draft(),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+        max_claims=2,
+        batches_per_pass=1,
+    )
+    state = _obligated_state()
+    deferred = "Alpha reported a second measured value in 2025."
+
+    async with tracker.session_span("session-1", state.original_question):
+        first = await agent.run(state)
+        assert first.result is not None
+        assert deferred in [
+            claim.text for claim in first.result.pending_claims
+        ]
+
+        second = await agent.run(state)
+
+    assert second.result is not None
+    assert deferred not in [
+        claim.text for claim in second.result.pending_claims
+    ]
+    resumed = [
+        claim for claim in second.result.claims if claim.text == deferred
+    ]
+    assert [claim.target_ids for claim in resumed] == [["target-1"]]

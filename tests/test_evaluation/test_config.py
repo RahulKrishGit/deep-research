@@ -467,11 +467,18 @@ CRITIC_PROMPT_FINGERPRINT = "15754f64fa12"
 #   fact_checker       772e7d9d13f8 -> 15322a899461
 #   synthesizer        895e307a5068 -> cccb6dc91c6e
 #   critic             cfb6f062b992 -> 15754f64fa12
+# Task 5's own review round then moved the Fact Checker's value once more,
+# ``15322a899461`` -> ``c9b3380c81e4``, and nothing else: the pass must drain
+# its continuation queue *before* the provenance reset, otherwise a resumed
+# claim whose extraction is not restated loses the target attribution and the
+# provenance it was extracted with. That is a fact_checker.py module-source
+# move with no prompt string edited, so the other five values and the Judge
+# pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "599c78243c9e",
     "researcher": "fdc2bc2e8d48",
     "source_evaluator": "674593415225",
-    "fact_checker": "15322a899461",
+    "fact_checker": "c9b3380c81e4",
     "synthesizer": "cccb6dc91c6e",
     "critic": "15754f64fa12",
 }
