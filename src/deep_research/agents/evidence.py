@@ -667,19 +667,94 @@ def read_dated_tokens(read: ReadRecord) -> list[str]:
     return sorted(_read_date_tokens(read))
 
 
+# How many days each month has in a year that is not a leap year. Shape alone
+# cannot tell a date from a number that looks like one: the day a document
+# writes has to exist in the month and the year it names.
+_MONTH_LENGTHS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+def _is_leap_year(year: int) -> bool:
+    """True for a year February has a 29th day in."""
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+
+def _days_in_month(year: int, month: int) -> int:
+    if month == 2 and _is_leap_year(year):
+        return 29
+    return _MONTH_LENGTHS[month - 1]
+
+
 def _is_date_atom(atom: str) -> bool:
     """True when ``atom`` is a real date, not a number shaped like one.
 
     "2026-13" has the shape of a year and a month and is neither: there is no
     thirteenth month, so the digits are a number that merely looks like a date
-    and nothing may be read from them.
+    and nothing may be read from them. The day is decided the same way, against
+    the length of its own month in its own year: "2026-02-31" and "2025-02-29"
+    name days those months never had, while a real leap day does.
     """
     parts = atom.split("-")
     if any(not part.isdigit() for part in parts):
         return False
     if len(parts) > 1 and not 1 <= int(parts[1]) <= 12:
         return False
-    return len(parts) < 3 or 1 <= int(parts[2]) <= 31
+    if len(parts) < 3:
+        return True
+    return 1 <= int(parts[2]) <= _days_in_month(int(parts[0]), int(parts[1]))
+
+
+# Punctuation that joins the parts of ONE token rather than separating two of
+# them: the bracket of a code or a filename, and the marks a URL path or query
+# string uses. A date sitting against one of these is a fragment of an
+# identifier — "ABC(2026)", "report(2025).pdf", "…/report;2025", "?id,2024" —
+# so it dates nothing, which no digit masking can fix and only the boundary
+# can.
+_GLUE_MARKS = frozenset("()[]{};,")
+
+
+def _continues_token(text: str, index: int) -> bool:
+    """True when ``text[index]`` carries on a token instead of ending one."""
+    char = text[index]
+    if char.isalnum() or char == "_":
+        return True
+    # A full stop is the one ambiguous mark: a sentence-final one separates,
+    # while the one in "10.5" or "report.pdf" continues a token.
+    return char == "." and index + 1 < len(text) and text[index + 1].isalnum()
+
+
+def _mark_is_inside_a_token(text: str, mark: int, step: int) -> bool:
+    """True when the mark at ``mark`` is part of a longer token.
+
+    A mark separates only when nothing that continues a token sits on its far
+    side. "Grid Storage Outlook (2025)" and "in 2025, the queue grew" separate;
+    "ABC(2026)", "report(2025).pdf", "…/report;2025" and "?id,2024" do not,
+    because the mark is glued to a word rather than standing on its own.
+    """
+    far = mark + step
+    if far < 0 or far >= len(text):
+        return False
+    return _continues_token(text, far)
+
+
+def _is_delimited_date_token(text: str, start: int, end: int) -> bool:
+    """True when the date spanning ``text[start:end]`` stands as its own token.
+
+    A date is delimited by whitespace, the ends of the text, or ordinary
+    sentence punctuation — never by a mark that makes it part of a longer
+    token. The pattern that found the date already refuses a word character, an
+    identifier's punctuation, and a range separator; this is the remaining
+    case, where the character beside the digits is punctuation that is itself
+    inside a token.
+    """
+    if start > 0:
+        before = text[start - 1]
+        if before in _GLUE_MARKS and _mark_is_inside_a_token(text, start - 1, -1):
+            return False
+    if end < len(text):
+        after = text[end]
+        if after in _GLUE_MARKS and _mark_is_inside_a_token(text, end, 1):
+            return False
+    return True
 
 
 def _read_date_tokens(read: ReadRecord) -> set[str]:
@@ -693,7 +768,10 @@ def _read_date_tokens(read: ReadRecord) -> set[str]:
     both of its ends evidence their own coarser forms too.
     """
     tokens: set[str] = set()
-    for match in _DATE_TOKEN_PATTERN.finditer(_dated_text(read)):
+    dated = _dated_text(read)
+    for match in _DATE_TOKEN_PATTERN.finditer(dated):
+        if not _is_delimited_date_token(dated, match.start(), match.end()):
+            continue
         for atom in (match.group("atom"), match.group("end")):
             if atom is not None and _is_date_atom(atom):
                 tokens |= _token_forms(atom)
@@ -1188,6 +1266,8 @@ def _stated_dates(quote: str) -> list[tuple[str, ...]]:
     """
     stated: list[tuple[str, ...]] = []
     for match in _DATE_TOKEN_PATTERN.finditer(quote):
+        if not _is_delimited_date_token(quote, match.start(), match.end()):
+            continue
         atoms = tuple(
             atom
             for atom in (match.group("atom"), match.group("end"))

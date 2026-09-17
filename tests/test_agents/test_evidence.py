@@ -2359,3 +2359,141 @@ def test_a_value_that_is_not_the_date_it_claims_is_rejected(value: str) -> None:
 
     assert temporal.data_period is None, value
     assert temporal.status == "unknown", value
+
+
+# --------------------------------------------------------------------------
+# Preconditions carried from Task 4's breaker
+# --------------------------------------------------------------------------
+#
+# Both findings mint a temporal value and a freshness judgement at this shared
+# admission boundary, so a claim built on either reads a date the document
+# never stated. Each named shape gets its own test: the boundary is what
+# distinguishes a token from a fragment, and a shape that passes proves
+# nothing about the shapes that do not.
+
+
+def test_a_parenthesised_code_never_dates_the_document() -> None:
+    """"ABC(2026)" is a code with digits, not a year the document states.
+
+    The bracket glues the digits to the word in front of them, so ``2026``
+    here is a fragment of one token rather than a date of its own.
+    """
+    read = _dated(
+        "Code Report. The token ABC(2026) indexes the table.",
+        url="https://lab.example/coded",
+    )
+
+    temporal = validated_temporal(
+        read,
+        publication_date=_claim("2026", "The token ABC(2026) indexes the table."),
+        status="current",
+    )
+
+    assert temporal.publication_date is None
+    assert temporal.status == "unknown"
+    assert read_dated_tokens(read) == []
+
+
+def test_a_filename_and_its_extension_never_date_the_document() -> None:
+    """"report(2025).pdf" names a file; the digits in it date nothing.
+
+    The closing bracket is joined to the extension that follows it, which is
+    what makes the whole run one filename rather than a year in brackets.
+    """
+    read = _dated(
+        "File Report. See report(2025).pdf for the file.",
+        url="https://lab.example/filed",
+    )
+
+    temporal = validated_temporal(
+        read,
+        publication_date=_claim("2025", "See report(2025).pdf for the file."),
+        status="current",
+    )
+
+    assert temporal.publication_date is None
+    assert temporal.status == "unknown"
+    assert read_dated_tokens(read) == []
+
+
+def test_a_url_path_segment_never_dates_the_document() -> None:
+    """A year at the end of a URL path is where a file is filed.
+
+    A document that prints its own URL states a location, not a date: the
+    digits belong to the path, and the semicolon joins them to it.
+    """
+    read = _dated(
+        "Link Report. Source: https://lab.example/report;2025 for the file.",
+        url="https://lab.example/linked",
+    )
+
+    temporal = validated_temporal(
+        read,
+        publication_date=_claim(
+            "2025", "Source: https://lab.example/report;2025 for the file."
+        ),
+        status="current",
+    )
+
+    assert temporal.publication_date is None
+    assert temporal.status == "unknown"
+    assert read_dated_tokens(read) == []
+
+
+def test_a_url_query_parameter_never_dates_the_document() -> None:
+    """A year in a query parameter is a parameter value, not a date.
+
+    The comma joins the digits to the parameter name, so they are part of one
+    URL token and cannot be read as a year the document states.
+    """
+    read = _dated(
+        "Query Report. Source: https://lab.example/f?id,2024 for the file.",
+        url="https://lab.example/queried",
+    )
+
+    temporal = validated_temporal(
+        read,
+        publication_date=_claim(
+            "2024", "Source: https://lab.example/f?id,2024 for the file."
+        ),
+        status="current",
+    )
+
+    assert temporal.publication_date is None
+    assert temporal.status == "unknown"
+    assert read_dated_tokens(read) == []
+
+
+@pytest.mark.parametrize("atom", ["2026-02-31", "2025-02-29", "2026-04-31"])
+def test_an_impossible_calendar_date_is_not_a_date(atom: str) -> None:
+    """February has no 31st, and 2025 has no 29th of February.
+
+    Shape is not enough: a month's length decides whether the day the digits
+    name exists at all, so an impossible one is a number that merely looks
+    like a date.
+    """
+    read = _dated(f"Impossible Report. The table reads {atom}.")
+
+    temporal = validated_temporal(
+        read,
+        publication_date=_claim(atom, f"The table reads {atom}."),
+        status="current",
+    )
+
+    assert temporal.publication_date is None
+    assert read_dated_tokens(read) == []
+
+
+def test_a_real_leap_day_is_still_a_date() -> None:
+    """The positive control: 2024 is a leap year, so 2024-02-29 exists."""
+    read = _dated("Leap Report. The table reads 2024-02-29.")
+
+    temporal = validated_temporal(
+        read,
+        publication_date=_claim("2024-02-29", "The table reads 2024-02-29."),
+        status="current",
+    )
+
+    assert temporal.publication_date == "2024-02-29"
+    assert temporal.status == "current"
+    assert read_dated_tokens(read) == ["2024", "2024-02", "2024-02-29"]
