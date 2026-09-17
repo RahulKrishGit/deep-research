@@ -86,8 +86,6 @@ def _state(question: str = "Why is the sky blue?") -> ResearchState:
     return ResearchState(session_id="session-1", original_question=question)
 
 
-
-
 def _pad(agent_name: str = "summarizer", max_entries: int = 20) -> ScratchpadMemory:
     return ScratchpadMemory(
         session_id="session-1",

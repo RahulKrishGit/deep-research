@@ -456,13 +456,13 @@ def test_the_entrypoint_starts_the_session_with_planning_recall(
     import asyncio
 
     from deep_research import main as main_module
+    from deep_research.graph.orchestrator import compile_research_graph
     from deep_research.main import run_research
-    from deep_research.runtime.assembly import ResearchRuntime
+    from deep_research.observability import LangSmithRuntimeConfig, Tracker
     from deep_research.request_budget import RequestBudget
+    from deep_research.runtime.assembly import ResearchRuntime
     from deep_research.utils.types import MemorySnapshot
     from tests.graph_fakes import fake_research_agents
-    from deep_research.graph.orchestrator import compile_research_graph
-    from deep_research.observability import LangSmithRuntimeConfig, Tracker
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
