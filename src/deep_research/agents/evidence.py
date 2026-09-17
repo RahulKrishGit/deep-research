@@ -558,8 +558,11 @@ _ATTRIBUTION_PHRASES = (
 )
 
 # Punctuation allowed between two words of one name, and between the
-# attribution phrase and the name it attributes.
-_NAME_GAP = r"[\W_]{0,4}"
+# attribution phrase and the name it attributes. A name's words must be
+# separated by *something*: "ExampleLab" is a different name from
+# "Example Lab", for the same reason ``_identity_words`` never merges two
+# words into each other.
+_NAME_GAP = r"[\W_]{1,4}"
 _ATTRIBUTION_GAP = r"[\s:,\u2013\u2014-]{0,4}"
 
 # The anchors a model may propose about a document. Each is accepted only when
@@ -567,7 +570,12 @@ _ATTRIBUTION_GAP = r"[\s:,\u2013\u2014-]{0,4}"
 ANCHOR_FIELDS = ("doi", "issuer", "report_number", "year")
 
 _YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+# One date atom: a year, a year and month, or a full day.
 _DATE_TOKEN_PATTERN = re.compile(r"(?<!\d)\d{4}(?:-\d{2}(?:-\d{2})?)?(?!\d)")
+# How a document joins the two ends of a period it states.
+_RANGE_SEPARATOR = (
+    r"\s*(?:-|\u2013|\u2014|/|(?:to|through|until|thru)(?![A-Za-z]))\s*"
+)
 
 # How much of one read's own text a dossier shows the model.
 DEFAULT_DOSSIER_EXCERPTS = 4
@@ -1002,26 +1010,46 @@ def validated_temporal(
 
 
 def _dated_anchor(read: ReadRecord | None, value: object) -> str | None:
-    """The part of a proposed date the read actually evidences.
+    """The temporal value the read actually evidences, at its own precision.
 
-    A document that says only "2026" cannot be recorded as "2026-12-31": the
-    accepted anchor is the longest prefix of the proposed date that the read
-    states, so a fabricated day or month is dropped and the year it does state
-    is kept — at its own precision, never at the model's.
+    A date is never more precise than the document: a read saying "2026"
+    cannot be recorded as "2026-12-31", so a single date keeps only the
+    leading components the read states. A period is never less precise
+    either — "2022-2024" is a period, not a date to be truncated to its first
+    year — so a proposed range is kept whole, normalised to one spelling, or
+    dropped entirely when the read does not state it as a period.
     """
     text = " ".join(str(value or "").split())
     if not text or read is None:
         return None
-    match = re.search(r"\d{4}(?:-\d{2}(?:-\d{2})?)?", text)
-    if match is None:
+    parts = [
+        match.group(0) for match in _DATE_TOKEN_PATTERN.finditer(text)
+    ]
+    if not parts:
         return None
+    if len(parts) > 1:
+        stated = f"{parts[0]}-{parts[-1]}"
+        return (
+            stated
+            if _period_evidenced(_dated_text(read), parts[0], parts[-1])
+            else None
+        )
     tokens = _read_date_tokens(read)
-    candidate = match.group(0)
+    candidate = parts[0]
     while candidate:
         if candidate in tokens:
             return candidate
         candidate = candidate.rsplit("-", 1)[0] if "-" in candidate else ""
     return None
+
+
+def _period_evidenced(haystack: str, start: str, end: str) -> bool:
+    """True when the read states ``start`` through ``end`` as one period."""
+    pattern = re.compile(
+        rf"(?<!\d){re.escape(start)}{_RANGE_SEPARATOR}{re.escape(end)}(?!\d)",
+        re.IGNORECASE,
+    )
+    return pattern.search(haystack) is not None
 
 
 class ReadDossier(ContractModel):

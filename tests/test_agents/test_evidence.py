@@ -1804,6 +1804,97 @@ def test_a_date_is_stored_at_the_precision_the_read_evidences() -> None:
     )
 
 
+def test_a_merged_word_does_not_evidence_a_two_word_issuer() -> None:
+    """Separate words do not merge into each other, in a name either.
+
+    "Published by ExampleLab" is a different name from "Example Lab", for the
+    same reason ``_identity_words`` refuses to merge two words: accepting it
+    would let a string that never appears in the document become its issuer.
+    """
+    read = _web_read(
+        "https://lab.example/merged",
+        text="Merged Report. Published by ExampleLab on 2026-01-15.",
+    )
+
+    row = read_metadata_row(read, anchors={"issuer": "Example Lab"})
+
+    assert "issuer" not in row
+    # The document's own name, spelled as the document spells it, still
+    # resolves — the separator has to be there, not be absent.
+    assert read_metadata_row(read, anchors={"issuer": "ExampleLab"})[
+        "issuer"
+    ] == "ExampleLab"
+
+
+def test_a_stated_period_stays_a_period() -> None:
+    """A range is a period, not a date to be truncated to its first year.
+
+    Dropping the second end of "2022-2024" is the same class of error as
+    inventing a day: it destroys evidence the read states. The stored value is
+    the period, normalised to one spelling, however the document wrote it.
+    """
+    hyphen = _web_read(
+        "https://lab.example/hyphen",
+        text=(
+            "Period Report. Published by Example Lab on 2026-01-15. "
+            "The survey covers 2022-2024."
+        ),
+    )
+    spelled = _web_read(
+        "https://lab.example/spelled",
+        text=(
+            "Written Report. Published by Example Lab on 2026-01-15. "
+            "The survey covers 2022 to 2024."
+        ),
+    )
+    dashed = _web_read(
+        "https://lab.example/dashed",
+        text=(
+            "Dashed Report. Published by Example Lab on 2026-01-15. "
+            "The survey covers 2022\u20132024."
+        ),
+    )
+
+    assert validated_temporal(
+        hyphen, data_period="2022-2024", status="stale_data"
+    ).data_period == "2022-2024"
+    assert validated_temporal(
+        spelled, data_period="2022 to 2024", status="stale_data"
+    ).data_period == "2022-2024"
+    assert validated_temporal(
+        dashed, data_period="2022\u20132024", status="stale_data"
+    ).data_period == "2022-2024"
+
+
+def test_a_freshness_status_follows_the_period_it_was_computed_from() -> None:
+    """The status is judged against the value that was kept, not a truncation.
+
+    A period the read states keeps both its ends and the status that rests on
+    it. A period the read does not state is dropped entirely, and the status
+    that had nothing left to rest on becomes ``unknown`` rather than being
+    computed against a value that was never recorded.
+    """
+    read = _web_read(
+        "https://lab.example/period",
+        text=(
+            "Period Report. Published by Example Lab on 2026-01-15. "
+            "The survey covers 2022-2024."
+        ),
+    )
+
+    preserved = validated_temporal(
+        read, data_period="2022-2024", status="stale_data"
+    )
+    dropped = validated_temporal(
+        read, data_period="1999-2001", status="stale_data"
+    )
+
+    assert preserved.data_period == "2022-2024"
+    assert preserved.status == "stale_data"
+    assert dropped.data_period is None
+    assert dropped.status == "unknown"
+
+
 def test_the_assessment_revision_tracks_content_metadata_and_time() -> None:
     """The reuse key is content, metadata *and* the dates the read carries."""
     baseline = _web_read()
