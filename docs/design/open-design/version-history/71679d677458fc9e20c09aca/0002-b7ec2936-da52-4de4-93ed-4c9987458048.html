@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Deep Research — session states: empty, error, failed, partial</title>
+<style>
+/* ═══ tokens — Perplexity AI design system. Only literal colours live here. ═══ */
+:root{
+  --bg:#0f0f10;--surface:#19191a;--surface-warm:var(--surface);
+  --fg:#f0f0f0;--fg-2:var(--fg);--muted:#9b9b9b;--meta:#5c5c5e;
+  --border:#2e2e30;--border-soft:#232325;
+  --accent:#a855f7;--accent-on:#ffffff;--accent-hover:#c084fc;--accent-active:#9333ea;
+  --success:#22c55e;--warn:#f59e0b;--danger:#ef4444;
+  --font-display:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-body:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"Cascadia Code",Menlo,Monaco,Consolas,monospace;
+  --text-xs:11px;--text-sm:13px;--text-base:15px;--text-lg:16px;--text-xl:18px;--text-2xl:22px;--text-3xl:28px;--text-4xl:32px;
+  --leading-body:1.65;--leading-tight:1.2;--tracking-display:-0.01em;
+  --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-8:32px;--space-12:48px;
+  --section-y-desktop:64px;
+  --radius-sm:4px;--radius-md:8px;--radius-lg:12px;--radius-pill:9999px;
+  --elev-ring:0 0 0 1px var(--border);--focus-ring:0 0 0 2px var(--accent);
+  --motion-fast:120ms;--motion-base:200ms;--ease-standard:cubic-bezier(0.2,0,0,1);
+  --container-gutter-desktop:24px;--container-gutter-phone:16px;
+  --status-ok:oklch(72% 0.19 145);--status-warn:oklch(74% 0.17 72);--status-danger:oklch(71% 0.17 22);
+  --shell-max:1100px;--reading-max:720px;--rail:280px;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:var(--text-base);line-height:var(--leading-body);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+p{margin:0;text-wrap:pretty}
+h1,h2,h3{text-wrap:balance}
+hr{border:0;border-top:1px solid var(--border);margin:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius-sm)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.shell{max-width:var(--shell-max);margin-inline:auto;padding-inline:var(--container-gutter-desktop)}
+.topnav{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--border)}
+.topnav-in{display:flex;align-items:center;gap:var(--space-6);min-height:56px;flex-wrap:wrap;padding-block:var(--space-2)}
+.wordmark{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:var(--tracking-display);display:flex;align-items:center;gap:var(--space-2)}
+.wordmark .mark{width:14px;height:14px;border:1.5px solid var(--muted);border-radius:2px;position:relative;flex:none}
+.wordmark .mark::after{content:"";position:absolute;inset:3px;background:var(--muted);border-radius:1px}
+.topnav .localnote{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);margin-left:auto}
+.demo{border-top:1px solid var(--border);padding-block:var(--space-12)}
+.demo:first-of-type{border-top:0}
+.demo-head{display:grid;grid-template-columns:minmax(0,1fr) var(--rail);gap:var(--space-8);align-items:start;margin-bottom:var(--space-8)}
+.eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1.display{font-family:var(--font-display);font-size:var(--text-4xl);font-weight:600;line-height:var(--leading-tight);letter-spacing:var(--tracking-display);margin:0}
+h2.demo-title{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;line-height:1.3;margin:0}
+h3.sub{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;line-height:1.4;margin:0}
+.card-title{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;line-height:1.4;margin:0}
+.lead{font-size:var(--text-lg);color:var(--muted);max-width:62ch}
+.sm{font-size:var(--text-sm);color:var(--muted)}
+.cap{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.stack{display:flex;flex-direction:column;gap:var(--space-4)}
+.stack-2{display:flex;flex-direction:column;gap:var(--space-2)}
+.row{display:flex;align-items:center;gap:var(--space-3)}
+.row-between{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+.wrap{flex-wrap:wrap}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-5)}
+.card.flat{background:transparent}
+.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-5)}
+.grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-5)}
+@media (max-width:1080px){.demo-head{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:900px){.shell{padding-inline:var(--container-gutter-phone)}.grid-2,.grid-3{grid-template-columns:minmax(0,1fr)}}
+@media (prefers-reduced-motion:reduce){*{animation-duration:0ms !important;animation-iteration-count:1 !important;transition-duration:0ms !important}}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);height:36px;padding:0 var(--space-5);border-radius:var(--radius-md);border:1px solid transparent;font-size:var(--text-base);font-weight:500;white-space:nowrap;transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard)}
+.btn-primary{background:var(--accent);color:var(--accent-on);font-weight:600}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-primary:active{background:var(--accent-active)}
+.btn-ghost{border-color:var(--border);color:var(--fg)}
+.btn-ghost:hover{background:var(--border-soft);border-color:var(--muted)}
+.btn-sm{height:30px;font-size:var(--text-sm);padding:0 var(--space-4)}
+
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 9px;font-size:var(--text-sm);color:var(--fg);line-height:1.35}
+.chip .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
+.chip .dot-ok{background:var(--status-ok)}
+.chip .dot-warn{background:var(--status-warn)}
+.chip .dot-danger{background:var(--status-danger)}
+.chip .dot-none{background:transparent;border:1px solid var(--muted)}
+.chip .kind{color:var(--muted)}
+.chip.is-unavailable{background:transparent;border-color:transparent;padding-inline:0;color:var(--muted)}
+.chip-lg{font-size:var(--text-base);padding:6px 12px}
+
+.avail{color:var(--muted);font-size:var(--text-sm)}
+.avail-mono{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:var(--space-2) var(--space-4);font-size:var(--text-sm);align-items:baseline}
+.kv dt{color:var(--muted);white-space:nowrap}
+.kv dd{margin:0;text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.kv dd.plain{font-family:var(--font-body)}
+
+.tbl{width:100%;border-collapse:collapse;font-size:var(--text-sm)}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+.tbl th{color:var(--muted);font-weight:500;font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.04em;text-transform:uppercase}
+.tbl td.wrapcell{overflow-wrap:anywhere}
+.tbl code,.inline-code{font-family:var(--font-mono);font-size:var(--text-xs);background:var(--border-soft);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 5px}
+
+.empty{border:1px dashed var(--border);border-radius:var(--radius-lg);padding:var(--space-8);text-align:center}
+.empty .glyph{font-family:var(--font-mono);font-size:var(--text-2xl);color:var(--meta);margin-bottom:var(--space-3)}
+.empty p{color:var(--muted);max-width:52ch;margin:0 auto var(--space-5);font-size:var(--text-sm);line-height:1.6}
+
+.note{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-4)}
+.note .note-head{display:flex;gap:var(--space-2);align-items:center;font-size:var(--text-sm);color:var(--fg);margin-bottom:var(--space-2)}
+.note .note-head .mk{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 5px}
+.note p{font-size:var(--text-sm);color:var(--muted);line-height:1.6}
+.note.attn{border-color:color-mix(in oklch,var(--status-warn) 40%,var(--border))}
+.note.attn .note-head{color:var(--status-warn)}
+.note.bad{border-color:color-mix(in oklch,var(--status-danger) 44%,var(--border))}
+.note.bad .note-head{color:var(--status-danger)}
+
+pre.wire{margin:0;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-4);overflow-x:auto;font-family:var(--font-mono);font-size:var(--text-xs);line-height:1.7;color:var(--muted)}
+pre.wire .k{color:var(--fg)}
+pre.wire .n{color:var(--fg)}
+pre.wire .nostr{color:var(--muted);font-style:italic}
+
+.failure{border:1px solid color-mix(in oklch,var(--status-danger) 44%,var(--border));border-radius:var(--radius-lg);padding:var(--space-5);background:var(--surface)}
+.failure h3{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;margin:0 0 var(--space-2)}
+.prose{max-width:var(--reading-max)}
+.prose p{margin-bottom:var(--space-4)}
+.prose h3{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;margin:var(--space-6) 0 var(--space-3)}
+.prose ul{margin:0 0 var(--space-4);padding-left:var(--space-5)}
+.prose li{margin-bottom:var(--space-2)}
+.cite{font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted);white-space:nowrap}
+.limitation-list{list-style:none;padding-left:0;margin:0}
+.limitation-list li{padding:var(--space-3) 0;border-bottom:1px solid var(--border-soft);font-size:var(--text-sm);color:var(--muted);display:grid;grid-template-columns:auto 1fr;gap:var(--space-3)}
+.limitation-list li:last-child{border-bottom:0}
+.limitation-list .tag{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 5px;height:fit-content;white-space:nowrap}
+.cvd{display:flex;gap:var(--space-3);flex-wrap:wrap}
+.cvd .sim{border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3);background:var(--surface)}
+.cvd .sim .cap{display:block;margin-bottom:var(--space-2)}
+
+/* event tail — same rhythm as the console's log */
+.log{list-style:none;margin:0;padding:0;font-family:var(--font-mono);font-size:var(--text-xs);line-height:1.7}
+.log li{display:grid;grid-template-columns:52px 1fr;gap:var(--space-3);padding:5px 0;border-bottom:1px solid var(--border-soft)}
+.log li:last-child{border-bottom:0}
+.log .etype{color:var(--fg)}
+.spine-log{list-style:none;margin:0;padding:0}
+
+/* verdict bars — filled proportions, never outlines */
+.bars{display:flex;flex-direction:column;gap:var(--space-3)}
+.bar-row{display:grid;grid-template-columns:150px 1fr 40px;gap:var(--space-3);align-items:center;font-size:var(--text-sm)}
+.bar-row .track{height:6px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden}
+.bar-row .track span{display:block;height:100%;background:var(--muted);border-radius:var(--radius-pill)}
+.bar-row .track span.ok{background:var(--status-ok)}
+.bar-row .track span.bad{background:var(--status-danger)}
+.bar-row .n{text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+@media (max-width:900px){.bar-row{grid-template-columns:118px 1fr 36px}}
+</style>
+</head>
+<body>
+
+<header class="topnav" data-od-id="topnav">
+  <div class="shell topnav-in">
+    <span class="wordmark"><span class="mark" aria-hidden="true"></span>Deep Research</span>
+    <span class="localnote">docs/design/prototype/states.html · review artifact</span>
+  </div>
+</header>
+
+<main class="shell" id="content">
+
+  <!-- ═══ 0 · the mapping, as pixels ═══ -->
+  <section class="demo" data-od-id="state-status-mapping" aria-labelledby="map-h">
+    <div class="stack" style="gap:var(--space-6)">
+      <div class="prose">
+        <p class="eyebrow">docs/design/DESIGN.md §4</p>
+        <h1 class="display" id="map-h">Status mapping</h1>
+        <p class="lead" style="margin-top:var(--space-3)">Five interface statuses, five API statuses, one mapping. Everything below renders from the same tokens the console uses, so the table can be read against the actual chips.</p>
+      </div>
+
+      <div class="grid-3">
+        <div class="card stack-2" data-od-id="chip-running">
+          <span class="cap">API status <span class="mono">running</span></span>
+          <span class="chip chip-lg"><span class="dot dot-ok"></span>Running <span class="kind">· iteration 2 of 3</span></span>
+          <p class="avail">Text label always present. The dot is redundant reinforcement and is not the only signal.</p>
+        </div>
+        <div class="card stack-2" data-od-id="chip-completed">
+          <span class="cap">API status <span class="mono">completed</span> + quality <span class="mono">accepted</span></span>
+          <span class="chip chip-lg"><span class="dot dot-ok"></span>Completed <span class="kind">· quality gates accepted</span></span>
+          <p class="avail">Both conditions required. <span class="mono">status == "completed"</span> alone is not acceptance.</p>
+        </div>
+        <div class="card stack-2" data-od-id="chip-partial">
+          <span class="cap">API status <span class="mono">max_iterations</span> · <span class="mono">incomplete</span></span>
+          <span class="chip chip-lg"><span class="dot dot-warn"></span>Partially completed <span class="kind">· budget exhausted</span></span>
+          <p class="avail">Same visual weight as Completed. A normal outcome, not a degraded one.</p>
+        </div>
+        <div class="card stack-2" data-od-id="chip-failed">
+          <span class="cap">API status <span class="mono">failed</span></span>
+          <span class="chip chip-lg"><span class="dot dot-danger"></span>Failed <span class="kind">· graph_provider_configuration_error</span></span>
+          <p class="avail">Carries the enumerated error type. Never exception text, never provider text.</p>
+        </div>
+        <div class="card stack-2" data-od-id="chip-unavailable">
+          <span class="cap">Not a status — an absent value</span>
+          <span class="chip chip-lg is-unavailable">Not available while running</span>
+          <p class="avail">No chip, no dot, no icon, no disabled control. Muted text, and nothing else.</p>
+        </div>
+        <div class="card stack-2" data-od-id="chip-pending">
+          <span class="cap">Before the first frame</span>
+          <span class="chip chip-lg"><span class="dot dot-ok"></span>Running <span class="kind">· stage starting</span></span>
+          <p class="avail">There is no sixth status. <span class="mono">POST /research</span> returns <span class="mono">running</span> before any event exists.</p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card stack" data-od-id="contrast-receipt">
+          <h2 class="card-title">Contrast, measured not assumed</h2>
+          <table class="tbl">
+            <thead><tr><th>Pair</th><th class="mono">Ratio</th><th>Verdict</th></tr></thead>
+            <tbody>
+              <tr><td class="wrapcell"><span class="mono">--fg</span> on <span class="mono">--bg</span></td><td class="mono">16.81:1</td><td>passes 4.5:1</td></tr>
+              <tr><td class="wrapcell"><span class="mono">--muted</span> on <span class="mono">--surface</span></td><td class="mono">6.32:1</td><td>passes 4.5:1</td></tr>
+              <tr><td class="wrapcell"><span class="mono">--meta</span> on <span class="mono">--surface</span></td><td class="mono">2.63:1</td><td><strong>fails.</strong> Carries the sidebar group labels and the settings keys — real text, below even 3:1. A known shortfall, not yet resolved</td></tr>
+              <tr><td class="wrapcell"><span class="mono">--status-ok</span> on <span class="mono">--bg</span></td><td class="mono">8.41:1</td><td>passes 4.5:1</td></tr>
+              <tr><td class="wrapcell"><span class="mono">--status-warn</span> on <span class="mono">--bg</span></td><td class="mono">8.92:1</td><td>passes 4.5:1</td></tr>
+              <tr><td class="wrapcell"><span class="mono">--status-danger</span> on <span class="mono">--bg</span></td><td class="mono">6.93:1</td><td>6.35:1 on <span class="mono">--surface</span>. The system's <span class="mono">--danger</span> also passes, at 5.09:1 — the lift is a preference at dot size, not a requirement</td></tr>
+              <tr><td class="wrapcell"><span class="mono">--accent</span> on <span class="mono">--bg</span></td><td class="mono">4.84:1</td><td>passes 4.5:1 for links and focus</td></tr>
+              <tr><td class="wrapcell"><span class="mono">--accent-on</span> on <span class="mono">--accent</span></td><td class="mono">3.96:1</td><td><strong>fails 4.5:1.</strong> 15px/600 is <em>not</em> large text — that threshold starts at 18.66px — so the large-text exemption does not apply. A known shortfall, recorded in DESIGN.md §5.2 with three ways out</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card stack" data-od-id="colour-vision-note">
+          <h2 class="card-title">Status never depends on colour</h2>
+          <p class="avail">The three status hues are close in lightness by design — they sit on the same dark canvas and read as one family. That makes colour a poor sole signal, so every status carries its label. Outline-only chips below simulate the dots losing their hue entirely:</p>
+          <p class="avail"><strong>One surface is an exception, and it is deliberate.</strong> A sidebar row carries no status word: the ledger shows the question and nothing else, and marks a running session with a <span class="mono">--status-ok</span> ring. It is not left as colour alone — the ring spins, the row's question steps up to <span class="mono">--fg</span>, and the row's accessible name ends in <span class="mono">— running</span>. But with animation suppressed the spin is gone, and what separates a running row from a settled one is the ring's hue plus a text-weight step. The words are the signal everywhere else in the product; this is the one place they are not.</p>
+          <div class="cvd">
+            <div class="sim"><span class="cap">as shipped</span><span class="chip"><span class="dot dot-ok"></span>Completed</span></div>
+            <div class="sim"><span class="cap">hue removed</span><span class="chip"><span class="dot dot-none"></span>Completed</span></div>
+            <div class="sim"><span class="cap">hue removed</span><span class="chip"><span class="dot dot-none"></span>Partially completed</span></div>
+          </div>
+          <p class="avail">The words are the signal. The dot is decoration that never has to be read.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 1 · EMPTY ═══ -->
+  <section class="demo" data-od-id="state-empty" aria-labelledby="empty-h">
+    <div class="demo-head">
+      <div class="stack-2">
+        <p class="eyebrow">State 1 · empty</p>
+        <h2 class="demo-title" id="empty-h">No session has been started in this process</h2>
+        <p class="lead">The history list is empty because nothing exists yet — not because a request failed. The interface says which of those it is.</p>
+      </div>
+      <div class="card stack-2">
+        <span class="cap">Reached when</span>
+        <p class="sm" style="color:var(--fg)">The store holds zero sessions. <span class="mono">GET /research/{id}/status</span> for any imagined id answers <span class="mono">404 session_not_found</span> — there is no way to enumerate what does not exist.</p>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card stack" style="gap:var(--space-5)" data-od-id="empty-history">
+        <div class="row-between">
+          <h3 class="sub">Session history</h3>
+          <span class="avail-mono">0 sessions</span>
+        </div>
+        <div class="empty">
+          <div class="glyph" aria-hidden="true">[ ]</div>
+          <p>Ask anything. Sessions live in this API process's memory, so this list starts empty every time the process does.</p>
+          <button class="btn btn-primary" type="button" data-od-id="cta-empty-start">Start research</button>
+        </div>
+        <p class="avail">No illustration, no arrow pointing at the button, no apology. The action is the whole state.</p>
+      </div>
+
+      <div class="card stack" data-od-id="empty-live-region">
+        <h3 class="sub">Beside it, on the investigation screen</h3>
+        <div class="stack" style="gap:var(--space-4)">
+          <div class="row-between">
+            <span class="sm" style="color:var(--fg)">Live progress</span>
+            <span class="avail-mono">0 events</span>
+          </div>
+          <hr />
+          <div class="stack-2">
+            <span class="avail-mono">GET /research/{id}/stream</span>
+            <p class="avail">The stream is open and has delivered nothing. An empty stream is rendered as an open connection with a zero count and no rows — never as a spinner that implies work is happening, and never as an error.</p>
+          </div>
+          <hr />
+          <div class="stack-2">
+            <span class="sm" style="color:var(--fg)">Report</span>
+            <span class="avail-mono">GET /report → 409 session_not_complete</span>
+            <p class="avail">The report is not missing — it does not exist yet, and the server says so with a distinct code rather than a 404. The screen states the code.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 2 · CONFIGURATION ERROR ═══ -->
+  <section class="demo" data-od-id="state-configuration-error" aria-labelledby="config-h">
+    <div class="demo-head">
+      <div class="stack-2">
+        <p class="eyebrow">State 2 · configuration error</p>
+        <h2 class="demo-title" id="config-h">The service cannot start a run, and says why in one word</h2>
+        <p class="lead">Preflight runs before a session is registered, so a rejected request produces no session — not a failed one. The distinction matters: there is nothing to retry, only something to fix.</p>
+      </div>
+      <div class="card stack-2">
+        <span class="cap">Reached when</span>
+        <p class="sm" style="color:var(--fg)"><span class="mono">preflight()</span> raises <span class="mono">ResearchConfigurationError</span>. The route converts it to <span class="mono">500 configuration_error</span> carrying only the enumerated <span class="mono">reason</span> — no file contents, no secret values, no traceback.</p>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="failure stack" data-od-id="config-panel">
+        <div class="row-between">
+          <div class="row">
+            <span class="chip chip-lg" style="border-color:color-mix(in oklch,var(--status-danger) 44%,var(--border))">
+              <span class="dot dot-danger" aria-hidden="true"></span>Configuration error
+            </span>
+            <span class="mono" style="font-size:var(--text-sm)">500</span>
+          </div>
+          <span class="avail-mono">no session created</span>
+        </div>
+        <hr />
+        <div class="stack-2">
+          <h3 class="sub" style="font-size:var(--text-lg)">Missing required secret for the selected provider</h3>
+          <p class="sm">The configured chat provider needs an API key before any model is called. Strict mode is enabled for the CLI and the API, so the run stops here rather than failing later mid-research.</p>
+        </div>
+        <dl class="kv">
+          <dt>error.code</dt><dd>configuration_error</dd>
+          <dt>error.reason</dt><dd>missing_deepseek_api_key</dd>
+          <dt>HTTP</dt><dd>500</dd>
+          <dt>session_id</dt><dd class="avail" style="font-family:var(--font-body)">Not created</dd>
+          <dt>retry</dt><dd class="plain">Fix the environment, then submit again</dd>
+        </dl>
+        <hr />
+        <div class="stack-2">
+          <span class="sm" style="color:var(--fg)">What the response does not contain</span>
+          <p class="avail">No <span class="mono">.env</span> contents, no secret values, no provider text, no traceback. The front end therefore cannot show the operator which key is missing beyond the enumerated reason — and must not guess.</p>
+        </div>
+        <div class="row wrap">
+          <button class="btn btn-primary" type="button" data-od-id="cta-config-retry">Try again</button>
+          <button class="btn btn-ghost" type="button" data-od-id="cta-config-details">Show request body sent</button>
+        </div>
+      </div>
+
+      <div class="stack" style="gap:var(--space-5)">
+        <div class="card stack-2" data-od-id="config-wire">
+          <h3 class="sub">Response body</h3>
+          <pre class="wire">{
+  <span class="k">"error"</span>: {
+    <span class="k">"code"</span>: <span class="nostr">"configuration_error"</span>,
+    <span class="k">"message"</span>: <span class="nostr">"Research service configuration is unavailable."</span>,
+    <span class="k">"reason"</span>: <span class="nostr">"missing_deepseek_api_key"</span>,
+    <span class="k">"issues"</span>: []
+  }
+}</pre>
+          <p class="avail">The <span class="mono">message</span> is a fixed, safe string. The only variable part is the enumerated <span class="mono">reason</span>, which is what the panel headline is built from.</p>
+        </div>
+
+        <div class="card stack-2" data-od-id="config-vs-validation">
+          <h3 class="sub">Its neighbour: 422</h3>
+          <p class="sm">A malformed override is a different failure with a different shape — a list of field locations and types, still without the values:</p>
+          <pre class="wire">{
+  <span class="k">"error"</span>: {
+    <span class="k">"code"</span>: <span class="nostr">"validation_error"</span>,
+    <span class="k">"message"</span>: <span class="nostr">"Request validation failed."</span>,
+    <span class="k">"issues"</span>: [
+      { <span class="k">"location"</span>: <span class="nostr">"body.config_overrides.llm.model_overrides"</span>,
+        <span class="k">"type"</span>: <span class="nostr">"value_error"</span> }
+    ]
+  }
+}</pre>
+          <p class="avail">Both render in the place the request was made — inline on the form, never as a blocking dialog. The design system resolves choices inline; a configuration failure is not a modal.</p>
+        </div>
+
+        <div class="note attn" data-od-id="config-gap">
+          <div class="note-head"><span class="mk">gap</span>Unreachable without attempting a run</div>
+          <p>The API exposes no health or preflight route, so this state can only be discovered by submitting. A <span class="mono">GET /health</span> returning the enumerated readiness reasons would let the compose screen warn before the operator writes a question.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 3 · SESSION FAILED ═══ -->
+  <section class="demo" data-od-id="state-session-failed" aria-labelledby="failed-h">
+    <div class="demo-head">
+      <div class="stack-2">
+        <p class="eyebrow">State 3 · session failed</p>
+        <h2 class="demo-title" id="failed-h">The run halted, and no artifact was published</h2>
+        <p class="lead">A failure is a halt mark in state, not an exception out of the run. Everything collected before the halt survives in the session, but a halted run publishes nothing — so the report endpoint answers 409, not 404.</p>
+      </div>
+      <div class="card stack-2">
+        <span class="cap">Reached when</span>
+        <p class="sm" style="color:var(--fg)">An error type in <span class="mono">HALTING_ERROR_TYPES</span> lands in state, or the runner raises. The route to the end is <span class="mono">halted</span> and the status is <span class="mono">failed</span>.</p>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="stack" style="gap:var(--space-5)">
+        <div class="failure stack" data-od-id="failed-panel">
+          <div class="row-between">
+            <span class="chip chip-lg" style="border-color:color-mix(in oklch,var(--status-danger) 44%,var(--border))"><span class="dot dot-danger" aria-hidden="true"></span>Failed</span>
+            <span class="avail-mono">session 2ad900b1 · 0m 04s</span>
+          </div>
+          <hr />
+          <div class="stack-2">
+            <h3 class="sub">graph_provider_configuration_error</h3>
+            <p class="sm">The selected chat provider rejected its own configuration before the first agent call. No plan was produced, no research ran, and no report or evidence ledger was written.</p>
+          </div>
+          <dl class="kv">
+            <dt>error_type</dt><dd>graph_provider_configuration_error</dd>
+            <dt>source</dt><dd>graph</dd>
+            <dt>recoverable</dt><dd>false</dd>
+            <dt>timestamp</dt><dd>17:22:31Z</dd>
+            <dt>finished_at</dt><dd>17:22:31Z</dd>
+            <dt>report_path</dt><dd class="avail" style="font-family:var(--font-body)">Not published</dd>
+            <dt>trace_url</dt><dd class="plain">smith.langchain.com ↗</dd>
+          </dl>
+          <hr />
+          <div class="row wrap">
+            <button class="btn btn-primary" type="button" data-od-id="cta-failed-fix">Fix configuration</button>
+            <button class="btn btn-ghost" type="button" data-od-id="cta-failed-trace">Open trace <span aria-hidden="true">↗</span></button>
+          </div>
+        </div>
+
+        <div class="card stack" data-od-id="failed-survived">
+          <h3 class="sub">What survived the halt</h3>
+          <p class="sm">The graph does not discard state on failure. Everything the run collected is still in the session, even though none of it was published as an artifact:</p>
+          <div class="grid-3">
+            <div><div class="mono" style="font-size:var(--text-2xl)">0</div><div class="sm">findings</div></div>
+            <div><div class="mono" style="font-size:var(--text-2xl)">0</div><div class="sm">sources evaluated</div></div>
+            <div><div class="mono" style="font-size:var(--text-2xl)">0</div><div class="sm">claims checked</div></div>
+          </div>
+          <p class="avail">Zeroes here are real counts read from state, not absences. An absent value would read <span class="mono">Not recorded</span> — the two look different on purpose.</p>
+        </div>
+      </div>
+
+      <div class="stack" style="gap:var(--space-5)">
+        <div class="card stack-2" data-od-id="failed-report-request">
+          <h3 class="sub">Asking for the report</h3>
+          <pre class="wire">GET /research/2ad900b1/report
+
+<span class="n">409 Conflict</span>
+{
+  <span class="k">"error"</span>: {
+    <span class="k">"code"</span>: <span class="nostr">"report_unavailable"</span>,
+    <span class="k">"message"</span>: <span class="nostr">"Research session finished without a report."</span>,
+    <span class="k">"issues"</span>: []
+  }
+}</pre>
+          <p class="avail">A finished session with no report is a 409, distinct from the 409 a <em>running</em> session returns (<span class="mono">session_not_complete</span>) and distinct from the 404 an unknown id returns. Three different truths, three different codes, and the screen prints the one it got.</p>
+        </div>
+
+        <div class="card stack" data-od-id="failed-event-tail">
+          <h3 class="sub">The event tail stops where the run did</h3>
+          <ol class="log">
+            <li><span class="avail-mono">17:22:27Z</span><span><span class="etype">graph.session.started</span> <span class="avail">Session started.</span></span></li>
+            <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.node.started</span> <span class="avail">Node planner started.</span></span></li>
+            <li><span class="avail-mono">17:22:31Z</span><span><span style="color:var(--status-danger)">graph_provider_configuration_error</span> <span class="avail">Graph halted.</span></span></li>
+            <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.session.completed</span> <span class="avail">status failed, error_count 1, has_report false.</span></span></li>
+          </ol>
+          <p class="avail">Four frames, then the stream closes. There is no terminal sentinel event: the front end learns the run ended when the connection ends, and must then read <span class="mono">GET /status</span> to learn <em>how</em> it ended.</p>
+        </div>
+
+        <div class="note" data-od-id="failed-note">
+          <div class="note-head"><span class="mk">note</span>Not a crash</div>
+          <p>The enumerated halt types are outcomes the engine models deliberately. This screen names the type and offers the two things an operator can actually do: fix the configuration, or read the trace. It does not offer to re-run, because the API has no re-run endpoint — the operator submits a new session.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 4 · PARTIAL REPORT ═══ -->
+  <section class="demo" data-od-id="state-partial-report" aria-labelledby="partial-h">
+    <div class="demo-head">
+      <div class="stack-2">
+        <p class="eyebrow">State 4 · partial report</p>
+        <h2 class="demo-title" id="partial-h">A finished partial run still delivers a report</h2>
+        <p class="lead">The refinement budget ran out before the critic accepted. The report exists, is authoritative, and is missing evidence in named places. The interface leads with what the report does say, then states the gaps it declares about itself.</p>
+      </div>
+      <div class="card stack-2">
+        <span class="cap">Reached when</span>
+        <p class="sm" style="color:var(--fg)"><span class="mono">status</span> is <span class="mono">max_iterations</span> or <span class="mono">incomplete</span>, or the route reason was not <span class="mono">critique_satisfied</span> — in which case even a <span class="mono">completed</span> session renders here with the reason <span class="mono">not yet quality-gated</span>.</p>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="stack" style="gap:var(--space-5)">
+        <div class="card stack" data-od-id="partial-header">
+          <div class="row-between">
+            <span class="chip chip-lg"><span class="dot dot-warn" aria-hidden="true"></span>Partially completed <span class="kind">· refinement budget exhausted</span></span>
+            <span class="avail-mono">session 7c0d13ff · 14m 02s · 3 of 3 passes</span>
+          </div>
+          <hr />
+          <h3 class="sub">What limits solid-state electrolyte scale-up for EV cells?</h3>
+          <p class="sm">The report is complete as an artifact: all seven sections composed, citations numbered locally, limitations enumerated. What is missing is evidence, and the report says where.</p>
+          <div class="row wrap">
+            <a class="btn btn-primary" href="#" data-od-id="cta-partial-download">Download report.md</a>
+            <a class="btn btn-ghost" href="#" data-od-id="cta-partial-trace">Open trace <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+
+        <div class="card stack" style="gap:var(--space-4)" data-od-id="partial-limitations">
+          <div class="row-between">
+            <h3 class="sub">Limitations, as the report declares them</h3>
+            <span class="avail-mono">6 recorded</span>
+          </div>
+          <ul class="limitation-list">
+            <li><span class="tag">errors</span><span>Some steps of this research pass failed; sections of this report may be incomplete.</span></li>
+            <li><span class="tag">budget</span><span>The refinement budget was exhausted before the critic accepted the report.</span></li>
+            <li><span class="tag">sources</span><span>Some sources behind these findings were flagged low confidence.</span></li>
+            <li><span class="tag">contradiction</span><span>At least one claim was contradicted by an independent source.</span></li>
+            <li><span class="tag">coverage</span><span>Four planned sub-topics were never attempted because the cap truncated the plan.</span></li>
+            <li><span class="tag">scope</span><span>Grid-side evidence is confined to the United States.</span></li>
+          </ul>
+          <p class="avail">Each line is a limitation the engine enumerated itself, never model prose. The tag is the reason code, so the operator can map a gap to a mechanism.</p>
+        </div>
+
+        <div class="card stack" style="gap:var(--space-4)" data-od-id="partial-ledger">
+          <h3 class="sub">Claim verdicts</h3>
+          <div class="bars">
+            <div class="bar-row">
+              <span style="color:var(--fg)">Verified</span>
+              <span class="track"><span class="ok" style="width:52%"></span></span>
+              <span class="n">12</span>
+            </div>
+            <div class="bar-row">
+              <span style="color:var(--fg)">Unverified</span>
+              <span class="track"><span style="width:26%"></span></span>
+              <span class="n">6</span>
+            </div>
+            <div class="bar-row">
+              <span style="color:var(--fg)">Insufficient evidence</span>
+              <span class="track"><span style="width:17%"></span></span>
+              <span class="n">4</span>
+            </div>
+            <div class="bar-row">
+              <span style="color:var(--fg)">Contradicted</span>
+              <span class="track"><span class="bad" style="width:4.5%"></span></span>
+              <span class="n">1</span>
+            </div>
+          </div>
+          <p class="avail">Bars are filled proportions of 23 checked claims, not outlines. The contradicted count is small and dangerous, so it carries the danger hue rather than a muted grey — the one place a status colour is allowed to be the loudest thing in the row.</p>
+        </div>
+      </div>
+
+      <div class="stack" style="gap:var(--space-5)">
+        <div class="card stack" style="gap:var(--space-4)" data-od-id="partial-report-head">
+          <h3 class="sub">The report itself, opening as usual</h3>
+          <div class="prose" style="max-width:100%">
+            <p class="cap" style="margin-bottom:var(--space-3)">Executive summary</p>
+            <p style="font-size:var(--text-sm);line-height:var(--leading-body);color:var(--fg)">The constraints best supported by this pass's evidence are manufacturing yield at the separator and the cost of lithium-scale purification. Two of the four planned sub-topics were never researched, so the report's coverage of recycling economics and of dry-electrode processing rests on a single source each. <a class="cite" href="#">[2][7]</a></p>
+            <p class="cap" style="margin:var(--space-4) 0 var(--space-3)">Limitations</p>
+            <p style="font-size:var(--text-sm);color:var(--muted)">The refinement budget was exhausted before the critic accepted the report; the gaps listed here may reflect process failure rather than an absence of evidence in the literature.</p>
+          </div>
+          <hr />
+          <p class="avail">Identical typography to the accepted report. A partial report is not set in a warning colour, not wrapped in a banner, and not truncated. The status line above it carries the qualification; the document is left alone.</p>
+        </div>
+
+        <div class="card stack-2" data-od-id="partial-quality-panel">
+          <h3 class="sub">Quality snapshot</h3>
+          <div class="grid-2" style="gap:var(--space-4)">
+            <div><div class="mono" style="font-size:var(--text-2xl)">0.64</div><div class="sm">coverage ratio</div></div>
+            <div><div class="mono" style="font-size:var(--text-2xl)">2 of 6</div><div class="sm">sub-topics researched</div></div>
+            <div><div class="mono" style="font-size:var(--text-2xl)">4</div><div class="sm">hard failures</div></div>
+            <div><div class="mono" style="font-size:var(--text-2xl)">23</div><div class="sm">claims checked</div></div>
+          </div>
+          <p class="avail">These come from the session's <span class="mono">ReportQualitySnapshot</span>. The API does not serve it — this panel is the strongest single argument for adding it, because a partial report's numbers are exactly what an operator needs and exactly what a Markdown body cannot give them structurally.</p>
+        </div>
+
+        <div class="note attn" data-od-id="partial-vs-failed">
+          <div class="note-head"><span class="mk">rule</span>Partial is not failed</div>
+          <p>A partial run produced its deliverable. The screen uses the same layout, the same type scale and the same action ordering as the accepted report, and the difference is carried by one status chip and the limitations the report already enumerates. Escalating a normal outcome into a warning state would train the operator to ignore the state that matters.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>

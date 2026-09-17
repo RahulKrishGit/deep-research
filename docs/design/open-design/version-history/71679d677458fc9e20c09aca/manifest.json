@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "fileName": "docs/design/prototype/states.html",
+  "currentVersionId": "b7ec2936-da52-4de4-93ed-4c9987458048",
+  "entries": [
+    {
+      "id": "da4e25f4-10f6-4502-a101-24dbc6c8156f",
+      "fileName": "docs/design/prototype/states.html",
+      "version": 1,
+      "label": "Version 1",
+      "createdAt": 1789580383068,
+      "source": "ai",
+      "prompt": "You are designing a new front end for this repository: a Python multi-agent\ndeep-research engine whose interface is FastAPI. The target is a React/Next front\nend on that API, for a single local user, with no authentication.\nGround yourself first: read README.md, src/deep_research/api/app.py, and the SSE\nevent definitions that module streams.\nThe API serves today:\n- POST /research -> session_id, status, current_agent, iteration, started_at,\n  finished_at, report_path, trace_url, errors\n- GET /research/{id}/status -> the same session shape\n- GET /research/{id}/stream -> server-sent progress events, replayed from the\n  first event and then followed live until the session reaches a terminal state\n- GET /research/{id}/report -> the report as Markdown, only once complete\n- GET /research/{id}/trace -> the LangSmith trace URL, absent while running\nProduct facts the design system cannot know:\n- a run lasts minutes to tens of minutes and is watched, not clicked\n- the report is the deliverable; progress and observability are supporting evidence\n- a run can end partially, with iterations exhausted and errors recorded -- a\n  normal outcome, not a crash\n- local and single-user: no collaborators, orgs, billing or sharing surfaces\nDefine the status mapping explicitly in docs/design/DESIGN.md, using the active\ndesign system's existing roles: running, completed, partially completed, failed,\nand unavailable. Unavailable means a trace URL, token count or usage figure that\nis simply absent -- it renders as muted text, never as a zero, a placeholder, or\na disabled control.\nTask -- design artifacts only. Write no application code and run no npm install.\n1. Propose three structurally distinct layouts for the investigation state, for\n   example a linear event timeline, a narrative column with a details rail, or a\n   split ledger of claims against sources. All three must use the active design\n   system's tokens. For each: what it optimises, what it costs, and who it suits.\n   Recommend one.\n2. docs/design/DESIGN.md: the screen inventory, the status mapping above, and only\n   the decisions the active design system does not already answer.\n3. Build a self-contained prototype at docs/design/prototype/index.html with an\n   in-page state switcher covering new research, running with live progress,\n   completed report, and session history; plus docs/design/prototype/states.html\n   covering empty, configuration error, session failed, and partial report. No\n   build step, no external scripts, no web-font fetches, all values driven from\n   the design system tokens through CSS custom properties, any details rail\n   stacks below the primary column on narrow screens, visible focus states, and\n   respect for prefers-reduced-motion.\n4. List, per screen, the data it needs that the API above does not serve.\nKeep every artifact under docs/design/. Do not modify src/, tests/ or\nconfiguration, and do not commit anything -- leave the changes in the working\ntree for review.\nWhen you are done, tell me what to look at first and what you would change with\nmore time.@Perplexity AI",
+      "size": 40357,
+      "mime": "text/html; charset=utf-8",
+      "kind": "html",
+      "contentPath": "0001-da4e25f4-10f6-4502-a101-24dbc6c8156f.html",
+      "promptSource": "message",
+      "contentDigest": "30bd57bfa5cf561b90aa23021fc5b14c25c7c839e2d12df6e0b3dbfcab93af3d"
+    },
+    {
+      "id": "b7ec2936-da52-4de4-93ed-4c9987458048",
+      "fileName": "docs/design/prototype/states.html",
+      "version": 2,
+      "label": "Version 2",
+      "createdAt": 1789611195639,
+      "source": "ai",
+      "prompt": "is it ready for handoff now?",
+      "size": 41622,
+      "mime": "text/html; charset=utf-8",
+      "kind": "html",
+      "contentPath": "0002-b7ec2936-da52-4de4-93ed-4c9987458048.html",
+      "contentDigest": "2a99dc151ca552e6c05050f0c1842e6e65bccbd2d769206718fbda848b405cad",
+      "promptSource": "message"
+    }
+  ]
+}
