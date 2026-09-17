@@ -77,6 +77,20 @@ class SufficientAgent(SummaryAgent):
         )
 
 
+class ContextAgent(SummaryAgent):
+    name = "context_summarizer"
+
+    def build_decision_context(
+        self,
+        task: AgentTask,
+        *,
+        iteration: int,
+        steps: Sequence[ReActStep],
+    ) -> str:
+        del task, steps
+        return f"target=target-{iteration}; complete context for turn {iteration}"
+
+
 class FlakyAgent(SummaryAgent):
     name = "flaky_summarizer"
     allowed_tools = ("echo", "boom")
@@ -153,6 +167,30 @@ async def test_run_renders_the_task_tools_and_scratchpad_into_the_prompt(
     assert [definition.name for definition in first_call.tools] == ["echo"]
     assert "- echo:" not in first_call.messages[1].content
     assert "echo" not in first_call.messages[0].content
+
+
+@pytest.mark.asyncio
+async def test_react_decision_prompt_receives_fresh_complete_decision_context(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        [
+            use_tool("Check the echo.", "echo", '{"value": "hi"}'),
+            finish("Enough.", "Rayleigh."),
+        ]
+    )
+    agent = _agent(
+        tracker,
+        completer,
+        agent_class=ContextAgent,
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        await agent.run(_state())
+
+    assert "## Acquisition context" in completer.react_calls[0].messages[1].content
+    assert "target=target-1" in completer.react_calls[0].messages[1].content
+    assert "target=target-2" in completer.react_calls[1].messages[1].content
 
     second_messages = completer.react_calls[1].messages
     assert "- [thought] Selected tool through provider-native calling." in (

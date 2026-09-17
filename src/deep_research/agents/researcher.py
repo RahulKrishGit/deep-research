@@ -13,12 +13,15 @@ still considered high priority.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from datetime import datetime, timezone
 from typing import NamedTuple
 
 from pydantic import Field, JsonValue, ValidationError
 
+from deep_research.agents.acquisition import (
+    AcquisitionPolicy,
+)
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
     AgentConfigurationError,
@@ -26,6 +29,7 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.events import agent_event
+from deep_research.agents.evidence import excerpt_matches
 from deep_research.agents.identity import deduplicate_findings
 from deep_research.agents.prompts import (
     AgentTask,
@@ -49,9 +53,12 @@ from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    QUALITY_CONTRACT_VERSION,
+    AcquisitionState,
     ContractModel,
     CritiqueGap,
     Finding,
+    ReadRecord,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -135,6 +142,13 @@ class FindingDraft(ContractModel):
     source_url: str
     source_title: str
     confidence: float
+    # Newer extraction callers may identify the exact registry item. These
+    # remain optional for compatibility with the original URL/title schema;
+    # when supplied, build_findings verifies every field against the read.
+    read_id: str | None = None
+    locator: str | None = None
+    excerpt: str | None = None
+    target_ids: list[str] = Field(default_factory=list)
 
 
 class SubTopicFindingsDraft(ContractModel):
@@ -557,6 +571,7 @@ def extraction_messages(
     run: ReActRun,
     *,
     evidence_chars: int,
+    acquisition_context: str | None = None,
 ) -> list[ChatMessage]:
     """Build the messages that extract findings from one finished loop."""
     criteria = "\n".join(
@@ -564,16 +579,24 @@ def extraction_messages(
     )
     sections = [
         f"# Sub-topic\n{task.sub_topic.title}",
-        f"# Success criteria\n{criteria}",
-        (
-            "# Retrieved evidence\n"
-            f"{render_evidence(run, limit=evidence_chars, discovery_payloads=False)}"
+            f"# Success criteria\n{criteria}",
+            (
+                "# Retrieved evidence\n"
+                + (
+                acquisition_context
+                if acquisition_context is not None
+                else render_evidence(
+                    run, limit=evidence_chars, discovery_payloads=False
+                )
+            )
         ),
         (
             "# Response contract\nReturn one finding per distinct, "
             "source-backed claim. Use the exact source_url and source_title "
-            "from the evidence above. Return an empty list when the evidence "
-            "supports nothing."
+            "from the evidence above. When a read_id, locator, and excerpt "
+            "are present, copy those registry fields exactly; never invent a "
+            "content hash. Return an empty list when the evidence supports "
+            "nothing."
         ),
         (
             "# Reply format\n"
@@ -592,6 +615,8 @@ def build_findings(
     sub_topic: SubTopic,
     extracted_at: str,
     known_urls: Sequence[str],
+    known_reads: Mapping[str, ReadRecord] | None = None,
+    target_id: str | None = None,
 ) -> tuple[list[Finding], list[str]]:
     """Stamp drafts into ``Finding`` values, naming the ones that were dropped.
 
@@ -607,15 +632,45 @@ def build_findings(
     rejected: list[str] = []
     allowed = {normalize_source_url(url) for url in known_urls}
     for index, item in enumerate(draft.findings, start=1):
-        if normalize_source_url(item.source_url) not in allowed:
+        read = None
+        source_url = item.source_url
+        source_title = item.source_title
+        if item.read_id is not None:
+            read = None if known_reads is None else known_reads.get(item.read_id)
+            if read is None:
+                rejected.append(f"finding {index}: read id was not admitted")
+                continue
+            source_url = item.source_url or read.resolved_url
+            source_title = item.source_title or read.title
+            if normalize_source_url(source_url) != read.resolved_url:
+                rejected.append(f"finding {index}: source url did not match read")
+                continue
+            if source_title != read.title:
+                rejected.append(f"finding {index}: source title did not match read")
+                continue
+            if not item.locator or not item.excerpt:
+                rejected.append(
+                    f"finding {index}: read id requires locator and excerpt"
+                )
+                continue
+            passage = read.passages.get(item.locator)
+            if passage is None or not excerpt_matches(passage, item.excerpt):
+                rejected.append(
+                    f"finding {index}: excerpt was not admitted at locator"
+                )
+                continue
+            if target_id is not None and target_id not in item.target_ids:
+                rejected.append(f"finding {index}: target id was not admitted")
+                continue
+        if normalize_source_url(source_url) not in allowed:
             rejected.append(f"finding {index}: source url was not retrieved")
             continue
         try:
             findings.append(
                 Finding(
                     content=item.content,
-                    source_url=item.source_url,
-                    source_title=item.source_title,
+                    source_url=source_url,
+                    source_title=source_title,
                     extracted_at=extracted_at,
                     confidence=item.confidence,
                     related_sub_topic=sub_topic.title,
@@ -633,6 +688,10 @@ class BoundedFindings(NamedTuple):
     dropped_duplicate: int
     dropped_cap: int
     sources_retained: int
+    publishers_retained: int
+    source_urls_retained: int
+    findings_retained: int
+    works_retained: int
 
 
 def bound_sub_topic_findings(
@@ -699,6 +758,18 @@ def bound_sub_topic_findings(
         sources_retained=len(
             {normalize_source_url(finding.source_url) for finding in retained}
         ),
+        publishers_retained=len(
+            {publisher_identity(finding.source_url) for finding in retained}
+        ),
+        source_urls_retained=len(
+            {normalize_source_url(finding.source_url) for finding in retained}
+        ),
+        findings_retained=len(retained),
+        # Task 4 enriches findings with explicit work identities. Until then,
+        # a distinct retained source is the conservative work-count alias.
+        works_retained=len(
+            {normalize_source_url(finding.source_url) for finding in retained}
+        ),
     )
 
 
@@ -740,6 +811,7 @@ def tool_call_events(
                 metadata={
                     "sub_topic": summarize_text(sub_topic.title),
                     "tool": observation.tool_name,
+                    "proposal_id": step.proposal_id,
                     "iteration": step.iteration,
                     "success": observation.success,
                     "error_type": observation.error_type,
@@ -758,6 +830,12 @@ def sub_topic_completed_event(
     dropped_duplicate: int,
     dropped_cap: int,
     sources_retained: int,
+    publishers_retained: int,
+    source_urls_retained: int,
+    findings_retained: int,
+    works_retained: int,
+    successful_reads: int = 0,
+    useful_evidence_yield: int = 0,
 ) -> ResearchEvent:
     """Report one sub-topic's stop reason, counts, and finding total.
 
@@ -780,6 +858,12 @@ def sub_topic_completed_event(
             "findings_dropped_duplicate": dropped_duplicate,
             "findings_dropped_cap": dropped_cap,
             "sources_retained": sources_retained,
+            "publishers_retained": publishers_retained,
+            "source_urls_retained": source_urls_retained,
+            "findings_retained": findings_retained,
+            "works_retained": works_retained,
+            "successful_reads": successful_reads,
+            "useful_evidence_yield": useful_evidence_yield,
         },
     )
 
@@ -940,6 +1024,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
         high_priority_threshold: int = HIGH_PRIORITY_THRESHOLD,
         evidence_chars: int = DEFAULT_EVIDENCE_CHARS,
+        selected_passages_per_read: int | None = None,
+        evidence_packet_chars: int | None = None,
+        cache: MutableMapping[str, ReadRecord] | None = None,
+        network_read_ids: set[str] | None = None,
         clock: Clock = _utc_now,
     ) -> None:
         super().__init__(
@@ -956,6 +1044,20 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             raise ValueError("high_priority_threshold must be at least 1")
         if evidence_chars < 1:
             raise ValueError("evidence_chars must be at least 1")
+        selected_limit = (
+            self.config.selected_passages_per_read
+            if selected_passages_per_read is None
+            else selected_passages_per_read
+        )
+        packet_limit = (
+            self.config.evidence_packet_chars
+            if evidence_packet_chars is None
+            else evidence_packet_chars
+        )
+        if selected_limit < 1:
+            raise ValueError("selected_passages_per_read must be at least 1")
+        if packet_limit < 1:
+            raise ValueError("evidence_packet_chars must be at least 1")
         probe = clock()
         if probe.tzinfo is None or probe.utcoffset() is None:
             raise AgentConfigurationError(
@@ -965,7 +1067,29 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._max_sub_topics = max_sub_topics
         self._high_priority_threshold = high_priority_threshold
         self._evidence_chars = evidence_chars
+        self._selected_passages_per_read = selected_limit
+        self._evidence_packet_chars = packet_limit
         self._clock = clock
+        # These registries are intentionally run-scoped and shared by every
+        # sub-topic loop. A body read for one target can therefore be selected
+        # locally for another target without another network acquisition.
+        self._run_reads: dict[str, ReadRecord] = {}
+        self._run_evidence = {}
+        self._run_dispositions = []
+        self._run_boundary_audits = {}
+        self._run_acquisition_states = {}
+        self._run_seen_target_ids: set[str] = set()
+        self._run_cache: dict[str, ReadRecord] = {}
+        self._run_network_read_ids: set[str] = set()
+        self._shared_cache = cache if cache is not None else {}
+        self._shared_network_read_ids = (
+            network_read_ids if network_read_ids is not None else set()
+        )
+        self._active_acquisition: AcquisitionPolicy | None = None
+        self._active_target_id: str | None = None
+        self._run_source_state: ResearchState | None = None
+        self._last_successful_reads = 0
+        self._last_useful_evidence_yield = 0
 
     @property
     def output_schema(self) -> type[ResearchFindings]:
@@ -987,6 +1111,62 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         return AgentTask(
             instruction=state.original_question,
             guidance=render_session_guidance(state),
+        )
+
+    def build_decision_context(
+        self,
+        task: AgentTask,
+        *,
+        iteration: int,
+        steps: Sequence[ReActStep],
+    ) -> str:
+        """Refresh and render the active target's complete acquisition state."""
+        del task, iteration, steps
+        policy = self._active_acquisition
+        if policy is None:
+            return ""
+        return policy.context(limit=self._evidence_packet_chars)
+
+    def _policy_for_task(self, task: SubTopicTask) -> AcquisitionPolicy:
+        target_id = task.sub_topic.coverage_id
+        existing = (
+            None
+            if target_id in self._run_seen_target_ids
+            else self._run_acquisition_states.get(target_id)
+        )
+        if existing is None:
+            acquisition_state = AcquisitionState(
+                target_id=target_id,
+                remaining_calls=self.config.tool_budget_for(self.name),
+                remaining_model_turns=self.config.max_iterations,
+            )
+        else:
+            acquisition_state = existing
+        return AcquisitionPolicy(
+            state=acquisition_state,
+            session_id=(
+                self._run_source_state.session_id
+                if self._run_source_state is not None
+                else "researcher-session"
+            ),
+            target_id=target_id,
+            query=(
+                f"{task.sub_topic.title} "
+                + " ".join(task.sub_topic.success_criteria)
+            ),
+            origin="researcher",
+            reads=self._run_reads,
+            evidence=self._run_evidence,
+            dispositions=self._run_dispositions,
+            boundary_audits=self._run_boundary_audits,
+            retrieved_at=lambda: self._clock().isoformat(),
+            selected_passages_per_read=self._selected_passages_per_read,
+            configuration_fingerprint=(
+                f"selected={self._selected_passages_per_read};"
+                f"packet={self._evidence_packet_chars}"
+            ),
+            cache=self._run_cache,
+            network_read_ids=self._run_network_read_ids,
         )
 
     def sub_topic_task(
@@ -1041,14 +1221,32 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # One call, two consumers: the same tuple gates the provider call and
         # becomes the provenance allow-list, so "did this loop read anything"
         # and "which URLs may a finding cite" cannot disagree.
-        retrieved = retrieved_finding_urls(run)
+        policy = self._active_acquisition
+        retrieved = (
+            tuple(
+                dict.fromkeys(
+                    read.resolved_url
+                    for read in policy.reads.values()
+                    if read.resolved_url in policy.state.read_urls
+                )
+            )
+            if policy is not None
+            else retrieved_finding_urls(run)
+        )
         if not run.succeeded or not retrieved:
             return [], [], False
 
         try:
             draft = await self.provider.complete_structured(
                 extraction_messages(
-                    task, run, evidence_chars=self._evidence_chars
+                    task,
+                    run,
+                    evidence_chars=self._evidence_chars,
+                    acquisition_context=(
+                        policy.context(limit=self._evidence_packet_chars)
+                        if policy is not None
+                        else None
+                    ),
                 ),
                 SubTopicFindingsDraft,
                 agent_name=self.name,
@@ -1061,9 +1259,27 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             sub_topic=task.sub_topic,
             extracted_at=self._clock().isoformat(),
             known_urls=retrieved,
+            known_reads=(
+                {
+                    read_id: read
+                    for read_id, read in policy.reads.items()
+                    if read.resolved_url in policy.state.read_urls
+                }
+                if policy is not None
+                else None
+            ),
+            target_id=(policy.target_id if policy is not None else None),
         )
+        if policy is not None:
+            policy.record_extraction_dispositions(
+                [finding.source_url for finding in findings]
+            )
         if not rejected:
+            if policy is not None:
+                policy.complete_extraction()
             return findings, [], False
+        if policy is not None:
+            policy.complete_extraction()
         return findings, [
             agent_error(
                 agent_name=self.name,
@@ -1104,6 +1320,24 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
             update["raw_findings"] = list(result.findings)
+        if (
+            self._run_reads
+            or self._run_evidence
+            or self._run_dispositions
+            or self._run_acquisition_states
+        ):
+            update.update(
+                {
+                    "read_records": dict(self._run_reads),
+                    "evidence_units": dict(self._run_evidence),
+                    "evidence_dispositions": list(self._run_dispositions),
+                    "boundary_audits": dict(self._run_boundary_audits),
+                    "acquisition_state_by_target": dict(
+                        self._run_acquisition_states
+                    ),
+                    "quality_contract_version": QUALITY_CONTRACT_VERSION,
+                }
+            )
         return update
 
     async def _research_sub_topic(self, task: SubTopicTask) -> ReActRun:
@@ -1115,13 +1349,19 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """
         self.scratchpad.clear()
         toolset = self.toolset
+        policy = self._policy_for_task(task)
+        self._active_acquisition = policy
+        self._active_target_id = task.sub_topic.coverage_id
 
         async def decide(
             iteration: int,
             steps: Sequence[ReActStep],
-        ) -> ReActDecision:
-            del steps
-            return await self._complete_react_decision(task, iteration=iteration)
+        ) -> tuple[ReActDecision, ...]:
+            return await self._complete_react_decision(
+                task,
+                iteration=iteration,
+                steps=steps,
+            )
 
         react = await run_react_loop(
             agent_name=self.name,
@@ -1133,6 +1373,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             on_step=self._record_step,
             is_sufficient=self.is_sufficient,
             summary_limit=self.config.observation_summary_chars,
+            tool_policy=policy,
+            job_id=f"{self.name}/{policy.session_id}/{policy.target_id}",
             propagate_provider_errors=False,
         )
         return react.model_copy(
@@ -1143,6 +1385,31 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
     async def run(self, state: ResearchState) -> AgentRun[ResearchFindings]:
         """Research each selected sub-topic in its own bounded loop."""
+        self._run_source_state = state
+        self._run_reads = dict(state.read_records)
+        self._run_evidence = dict(state.evidence_units)
+        self._run_dispositions = list(state.evidence_dispositions)
+        self._run_boundary_audits = dict(state.boundary_audits)
+        self._run_acquisition_states = dict(state.acquisition_state_by_target)
+        self._run_seen_target_ids = set()
+        self._run_cache = self._shared_cache
+        self._run_cache.update(
+            {
+                key: read
+                for key, read in self._run_reads.items()
+                if read.acquisition_kind == "network"
+            }
+        )
+        self._run_network_read_ids = self._shared_network_read_ids
+        self._run_network_read_ids.update(
+            {
+                read.read_id
+                for read in self._run_reads.values()
+                if read.acquisition_kind == "network"
+            }
+        )
+        self._active_acquisition = None
+        self._active_target_id = None
         base_task = self.build_task(state)
         ordered = _ordered_sub_topics(state)
         satisfied = _refinement_satisfied_sub_topics(state)
@@ -1174,6 +1441,25 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     extraction_errors,
                     extraction_failed,
                 ) = await self.extract_findings(task, react)
+                if self._active_acquisition is not None:
+                    policy = self._active_acquisition
+                    self._last_successful_reads = sum(
+                        read.resolved_url in policy.state.read_urls
+                        for read in policy.reads.values()
+                    )
+                    self._last_useful_evidence_yield = sum(
+                        policy.target_id in unit.target_ids
+                        for unit in policy.evidence.values()
+                    )
+                    policy.complete_extraction()
+                    target_id = policy.target_id
+                    if target_id is not None:
+                        self._run_acquisition_states[target_id] = (
+                            self._active_acquisition.state
+                        )
+                        self._run_seen_target_ids.add(target_id)
+                self._active_acquisition = None
+                self._active_target_id = None
                 if extraction_failed:
                     # Mirror the loop-level provider_error path so the
                     # merged run (and this sub-topic's own completed event)
@@ -1208,6 +1494,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     dropped_duplicate=bounded.dropped_duplicate,
                     dropped_cap=bounded.dropped_cap,
                     sources_retained=bounded.sources_retained,
+                    publishers_retained=bounded.publishers_retained,
+                    source_urls_retained=bounded.source_urls_retained,
+                    findings_retained=bounded.findings_retained,
+                    works_retained=bounded.works_retained,
+                    successful_reads=self._last_successful_reads,
+                    useful_evidence_yield=self._last_useful_evidence_yield,
                 )
             )
             if not react.succeeded:

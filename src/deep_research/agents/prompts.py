@@ -352,6 +352,7 @@ def render_react_messages(
     scratchpad: Sequence[ScratchpadEntry],
     iteration: int,
     max_iterations: int,
+    decision_context: str = "",
 ) -> list[ChatMessage]:
     """Build the two messages one ReAct turn sends to the provider.
 
@@ -370,6 +371,8 @@ def render_react_messages(
     sections = [f"## Task\n{task.instruction}"]
     if task.guidance.strip():
         sections.append(f"## Guidance\n{task.guidance}")
+    if decision_context.strip():
+        sections.append(f"## Acquisition context\n{decision_context}")
     sections.append(f"## Notes so far\n{render_scratchpad(scratchpad)}")
     sections.append(f"## Budget\nIteration {iteration} of {max_iterations}.")
     sections.append(f"## How to respond\n{NATIVE_REACT_RESPONSE_CONTRACT}")

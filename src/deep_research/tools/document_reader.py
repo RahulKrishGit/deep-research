@@ -131,10 +131,18 @@ class DocumentReaderTool(BaseTool):
         else:
             payload = Path(source).read_bytes()
 
-        suffix = _source_suffix(source)
-        document_format = _SUFFIX_FORMATS.get(suffix)
-        if document_format is None and not suffix:
-            document_format = _CONTENT_TYPE_FORMATS.get(_media_type(content_type))
+        requested_suffix = _source_suffix(source)
+        resolved_suffix = _source_suffix(resolved_source)
+        # A redirect can turn an HTML-looking landing URL into a PDF (or
+        # another document type). Prefer the URL that actually served the
+        # bytes, then use the response MIME type, and only fall back to the
+        # requested suffix for local files and non-descriptive redirects.
+        suffix = resolved_suffix or requested_suffix
+        document_format = _CONTENT_TYPE_FORMATS.get(_media_type(content_type))
+        if document_format is None:
+            document_format = _SUFFIX_FORMATS.get(resolved_suffix)
+        if document_format is None:
+            document_format = _SUFFIX_FORMATS.get(requested_suffix)
         if document_format is None:
             raise ToolExecutionError(
                 "unsupported document format",

@@ -7,9 +7,10 @@ one ``react_iteration_span`` per turn.
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TypeAlias
 
 from pydantic import JsonValue
@@ -37,6 +38,9 @@ DecideCallback: TypeAlias = Callable[
 ]
 StepCallback: TypeAlias = Callable[[ReActStep], Awaitable[None]]
 SufficiencyCallback: TypeAlias = Callable[[Sequence[ReActStep]], bool]
+ToolPolicyCallback: TypeAlias = Callable[
+    [ReActDecision, Mapping[str, JsonValue]], object
+]
 
 # The tool name the loop records for the calls a spent budget never reached.
 # It is project-authored on purpose: the count of dropped calls is what the
@@ -198,6 +202,7 @@ def _unexecuted_remainder_step(
     unexecuted: int,
     tool_budget: int,
     summary_limit: int,
+    proposal_id: str | None = None,
 ) -> ReActStep:
     """One step recording the calls a spent tool budget never reached.
 
@@ -213,6 +218,7 @@ def _unexecuted_remainder_step(
         limit=summary_limit,
     )
     return ReActStep(
+        proposal_id=proposal_id,
         iteration=iteration,
         thought=(
             "Stopped before every tool call the provider requested could run."
@@ -229,6 +235,71 @@ def _unexecuted_remainder_step(
     )
 
 
+def build_proposal_id(job_id: str, turn_index: int, batch_index: int) -> str:
+    """Build a local proposal identity from loop coordinates.
+
+    ``NativeToolCall`` intentionally has no provider/vendor identifier.  The
+    loop owns this additive identity so a batch call, a policy rejection, and
+    a budget refusal remain individually auditable without pretending the
+    provider supplied an id.
+    """
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise ValueError("job_id must be a non-empty string")
+    if turn_index < 1 or batch_index < 0:
+        raise ValueError("proposal coordinates are out of bounds")
+    return f"{job_id.strip()}/turn-{turn_index}/call-{batch_index}"
+
+
+async def _policy_result(
+    policy: ToolPolicyCallback,
+    decision: ReActDecision,
+    tool_input: Mapping[str, JsonValue],
+) -> object:
+    value = policy(decision, tool_input)
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _policy_fields(value: object) -> tuple[bool, str, ToolResult | None, bool]:
+    """Normalize a policy result without importing the acquisition module."""
+    if value is None or value is True:
+        return True, "", None, True
+    if value is False:
+        return False, "the requested action was rejected by policy", None, False
+    if isinstance(value, str):
+        return False, value, None, False
+    allowed = getattr(value, "allowed", None)
+    if isinstance(allowed, bool):
+        reason = getattr(value, "reason", "")
+        result = getattr(value, "result", None)
+        charge = getattr(value, "charge_tool_budget", True)
+        return (
+            allowed,
+            reason if isinstance(reason, str) else "",
+            result if isinstance(result, ToolResult) else None,
+            charge if isinstance(charge, bool) else True,
+        )
+    raise TypeError(
+        "tool_policy must return a bool, reason, or policy decision"
+    )
+
+
+def _policy_rejection_observation(
+    tool_name: str, reason: str, *, limit: int
+) -> ReActObservation:
+    return ReActObservation(
+        tool_name=tool_name,
+        success=False,
+        summary=summarize_text(
+            f"{tool_name} rejected by acquisition policy: "
+            f"{reason or 'the requested action is not allowed now'}",
+            limit=limit,
+        ),
+        error_type="agent_tool_policy_rejected",
+    )
+
+
 async def run_react_loop(
     *,
     agent_name: str,
@@ -239,6 +310,8 @@ async def run_react_loop(
     tool_budget: int,
     on_step: StepCallback | None = None,
     is_sufficient: SufficiencyCallback | None = None,
+    tool_policy: ToolPolicyCallback | None = None,
+    job_id: str | None = None,
     summary_limit: int = DEFAULT_SUMMARY_LIMIT,
     propagate_provider_errors: bool = True,
 ) -> ReActRun:
@@ -265,11 +338,15 @@ async def run_react_loop(
     if tool_budget < 0:
         raise ValueError("tool_budget must not be negative")
     agent_name = agent_name.strip()
+    local_job_id = (job_id or agent_name).strip()
+    if not local_job_id:
+        raise ValueError("job_id must be a non-empty string")
 
     steps: list[ReActStep] = []
     errors: list[ResearchError] = []
     stop_reason: StopReason | None = None
     tool_calls = 0
+    charged_tool_calls = 0
     iteration = 0
 
     while iteration < max_iterations and stop_reason is None:
@@ -282,8 +359,16 @@ async def run_react_loop(
         # model turn and nothing else.
         try:
             async with tracker.react_iteration_span(iteration) as span:
+                start_turn = getattr(tool_policy, "start_turn", None)
+                if callable(start_turn):
+                    value = start_turn()
+                    if inspect.isawaitable(value):
+                        await value
                 decisions = await decide(iteration, steps)
                 for position, decision in enumerate(decisions):
+                    proposal_id = build_proposal_id(
+                        local_job_id, iteration, position
+                    )
                     observation: ReActObservation | None = None
                     tool_result: ToolResult | None = None
                     tool_input: dict[str, JsonValue] = {}
@@ -325,35 +410,6 @@ async def run_react_loop(
                                     },
                                 )
                             )
-                        elif tool_calls >= tool_budget:
-                            observation = ReActObservation(
-                                tool_name=tool_name,
-                                success=False,
-                                summary=summarize_text(
-                                    f"The tool budget of {tool_budget} calls is "
-                                    "exhausted; no further tool calls are "
-                                    "possible.",
-                                    limit=summary_limit,
-                                ),
-                                error_type="agent_tool_budget_exhausted",
-                            )
-                            errors.append(
-                                agent_error(
-                                    agent_name=agent_name,
-                                    error_type="agent_tool_budget_exhausted",
-                                    message=(
-                                        "The agent stopped after exhausting its "
-                                        "tool budget."
-                                    ),
-                                    details={
-                                        "tool": tool_name,
-                                        "iteration": iteration,
-                                        "tool_budget": tool_budget,
-                                    },
-                                )
-                            )
-                            stop_reason = "tool_budget_exhausted"
-                            budget_spent = True
                         else:
                             try:
                                 tool_input = parse_tool_input(
@@ -385,34 +441,142 @@ async def run_react_loop(
                                     )
                                 )
                             else:
-                                tool_result = await tool.execute(**tool_input)
-                                tool_calls += 1
-                                observation = _tool_observation(
-                                    tool_result, limit=summary_limit
-                                )
-                                if not tool_result.success:
+                                allowed = True
+                                policy_reason = ""
+                                policy_result: ToolResult | None = None
+                                charge_budget = True
+                                if tool_policy is not None:
+                                    policy_value = await _policy_result(
+                                        tool_policy, decision, tool_input
+                                    )
+                                    (
+                                        allowed,
+                                        policy_reason,
+                                        policy_result,
+                                        charge_budget,
+                                    ) = _policy_fields(policy_value)
+                                if not allowed:
+                                    observation = _policy_rejection_observation(
+                                        tool_name,
+                                        policy_reason,
+                                        limit=summary_limit,
+                                    )
                                     errors.append(
                                         agent_error(
                                             agent_name=agent_name,
-                                            error_type="agent_tool_failed",
+                                            error_type="agent_tool_policy_rejected",
                                             message=(
-                                                f"{tool_name} failed; the agent "
-                                                "continued with an observation."
+                                                "The acquisition policy rejected "
+                                                "a requested tool action."
                                             ),
-                                            details=_tool_failure_details(
-                                                tool_result,
-                                                tool_name=tool_name,
-                                                iteration=iteration,
-                                                tool_error_type=(
-                                                    observation.error_type
-                                                    or "unknown"
-                                                ),
-                                            ),
+                                            details={
+                                                "tool": tool_name,
+                                                "iteration": iteration,
+                                            },
                                         )
                                     )
+                                elif (
+                                    policy_result is not None
+                                    and not charge_budget
+                                ):
+                                    # A local/cache result is an observation,
+                                    # not an external tool call. It still
+                                    # counts as a completed action in the run.
+                                    tool_result = policy_result
+                                    observation = _tool_observation(
+                                        tool_result, limit=summary_limit
+                                    )
+                                    tool_calls += 1
+                                    if not tool_result.success:
+                                        errors.append(
+                                            agent_error(
+                                                agent_name=agent_name,
+                                                error_type="agent_tool_failed",
+                                                message=(
+                                                    f"{tool_name} failed; the agent "
+                                                    "continued with an observation."
+                                                ),
+                                                details=_tool_failure_details(
+                                                    tool_result,
+                                                    tool_name=tool_name,
+                                                    iteration=iteration,
+                                                    tool_error_type=(
+                                                        observation.error_type
+                                                        or "unknown"
+                                                    ),
+                                                ),
+                                            )
+                                        )
+                                elif charged_tool_calls >= tool_budget:
+                                    # Arguments for a call the budget refused
+                                    # are provider text and must not enter the
+                                    # persisted step or its public repr.
+                                    tool_input = {}
+                                    observation = ReActObservation(
+                                        tool_name=tool_name,
+                                        success=False,
+                                        summary=summarize_text(
+                                            f"The tool budget of {tool_budget} calls "
+                                            "is exhausted; no further tool calls "
+                                            "are possible.",
+                                            limit=summary_limit,
+                                        ),
+                                        error_type="agent_tool_budget_exhausted",
+                                    )
+                                    errors.append(
+                                        agent_error(
+                                            agent_name=agent_name,
+                                            error_type=(
+                                                "agent_tool_budget_exhausted"
+                                            ),
+                                            message=(
+                                                "The agent stopped after exhausting "
+                                                "its tool budget."
+                                            ),
+                                            details={
+                                                "tool": tool_name,
+                                                "iteration": iteration,
+                                                "tool_budget": tool_budget,
+                                            },
+                                        )
+                                    )
+                                    stop_reason = "tool_budget_exhausted"
+                                    budget_spent = True
+                                else:
+                                    tool_result = (
+                                        policy_result
+                                        if policy_result is not None
+                                        else await tool.execute(**tool_input)
+                                    )
+                                    tool_calls += 1
+                                    charged_tool_calls += 1
+                                    observation = _tool_observation(
+                                        tool_result, limit=summary_limit
+                                    )
+                                    if not tool_result.success:
+                                        errors.append(
+                                            agent_error(
+                                                agent_name=agent_name,
+                                                error_type="agent_tool_failed",
+                                                message=(
+                                                    f"{tool_name} failed; the agent "
+                                                    "continued with an observation."
+                                                ),
+                                                details=_tool_failure_details(
+                                                    tool_result,
+                                                    tool_name=tool_name,
+                                                    iteration=iteration,
+                                                    tool_error_type=(
+                                                        observation.error_type
+                                                        or "unknown"
+                                                    ),
+                                                ),
+                                            )
+                                        )
 
                     turn_steps.append(
                         ReActStep(
+                            proposal_id=proposal_id,
                             iteration=iteration,
                             thought=decision.thought,
                             action=decision.action,
@@ -423,6 +587,12 @@ async def run_react_loop(
                             final_answer=decision.final_answer or None,
                         )
                     )
+                    if tool_policy is not None:
+                        after_action = getattr(tool_policy, "after_action", None)
+                        if callable(after_action):
+                            value = after_action(turn_steps[-1], tool_input)
+                            if inspect.isawaitable(value):
+                                await value
                     span.set_outputs(
                         {
                             "agent_name": agent_name,
@@ -460,6 +630,9 @@ async def run_react_loop(
                                 unexecuted=unexecuted,
                                 tool_budget=tool_budget,
                                 summary_limit=summary_limit,
+                                proposal_id=build_proposal_id(
+                                    local_job_id, iteration, position + 1
+                                ),
                             )
                         )
                         errors.append(

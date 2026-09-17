@@ -432,6 +432,18 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
         ("AGENTS_TOOL_BUDGET", ("agents", "tool_budget"), "3", 3),
         ("AGENTS_MAX_SUB_TOPICS", ("agents", "max_sub_topics"), "5", 5),
         (
+            "AGENTS_SELECTED_PASSAGES_PER_READ",
+            ("agents", "selected_passages_per_read"),
+            "6",
+            6,
+        ),
+        (
+            "AGENTS_EVIDENCE_PACKET_CHARS",
+            ("agents", "evidence_packet_chars"),
+            "18000",
+            18000,
+        ),
+        (
             "AGENTS_PROMPT_CONTEXT_ENTRIES",
             ("agents", "prompt_context_entries"),
             "4",

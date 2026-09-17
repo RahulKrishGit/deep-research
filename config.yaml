@@ -97,6 +97,10 @@ agents:
   # researcher_sub_topic_skipped with its coverage id, but the report is short
   # for it regardless.
   max_sub_topics: 7
+  # Exact target-bearing passages retained from each successful read.
+  selected_passages_per_read: 4
+  # Maximum serialized acquisition/evidence context sent in one packet.
+  evidence_packet_chars: 24000
   prompt_context_entries: 8
   observation_summary_chars: 200
   # Operation-specific output budget for the planner's final

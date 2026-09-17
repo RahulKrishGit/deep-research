@@ -324,6 +324,22 @@ class BaseAgent(ABC, Generic[ResultT]):
         del result
         return {"errors": list(run.errors)}
 
+    def build_decision_context(
+        self,
+        task: AgentTask,
+        *,
+        iteration: int,
+        steps: Sequence[ReActStep],
+    ) -> str:
+        """Return complete structured context for the next ReAct decision.
+
+        The default is empty so non-acquisition agents keep their existing
+        prompt shape. Agents that carry bounded candidate/read state override
+        this hook; it is called immediately before every provider turn.
+        """
+        del task, iteration, steps
+        return ""
+
     # --- runtime ------------------------------------------------------------
 
     async def complete_output(self, messages: Sequence[ChatMessage]) -> ResultT:
@@ -345,6 +361,8 @@ class BaseAgent(ABC, Generic[ResultT]):
         task: AgentTask,
         *,
         iteration: int,
+        steps: Sequence[ReActStep] = (),
+        decision_context: str | None = None,
     ) -> tuple[ReActDecision, ...]:
         """Ask the provider for one native ReAct turn, adapted to loop state.
 
@@ -363,6 +381,15 @@ class BaseAgent(ABC, Generic[ResultT]):
             "ReactDecision",
             output_limit=self._config.react_decision_max_tokens,
         )
+        context = (
+            self.build_decision_context(
+                task,
+                iteration=iteration,
+                steps=steps,
+            )
+            if decision_context is None
+            else decision_context
+        )
         turn = await self._provider.complete_react(
             render_react_messages(
                 system_prompt=self.system_prompt(task),
@@ -372,6 +399,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                 ),
                 iteration=iteration,
                 max_iterations=self._config.max_iterations,
+                decision_context=context,
             ),
             self.toolset.provider_definitions(),
             agent_name=self._name,
@@ -387,8 +415,11 @@ class BaseAgent(ABC, Generic[ResultT]):
             iteration: int,
             steps: Sequence[ReActStep],
         ) -> tuple[ReActDecision, ...]:
-            del steps
-            return await self._complete_react_decision(task, iteration=iteration)
+            return await self._complete_react_decision(
+                task,
+                iteration=iteration,
+                steps=steps,
+            )
 
         async with self._tracker.agent_span(self._name) as span:
             react = await run_react_loop(

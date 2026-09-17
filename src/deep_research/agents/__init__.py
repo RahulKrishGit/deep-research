@@ -1,5 +1,19 @@
 """The shared agent base class and its bounded ReAct runtime."""
 
+from deep_research.agents.acquisition import (
+    AcquisitionAction,
+    AcquisitionPolicy,
+    OriginName,
+    ReadAdmission,
+    ToolPolicyDecision,
+    admit_read_from_tool_result,
+    admit_read_result,
+    build_acquisition_context,
+    build_read_record_from_tool_result,
+    next_acquisition_action,
+    normalize_tool_policy_result,
+    read_record_from_tool_result,
+)
 from deep_research.agents.base import (
     AgentCompleter,
     AgentRun,
@@ -205,6 +219,8 @@ from deep_research.agents.react import (
     DecideCallback,
     StepCallback,
     SufficiencyCallback,
+    ToolPolicyCallback,
+    build_proposal_id,
     run_react_loop,
 )
 from deep_research.agents.report import (
@@ -360,6 +376,7 @@ from deep_research.agents.synthesizer import (
     synthesis_started_event,
 )
 from deep_research.agents.toolset import AgentToolset, ToolDescriptor
+from deep_research.tools.passage_selection import select_relevant_passages
 from deep_research.utils.types import CritiqueGap
 
 __all__ = [
@@ -471,6 +488,9 @@ __all__ = [
     "CritiqueGapDraft",
     "CritiqueDraft",
     "CritiqueTask",
+    "AcquisitionAction",
+    "AcquisitionPolicy",
+    "OriginName",
     "DecideCallback",
     "EvaluatedSources",
     "FactCheckerAgent",
@@ -502,8 +522,11 @@ __all__ = [
     "SourceGroup",
     "SourceScoreDraft",
     "SourceScoresDraft",
+    "ReadAdmission",
     "StepCallback",
     "StopReason",
+    "ToolPolicyCallback",
+    "ToolPolicyDecision",
     "AgentCompleter",
     "StructuredCompleter",
     "SubTopicDraft",
@@ -528,7 +551,12 @@ __all__ = [
     "boundary_audit_id",
     "bounded_claim_packet",
     "bounded_finding_digest",
+    "admit_read_from_tool_result",
+    "admit_read_result",
+    "build_acquisition_context",
     "build_boundary_audit",
+    "build_proposal_id",
+    "build_read_record_from_tool_result",
     "build_citation_index",
     "build_claim",
     "build_claim_drafts",
@@ -616,6 +644,8 @@ __all__ = [
     "no_findings_error",
     "no_findings_to_check_error",
     "no_sources_error",
+    "next_acquisition_action",
+    "normalize_tool_policy_result",
     "normalize_gap_drafts",
     "normalize_gaps",
     "normalize_notes",
@@ -644,6 +674,7 @@ __all__ = [
     "planner_guidance",
     "planning_started_event",
     "read_evidence_urls",
+    "read_record_from_tool_result",
     "reader_citations",
     "render_citations",
     "render_claim_digest",
@@ -682,6 +713,7 @@ __all__ = [
     "run_react_loop",
     "scoring_messages",
     "scoring_provider_error",
+    "select_relevant_passages",
     "select_sub_topics",
     "source_domain",
     "publisher_identity",

@@ -164,6 +164,8 @@ class ReActObservation(ContractModel):
 class ReActStep(ContractModel):
     """One completed think -> act -> observe cycle."""
 
+    proposal_id: str | None = Field(default=None, min_length=1)
+    """Local identity for one provider proposal, never a vendor call id."""
     iteration: int = Field(ge=1)
     thought: str = Field(min_length=1)
     action: ReActActionType

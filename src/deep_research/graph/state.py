@@ -121,8 +121,17 @@ class ResearchGraphState(TypedDict):
 
 
 def dump_state(state: ResearchState) -> ResearchGraphState:
-    """Render one research state as the channel a node returns."""
-    return {"state": state.model_dump(mode="json")}
+    """Render one research state as the channel a node returns.
+
+    Acquisition queues, candidate records, read registries, and pending
+    passage IDs are deliberately part of this single JSON snapshot. Keeping
+    the check here prevents a future channel serializer from silently
+    dropping the state that makes a resumed run auditable.
+    """
+    serialized = state.model_dump(mode="json")
+    if "acquisition_state_by_target" not in serialized:
+        raise ValueError("research state must persist acquisition state")
+    return {"state": serialized}
 
 
 def load_state(channel: ResearchGraphState) -> ResearchState:
@@ -131,7 +140,13 @@ def load_state(channel: ResearchGraphState) -> ResearchState:
     Validation is not ceremony: it is what makes a checkpoint written by an
     older build fail loudly here rather than silently half-populate a node.
     """
-    return ResearchState.model_validate(channel["state"])
+    payload = channel["state"]
+    # Older checkpoints predate the acquisition registry; loading them keeps
+    # the honest empty default rather than synthesizing evidence or rejecting
+    # an otherwise valid legacy snapshot.
+    if "acquisition_state_by_target" not in payload:
+        payload = {**payload, "acquisition_state_by_target": {}}
+    return ResearchState.model_validate(payload)
 
 
 def initial_graph_state(

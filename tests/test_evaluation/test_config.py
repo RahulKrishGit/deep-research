@@ -162,7 +162,7 @@ from deep_research.utils.config import (
 # ``60ffff5a3558``, when the Critic's own ``run_react_loop`` call site began
 # resolving its per-agent tool budget through ``tool_budget_for`` — a
 # module-source move with no prompt edit.
-CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
+CRITIC_PROMPT_FINGERPRINT = "29176f9c39df"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -404,12 +404,12 @@ CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
 # shape-only acronym/plural positives, adding explicit contrastive-set syntax,
 # and preserving overlapping repeated year/work spans inside count frames.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "3de57a6c78cf",
-    "researcher": "711b4d414515",
-    "source_evaluator": "c50282e1dd42",
-    "fact_checker": "675fa5aea904",
-    "synthesizer": "a7fe09fe50c7",
-    "critic": "7e0d97508b00",
+    "planner": "7e43f342910c",
+    "researcher": "bebb16cebfe9",
+    "source_evaluator": "9528b1099f3f",
+    "fact_checker": "518464aa4cee",
+    "synthesizer": "758ea76a8c0c",
+    "critic": "29176f9c39df",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

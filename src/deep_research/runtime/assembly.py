@@ -137,7 +137,10 @@ def _scratchpad(
 _AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
     "planner": lambda reputation, **shared: PlannerAgent(**shared),
     "researcher": lambda reputation, **shared: ResearcherAgent(
-        max_sub_topics=shared["config"].max_sub_topics, **shared
+        max_sub_topics=shared["config"].max_sub_topics,
+        selected_passages_per_read=shared["config"].selected_passages_per_read,
+        evidence_packet_chars=shared["config"].evidence_packet_chars,
+        **shared,
     ),
     "source_evaluator": lambda reputation, **shared: SourceEvaluatorAgent(
         reputation=reputation, **shared

@@ -60,6 +60,55 @@ async def test_a_remote_redirect_reports_the_resolved_source(tracker) -> None:
 
 
 @pytest.mark.asyncio
+async def test_redirected_pdf_uses_resolved_suffix_even_when_landing_page_is_html(
+    tracker, monkeypatch,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/landing.html":
+            return httpx.Response(
+                302,
+                headers={"Location": "https://cdn.example.test/report.pdf"},
+                request=request,
+            )
+        # The extractor is patched below; this body only needs to reach the
+        # format dispatch after the redirect has been followed.
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/pdf"},
+            content=b"pdf bytes",
+            request=request,
+        )
+
+    class Page:
+        def extract_text(self) -> str:
+            return "Late report finding."
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "https://example.test/landing.html"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker, client=client).execute(
+                source=source
+            )
+
+    assert result.success is True
+    assert result.data is not None
+    assert result.data["format"] == "pdf"
+    assert result.data["resolved_source"] == "https://cdn.example.test/report.pdf"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("filename", "document_format"),
     [("sample.md", "markdown"), ("sample.txt", "text")],

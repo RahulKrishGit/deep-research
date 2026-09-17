@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from datetime import datetime, timezone
 from math import isfinite
 from typing import Annotated, Literal, TypeAlias, TypedDict
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import (
     AfterValidator,
@@ -168,6 +169,113 @@ class SubTopic(ContractModel):
     ceiling of four keeps one sub-topic from becoming a batch no pass can
     finish; a fifth obligation belongs to its own sub-topic.
     """
+
+
+AcquisitionStatus: TypeAlias = Literal[
+    "queued", "read", "denied", "unusable", "deferred"
+]
+CandidateDiscovery: TypeAlias = Literal["search", "memory", "document_link"]
+
+
+def _canonical_acquisition_url(value: str) -> str:
+    """Canonicalize a candidate URL without importing the agent layer."""
+    collapsed = " ".join(value.split())
+    try:
+        parts = urlsplit(collapsed)
+        if not parts.scheme or not parts.hostname:
+            return collapsed
+        scheme = parts.scheme.casefold()
+        host = parts.hostname.casefold()
+        if host.startswith("www."):
+            host = host[4:]
+        netloc = host
+        port = parts.port
+        if port is not None and not (
+            (scheme == "http" and port == 80)
+            or (scheme == "https" and port == 443)
+        ):
+            netloc = f"{host}:{port}"
+        return urlunsplit(
+            (scheme, netloc, parts.path.rstrip("/"), parts.query, "")
+        )
+    except ValueError:
+        return collapsed
+
+
+class CandidateRecord(ContractModel):
+    """One queued source lead and its explicit acquisition disposition."""
+
+    candidate_id: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    title: str = ""
+    target_ids: list[str] = Field(default_factory=list)
+    selection_reason: str = Field(
+        default="candidate discovered for the active target", min_length=1
+    )
+    discovered_via: CandidateDiscovery
+    status: AcquisitionStatus = "queued"
+    read_id: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_identity(self) -> "CandidateRecord":
+        self.url = _canonical_acquisition_url(self.url)
+        if not self.url:
+            raise ValueError("candidate URL must not be blank")
+        self.title = " ".join(self.title.split())
+        self.target_ids = list(dict.fromkeys(self.target_ids))
+        return self
+
+
+class AcquisitionState(ContractModel):
+    """Deterministic, persisted state for one target's acquisition pass."""
+
+    candidate_urls: list[str] = Field(default_factory=list)
+    attempted_urls: list[str] = Field(default_factory=list)
+    read_urls: list[str] = Field(default_factory=list)
+    denied_urls: list[str] = Field(default_factory=list)
+    pending_passage_ids: list[str] = Field(default_factory=list)
+    pending_extraction_ids: list[str] = Field(default_factory=list)
+    target_id: str | None = None
+    remaining_calls: int = Field(default=0, ge=0)
+    consecutive_searches: int = Field(default=0, ge=0)
+    empty_searches: int = Field(default=0, ge=0)
+    candidate_records: dict[str, CandidateRecord] = Field(default_factory=dict)
+    remaining_model_turns: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def normalize_queue(self) -> "AcquisitionState":
+        for field_name in (
+            "candidate_urls",
+            "attempted_urls",
+            "read_urls",
+            "denied_urls",
+        ):
+            values = getattr(self, field_name)
+            normalized: list[str] = []
+            for value in values:
+                candidate = _canonical_acquisition_url(value)
+                if candidate and candidate not in normalized:
+                    normalized.append(candidate)
+            setattr(self, field_name, normalized)
+
+        records: dict[str, CandidateRecord] = {}
+        for key, record in self.candidate_records.items():
+            normalized = _canonical_acquisition_url(record.url or key)
+            if not normalized:
+                raise ValueError("candidate record URL must not be blank")
+            if normalized in records and records[normalized] != record:
+                raise ValueError(
+                    f"candidate records collide at canonical URL {normalized!r}"
+                )
+            if record.url != normalized:
+                record = record.model_copy(update={"url": normalized})
+            records[normalized] = record
+        self.candidate_records = records
+        for field_name in ("pending_passage_ids", "pending_extraction_ids"):
+            setattr(self, field_name, list(dict.fromkeys(getattr(self, field_name))))
+        if self.target_id is not None:
+            self.target_id = self.target_id.strip() or None
+        return self
 
 
 class Finding(ContractModel):
@@ -770,6 +878,10 @@ class ResearchState(ContractModel):
     """Why each non-admitted item was not admitted; never silently dropped."""
     boundary_audits: dict[str, BoundaryAudit] = Field(default_factory=dict)
     """Section 2.6 boundary manifests, keyed by ``audit_id``."""
+    acquisition_state_by_target: dict[str, AcquisitionState] = Field(
+        default_factory=dict
+    )
+    """The explicit acquisition queue and policy state for each target."""
     quality_contract_version: str = LEGACY_QUALITY_CONTRACT_VERSION
     """Which evidence/quality contract wrote this snapshot.
 
@@ -813,6 +925,7 @@ class ResearchStateUpdate(TypedDict, total=False):
     evidence_units: dict[str, EvidenceUnit]
     evidence_dispositions: list[EvidenceDisposition]
     boundary_audits: dict[str, BoundaryAudit]
+    acquisition_state_by_target: dict[str, AcquisitionState]
     quality_contract_version: str
     critique: Critique | None
     max_iterations: int
@@ -860,6 +973,128 @@ def _union_ids(existing: Sequence[str], added: Sequence[str]) -> list[str]:
     return merged
 
 
+_CANDIDATE_STATUS_PRIORITY: dict[AcquisitionStatus, int] = {
+    "queued": 0,
+    "deferred": 1,
+    "unusable": 2,
+    "denied": 3,
+    "read": 4,
+}
+
+
+def _merge_candidate_records(
+    previous: Mapping[str, CandidateRecord],
+    current: Mapping[str, CandidateRecord],
+) -> dict[str, CandidateRecord]:
+    """Merge candidate identities while allowing monotonic state changes."""
+    merged = dict(previous)
+    for key, incoming in current.items():
+        canonical = _canonical_acquisition_url(key)
+        existing = merged.get(canonical)
+        if existing is None:
+            merged[canonical] = incoming
+            continue
+        if existing.candidate_id != incoming.candidate_id:
+            raise ValueError(
+                f"candidate {canonical!r} already has another candidate id"
+            )
+        if (
+            existing.url != incoming.url
+            or existing.discovered_via != incoming.discovered_via
+        ):
+            raise ValueError(
+                f"candidate {canonical!r} already has a different identity"
+            )
+        # A changed source version is a new read identity for the same queued
+        # URL. Keep both read records; the latest read association wins rather
+        # than treating a version change as an identity corruption.
+        targets = _union_ids(existing.target_ids, incoming.target_ids)
+        selected_reason = existing.selection_reason
+        if not selected_reason.strip() and incoming.selection_reason.strip():
+            selected_reason = incoming.selection_reason
+        status = incoming.status
+        if _CANDIDATE_STATUS_PRIORITY[existing.status] > _CANDIDATE_STATUS_PRIORITY[
+            incoming.status
+        ]:
+            status = existing.status
+        merged[canonical] = existing.model_copy(
+            update={
+                "title": existing.title or incoming.title,
+                "target_ids": targets,
+                "selection_reason": selected_reason,
+                "status": status,
+                "read_id": (
+                    incoming.read_id
+                    if incoming.status == "read" and incoming.read_id
+                    else existing.read_id or incoming.read_id
+                ),
+            }
+        )
+    return merged
+
+
+def _merge_acquisition_state(
+    previous: AcquisitionState,
+    incoming: AcquisitionState,
+) -> AcquisitionState:
+    """Fold one target's updates without resurrecting spent capacity."""
+    records = _merge_candidate_records(
+        previous.candidate_records, incoming.candidate_records
+    )
+    queue_candidates = _union_ids(
+        previous.candidate_urls, incoming.candidate_urls
+    )
+    queue = [
+        url
+        for url in queue_candidates
+        if url not in records or records[url].status == "queued"
+    ]
+    return AcquisitionState(
+        candidate_urls=queue,
+        attempted_urls=_union_ids(
+            previous.attempted_urls, incoming.attempted_urls
+        ),
+        read_urls=_union_ids(previous.read_urls, incoming.read_urls),
+        denied_urls=_union_ids(previous.denied_urls, incoming.denied_urls),
+        pending_passage_ids=list(incoming.pending_passage_ids),
+        pending_extraction_ids=list(incoming.pending_extraction_ids),
+        target_id=incoming.target_id or previous.target_id,
+        remaining_calls=min(previous.remaining_calls, incoming.remaining_calls),
+        consecutive_searches=incoming.consecutive_searches,
+        empty_searches=incoming.empty_searches,
+        candidate_records=records,
+        remaining_model_turns=min(
+            previous.remaining_model_turns, incoming.remaining_model_turns
+        ),
+    )
+
+
+def merge_acquisition_states(
+    previous: Mapping[str, AcquisitionState],
+    current: Mapping[str, AcquisitionState],
+) -> dict[str, AcquisitionState]:
+    """ID-aware reducer for the per-target acquisition registry."""
+    merged = dict(previous)
+    for target_id, incoming in current.items():
+        key = target_id.strip()
+        if not key:
+            raise ValueError("acquisition state keys must not be blank")
+        if incoming.target_id is not None and incoming.target_id != key:
+            raise ValueError(
+                f"acquisition state {key!r} carries another target id"
+            )
+        normalized = incoming if incoming.target_id == key else incoming.model_copy(
+            update={"target_id": key}
+        )
+        existing = merged.get(key)
+        merged[key] = (
+            normalized
+            if existing is None
+            else _merge_acquisition_state(existing, normalized)
+        )
+    return merged
+
+
 def merge_research_state(
     state: ResearchState,
     update: ResearchStateUpdate,
@@ -891,6 +1126,7 @@ def merge_research_state(
         "evidence_units": merge_evidence_units,
         "evidence_dispositions": merge_evidence_dispositions,
         "boundary_audits": merge_boundary_audits,
+        "acquisition_state_by_target": merge_acquisition_states,
     }
 
     payload = state.model_dump(mode="python")

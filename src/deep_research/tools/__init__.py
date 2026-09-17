@@ -14,6 +14,7 @@ from deep_research.tools.memory_tools import (
     QueryMemoryTool,
     SaveToMemoryTool,
 )
+from deep_research.tools.passage_selection import select_relevant_passages
 from deep_research.tools.web_scraper import WebScraperTool
 from deep_research.tools.web_search import WebSearchTool
 from deep_research.tools.write_document import WriteDocumentTool
@@ -24,6 +25,7 @@ __all__ = [
     "LongTermMemory",
     "QueryMemoryTool",
     "SaveToMemoryTool",
+    "select_relevant_passages",
     "ToolCallContext",
     "ToolError",
     "ToolExecution",

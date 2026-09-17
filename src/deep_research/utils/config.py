@@ -234,6 +234,8 @@ class AgentRuntimeConfig(BaseModel):
     tool_budget: int = Field(default=10, ge=0)
     tool_budget_overrides: dict[str, int] = Field(default_factory=dict)
     max_sub_topics: int = Field(default=7, ge=1)
+    selected_passages_per_read: int = Field(default=4, ge=1)
+    evidence_packet_chars: int = Field(default=24000, ge=1)
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
     planner_final_max_tokens: int = Field(default=32768, ge=1)
@@ -447,6 +449,11 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_MAX_ITERATIONS": ("agents", "max_iterations"),
     "AGENTS_TOOL_BUDGET": ("agents", "tool_budget"),
     "AGENTS_MAX_SUB_TOPICS": ("agents", "max_sub_topics"),
+    "AGENTS_SELECTED_PASSAGES_PER_READ": (
+        "agents",
+        "selected_passages_per_read",
+    ),
+    "AGENTS_EVIDENCE_PACKET_CHARS": ("agents", "evidence_packet_chars"),
     "AGENTS_SOURCE_EVALUATOR_BATCH_SIZE": (
         "agents",
         "source_evaluator",
