@@ -20,14 +20,28 @@ from __future__ import annotations
 import pytest
 
 from deep_research.agents.claim_clusters import (
+    MAX_EQUIVALENCE_ATOMS,
+    AtomicPairDraft,
+    ClaimEquivalenceDraft,
     atomic_compatible,
     claim_cluster_id,
     cluster_for_atom,
+    consolidate_claims,
+    dimension_is_answered,
+    equivalence_messages,
+    equivalence_strength,
     extract_atoms,
     merge_claim_clusters,
+    metadata_dimension_asked_for,
+    reverification_cache_key,
     select_claim_batch,
     select_claim_batch_indices,
     target_order_for,
+)
+from deep_research.observability import TokenUsage
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
 )
 from deep_research.utils.types import (
     AtomicProposition,
@@ -37,6 +51,7 @@ from deep_research.utils.types import (
     ResearchState,
     SubTopic,
 )
+from tests.agent_fakes import ScriptedCompleter
 
 # --------------------------------------------------------------------------
 # atomic_compatible: necessary, not sufficient
@@ -582,4 +597,470 @@ def test_target_order_falls_back_to_the_plans_own_obligations() -> None:
     )
 
     assert target_order_for(state) == ["topic-01", "topic-02"]
+
+
+# --------------------------------------------------------------------------
+# Consolidation: the provider proposes, local code decides
+# --------------------------------------------------------------------------
+
+
+def _unit(evidence_id: str, url: str, excerpt: str) -> EvidenceUnit:
+    return EvidenceUnit(
+        evidence_id=evidence_id,
+        read_id=f"read-{evidence_id}",
+        source_url=url,
+        source_title="Queue report",
+        locator="p. 4",
+        excerpt=excerpt,
+        origin="fact_checker",
+    )
+
+
+def _passage(url: str, excerpt: str) -> EvidencePassage:
+    return EvidencePassage(
+        source_url=url,
+        source_title="Queue report",
+        locator="p. 4",
+        excerpt=excerpt,
+        stance="supports",
+    )
+
+
+QUEUE_A = "https://a.test/queue"
+QUEUE_B = "https://b.test/queue"
+TEXT_A = "The 2024 interconnection queue held 10 GW of capacity."
+TEXT_B = "10 GW sat in the 2024 interconnection queue."
+
+
+def _mergeable_claims() -> tuple[list[Claim], list[EvidenceUnit]]:
+    """Two claims from two sources that state one fact two ways."""
+    evidence = [
+        _unit("evidence-a", QUEUE_A, "The 2024 queue held 10 GW."),
+        _unit("evidence-b", QUEUE_B, "10 GW sat in the 2024 queue."),
+    ]
+    claims = [
+        _claim(
+            TEXT_A,
+            claim_id="claim-a",
+            source_urls=[QUEUE_A],
+            verification_evidence=[_passage(QUEUE_A, "The 2024 queue held 10 GW.")],
+        ),
+        _claim(
+            TEXT_B,
+            claim_id="claim-b",
+            source_urls=[QUEUE_B],
+            verification_evidence=[_passage(QUEUE_B, "10 GW sat in the 2024 queue.")],
+        ),
+    ]
+    return claims, evidence
+
+
+def _pairs(*pairs: tuple[int, int]) -> ClaimEquivalenceDraft:
+    return ClaimEquivalenceDraft(
+        pairs=[
+            AtomicPairDraft(left=left, right=right) for left, right in pairs
+        ]
+    )
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_and_b_findings_become_one_proposition_with_both_evidence_ids() -> None:
+    claims, evidence = _mergeable_claims()
+    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+
+    consolidation = await consolidate_claims(
+        completer, claims, evidence=evidence
+    )
+
+    assert len(consolidation.claims) == 1
+    (cluster,) = consolidation.clusters
+    assert cluster.evidence_ids == ["evidence-a", "evidence-b"]
+    assert cluster.member_claim_ids == ["claim-a", "claim-b"]
+    snapshot = consolidation.claims[0]
+    assert snapshot.cluster_id == cluster.cluster_id
+    assert snapshot.source_urls == sorted({QUEUE_A, QUEUE_B})
+
+
+@pytest.mark.asyncio
+async def test_two_claims_from_one_source_stay_distinct() -> None:
+    """Sharing a URL is not identity: the two assertions differ by year."""
+    claims = [
+        _claim(
+            "The 2024 queue held 10 GW.",
+            claim_id="claim-2024",
+            source_urls=[QUEUE_A],
+        ),
+        _claim(
+            "The 2025 queue held 10 GW.",
+            claim_id="claim-2025",
+            source_urls=[QUEUE_A],
+        ),
+    ]
+    completer = ScriptedCompleter(outputs=[_pairs()])
+
+    consolidation = await consolidate_claims(completer, claims)
+
+    assert len(consolidation.claims) == 2
+    assert len({claim.cluster_id for claim in consolidation.claims}) == 2
+    assert {claim.claim_id for claim in consolidation.claims} == {
+        "claim-2024",
+        "claim-2025",
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_incompatible_candidate_pair_is_a_diagnostic_not_a_failure() -> None:
+    """A proposal local code refuses is recorded, and both claims survive."""
+    claims = [
+        _claim("The 2024 queue held 10 GW.", claim_id="claim-2024"),
+        _claim("The 2025 queue held 10 GW.", claim_id="claim-2025"),
+    ]
+    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+
+    consolidation = await consolidate_claims(completer, claims)
+
+    assert len(consolidation.claims) == 2
+    assert consolidation.diagnostics == [
+        "equivalence_candidate_incompatible:0:1"
+    ]
+    assert consolidation.provider_failed is False
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_never_merges_on_error() -> None:
+    claims, evidence = _mergeable_claims()
+    completer = ScriptedCompleter(outputs=[_output_limit_error()])
+
+    consolidation = await consolidate_claims(
+        completer, claims, evidence=evidence
+    )
+
+    assert consolidation.provider_failed is True
+    assert consolidation.diagnostics == ["equivalence_provider_failed"]
+    assert len(consolidation.claims) == 2
+
+
+@pytest.mark.asyncio
+async def test_candidate_pairs_come_from_one_bounded_provider_call() -> None:
+    claims, evidence = _mergeable_claims()
+    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+
+    await consolidate_claims(completer, claims, evidence=evidence)
+
+    assert [name for name, _, _ in completer.calls] == [
+        "ClaimEquivalenceDraft"
+    ]
+
+
+def test_the_equivalence_prompt_lists_a_bounded_number_of_atoms() -> None:
+    atoms = [
+        _queue_proposition(
+            text=f"The 20{number:02d} queue held 10 GW.",
+            observation_period=f"20{number:02d}",
+        )
+        for number in range(1, MAX_EQUIVALENCE_ATOMS + 21)
+    ]
+
+    _, user = equivalence_messages(atoms)
+    listed = [
+        line
+        for line in user.content.splitlines()
+        if line[:1].isdigit() and line.split(".")[0].isdigit()
+    ]
+
+    assert len(listed) == MAX_EQUIVALENCE_ATOMS
+
+
+@pytest.mark.asyncio
+async def test_a_textual_duplicate_is_not_excluded_by_exact_number_matching() -> None:
+    """The two claims write one number two ways, and they are still one fact."""
+    claims = [
+        _claim(
+            "The 2024 queue withheld 1,200 MW of capacity.",
+            claim_id="claim-comma",
+        ),
+        _claim(
+            "The 2024 queue withheld 1200 MW of capacity.",
+            claim_id="claim-plain",
+        ),
+    ]
+    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+
+    consolidation = await consolidate_claims(completer, claims)
+
+    assert len(consolidation.claims) == 1
+    assert consolidation.clusters[0].member_claim_ids == [
+        "claim-comma",
+        "claim-plain",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_near_duplicate_publishes_one_representative_with_union() -> None:
+    """Two claims too thin to prove identical still publish as ONE fact."""
+    claims = [
+        _claim(
+            "Interconnection delays are growing.",
+            claim_id="claim-plain",
+            source_urls=[QUEUE_A],
+        ),
+        _claim(
+            "Interconnection delays are increasing.",
+            claim_id="claim-reworded",
+            source_urls=[QUEUE_B],
+        ),
+    ]
+    completer = ScriptedCompleter(outputs=[_pairs((0, 1))])
+
+    consolidation = await consolidate_claims(completer, claims)
+
+    assert len(consolidation.claims) == 1
+    (cluster,) = consolidation.clusters
+    assert cluster.status == "duplicate_representative"
+    assert cluster.diagnostics == ["equivalence_candidate_uncertain:0:1"]
+    assert consolidation.claims[0].source_urls == sorted({QUEUE_A, QUEUE_B})
+
+
+def test_equivalence_strength_separates_proof_from_uncertainty() -> None:
+    stated = _queue_proposition()
+    thin = AtomicProposition(text="Interconnection delays are growing.")
+    other_thin = AtomicProposition(text="Interconnection delays are increasing.")
+    different_year = _queue_proposition(observation_period="2025")
+
+    assert equivalence_strength(stated, stated) == "identical"
+    assert equivalence_strength(thin, other_thin) == "uncertain"
+    assert equivalence_strength(stated, different_year) == "incompatible"
+
+
+@pytest.mark.asyncio
+async def test_consolidation_is_deterministic_for_the_same_atoms() -> None:
+    claims, evidence = _mergeable_claims()
+
+    first = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((0, 1))]), claims, evidence=evidence
+    )
+    second = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((0, 1))]), claims, evidence=evidence
+    )
+
+    assert [claim.cluster_id for claim in first.claims] == [
+        claim.cluster_id for claim in second.claims
+    ]
+    assert first.aliases == second.aliases
+
+
+@pytest.mark.asyncio
+async def test_a_refinement_reuses_the_stored_cluster_identity() -> None:
+    """A cluster already on the state keeps its id when a third claim joins."""
+    claims, evidence = _mergeable_claims()
+    first = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((0, 1))]), claims, evidence=evidence
+    )
+    stored = first.clusters[0]
+    third = _claim(
+        "The 2024 queue reported 10 GW of capacity.",
+        claim_id="claim-c",
+        source_urls=["https://c.test/queue"],
+    )
+
+    refined = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((0, 1), (1, 2))]),
+        [*claims, third],
+        existing=[stored],
+        evidence=evidence,
+    )
+
+    assert refined.clusters[0].cluster_id == stored.cluster_id
+    assert refined.clusters[0].member_claim_ids == [
+        "claim-a",
+        "claim-b",
+        "claim-c",
+    ]
+
+
+# --------------------------------------------------------------------------
+# Reverification: what invalidates a cached verdict, and what does not
+# --------------------------------------------------------------------------
+
+
+def test_the_reverification_key_is_stable_for_one_proposition_and_evidence() -> None:
+    key = reverification_cache_key(
+        proposition=TEXT_A,
+        evidence_content=["The 2024 queue held 10 GW."],
+        assessment_revision="rev-1",
+        temporal_scope="2024",
+        prompt_version="1",
+    )
+
+    assert key == reverification_cache_key(
+        proposition=TEXT_A,
+        evidence_content=["The 2024 queue held 10 GW."],
+        assessment_revision="rev-1",
+        temporal_scope="2024",
+        prompt_version="1",
+    )
+
+
+def test_new_evidence_invalidates_the_reverification_key() -> None:
+    new = reverification_cache_key(
+        proposition=TEXT_A,
+        evidence_content=["The 2024 queue held 10 GW.", "A second read agreed."],
+        assessment_revision="rev-1",
+        temporal_scope="2024",
+        prompt_version="1",
+    )
+
+    assert new != reverification_cache_key(
+        proposition=TEXT_A,
+        evidence_content=["The 2024 queue held 10 GW."],
+        assessment_revision="rev-1",
+        temporal_scope="2024",
+        prompt_version="1",
+    )
+
+
+def test_an_identity_correction_invalidates_the_reverification_key() -> None:
+    """Task 4's ``assessment_revision`` is the evidence of a changed source."""
+    corrected = reverification_cache_key(
+        proposition=TEXT_A,
+        evidence_content=["The 2024 queue held 10 GW."],
+        assessment_revision="rev-2",
+        temporal_scope="2024",
+        prompt_version="1",
+    )
+
+    assert corrected != reverification_cache_key(
+        proposition=TEXT_A,
+        evidence_content=["The 2024 queue held 10 GW."],
+        assessment_revision="rev-1",
+        temporal_scope="2024",
+        prompt_version="1",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [
+        ("proposition", TEXT_B),
+        ("temporal_scope", "2025"),
+        ("prompt_version", "2"),
+    ],
+)
+def test_every_ruled_component_changes_the_reverification_key(
+    field: str, changed: str
+) -> None:
+    fields = {
+        "proposition": TEXT_A,
+        "evidence_content": ["The 2024 queue held 10 GW."],
+        "assessment_revision": "rev-1",
+        "temporal_scope": "2024",
+        "prompt_version": "1",
+    }
+    baseline = reverification_cache_key(**fields)
+
+    assert reverification_cache_key(**{**fields, field: changed}) != baseline
+
+
+def test_a_wording_only_critique_does_not_invalidate_the_reverification_key() -> None:
+    """A reworded request is the same request; only evidence changes it."""
+    fields = {
+        "proposition": TEXT_A,
+        "evidence_content": ["The 2024 queue held 10 GW."],
+        "assessment_revision": "rev-1",
+        "temporal_scope": "2024",
+        "prompt_version": "1",
+    }
+    baseline = reverification_cache_key(**fields)
+
+    assert (
+        reverification_cache_key(
+            **fields, critique="Please double-check this claim once more."
+        )
+        == baseline
+    )
+    assert (
+        reverification_cache_key(
+            **fields, critique="Re-verify the queue claim."
+        )
+        == baseline
+    )
+
+
+# --------------------------------------------------------------------------
+# Metadata relevance depends on the question
+# --------------------------------------------------------------------------
+
+
+def test_a_publication_date_cannot_answer_a_deployment_mechanism() -> None:
+    """Metadata is context: it never stands in for a substantive dimension."""
+    assert not dimension_is_answered(
+        question=(
+            "What deployment mechanisms connect storage to the grid, and "
+            "which are approved?"
+        ),
+        dimension="deployment_mechanism",
+        stated_dimensions={"publication_date", "retrieval_date"},
+    )
+
+
+def test_a_publication_date_answers_a_question_asking_when_it_was_published() -> None:
+    assert dimension_is_answered(
+        question="When was the grid storage report published?",
+        dimension="publication_date",
+        stated_dimensions={"publication_date"},
+    )
+
+
+def test_metadata_is_context_unless_the_question_asks_for_metadata() -> None:
+    assert not dimension_is_answered(
+        question="What are the interconnection queue costs?",
+        dimension="publication_date",
+        stated_dimensions={"publication_date"},
+    )
+    # The same evidence answers the same dimension once the question asks it.
+    assert dimension_is_answered(
+        question="What data period does the queue survey cover?",
+        dimension="data_period",
+        stated_dimensions={"data_period"},
+    )
+
+
+def test_a_substantive_dimension_is_answered_by_its_own_evidence() -> None:
+    assert dimension_is_answered(
+        question="Which deployment mechanisms are approved?",
+        dimension="deployment_mechanism",
+        stated_dimensions={"deployment_mechanism"},
+    )
+    assert not dimension_is_answered(
+        question="Which deployment mechanisms are approved?",
+        dimension="deployment_mechanism",
+        stated_dimensions={"cost"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("question", "dimension", "expected"),
+    [
+        ("When was the report released?", "publication_date", True),
+        ("Who published the report?", "publication_date", True),
+        ("How much capacity was withheld?", "publication_date", False),
+        ("When did the rule take effect?", "effective_date", True),
+        ("What is the forecast horizon?", "forecast_horizon", True),
+    ],
+)
+def test_the_metadata_markers_follow_the_question(
+    question: str, dimension: str, expected: bool
+) -> None:
+    assert metadata_dimension_asked_for(question, dimension) is expected
 

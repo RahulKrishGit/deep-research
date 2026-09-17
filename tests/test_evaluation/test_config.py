@@ -186,7 +186,11 @@ from deep_research.utils.config import (
 # ``6425f37345c4`` -> ``772e7d9d13f8``, Synthesizer ``c3daf199e75d`` ->
 # ``895e307a5068``, and Critic ``4f8e2cac55a1`` -> ``cfb6f062b992``. The Judge
 # pin did **not** move: no judge prompt or template changed.
-CRITIC_PROMPT_FINGERPRINT = "cfb6f062b992"
+# Task 5 moved it once more, ``cfb6f062b992`` -> ``15754f64fa12``, with the
+# other five: the shared ``agents.prompts`` module gained the claim-equivalence
+# prompt and its two schema-version constants, and the Critic shares that
+# module. No critic prompt string changed.
+CRITIC_PROMPT_FINGERPRINT = "15754f64fa12"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -447,13 +451,29 @@ CRITIC_PROMPT_FINGERPRINT = "cfb6f062b992"
 # Evaluator's own module gained the quoted draft fields and dropped the
 # value-only parsing path. Moves are recorded against
 # ``CRITIC_PROMPT_FINGERPRINT`` above; the Judge pin is unchanged.
+# Task 5 re-pins all six again, in one step, because the change was to the
+# SHARED ``agents.prompts`` module: it gained the claim-equivalence system
+# prompt, its response contract, and the two schema-version constants the
+# reverification cache key is built from. The Fact Checker's own module moved
+# for its own reasons as well — the explicit ``claim_batch_size`` /
+# ``claim_batches_per_pass`` bounds, the batch loop, the pending continuation
+# queue, and the target attribution each claim now carries — so its value
+# moved for both causes at once, which is the documented false positive of
+# hashing a module's whole source. No judge prompt moved, so the Judge pin is
+# unchanged.
+#   planner            da23fbecdf5d -> 599c78243c9e
+#   researcher         0d4ee670a0fe -> fdc2bc2e8d48
+#   source_evaluator   e01b5b79a4d2 -> 674593415225
+#   fact_checker       772e7d9d13f8 -> 15322a899461
+#   synthesizer        895e307a5068 -> cccb6dc91c6e
+#   critic             cfb6f062b992 -> 15754f64fa12
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "da23fbecdf5d",
-    "researcher": "0d4ee670a0fe",
-    "source_evaluator": "e01b5b79a4d2",
-    "fact_checker": "772e7d9d13f8",
-    "synthesizer": "895e307a5068",
-    "critic": "cfb6f062b992",
+    "planner": "599c78243c9e",
+    "researcher": "fdc2bc2e8d48",
+    "source_evaluator": "674593415225",
+    "fact_checker": "15322a899461",
+    "synthesizer": "cccb6dc91c6e",
+    "critic": "15754f64fa12",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

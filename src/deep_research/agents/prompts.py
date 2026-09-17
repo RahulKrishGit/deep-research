@@ -304,6 +304,43 @@ REPORT_INSTRUCTION = (
     "you from the urls you attach."
 )
 
+# Task 5's claim consolidation. The provider proposes which extracted atoms
+# *might* state one fact; local code validates every proposal before anything
+# merges, so this prompt may be generous — the refusals are what carry the
+# guarantee, and a missed duplicate costs a row in the ledger while a false
+# merge deletes evidence.
+CLAIM_EQUIVALENCE_SYSTEM_PROMPT = (
+    "You compare atomic factual claims extracted from one research pass and "
+    "say which of them state the same fact in different words.\n"
+    "The claims are numbered. Return pairs of numbers only.\n"
+    "Compare what the claims assert, never how they are worded. Two claims "
+    "that state one fact are a pair even when they use different vocabulary, "
+    "different sentence order, or a differently formatted number — "
+    "'1,200 MW' and '1200 MW' are the same figure. A claim that merely "
+    "mentions the same subject as another is not a pair: the year, the "
+    "observation period, the geography, the population, the unit, the "
+    "percentage denominator, the attribution, whether the number is observed "
+    "or projected, and whether the claim is negated all have to agree.\n"
+    "Return an empty list when nothing is a duplicate. Never pair two claims "
+    "you cannot put in one sentence without changing what either asserts."
+)
+
+CLAIM_EQUIVALENCE_INSTRUCTION = (
+    "Return the duplicate pairs you found, as objects with left and right, "
+    "each one a number from the list you were shown. Every pair you return "
+    "is checked locally before anything merges, so return only pairs you "
+    "are confident about."
+)
+
+# The schema version of the equivalence proposal above. A change to the
+# fields the provider returns changes it.
+CLAIM_EQUIVALENCE_SCHEMA_VERSION = "1"
+
+# The schema version of one claim-verification verdict. Task 5's
+# reverification cache key includes it: a verdict reached under a different
+# verdict contract is not the verdict this pass would reach.
+CLAIM_VERIFICATION_SCHEMA_VERSION = "1"
+
 CRITIC_SYSTEM_PROMPT = (
     "You are the critic of a multi-agent research system. You judge one "
     "finished report and say what another research pass would have to fix.\n"

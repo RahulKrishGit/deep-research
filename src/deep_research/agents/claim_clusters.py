@@ -28,29 +28,72 @@ anything merges.
 
 from __future__ import annotations
 
+import hashlib
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from decimal import Decimal, InvalidOperation
 
+from pydantic import Field
+
+from deep_research.agents.base import AgentCompleter
 from deep_research.agents.identity import claim_cluster_id
+from deep_research.agents.prompts import (
+    CLAIM_EQUIVALENCE_INSTRUCTION,
+    CLAIM_EQUIVALENCE_SYSTEM_PROMPT,
+    render_structured_reply_format,
+)
+from deep_research.providers import ChatMessage, ProviderError
 from deep_research.utils.types import (
     AtomicProposition,
     Claim,
     ClaimCluster,
+    ContractModel,
+    EvidencePassage,
     EvidenceUnit,
     ResearchState,
 )
 
 __all__ = [
+    "MAX_EQUIVALENCE_ATOMS",
+    "METADATA_DIMENSIONS",
+    "AtomicPairDraft",
+    "ClaimConsolidation",
+    "ClaimEquivalenceDraft",
     "atomic_compatible",
     "claim_cluster_id",
     "cluster_for_atom",
+    "consolidate_claims",
+    "dimension_is_answered",
+    "equivalence_messages",
+    "equivalence_strength",
     "extract_atoms",
     "merge_claim_clusters",
+    "metadata_dimension_asked_for",
+    "reverification_cache_key",
     "select_claim_batch",
     "select_claim_batch_indices",
+    "stated_dimensions",
     "target_order_for",
 ]
+
+# How many atoms one equivalence request may list, and how many pairs it is
+# asked for. One bounded call, whatever the pass extracted.
+MAX_EQUIVALENCE_ATOMS = 40
+MAX_EQUIVALENCE_PAIRS = 40
+
+# Which agent's span records the consolidation request. The Fact Checker is
+# the claim agent; consolidation is its second phase, not a seventh agent.
+CONSOLIDATION_AGENT_NAME = "fact_checker"
+
+# One example, because the empty-list case is the opposite end of a scale
+# rather than a second shape, and the response contract already states it.
+_CLAIM_EQUIVALENCE_REPLY_EXAMPLES = (
+    (
+        "Example input: two atomic claims that state one measured fact in "
+        "different words.",
+        '{"pairs":[{"left":1,"right":2}]}',
+    ),
+)
 
 
 def _canonical(value: str) -> str:
@@ -471,6 +514,11 @@ def extract_atoms(
         period = _observation_period(clause)
         value, unit = _value_and_unit(clause, period=period)
         forecast = _first_group(_FORECAST, clause)
+        # A denominator is the base a *share* is taken of. "10 GW of capacity"
+        # states a quantity and its subject, not a percentage of anything, so
+        # reading "capacity" as a denominator there would refuse a genuine
+        # paraphrase for a qualifier neither claim made.
+        share = _canonical_unit(unit) in ("%", "pp")
         atoms.append(
             AtomicProposition(
                 text=clause,
@@ -478,7 +526,9 @@ def extract_atoms(
                 unit=unit,
                 observation_period=period,
                 geography=_first_group(_GEOGRAPHY, clause),
-                denominator=_first_group(_DENOMINATOR, clause),
+                denominator=(
+                    _first_group(_DENOMINATOR, clause) if share else ""
+                ),
                 attribution=_first_group(_ATTRIBUTION, clause),
                 forecast_status=forecast.casefold(),
                 negated=_NEGATION.search(clause) is not None,
@@ -585,3 +635,473 @@ def select_claim_batch(
         [claim.target_ids for claim in claims], target_order, limit
     )
     return [claims[index] for index in picked]
+
+
+def stated_dimensions(proposition: AtomicProposition) -> frozenset[str]:
+    """The checkable dimensions this proposition actually states.
+
+    An assertion that states none of them can be *compatible* with another and
+    still not be provably the same claim: "delays are growing" and "delays are
+    increasing" agree on every dimension because neither states one. That is
+    what ``uncertain`` records.
+    """
+    stated = {
+        name
+        for name in _COMPARED_DIMENSIONS
+        if name != "subject" and name != "predicate"
+        if _canonical(getattr(proposition, name))
+    }
+    if _canonical_number(proposition.value):
+        stated.add("value")
+    if _canonical_unit(proposition.unit):
+        stated.add("unit")
+    if proposition.negated:
+        stated.add("negated")
+    return frozenset(stated)
+
+
+def equivalence_strength(
+    a: AtomicProposition, b: AtomicProposition
+) -> str:
+    """How far this contract can go towards calling ``a`` and ``b`` one claim.
+
+    ``incompatible`` is a refusal. ``identical`` means the two agree on every
+    checkable dimension and at least one of them is stated, so they are one
+    assertion and merging them cannot lose evidence. ``uncertain`` means they
+    do not contradict each other but this contract cannot prove they are the
+    same — a diagnostic, never a hard failure, and never a silent merge.
+    """
+    if not atomic_compatible(a, b):
+        return "incompatible"
+    return "identical" if stated_dimensions(a) else "uncertain"
+
+
+def equivalence_messages(
+    atoms: Sequence[AtomicProposition],
+) -> list[ChatMessage]:
+    """Build the one bounded request that proposes duplicate pairs.
+
+    Bounded in the atoms it lists: a pass with more atoms than the ceiling
+    still makes exactly one call, over the first ``MAX_EQUIVALENCE_ATOMS`` of
+    them in the order the claims were adjudicated. Nothing is dropped from the
+    ledger by that bound — the atoms left out simply stay separate claims,
+    which is the direction that cannot lose evidence.
+    """
+    listed = atoms[:MAX_EQUIVALENCE_ATOMS]
+    lines: list[str] = []
+    for position, atom in enumerate(listed, start=1):
+        stated = ", ".join(
+            f"{name}={getattr(atom, name)}"
+            for name in sorted(stated_dimensions(atom))
+            if name != "negated"
+        )
+        suffix = f" ({stated})" if stated else ""
+        lines.append(f"{position}. {atom.text}{suffix}")
+    inventory = "\n".join(lines) or "(no atomic claims)"
+    sections = [
+        f"# Atomic claims\n{inventory}",
+        f"# Response contract\n{CLAIM_EQUIVALENCE_INSTRUCTION}",
+        (
+            "# Reply format\n"
+            f"{render_structured_reply_format(_CLAIM_EQUIVALENCE_REPLY_EXAMPLES)}"
+        ),
+    ]
+    return [
+        ChatMessage(role="developer", content=CLAIM_EQUIVALENCE_SYSTEM_PROMPT),
+        ChatMessage(role="user", content="\n\n".join(sections)),
+    ]
+
+
+class AtomicPairDraft(ContractModel):
+    """One provider-proposed duplicate pair, as two positions in the list."""
+
+    left: int
+    right: int
+
+
+class ClaimEquivalenceDraft(ContractModel):
+    """The provider-facing shape of one equivalence proposal.
+
+    No ``Field`` constraints: this is converted to a strict JSON schema, and
+    a model that returns nothing usable must produce local diagnostics rather
+    than a validation failure that discards the whole consolidation.
+    """
+
+    pairs: list[AtomicPairDraft]
+
+
+class ClaimConsolidation(ContractModel):
+    """Canonical claims, the clusters behind them, and the aliases between ids."""
+
+    claims: list[Claim] = Field(default_factory=list)
+    clusters: list[ClaimCluster] = Field(default_factory=list)
+    aliases: dict[str, str] = Field(default_factory=dict)
+    """Absorbed cluster id -> the surviving cluster id it resolves to."""
+    diagnostics: list[str] = Field(default_factory=list)
+    """Provider-independent reasons a proposal did not become a merge."""
+    provider_failed: bool = False
+
+
+def _accepted_pairs(
+    proposal: ClaimEquivalenceDraft,
+    atoms: Sequence[AtomicProposition],
+    diagnostics: list[str],
+) -> list[tuple[int, int]]:
+    """The proposed pairs local validation did not refuse.
+
+    A pair is refused when it names an atom outside the list, when it pairs an
+    atom with itself, and when :func:`atomic_compatible` says the two differ
+    in a qualifier. Each refusal is recorded: an uncertain or wrong proposal
+    is a diagnostic, not a failure, and the claims behind it publish
+    separately.
+    """
+    accepted: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for pair in proposal.pairs:
+        left, right = pair.left, pair.right
+        if (
+            not 0 <= left < len(atoms)
+            or not 0 <= right < len(atoms)
+            or left == right
+        ):
+            diagnostics.append(f"equivalence_candidate_out_of_range:{left}:{right}")
+            continue
+        key = (min(left, right), max(left, right))
+        if key in seen:
+            continue
+        seen.add(key)
+        if not atomic_compatible(atoms[key[0]], atoms[key[1]]):
+            diagnostics.append(
+                f"equivalence_candidate_incompatible:{key[0]}:{key[1]}"
+            )
+            continue
+        accepted.append(key)
+    return accepted
+
+
+def _grouped(count: int, pairs: Sequence[tuple[int, int]]) -> list[list[int]]:
+    """Transitive closure of the accepted pairs, in first-seen order.
+
+    An accepted pair is a validated equivalence, so if A is one fact with B
+    and B is one fact with C then A, B and C are one fact; every edge was
+    checked before it was used.
+    """
+    parent = list(range(count))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for left, right in pairs:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+    groups: dict[int, list[int]] = {}
+    for index in range(count):
+        groups.setdefault(find(index), []).append(index)
+    return [groups[root] for root in sorted(groups)]
+
+
+def _resolve_stored_cluster(
+    cluster_id: str, existing: Sequence[ClaimCluster]
+) -> ClaimCluster | None:
+    """The stored cluster ``cluster_id`` resolves to, following its aliases."""
+    for cluster in existing:
+        if cluster.cluster_id == cluster_id or cluster_id in cluster.cluster_aliases:
+            return cluster
+    return None
+
+
+def _union(values: Sequence[str]) -> list[str]:
+    """First-seen order, without duplicates."""
+    union: list[str] = []
+    for value in values:
+        if value and value not in union:
+            union.append(value)
+    return union
+
+
+def _canonical_claim(
+    anchor: Claim, members: Sequence[Claim], cluster: ClaimCluster
+) -> Claim:
+    """One claim snapshot per cluster, carrying the union of its provenance.
+
+    The anchor supplies the verdict, because a cluster is one assertion and
+    the first record of it is the one that was judged; everything behind it —
+    citation URLs, verificaton passages, the findings it consumed, the
+    obligations it answers — is unioned, so a known duplicate can never inflate
+    a supporting-fact count by publishing as a second row.
+    """
+    source_urls: list[str] = []
+    passages: list[EvidencePassage] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for claim in members:
+        source_urls.extend(claim.source_urls)
+        for passage in claim.verification_evidence:
+            key = (
+                passage.source_url,
+                passage.locator,
+                passage.excerpt,
+                passage.stance,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            passages.append(passage)
+    return anchor.model_copy(
+        update={
+            "source_urls": sorted(set(source_urls)),
+            "verification_evidence": passages,
+            "evidence": [
+                passage.excerpt
+                for passage in passages
+                if passage.stance == "supports"
+            ],
+            "contradictions": [
+                passage.excerpt
+                for passage in passages
+                if passage.stance == "contradicts"
+            ],
+            "consumed_finding_fingerprints": _union(
+                [
+                    fingerprint
+                    for claim in members
+                    for fingerprint in claim.consumed_finding_fingerprints
+                ]
+            ),
+            "consumed_coverage_ids": _union(
+                [
+                    coverage_id
+                    for claim in members
+                    for coverage_id in claim.consumed_coverage_ids
+                ]
+            ),
+            "target_ids": sorted(
+                {
+                    *cluster.target_ids,
+                    *(t for claim in members for t in claim.target_ids),
+                }
+            ),
+            "cluster_id": cluster.cluster_id,
+            "cluster_aliases": list(cluster.cluster_aliases),
+        }
+    )
+
+
+async def consolidate_claims(
+    provider: AgentCompleter,
+    drafts: Sequence[Claim],
+    existing: Sequence[ClaimCluster] = (),
+    evidence: Sequence[EvidenceUnit] = (),
+) -> ClaimConsolidation:
+    """Reduce adjudicated claims to one canonical snapshot per asserted fact.
+
+    The provider proposes which atoms might state the same thing — that is the
+    judgement local code cannot make — and every proposal is validated here
+    before anything merges. A refused or uncertain proposal is a diagnostic,
+    never a failure: the claims behind it either publish separately (a
+    refusal) or publish once through a conservative representative carrying
+    the union of their provenance (uncertainty).
+
+    A cluster this run already stored keeps its identity: the stored cluster's
+    id survives the merge and the new one becomes an alias, so a later pass
+    recognises its own work instead of minting a second row.
+    """
+    claims = list(drafts)
+    atoms: list[AtomicProposition] = []
+    owners: list[int] = []
+    for position, claim in enumerate(claims):
+        for atom in extract_atoms(claim, evidence):
+            atoms.append(atom)
+            owners.append(position)
+
+    diagnostics: list[str] = []
+    provider_failed = False
+    groups = [[index] for index in range(len(atoms))]
+    if len(atoms) > 1:
+        try:
+            proposal = await provider.complete_structured(
+                equivalence_messages(atoms),
+                ClaimEquivalenceDraft,
+                agent_name=CONSOLIDATION_AGENT_NAME,
+            )
+        except ProviderError:
+            provider_failed = True
+            diagnostics.append("equivalence_provider_failed")
+        else:
+            groups = _grouped(
+                len(atoms), _accepted_pairs(proposal, atoms, diagnostics)
+            )
+
+    clusters: list[ClaimCluster] = []
+    aliases: dict[str, str] = {}
+    canonical: list[Claim] = []
+    for group in groups:
+        anchor_atom = atoms[group[0]]
+        cluster = cluster_for_atom(anchor_atom)
+        members = [claims[owners[index]] for index in group]
+        for index in group[1:]:
+            if equivalence_strength(anchor_atom, atoms[index]) == "uncertain":
+                cluster = cluster.model_copy(
+                    update={
+                        "status": "duplicate_representative",
+                        "diagnostics": sorted(
+                            {
+                                *cluster.diagnostics,
+                                "equivalence_candidate_uncertain:"
+                                f"{group[0]}:{index}",
+                            }
+                        ),
+                    }
+                )
+            cluster = merge_claim_clusters(
+                cluster, cluster_for_atom(atoms[index])
+            )
+        stored = _resolve_stored_cluster(cluster.cluster_id, existing)
+        if stored is not None:
+            for alias in (*stored.cluster_aliases, cluster.cluster_id):
+                if alias != stored.cluster_id:
+                    aliases[alias] = stored.cluster_id
+            cluster = merge_claim_clusters(stored, cluster)
+        for alias in cluster.cluster_aliases:
+            aliases[alias] = cluster.cluster_id
+        clusters.append(cluster)
+        canonical.append(_canonical_claim(members[0], members, cluster))
+
+    return ClaimConsolidation(
+        claims=canonical,
+        clusters=clusters,
+        aliases=aliases,
+        diagnostics=sorted(set(diagnostics)),
+        provider_failed=provider_failed,
+    )
+
+
+def reverification_cache_key(
+    *,
+    proposition: str,
+    evidence_content: Sequence[str],
+    assessment_revision: str,
+    temporal_scope: str,
+    prompt_version: str,
+    critique: str = "",
+) -> str:
+    """The cache key one claim's verdict is stored and reused under.
+
+    Every component is a reason a stored verdict might no longer be the
+    verdict this pass would reach: the proposition itself, the content of the
+    evidence it was judged against, Task 4's ``assessment_revision`` (the
+    recorded evidence that the source's body, metadata, or dates changed), the
+    temporal scope the judgement was made in, and the verification
+    prompt/schema version it was made under.
+
+    ``critique`` is accepted and deliberately *not* part of the digest. A
+    critique that only rewords the request — "re-verify this claim", "please
+    double-check" — asks for the same judgement of the same evidence, and
+    letting its wording change the key would make every restatement of the
+    same request buy a fresh paid verification.
+    """
+    parts = [
+        _canonical(proposition),
+        *(_canonical(text) for text in evidence_content),
+        _canonical(assessment_revision),
+        _canonical(temporal_scope),
+        _canonical(prompt_version),
+    ]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+# The dimensions that describe the record rather than the world. Section 2.3:
+# publication date, data period, forecast horizon, effective policy date,
+# retrieval date, and generation date are six different facts, and none of
+# them is evidence about a substantive dimension. Metadata is context unless
+# the question asks for metadata.
+METADATA_DIMENSIONS = frozenset(
+    {
+        "publication_date",
+        "data_period",
+        "forecast_horizon",
+        "effective_date",
+        "retrieval_date",
+        "generation_date",
+    }
+)
+
+# How a question asks for each metadata dimension. Deliberately a small,
+# explicit marker list rather than a similarity score: this decides whether a
+# date may be used as an ANSWER, and a wrong yes here lets a publication date
+# stand in for a mechanism.
+_METADATA_QUESTION_MARKERS: dict[str, tuple[str, ...]] = {
+    "publication_date": (
+        "publish",
+        "publication",
+        "release date",
+        "released",
+        "issued",
+    ),
+    "data_period": (
+        "data period",
+        "data cover",
+        "period the data",
+        "vintage",
+        "as of",
+    ),
+    "forecast_horizon": (
+        "forecast horizon",
+        "projection horizon",
+        "forecast period",
+        "how far ahead",
+    ),
+    "effective_date": (
+        "effective date",
+        "take effect",
+        "takes effect",
+        "took effect",
+        "in force",
+    ),
+    "retrieval_date": (
+        "retrieval date",
+        "retrieved",
+        "when was it read",
+        "when was it fetched",
+    ),
+    "generation_date": (
+        "generation date",
+        "generated",
+        "when was the report produced",
+    ),
+}
+
+
+def metadata_dimension_asked_for(question: str, dimension: str) -> bool:
+    """True when the question itself asks for this metadata dimension."""
+    folded = _canonical(question)
+    return any(
+        marker in folded
+        for marker in _METADATA_QUESTION_MARKERS.get(dimension, ())
+    )
+
+
+def dimension_is_answered(
+    *,
+    question: str,
+    dimension: str,
+    stated_dimensions: Collection[str],
+) -> bool:
+    """True when the evidence answers ``dimension`` for ``question``.
+
+    Two rules, and both are needed. Evidence answers a dimension only by
+    stating it — a publication date cannot stand in for a deployment
+    mechanism, however recent the report. And a *metadata* dimension is
+    answered only when the question asks for it: a report's publication date
+    is context for a question about grid costs, and is the answer to a
+    question about when the report was published.
+    """
+    stated = {_canonical(name) for name in stated_dimensions}
+    if dimension not in stated:
+        return False
+    if dimension in METADATA_DIMENSIONS:
+        return metadata_dimension_asked_for(question, dimension)
+    return True
