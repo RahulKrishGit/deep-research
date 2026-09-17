@@ -389,8 +389,10 @@ CRITIC_PROMPT_FINGERPRINT = "7e0d97508b00"
 # synthesizer ``a7fe09fe50c7``, critic ``7e0d97508b00``. The Judge pin is
 # unchanged. Fix round 3 moved planner to ``863f670c4f5a`` for direct
 # comparison referents, the threshold guard, and bounded marker variants.
+# Fix round 4 moves planner to ``b3bfe9127cae`` for the bounded direct
+# proper-name referent rule that keeps spelled-out quantity thresholds factual.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "863f670c4f5a",
+    "planner": "b3bfe9127cae",
     "researcher": "711b4d414515",
     "source_evaluator": "c50282e1dd42",
     "fact_checker": "675fa5aea904",

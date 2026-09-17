@@ -1722,6 +1722,41 @@ def test_a_threshold_question_is_not_a_comparison(
     assert answer_kind_for(question, clock_year=2026) == expected
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_kind", "expected_policy"),
+    [
+        (
+            "How many projects waited more than one year?",
+            "factual",
+            "independent_pair",
+        ),
+        (
+            "How many projects waited more than five years?",
+            "factual",
+            "independent_pair",
+        ),
+        (
+            "What are the requirements for tariffs greater than ten percent?",
+            "constraints",
+            "primary_attribution",
+        ),
+        (
+            "What are the requirements for tariffs greater than half the baseline?",
+            "constraints",
+            "primary_attribution",
+        ),
+    ],
+)
+def test_spelled_out_quantity_thresholds_keep_answer_form_and_support_policy(
+    question: str, expected_kind: str, expected_policy: str
+) -> None:
+    """Spelled-out quantities after an inequality are thresholds, not referents."""
+    assert (
+        answer_kind_for(question, clock_year=2026),
+        support_policy_for(question=question),
+    ) == (expected_kind, expected_policy)
+
+
 def test_a_threshold_rule_keeps_its_primary_attribution_policy() -> None:
     """"Tariffs of more than 10%" is an official threshold, not a comparison."""
     assert (

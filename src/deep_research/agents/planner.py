@@ -195,12 +195,20 @@ _COMPARATIVE_DIRECT_PATTERN = re.compile(
     rf"[^.;?!]{{0,40}}?"
     rf"(?<![a-z0-9])than\s+"
     rf"(?!{_COMPARATIVE_THRESHOLD_PATTERN}\b)"
-    # Numeric years and an unintroduced noun/proper name are direct referents.
-    # Determiners excluded here are thresholds ("more than a year") or are
-    # already handled by _COMPARATIVE_PATTERN above.
-    rf"(?:(?:19|20)\d{{2}}(?![a-z0-9])|"
-    rf"(?!(?:a|an|any|the)\b)[a-z][a-z-]*(?![a-z0-9]))",
+    # A numeric year is a direct referent. Word referents use the
+    # case-preserved proper-name pattern below; accepting any alphabetic token
+    # here would turn spelled-out quantities ("one", "five", "ten", "half")
+    # into comparisons.
+    rf"(?:19|20)\d{{2}}(?![a-z0-9])",
     re.IGNORECASE,
+)
+_COMPARATIVE_DIRECT_NAME_PATTERN = re.compile(
+    rf"(?i:(?<![a-z0-9])(?:{'|'.join(_COMPARATIVE_CUES)})(?![a-z0-9])"
+    rf"[^.;?!]{{0,40}}?(?<![a-z0-9])than)\s+"
+    # A capitalized token is the smallest bounded shape for an unintroduced
+    # proper-name referent ("than Texas"), while lowercase quantity words do
+    # not qualify. The trailing boundary prevents partial acronym matches.
+    rf"[A-Z][a-z-]*(?![A-Za-z0-9])"
 )
 _CONSTRAINTS_MARKERS = (
     "constraint",
@@ -796,7 +804,7 @@ def _marker_pattern(
     return pattern
 
 
-def _is_comparative(normalized: str) -> bool:
+def _is_comparative(question: str) -> bool:
     """True for a comparison: a comparison verb, or an inequality with a
     referent.
 
@@ -804,9 +812,17 @@ def _is_comparative(normalized: str) -> bool:
     regulation cost more than the 2019 one?" compare; "waited more than 5
     years" and "tariffs of more than 10%" are thresholds about one quantity.
     """
-    return _mentions(normalized, _COMPARISON_MARKERS) or any(
-        pattern.search(normalized) is not None
-        for pattern in (_COMPARATIVE_PATTERN, _COMPARATIVE_DIRECT_PATTERN)
+    normalized = _normalized_question(question)
+    return (
+        _mentions(normalized, _COMPARISON_MARKERS)
+        or any(
+            pattern.search(normalized) is not None
+            for pattern in (_COMPARATIVE_PATTERN, _COMPARATIVE_DIRECT_PATTERN)
+        )
+        or _COMPARATIVE_DIRECT_NAME_PATTERN.search(
+            collapse_whitespace(question)
+        )
+        is not None
     )
 
 
@@ -841,7 +857,7 @@ def answer_kind_for(question: str, *, clock_year: int | None = None) -> AnswerKi
     past_years = [
         year for year in years if clock_year is None or year < clock_year
     ]
-    if _is_comparative(normalized):
+    if _is_comparative(question):
         return "comparison"
     # A question that asks *why* is answered by a mechanism whatever period it
     # is about; the period travels in the as-of date, not in the answer form.
@@ -1190,7 +1206,7 @@ def support_policy_for(*, question: str) -> str:
       ``independent_pair``.
     """
     normalized = _normalized_question(question)
-    if _is_comparative(normalized):
+    if _is_comparative(question):
         return "independent_pair"
     if _mentions(normalized, _DERIVATION_MARKERS):
         return "derivation"
