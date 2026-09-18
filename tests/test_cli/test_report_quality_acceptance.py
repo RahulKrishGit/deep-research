@@ -50,7 +50,6 @@ from pydantic import ValidationError
 from deep_research.agents.critic import (
     _READER_SECTION_ORDER,
     _SECTION_NOT_PRESENT,
-    CRITIC_CLAIM_DIGEST,
     CRITIC_REPORT_CHARS,
     CriticAgent,
     critique_messages,
@@ -943,7 +942,6 @@ def _critic_body(state: ResearchState) -> str:
     return critique_messages(
         agent.build_task(state),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        claim_digest=CRITIC_CLAIM_DIGEST,
     )[1].content
 
 

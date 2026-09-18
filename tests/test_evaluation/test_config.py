@@ -235,8 +235,14 @@ from deep_research.utils.config import (
 # excerpts and the unit list are carried whole, every checked claim and cited
 # source is rendered instead of sliced or summarized, and the shared evidence
 # badge is blank when contributing badges disagree. ``agents.prompts`` was not
-# touched, so the other five moved in neither direction.
-CRITIC_PROMPT_FINGERPRINT = "30496ba14ad6"
+# touched, so the other five moved in neither direction. The same round's cleanup
+# commit moved it once more, ``30496ba14ad6`` -> ``24f2a9be4630``: the three
+# constants that still asserted the deleted bounds (``CRITIC_CLAIM_DIGEST``,
+# ``CRITIC_EVIDENCE_UNIT_CHARS``, ``CRITIC_MAX_EVIDENCE_UNITS``) and the
+# accepted-but-ignored ``claim_digest`` parameter were removed, so no bound the
+# code no longer applies survives to be re-wired. ``agents.prompts`` again
+# untouched; the other five again unmoved.
+CRITIC_PROMPT_FINGERPRINT = "24f2a9be4630"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -574,7 +580,9 @@ CRITIC_PROMPT_FINGERPRINT = "30496ba14ad6"
 #     instead of clamped or truncated), -> ``30496ba14ad6`` in fix round 4 (the
 #     provider boundary was swept: strict and non-blank fields, no legacy string
 #     gap on the live schema, a re-validated reply, whole evidence excerpts and
-#     no unit ceiling, every claim and source rendered, conservative badges)
+#     no unit ceiling, every claim and source rendered, conservative badges),
+#     -> ``24f2a9be4630`` in the same round's cleanup (the dead bound constants
+#     and the ignored ``claim_digest`` argument removed)
 # Task 8 moved all six. The critic's own module changed (the tool path removed,
 # the packet and its fingerprint added, the request sections rebuilt, and the
 # repair path's failure handling split between schema and provider causes), and
@@ -589,7 +597,8 @@ CRITIC_PROMPT_FINGERPRINT = "30496ba14ad6"
 #   critic ``3f0341751794`` -> ``98c2864fd56c``, -> ``6da1052f44b6`` in fix
 #     round 3 (no prompt string was edited: the reply contract's bounds moved),
 #     -> ``30496ba14ad6`` in fix round 4 (the same: the swept boundary is the
-#     module that renders the request, not the shared prompt library)
+#     module that renders the request, not the shared prompt library), and
+#     -> ``24f2a9be4630`` when that round's dead bound constants were removed
 # The Judge pin did not move: no judge prompt or template changed.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "02d66a4a2d15",
@@ -597,7 +606,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "7695ca2d0524",
     "synthesizer": "0ec21503cc00",
-    "critic": "30496ba14ad6",
+    "critic": "24f2a9be4630",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

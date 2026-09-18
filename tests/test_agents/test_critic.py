@@ -17,10 +17,7 @@ from deep_research.agents.critic import (
     _HIGH_EXAMPLE_SCORE,
     _LOW_EXAMPLE_SCORE,
     ACCEPTANCE_SCORE,
-    CRITIC_CLAIM_DIGEST,
     CRITIC_EVIDENCE_BATCH_CHARS,
-    CRITIC_EVIDENCE_UNIT_CHARS,
-    CRITIC_MAX_EVIDENCE_UNITS,
     CRITIC_REPORT_CHARS,
     CRITIQUE_INSTRUCTION,
     DEFAULT_MAX_NOTES,
@@ -276,7 +273,6 @@ def test_the_review_call_uses_a_prompt_that_names_no_tools() -> None:
     system = critique_messages(
         _task(),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        claim_digest=40,
     )[0].content
 
     assert system == CRITIC_REVIEW_SYSTEM_PROMPT
@@ -355,7 +351,6 @@ def test_a_report_containing_a_fence_cannot_close_the_enclosing_fence() -> None:
     body = critique_messages(
         _task(report=report),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        claim_digest=40,
     )[1].content
     lines = body.splitlines()
     opening, closing, tick = _fence_bounds(body)
@@ -369,7 +364,6 @@ def _review_body() -> str:
     return critique_messages(
         _task(),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        claim_digest=40,
     )[1].content
 
 
@@ -1210,7 +1204,6 @@ def test_critique_messages_carry_the_report_and_every_quality_signal() -> None:
     messages = critique_messages(
         _task(),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        claim_digest=10,
     )
 
     assert [message.role for message in messages] == ["developer", "user"]
@@ -1280,7 +1273,6 @@ def test_critique_messages_keep_each_reader_section_and_typed_quality_context() 
     body = critique_messages(
         task,
         ReActRun(agent_name="critic", stop_reason="finished"),
-        claim_digest=10,
     )[1].content
 
     for marker in (
@@ -1314,7 +1306,6 @@ def test_a_long_reader_section_is_carried_whole() -> None:
     body = critique_messages(
         _task(report=report),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        claim_digest=10,
     )[1].content
 
     assert "# Research report: a long one" in body
@@ -1328,7 +1319,6 @@ def test_critique_messages_say_so_when_there_is_no_report() -> None:
     body = critique_messages(
         _task(report="   "),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        claim_digest=10,
     )[1].content
 
     assert "(no report)" in body
@@ -1670,6 +1660,48 @@ async def test_an_http_provider_failure_still_routes_and_stops(
     provider = error.details["provider_failure"]
     assert provider["kind"] == "provider_http"
     assert provider["http_status_code"] == 503
+
+
+@pytest.mark.asyncio
+async def test_a_request_rejected_for_size_fails_closed(
+    tracker: Tracker,
+) -> None:
+    """The unbounded request's fallback is the provider-error path, not a cut.
+
+    Fix round 4 removed every bound on the review material — the passage cut,
+    the evidence-unit ceiling, the claim count and length slices, and the source
+    slice — so a long enough run can produce a request a provider refuses for
+    size. What must not happen is a quiet degradation into a partial view: the
+    refusal is a provider error, so the review is recorded ``failed``, the run
+    does not continue, and the graph turns that into ``critique_failed`` →
+    status ``failed`` → quality ``partial`` → no memory write → CLI exit 3,
+    which `test_a_real_critic_provider_outage_fails_closed_through_cli` pins end
+    to end (``graph_route`` reads ``review_status``, not the failure category).
+    """
+    provider = ScriptedCompleter(
+        outputs=[
+            ProviderResponseError(
+                "request exceeds the model's context window",
+                failure_category="http",
+                http_status_code=413,
+                failure_origin="sdk",
+            )
+        ]
+    )
+    agent = _critic(tracker, provider)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in provider.calls] == ["CritiqueDraft"]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    assert outcome.result.should_continue is False
+    assert outcome.result.gaps == []
+    assert outcome.react.stop_reason == "provider_error"
+    assert [error.error_type for error in outcome.errors] == [
+        "critic_review_provider_error"
+    ]
 
 
 @pytest.mark.asyncio
@@ -3399,6 +3431,16 @@ async def test_an_omitted_severity_is_not_a_routing_judgement(
     assert outcome.result.review_status == "reviewed"
 
 
+_OLD_EVIDENCE_UNIT_CHARS = 1200
+_OLD_MAX_EVIDENCE_UNITS = 24
+_OLD_CLAIM_DIGEST = 40
+"""The bounds fix round 4 deleted, named here because the tests still need
+"more than the old bound" as input. They live in the test module rather than in
+``agents.critic`` on purpose: a constant there would assert a limit the code no
+longer applies, which is the exact confusion this round removed.
+"""
+
+
 def test_critic_carries_a_long_evidence_passage_whole() -> None:
     """Sweep 6: the qualifier at the end of a passage is review material.
 
@@ -3409,7 +3451,7 @@ def test_critic_carries_a_long_evidence_passage_whole() -> None:
     """
     tail = "TAIL-CONTRADICTION: this estimate excludes process emissions."
     excerpt = ("supporting context " * 100) + tail
-    assert len(excerpt) > CRITIC_EVIDENCE_UNIT_CHARS
+    assert len(excerpt) > _OLD_EVIDENCE_UNIT_CHARS
 
     packet = build_critic_packet(
         _packet_state(evidence=[_packet_evidence(excerpt=excerpt)])
@@ -3433,7 +3475,7 @@ def test_oversized_evidence_is_batched_and_never_omitted() -> None:
             f"ev-{index:02d}",
             excerpt=f"Excerpt {index} about the measured logical error rate. " * 20,
         )
-        for index in range(1, CRITIC_MAX_EVIDENCE_UNITS + 7)
+        for index in range(1, _OLD_MAX_EVIDENCE_UNITS + 7)
     ]
 
     packet = build_critic_packet(_packet_state(evidence=units))
@@ -3448,7 +3490,7 @@ def test_oversized_evidence_is_batched_and_never_omitted() -> None:
     ]
     assert rendered == [unit.evidence_id for unit in units]
     assert packet.omitted_evidence_ids == []
-    assert len(rendered) == CRITIC_MAX_EVIDENCE_UNITS + 6
+    assert len(rendered) == _OLD_MAX_EVIDENCE_UNITS + 6
     assert [statement.statement_id for statement in packet.statements] == [
         "S001",
         "F001",
@@ -3496,7 +3538,7 @@ async def test_the_claim_section_renders_every_checked_claim_whole(
     a claim whose own text was cut could hide the half that contradicts the
     report.
     """
-    claims = _many_claims(CRITIC_CLAIM_DIGEST + 1, long_first=True)
+    claims = _many_claims(_OLD_CLAIM_DIGEST + 1, long_first=True)
     completer = ScriptedCompleter(outputs=[_draft(score=8)])
     agent = _critic(tracker, completer)
 
@@ -3504,7 +3546,7 @@ async def test_the_claim_section_renders_every_checked_claim_whole(
         await agent.run(_packet_state(claims=claims))
 
     collapsed = " ".join(completer.calls[0][2][1].content.split())
-    assert f"distinctive marker {CRITIC_CLAIM_DIGEST + 1}" in collapsed
+    assert f"distinctive marker {_OLD_CLAIM_DIGEST + 1}" in collapsed
     assert "CLAIM-TAIL-MARKER" in collapsed
 
 

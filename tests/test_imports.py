@@ -178,7 +178,6 @@ def test_provider_public_api_imports() -> None:
 def test_agent_runtime_contracts_import_from_package() -> None:
     from deep_research.agents import (  # noqa: F401
         ACCEPTANCE_SCORE,
-        CRITIC_CLAIM_DIGEST,
         CRITIC_EVIDENCE_CHARS,
         CRITIC_NAME,
         CRITIC_REPORT_CHARS,

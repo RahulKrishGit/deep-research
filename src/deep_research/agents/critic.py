@@ -107,39 +107,29 @@ section — and this value decides when a section's heading says how many
 characters it carries, so the model knows it is reading a large section. Long
 report tests also use it as the length a report must exceed to count as long.
 """
-CRITIC_CLAIM_DIGEST = 40
 CRITIC_EVIDENCE_CHARS = 2000
 DEFAULT_MAX_NOTES = 10
 
 # --- the review packet's bounds ---------------------------------------------
 #
-# The report is never the thing that gets truncated: the historical failure
-# was a late contradiction, a fabricated limitation, and a citation near the
-# report's end falling outside old prefix boundaries, so the packet carries
-# the complete reader content and every reader statement, and the request
-# renders every reader section whole.
+# There are none, and that is the design. The report is never the thing that
+# gets truncated: the historical failure was a late contradiction, a fabricated
+# limitation, and a citation near the report's end falling outside old prefix
+# boundaries, so the packet carries the complete reader content and every reader
+# statement, and the request renders every reader section whole.
 #
-# Evidence is batched, because it is the only part with no natural ceiling, and
-# batching is the *only* bound: every item is carried as the exact passage the
-# read registered — a qualifier at the end of a long passage is the sentence
-# that turns an acceptance into a contradiction — and every registered unit is
-# carried, in citation order, however many there are. If a request ever cannot
-# fit, the review must fail closed rather than review a partial view.
-CRITIC_EVIDENCE_UNIT_CHARS = 1200
-"""The passage length above which an excerpt used to be cut.
-
-Historical: ``from_unit`` carried ``excerpt[:1200] + "..."`` until Task 8's fix
-round 4, which removed the cut. The value is kept because it is part of the
-exported agent surface, and a test uses it as "longer than the old cut".
-"""
+# Evidence is *batched*, because it is the one part with no natural ceiling —
+# but batching groups items, it does not drop them: every item is carried as the
+# exact passage the read registered (a qualifier at the end of a long passage is
+# the sentence that turns an acceptance into a contradiction), and every
+# registered unit is carried, in citation order, however many there are. The
+# claim and source sections are the same: every checked claim, whole, and every
+# cited source.
+#
+# The bound that replaced truncation is therefore batching, and the fallback
+# when a request cannot fit is the provider-error path — the review is recorded
+# ``failed`` and the run fails closed, never a partial view of the packet.
 CRITIC_EVIDENCE_BATCH_CHARS = 4000
-CRITIC_MAX_EVIDENCE_UNITS = 24
-"""The unit count the packet used to keep before naming the rest as omitted.
-
-Historical: it was a silent-review-material bound, so Task 8's fix round 4
-removed it — ``omitted_evidence_ids`` is now always empty and the packet
-carries every registered unit. Kept as exported surface.
-"""
 
 # One initial request plus exactly one repair. The provider already performs a
 # single transport-level repair; this is the agent-level re-ask that carries
@@ -1723,8 +1713,6 @@ def _render_critic_claims(claims: Sequence[Claim]) -> str:
 def critique_messages(
     task: CritiqueTask,
     run: ReActRun | None = None,
-    *,
-    claim_digest: int = CRITIC_CLAIM_DIGEST,
 ) -> list[ChatMessage]:
     """Build the messages that request one structured review.
 
@@ -1741,11 +1729,10 @@ def critique_messages(
     and a section larger than ``CRITIC_REPORT_CHARS`` says so in its heading
     rather than losing its end. Nor is any other review material bounded: every
     checked claim is rendered whole, every cited source is listed, and every
-    registered excerpt is batched — ``claim_digest`` is accepted for callers
-    that still pass it and deliberately ignored, because a count bound here
-    removed information the packet's own fingerprint covers.
+    registered excerpt is batched. There is no count argument to pass, because a
+    count bound here removed information the packet's own fingerprint covers.
     """
-    del run, claim_digest
+    del run
     packet = packet_for_task(task)
     canonical_claims = merge_claim_snapshot([], packet.claims)
     canonical_sources = merge_source_snapshot([], packet.sources)
@@ -1869,8 +1856,6 @@ def critique_repair_messages(
     task: CritiqueTask,
     error: StructuredOutputError | CritiqueContractViolation,
     run: ReActRun | None = None,
-    *,
-    claim_digest: int = CRITIC_CLAIM_DIGEST,
 ) -> list[ChatMessage]:
     """Build the one repair request for an unusable review reply.
 
@@ -1886,7 +1871,7 @@ def critique_repair_messages(
     way, because from the model's side the fix is the same: return the object
     again, with the reported field corrected.
     """
-    messages = critique_messages(task, run, claim_digest=claim_digest)
+    messages = critique_messages(task, run)
     diagnostics = reply_diagnostics(error)
     lines = [
         f"- {validation_summary(diagnostic)}" for diagnostic in diagnostics
@@ -2218,7 +2203,6 @@ class CriticAgent(BaseAgent[Critique]):
         tools: Sequence[BaseTool] = (),
         config: AgentRuntimeConfig | None = None,
         model_profile: EffectiveModelConfig | None = None,
-        claim_digest: int = CRITIC_CLAIM_DIGEST,
     ) -> None:
         super().__init__(
             provider=provider,
@@ -2228,9 +2212,6 @@ class CriticAgent(BaseAgent[Critique]):
             config=config,
             model_profile=model_profile,
         )
-        if claim_digest < 1:
-            raise ValueError("claim_digest must be at least 1")
-        self._claim_digest = claim_digest
 
     @property
     def output_schema(self) -> type[Critique]:
@@ -2298,11 +2279,7 @@ class CriticAgent(BaseAgent[Critique]):
             return critique, reason, [missing_report_error()], False
 
         opened = packet.fingerprint
-        messages = critique_messages(
-            task,
-            run,
-            claim_digest=self._claim_digest,
-        )
+        messages = critique_messages(task, run)
         try:
             draft = await self._complete_review(messages)
             critique, reason = build_critique(
@@ -2415,12 +2392,7 @@ class CriticAgent(BaseAgent[Critique]):
 
         try:
             draft = await self._complete_review(
-                critique_repair_messages(
-                    task,
-                    error,
-                    run,
-                    claim_digest=self._claim_digest,
-                )
+                critique_repair_messages(task, error, run)
             )
             critique, reason = build_critique(
                 draft,
