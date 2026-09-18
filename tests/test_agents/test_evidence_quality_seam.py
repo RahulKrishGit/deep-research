@@ -259,18 +259,25 @@ async def test_findings_flow_through_scoring_into_an_adjudicated_claim(
     # domains they were served from.
     #
     # The honest verdict here is NOT ``verified``, and that is the point of the
-    # Task 6 seam: both reads were served the same body, so the two documents
-    # are one work by complete-content hash, and neither read evidences an
-    # issuer, so neither has a known publisher or claim-specific origin. A
-    # second domain is a transport fact, never corroboration (Section 2.1/2.2),
-    # so the claim is attributable and unsettled rather than independently
-    # confirmed.
+    # Task 6 seam. Two things make the pair fail, and they are worth stating
+    # exactly:
+    #
+    # * both reads were served the same body, so their ``content_sha256`` is
+    #   byte-identical and Section 2.2's equal-hash rule makes them ONE work —
+    #   a second domain is a transport fact, never a second work;
+    # * neither assessment evidences an issuer, so the source role stays
+    #   ``unknown`` and ``source_origin_id`` resolves no claim-specific origin
+    #   at all (the publisher id itself *does* resolve, from the serving host).
+    #
+    # The named reason is therefore the provable one — same work — rather than
+    # the generic "identity unknown". The old verdict called this verified on
+    # domain difference alone; it never rested on a pair test.
     assert len(state.verified_claims) == 1
     claim = state.verified_claims[0]
     assert claim.source_urls == [SOURCE_URL]
     assert claim.verdict == "insufficient_evidence"
     assert claim.evidence_status == "source_supported"
-    assert claim.insufficient_reason == "identity_unknown"
+    assert claim.insufficient_reason == "same_work"
     assert claim.verification_evidence
     assert {passage.source_url for passage in claim.verification_evidence} == {
         SOURCE_URL,

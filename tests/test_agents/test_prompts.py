@@ -520,6 +520,13 @@ def _digest_claim(
         text=text,
         source_urls=urls or ["https://example.org/a"],
         verdict=verdict,
+        evidence_status=(
+            "verified_pair"
+            if verdict == "verified"
+            else "source_supported"
+            if verdict == "insufficient_evidence"
+            else None
+        ),
         confidence=confidence,
         evidence=[],
         contradictions=[],

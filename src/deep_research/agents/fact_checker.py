@@ -144,6 +144,11 @@ MAX_REPORTED_FIELD_PATHS = 8
 # How many exact passages one verifier read contributes to its packet, matching
 # the Researcher's own default selection bound.
 DEFAULT_PASSAGES_PER_READ = 4
+# How many omitted ids and handoff ids one persisted adjudication manifest
+# carries. The counts are exact; the id lists are bounded so a 300-document
+# registry cannot write a 300-row manifest per claim, and the overflow is
+# summarized rather than dropped.
+MAX_PACKET_OMISSIONS = 16
 
 
 class ClaimDraft(ContractModel):
@@ -897,6 +902,16 @@ class AdjudicationPacket(ContractModel):
     units: list[EvidenceUnit] = Field(default_factory=list)
     eligibility: dict[str, EvidenceEligibility] = Field(default_factory=dict)
     omitted: list[EvidenceDisposition] = Field(default_factory=list)
+    omitted_count: int = 0
+    """How many registry units were left out, exact even when ``omitted`` is
+    bounded. The bound is on the list, never on the fact of the omission."""
+    missing_read_ids: list[str] = Field(default_factory=list)
+    """Reads this claim is linked to that contributed no passage to the packet.
+
+    The exact ids the passage-selection boundary lost, so ``handoff_loss`` names
+    what disappeared instead of describing it.
+    """
+    missing_read_count: int = 0
     fingerprint: str = ""
 
 
@@ -908,10 +923,12 @@ def claim_evidence_pool(
 ) -> list[EvidenceUnit]:
     """The evidence units this *claim* may be adjudicated against.
 
-    ``target_ids`` is the obligations the *caller* recorded for this claim:
-    a draft the provider just returned carries none of its own, so the
-    agent passes the attribution it built for the draft, while a recorded
-    ``Claim`` already carries them.
+    ``target_ids`` is the obligations the *caller* recorded for this claim: a
+    draft the provider just returned carries none of its own, so the agent
+    passes the attribution it built for the draft, while a recorded ``Claim``
+    already carries them. A caller that passes a bare draft and no target ids
+    therefore gets the *narrower* pool — only the claim's own citations and its
+    recorded passages — and must do so deliberately.
 
     Three links, and only these: a unit whose read is one of the claim's own
     citations, a unit whose locator and excerpt are the passage the claim
@@ -956,18 +973,14 @@ def claim_evidence_pool(
 
 def claim_pool_dispositions(
     state: ResearchState,
-    claim: Claim | ClaimDraft,
     pool: Sequence[EvidenceUnit],
-    *,
-    target_ids: Sequence[str] | None = None,
 ) -> list[EvidenceDisposition]:
-    """Why each registry unit that is not in ``pool`` was left out.
+    """Why each registry unit that is not in the packet was left out.
 
     An explicit omission with a reason, never a silent drop: a passage the run
     did read and this adjudication did not consider has to be distinguishable
     from one that was never read (Section 2.4).
     """
-    del claim, target_ids
     admitted = {unit.evidence_id for unit in pool}
     return [
         EvidenceDisposition(
@@ -979,6 +992,76 @@ def claim_pool_dispositions(
         for unit in state.evidence_units.values()
         if unit.evidence_id not in admitted
     ] or []
+
+
+def claim_missing_read_ids(
+    state: ResearchState,
+    claim: Claim | ClaimDraft,
+    pool: Sequence[EvidenceUnit],
+    *,
+    target_ids: Sequence[str] | None = None,
+) -> list[str]:
+    """Reads this claim is linked to that contributed no passage to its packet.
+
+    The passage-selection boundary is where a read stops being evidence: a
+    document the run read for this claim, whose body is in the registry, but
+    from which no unit was admitted, is a *handoff loss*. Naming the exact read
+    ids is what makes that distinguishable from a claim that simply has no
+    source — the two produce the same thin packet and the same verdict.
+    """
+    obligations = (
+        set(target_ids)
+        if target_ids is not None
+        else set(getattr(claim, "target_ids", ()) or ())
+    )
+    cited = {
+        normalize_source_url(url)
+        for url in getattr(claim, "source_urls", ()) or ()
+    }
+    present = {unit.read_id for unit in pool}
+    missing: list[str] = []
+    for read in state.read_records.values():
+        if read.read_id in present:
+            continue
+        if (
+            normalize_source_url(read.resolved_url) in cited
+            or normalize_source_url(read.requested_url) in cited
+            or bool(obligations and obligations.intersection(read.target_ids))
+        ):
+            missing.append(read.read_id)
+    return missing
+
+
+def memory_candidate_count(
+    state: ResearchState,
+    run: ReActRun | None,
+    claim: Claim | ClaimDraft,
+) -> int:
+    """How many *remembered* candidates were considered for this claim.
+
+    Deliberately a separate number from any validated read-support count: a
+    recall is discovery, never evidence (TR-01), and a reader that cannot tell
+    the two apart is the defect this program exists to remove. Counted here:
+    every successful ``query_memory`` observation the claim's loop made, and
+    every remembered finding whose source is one this claim cites.
+    """
+    cited = {
+        normalize_source_url(url)
+        for url in getattr(claim, "source_urls", ()) or ()
+    }
+    recalled = sum(
+        1
+        for step in (run.steps if run is not None else ())
+        if step.tool_name == "query_memory"
+        and step.tool_result is not None
+        and step.tool_result.success
+    )
+    remembered = sum(
+        1
+        for finding in state.memory_context.similar_findings
+        if normalize_source_url(finding.source_url) in cited
+    )
+    return recalled + remembered
 
 
 def claim_eligibility(
@@ -1032,6 +1115,8 @@ def build_adjudication_packet(
     *,
     eligibility: Mapping[str, EvidenceEligibility] | None = None,
     omitted: Sequence[EvidenceDisposition] = (),
+    omitted_count: int | None = None,
+    missing_read_ids: Sequence[str] = (),
 ) -> AdjudicationPacket:
     """Assemble the packet, with the fingerprint that identifies it.
 
@@ -1059,7 +1144,12 @@ def build_adjudication_packet(
         claim_cluster_id=claim_cluster_id(atoms[0]) if atoms else "",
         units=units,
         eligibility=dict(eligibility or {}),
-        omitted=list(omitted),
+        omitted=list(omitted)[:MAX_PACKET_OMISSIONS],
+        omitted_count=(
+            len(omitted) if omitted_count is None else omitted_count
+        ),
+        missing_read_ids=list(missing_read_ids)[:MAX_PACKET_OMISSIONS],
+        missing_read_count=len(missing_read_ids),
         fingerprint=fingerprint,
     )
 
@@ -1131,9 +1221,15 @@ def validate_adjudication(
     rows = list(draft.assessments if assessments is None else assessments)
     shown = {unit.evidence_id: unit for unit in packet.units}
     flags: list[str] = []
-    if packet.omitted:
+    if packet.missing_read_ids:
+        # A read this claim is linked to never reached the packet. That is the
+        # first thing to say about the claim, because it explains a thin packet
+        # that would otherwise read as "nothing supports this".
+        flags.append("handoff_loss")
+    if packet.omitted_count:
         flags.append("packet_incomplete")
     accepted: dict[str, SupportAssessment] = {}
+    selected_support_candidates: list[str] = []
     for row in rows:
         if row.evidence_id not in shown:
             flags.append("evidence_not_admitted")
@@ -1159,6 +1255,7 @@ def validate_adjudication(
         contradicts
     ) != len(list(dict.fromkeys(draft.contradiction_ids))):
         flags.append("evidence_not_admitted")
+    selected_support_candidates = list(supports)
     overlap = set(supports).intersection(contradicts)
     if overlap:
         # A passage cannot both support and refute one claim: the model
@@ -1187,6 +1284,17 @@ def validate_adjudication(
             }
         )
 
+    # Only a passage that supports the COMPLETE, in-scope claim may stand
+    # behind it. A partial, off-scope, or reversed reading is still assessed
+    # and still recorded as a conflict where it contradicts — but it is not
+    # evidence for the claim, and publishing its text as ``evidence`` would put
+    # an unsupported assertion in front of a reader.
+    complete_supports = [
+        evidence_id
+        for evidence_id in supports
+        if eligibility[evidence_id].complete_support
+    ]
+    supports = complete_supports
     verified_pair: tuple[str, str] | None = None
     for index, left in enumerate(supports):
         for right in supports[index + 1 :]:
@@ -1201,13 +1309,7 @@ def validate_adjudication(
         conflict.material and conflict.resolution == "unresolved"
         for conflict in conflicts
     )
-    complete_supports = [
-        evidence_id
-        for evidence_id in supports
-        if eligibility[evidence_id].complete_support
-    ]
-
-    if contradicts and (material_unresolved or not complete_supports):
+    if contradicts and (material_unresolved or not supports):
         # Both sides exist and cannot be reconciled by a scope difference this
         # contract can see (or nothing complete stands against them), so the
         # claim is disputed. The conflict rows carry the analysis; the verdict
@@ -1218,11 +1320,11 @@ def validate_adjudication(
     elif verified_pair is not None:
         verdict = "verified"
         status = "verified_pair"
-    elif complete_supports:
+    elif supports:
         verdict = "insufficient_evidence"
         status = "source_supported"
-        flags.extend(_insufficient_flags(eligibility, complete_supports))
-    elif supports:
+        flags.extend(_insufficient_flags(eligibility, supports))
+    elif selected_support_candidates:
         verdict = "insufficient_evidence"
         status = "source_supported"
         flags.append("no_complete_support")
@@ -1290,29 +1392,37 @@ def _insufficient_flags(
     diagnosable when it is not.
     """
     flags: list[str] = []
-    eligible = [
+    identified = [
         evidence_id
         for evidence_id in complete_supports
-        if eligibility[evidence_id].corroboration_eligible
-    ]
-    if not eligible:
-        return ["identity_unknown"]
-    known = [
-        evidence_id
-        for evidence_id in eligible
         if eligibility[evidence_id].publisher_id
         and eligibility[evidence_id].work_id
-        and eligibility[evidence_id].origin_group_id
     ]
-    if len(known) < 2:
-        flags.append("single_primary_only")
-        return flags
-    if len({eligibility[item].work_id for item in known}) < 2:
-        flags.append("same_work")
-    if len({eligibility[item].publisher_id for item in known}) < 2:
-        flags.append("same_publisher")
-    if len({eligibility[item].origin_group_id for item in known}) < 2:
-        flags.append("shared_origin")
+    # The specific identity test is named whenever it is provable, before the
+    # generic "only one source" answer: two complete supports that share one
+    # work, one publisher, or one origin are a *known* failure of independence,
+    # and calling that "identity_unknown" would hide the reason the ledger is
+    # read for.
+    if len(identified) >= 2:
+        if len({eligibility[item].work_id for item in identified}) < 2:
+            flags.append("same_work")
+        if len({eligibility[item].publisher_id for item in identified}) < 2:
+            flags.append("same_publisher")
+        origins = {
+            eligibility[item].origin_group_id for item in identified
+        }
+        if None not in origins and len(origins) < 2:
+            flags.append("shared_origin")
+    if not flags:
+        eligible = [
+            evidence_id
+            for evidence_id in complete_supports
+            if eligibility[evidence_id].corroboration_eligible
+        ]
+        if not eligible:
+            flags.append("identity_unknown")
+        elif len(eligible) < 2:
+            flags.append("single_primary_only")
     if not flags:
         flags.append("single_primary_only")
     return flags
@@ -1404,6 +1514,10 @@ def _packet_independent_publishers(
     """
     if packet is None or claim is None:
         return 0
+    # Only a published support counts, and a support is published only when it
+    # completely supported the claim — so the completeness half of the test is
+    # already applied. What remains to check locally is that the source behind
+    # it was validated: a scored origin, not a URL.
     selected = {
         passage.excerpt
         for passage in claim.verification_evidence
@@ -1415,7 +1529,6 @@ def _packet_independent_publishers(
         if unit.excerpt in selected
         and unit.evidence_id in packet.eligibility
         and packet.eligibility[unit.evidence_id].corroboration_eligible
-        and packet.eligibility[unit.evidence_id].complete_support
         and packet.eligibility[unit.evidence_id].publisher_id
     }
     return len(publishers)
@@ -1661,8 +1774,11 @@ def resolve_verdict(
     if any(passage.stance == "contradicts" for passage in passages):
         return "contradicted", confidence
     if any(passage.stance == "supports" for passage in passages):
-        if verdict == "verified":
-            return "verified", confidence
+        # This path has no evidence packet and therefore no pair test, so it
+        # may never publish the strict badge: the old code returned whatever
+        # the model proposed, which is how a single unpersisted read settled a
+        # claim. ``unverified`` is the honest ceiling here.
+        del verdict
         return "unverified", confidence
     return "unverified", confidence
 
@@ -1719,6 +1835,7 @@ def build_claim(
         consumed_finding_fingerprints=list(consumed_finding_fingerprints),
         consumed_coverage_ids=list(consumed_coverage_ids),
         target_ids=list(target_ids),
+        evidence_status="source_supported" if passages else None,
     )
 
 
@@ -1984,6 +2101,7 @@ def claim_checked_event(
     index: int,
     independent_sources: int,
     reason: str | None,
+    memory_candidates: int = 0,
 ) -> ResearchEvent:
     """Report one claim's verdict and what it cost to reach it.
 
@@ -2017,6 +2135,9 @@ def claim_checked_event(
             "confidence": round(claim.confidence, 4),
             "contradictions": len(claim.contradictions),
             "independent_sources": independent_sources,
+            # Discovery only, and counted apart from the validated support
+            # above so a recall can never be read as a read.
+            "memory_candidates": memory_candidates,
             "support_passages": support_passages,
             "contradiction_passages": contradiction_passages,
             "unique_publishers": unique_publishers,
@@ -2037,6 +2158,7 @@ def fact_check_completed_event(
     batches_run: int = 0,
     pending_claim_count: int = 0,
     deferred_claim_count: int = 0,
+    memory_candidates: int = 0,
 ) -> ResearchEvent:
     """Report the whole fact-checking pass.
 
@@ -2071,6 +2193,7 @@ def fact_check_completed_event(
             "support_passages": support_passages,
             "contradiction_passages": contradiction_passages,
             "unique_publishers": unique_publishers,
+            "memory_candidates": memory_candidates,
             "tool_calls": tool_calls,
             "claim_batch_size": claim_batch_size,
             "claim_batches_per_pass": claim_batches_per_pass,
@@ -2347,11 +2470,16 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             return None, True
         pool = claim_evidence_pool(state, draft, target_ids=target_ids)
         eligibility = self._claim_eligibility(pool)
+        omitted = claim_pool_dispositions(state, pool)
         packet = build_adjudication_packet(
             draft,
             pool,
             eligibility=eligibility,
-            omitted=claim_pool_dispositions(state, draft, pool),
+            omitted=omitted,
+            omitted_count=len(omitted),
+            missing_read_ids=claim_missing_read_ids(
+                state, draft, pool, target_ids=target_ids
+            ),
         )
         return packet, not _packet_has_pair(packet)
 
@@ -2409,36 +2537,77 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             list(units.values()),
             eligibility=eligibility,
             omitted=merged_dispositions,
+            omitted_count=packet.omitted_count + len(self._new_dispositions),
+            missing_read_ids=packet.missing_read_ids,
         )
 
     def _record_packet_audit(
-        self, packet: AdjudicationPacket, claim: Claim | None, *, status: str
+        self,
+        packet: AdjudicationPacket,
+        claim: Claim | None,
+        *,
+        status: str,
+        target_ids: Sequence[str] = (),
     ) -> None:
-        """Persist the Section 2.4 boundary manifest for one adjudication."""
+        """Persist the Section 2.4 boundary manifest for one adjudication.
+
+        Every id list is joinable against the others — ``input_ids`` are the
+        evidence ids the packet offered, ``selected_ids`` the ones the model
+        selected, ``accepted_ids`` the subset standing behind the claim — and
+        the handoff entries name exactly which reads never reached the packet.
+        The lists are bounded (``MAX_PACKET_OMISSIONS``) and any overflow is
+        summarized by count, so a 300-document registry cannot write a
+        300-row manifest per claim while still recording that it overflowed.
+        """
+        passages = list(claim.verification_evidence) if claim else []
+        chosen = {passage.excerpt for passage in passages}
+        supports = {
+            passage.excerpt
+            for passage in passages
+            if passage.stance == "supports"
+        }
+        disposition_ids = [
+            f"{item.item_id}:{item.reason}" for item in packet.omitted
+        ]
+        persisted_omissions = len(packet.omitted[:MAX_PACKET_OMISSIONS])
+        if packet.omitted_count > persisted_omissions:
+            disposition_ids.append(
+                f"omitted_overflow:"
+                f"{packet.omitted_count - persisted_omissions}"
+            )
+        disposition_ids.extend(
+            f"read:{read_id}:handoff_loss"
+            for read_id in packet.missing_read_ids
+        )
+        if packet.missing_read_count > len(packet.missing_read_ids):
+            disposition_ids.append(
+                "handoff_overflow:"
+                f"{packet.missing_read_count - len(packet.missing_read_ids)}"
+            )
         audit = build_boundary_audit(
             operation=ADJUDICATION_OPERATION,
             job_id=self._session_id or "fact-checker-session",
             agent_name=self.name,
             sequence=len(self._adjudication_audits) + 1,
+            target_ids=tuple(target_ids),
             claim_cluster_ids=(
                 [packet.claim_cluster_id] if packet.claim_cluster_id else []
             ),
             input_ids=tuple(unit.evidence_id for unit in packet.units),
             selected_ids=tuple(
-                passage.locator
-                for passage in (claim.verification_evidence if claim else [])
+                unit.evidence_id
+                for unit in packet.units
+                if unit.excerpt in chosen
             ),
             accepted_ids=tuple(
                 unit.evidence_id
                 for unit in packet.units
-                if claim is not None
-                and unit.excerpt
-                in {passage.excerpt for passage in claim.verification_evidence}
+                if unit.excerpt in supports
             ),
-            deferred_ids=tuple(item.item_id for item in packet.omitted),
-            disposition_ids=tuple(
-                f"{item.item_id}:{item.reason}" for item in packet.omitted
+            deferred_ids=tuple(
+                item.item_id for item in packet.omitted[:MAX_PACKET_OMISSIONS]
             ),
+            disposition_ids=tuple(disposition_ids),
             packet_fingerprint=packet.fingerprint,
             configuration_fingerprint=(
                 f"evidence_chars={self._evidence_chars};"
@@ -2766,9 +2935,15 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             # the adjudication was never read, so nothing was judged. Recording
             # insufficient_evidence here would make an outage read as a finding
             # about the claim and would mark its findings consumed.
+            reason = provider_failure_reason(error)
+            self._adjudication_failure[packet.claim_id] = (
+                "schema_failed"
+                if reason == "schema_failed"
+                else "provider_failed"
+            )
             return (
                 None,
-                provider_failure_reason(error),
+                reason,
                 [claim_verification_provider_error(error)],
                 True,
             )
@@ -3022,6 +3197,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._adjudication_audits = {}
         self._adjudicated_packets = set()
         self._repair_events = []
+        self._adjudication_failure = {}
         # Provenance belongs to the extraction pass about to run; anything
         # left from an earlier run must not leak into it, except the
         # attribution of a claim this run is about to resume. The queue is
@@ -3075,6 +3251,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         cursor = 0
         batches_run = 0
         index = 0
+        memory_candidates_seen = 0
         for batch_number in range(1, self._batches_per_pass + 1):
             outstanding = [
                 draft
@@ -3155,10 +3332,13 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                             task.packet,
                             claim,
                             status=(
-                                "provider_failed"
+                                self._adjudication_failure.get(
+                                    task.packet.claim_id, "provider_failed"
+                                )
                                 if verify_failed
                                 else "completed"
                             ),
+                            target_ids=task.target_ids,
                         )
                         self._adjudicated_packets.add(task.packet.fingerprint)
                     if verify_failed:
@@ -3168,6 +3348,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                         react = react.model_copy(
                             update={"stop_reason": "provider_error"}
                         )
+                    memory_candidates = memory_candidate_count(
+                        state, react, task.claim
+                    )
+                    memory_candidates_seen += memory_candidates
                     # In the packet path the diagnostic counts VALIDATED
                     # read support; a URL count can never raise it.
                     independent = (
@@ -3214,6 +3398,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                                 else []
                             ),
                             "independent_sources": independent,
+                            "memory_candidates": memory_candidates,
                             "tool_calls": react.tool_calls,
                             "stop_reason": react.stop_reason,
                         }
@@ -3244,6 +3429,9 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                         index=index,
                         independent_sources=independent,
                         reason=reason,
+                        memory_candidates=memory_candidate_count(
+                            state, react, task.claim
+                        ),
                     )
                 )
                 if not react.succeeded:
@@ -3280,6 +3468,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 )
             )
 
+        # A repaired structured reply is a diagnostic the run must be able to
+        # read: the response's own finish reason is ``stop``, exactly like a
+        # clean first attempt, so without this the categories and field paths
+        # of the rejected reply are collected and then dropped.
+        events.extend(self._repair_events)
         merged = merge_react_runs(self.name, runs).model_copy(
             update={"errors": errors}
         )
@@ -3296,6 +3489,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 batches_run=batches_run,
                 pending_claim_count=len(remaining),
                 deferred_claim_count=deferred_count,
+                memory_candidates=memory_candidates_seen,
             )
         )
         result = VerifiedClaims(

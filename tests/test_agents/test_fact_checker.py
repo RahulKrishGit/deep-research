@@ -6,10 +6,17 @@ import re
 from typing import get_args
 
 import pytest
+from pydantic import ValidationError
 
+import deep_research.providers.contracts as contracts_module
 from deep_research.agents import fact_checker as fact_checker_module
 from deep_research.agents.base import AgentRun
-from deep_research.agents.claim_clusters import claim_meets_support_policy
+from deep_research.agents.claim_clusters import (
+    _canonical_claim,
+    claim_meets_support_policy,
+    cluster_for_atom,
+    extract_atoms,
+)
 from deep_research.agents.evidence import (
     EvidenceEligibility,
     build_evidence_unit,
@@ -21,6 +28,7 @@ from deep_research.agents.fact_checker import (
     DEFAULT_FINDING_DIGEST,
     DEFAULT_MAX_CLAIMS,
     INSUFFICIENT_REASONS,
+    MAX_PACKET_OMISSIONS,
     MAX_PASSAGE_EXCERPT_CHARS,
     MAX_PASSAGE_LOCATOR_CHARS,
     MAX_PENDING_CLAIMS,
@@ -38,6 +46,7 @@ from deep_research.agents.fact_checker import (
     _critique_texts,
     _finding_is_new,
     _packet_independent_publishers,
+    adjudication_repaired_event,
     build_adjudication_packet,
     build_claim,
     build_claim_drafts,
@@ -52,6 +61,7 @@ from deep_research.agents.fact_checker import (
     independent_domains,
     insufficient_claim,
     known_source_urls,
+    memory_candidate_count,
     normalize_verdict,
     ordered_findings_for_extraction,
     partition_pending_claims,
@@ -87,6 +97,7 @@ from deep_research.providers import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
+from deep_research.providers.contracts import StructuredRepairRecord
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -95,6 +106,7 @@ from deep_research.utils.types import (
     ClaimVerdict,
     Critique,
     CritiqueGap,
+    EvidenceDisposition,
     EvidencePassage,
     EvidenceTarget,
     EvidenceUnit,
@@ -340,6 +352,7 @@ def test_a_new_publisher_restatement_is_new_evidence() -> None:
         text=claim.text,
         source_urls=list(claim.source_urls),
         verdict="insufficient_evidence",
+        evidence_status="verified_pair",
         confidence=0.0,
         evidence=[],
         contradictions=[],
@@ -776,7 +789,11 @@ def test_an_upstream_read_passage_yields_the_models_verdict() -> None:
         upstream_read_urls=["https://upstream.test/report"],
     )
 
-    assert claim.verdict == "verified"
+    # The legacy passage path has no evidence packet and therefore no pair
+    # test, so it may not publish the strict badge: its ceiling is
+    # ``unverified``, never a settled ``verified``.
+    assert claim.verdict == "unverified"
+    assert claim.evidence_status == "source_supported"
     assert claim.confidence == pytest.approx(0.9)
     assert claim.evidence == ["An independent study reports the same reduction."]
 
@@ -873,7 +890,10 @@ def test_a_built_claim_keeps_its_own_sources_and_the_models_evidence() -> None:
 
     assert isinstance(claim, Claim)
     assert claim.source_urls == ["https://example.org/a"]
-    assert claim.verdict == "verified"
+    # The legacy passage path has no evidence packet and therefore no pair
+    # test, so it may not publish the strict badge: its ceiling is
+    # ``unverified``, never a settled ``verified``.
+    assert claim.verdict == "unverified"
     assert claim.evidence == ["Third party agrees."]
     assert claim.contradictions == []
     # Minor 1: the emitted identity is the canonical fingerprint of the text,
@@ -969,8 +989,10 @@ def test_verdict_counts_cover_every_verdict_value() -> None:
     counts = verdict_counts(claims)
 
     assert counts == {
-        "verified": 1,
-        "unverified": 0,
+        # The passage path cannot verify, so its supported claim is
+        # unverified rather than settled.
+        "verified": 0,
+        "unverified": 1,
         "contradicted": 0,
         "insufficient_evidence": 1,
     }
@@ -1188,7 +1210,10 @@ async def test_independent_evidence_produces_a_model_verdict(
 
     claim, reason, errors, provider_failed = await agent.verify_claim(task, run)
 
-    assert claim.verdict == "verified"
+    # The legacy passage path has no evidence packet and therefore no pair
+    # test, so it may not publish the strict badge: its ceiling is
+    # ``unverified``, never a settled ``verified``.
+    assert claim.verdict == "unverified"
     assert claim.confidence == pytest.approx(0.9)
     assert reason is None
     assert errors == []
@@ -1234,7 +1259,10 @@ async def test_the_agent_pools_evidence_the_researcher_read_upstream(
         outcome = await agent.run(state)
 
     claims = outcome.state_update["verified_claims"]
-    assert [claim.verdict for claim in claims] == ["verified"]
+    # The legacy passage path has no evidence packet and therefore no pair
+    # test, so it may not publish the strict badge: its ceiling is
+    # ``unverified``, never a settled ``verified``.
+    assert [claim.verdict for claim in claims] == ["unverified"]
     assert [claim.confidence for claim in claims] == [pytest.approx(0.9)]
 
 
@@ -1568,6 +1596,7 @@ async def test_a_second_pass_carries_the_claims_of_the_first(
         text="An earlier pass verified this.",
         source_urls=["https://example.org/a"],
         verdict="verified",
+        evidence_status="verified_pair",
         confidence=0.8,
         evidence=["An independent source reported the same figure."],
         contradictions=[],
@@ -1662,6 +1691,7 @@ def test_claim_events_report_bounded_provenance_counts_without_excerpts() -> Non
         text="A measured result was reported.",
         source_urls=["https://example.org/a"],
         verdict="verified",
+        evidence_status="verified_pair",
         confidence=0.9,
         evidence=["An independent study agrees."],
         contradictions=[],
@@ -1843,7 +1873,10 @@ async def test_unchanged_evidence_makes_every_later_pass_free(
 
     first = await _research_pass(agent, tracker, state)
     first_snapshot = _snapshot(first)
-    assert [claim.verdict for claim in first_snapshot] == ["verified"]
+    # The legacy passage path has no evidence packet and therefore no pair
+    # test, so it may not publish the strict badge: its ceiling is
+    # ``unverified``, never a settled ``verified``.
+    assert [claim.verdict for claim in first_snapshot] == ["unverified"]
     assert _structured_names(completer, 0) == [
         "ClaimsDraft",
         "PassageVerdictDraft",
@@ -1864,7 +1897,8 @@ async def test_unchanged_evidence_makes_every_later_pass_free(
         snapshot = _snapshot(outcome)
         assert len(snapshot) == 1
         assert snapshot[0].claim_id == first_snapshot[0].claim_id
-        assert snapshot[0].verdict == "verified"
+        # The passage path has no pair test, so its ceiling is unverified.
+        assert snapshot[0].verdict == "unverified"
         carried = merge_research_state(carried, outcome.state_update)
 
 
@@ -2122,9 +2156,10 @@ def test_the_completed_event_reports_every_verdict_count() -> None:
 
     assert event.event_type == "fact_checker.fact_check.completed"
     assert event.metadata["claim_count"] == 2
-    assert event.metadata["verified"] == 1
+    # Neither claim came through the packet path, so none may be settled.
+    assert event.metadata["verified"] == 0
     assert event.metadata["contradicted"] == 1
-    assert event.metadata["unverified"] == 0
+    assert event.metadata["unverified"] == 1
     assert event.metadata["insufficient_evidence"] == 0
     assert event.metadata["contradiction_count"] == 1
     assert event.metadata["tool_calls"] == 5
@@ -2168,7 +2203,12 @@ async def test_a_full_run_verifies_each_claim_and_reports_the_counts(
 
     assert outcome.agent_name == "fact_checker"
     assert outcome.result is not None
-    assert [claim.verdict for claim in outcome.result.claims] == ["verified"]
+    # The legacy passage path has no evidence packet and therefore no pair
+    # test, so it may not publish the strict badge: its ceiling is
+    # ``unverified``, never a settled ``verified``.
+    assert [claim.verdict for claim in outcome.result.claims] == [
+        "unverified"
+    ]
 
     merged = merge_research_state(state, outcome.state_update)
     assert len(merged.verified_claims) == 1
@@ -2180,7 +2220,8 @@ async def test_a_full_run_verifies_each_claim_and_reports_the_counts(
     assert types[-1] == "fact_checker.fact_check.completed"
     completed = events[-1]
     assert completed.metadata["claim_count"] == 1
-    assert completed.metadata["verified"] == 1
+    assert completed.metadata["verified"] == 0
+    assert completed.metadata["unverified"] == 1
     assert completed.metadata["contradiction_count"] == 0
     checked = next(
         event for event in events
@@ -2288,7 +2329,12 @@ async def test_a_verification_provider_failure_stops_further_claims(
     assert outcome.result is not None
     # The second claim was never judged: a failed verification is a
     # continuation, not an insufficient-evidence row.
-    assert [claim.verdict for claim in outcome.result.claims] == ["verified"]
+    # The legacy passage path has no evidence packet and therefore no pair
+    # test, so it may not publish the strict badge: its ceiling is
+    # ``unverified``, never a settled ``verified``.
+    assert [claim.verdict for claim in outcome.result.claims] == [
+        "unverified"
+    ]
     assert [claim.text for claim in outcome.result.pending_claims] == ["Second."]
     assert outcome.react.stop_reason == "provider_error"
     types = {error.error_type for error in outcome.errors}
@@ -2609,7 +2655,11 @@ async def test_a_batch_takes_one_claim_per_target_before_extra_slots(
         for claim in outcome.result.claims
         for target in claim.target_ids
     }
-    assert targets == {"target-1", "target-2"}
+    # An ``independent_pair`` obligation is only answered by a claim that
+    # carries the strict badge, and a passage-path claim never does: the
+    # obligations stay outstanding instead of being credited to evidence
+    # that was never tested as a pair.
+    assert targets == set()
 
 
 @pytest.mark.asyncio
@@ -2805,7 +2855,10 @@ async def test_a_resumed_claim_keeps_the_obligation_it_was_extracted_for(
     resumed = [
         claim for claim in second.result.claims if claim.text == deferred
     ]
-    assert [claim.target_ids for claim in resumed] == [["target-1"]]
+    # The attribution survived (the claim was resumed at all), but the
+    # policy refuses to credit an ``independent_pair`` target to a claim
+    # with no pair behind it.
+    assert [claim.target_ids for claim in resumed] == [[]]
 
 
 # --------------------------------------------------------------------------
@@ -3232,8 +3285,13 @@ async def test_a_verified_independent_pair_retains_its_target(
         outcome = await agent.run(state)
 
     assert outcome.result is not None
-    assert [claim.verdict for claim in outcome.result.claims] == ["verified"]
-    assert outcome.result.claims[0].target_ids == ["target-1"]
+    # The legacy passage path has no evidence packet and therefore no pair
+    # test, so it may not publish the strict badge: its ceiling is
+    # ``unverified``, never a settled ``verified``.
+    assert [claim.verdict for claim in outcome.result.claims] == [
+        "unverified"
+    ]
+    assert outcome.result.claims[0].target_ids == []
 
 # ---------------------------------------------------------------------------
 # Task 6: the claim-specific evidence union and its strict pair rule
@@ -3277,6 +3335,9 @@ def _ab_read(read_id: str, url: str, title: str, text: str) -> object:
         text=text,
         passages={"chunk-0": text},
         extraction_complete=True,
+        # The production adapter stamps the target a read was made for, which
+        # is the link the packet's handoff audit resolves.
+        target_ids=[TASK6_TARGET],
     )
 
 
@@ -4205,3 +4266,516 @@ def test_every_adjudication_reason_is_enumerated() -> None:
         "model_disagreement",
     ):
         assert INSUFFICIENT_REASONS.get(reason), reason
+
+# ---------------------------------------------------------------------------
+# Fix round 1: what the review found missing
+# ---------------------------------------------------------------------------
+
+
+class _RepairingAdjudicator:
+    """A completer that reproduces the provider's bounded one-repair contract.
+
+    On the first ``ClaimVerdictDraft`` request the reply is treated as
+    malformed; the completer appends the provider's own repair turn to the
+    *same* messages and asks again, then returns the valid draft. Both requests
+    are recorded, which is what lets a test assert the packet survived the
+    repair intact.
+    """
+
+    def __init__(self, *, valid, repairs: tuple[object, ...] = ()) -> None:
+        self._valid = valid
+        self._repairs = tuple(repairs)
+        self._seen = 0
+        self.requests: list[list[ChatMessage]] = []
+
+    async def complete_react(self, *args: object, **kwargs: object) -> object:
+        raise AssertionError("a sufficient packet needs no ReAct turn")
+
+    async def complete_structured(
+        self,
+        messages,
+        schema,
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> object:
+        del agent_name, max_tokens
+        if schema.__name__ == "ClaimsDraft":
+            return ClaimsDraft(
+                claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])]
+            )
+        self.requests.append(list(messages))
+        self._seen += 1
+        if self._seen == 1:
+            repaired = [
+                *messages,
+                ChatMessage(
+                    role="system",
+                    content=(
+                        "The previous JSON response failed ClaimVerdictDraft "
+                        "validation. Return only one JSON object that validates "
+                        "against the supplied JSON Schema."
+                    ),
+                ),
+            ]
+            self.requests.append(repaired)
+            return self._valid(repaired, schema)
+        return self._valid(list(messages), schema)
+
+    def drain_structured_repairs(self) -> tuple[object, ...]:
+        return self._repairs
+
+
+def _badge_claim(
+    text: str,
+    *,
+    claim_id: str,
+    verdict: str,
+    evidence_status: str | None = None,
+) -> Claim:
+    return Claim(
+        claim_id=claim_id,
+        text=text,
+        source_urls=[A_URL],
+        verdict=verdict,  # type: ignore[arg-type]
+        evidence_status=evidence_status,  # type: ignore[arg-type]
+        confidence=0.9,
+        evidence=[],
+        contradictions=[],
+        verification_evidence=[],
+    )
+
+
+def test_a_repaired_adjudication_publishes_its_diagnostic() -> None:
+    """The collected repair record must be reportable, bounded and text-free.
+
+    The provider repairs one malformed structured reply and returns the
+    repaired parse, whose own finish reason is ``stop`` - identical to a clean
+    first attempt. Unless the collected record is published, the categories and
+    field paths of the rejected reply are gathered and then dropped.
+    """
+    record = StructuredRepairRecord(
+        schema_name="ClaimVerdictDraft",
+        diagnostics=(
+            contracts_module.StructuredValidationDiagnostic(
+                attempt=1,
+                field_paths=("support_ids",),
+                category="missing",
+            ),
+        ),
+    )
+
+    event = adjudication_repaired_event(
+        record, packet_fingerprint="packet-fingerprint-1"
+    )
+
+    assert event is not None
+    assert event.event_type == "fact_checker.adjudication.repaired"
+    assert event.metadata["packet_fingerprint"] == "packet-fingerprint-1"
+    assert event.metadata["field_paths"] == ["support_ids"]
+    assert event.metadata["categories"] == ["missing"]
+    assert event.metadata["diagnostic_count"] == 1
+    # Bounded and provider-output-free: locations and categories only.
+    assert "excerpt" not in event.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_the_repair_event_reaches_the_state_update(tracker: Tracker) -> None:
+    """A run whose reply was repaired reports it, and preserves the packet.
+
+    The brief's malformed-then-valid case: the exact claim and evidence packet
+    is intact in the repaired request, both requests are counted, and the
+    diagnostic the provider recorded reaches the run's events.
+    """
+    completer = _RepairingAdjudicator(
+        valid=_select_every_shown_id,
+        repairs=(
+            StructuredRepairRecord(
+                schema_name="ClaimVerdictDraft",
+                diagnostics=(
+                    contracts_module.StructuredValidationDiagnostic(
+                        attempt=1,
+                        field_paths=("support_ids",),
+                        category="missing",
+                    ),
+                ),
+            ),
+        ),
+    )
+    agent = _checker(tracker, completer)  # type: ignore[arg-type]
+
+    outcome = await _task6_run(agent, _ab_state(), tracker)
+
+    assert len(completer.requests) == 2
+    first, repaired = completer.requests
+    first_body = "\n".join(message.content for message in first)
+    repaired_body = "\n".join(message.content for message in repaired)
+    # The packet - claim text and both exact passages - survives the repair
+    # byte for byte; the repair only appends.
+    assert TASK6_CLAIM in repaired_body
+    assert A_TEXT in repaired_body and B_TEXT in repaired_body
+    assert repaired_body.startswith(first_body)
+    (claim,) = outcome.result.claims
+    assert claim.verdict == "verified"
+    repaired_events = [
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "fact_checker.adjudication.repaired"
+    ]
+    assert len(repaired_events) == 1
+    assert repaired_events[0].metadata["packet_fingerprint"]
+
+
+def test_the_manifest_ids_are_joinable_evidence_ids() -> None:
+    """Section 2.4: the boundary lists must be the same kind of id."""
+    packet = _pair_packet(_eligibility(), _independent_second())
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="verified",
+            confidence=0.9,
+            assessments=[
+                SupportAssessment(
+                    evidence_id=unit.evidence_id,
+                    stance="supports",
+                    complete_support=True,
+                    scope_compatible=True,
+                    independent=True,
+                )
+                for unit in packet.units
+            ],
+            support_ids=[unit.evidence_id for unit in packet.units],
+            contradiction_ids=[],
+            rationale="Both state the figure.",
+        ),
+        packet,
+        None,
+    )
+    agent = object.__new__(FactCheckerAgent)
+    agent._session_id = "session-1"
+    agent._evidence_chars = 4000
+    agent._passages_per_read = 4
+    agent._adjudication_audits = {}
+
+    FactCheckerAgent._record_packet_audit(
+        agent, packet, claim, status="completed", target_ids=[TASK6_TARGET]
+    )
+
+    (audit,) = agent._adjudication_audits.values()
+    inputs = set(audit.input_ids)
+    # Locators used to land here; every list is now evidence ids, so the
+    # manifest can be joined end to end.
+    assert set(audit.selected_ids) <= inputs
+    assert set(audit.accepted_ids) <= set(audit.selected_ids)
+    assert audit.selected_ids
+    assert all(item.startswith("ev-") for item in audit.input_ids)
+    assert audit.target_ids == [TASK6_TARGET]
+    assert audit.claim_cluster_ids == ["cluster-1"]
+
+
+def test_the_persisted_manifest_is_bounded_and_summarizes_its_overflow() -> None:
+    """A 300-unit registry may not write a 300-row manifest for one claim."""
+    units = [
+        _pair_unit(f"u{index}", f"https://host{index}.test/a", "x")
+        for index in range(40)
+    ]
+    packet = AdjudicationPacket(
+        claim_id="claim-1",
+        claim_text=TASK6_CLAIM,
+        claim_source_urls=["https://one.test/a"],
+        claim_cluster_id="cluster-1",
+        units=units[:2],
+        eligibility={},
+        omitted=[
+            EvidenceDisposition(
+                item_id=unit.evidence_id,
+                stage="adjudication-packet",
+                reason="out_of_scope",
+            )
+            for unit in units[2:]
+        ],
+        omitted_count=len(units) - 2,
+        fingerprint="fingerprint-1",
+    )
+    agent = object.__new__(FactCheckerAgent)
+    agent._session_id = "session-1"
+    agent._evidence_chars = 4000
+    agent._passages_per_read = 4
+    agent._adjudication_audits = {}
+
+    FactCheckerAgent._record_packet_audit(
+        agent, packet, None, status="completed", target_ids=[]
+    )
+
+    (audit,) = agent._adjudication_audits.values()
+    assert len(audit.deferred_ids) <= MAX_PACKET_OMISSIONS
+    assert any(
+        item.startswith("omitted_overflow:") for item in audit.disposition_ids
+    )
+    # The exact count is not lost with the list.
+    assert packet.omitted_count == 38
+
+
+def test_a_handoff_loss_is_named_from_the_audit_not_the_test() -> None:
+    """The diagnostic must come from the manifest, with the exact missing id.
+
+    ``read-b``'s body is in the registry, the claim is linked to it, and no
+    evidence unit cites it - so the passage-selection boundary is where the
+    evidence stopped. The claim says ``handoff_loss``, and the manifest names
+    the exact read id: the assertion reads that id out of the audit rather than
+    handing it to the code under test.
+    """
+    complete = _ab_state()
+    state = complete.model_copy(
+        update={
+            "evidence_units": {
+                evidence_id: unit
+                for evidence_id, unit in complete.evidence_units.items()
+                if unit.source_url != B_URL
+            }
+        }
+    )
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+    agent = object.__new__(FactCheckerAgent)
+    agent._run_reads = dict(state.read_records)
+    agent._run_sources = list(state.evaluated_sources)
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+
+    assert packet.missing_read_ids
+    assert packet.missing_read_count == len(packet.missing_read_ids)
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="verified",
+            confidence=0.9,
+            assessments=[
+                SupportAssessment(
+                    evidence_id=unit.evidence_id,
+                    stance="supports",
+                    complete_support=True,
+                    scope_compatible=True,
+                    independent=True,
+                )
+                for unit in packet.units
+            ],
+            support_ids=[unit.evidence_id for unit in packet.units],
+            contradiction_ids=[],
+            rationale="One report states the figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert "handoff_loss" in claim.audit_flags
+    assert claim.insufficient_reason == "handoff_loss"
+    assert claim.verdict == "insufficient_evidence"
+
+    agent._session_id = "session-1"
+    agent._evidence_chars = 4000
+    agent._passages_per_read = 4
+    agent._adjudication_audits = {}
+    FactCheckerAgent._record_packet_audit(
+        agent, packet, claim, status="completed", target_ids=[TASK6_TARGET]
+    )
+    (audit,) = agent._adjudication_audits.values()
+    handoffs = [
+        item.split(":")[1]
+        for item in audit.disposition_ids
+        if item.startswith("read:") and item.endswith(":handoff_loss")
+    ]
+    # The id under test comes out of the audit, and it is the registry's own
+    # read id for the document whose passage never reached the packet.
+    assert handoffs == [
+        read_id
+        for read_id, read in state.read_records.items()
+        if read.resolved_url == B_URL
+    ]
+
+
+def test_a_wrong_causal_direction_never_counts_as_a_complete_support() -> None:
+    """The brief's case: the same numbers, the opposite causal claim.
+
+    A passage that states the relationship backwards does not support the claim
+    it looks like it supports, and the packet has no pair left: the claim is
+    unsettled rather than settled on a reversed reading.
+    """
+    packet = _pair_packet(
+        _eligibility(),
+        _independent_second(),
+        left_text="Cheap wind caused the capacity increase in 2025.",
+        right_text="The capacity increase caused the drop in wind costs in 2025.",
+    )
+    draft = ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[
+            SupportAssessment(
+                evidence_id="ev-left",
+                stance="supports",
+                complete_support=True,
+                scope_compatible=True,
+                independent=True,
+            ),
+            SupportAssessment(
+                evidence_id="ev-right",
+                stance="supports",
+                complete_support=False,
+                scope_compatible=True,
+                independent=True,
+            ),
+        ],
+        support_ids=["ev-left", "ev-right"],
+        contradiction_ids=[],
+        rationale="Both passages state the same two quantities.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status == "source_supported"
+    assert claim.audit_flags
+    # The reversed reading is not evidence for the claim: only the passage that
+    # supports the complete assertion is published behind it.
+    assert claim.evidence == ["Cheap wind caused the capacity increase in 2025."]
+    assert all(
+        "The capacity increase caused" not in excerpt
+        for excerpt in claim.evidence
+    )
+
+
+def test_memory_candidates_are_counted_apart_from_read_support() -> None:
+    """TR-01: a recall is discovery, and its count is never a read count."""
+    state = _ab_state()
+    state = state.model_copy(
+        update={
+            "memory_context": MemorySnapshot(
+                similar_findings=[_check_finding(A_URL, sub_topic="Alpha")]
+            )
+        }
+    )
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+
+    counted = memory_candidate_count(state, None, draft)
+
+    assert counted == 1
+    # The packet's independent-publisher count is derived from validated read
+    # support alone, and memory can never raise it.
+    agent = object.__new__(FactCheckerAgent)
+    agent._run_reads = dict(state.read_records)
+    agent._run_sources = list(state.evaluated_sources)
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+    assert _packet_independent_publishers(packet, None) == 0
+    assert _packet_independent_publishers(None, None) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_current_read_beats_a_repeated_high_confidence_memory(
+    tracker: Tracker,
+) -> None:
+    """The brief: the reader follows the read, not the repetition.
+
+    Memory asserts the opposite of what the run's own reads state, with high
+    confidence and a remembered source URL. The claim is judged from the two
+    reads - verified, because they are a real pair - and the remembered prose
+    contributes no passage and no publisher. The memory candidates are reported
+    beside it as their own number.
+    """
+    memory_claim = "Wind capacity reached 20 GW in 2025."
+    claim_text = "Wind capacity did not reach 20 GW in 2025."
+    state = _ab_state()
+    state = state.model_copy(
+        update={
+            "memory_context": MemorySnapshot(
+                similar_findings=[
+                    _check_finding(A_URL, content=memory_claim, sub_topic="Alpha")
+                ]
+            )
+        }
+    )
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(claims=[ClaimDraft(text=claim_text, source_urls=[A_URL])]),
+            _select_every_shown_id,
+        ]
+    )
+    agent = _checker(tracker, completer)
+
+    outcome = await _task6_run(agent, state, tracker)
+
+    (claim,) = outcome.result.claims
+    assert claim.verdict == "verified"
+    assert claim.evidence_status == "verified_pair"
+    # The evidence is the reads' own text, never the remembered sentence.
+    assert memory_claim not in claim.evidence
+    assert A_TEXT in _adjudication_body(completer)
+    events = outcome.state_update["events"]
+    completed = next(
+        event
+        for event in events
+        if event.event_type == "fact_checker.fact_check.completed"
+    )
+    assert completed.metadata["memory_candidates"] == 1
+    checked = next(
+        event
+        for event in events
+        if event.event_type == "fact_checker.claim.checked"
+    )
+    assert checked.metadata["memory_candidates"] == 1
+    assert checked.metadata["independent_sources"] == 2
+
+
+def test_the_verified_badge_is_structurally_required() -> None:
+    """Critical 1's invariant, enforced where claims are built."""
+    with pytest.raises(ValidationError):
+        _badge_claim(TASK6_CLAIM, claim_id="claim-1", verdict="verified")
+    with pytest.raises(ValidationError):
+        _badge_claim(
+            TASK6_CLAIM,
+            claim_id="claim-1",
+            verdict="verified",
+            evidence_status="source_supported",
+        )
+    # The control: the badge is accepted with the pair behind it.
+    backed = _badge_claim(
+        TASK6_CLAIM,
+        claim_id="claim-1",
+        verdict="verified",
+        evidence_status="verified_pair",
+    )
+    assert backed.evidence_status == "verified_pair"
+
+
+def test_a_cluster_without_a_recorded_pair_badge_cannot_settle() -> None:
+    """The cluster snapshot may not invent the badge its members never had."""
+    claim = _badge_claim(
+        TASK6_CLAIM, claim_id="claim-a", verdict="unverified"
+    )
+    cluster = cluster_for_atom(
+        extract_atoms(claim)[0], claim=claim, created_seq=1
+    )
+
+    canonical = _canonical_claim(cluster)
+
+    assert canonical.verdict == "unverified"
+    assert canonical.evidence_status is None
+
+
+def test_a_cluster_records_and_republishes_the_pair_badge() -> None:
+    """The positive control: a member's badge survives into the snapshot."""
+    claim = _badge_claim(
+        TASK6_CLAIM,
+        claim_id="claim-a",
+        verdict="verified",
+        evidence_status="verified_pair",
+    )
+    cluster = cluster_for_atom(
+        extract_atoms(claim)[0], claim=claim, created_seq=1
+    )
+
+    canonical = _canonical_claim(cluster)
+
+    assert canonical.verdict == "verified"
+    assert canonical.evidence_status == "verified_pair"

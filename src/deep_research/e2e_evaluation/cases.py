@@ -680,6 +680,16 @@ def _claim(
         contradictions=[contradiction] if contradiction else [],
         verification_evidence=[passage],
         consumed_coverage_ids=[topic.coverage_id],
+        # A scripted end-to-end fixture's premise is a claim that already
+        # carries the badge under test, so the fixture declares it: ``Claim``
+        # refuses a verified verdict with no ``verified_pair`` behind it.
+        evidence_status=(
+            "verified_pair"
+            if verdict == "verified"
+            else "source_supported"
+            if verdict == "insufficient_evidence"
+            else None
+        ),
     )
 
 

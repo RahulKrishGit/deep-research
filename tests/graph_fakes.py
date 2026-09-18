@@ -152,6 +152,16 @@ def fake_claim(
         evidence=["An independent review states the same figure."],
         contradictions=[],
         verification_evidence=[],
+        # The fake's premise is a claim that already carries the badge under
+        # test: ``Claim`` refuses a verified verdict with no ``verified_pair``
+        # behind it, for every producer and every fixture alike.
+        evidence_status=(
+            "verified_pair"
+            if verdict == "verified"
+            else "source_supported"
+            if verdict == "insufficient_evidence"
+            else None
+        ),
     )
 
 

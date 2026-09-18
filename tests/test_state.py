@@ -93,6 +93,9 @@ def claim(text: str = "Adoption increased.") -> Claim:
         text=text,
         source_urls=["https://example.com/source"],
         verdict="verified",
+        # The fixture's premise is a claim carrying the strict badge; ``Claim``
+        # refuses a verified verdict with no ``verified_pair`` behind it.
+        evidence_status="verified_pair",
         confidence=0.9,
         evidence=["The source reports a year-over-year increase."],
         contradictions=[],

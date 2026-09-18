@@ -377,8 +377,11 @@ def cluster_for_atom(
     elif atom.parent_claim_id:
         members.add(atom.parent_claim_id)
     verdict_evidence: dict[str, list[str]] = {}
+    verdict_status: dict[str, str] = {}
     if claim is not None:
         verdict_evidence[claim.verdict] = _claim_citations(claim)
+        if claim.evidence_status:
+            verdict_status[claim.verdict] = claim.evidence_status
     return ClaimCluster(
         cluster_id=claim_cluster_id(atom),
         proposition=atom,
@@ -394,6 +397,7 @@ def cluster_for_atom(
         ),
         verdicts=sorted(verdict_evidence),  # type: ignore[arg-type]
         verdict_evidence=verdict_evidence,
+        verdict_evidence_status=verdict_status,
         confidence=claim.confidence if claim is not None else None,
         insufficient_reason=(
             claim.insufficient_reason if claim is not None else None
@@ -473,6 +477,10 @@ def merge_claim_clusters(
             "verdict_evidence": _union_verdict_evidence(
                 existing.verdict_evidence, incoming.verdict_evidence
             ),
+            "verdict_evidence_status": _union_verdict_status(
+                existing.verdict_evidence_status,
+                incoming.verdict_evidence_status,
+            ),
             "confidence": min(confidences) if confidences else None,
             "insufficient_reason": (
                 existing.insufficient_reason or incoming.insufficient_reason
@@ -494,6 +502,27 @@ def merge_claim_clusters(
             ),
         }
     )
+
+
+def _union_verdict_status(
+    first: Mapping[str, str],
+    second: Mapping[str, str],
+) -> dict[str, str]:
+    """Per-verdict evidence badges, unioned under every verdict either recorded.
+
+    A verdict keeps the strongest badge recorded for it: ``verified_pair`` is
+    the only badge that may accompany ``verified``, and a member that recorded
+    a weaker badge for the same verdict cannot take it away.
+    """
+    union: dict[str, str] = {}
+    for source in (first, second):
+        for verdict, status in source.items():
+            current = union.get(verdict)
+            if current is None or (
+                status == "verified_pair" and current != "verified_pair"
+            ):
+                union[verdict] = status
+    return union
 
 
 def _union_verdict_evidence(
@@ -1985,6 +2014,15 @@ def _canonical_claim(cluster: ClaimCluster) -> Claim:
     every verdict recorded, so a disagreement cannot read as a settled fact.
     """
     verdict = resolved_verdict(cluster.verdicts)
+    status = cluster.verdict_evidence_status.get(verdict)
+    if verdict == "verified" and status != "verified_pair":
+        # No member recorded the strict badge for this resolution, so the
+        # cluster may not publish it: the conservative direction is a claim
+        # that is merely unverified, never a settled fact with no pair behind
+        # it. ``Claim`` refuses the combination outright, so this is the one
+        # place the cluster can still resolve it.
+        verdict = "unverified"
+        status = None
     return Claim(
         claim_id=cluster.cluster_id,
         text=cluster.proposition.text,
@@ -2007,6 +2045,7 @@ def _canonical_claim(cluster: ClaimCluster) -> Claim:
             if verdict == "insufficient_evidence"
             else None
         ),
+        evidence_status=status,  # type: ignore[arg-type]
         consumed_finding_fingerprints=list(
             cluster.consumed_finding_fingerprints
         ),

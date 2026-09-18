@@ -95,6 +95,13 @@ def _claim(*, verdict: str = "verified") -> Claim:
         text="Logical error rates fell below break-even in 2025.",
         source_urls=[CRITIC_SOURCE_URL],
         verdict=verdict,
+        evidence_status=(
+            "verified_pair"
+            if verdict == "verified"
+            else "source_supported"
+            if verdict == "insufficient_evidence"
+            else None
+        ),
         confidence=0.8,
         evidence=[],
         contradictions=[],

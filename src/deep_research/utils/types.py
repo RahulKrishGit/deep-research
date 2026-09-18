@@ -760,9 +760,16 @@ class Claim(ContractModel):
     # different known publishers, works, and claim-specific origins, with no
     # unresolved material contradiction; ``source_supported`` is the strictly
     # weaker "a source said this", which keeps the legacy
-    # ``insufficient_evidence`` verdict beside it. ``None`` for a claim judged
-    # before this contract existed, or with no evidence to classify at all.
-    evidence_status: str | None = None
+    # ``insufficient_evidence`` verdict beside it; ``contested`` is both sides
+    # present with the disagreement unresolved. ``None`` for a claim judged
+    # with no evidence to classify at all.
+    #
+    # Enumerated rather than a plain ``str``: ``verified`` may only be
+    # published with ``verified_pair`` behind it, and a value this contract
+    # does not know must fail loudly rather than read as "some other badge".
+    evidence_status: (
+        Literal["verified_pair", "source_supported", "contested"] | None
+    ) = None
     # Every conflict this claim's adjudication had to face, with what was done
     # about it. Empty means none was recorded, which is not the same as "none
     # existed" — a consumer that needs that distinction reads the boundary
@@ -774,6 +781,23 @@ class Claim(ContractModel):
     # plain strings for the same reason as ``insufficient_reason`` — a snapshot
     # written by a later release must stay readable.
     audit_flags: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_verified_is_backed_by_a_pair(self) -> Claim:
+        """``verified`` is only ever published with the strict pair behind it.
+
+        The badge is not decoration: the legacy passage path had no pair test
+        at all, so a single unpersisted read could settle a claim. Enforcing
+        the pairing here makes that impossible for every producer — the packet
+        adjudication, the cluster snapshot, and any caller that builds a
+        ``Claim`` by hand — rather than leaving it to each of them to remember.
+        """
+        if self.verdict == "verified" and self.evidence_status != "verified_pair":
+            raise ValueError(
+                "verified requires evidence_status='verified_pair': the badge "
+                "is written only by the strict independent-pair test"
+            )
+        return self
 
 
 class AtomicProposition(ContractModel):
@@ -910,6 +934,16 @@ class ClaimCluster(ContractModel):
     a cluster can never be a settled supporting fact, and it cannot count as
     independent corroboration for anything else."""
     diagnostics: list[str] = Field(default_factory=list)
+    verdict_evidence_status: dict[str, str] = Field(default_factory=dict)
+    """Each recorded verdict mapped to the evidence badge that carried it.
+
+    The badge is not derivable from the verdict alone — ``verified`` means
+    "independent corroboration established" only when some member actually
+    recorded ``verified_pair`` — so it is persisted beside the verdicts instead
+    of being assumed by whoever reads the cluster back. A verdict with no
+    recorded badge resolves to no badge, and the canonical snapshot may then
+    not publish ``verified``.
+    """
 
 
 class ReportQualitySnapshot(ContractModel):

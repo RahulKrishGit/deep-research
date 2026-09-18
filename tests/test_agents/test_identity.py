@@ -71,6 +71,15 @@ def claim(
             "text": text,
             "source_urls": ["https://example.test/a"],
             "verdict": verdict,
+            # The fixture's premise is a claim that carries the strict badge;
+            # ``Claim`` refuses a verified verdict without it.
+            "evidence_status": (
+                "verified_pair"
+                if verdict == "verified"
+                else "source_supported"
+                if verdict == "insufficient_evidence"
+                else None
+            ),
             "confidence": confidence,
             "evidence": ["The source quotes the annual figure."],
             "contradictions": contradictions or [],

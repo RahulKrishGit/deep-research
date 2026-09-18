@@ -216,6 +216,17 @@ def claim(
         evidence=support_texts,
         contradictions=contradiction_texts,
         verification_evidence=passages,
+        # An evaluation fixture's premise is a claim that already carries the
+        # badge under test, so the fixture declares it. ``Claim`` refuses a
+        # verified verdict with no ``verified_pair`` behind it, which is what
+        # keeps the invariant from depending on every caller remembering it.
+        evidence_status=(
+            "verified_pair"
+            if verdict == "verified"
+            else "source_supported"
+            if verdict == "insufficient_evidence" and support_texts
+            else None
+        ),
     )
 
 

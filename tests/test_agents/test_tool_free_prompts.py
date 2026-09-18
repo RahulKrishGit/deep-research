@@ -166,6 +166,7 @@ def _claim(url: str = "https://real.test/one") -> Claim:
         text="A measured result was reported.",
         source_urls=[url],
         verdict="verified",
+        evidence_status="verified_pair",
         confidence=0.9,
         evidence=["An independent study reports the same result."],
         contradictions=[],

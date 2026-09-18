@@ -114,6 +114,13 @@ def _claim(
         text=text,
         source_urls=urls or [SOURCE_URL],
         verdict=verdict,
+        evidence_status=(
+            "verified_pair"
+            if verdict == "verified"
+            else "source_supported"
+            if verdict == "insufficient_evidence"
+            else None
+        ),
         confidence=confidence,
         evidence=["An independent review states the same figure."],
         contradictions=contradictions or [],

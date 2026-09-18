@@ -1498,6 +1498,9 @@ def _claim(text: str, **overrides: object) -> Claim:
         "text": text,
         "source_urls": ["https://example.test/report"],
         "verdict": "verified",
+        # The fixture's premise is a claim that passed the strict pair test;
+        # ``Claim`` refuses the verified badge without it.
+        "evidence_status": "verified_pair",
         "confidence": 0.9,
         "evidence": [],
         "contradictions": [],
