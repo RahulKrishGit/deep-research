@@ -52,6 +52,7 @@ from deep_research.utils.types import (
     EvidenceTarget,
     EvidenceUnit,
     ResearchState,
+    SubjectState,
 )
 
 __all__ = [
@@ -306,7 +307,20 @@ def atomic_compatible(
     proof: when the clause writes a number no stated dimension accounts for,
     this contract cannot show the two clauses assert the same thing, so only a
     formatting-identical text may merge.
+
+    A *derivation* refusal comes first, because it is about the derivation
+    rather than about what the clauses say: a clause whose entity position this
+    contract could not resolve (see ``AtomicProposition.subject_state``) is
+    refused against everything, including another clause it could not resolve.
+    Two underivable entities are not two mentions of one entity, and reading
+    the two empty subjects as agreement settled claims that named different
+    operators, counties, and grids.
     """
+    if (
+        a.subject_state == _SUBJECT_UNRESOLVED
+        or b.subject_state == _SUBJECT_UNRESOLVED
+    ):
+        return False
     if a.negated != b.negated:
         return False
     if _canonical_number(a.value) != _canonical_number(b.value):
@@ -316,6 +330,17 @@ def atomic_compatible(
     for name in _COMPARED_DIMENSIONS:
         if _canonical(getattr(a, name)) != _canonical(getattr(b, name)):
             return False
+    # The measurand a quantity names is compared when both state one. "10 GW of
+    # storage" is not "10 GW of solar", and dropping the quantity's noun from
+    # the entity run (so the locative entity can be read) may not lose that
+    # difference. A one-sided measurand is not a difference: the same assertion
+    # is written with the noun named and left implied.
+    if (
+        _canonical(a.quantity_noun)
+        and _canonical(b.quantity_noun)
+        and _canonical(a.quantity_noun) != _canonical(b.quantity_noun)
+    ):
+        return False
     if _stated_numbers(a) != _stated_numbers(b):
         return False
     if _unaccounted_numbers(a) or _unaccounted_numbers(b):
@@ -489,10 +514,12 @@ def oldest_first(clusters: Sequence[ClaimCluster]) -> list[ClaimCluster]:
     ``created_seq`` is the authority, so the surviving identity does not depend
     on the order a caller lists its clusters in. An unstamped sequence (zero —
     a cluster built by hand, or written before the field existed) is the
-    *lowest*-priority answer, never a winning one: it sorts after every stamped
-    cluster and is ordered among its peers by the identity it was minted from,
-    which no caller can reorder. Consolidation mints a real sequence for every
-    cluster it builds, so in production this fallback is never reached.
+    *lowest*-priority answer, never a winning one. The cluster id is the
+    tie-break for peers at one sequence, stamped or not: two clusters minted in
+    the same pass share a sequence, and ordering them by registry position would
+    hand the identity to whichever the caller happened to list first. Consolidation
+    mints a real sequence for every cluster it builds, so in production the
+    unstamped fallback is never reached.
     """
     return [
         cluster
@@ -501,10 +528,7 @@ def oldest_first(clusters: Sequence[ClaimCluster]) -> list[ClaimCluster]:
             key=lambda pair: (
                 pair[1].created_seq == 0,
                 pair[1].created_seq,
-                # Among the unstamped, the registry position *is* the caller's
-                # own order, so it would hand the identity to whichever came
-                # first. The id is a stable tie-break instead.
-                pair[1].cluster_id if pair[1].created_seq == 0 else "",
+                pair[1].cluster_id,
                 pair[0],
             ),
         )
@@ -873,24 +897,38 @@ _LIGHT_VERBS = frozenset(
 _WORD_TOKEN = re.compile(r"[A-Za-z][\w'-]*")
 MAX_SUBJECT_WORDS = 6
 
+# The three outcomes of a subject derivation. ``derived`` means an entity was
+# read and is compared; ``absent`` means the clause names none, so two such
+# clauses may still agree; ``unresolved`` means an entity position is there and
+# the derivation failed, which refuses. The distinction exists because an empty
+# subject that means "I could not tell" was being read as "the two agree".
+_SUBJECT_DERIVED: SubjectState = "derived"
+_SUBJECT_ABSENT: SubjectState = "absent"
+_SUBJECT_UNRESOLVED: SubjectState = "unresolved"
+
 # Where an entity sits when the clause puts it after the value and the verb:
 # "10 GW sat in the 2024 interconnection queue", "10 GW was held by the wind
-# fleet". Read only when nothing precedes the anchor, so a clause that already
-# named its subject is never overridden by a locative tail.
+# fleet", "10 GW was added to the Texas grid". Read only when nothing precedes
+# the anchor, so a clause that already named its subject is never overridden by
+# a locative tail.
 #
 # The phrase is read to the clause's own boundary and kept whole, or not at all.
 # A fixed-length prefix of a long entity is the dangerous shape: "California
 # Independent System Operator" out of "… Operator interconnection queue" is
 # nonempty, plausible, and silently identical to the opening words of a
 # different entity — an interconnection queue and a transmission queue merged,
-# and so did the operator named on its own. An empty subject REFUSES a merge
-# against a stated one, so a capture this contract cannot show is the whole
-# entity yields EMPTY rather than its first words.
+# and so did the operator named on its own. A capture this contract cannot show
+# is the whole entity is therefore UNRESOLVED, which refuses, rather than empty,
+# which two clauses could agree on.
 _TRAILING_ENTITY_HEAD = re.compile(
-    r"\b(?:by|in|at|on|within|across|for)\s+(?:the\s+)?"
-    r"(?:(?:19|20)\d{2}\s+)?",
+    r"\b(?:by|in|at|on|within|across|for|to|into|onto|throughout)\s+"
+    r"(?:the\s+)?(?:(?:19|20)\d{2}\s+)?",
     re.IGNORECASE,
 )
+# Words that turn a following "to" into an idiom rather than a locative:
+# "according to PJM", "up to 10 GW", "prior to 2024", "due to delays",
+# "next to the queue".
+_TO_HEAD_GUARD_WORDS = frozenset({"according", "up", "prior", "due", "next"})
 # Where the noun phrase stops: the clause's own punctuation. This is a real
 # boundary, so it completes the capture rather than truncating it.
 _TRAILING_ENTITY_BOUNDARY = re.compile(r"[,;:.!?()\[\]\u2013\u2014]")
@@ -978,8 +1016,8 @@ def _predicate(
 
 def _trailing_entity(
     clause: str, *, excluded: Sequence[tuple[int, int]]
-) -> str:
-    """The entity a clause names after its value and verb, or empty.
+) -> tuple[str, SubjectState]:
+    """The entity a clause names after its value and verb, and how it was read.
 
     "10 GW sat in the 2024 interconnection queue" and "10 GW was held by the
     wind fleet" both state their subject after the measurement. Reading it is
@@ -988,12 +1026,20 @@ def _trailing_entity(
     qualifier must not become an escape hatch for two different entities.
 
     The phrase runs to the clause's own boundary and is taken whole. A capture
-    that would be cut short is no subject at all: a plausible prefix of a long
-    entity matches entities it does not name, while an empty subject refuses the
-    merge it would have wrongly allowed.
+    that would be cut short is no subject at all, and a clause whose entity is
+    *present* but unreadable is ``unresolved`` rather than ``absent``: two
+    clauses that both name an entity this contract could not read are not two
+    clauses that name the same entity.
+
+    Not every locative head introduces an entity, so a head is skipped when the
+    phrase behind it is a verb phrase ("to be added"), an attribution
+    ("according to PJM"), a level the clause reached ("to 12 GW"), or another
+    preposition's object rather than a noun phrase of its own.
     """
     for head in _TRAILING_ENTITY_HEAD.finditer(clause):
         if any(start <= head.start() < end for start, end in excluded):
+            continue
+        if _is_guarded_head(clause, head):
             continue
         tail = clause[head.end():]
         boundary = _TRAILING_ENTITY_BOUNDARY.search(tail)
@@ -1006,44 +1052,67 @@ def _trailing_entity(
             for start, end in excluded
         ):
             continue
+        if tokens[0].group(0).casefold() in _SUBJECT_STOPWORDS:
+            # A noun phrase this head introduces does not begin with a
+            # connective or a preposition: "in 2024, according to PJM" names an
+            # attribution, not an entity that starts with "according".
+            continue
         if len(tokens) > MAX_TRAILING_ENTITY_WORDS:
             # Longer than this contract will read, so it cannot show the
-            # capture is the whole entity. It states none.
-            return ""
+            # capture is the whole entity — but the entity IS there, so this is
+            # a failed derivation rather than a clause that names none.
+            return "", _SUBJECT_UNRESOLVED
         words = [
             token.group(0)
             for token in tokens
             if token.group(0).casefold() not in _SUBJECT_STOPWORDS
         ]
         if words:
-            return " ".join(words)
-    return ""
+            return " ".join(words), _SUBJECT_DERIVED
+    return "", _SUBJECT_ABSENT
 
 
-def _subject(
+def _is_guarded_head(clause: str, head: re.Match[str]) -> bool:
+    """True when this locative head does not introduce an entity phrase.
+
+    Only the ``to`` head needs this: ``by``/``in``/``on`` and their peers take a
+    noun phrase, while ``to`` introduces a level ("rose to 10 GW"), an
+    infinitive ("expected to be added"), an attribution ("according to PJM"),
+    or an idiom ("up to", "prior to", "due to", "next to") at least as often as
+    it introduces a place.
+    """
+    if not head.group(0).casefold().startswith("to"):
+        return False
+    before = _WORD_TOKEN.findall(clause[: head.start()])
+    if before and before[-1].casefold() in _TO_HEAD_GUARD_WORDS:
+        return True
+    rest = clause[head.end():].lstrip()
+    if not rest or rest[0].isdigit():
+        return True
+    token = _WORD_TOKEN.match(rest)
+    if token is None or token.group(0).casefold() in _LIGHT_VERBS:
+        return True
+    return False
+
+
+def _run_before(
     clause: str,
     *,
-    anchor: re.Match[str] | None,
+    cutoff: int,
+    floor: int,
     excluded: Sequence[tuple[int, int]],
-) -> str:
-    """The entity the clause asserts about.
+) -> tuple[str, bool]:
+    """The entity words in ``clause[floor:cutoff]``, and whether words were erased.
 
-    Read as the run of words immediately before the clause's predicate — or,
-    failing that, before its first stated value or period — that is not a
-    stopword. A word inside an excluded span (the period, the value) ends the
-    run rather than being read as the subject, so "the 2024 interconnection
-    queue held 10 GW" yields "interconnection queue" and not the year.
-
-    A clause that names its entity *after* the measurement — post-verbal or
-    passive — has nothing before the anchor, and falls back to the trailing
-    entity phrase rather than reporting an empty subject.
+    Read right-to-left from the anchor, as the subject run always has been: a
+    stopword ends the run once something has been gathered, and a word inside an
+    excluded span (the period, the value, a quantity phrase's unit noun) ends it
+    too. A light verb clears whatever was gathered to its right — those words
+    sit on the verb phrase's side of it — and the cleared flag records that real
+    words were dropped. A run that is empty *because* a light verb ate it is a
+    derivation failure, not a clause that names no entity: "Will County" is not
+    the modal "will".
     """
-    if anchor is not None:
-        cutoff = anchor.start()
-    elif excluded:
-        cutoff = min(start for start, _ in excluded)
-    else:
-        cutoff = len(clause)
 
     def is_excluded(position: int) -> bool:
         return any(start <= position < end for start, end in excluded)
@@ -1051,18 +1120,17 @@ def _subject(
     words = [
         (match.start(), match.group(0))
         for match in _WORD_TOKEN.finditer(clause)
-        if match.end() <= cutoff
+        if floor <= match.start() and match.end() <= cutoff
     ]
     collected: list[str] = []
+    erased = False
     for start, word in reversed(words):
         if is_excluded(start):
             break
         folded = word.casefold()
-        # A light verb is noise: not an entity, and not the boundary of one
-        # either — the determiner in front of the entity is. Anything gathered
-        # to its right is on the verb phrase's side of it, not the entity's, so
-        # "delays are growing" keeps "delays" and drops the participle.
         if folded in _LIGHT_VERBS:
+            if collected:
+                erased = True
             collected.clear()
             continue
         if folded in _SUBJECT_STOPWORDS:
@@ -1073,13 +1141,152 @@ def _subject(
         if len(collected) >= MAX_SUBJECT_WORDS:
             break
     if collected:
-        return " ".join(reversed(collected))
-    return _trailing_entity(clause, excluded=excluded)
+        return " ".join(reversed(collected)), erased
+    return "", erased
+
+
+def _entity_after_relation(
+    clause: str,
+    *,
+    start: int,
+    end: int,
+    excluded: Sequence[tuple[int, int]],
+) -> str:
+    """The entity a relation word leaves between itself and the measurement.
+
+    "Projected wind capacity is 10 GW" names its entity *after* the relation, so
+    the run before the relation word is empty and there is nothing to fall back
+    to but the trailing phrase — which is what made two different entities agree
+    on an empty subject. The phrase is read forward from the relation word and
+    stops at the first word that cannot be part of a noun phrase, so a locative
+    that follows it ("… capacity in PJM is 10 GW") does not become the entity.
+    """
+
+    def is_excluded(position: int) -> bool:
+        return any(left <= position < right for left, right in excluded)
+
+    collected: list[str] = []
+    for match in _WORD_TOKEN.finditer(clause, start, end):
+        if is_excluded(match.start()):
+            break
+        folded = match.group(0).casefold()
+        if folded in _LIGHT_VERBS:
+            break
+        if folded in _SUBJECT_STOPWORDS:
+            if collected:
+                break
+            continue
+        collected.append(match.group(0))
+        if len(collected) >= MAX_SUBJECT_WORDS:
+            break
+    return " ".join(collected)
+
+
+def _subject(
+    clause: str,
+    *,
+    anchor: re.Match[str] | None,
+    measurement: re.Match[str] | None,
+    excluded: Sequence[tuple[int, int]],
+    unit_noun_excluded: bool = False,
+) -> tuple[str, SubjectState]:
+    """The entity the clause asserts about, and how it was derived.
+
+    Read as the run of words immediately before the clause's predicate — or,
+    failing that, before its first stated value or period — that is not a
+    stopword. A word inside an excluded span (the period, the value) ends the
+    run rather than being read as the subject, so "the 2024 interconnection
+    queue held 10 GW" yields "interconnection queue" and not the year.
+
+    A clause that names its entity *after* the measurement — post-verbal or
+    passive — has nothing before the anchor, and falls back to the trailing
+    entity phrase rather than reporting an empty subject.
+
+    Three outcomes, and the difference between the last two is the point:
+
+    * ``derived`` — an entity was read, and it is compared as it always was;
+    * ``absent`` — the clause names no entity at all, so two such clauses may
+      still agree (the round-3 control: "10 GW was held in 2024" and "10 GW sat
+      in 2024" state one fact about no particular entity);
+    * ``unresolved`` — an entity position exists and the derivation failed.
+      That refuses, because it is the absence of evidence rather than evidence
+      that the two clauses name the same thing.
+    """
+    if anchor is not None:
+        cutoff = anchor.start()
+    elif excluded:
+        cutoff = min(start for start, _ in excluded)
+    else:
+        cutoff = len(clause)
+
+    text, erased = _run_before(
+        clause, cutoff=cutoff, floor=0, excluded=excluded
+    )
+    if text:
+        return text, _SUBJECT_DERIVED
+
+    # A relation word can precede the entity it relates. The run *before* the
+    # word is then empty even though the clause names an entity, so the entity
+    # is read from the gap the relation word leaves before the measurement.
+    if (
+        measurement is not None
+        and anchor is not None
+        and anchor.end() <= measurement.start()
+    ):
+        text = _entity_after_relation(
+            clause,
+            start=anchor.end(),
+            end=measurement.start(),
+            excluded=excluded,
+        )
+        if text:
+            return text, _SUBJECT_DERIVED
+
+    text, trailing_state = _trailing_entity(clause, excluded=excluded)
+    if text:
+        return text, _SUBJECT_DERIVED
+    if trailing_state == _SUBJECT_UNRESOLVED:
+        return "", _SUBJECT_UNRESOLVED
+    if erased or unit_noun_excluded:
+        # Words were gathered and cleared, or the only candidate this contract
+        # found was the measured unit's own noun. Either way an entity position
+        # was there and this contract could not read it.
+        return "", _SUBJECT_UNRESOLVED
+    return "", _SUBJECT_ABSENT
 
 
 def _of_phrase(pattern: re.Pattern[str], clause: str) -> str:
     """The noun phrase after "of", when the clause states one."""
     return _first_group(pattern, clause)
+
+
+def _unit_noun_span(
+    clause: str,
+    *,
+    value_match: re.Match[str] | None,
+    measured: bool,
+) -> tuple[int, int] | None:
+    """The span of a bare unit noun in the ``of``-phrase of a measured quantity.
+
+    "10 GW of capacity" is one quantity phrase whose ``of`` names the unit's own
+    noun, not an entity: a measured quantity is already fully qualified by its
+    number and unit, so the noun behind it says what is being measured rather
+    than what the clause asserts about. Only a single bare noun immediately
+    after the value qualifies — "10 GW of *wind* capacity" and "10 GW of
+    capacity *and output*" are qualified phrases that do discriminate, and a
+    clause's own grammatical subject ("Capacity rose 10 percent") is not an
+    ``of``-phrase at all and is never touched by this.
+    """
+    if not measured or value_match is None:
+        return None
+    match = _DENOMINATOR.search(clause)
+    if match is None:
+        return None
+    if clause[value_match.end(): match.start()].strip():
+        return None
+    if len(_WORD_TOKEN.findall(match.group("denominator"))) != 1:
+        return None
+    return match.span("denominator")
 
 
 def _evidence_ids_for(
@@ -1156,20 +1363,43 @@ def extract_text_atoms(
         share = _canonical_unit(unit) in ("%", "pp")
         phrase = _of_phrase(_DENOMINATOR, clause)
         measured = bool(unit) and not share
+        # In "10 GW of capacity was added to the Texas grid", the only words the
+        # pre-anchor run can gather are the measured unit's own noun, so both
+        # grids came back as "capacity" and agreed. The bare unit noun of a
+        # measured quantity is therefore not an entity: its span is excluded, so
+        # the run breaks and the clause falls through to the entity it actually
+        # names — and when there is none, the exclusion is remembered so the
+        # clause reports UNRESOLVED rather than a clause that names nothing.
+        unit_noun_span = _unit_noun_span(
+            clause, value_match=value_match, measured=measured
+        )
+        if unit_noun_span is not None:
+            excluded.append(unit_noun_span)
+        subject, subject_state = _subject(
+            clause,
+            anchor=predicate_match or value_match or period_match,
+            measurement=value_match or period_match,
+            excluded=excluded,
+            unit_noun_excluded=unit_noun_span is not None,
+        )
         atoms.append(
             AtomicProposition(
                 text=clause,
                 atom_id=(f"{claim_id}#{index}" if claim_id else ""),
-                subject=_subject(
-                    clause,
-                    anchor=predicate_match or value_match or period_match,
-                    excluded=excluded,
-                ),
+                subject=subject,
+                subject_state=subject_state,
                 predicate=_predicate(clause, anchor=measurement),
                 value=value,
                 unit=unit,
                 observation_period=period,
                 geography=_first_group(_GEOGRAPHY, clause),
+                quantity_noun=(
+                    " ".join(
+                        clause[unit_noun_span[0]: unit_noun_span[1]].split()
+                    )
+                    if unit_noun_span is not None
+                    else ""
+                ),
                 population="" if (share or measured) else phrase,
                 denominator=phrase if share else "",
                 attribution=_first_group(_ATTRIBUTION, clause),

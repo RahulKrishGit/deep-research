@@ -17,6 +17,8 @@ the weight, and each is tested on its own:
 
 from __future__ import annotations
 
+from itertools import permutations
+
 import pytest
 
 from deep_research.agents.claim_clusters import (
@@ -470,6 +472,334 @@ def test_two_clauses_that_name_no_entity_still_merge() -> None:
     assert atomic_compatible(left, right)
 
 
+# --------------------------------------------------------------------------
+# Fix round 5: an entity a clause names is never deleted by its own wording
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("left_text", "right_text"),
+    [
+        (
+            "Projected wind capacity is 10 GW.",
+            "Projected solar capacity is 10 GW.",
+        ),
+        (
+            "Estimated wind capacity is 10 GW.",
+            "Estimated solar capacity is 10 GW.",
+        ),
+        (
+            "Reported wind capacity is 10 GW.",
+            "Reported solar capacity is 10 GW.",
+        ),
+        (
+            "Measured wind capacity is 10 GW.",
+            "Measured solar capacity is 10 GW.",
+        ),
+        ("Projected capacity is 10 GW.", "Projected output is 10 GW."),
+        (
+            "The projected wind capacity is 10 GW.",
+            "The projected solar capacity is 10 GW.",
+        ),
+        (
+            "Projected wind capacity in 2024 is 10 GW.",
+            "Projected solar capacity in 2024 is 10 GW.",
+        ),
+    ],
+)
+def test_a_relation_word_before_the_entity_never_deletes_it(
+    left_text: str, right_text: str
+) -> None:
+    """A relation word that precedes its entity must not anchor the entity run.
+
+    The reviewer's probes: with the auxiliaries gone from the relation table,
+    ``_predicate_match`` returns the clause's own relation word — "Projected",
+    whose start is at or before the entity — so the run before the anchor was
+    empty and the clause reported no subject at all. Both sides came back ``''``,
+    which the comparison reads as agreement, and this module's own running
+    example ("wind capacity" vs "solar capacity") merged into one settled
+    verified cluster with no diagnostic.
+    """
+    (left,) = extract_atoms(_claim(left_text, claim_id="claim-left"))
+    (right,) = extract_atoms(_claim(right_text, claim_id="claim-right"))
+
+    assert left.subject
+    assert right.subject
+    assert left.subject != right.subject
+    assert not atomic_compatible(left, right)
+
+
+def test_the_entity_is_read_from_the_gap_the_relation_leaves() -> None:
+    """The rule stated directly: the entity sits between the relation and the value."""
+    (atom,) = extract_atoms(_claim("Projected wind capacity is 10 GW."))
+
+    assert atom.subject == "wind capacity"
+    assert atom.subject_state == "derived"
+    assert atom.predicate == "projected"
+
+
+def test_the_pjm_trailing_control_is_unchanged() -> None:
+    """The control the reviewer warned about: reading the gap must not perturb it.
+
+    ``10 GW sat in PJM's 2024 interconnection queue`` names its entity after the
+    verb, so it takes the trailing read and has to keep reading the whole
+    entity. A naive version of the gap read came back as ``'PJM's'``.
+    """
+    (atom,) = extract_atoms(_claim("10 GW sat in PJM's 2024 interconnection queue"))
+
+    assert atom.subject == "PJM's interconnection queue"
+
+
+@pytest.mark.asyncio
+async def test_a_relation_word_before_the_entity_never_merges_end_to_end() -> None:
+    """The harm the probe measured: one canonical cluster, settled verified."""
+    claims = [
+        _claim("Projected wind capacity is 10 GW.", claim_id="claim-wind"),
+        _claim("Projected solar capacity is 10 GW.", claim_id="claim-solar"),
+    ]
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims
+    )
+
+    assert len(consolidation.claims) == 2
+    assert consolidation.diagnostics == [
+        "equivalence_candidate_incompatible:1:2"
+    ]
+
+
+def test_a_light_verb_never_erases_a_real_entity_word() -> None:
+    """``Will County`` is an entity, not the modal ``will``.
+
+    The reviewer's probe: the light-verb clearing dropped "Will"/"May" from the
+    run and left nothing, so "Will County held 10 GW" and "May County held
+    10 GW" both reported no subject and merged where the base refused. An entity
+    word this contract gathers and then clears is a derivation failure —
+    UNRESOLVED, which refuses — not a clause that names no entity.
+    """
+    (left,) = extract_atoms(_claim("Will County held 10 GW", claim_id="claim-will"))
+    (right,) = extract_atoms(_claim("May County held 10 GW", claim_id="claim-may"))
+
+    assert left.subject_state == "unresolved"
+    assert right.subject_state == "unresolved"
+    assert not atomic_compatible(left, right)
+
+
+@pytest.mark.asyncio
+async def test_a_light_verb_never_merges_two_counties_end_to_end() -> None:
+    """The harm: a base-refused pair became one settled verified cluster."""
+    claims = [
+        _claim("Will County held 10 GW", claim_id="claim-will"),
+        _claim("May County held 10 GW", claim_id="claim-may"),
+    ]
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims
+    )
+
+    assert len(consolidation.claims) == 2
+    assert consolidation.diagnostics == [
+        "equivalence_candidate_incompatible:1:2"
+    ]
+
+
+def test_two_clauses_that_name_no_entity_still_agree() -> None:
+    """The round-3 control, through the real extractor rather than by hand."""
+    (left,) = extract_atoms(_claim("10 GW was held in 2024.", claim_id="claim-a"))
+    (right,) = extract_atoms(_claim("10 GW sat in 2024.", claim_id="claim-b"))
+
+    assert left.subject_state == right.subject_state == "absent"
+    assert atomic_compatible(left, right)
+
+
+OVER_CAP_CALIFORNIA = (
+    "10 GW was held by the California Independent System Operator "
+    "interconnection queue for the second half of the year"
+)
+OVER_CAP_MIDCONTINENT = (
+    "10 GW was held by the Midcontinent Independent System Operator "
+    "interconnection queue for the second half of the year"
+)
+
+
+def test_two_over_cap_entities_never_agree_on_nothing() -> None:
+    """A capture this contract cannot complete is UNRESOLVED, not "no entity".
+
+    The reviewer's probe: both clauses carry a thirteen-word entity, so the
+    whole-or-empty read returned ``''`` on both sides — and empty-vs-empty is
+    the permissive case, so two different operators merged where the base
+    refused on their four-word prefixes. The clause *has* an entity and the
+    derivation failed; that is the absence of evidence, not evidence that the
+    two entities agree.
+    """
+    (left,) = extract_atoms(_claim(OVER_CAP_CALIFORNIA, claim_id="claim-ca"))
+    (right,) = extract_atoms(
+        _claim(OVER_CAP_MIDCONTINENT, claim_id="claim-midcontinent")
+    )
+
+    assert left.subject == right.subject == ""
+    assert left.subject_state == right.subject_state == "unresolved"
+    assert not atomic_compatible(left, right)
+
+
+def test_an_identical_over_cap_entity_is_not_an_agreed_unknown_either() -> None:
+    """UNRESOLVED refuses against everything, including another UNRESOLVED.
+
+    Round 2's ruling permitted two *identical* over-cap entities to merge; the
+    round-5 three-state ruling is stricter, because a derivation failure is not
+    evidence that two clauses name the same entity. Refusing is the direction
+    that cannot settle a claim on nothing.
+    """
+    (left,) = extract_atoms(_claim(OVER_CAP_CALIFORNIA, claim_id="claim-a"))
+    (right,) = extract_atoms(_claim(OVER_CAP_CALIFORNIA, claim_id="claim-b"))
+
+    assert not atomic_compatible(left, right)
+
+
+@pytest.mark.asyncio
+async def test_two_over_cap_entities_never_become_one_settled_claim() -> None:
+    """The harm: two different operators merged into one canonical cluster."""
+    claims = [
+        _claim(OVER_CAP_CALIFORNIA, claim_id="claim-ca"),
+        _claim(OVER_CAP_MIDCONTINENT, claim_id="claim-midcontinent"),
+    ]
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims
+    )
+
+    assert len(consolidation.claims) == 2
+    assert consolidation.diagnostics == [
+        "equivalence_candidate_incompatible:1:2"
+    ]
+
+
+def test_a_bare_unit_noun_is_not_the_clauses_subject() -> None:
+    """Shape (i): ``of capacity`` is the measured unit's own noun, not an entity."""
+    (left,) = extract_atoms(
+        _claim("10 GW of capacity was added to the Texas grid", claim_id="claim-tx")
+    )
+    (right,) = extract_atoms(
+        _claim(
+            "10 GW of capacity was added to the California grid",
+            claim_id="claim-ca",
+        )
+    )
+
+    assert left.subject == "Texas grid"
+    assert right.subject == "California grid"
+    assert not atomic_compatible(left, right)
+
+
+def test_a_locative_entity_is_read_after_a_measured_value() -> None:
+    """Shape (ii): both clauses named no subject, so two grids agreed."""
+    (left,) = extract_atoms(
+        _claim("10 GW was added to the Texas grid", claim_id="claim-tx")
+    )
+    (right,) = extract_atoms(
+        _claim("10 GW was added to the California grid", claim_id="claim-ca")
+    )
+
+    assert left.subject == "Texas grid"
+    assert right.subject == "California grid"
+    assert not atomic_compatible(left, right)
+
+
+def test_the_quantity_phrase_paraphrase_still_merges() -> None:
+    """The coverage win: naming the unit's noun is wording, not a difference."""
+    (left,) = extract_atoms(
+        _claim("10 GW of capacity was added to the Texas grid", claim_id="claim-a")
+    )
+    (right,) = extract_atoms(
+        _claim("10 GW was added to the Texas grid", claim_id="claim-b")
+    )
+
+    assert left.subject == right.subject == "Texas grid"
+    assert atomic_compatible(left, right)
+
+
+def test_a_quantity_phrase_never_overrides_a_clauses_own_subject() -> None:
+    """The backfire control: the unit-noun rule may not touch a real subject.
+
+    ``Capacity rose 10 percent`` states its subject before the measurement; only
+    an ``of``-phrase *inside* a measured quantity is the unit's noun. Reading
+    the two as one shape would merge capacity with output.
+    """
+    (left,) = extract_atoms(_claim("Capacity rose 10 percent in 2024"))
+    (right,) = extract_atoms(_claim("Output rose 10 percent in 2024"))
+
+    assert left.subject == "Capacity"
+    assert right.subject == "Output"
+    assert not atomic_compatible(left, right)
+
+
+def test_a_qualified_quantity_phrase_still_discriminates() -> None:
+    """``of wind capacity`` is not a bare unit noun, so it stays a readable entity."""
+    (left,) = extract_atoms(
+        _claim("10 GW of wind capacity was added in 2024", claim_id="claim-wind")
+    )
+    (right,) = extract_atoms(
+        _claim("10 GW of solar capacity was added in 2024", claim_id="claim-solar")
+    )
+
+    assert left.subject == "wind capacity"
+    assert right.subject == "solar capacity"
+    assert not atomic_compatible(left, right)
+
+
+@pytest.mark.parametrize(
+    ("text", "captured"),
+    [
+        ("10 GW is expected to be added in 2024", "be added"),
+        ("10 GW was added in 2024, according to PJM", "PJM"),
+        ("10 GW was added, bringing the total to 12 GW", "GW"),
+    ],
+)
+def test_a_to_phrase_never_captures_a_verb_a_level_or_an_attribution(
+    text: str, captured: str
+) -> None:
+    """The reviewer's measurements: a ``to`` phrase is a locative only sometimes.
+
+    "to be added" is a verb phrase, "according to PJM" is an attribution, and
+    "to 12 GW" is a level the clause states rather than an entity it names.
+    """
+    (atom,) = extract_atoms(_claim(text))
+
+    assert atom.subject != captured
+
+
+def test_a_quantitys_noun_is_still_compared() -> None:
+    """Narrowing the entity run may not drop the measurand a quantity names.
+
+    Excluding the bare ``of``-noun from the entity run is what lets the locative
+    entity be read; taken alone it also lost the difference between "10 GW of
+    storage" and "10 GW of solar" on one grid, which the base refused. The noun
+    is carried as the quantity's measurand and compared when both state one.
+    """
+    (left,) = extract_atoms(
+        _claim("10 GW of storage was connected to the Texas grid")
+    )
+    (right,) = extract_atoms(
+        _claim("10 GW of solar was connected to the Texas grid")
+    )
+
+    assert left.subject == right.subject == "Texas grid"
+    assert left.quantity_noun == "storage"
+    assert right.quantity_noun == "solar"
+    assert not atomic_compatible(left, right)
+
+
+def test_an_unnamed_measurand_is_not_a_different_one() -> None:
+    """The control: naming the measurand is wording the other clause may omit."""
+    (left,) = extract_atoms(
+        _claim("10 GW of storage was connected to the Texas grid")
+    )
+    (right,) = extract_atoms(_claim("10 GW was connected to the Texas grid"))
+
+    assert right.quantity_noun == ""
+    assert atomic_compatible(left, right)
+
+
 def test_an_identical_subject_and_predicate_still_merges() -> None:
     """The control: strictness about entities must not block one entity."""
     a = _queue_proposition(
@@ -612,6 +942,36 @@ def test_an_all_unstamped_group_keeps_one_identity_whatever_the_order() -> None:
         merge_claim_clusters(forward[0], forward[1]).cluster_id
         == merge_claim_clusters(backward[0], backward[1]).cluster_id
     )
+
+
+def test_equal_sequences_never_flip_with_caller_order() -> None:
+    """An equal non-zero sequence is not a licence to fall back to input order.
+
+    ``oldest_first`` tie-broke on the cluster id only when ``created_seq`` was
+    zero, so three clusters minted at one equal sequence produced six orderings
+    — and six different survivors — by the order a caller listed them in. That
+    is reachable through ``merge_claim_cluster_registry`` across runs, where the
+    caller's order is the registry fold's.
+    """
+    clusters = [
+        _stored_cluster("claim-a", 5),
+        _stored_cluster("claim-b", 5),
+        _stored_cluster("claim-c", 5),
+    ]
+
+    orderings = {
+        tuple(cluster.cluster_id for cluster in oldest_first(list(order)))
+        for order in permutations(clusters)
+    }
+
+    assert len(orderings) == 1
+    (ordering,) = orderings
+    assert ordering == tuple(sorted(ordering))
+    assert [cluster.created_seq for cluster in oldest_first(list(clusters))] == [
+        5,
+        5,
+        5,
+    ]
 
 
 @pytest.mark.asyncio

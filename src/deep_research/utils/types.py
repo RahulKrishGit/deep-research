@@ -101,6 +101,17 @@ FreshnessStatus: TypeAlias = Literal[
     "effective",
     "unknown",
 ]
+# How an atom's ``subject`` was derived, which is not the same question as what
+# it says. ``absent`` is a fact about the clause — it names no entity at all —
+# and two such clauses may agree, which is the permissive case the comparison
+# must keep. ``unresolved`` is a fact about this contract: an entity position is
+# there and the derivation failed (a relation word precedes the entity, a
+# trailing phrase is longer than this contract will read whole, the only
+# candidate was a bare unit noun). A failed derivation is the absence of
+# evidence, and it must never read as two clauses agreeing on the same entity.
+# An empty string means "not recorded" — a proposition built by hand, or written
+# before this field existed — and is compared on its subject text alone.
+SubjectState: TypeAlias = Literal["", "derived", "absent", "unresolved"]
 
 
 class ContractModel(BaseModel):
@@ -746,6 +757,13 @@ class AtomicProposition(ContractModel):
     """
     subject: str = ""
     """The entity the assertion is about, as a noun phrase, or empty."""
+    subject_state: SubjectState = ""
+    """How ``subject`` was derived: ``derived``, ``absent``, or ``unresolved``.
+
+    ``absent`` and ``unresolved`` are different claims about a clause, and
+    reading the second as the first is what let two clauses with different
+    entities agree on an empty string. See :data:`SubjectState`.
+    """
     predicate: str = ""
     """The *relation class* the assertion states about its subject.
 
@@ -762,6 +780,16 @@ class AtomicProposition(ContractModel):
     geography: str = ""
     population: str = ""
     """The measured population, when the assertion quantifies over one."""
+    quantity_noun: str = ""
+    """The noun a measured quantity is of: "10 GW of capacity" names capacity.
+
+    A quantity phrase's ``of``-noun is not the assertion's entity — it says what
+    was measured, not what the clause asserts about — so it is read separately.
+    It is compared only when both clauses name one, because the same assertion
+    may state it or leave it implied ("10 GW of capacity was added to the Texas
+    grid" and "10 GW was added to the Texas grid"); an unnamed measurand is not
+    a different one, while two named and different ones are two quantities.
+    """
     denominator: str = ""
     """The base a share is taken of — a percentage without one is ambiguous."""
     attribution: str = ""
