@@ -1077,6 +1077,65 @@ def _strong_work_alias(work_id: str) -> bool:
     return work_id.startswith(_STRONG_WORK_ALIASES)
 
 
+class EvidenceEligibility(ContractModel):
+    """What one passage can contribute to an *independent corroboration pair*.
+
+    Section 2.1's ``verified`` badge is the strict one: two selected passages,
+    each supporting the COMPLETE atomic claim, whose known canonical publishers
+    and works differ, whose claim-specific evidence origins are independent,
+    and with no unresolved material contradiction defeating settlement. This
+    record carries exactly the local half of that test — the identity fields
+    Task 1/Task 4 resolved, and the three booleans the semantic half produced —
+    so the pair rule is one pure function of two of them.
+
+    Every identity field is *nullable*, and ``None`` never means "different":
+    unknown identity establishes neither sameness nor independence, so a pair
+    with an unknown publisher, work, or origin cannot stand (Section 2.2).
+    """
+
+    publisher_id: str | None = None
+    work_id: str | None = None
+    origin_group_id: str | None = None
+    complete_support: bool = False
+    read_valid: bool = False
+    corroboration_eligible: bool = False
+
+
+def eligible_independent_pair(
+    a: EvidenceEligibility, b: EvidenceEligibility
+) -> bool:
+    """True only when ``a`` and ``b`` may corroborate each other independently.
+
+    Both must be a valid read of a passage that completely supports the claim,
+    contributed by a source eligible to corroborate at all; all six identity
+    fields must be known; and publisher, work, and claim-specific origin must be
+    pairwise different. A mirror, a second work from one publisher, two
+    documents sharing one origin, and any pair with an unknown identity all
+    fail — a URL count is never corroboration.
+    """
+    return (
+        a.read_valid
+        and b.read_valid
+        and a.complete_support
+        and b.complete_support
+        and a.corroboration_eligible
+        and b.corroboration_eligible
+        and all(
+            (
+                a.publisher_id,
+                b.publisher_id,
+                a.work_id,
+                b.work_id,
+                a.origin_group_id,
+                b.origin_group_id,
+            )
+        )
+        and a.publisher_id != b.publisher_id
+        and a.work_id != b.work_id
+        and a.origin_group_id != b.origin_group_id
+    )
+
+
 def _vocabulary(value: object, allowed: Sequence[str], *, default: str) -> str:
     candidate = " ".join(str(value or "").split()).casefold()
     return candidate if candidate in allowed else default

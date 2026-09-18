@@ -42,7 +42,7 @@ from deep_research.agents.fact_checker import (
     _CLAIM_VERIFICATION_REPLY_EXAMPLES,
     ClaimsDraft,
     ClaimTask,
-    ClaimVerdictDraft,
+    PassageVerdictDraft,
     claim_extraction_messages,
     claim_verification_messages,
 )
@@ -431,7 +431,7 @@ def _example_tables() -> tuple:
         (_FINDING_REPLY_EXAMPLES, SubTopicFindingsDraft),
         (_SOURCE_SCORE_REPLY_EXAMPLES, SourceScoresDraft),
         (_CLAIM_EXTRACTION_REPLY_EXAMPLES, ClaimsDraft),
-        (_CLAIM_VERIFICATION_REPLY_EXAMPLES, ClaimVerdictDraft),
+        (_CLAIM_VERIFICATION_REPLY_EXAMPLES, PassageVerdictDraft),
         (_REPORT_REPLY_EXAMPLES, ReportDraft),
         (_critique_examples(), CritiqueDraft),
         (_judge_examples(), JudgeVerdict),
@@ -570,7 +570,7 @@ OPERATIONS = (
         operation="claim verification",
         agent="fact_checker",
         build_messages=_claim_verification_messages,
-        schema=ClaimVerdictDraft,
+        schema=PassageVerdictDraft,
         examples=_labelled_examples,
     ),
     StructuredOperation(
@@ -875,8 +875,8 @@ def test_the_claim_verification_pair_is_schema_valid_and_opposite() -> None:
     }
 
     assert set(labelled) == {"verified", "insufficient-evidence"}
-    verified = ClaimVerdictDraft.model_validate_json(labelled["verified"])
-    insufficient = ClaimVerdictDraft.model_validate_json(
+    verified = PassageVerdictDraft.model_validate_json(labelled["verified"])
+    insufficient = PassageVerdictDraft.model_validate_json(
         labelled["insufficient-evidence"]
     )
 

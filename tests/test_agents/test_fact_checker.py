@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import get_args
 
 import pytest
@@ -9,28 +10,40 @@ import pytest
 from deep_research.agents import fact_checker as fact_checker_module
 from deep_research.agents.base import AgentRun
 from deep_research.agents.claim_clusters import claim_meets_support_policy
+from deep_research.agents.evidence import (
+    EvidenceEligibility,
+    build_evidence_unit,
+    build_read_record,
+)
 from deep_research.agents.fact_checker import (
     DEFAULT_CLAIM_BATCH_SIZE,
     DEFAULT_CLAIM_BATCHES_PER_PASS,
     DEFAULT_FINDING_DIGEST,
     DEFAULT_MAX_CLAIMS,
+    INSUFFICIENT_REASONS,
     MAX_PASSAGE_EXCERPT_CHARS,
     MAX_PASSAGE_LOCATOR_CHARS,
     MAX_PENDING_CLAIMS,
     VERDICT_VALUES,
+    AdjudicationPacket,
     ClaimDraft,
     ClaimsDraft,
     ClaimTask,
     ClaimVerdictDraft,
     EvidencePassageDraft,
     FactCheckerAgent,
+    PassageVerdictDraft,
+    SupportAssessment,
     VerifiedClaims,
     _critique_texts,
     _finding_is_new,
+    _packet_independent_publishers,
+    build_adjudication_packet,
     build_claim,
     build_claim_drafts,
     claim_attribution,
     claim_checked_event,
+    claim_evidence_pool,
     claim_extraction_messages,
     claim_verification_messages,
     claimed_domains_for,
@@ -42,10 +55,12 @@ from deep_research.agents.fact_checker import (
     normalize_verdict,
     ordered_findings_for_extraction,
     partition_pending_claims,
+    provider_failure_reason,
     resolve_verdict,
     retrieved_source_urls,
     union_claim_provenance,
     valid_verification_passages,
+    validate_adjudication,
     verdict_counts,
 )
 from deep_research.agents.identity import (
@@ -53,6 +68,10 @@ from deep_research.agents.identity import (
     finding_fingerprint,
 )
 from deep_research.agents.prompts import AgentTask
+from deep_research.agents.source_evaluator import (
+    SourceScoreDraft,
+    SourceScoresDraft,
+)
 from deep_research.agents.steps import (
     ReActDecision,
     ReActObservation,
@@ -62,19 +81,23 @@ from deep_research.agents.steps import (
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
+    ChatMessage,
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
     ProviderTimeoutError,
+    StructuredOutputError,
 )
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    QUALITY_CONTRACT_VERSION,
     Claim,
     ClaimVerdict,
     Critique,
     CritiqueGap,
     EvidencePassage,
     EvidenceTarget,
+    EvidenceUnit,
     Finding,
     MemorySnapshot,
     ResearchState,
@@ -83,7 +106,12 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
-from tests.research_fakes import FakeSearchClient, fact_checker_tools, search_response
+from tests.research_fakes import (
+    FakeSearchClient,
+    fact_checker_tools,
+    page_client,
+    search_response,
+)
 
 CHECK_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
@@ -401,7 +429,7 @@ def _verdict_draft(
     evidence: list[str] | None = None,
     contradictions: list[str] | None = None,
     passages: list[EvidencePassageDraft] | None = None,
-) -> ClaimVerdictDraft:
+) -> PassageVerdictDraft:
     if passages is None:
         passages = [
             EvidencePassageDraft(
@@ -427,16 +455,16 @@ def _verdict_draft(
             )
             for excerpt in (contradictions or [])
         )
-    return ClaimVerdictDraft(
+    return PassageVerdictDraft(
         verdict=verdict,
         confidence=confidence,
         passages=passages,
     )
 
 
-def _independent_pair_verdict() -> ClaimVerdictDraft:
+def _independent_pair_verdict() -> PassageVerdictDraft:
     """One verdict whose support is a genuine pair of independent publishers."""
-    return ClaimVerdictDraft(
+    return PassageVerdictDraft(
         verdict="verified",
         confidence=0.9,
         passages=[
@@ -702,7 +730,7 @@ def test_passages_require_read_urls_and_keep_bounded_independent_provenance() ->
 
 def _upstream_passage_draft(
     url: str = "https://upstream.test/report",
-) -> ClaimVerdictDraft:
+) -> PassageVerdictDraft:
     return _verdict_draft(
         passages=[
             EvidencePassageDraft(
@@ -1818,7 +1846,7 @@ async def test_unchanged_evidence_makes_every_later_pass_free(
     assert [claim.verdict for claim in first_snapshot] == ["verified"]
     assert _structured_names(completer, 0) == [
         "ClaimsDraft",
-        "ClaimVerdictDraft",
+        "PassageVerdictDraft",
     ]
     assert first_snapshot[0].consumed_finding_fingerprints == [
         finding_fingerprint(_alpha_finding())
@@ -1883,7 +1911,7 @@ async def test_a_changed_finding_at_the_same_url_reopens_the_claim(
 
     assert _structured_names(completer, after_first) == [
         "ClaimsDraft",
-        "ClaimVerdictDraft",
+        "PassageVerdictDraft",
     ]
     snapshot = _snapshot(second)
     assert len(snapshot) == 1
@@ -1953,7 +1981,7 @@ async def test_an_untouched_coverage_id_sharing_the_url_stays_uncovered(
 
     assert _structured_names(completer, after_first) == [
         "ClaimsDraft",
-        "ClaimVerdictDraft",
+        "PassageVerdictDraft",
     ]
     snapshot = _snapshot(second)
     assert [claim.text for claim in snapshot] == [CLAIM_A_TEXT, CLAIM_B_TEXT]
@@ -2021,7 +2049,7 @@ async def test_a_critic_reverification_replaces_the_claim_without_duplicating(
 
     assert _structured_names(completer, after_first) == [
         "ClaimsDraft",
-        "ClaimVerdictDraft",
+        "PassageVerdictDraft",
     ]
     snapshot = _snapshot(second)
     assert len(snapshot) == 1
@@ -3206,3 +3234,974 @@ async def test_a_verified_independent_pair_retains_its_target(
     assert outcome.result is not None
     assert [claim.verdict for claim in outcome.result.claims] == ["verified"]
     assert outcome.result.claims[0].target_ids == ["target-1"]
+
+# ---------------------------------------------------------------------------
+# Task 6: the claim-specific evidence union and its strict pair rule
+# ---------------------------------------------------------------------------
+
+TASK6_CLAIM = "Wind capacity reached 10 GW in 2025."
+A_URL = "https://lab-a.test/wind"
+B_URL = "https://lab-b.test/audit"
+A_TEXT = "Lab A reported that wind capacity reached 10 GW in 2025."
+B_TEXT = "Lab B audited the figure: wind capacity reached 10 GW in 2025."
+TASK6_TARGET = "target-1"
+
+
+class _NoDownloadClient:
+    """A page client that fails the test if any body is ever fetched."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get(self, *args: object, **kwargs: object) -> object:
+        self.calls += 1
+        raise AssertionError("a body was downloaded for a sufficient packet")
+
+
+async def _task6_run(
+    agent: FactCheckerAgent, state: ResearchState, tracker: Tracker
+) -> AgentRun[VerifiedClaims]:
+    """Run one Fact Checker pass inside the session span it requires."""
+    async with tracker.session_span("session-1", state.original_question):
+        return await agent.run(state)
+
+
+def _ab_read(read_id: str, url: str, title: str, text: str) -> object:
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title=title,
+        retrieved_at=CHECK_EXTRACTED_AT,
+        text=text,
+        passages={"chunk-0": text},
+        extraction_complete=True,
+    )
+
+
+def _ab_source(url: str, host: str, work: str, *, scored: bool = True) -> ScoredSource:
+    return ScoredSource(
+        url=url,
+        title="Wind capacity audit",
+        authority_score=0.9 if scored else None,
+        recency_score=0.9 if scored else None,
+        relevance_score=0.9 if scored else None,
+        overall_score=0.9 if scored else None,
+        rationale="Independent and dated.",
+        low_confidence=False,
+        serving_host=host,
+        publisher_id=host,
+        work_id=work,
+        transport_relation="original",
+        source_role="independent_research" if scored else "unknown",
+        self_interest="none",
+        evaluation_status="scored" if scored else "unscored_missing",
+    )
+
+
+def _ab_state(*, score_b: bool = True, units_for_b: bool = True) -> ResearchState:
+    """Upstream A+B, read by the Researcher, targeted at one claim."""
+    read_a = _ab_read("read-a", A_URL, "Lab A report", A_TEXT)
+    read_b = _ab_read("read-b", B_URL, "Lab B audit", B_TEXT)
+    units = [
+        build_evidence_unit(
+            read=read_a,
+            locator="chunk-0",
+            excerpt=A_TEXT,
+            origin="researcher",
+            target_ids=[TASK6_TARGET],
+        )
+    ]
+    if units_for_b:
+        units.append(
+            build_evidence_unit(
+                read=read_b,
+                locator="chunk-0",
+                excerpt=B_TEXT,
+                origin="researcher",
+                target_ids=[TASK6_TARGET],
+            )
+        )
+    return ResearchState(
+        session_id="session-1",
+        original_question="How much wind capacity was added?",
+        initial_target_ids=[TASK6_TARGET],
+        sub_topics=[_targeted_topic("topic-01", "Alpha", TASK6_TARGET)],
+        raw_findings=[
+            _check_finding(A_URL, content=A_TEXT, sub_topic="Alpha"),
+            _check_finding(B_URL, content=B_TEXT, sub_topic="Alpha"),
+        ],
+        evaluated_sources=[
+            _ab_source(A_URL, "lab-a.test", f"sha256:{read_a.content_sha256}"),
+            _ab_source(
+                B_URL, "lab-b.test", f"sha256:{read_b.content_sha256}", scored=score_b
+            ),
+        ],
+        read_records={read_a.read_id: read_a, read_b.read_id: read_b},
+        evidence_units={unit.evidence_id: unit for unit in units},
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+        memory_context=MemorySnapshot(),
+    )
+
+
+def _shown_ids(messages: list[ChatMessage]) -> list[str]:
+    body = "\n".join(message.content for message in messages)
+    return list(dict.fromkeys(re.findall(r"id: (ev-[0-9a-f]+)", body)))
+
+
+def _select_every_shown_id(
+    messages: list[ChatMessage], schema: type[ClaimVerdictDraft]
+) -> ClaimVerdictDraft:
+    """The adjudication a model makes over the packet it was shown."""
+    ids = _shown_ids(messages)
+    assert ids, "\n".join(message.content for message in messages)
+    return schema(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[
+            SupportAssessment(
+                evidence_id=evidence_id,
+                stance="supports",
+                complete_support=True,
+                scope_compatible=True,
+                independent=True,
+            )
+            for evidence_id in ids
+        ],
+        support_ids=ids,
+        contradiction_ids=[],
+        rationale="Two independent reports state the same figure.",
+    )
+
+
+def _adjudication_requests(completer: ScriptedCompleter) -> list[list[ChatMessage]]:
+    return [
+        messages
+        for name, _, messages in completer.calls
+        if name == "ClaimVerdictDraft"
+    ]
+
+
+def _adjudication_body(completer: ScriptedCompleter) -> str:
+    (messages,) = _adjudication_requests(completer)
+    return "\n".join(message.content for message in messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cited",
+    [
+        pytest.param([A_URL], id="cites-a"),
+        pytest.param([B_URL], id="cites-b"),
+        pytest.param([A_URL, B_URL], id="cites-both"),
+    ],
+)
+async def test_a_qualifying_upstream_pair_is_verified_with_no_retrieval_at_all(
+    tracker: Tracker, cited: list[str]
+) -> None:
+    """Section 2.1: qualifying upstream A+B needs no new retrieval.
+
+    The claim's own ``source_urls`` are a citation list, not the evidence pool:
+    the same two selected passages produce ``verified`` whether the claim names
+    A, B, or both, because the packet is the claim-specific union of the run's
+    reads rather than the URLs one finding happened to cite.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=list(cited))]),
+            _select_every_shown_id,
+        ]
+    )
+    client = _NoDownloadClient()
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(tracker, http=client),  # type: ignore[arg-type]
+    )
+
+    outcome = await _task6_run(agent, _ab_state(), tracker)
+
+    (claim,) = outcome.result.claims
+    assert claim.verdict == "verified"
+    assert claim.evidence_status == "verified_pair"
+    assert claim.insufficient_reason is None
+    # Both exact passages of both upstream reads are in the adjudication
+    # request, each under its own selectable id.
+    body = _adjudication_body(completer)
+    assert A_TEXT in body
+    assert B_TEXT in body
+    # Zero retrieval: no ReAct turn was ever requested, no body was fetched.
+    assert completer.react_calls == []
+    assert outcome.react.tool_calls == 0
+    assert outcome.react.steps == []
+    assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_locally_sufficient_pool_the_model_cannot_use_gets_one_retrieval(
+    tracker: Tracker,
+) -> None:
+    """A failed pair allows bounded targeted retrieval, not paralysis.
+
+    Two identities exist locally, so the pool looks sufficient and the loop is
+    skipped. The model judges neither passage a support for the complete claim,
+    and the claim is *not* settled on that: one bounded retrieval round runs,
+    the newly read source is assessed and added to the packet, and the claim is
+    re-adjudicated over the enlarged union.
+    """
+    def reply(
+        messages: list[ChatMessage], schema: type[ClaimVerdictDraft]
+    ) -> ClaimVerdictDraft:
+        ids = _shown_ids(messages)
+        if len(ids) <= 2:
+            return schema(
+                verdict="insufficient_evidence",
+                confidence=0.1,
+                assessments=[
+                    SupportAssessment(
+                        evidence_id=evidence_id,
+                        stance="supports",
+                        complete_support=False,
+                        scope_compatible=False,
+                        independent=True,
+                    )
+                    for evidence_id in ids
+                ],
+                support_ids=[],
+                contradiction_ids=[],
+                rationale="Neither passage supports the complete claim.",
+            )
+        return _select_every_shown_id(messages, schema)
+
+    completer = ScriptedCompleter(
+        decisions=_verification_decisions(),
+        outputs=[
+            ClaimsDraft(claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])]),
+            reply,
+            SourceScoresDraft(
+                sources=[
+                    SourceScoreDraft(
+                        url=INDEPENDENT_URL,
+                        authority_score=0.9,
+                        recency_score=0.9,
+                        relevance_score=0.9,
+                        source_role="independent_research",
+                        issuer="Third Party",
+                        rationale="Independent and dated.",
+                    )
+                ]
+            ),
+            reply,
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            http=page_client(
+                title="Third party audit",
+                body=(
+                    "Third Party audited the figure: wind capacity reached "
+                    "10 GW in 2025."
+                ),
+            ),
+        ),
+    )
+
+    outcome = await _task6_run(agent, _ab_state(), tracker)
+
+    requests = _adjudication_requests(completer)
+    assert len(requests) == 2
+    assert len(_shown_ids(requests[0])) == 2
+    assert len(_shown_ids(requests[1])) > 2
+    assert completer.react_calls
+    (claim,) = outcome.result.claims
+    assert claim.verdict == "verified"
+    assert claim.evidence_status == "verified_pair"
+
+
+def test_a_memory_only_pair_never_becomes_a_packet() -> None:
+    """Remembered or discovered prose is not read-bearing evidence.
+
+    The findings still name A and B, and two sources sit in
+    ``evaluated_sources`` — but no read was ever performed, so the
+    claim-specific pool is empty and no packet can present them as evidence.
+    """
+    state = _ab_state().model_copy(
+        update={"read_records": {}, "evidence_units": {}}
+    )
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+
+    assert claim_evidence_pool(state, draft, target_ids=[TASK6_TARGET]) == []
+    agent = object.__new__(FactCheckerAgent)
+    agent._run_reads = {}
+    agent._run_sources = list(state.evaluated_sources)
+    packet, retrieval_needed = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+
+    assert packet is None
+    assert retrieval_needed is True
+    assert _packet_independent_publishers(None, None) == 0
+
+
+def test_a_sufficient_packet_is_recognised_before_any_model_call() -> None:
+    """The sufficiency test is local, and it is what skips the loop."""
+    state = _ab_state()
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+    agent = object.__new__(FactCheckerAgent)
+    agent._run_reads = dict(state.read_records)
+    agent._run_sources = list(state.evaluated_sources)
+
+    packet, retrieval_needed = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+
+    assert packet is not None
+    assert retrieval_needed is False
+    assert len(packet.units) == 2
+
+
+def test_a_boundary_loss_names_the_missing_read_and_never_verifies() -> None:
+    """A read that never reached the packet cannot half-support a claim.
+
+    The read registry still holds ``read-b``, but no evidence unit cites it, so
+    the passage-selection boundary is where the evidence stopped. The claim is
+    not verified, and the exact id that stopped is still nameable.
+    """
+    complete = _ab_state()
+    state = complete.model_copy(
+        update={
+            "evidence_units": {
+                evidence_id: unit
+                for evidence_id, unit in complete.evidence_units.items()
+                if unit.source_url != B_URL
+            }
+        }
+    )
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+
+    (missing_read_id,) = [
+        read_id
+        for read_id, read in state.read_records.items()
+        if read.resolved_url == B_URL
+    ]
+    pool = claim_evidence_pool(state, draft, target_ids=[TASK6_TARGET])
+    assert [unit.source_url for unit in pool] == [A_URL]
+    assert missing_read_id in state.read_records
+    assert all(
+        unit.read_id != missing_read_id for unit in state.evidence_units.values()
+    )
+
+    agent = object.__new__(FactCheckerAgent)
+    agent._run_reads = dict(state.read_records)
+    agent._run_sources = list(state.evaluated_sources)
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="verified",
+            confidence=0.9,
+            assessments=[
+                SupportAssessment(
+                    evidence_id=unit.evidence_id,
+                    stance="supports",
+                    complete_support=True,
+                    scope_compatible=True,
+                    independent=True,
+                )
+                for unit in pool
+            ],
+            support_ids=[unit.evidence_id for unit in pool],
+            contradiction_ids=[],
+            rationale="One report states the figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status == "source_supported"
+    assert claim.insufficient_reason
+    assert "single_primary_only" in claim.audit_flags
+
+
+def test_two_unrelated_reads_are_not_a_proven_handoff_loss() -> None:
+    """The control: a read about something else is not evidence of loss."""
+    state = _ab_state()
+    unrelated = _ab_read(
+        "read-c", "https://lab-c.test/other", "Other topic", "Solar capacity."
+    )
+    state = state.model_copy(
+        update={"read_records": {**state.read_records, unrelated.read_id: unrelated}}
+    )
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+
+    pool = claim_evidence_pool(state, draft, target_ids=[TASK6_TARGET])
+
+    assert {unit.source_url for unit in pool} == {A_URL, B_URL}
+    assert all(unit.read_id != "read-c" for unit in pool)
+
+
+@pytest.mark.asyncio
+async def test_an_unscored_source_can_never_be_half_of_the_pair(
+    tracker: Tracker,
+) -> None:
+    """Task 4's allocation: the shared service scores it, or it does not count."""
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing more to read.", "No further source.")],
+        outputs=[
+            ClaimsDraft(claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])]),
+            _select_every_shown_id,
+        ],
+    )
+    agent = _checker(tracker, completer)
+
+    outcome = await _task6_run(agent, _ab_state(score_b=False), tracker)
+
+    (claim,) = outcome.result.claims
+    assert claim.verdict != "verified"
+    assert claim.evidence_status == "source_supported"
+    assert claim.insufficient_reason
+
+
+@pytest.mark.asyncio
+async def test_a_researcher_read_is_reused_without_a_second_body_download(
+    tracker: Tracker,
+) -> None:
+    """Task 3's deferred cross-agent assertion, through the real agent.
+
+    The document was read by the Researcher in an earlier pass. A new Fact
+    Checker target needs it, the shared run read registry still holds the exact
+    body, and the packet is built from that stored read: no second body
+    download, no retrieval loop, and the same read id survives with its
+    original observation time.
+    """
+    state = _ab_state()
+    (stored_id,) = [
+        read_id
+        for read_id, read in state.read_records.items()
+        if read.resolved_url == A_URL
+    ]
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])]),
+            _select_every_shown_id,
+        ]
+    )
+    client = _NoDownloadClient()
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(tracker, http=client),  # type: ignore[arg-type]
+    )
+
+    outcome = await _task6_run(agent, state, tracker)
+
+    assert completer.react_calls == []
+    assert client.calls == 0
+    assert outcome.react.tool_calls == 0
+    assert A_TEXT in _adjudication_body(completer)
+    merged = merge_research_state(state, outcome.state_update)
+    assert stored_id in merged.read_records
+    assert merged.read_records[stored_id].acquisition_kind == "network"
+    assert merged.read_records[stored_id].retrieved_at == CHECK_EXTRACTED_AT
+
+
+def test_changed_content_or_an_added_passage_invalidates_the_fingerprint() -> None:
+    """The fingerprint follows the exact text, so changed evidence is a new packet.
+
+    A claim re-adjudicated over the same two passages shares a fingerprint and
+    is not judged twice; a body that changed, or a passage that was added,
+    produces different units and therefore a different packet — which is what
+    makes "unchanged evidence" a decidable question rather than an assumption.
+    """
+    state = _ab_state()
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+    first = build_adjudication_packet(
+        draft,
+        claim_evidence_pool(state, draft, target_ids=[TASK6_TARGET]),
+        eligibility={},
+        omitted=[],
+    )
+
+    changed_read = _ab_read(
+        "read-a",
+        A_URL,
+        "Lab A report, revised",
+        A_TEXT + " The revised edition restates the figure.",
+    )
+    added = build_evidence_unit(
+        read=changed_read,
+        locator="chunk-0",
+        excerpt=changed_read.passages["chunk-0"],
+        origin="researcher",
+        target_ids=[TASK6_TARGET],
+    )
+    changed_state = state.model_copy(
+        update={
+            "read_records": {
+                read_id: (changed_read if read.resolved_url == A_URL else read)
+                for read_id, read in state.read_records.items()
+            },
+            "evidence_units": {
+                evidence_id: (
+                    added if unit.source_url == A_URL else unit
+                )
+                for evidence_id, unit in state.evidence_units.items()
+            },
+        }
+    )
+    second = build_adjudication_packet(
+        draft,
+        claim_evidence_pool(changed_state, draft, target_ids=[TASK6_TARGET]),
+        eligibility={},
+        omitted=[],
+    )
+
+    assert first.fingerprint != second.fingerprint
+    assert {unit.evidence_id for unit in first.units} != {
+        unit.evidence_id for unit in second.units
+    }
+
+
+@pytest.mark.asyncio
+async def test_one_adjudication_per_claim_identity_per_pass(tracker: Tracker) -> None:
+    """No duplicate adjudication at one fingerprint, and the audit names it."""
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])]),
+            _select_every_shown_id,
+        ]
+    )
+    agent = _checker(tracker, completer)
+
+    outcome = await _task6_run(agent, _ab_state(), tracker)
+
+    assert len(agent._adjudicated_packets) == 1
+    (audit,) = agent._adjudication_audits.values()
+    (fingerprint,) = agent._adjudicated_packets
+    assert audit.packet_fingerprint == fingerprint
+    assert audit.operation == "adjudication_packet"
+    assert audit.status == "completed"
+    assert len(audit.input_ids) == 2
+    assert len(audit.accepted_ids) == 2
+    (claim,) = outcome.result.claims
+    assert claim.verdict == "verified"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: the strict pair rule and full-atom entailment, case by case
+# ---------------------------------------------------------------------------
+
+def _pair_unit(name: str, url: str, text: str) -> EvidenceUnit:
+    return EvidenceUnit(
+        evidence_id=f"ev-{name}",
+        read_id=f"read-{name}",
+        source_url=url,
+        source_title=f"{name} title",
+        locator="p. 1",
+        excerpt=text,
+        target_ids=[TASK6_TARGET],
+        origin="researcher",
+    )
+
+
+def _pair_packet(
+    left: EvidenceEligibility,
+    right: EvidenceEligibility,
+    *,
+    left_text: str = "The operator reported 10 GW in 2025.",
+    right_text: str = "An audit confirms 10 GW in 2025.",
+) -> AdjudicationPacket:
+    left_unit = _pair_unit("left", "https://one.test/a", left_text)
+    right_unit = _pair_unit("right", "https://two.test/b", right_text)
+    return AdjudicationPacket(
+        claim_id="claim-1",
+        claim_text=TASK6_CLAIM,
+        claim_source_urls=["https://one.test/a"],
+        claim_cluster_id="cluster-1",
+        units=[left_unit, right_unit],
+        eligibility={
+            left_unit.evidence_id: left,
+            right_unit.evidence_id: right,
+        },
+        fingerprint="fingerprint-1",
+    )
+
+
+def _eligibility(**overrides: object) -> EvidenceEligibility:
+    fields: dict[str, object] = {
+        "publisher_id": "publisher-one",
+        "work_id": "sha256:one",
+        "origin_group_id": "publisher:publisher-one",
+        "complete_support": True,
+        "read_valid": True,
+        "corroboration_eligible": True,
+    }
+    fields.update(overrides)
+    return EvidenceEligibility(**fields)  # type: ignore[arg-type]
+
+
+def _adjudication(
+    packet: AdjudicationPacket,
+    *,
+    verdict: str = "verified",
+    complete: bool = True,
+    scope: bool = True,
+    independent: bool = True,
+    stance: str = "supports",
+    contradiction_ids: list[str] | None = None,
+) -> tuple[Claim, list[str]]:
+    supports = [
+        unit.evidence_id for unit in packet.units
+    ] if stance == "supports" else []
+    return validate_adjudication(
+        ClaimVerdictDraft(
+            verdict=verdict,
+            confidence=0.9,
+            assessments=[
+                SupportAssessment(
+                    evidence_id=unit.evidence_id,
+                    stance=stance,
+                    complete_support=complete,
+                    scope_compatible=scope,
+                    independent=independent,
+                )
+                for unit in packet.units
+            ],
+            support_ids=supports,
+            contradiction_ids=list(contradiction_ids or []),
+            rationale="Judged over the packet.",
+        ),
+        packet,
+        None,
+    )
+
+
+def _independent_second(**overrides: object) -> EvidenceEligibility:
+    fields: dict[str, object] = {
+        "publisher_id": "publisher-two",
+        "work_id": "sha256:two",
+        "origin_group_id": "publisher:publisher-two",
+    }
+    fields.update(overrides)
+    return _eligibility(**fields)
+
+
+@pytest.mark.parametrize(
+    ("label", "second"),
+    [
+        (
+            "same-work-mirror",
+            _independent_second(work_id="sha256:one"),
+        ),
+        (
+            "same-publisher-different-works",
+            _independent_second(publisher_id="publisher-one"),
+        ),
+        (
+            "shared-statistic-origin",
+            _independent_second(origin_group_id="publisher:publisher-one"),
+        ),
+        (
+            "unknown-origin",
+            _independent_second(origin_group_id=None),
+        ),
+        (
+            "unknown-publisher",
+            _independent_second(publisher_id=None),
+        ),
+        (
+            "unknown-work",
+            _independent_second(work_id=None),
+        ),
+        (
+            "unscored-or-not-independent",
+            _independent_second(corroboration_eligible=False),
+        ),
+        (
+            "partial-read",
+            _independent_second(read_valid=False),
+        ),
+        (
+            "search-only-second-url",
+            _independent_second(publisher_id="", work_id="", origin_group_id=""),
+        ),
+    ],
+)
+def test_no_pair_that_cannot_show_independence_ever_verifies(
+    label: str, second: EvidenceEligibility
+) -> None:
+    """Section 2.2, one failing identity test at a time.
+
+    A mirror, a second work from one publisher, two documents sharing one
+    origin, an unknown identity, an unscored source, and a partial read all
+    fail the strict pair — and a second URL is not a second source.
+    """
+    packet = _pair_packet(_eligibility(), second)
+
+    claim = _adjudication(packet)
+
+    assert claim.verdict == "insufficient_evidence", label
+    assert claim.evidence_status == "source_supported"
+    assert claim.insufficient_reason
+
+
+@pytest.mark.parametrize(
+    ("label", "complete", "scope", "independent"),
+    [
+        ("period-mismatch", True, False, True),
+        ("unit-mismatch", False, True, True),
+        ("scope-mismatch", False, False, True),
+        ("compound-claim-partly-supported", False, True, True),
+        ("quoted-speculation", False, True, True),
+        ("stale-future-current-confusion", True, False, True),
+    ],
+)
+def test_a_support_that_is_not_a_complete_in_scope_support_never_verifies(
+    label: str, complete: bool, scope: bool, independent: bool
+) -> None:
+    """Section 2.1: each passage must support the COMPLETE atomic claim."""
+    packet = _pair_packet(_eligibility(), _independent_second())
+
+    claim = _adjudication(
+        packet, complete=complete, scope=scope, independent=independent
+    )
+
+    assert claim.verdict == "insufficient_evidence", label
+    assert (
+        "no_complete_support" in claim.audit_flags
+        or "single_primary_only" in claim.audit_flags
+    ), label
+
+
+def test_a_faithful_primary_attribution_stays_source_supported() -> None:
+    """One primary source is attribution, not independent corroboration."""
+    packet = _pair_packet(_eligibility(), _independent_second())
+
+    claim = _adjudication(packet, independent=False)
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status == "source_supported"
+    assert "independent" not in claim.insufficient_reason
+    assert claim.insufficient_reason
+
+
+def _contradiction_draft(
+    *,
+    right_complete: bool = True,
+    right_scope: bool = True,
+) -> ClaimVerdictDraft:
+    return ClaimVerdictDraft(
+        verdict="contradicted",
+        confidence=0.9,
+        assessments=[
+            SupportAssessment(
+                evidence_id="ev-left",
+                stance="supports",
+                complete_support=True,
+                scope_compatible=True,
+                independent=True,
+            ),
+            SupportAssessment(
+                evidence_id="ev-right",
+                stance="contradicts",
+                complete_support=right_complete,
+                scope_compatible=right_scope,
+                independent=True,
+            ),
+        ],
+        support_ids=["ev-left"],
+        contradiction_ids=["ev-right"],
+        rationale="The two passages disagree.",
+    )
+
+
+def test_contradictory_evidence_is_retained_with_a_conflict_row() -> None:
+    """A contradiction is recorded, never resolved away."""
+    packet = _pair_packet(_eligibility(), _independent_second())
+
+    claim = validate_adjudication(_contradiction_draft(), packet, None)
+
+    assert claim.verdict == "contradicted"
+    assert claim.contradictions
+    (conflict,) = claim.conflict_assessments
+    assert conflict.claim_cluster_id == "cluster-1"
+    assert conflict.evidence_ids == ["ev-left", "ev-right"]
+    assert conflict.resolution == "unresolved"
+    assert conflict.material is True
+    assert conflict.rationale
+
+
+def test_a_different_period_passage_is_a_scope_difference_not_a_refutation() -> None:
+    """Different-period facts are not automatically contradictions.
+
+    The model called the claim contradicted, and the passage it called a
+    refutation measures a period this contract can see is a different one. That
+    is a reasoned conflict analysis, not a forced "false": the row records the
+    scope difference, is not material, and the verdict is not ``contradicted``.
+    """
+    packet = _pair_packet(_eligibility(), _independent_second())
+
+    claim = validate_adjudication(
+        _contradiction_draft(right_scope=False), packet, None
+    )
+
+    assert claim.verdict != "contradicted"
+    (conflict,) = claim.conflict_assessments
+    assert conflict.resolution == "resolved"
+    assert conflict.same_scope is False
+    assert conflict.material is False
+
+
+def test_a_passage_about_another_question_is_not_a_conflict_at_all() -> None:
+    """Nothing was assessed as refuting the claim, so nothing is a conflict."""
+    packet = _pair_packet(_eligibility(), _independent_second())
+    draft = ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[
+            SupportAssessment(
+                evidence_id="ev-left",
+                stance="supports",
+                complete_support=True,
+                scope_compatible=True,
+                independent=True,
+            ),
+            SupportAssessment(
+                evidence_id="ev-right",
+                stance="unrelated",
+                complete_support=False,
+                scope_compatible=False,
+                independent=True,
+            ),
+        ],
+        support_ids=["ev-left"],
+        contradiction_ids=[],
+        rationale="Only one passage is about this claim.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "contradicted"
+    assert claim.conflict_assessments == []
+    assert claim.verdict == "insufficient_evidence"
+
+
+def test_a_material_unresolved_contradiction_precludes_settled_verified() -> None:
+    """Two complete in-scope passages that disagree cannot settle the claim."""
+    packet = _pair_packet(_eligibility(), _independent_second())
+    draft = ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[
+            SupportAssessment(
+                evidence_id="ev-left",
+                stance="supports",
+                complete_support=True,
+                scope_compatible=True,
+                independent=True,
+            ),
+            SupportAssessment(
+                evidence_id="ev-right",
+                stance="contradicts",
+                complete_support=True,
+                scope_compatible=True,
+                independent=True,
+            ),
+        ],
+        support_ids=["ev-left"],
+        contradiction_ids=["ev-right"],
+        rationale="The sources disagree.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict == "contradicted"
+    assert claim.evidence_status == "contested"
+    (conflict,) = claim.conflict_assessments
+    assert conflict.resolution == "unresolved"
+    assert "model_disagreement" in claim.audit_flags
+
+
+def test_an_id_the_model_was_never_shown_is_not_evidence() -> None:
+    """A selection outside the packet is a local disagreement, not a source."""
+    packet = _pair_packet(_eligibility(), _independent_second())
+    draft = ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[
+            SupportAssessment(
+                evidence_id="ev-invented",
+                stance="supports",
+                complete_support=True,
+                scope_compatible=True,
+                independent=True,
+            )
+        ],
+        support_ids=["ev-invented"],
+        contradiction_ids=[],
+        rationale="Trust me.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict == "insufficient_evidence"
+    assert "evidence_not_admitted" in claim.audit_flags
+    assert all(
+        passage.evidence_id if hasattr(passage, "evidence_id") else True
+        for passage in claim.verification_evidence
+    )
+    assert "ev-invented" not in {
+        passage.source_title for passage in claim.verification_evidence
+    }
+
+
+def test_a_provider_or_schema_failure_is_not_an_evidence_verdict() -> None:
+    """An outage records no verdict, and the enumerated reason names it."""
+    assert provider_failure_reason(ProviderTimeoutError("timed out")) == (
+        "provider_unavailable"
+    )
+    assert (
+        provider_failure_reason(
+            StructuredOutputError(
+                "invalid after one repair",
+                diagnostics=[
+                    {
+                        "attempt": 1,
+                        "field_paths": ("support_ids",),
+                        "category": "missing",
+                    }
+                ],
+            )
+        )
+        == "schema_failed"
+    )
+    assert "schema_failed" in INSUFFICIENT_REASONS
+    assert "provider_unavailable" in INSUFFICIENT_REASONS
+
+
+def test_every_adjudication_reason_is_enumerated() -> None:
+    """The brief's reason list is the enumerated one, and none is blank."""
+    for reason in (
+        "evidence_not_admitted",
+        "handoff_loss",
+        "packet_incomplete",
+        "acquisition_failed",
+        "no_candidate",
+        "capacity_deferred",
+        "identity_unknown",
+        "same_work",
+        "same_publisher",
+        "shared_origin",
+        "no_complete_support",
+        "single_primary_only",
+        "provider_unavailable",
+        "schema_failed",
+        "model_disagreement",
+    ):
+        assert INSUFFICIENT_REASONS.get(reason), reason

@@ -17,8 +17,8 @@ from deep_research.agents.critic import CriticAgent, CritiqueDraft
 from deep_research.agents.fact_checker import (
     ClaimDraft,
     ClaimsDraft,
-    ClaimVerdictDraft,
     FactCheckerAgent,
+    PassageVerdictDraft,
 )
 from deep_research.agents.planner import (
     EvidenceTargetDraft,
@@ -149,7 +149,7 @@ def _fact_checker_case() -> tuple[ResearchState, list, list]:
                     )
                 ]
             ),
-            ClaimVerdictDraft(
+            PassageVerdictDraft(
                 verdict="insufficient_evidence",
                 confidence=0.0,
                 passages=[],

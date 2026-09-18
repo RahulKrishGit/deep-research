@@ -4023,3 +4023,75 @@ async def test_request_budget_records_no_tokens_when_usage_is_malformed() -> Non
     assert snapshot.attempts == 1
     assert snapshot.input_tokens == 0
     assert snapshot.output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_reply_exposes_its_bounded_diagnostics() -> None:
+    """A successful repair must not erase what was wrong with the first reply.
+
+    The provider survives a malformed reply by repairing it once and returning
+    the repaired parse, so the categories and field paths that describe the
+    rejection were previously unreachable — and the historical trace's normal
+    ``stop`` finish reason identified neither. The additive hook records them,
+    bounded, with no rejected text.
+    """
+    extra_key = "undeclared_responses_property"
+    marker = "RESPONSES_REPAIR_MARKER_4C1D"
+    first_payload = _judge_payload(rationale="valid judge rationale")
+    del first_payload["rationale"]
+    first_payload[extra_key] = marker
+    second_payload = _judge_payload(rationale="repaired judge rationale")
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(first_payload)),
+        responses_response(output_text=json.dumps(second_payload)),
+    )
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(),
+        CapturingTracker(),
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with CapturingTracker().session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert result == JudgeVerdict.model_validate(second_payload)
+    records = provider.drain_structured_repairs()
+    assert len(records) == 1
+    record = records[0]
+    assert record.schema_name == JudgeVerdict.__name__
+    assert "rationale" in {
+        path for item in record.diagnostics for path in item.field_paths
+    }
+    assert {item.category for item in record.diagnostics} == {"missing"}
+    # Bounded and provider-output free: no rejected text, no marker.
+    assert marker not in record.model_dump_json()
+    # Drained, not accumulated without limit.
+    assert provider.drain_structured_repairs() == ()
+
+
+@pytest.mark.asyncio
+async def test_a_clean_reply_records_no_repair() -> None:
+    """The positive control: a first-attempt success is not a repair."""
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps(_judge_payload(rationale="clean rationale"))
+        )
+    )
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(),
+        CapturingTracker(),
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with CapturingTracker().session_span("session-1", "judge input"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert provider.drain_structured_repairs() == ()

@@ -21,6 +21,7 @@ from deep_research.agents.evidence import (
     PASSAGE_SELECTION_OPERATION,
     READ_ADMISSION_OPERATION,
     EvidenceContractError,
+    EvidenceEligibility,
     EvidenceIdentityConflict,
     MissingBoundaryManifest,
     TemporalClaim,
@@ -30,6 +31,7 @@ from deep_research.agents.evidence import (
     build_read_record,
     canonical_publisher_id,
     canonical_read_text,
+    eligible_independent_pair,
     excerpt_matches,
     merge_boundary_audits,
     merge_evidence_dispositions,
@@ -2497,3 +2499,142 @@ def test_a_real_leap_day_is_still_a_date() -> None:
     assert temporal.publication_date == "2024-02-29"
     assert temporal.status == "current"
     assert read_dated_tokens(read) == ["2024", "2024-02", "2024-02-29"]
+
+# --------------------------------------------------------------------------
+# Task 6: the strict pair rule an independent corroboration rests on
+# --------------------------------------------------------------------------
+
+
+def test_same_origin_cannot_corroborate_across_publishers() -> None:
+    a = EvidenceEligibility(
+        publisher_id="lab-a", work_id="report-a", origin_group_id="dataset-a",
+        complete_support=True, read_valid=True, corroboration_eligible=True)
+    b = a.model_copy(update={"publisher_id": "news-b", "work_id": "article-b"})
+    assert not eligible_independent_pair(a, b)
+    independent = b.model_copy(update={"origin_group_id": "study-b"})
+    assert eligible_independent_pair(a, independent)
+
+
+def test_the_plan_kernel_is_the_contract() -> None:
+    """Every conjunct of the ruled kernel, one at a time.
+
+    Both sides must be a valid read of a complete support by an eligible
+    contributor, all six identity fields must be known, and publisher, work and
+    origin must be pairwise different. A missing conjunct is not a weaker pair:
+    unknown identity can establish neither sameness nor independence.
+    """
+    complete = EvidenceEligibility(
+        publisher_id="lab-a",
+        work_id="report-a",
+        origin_group_id="study-a",
+        complete_support=True,
+        read_valid=True,
+        corroboration_eligible=True,
+    )
+    other = complete.model_copy(
+        update={
+            "publisher_id": "lab-b",
+            "work_id": "report-b",
+            "origin_group_id": "study-b",
+        }
+    )
+
+    assert eligible_independent_pair(complete, other)
+    # Symmetric: nothing about the answer depends on argument order.
+    assert eligible_independent_pair(other, complete)
+    for field in (
+        "publisher_id",
+        "work_id",
+        "origin_group_id",
+        "complete_support",
+        "read_valid",
+        "corroboration_eligible",
+    ):
+        weakened = complete.model_copy(
+            update={field: "" if field.endswith("_id") else False}
+        )
+        assert not eligible_independent_pair(weakened, other), field
+        assert not eligible_independent_pair(other, weakened), field
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["publisher_id", "work_id", "origin_group_id"],
+)
+def test_an_unknown_identity_field_can_never_be_half_of_the_pair(field: str) -> None:
+    """``None`` is "cannot establish this", never a value that differs."""
+    a = EvidenceEligibility(
+        publisher_id="lab-a",
+        work_id="report-a",
+        origin_group_id="study-a",
+        complete_support=True,
+        read_valid=True,
+        corroboration_eligible=True,
+    )
+    b = a.model_copy(
+        update={
+            "publisher_id": "lab-b",
+            "work_id": "report-b",
+            "origin_group_id": "study-b",
+            field: None,
+        }
+    )
+
+    assert not eligible_independent_pair(a, b)
+    assert not eligible_independent_pair(b, a)
+
+
+def test_a_mirror_and_its_original_are_one_work() -> None:
+    """A mirror is usable first support and never a second, independent one."""
+    original = EvidenceEligibility(
+        publisher_id="lab-a",
+        work_id="report-a",
+        origin_group_id="study-a",
+        complete_support=True,
+        read_valid=True,
+        corroboration_eligible=True,
+    )
+    mirror = original.model_copy(
+        update={"publisher_id": "mirror-b", "origin_group_id": "study-a"}
+    )
+
+    assert not eligible_independent_pair(original, mirror)
+
+
+def test_the_same_publisher_with_different_works_is_not_a_pair() -> None:
+    """Two reports from one issuer are one voice, however different the works."""
+    first = EvidenceEligibility(
+        publisher_id="lab-a",
+        work_id="report-a",
+        origin_group_id="study-a",
+        complete_support=True,
+        read_valid=True,
+        corroboration_eligible=True,
+    )
+    second = first.model_copy(
+        update={"work_id": "report-b", "origin_group_id": "study-b"}
+    )
+
+    assert not eligible_independent_pair(first, second)
+
+
+def test_a_partial_read_is_never_half_of_the_pair() -> None:
+    """Task 1: a partial read is admissible evidence and no identity edge."""
+    full = EvidenceEligibility(
+        publisher_id="lab-a",
+        work_id="report-a",
+        origin_group_id="study-a",
+        complete_support=True,
+        read_valid=True,
+        corroboration_eligible=True,
+    )
+    partial = full.model_copy(
+        update={
+            "publisher_id": "lab-b",
+            "work_id": "report-b",
+            "origin_group_id": "study-b",
+            "read_valid": False,
+        }
+    )
+
+    assert not eligible_independent_pair(full, partial)

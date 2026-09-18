@@ -681,6 +681,27 @@ MAX_CONSUMED_FINDING_FINGERPRINTS = 64
 MAX_CONSUMED_COVERAGE_IDS = 32
 
 
+class ConflictAssessment(ContractModel):
+    """What was done about two candidates that disagree about one claim.
+
+    A conflict is a fact about the evidence, so it is recorded rather than
+    resolved away: a missing row means the conflict was never assessed, which is
+    *unresolved*, never an implicit dismissal. ``resolution`` is the local
+    classification — ``resolved`` only when the disagreement is accounted for by
+    a scope, method, or period difference this contract can see,
+    ``not_comparable`` when the two passages are about different things
+    entirely, and ``unresolved`` otherwise. A material unresolved contradiction
+    precludes settled ``verified`` wording.
+    """
+
+    claim_cluster_id: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+    same_scope: bool = False
+    material: bool = True
+    resolution: Literal["resolved", "unresolved", "not_comparable"] = "unresolved"
+    rationale: str = Field(min_length=1)
+
+
 class Claim(ContractModel):
     claim_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
@@ -732,6 +753,27 @@ class Claim(ContractModel):
     # cluster.
     cluster_id: str | None = None
     cluster_aliases: list[str] = Field(default_factory=list)
+    # Section 2.1's badge, stated separately from the legacy verdict so
+    # "independent corroboration established" and "primary-source attribution"
+    # can never be read as the same thing. ``verified_pair`` is written only
+    # when two selected passages each completely support the claim from
+    # different known publishers, works, and claim-specific origins, with no
+    # unresolved material contradiction; ``source_supported`` is the strictly
+    # weaker "a source said this", which keeps the legacy
+    # ``insufficient_evidence`` verdict beside it. ``None`` for a claim judged
+    # before this contract existed, or with no evidence to classify at all.
+    evidence_status: str | None = None
+    # Every conflict this claim's adjudication had to face, with what was done
+    # about it. Empty means none was recorded, which is not the same as "none
+    # existed" — a consumer that needs that distinction reads the boundary
+    # manifest, not this list.
+    conflict_assessments: list[ConflictAssessment] = Field(default_factory=list)
+    # Every local audit flag this adjudication raised, from the enumerated
+    # vocabulary: the flags may coexist, and recording only the first would
+    # make a claim look diagnosable when three conditions apply. The tokens are
+    # plain strings for the same reason as ``insufficient_reason`` — a snapshot
+    # written by a later release must stay readable.
+    audit_flags: list[str] = Field(default_factory=list)
 
 
 class AtomicProposition(ContractModel):

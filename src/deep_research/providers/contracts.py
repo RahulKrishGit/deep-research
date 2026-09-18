@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from itertools import islice
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, Protocol, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -174,6 +174,49 @@ class StructuredValidationDiagnostic(ProviderContract):
             raise TypeError("field_paths must be a sequence of strings")
         normalized = tuple(_normalize_field_path(item) for item in value)
         return normalized or ("$",)
+
+
+# How many repaired-reply records one provider keeps before the oldest is
+# dropped. A bounded diagnostic hook, never a log.
+MAX_STRUCTURED_REPAIR_RECORDS = 8
+
+
+class StructuredRepairRecord(ProviderContract):
+    """One bounded record of a malformed structured reply that was repaired.
+
+    The provider's one-repair flow returns the repaired parse, so a caller had
+    no way to learn what had been wrong with the first reply: the finish reason
+    of a repaired response is ``stop``, exactly like a clean one, and the
+    rejected payload must never be logged. This record carries only the
+    schema's name and the bounded, provider-output-free diagnostics the local
+    validation already produced — field paths taken from the validation error's
+    own locations, never inferred from the schema's name, and categories from
+    the existing taxonomy.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, frozen=True
+    )
+
+    schema_name: str = Field(min_length=1)
+    packet_fingerprint: str = ""
+    """Whatever opaque token the caller attached to the request, or empty."""
+    diagnostics: tuple[StructuredValidationDiagnostic, ...] = Field(
+        default=(), max_length=_MAX_STRUCTURED_DIAGNOSTICS
+    )
+
+
+class StructuredRepairSource(Protocol):
+    """A provider that can hand back the repairs it performed.
+
+    Structural and optional: a caller that needs the diagnostics asks for this
+    method and degrades to no diagnostics when the provider does not implement
+    it, so no provider is forced to grow a recorder it has no use for.
+    """
+
+    def drain_structured_repairs(self) -> tuple[StructuredRepairRecord, ...]:
+        """Return the repairs recorded since the last drain, and clear them."""
+        ...
 
 
 class ProviderError(RuntimeError):

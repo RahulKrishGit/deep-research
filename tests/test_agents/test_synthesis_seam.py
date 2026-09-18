@@ -18,9 +18,9 @@ from deep_research.agents.critic import CriticAgent, CritiqueDraft
 from deep_research.agents.fact_checker import (
     ClaimDraft,
     ClaimsDraft,
-    ClaimVerdictDraft,
     EvidencePassageDraft,
     FactCheckerAgent,
+    PassageVerdictDraft,
 )
 from deep_research.agents.report import REPORT_SECTIONS
 from deep_research.agents.synthesizer import (
@@ -124,7 +124,7 @@ async def test_verified_claims_become_a_cited_report_the_critic_accepts(
                         )
                     ]
                 ),
-                ClaimVerdictDraft(
+                PassageVerdictDraft(
                     verdict="verified",
                     confidence=0.9,
                     passages=[

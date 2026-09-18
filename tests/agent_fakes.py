@@ -118,7 +118,9 @@ class ScriptedCompleter:
     refuses ``ReActDecision`` outright, so a production agent that went back to
     the prompt-encoded tool protocol fails loudly here. A queued
     ``BaseException`` is raised instead of returned, which is how provider
-    failures are simulated.
+    failures are simulated. A queued callable is called with the request's
+    messages and the requested schema, for a reply that has to read the request
+    it is answering.
     """
 
     def __init__(
@@ -179,6 +181,12 @@ class ScriptedCompleter:
         response = self._outputs.pop(0)
         if isinstance(response, BaseException):
             raise response
+        if callable(response):
+            # A factory, for a reply whose content depends on the request: a
+            # model that selects the evidence ids it was actually shown cannot
+            # be scripted as a fixed object, because the caller does not know
+            # those ids before the request is built.
+            return response(list(messages), schema)
         return response
 
 

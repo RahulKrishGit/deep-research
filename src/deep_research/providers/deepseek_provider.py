@@ -21,6 +21,7 @@ from pydantic import BaseModel, JsonValue, ValidationError
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers.capabilities import resolve_request_settings
 from deep_research.providers.contracts import (
+    MAX_STRUCTURED_REPAIR_RECORDS,
     ChatMessage,
     ChatResult,
     FinishReasonCategory,
@@ -34,6 +35,7 @@ from deep_research.providers.contracts import (
     ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
+    StructuredRepairRecord,
     StructuredValidationDiagnostic,
     ToolDefinition,
 )
@@ -961,7 +963,7 @@ class DeepSeekChatProvider:
         final_error: StructuredOutputError | None = None
         for attempt in (1, 2):
             try:
-                return await self._structured_attempt(
+                parsed = await self._structured_attempt(
                     current_messages,
                     schema,
                     model=effective.model,
@@ -996,6 +998,13 @@ class DeepSeekChatProvider:
                     *current_messages,
                     {"role": "system", "content": repair},
                 ]
+            else:
+                if attempt == 2:
+                    # A repair succeeded, so the categories describing the
+                    # rejected first reply are kept: the response's own finish
+                    # reason is ``stop`` and can no longer identify them.
+                    self._record_structured_repair(schema.__name__, diagnostics)
+                return parsed
 
         if final_error is None:
             raise AssertionError("structured output attempt loop did not return")
@@ -1161,6 +1170,32 @@ class DeepSeekChatProvider:
             raise failure
 
 
+    def _record_structured_repair(
+        self,
+        schema_name: str,
+        diagnostics: Sequence[StructuredValidationDiagnostic],
+    ) -> None:
+        """Keep one bounded record of a malformed reply that was repaired."""
+        records: list[StructuredRepairRecord] | None = getattr(
+            self, "_structured_repairs", None
+        )
+        if records is None:
+            records = []
+            self._structured_repairs = records
+        records.append(
+            StructuredRepairRecord(
+                schema_name=schema_name,
+                diagnostics=tuple(diagnostics),
+            )
+        )
+        del records[: -MAX_STRUCTURED_REPAIR_RECORDS]
+
+    def drain_structured_repairs(self) -> tuple[StructuredRepairRecord, ...]:
+        """Return the repairs recorded since the last drain, and clear them."""
+        records = tuple(getattr(self, "_structured_repairs", ()))
+        self._structured_repairs = []
+        return records
+
 class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
     """DeepSeek structured output through native Responses ``json_schema``.
 
@@ -1177,7 +1212,15 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
     one-repair flow is unchanged, and every failure stays in the existing
     typed taxonomy. Plain completions keep the Chat Completions path; only
     ``complete_structured`` moves.
+
+    A *successful* repair is recorded, bounded, in ``_structured_repairs``: the
+    categories and field paths of the rejected reply are otherwise lost when
+    the repaired parse is returned, and the response's own finish reason is
+    ``stop`` exactly as for a clean first attempt. Nothing but the schema's
+    name and the local validation's own bounded locations is kept — never the
+    rejected text.
     """
+
 
     async def _responses_structured_attempt(
         self,
@@ -1325,7 +1368,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
         final_error: StructuredOutputError | None = None
         for attempt in (1, 2):
             try:
-                return await self._responses_structured_attempt(
+                parsed = await self._responses_structured_attempt(
                     current_messages,
                     schema,
                     model=effective.model,
@@ -1360,6 +1403,13 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                     *current_messages,
                     {"role": "system", "content": repair},
                 ]
+            else:
+                if attempt == 2:
+                    # A repair succeeded, so the categories describing the
+                    # rejected first reply are kept: the response's own finish
+                    # reason is ``stop`` and can no longer identify them.
+                    self._record_structured_repair(schema.__name__, diagnostics)
+                return parsed
 
         if final_error is None:
             raise AssertionError("structured output attempt loop did not return")

@@ -10,14 +10,16 @@ merging state the way the orchestrator will.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from deep_research.agents.fact_checker import (
     ClaimDraft,
     ClaimsDraft,
     ClaimVerdictDraft,
-    EvidencePassageDraft,
     FactCheckerAgent,
+    SupportAssessment,
 )
 from deep_research.agents.researcher import (
     FindingDraft,
@@ -31,6 +33,7 @@ from deep_research.agents.source_evaluator import (
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
+from deep_research.providers import ChatMessage
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     MemorySnapshot,
@@ -77,8 +80,40 @@ def _pad(agent_name: str) -> ScratchpadMemory:
     )
 
 
+def _select_every_shown_passage(
+    messages: list[ChatMessage], schema: type[ClaimVerdictDraft]
+) -> ClaimVerdictDraft:
+    """The adjudication a real model makes over the packet it was shown.
+
+    The ids a packet carries are minted from the reads, so a caller cannot
+    script them as fixed objects: this reads them back out of the request the
+    same way the model does, which also proves the request actually carries
+    exact passages under selectable ids.
+    """
+    body = "\n".join(message.content for message in messages)
+    ids = list(dict.fromkeys(re.findall(r"id: (ev-[0-9a-f]+)", body)))
+    assert ids, body
+    return schema(
+        verdict="verified",
+        confidence=0.85,
+        assessments=[
+            SupportAssessment(
+                evidence_id=evidence_id,
+                stance="supports",
+                complete_support=True,
+                scope_compatible=True,
+                independent=True,
+            )
+            for evidence_id in ids
+        ],
+        support_ids=ids,
+        contradiction_ids=[],
+        rationale="Both passages state the same result.",
+    )
+
+
 @pytest.mark.asyncio
-async def test_findings_flow_through_scoring_into_verified_claims(
+async def test_findings_flow_through_scoring_into_an_adjudicated_claim(
     tracker: Tracker,
 ) -> None:
     state = _state()
@@ -191,24 +226,23 @@ async def test_findings_flow_through_scoring_into_verified_claims(
                         )
                     ]
                 ),
-                ClaimVerdictDraft(
-                    verdict="verified",
-                    confidence=0.85,
-                    passages=[
-                        EvidencePassageDraft(
-                            source_url=INDEPENDENT_URL,
-                            source_title="Independent review",
-                            locator="p. 2",
-                            excerpt=(
-                                "An unrelated review reports the same result."
-                            ),
-                            stance="supports",
+                # The source the verifier itself read is scored through Task
+                # 4's shared service before it may carry a statement, so the
+                # assessment request comes before the verdict request.
+                SourceScoresDraft(
+                    sources=[
+                        SourceScoreDraft(
+                            url=INDEPENDENT_URL,
+                            authority_score=0.8,
+                            recency_score=0.7,
+                            relevance_score=0.9,
+                            rationale="Independent and dated.",
                         )
-                    ],
+                    ]
                 ),
+                _select_every_shown_passage,
             ],
-        ),
-        tracker=tracker,
+        ),        tracker=tracker,
         scratchpad=_pad("fact_checker"),
         tools=fact_checker_tools(
             tracker,
@@ -220,12 +254,28 @@ async def test_findings_flow_through_scoring_into_verified_claims(
         outcome = await checker.run(state)
     state = merge_research_state(state, outcome.state_update)
 
-    # The claim cites only a URL that actually reached state, and its
-    # verdict came from an independent domain.
+    # The claim cites only a URL that actually reached state, and the verdict
+    # is decided from the exact passages of the packet rather than from the
+    # domains they were served from.
+    #
+    # The honest verdict here is NOT ``verified``, and that is the point of the
+    # Task 6 seam: both reads were served the same body, so the two documents
+    # are one work by complete-content hash, and neither read evidences an
+    # issuer, so neither has a known publisher or claim-specific origin. A
+    # second domain is a transport fact, never corroboration (Section 2.1/2.2),
+    # so the claim is attributable and unsettled rather than independently
+    # confirmed.
     assert len(state.verified_claims) == 1
     claim = state.verified_claims[0]
     assert claim.source_urls == [SOURCE_URL]
-    assert claim.verdict == "verified"
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status == "source_supported"
+    assert claim.insufficient_reason == "identity_unknown"
+    assert claim.verification_evidence
+    assert {passage.source_url for passage in claim.verification_evidence} == {
+        SOURCE_URL,
+        INDEPENDENT_URL,
+    }
 
     completed = next(
         event
@@ -233,5 +283,6 @@ async def test_findings_flow_through_scoring_into_verified_claims(
         if event.event_type == "fact_checker.fact_check.completed"
     )
     assert completed.metadata["claim_count"] == 1
-    assert completed.metadata["verified"] == 1
+    assert completed.metadata["verified"] == 0
+    assert completed.metadata["insufficient_evidence"] == 1
     assert completed.metadata["contradiction_count"] == 0
