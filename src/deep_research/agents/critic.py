@@ -470,13 +470,17 @@ def normalize_gap_drafts(values: object) -> object:
 class CritiqueDraft(ContractModel):
     """One model review, before domain validation.
 
-    ``score`` is a plain ``int`` rather than ``CriticScore``: a model that
-    answers 0 or 42 is making a formatting mistake, which ``clamp_score``
-    fixes locally rather than discarding the whole review over.
+    ``score`` is a plain ``int`` bounded to the declared 1-10 range rather than
+    ``CriticScore``, so the *range* is part of the reply contract while the
+    error a caller sees stays a schema failure: a model that answers 0 or 42
+    made a formatting mistake, and the reply is refused and re-asked once
+    rather than clamped into a number nobody wrote. ``gaps`` is bounded to the
+    same limit the normalizer applies, so an overflowing reply is refused
+    instead of having its tail silently dropped before routing.
     """
 
-    score: int
-    gaps: list[CritiqueGapDraft]
+    score: int = Field(ge=MIN_CRITIC_SCORE, le=MAX_CRITIC_SCORE)
+    gaps: list[CritiqueGapDraft] = Field(max_length=DEFAULT_MAX_NOTES)
     unsupported_claims: list[str]
     recommended_queries: list[str]
     rationale: str
@@ -1161,7 +1165,13 @@ def _render_answer_contract(contract: AnswerContract | None) -> str:
 
 
 def clamp_score(value: int) -> int:
-    """Pin a model score into the ``CriticScore`` range."""
+    """Pin a model score into the ``CriticScore`` range.
+
+    Retained as part of the exported agent helper surface; the review path no
+    longer calls it. ``CritiqueDraft`` refuses an out-of-range score and the
+    reply is repaired, because pinning a provider value into the band turns a
+    malformed review into an acceptance.
+    """
     return min(MAX_CRITIC_SCORE, max(MIN_CRITIC_SCORE, int(value)))
 
 
@@ -1213,7 +1223,11 @@ def normalize_gaps(
 
     A gap the contract still refuses raises ``CritiqueContractViolation``,
     which is the agent's cue to repair it exactly as it repairs a malformed
-    reply; nothing here silently drops or rewrites a defect.
+    reply; nothing here silently drops or rewrites a defect. The ``limit`` is
+    the same bound: a review carrying more than ``limit`` distinct gaps is
+    refused rather than cut, because the tail of a gap list is where the one
+    material defect can sit behind ten editorial ones, and the cut left no
+    trace in the critique for a later reader to notice.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -1347,7 +1361,15 @@ def normalize_gaps(
             gaps[previous] = gap.model_copy(
                 update={"gap_id": incumbent.gap_id}
             )
-    return gaps[:limit]
+    if len(gaps) > limit:
+        # Defence in depth for a draft that never went through the schema: the
+        # bound has to refuse the reply, never trim it, or the material gap
+        # behind a run of minor ones disappears without a record.
+        raise CritiqueContractViolation(
+            f"review contains more than {limit} distinct gaps",
+            gap_index=limit,
+        )
+    return gaps
 
 
 def _severity_rank(severity: str) -> int:
@@ -1447,7 +1469,7 @@ def build_critique(
     queries, de-duplicated in order: a query a gap carries is a query the next
     pass must run, and the two lists must not be able to disagree about it.
     """
-    score = clamp_score(draft.score)
+    score = draft.score
     gaps = normalize_gaps(
         draft.gaps, known_coverage_ids=known_coverage_ids, packet=packet
     )

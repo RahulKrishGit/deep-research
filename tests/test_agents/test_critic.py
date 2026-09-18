@@ -20,6 +20,7 @@ from deep_research.agents.critic import (
     CRITIC_MAX_EVIDENCE_UNITS,
     CRITIC_REPORT_CHARS,
     CRITIQUE_INSTRUCTION,
+    DEFAULT_MAX_NOTES,
     MAX_CRITIC_SCORE,
     MIN_CRITIC_SCORE,
     ROUTING_REASONS,
@@ -32,7 +33,6 @@ from deep_research.agents.critic import (
     CritiqueTask,
     build_critic_packet,
     build_critique,
-    clamp_score,
     critic_packet_fingerprint,
     critique_messages,
     fallback_critique,
@@ -700,15 +700,43 @@ async def test_the_review_budget_follows_the_agent_configuration(
     assert completer.budgets[review_index] == 16384
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [(-4, 1), (0, 1), (1, 1), (7, 7), (10, 10), (99, 10)],
-)
-def test_scores_are_pinned_into_the_critic_score_range(
-    raw: int, expected: int
+@pytest.mark.parametrize("score", (-4, 0, 11, 99))
+def test_a_provider_score_outside_the_critic_range_is_invalid(
+    score: int,
 ) -> None:
-    assert clamp_score(raw) == expected
-    assert MIN_CRITIC_SCORE <= clamp_score(raw) <= MAX_CRITIC_SCORE
+    """C3: a score outside 1-10 is a malformed reply, not a value to pin.
+
+    ``clamp_score`` turned ``{"score": 99}`` into 10, so a number the model
+    never wrote could carry a review to ``accepted_quality``. The range is part
+    of the reply contract now, and an out-of-range reply takes the same one
+    repair as any other malformed one.
+    """
+    with pytest.raises(ValidationError):
+        CritiqueDraft.model_validate(
+            {
+                "score": score,
+                "gaps": [],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "rationale": "Review.",
+            }
+        )
+
+
+@pytest.mark.parametrize("score", (MIN_CRITIC_SCORE, 7, MAX_CRITIC_SCORE))
+def test_a_provider_score_inside_the_critic_range_is_kept(score: int) -> None:
+    """The other side of C3's bound: an in-band score is the score used."""
+    draft = CritiqueDraft.model_validate(
+        {
+            "score": score,
+            "gaps": [],
+            "unsupported_claims": [],
+            "recommended_queries": [],
+            "rationale": "Review.",
+        }
+    )
+
+    assert draft.score == score
 
 
 def test_notes_are_collapsed_deduplicated_and_capped() -> None:
@@ -777,10 +805,17 @@ def test_a_missing_report_continues_while_budget_remains() -> None:
     ) == (True, "missing_report")
 
 
-def test_a_critique_is_validated_clamped_and_routed() -> None:
+def test_a_critique_is_validated_and_routed() -> None:
+    """An in-band score reaches the critique verbatim, with the route it implies.
+
+    ``score=99`` used to be this test's subject: the draft accepted any integer
+    and ``build_critique`` pinned it into the band. That bound is part of the
+    reply contract now (see the boundary tests above), so what is left here is
+    that a legal score survives into the critique unchanged.
+    """
     critique, reason = build_critique(
         _draft(
-            score=99,
+            score=9,
             gaps=["  No cost data. ", "No cost data."],
             queries=["qec cost 2025"],
         ),
@@ -789,7 +824,7 @@ def test_a_critique_is_validated_clamped_and_routed() -> None:
     )
 
     assert isinstance(critique, Critique)
-    assert critique.score == MAX_CRITIC_SCORE
+    assert critique.score == 9
     assert [gap.problem for gap in critique.gaps] == ["No cost data."]
     assert critique.recommended_queries == ["qec cost 2025"]
     assert critique.should_continue is True
@@ -2727,6 +2762,194 @@ async def test_a_blank_problem_repeated_exhausts_into_a_failed_review(
     assert outcome.result.gaps == []
     assert outcome.result.should_continue is False
     assert outcome.state_update["events"][-1].metadata["reason"] == "review_failed"
+
+
+def _impossible_score_review(score: int) -> dict[str, object]:
+    """A reply whose only defect is a score outside the declared 1-10 range."""
+    return {
+        "score": score,
+        "gaps": [],
+        "unsupported_claims": [],
+        "recommended_queries": [],
+        "rationale": "Complete.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_range_provider_score_is_repaired(
+    tracker: Tracker,
+) -> None:
+    """C3: ``{"score": 99}`` is refused and re-asked, never pinned to 10.
+
+    The reply is otherwise well formed and the report is fine, so the old
+    ``clamp_score`` produced a clean review scoring ``MAX_CRITIC_SCORE`` — an
+    acceptance built on a number nobody wrote. The range is a schema bound now,
+    so this is one repair against the same packet, and the repaired review is
+    the review that counts.
+    """
+    completer = ScriptedCompleter(
+        outputs=[_impossible_score_review(99), _draft(score=8)]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "reviewed"
+    assert outcome.result.score == 8
+    repaired = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_repaired"
+    )
+    assert repaired.details["schema_field_paths"] == ["score"]
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_range_score_repeated_exhausts_into_a_failed_review(
+    tracker: Tracker,
+) -> None:
+    """Two impossible scores are no review at all, never a pinned acceptance.
+
+    The second reply scores below the range rather than above it, so the run
+    fails on the bound itself and not on one repeated literal.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            _impossible_score_review(99),
+            _impossible_score_review(-4),
+        ]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    assert outcome.result.gaps == []
+    assert outcome.result.should_continue is False
+    assert outcome.state_update["events"][-1].metadata["reason"] == "review_failed"
+
+
+def _overflowing_gaps() -> list[dict[str, object]]:
+    """Ten minor editorial notes in front of one material acquisition gap.
+
+    Every gap is contract-valid and distinct, so the only thing wrong with a
+    reply built from them is the count.
+    """
+    minor = [
+        {
+            "statement_ids": ["S001"],
+            "kind": "presentation",
+            "severity": "minor",
+            "repair_action": "synthesize",
+            "problem": f"Editorial issue {index}.",
+            "recommended_queries": [],
+        }
+        for index in range(DEFAULT_MAX_NOTES)
+    ]
+    major = {
+        "target_ids": [_PACKET_TARGET_ID],
+        "kind": "acquisition",
+        "severity": "major",
+        "repair_action": "acquire",
+        "problem": "The central target lacks required evidence.",
+        "recommended_queries": ["qec independent evidence"],
+    }
+    return [*minor, major]
+
+
+def _overflowing_review() -> dict[str, object]:
+    """The provider-shaped reply that carries those gaps."""
+    return {
+        "score": 9,
+        "gaps": _overflowing_gaps(),
+        "unsupported_claims": [],
+        "recommended_queries": [],
+        "rationale": "Mostly strong.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_overflowing_gap_list_is_repaired_not_truncated(
+    tracker: Tracker,
+) -> None:
+    """C4: an eleventh gap is refused, never dropped before routing.
+
+    ``normalize_gaps`` ended with ``gaps[:DEFAULT_MAX_NOTES]``, so ten minor
+    editorial notes in front of one major acquisition gap silently lost the
+    material defect — and the cut left no trace in the critique, so a score of
+    9 accepted a report whose central obligation was unmet. The bound is part
+    of the reply contract now, and the overflow takes the repair path.
+    """
+    completer = ScriptedCompleter(
+        outputs=[_overflowing_review(), _draft(score=8)]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "reviewed"
+    repaired = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_repaired"
+    )
+    assert repaired.details["schema_field_paths"] == ["gaps"]
+
+
+@pytest.mark.asyncio
+async def test_an_overflowing_gap_list_repeated_exhausts_into_a_failed_review(
+    tracker: Tracker,
+) -> None:
+    """Two overflowing replies are no review at all, never a truncated one."""
+    completer = ScriptedCompleter(outputs=[_overflowing_review()] * 2)
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    assert outcome.result.gaps == []
+    assert outcome.result.should_continue is False
+    assert outcome.state_update["events"][-1].metadata["reason"] == "review_failed"
+
+
+def test_a_draft_that_bypassed_the_schema_cannot_hide_an_overflow() -> None:
+    """C4's second boundary: the normalizer refuses what the schema would have.
+
+    A transport that hands over constructed objects, or a caller that built a
+    draft without validation, never runs the ``max_length`` check — so the bound
+    is enforced again where the gaps are actually made. Each gap here is valid
+    on its own; the reply is refused for its count, and refused rather than cut,
+    because the tail of the list is where the material defect sits.
+    """
+    drafts = [
+        CritiqueGapDraft.model_validate(gap) for gap in _overflowing_gaps()
+    ]
+    draft = CritiqueDraft.model_construct(
+        score=9,
+        gaps=drafts,
+        unsupported_claims=[],
+        recommended_queries=[],
+        rationale="Mostly strong.",
+    )
+
+    with pytest.raises(CritiqueContractViolation, match="more than 10"):
+        build_critique(draft, iteration=0, max_iterations=3)
 
 
 @pytest.mark.asyncio

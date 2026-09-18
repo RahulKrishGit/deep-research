@@ -38,7 +38,14 @@ from deep_research.utils.config import (
 )
 from deep_research.utils.types import ContractModel, JsonValue
 
-EVALUATION_PACKAGE_VERSION = "1.0.0"
+EVALUATION_PACKAGE_VERSION = "1.1.0"
+"""The evaluator package version stamped into every artifact it writes.
+
+Bumped ``1.0.0`` → ``1.1.0`` with Task 8: the evaluators read typed gaps now
+and parse the legacy string-gap shape into them, so a score this package
+produces is not the score 1.0.0 produced. Stamping the version is what keeps
+"the new numbers are the honest ones" checkable rather than assumed.
+"""
 
 # The local case registry does not exist yet (Task 9 owns the canonical
 # public ``cases.CASE_REGISTRY_VERSION``); both are pinned at 1 by the plan.

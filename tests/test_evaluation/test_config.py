@@ -216,7 +216,15 @@ from deep_research.utils.config import (
 # unresolved scope is refused instead of globalized, and the packet fingerprint
 # is computed from the canonical packet. No prompt string changed at all this
 # round, which is why the five moved in neither direction.
-CRITIC_PROMPT_FINGERPRINT = "98c2864fd56c"
+# Task 8's fix round 3 moved it alone once more, ``98c2864fd56c`` ->
+# ``6da1052f44b6``: ``CritiqueDraft`` bounds ``score`` to 1-10 and ``gaps`` to
+# ``DEFAULT_MAX_NOTES``, and ``build_critique`` uses the provider's score
+# verbatim, so the structured-output contract the provider is held to changed
+# (the schema it is sent now carries ``minimum``, ``maximum`` and ``maxItems``)
+# and the module that renders the review request changed with it. ``clamp_score``
+# is no longer called by the review path. ``agents.prompts`` is untouched, so
+# the other five moved in neither direction.
+CRITIC_PROMPT_FINGERPRINT = "6da1052f44b6"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -548,7 +556,10 @@ CRITIC_PROMPT_FINGERPRINT = "98c2864fd56c"
 #     closing bracket is no longer an opener, and the abbreviation list
 #     completed). The other five are unchanged by all three rounds: no shared
 #     prompt string was edited.
-#   critic ``15754f64fa12`` -> ``3f0341751794`` -> ``98c2864fd56c``
+#   critic ``15754f64fa12`` -> ``3f0341751794`` -> ``98c2864fd56c`` ->
+#     ``6da1052f44b6`` in fix round 3 (the score and gap bounds became part of
+#     the reply contract, so an out-of-range or overflowing reply is repaired
+#     instead of clamped or truncated)
 # Task 8 moved all six. The critic's own module changed (the tool path removed,
 # the packet and its fingerprint added, the request sections rebuilt, and the
 # repair path's failure handling split between schema and provider causes), and
@@ -560,7 +571,8 @@ CRITIC_PROMPT_FINGERPRINT = "98c2864fd56c"
 #   source_evaluator ``33a71376d3e6`` -> ``6c12c0fffc92``
 #   fact_checker ``f1ccaf38ff02`` -> ``7695ca2d0524``
 #   synthesizer ``17bc15e0131b`` -> ``0ec21503cc00``
-#   critic ``3f0341751794`` -> ``98c2864fd56c``
+#   critic ``3f0341751794`` -> ``98c2864fd56c``, -> ``6da1052f44b6`` in fix
+#     round 3 (no prompt string was edited: the reply contract's bounds moved)
 # The Judge pin did not move: no judge prompt or template changed.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "02d66a4a2d15",
@@ -568,7 +580,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "7695ca2d0524",
     "synthesizer": "0ec21503cc00",
-    "critic": "98c2864fd56c",
+    "critic": "6da1052f44b6",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

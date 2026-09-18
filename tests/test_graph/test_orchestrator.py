@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
-from deep_research.agents.critic import fallback_critique
+from deep_research.agents.critic import CriticAgent, fallback_critique
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.synthesizer import SynthesizerAgent
+from deep_research.cli import EXIT_GRAPH_FAILED
+from deep_research.cli import main as cli_main
 from deep_research.graph.nodes import ReportPublisher
 from deep_research.graph.orchestrator import (
     AGENT_NODE_ORDER,
+    GraphRun,
     build_checkpointer,
     compile_research_graph,
     session_config,
@@ -22,12 +27,16 @@ from deep_research.graph.state import (
     NODE_NAMES,
     REFINE_NODE,
     graph_quality_status,
+    graph_route,
     graph_status,
     initial_graph_state,
     is_halted,
     load_state,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import Tracker
+from deep_research.providers import ProviderResponseError
+from deep_research.runtime.outcome import build_outcome
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
@@ -50,12 +59,14 @@ from tests.graph_fakes import (
 )
 from tests.research_fakes import synthesizer_tools
 
+QUESTION = "How mature is quantum error correction?"
+
 
 async def _run(agents, *, max_iterations: int = 3) -> ResearchState:
     graph = compile_research_graph(agents)
     channel = initial_graph_state(
         session_id="session-1",
-        question="How mature is quantum error correction?",
+        question=QUESTION,
         max_iterations=max_iterations,
     )
     result = await graph.ainvoke(
@@ -167,6 +178,80 @@ async def test_a_provider_outage_never_publishes_an_accepted_report() -> None:
     assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
     assert state.report_path is not None
     assert publisher.memory_writes == 0
+
+
+@pytest.mark.asyncio
+async def test_a_real_critic_provider_outage_fails_closed_through_cli(
+    tracker: Tracker,
+) -> None:
+    """The outage path end to end: the real Critic, the graph, and the CLI.
+
+    Everything else here scripts the Critic's output, so the branch Critical 1
+    lives in — the agent's own ``except ProviderError`` — was never driven
+    through the graph: one test drove a real ``CriticAgent`` outage, another
+    drove the compiled graph with the fallback critique wrapped in a fake
+    Critic, and neither connected them. Here the provider really fails inside
+    the real agent, the fallback critique it produces is what the graph routes
+    on, and the run must end ``critique_failed``/``failed``/``partial`` with
+    nothing remembered and the CLI's graph-failure exit code.
+    """
+    provider = ScriptedCompleter(
+        outputs=[
+            ProviderResponseError(
+                "provider unavailable",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+                failure_origin="sdk",
+            )
+        ]
+    )
+    critic = CriticAgent(
+        provider=provider,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="critic", max_entries=20
+        ),
+        tools=(),
+        config=AgentRuntimeConfig(max_iterations=3, tool_budget=0),
+    )
+    publisher = FakePublisher()
+    agents = fake_research_agents(
+        synthesizer=FakeAgent(
+            "synthesizer", [], update_factory=fake_synthesis_update
+        ),
+        critic=critic,
+        publisher=publisher,
+    )
+
+    # Production's ``run_research_graph`` opens this span around
+    # ``graph.ainvoke``: a real agent's child spans raise without it, which is
+    # exactly how this test differs from the ones driving scripted agents.
+    async with tracker.session_span("session-1", QUESTION):
+        state = await _run(agents)
+
+    assert provider.calls[0][0] == "CritiqueDraft"
+    assert state.critique is not None
+    assert state.critique.review_status == "failed"
+    assert graph_route(state) == ("finalize", "critique_failed")
+    assert graph_status(state) == "failed"
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+    assert publisher.memory_writes == 0
+
+    outcome = build_outcome(
+        GraphRun(
+            session_id="session-1",
+            state=state,
+            status=graph_status(state),
+            trace_url=None,
+        ),
+        metrics=(),
+    )
+
+    assert (
+        cli_main([QUESTION], runner=lambda **_: outcome, stream=io.StringIO())
+        == EXIT_GRAPH_FAILED
+    )
 
 
 def test_the_agent_node_order_matches_the_designed_sequence() -> None:
