@@ -495,7 +495,7 @@ CRITIC_PROMPT_FINGERPRINT = "15754f64fa12"
 # obligations it reached for, and the relation vocabulary was narrowed so a
 # level and a delta never compare equal. Module-source moves with no prompt
 # string edited; the other five values and the Judge pin are unchanged.
-# Task 6 moved it again, ``fef54f3dfdcb`` -> ``a4d08b5ab689``: adjudication runs
+# Task 6 moved it again, ``fef54f3dfdcb`` -> ``490342ba8ac0``: adjudication runs
 # over a claim-specific packet of evidence ids instead of free-form citation
 # URLs, the strict pair rule and the conflict rows live in the module, and the
 # legacy passage-shaped verdict contract is now ``PassageVerdictDraft``. Again a
@@ -505,7 +505,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "599c78243c9e",
     "researcher": "fdc2bc2e8d48",
     "source_evaluator": "674593415225",
-    "fact_checker": "a4d08b5ab689",
+    "fact_checker": "490342ba8ac0",
     "synthesizer": "cccb6dc91c6e",
     "critic": "15754f64fa12",
 }

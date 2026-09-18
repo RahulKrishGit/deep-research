@@ -781,6 +781,16 @@ class Claim(ContractModel):
     # plain strings for the same reason as ``insufficient_reason`` — a snapshot
     # written by a later release must stay readable.
     audit_flags: list[str] = Field(default_factory=list)
+    # The exact evidence ids behind ``verification_evidence``, keyed by the
+    # stance each was selected with. Section 2.4's boundary manifest has to be
+    # joinable end to end, and a passage can be joined by its id but never by
+    # its excerpt: two units of a mirror pair carry identical text, so an
+    # excerpt join reports both of them for one selection.
+    evidence_selection: dict[str, str] = Field(default_factory=dict)
+    # Selections local validation refused — an id that was not in the packet, a
+    # stance that contradicted the list it was selected in, a duplicate. Without
+    # these the manifest cannot tell "not selected" from "selected and refused".
+    refused_evidence_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_verified_is_backed_by_a_pair(self) -> Claim:
