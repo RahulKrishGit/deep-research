@@ -32,6 +32,7 @@ from deep_research.agents.report import (
 )
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import (
+    _COMMON_ABBREVIATIONS,
     DEFAULT_MEMORY_CONFIDENCE,
     STATEMENT_DISPOSITIONS,
     SYNTHESIS_OPEN_QUESTIONS_CHARS,
@@ -1810,6 +1811,78 @@ def test_an_answer_row_label_the_evidence_carries_is_published() -> None:
     assert row.statement is row.cells[-1]
     assert row.statement is not None
     assert row.statement.text.startswith("Logical error rates")
+
+
+def test_an_answer_row_period_the_evidence_does_not_carry_is_repaired() -> None:
+    """A Period cell is a figure; the cell check attests figures, not only words.
+
+    ``unattested_words`` alone leaves a cell with no words in it attested
+    vacuously, so a fabricated period would publish as an attributed statement
+    carrying the row's evidence ids — a date the reader has no reason to
+    distrust, attached to evidence that never states it.
+    """
+    for subject in ("2031", "1999", "2031-2040", "12,000"):
+        composition, rejected = _compose_comparison(subject=subject)
+
+        row = composition.answer_rows[0]
+        assert row.cells[0].text == "not stated", subject
+        assert row.cells[0].mode == "context", subject
+        assert "answer row 1 subject: no evidence for this cell" in rejected
+
+
+def test_an_evidence_spelled_out_abbreviation_is_not_refused() -> None:
+    """The domain writes "EVs" where its evidence writes "electric vehicles"."""
+    corpus = (
+        "electric vehicles and solar photovoltaic output rose; carbon dioxide "
+        "fell; gross domestic product grew"
+    )
+    for text in (
+        "Sales of EVs rose.",
+        "Solar PV output rose.",
+        "Emissions of CO2 fell.",
+        "Growth in GDP continued.",
+        "Use of AI grew.",
+        "It is OK.",
+    ):
+        assert unattested_atoms(text, corpus) == [], text
+
+
+def test_a_place_acronym_is_still_refused_after_the_abbreviation_carve_out() -> None:
+    """The carve-out is for technology and quantities, not for places.
+
+    "UK", "EU", "US" and "IEA" stay out of the list on purpose: catching a
+    place or an agency the evidence never names is what the acronym check is
+    for.
+    """
+    for text, expected in (
+        ("Deployment grew in the UK.", ["UK"]),
+        ("Deployment grew in the EU.", ["EU"]),
+        ("Output rose in the US.", ["US"]),
+        ("Output rose per IEA.", ["IEA"]),
+    ):
+        assert unattested_atoms(text, "output rose") == expected, text
+    for abbreviation in ("uk", "eu", "us", "iea"):
+        assert abbreviation not in _COMMON_ABBREVIATIONS
+
+
+def test_a_capitalised_opener_after_markup_is_still_an_opener() -> None:
+    """A bullet, a quote and a bracket open a sentence too.
+
+    Model prose arrives with markup in front of it, and a word capitalised
+    after a bullet is capitalised by position exactly as it is after a full
+    stop.
+    """
+    for text in (
+        "- California added capacity.",
+        '"California added capacity."',
+        "(California added capacity.)",
+        "- Charge for driving inside the zone.",
+    ):
+        assert unattested_atoms(text, "output rose") == [], text
+    # A name that is not at an opener is still checked.
+    assert unattested_atoms("- Output rose in California.", "output rose") == [
+        "California"
+    ]
 
 
 def _compose_comparison(

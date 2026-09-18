@@ -517,18 +517,20 @@ CRITIC_PROMPT_FINGERPRINT = "3f0341751794"
 #   researcher ``fdc2bc2e8d48`` -> ``b4f9d21a34b4``
 #   source_evaluator ``674593415225`` -> ``33a71376d3e6``
 #   fact_checker ``490342ba8ac0`` -> ``f1ccaf38ff02``
-#   synthesizer ``cccb6dc91c6e`` -> ``37b86926ec09``, then -> ``059540bede20``
-#     in the Task 7 fix round (whole-token corpus and cell matching, the
-#     acronym-aware name check, attested answer-row labels, and the shared
-#     statement derivation). The other five are unchanged by that round: the
-#     fix round edited no shared prompt string.
+#   synthesizer ``cccb6dc91c6e`` -> ``37b86926ec09``, -> ``059540bede20`` in the
+#     Task 7 fix round (whole-token corpus and cell matching, the acronym-aware
+#     name check, attested answer-row labels, and the shared statement
+#     derivation), then -> ``6bd12778d7fe`` in fix round 2 (cells attest figures
+#     and names as well as words, the dead cluster-resolver copy removed, and
+#     the auditable common-abbreviation carve-out). The other five are unchanged
+#     by both rounds: no shared prompt string was edited.
 #   critic ``15754f64fa12`` -> ``3f0341751794``
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "da4407dd9d39",
     "researcher": "b4f9d21a34b4",
     "source_evaluator": "33a71376d3e6",
     "fact_checker": "f1ccaf38ff02",
-    "synthesizer": "059540bede20",
+    "synthesizer": "6bd12778d7fe",
     "critic": "3f0341751794",
 }
 

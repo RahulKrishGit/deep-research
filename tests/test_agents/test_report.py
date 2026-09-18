@@ -57,6 +57,7 @@ from deep_research.agents.report import (
     validate_report_statements,
 )
 from deep_research.utils.types import (
+    EVIDENCE_BADGE_LABELS,
     AtomicProposition,
     Claim,
     ClaimCluster,
@@ -2141,6 +2142,23 @@ def test_an_unknown_answer_form_falls_back_to_the_form_its_heading_names() -> No
     assert reader_sections("estimate")[1] == DEFAULT_ANSWER_HEADING
     assert DEFAULT_ANSWER_HEADING in reader
     assert "(no constraint was ranked for this pass)" in reader
+
+
+def test_every_evidence_badge_has_a_reader_label() -> None:
+    """A badge without a label would print its raw enum string to the reader.
+
+    ``_evidence_strength`` falls back to the badge itself, so adding a value
+    to ``Claim.evidence_status`` without adding it to ``EVIDENCE_BADGE_LABELS``
+    is the one way this surface can regress silently.
+    """
+    union = get_args(Claim.model_fields["evidence_status"].annotation)
+    badges = {value for member in union for value in get_args(member)}
+
+    assert badges
+    assert badges <= set(EVIDENCE_BADGE_LABELS)
+    # The no-badge case is a label too: a claim judged with nothing to
+    # classify is not the same as a claim with no row.
+    assert "" in EVIDENCE_BADGE_LABELS
 
 
 # --- helpers ------------------------------------------------------------------

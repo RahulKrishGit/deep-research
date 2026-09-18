@@ -141,7 +141,13 @@ _PROPER_NOUN_PATTERN = re.compile(r"\b[A-Z][A-Za-z][\w'-]*\b")
 # at the start of one, and the four-character floor that used to hide it was a
 # length rule standing in for a case rule.
 _ACRONYM_PATTERN = re.compile(r"[A-Z]{2,}")
-_SENTENCE_INITIAL = re.compile(r"(?:^|[.!?]\s+)$")
+# What opens a sentence, for the position exemption: the start of the text, a
+# terminator, or the markup model prose arrives in — a bullet, a quote, a
+# bracket. A capitalised word after any of those is still capitalised by
+# position.
+_SENTENCE_INITIAL = re.compile(
+    r"(?:^|[.!?:]\s+|[-*\u2013\u2014>\u201c\u2018\"'(\[)]\s*)$"
+)
 # The operation words a derivation has to name to count as one: a recorded
 # basis states premises *and* what was done with them.
 _DERIVATION_MARKERS = (
@@ -1340,7 +1346,9 @@ def unattested_atoms(text: str, corpus: str) -> list[str]:
         # A unit is not a name: "GW" in a statement whose evidence spells out
         # "gigawatts" is an abbreviation of the same measured quantity, and the
         # figure it belongs to has already been checked against that evidence.
-        if folded in _UNIT_WORDS:
+        # A common abbreviation is not a name for the same reason: the domain
+        # writes "EVs" where its evidence writes "electric vehicles".
+        if folded in _UNIT_WORDS or folded in _COMMON_ABBREVIATIONS:
             continue
         if folded not in tokens and token not in found:
             found.append(token)
@@ -1375,35 +1383,6 @@ def _unrecorded_evidence_claim(text: str, failures: Sequence[str]) -> str:
             continue
         return label
     return ""
-
-
-def _clusters_for_claims(
-    claims: Sequence[Claim],
-    clusters: Mapping[str, ClaimCluster],
-) -> list[str]:
-    """The cluster ids the named claims belong to, in registry order.
-
-    Resolved in both directions on purpose: a claim records the cluster it
-    joined, and a cluster records the claims it absorbed. A refinement that
-    persisted only one side still resolves, and a merge that absorbed an
-    alias still resolves through it.
-    """
-    member_ids = {claim.claim_id for claim in claims}
-    resolved: list[str] = []
-    for claim in claims:
-        for candidate in (claim.cluster_id, *claim.cluster_aliases):
-            if (
-                candidate
-                and candidate in clusters
-                and candidate not in resolved
-            ):
-                resolved.append(candidate)
-    for cluster_id, cluster in clusters.items():
-        if cluster_id in resolved:
-            continue
-        if member_ids & set(cluster.member_claim_ids):
-            resolved.append(cluster_id)
-    return resolved
 
 
 def _statement_for_claims(
@@ -1649,6 +1628,12 @@ def _build_cell(
     cell", never as prose to attest. The returned statement is always present,
     so the reader can see that the cell was considered and what happened to
     it.
+
+    Words *and* atoms are checked. ``unattested_words`` alone leaves a cell
+    with no words in it — a Period, a date, a bare figure — attested
+    vacuously, and a fabricated period would then publish as an attributed
+    statement with the row's evidence ids attached, which is worse than the
+    context label it replaced: it would read as a checked fact.
     """
     written = _optional_text(text, limit=_CELL_CHARS)
     if written.casefold().strip(" .") == "not stated":
@@ -1666,7 +1651,10 @@ def _build_cell(
         if claim.claim_id in set(row.claim_ids)
     ]
     evidence_text = _cited_evidence(selected, context) or context.corpus
-    unattested = unattested_words(written, evidence_text)
+    unattested = [
+        *unattested_words(written, evidence_text),
+        *unattested_atoms(written, evidence_text),
+    ]
     if unattested:
         context.note(
             "unsupported_cell",
@@ -1881,6 +1869,21 @@ _UNIT_WORDS = frozenset(
         "dollars", "euros", "pounds", "percent", "%", "pct", "tonnes",
         "tons", "jobs", "units", "seconds", "minutes", "hours", "days",
         "weeks", "months", "years", "people", "households", "vehicles",
+    }
+)
+
+# Abbreviations that name a technology, a quantity or a common noun rather
+# than a place or an organisation. Auditable on purpose: an entry here is a
+# token the name check will never refuse, so each one has to be defensible —
+# and the domain's own vocabulary (EVs, PV, CO2, GDP, HVDC, PPAs) is written
+# this way constantly, while the evidence spells it out.
+#
+# "UK", "EU", "US" and "IEA" are deliberately absent: catching a place or an
+# agency the evidence never names is what the acronym check is for.
+_COMMON_ABBREVIATIONS = frozenset(
+    {
+        "ai", "co2", "ch4", "ev", "evs", "pv", "gdp", "ghg", "lng", "r&d",
+        "ok", "it", "ict", "iot", "ml", "hvdc", "ac", "dc", "ppa", "ppas",
     }
 )
 
