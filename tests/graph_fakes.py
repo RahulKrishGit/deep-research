@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import JsonValue
 
 from deep_research.agents.base import AgentRun
+from deep_research.agents.critic import failed_critique
 from deep_research.agents.identity import (
     claim_fingerprint,
     merge_claim_snapshot,
@@ -249,6 +250,18 @@ def fake_critique(*, should_continue: bool, score: int = 5) -> Critique:
         should_continue=should_continue,
         rationale="Recorded for graph tests.",
     )
+
+
+def fake_failed_critique() -> Critique:
+    """The critique an exhausted repair records, as the graph sees it.
+
+    Produced by the production constructor rather than hand-built, so the
+    graph tests exercise the exact object ``failed_critique`` returns: score at
+    the floor, no gaps, ``should_continue=False`` — every signal a clean
+    acceptance carries, plus ``review_status='failed'``.
+    """
+    critique, _ = failed_critique(iteration=0, max_iterations=3)
+    return critique
 
 
 def fake_quality(*, hard_failures: Sequence[str] = ()) -> ReportQualitySnapshot:

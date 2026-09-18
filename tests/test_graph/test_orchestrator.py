@@ -20,6 +20,7 @@ from deep_research.graph.state import (
     FINALIZE_NODE,
     NODE_NAMES,
     REFINE_NODE,
+    graph_quality_status,
     graph_status,
     initial_graph_state,
     is_halted,
@@ -29,6 +30,7 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
+    QUALITY_STATUS_PARTIAL,
     ResearchError,
     ResearchState,
 )
@@ -38,6 +40,7 @@ from tests.graph_fakes import (
     FakePublisher,
     fake_claim,
     fake_critique,
+    fake_failed_critique,
     fake_finding,
     fake_research_agents,
     fake_scored_source,
@@ -74,6 +77,40 @@ def _route_reasons(state: ResearchState) -> list[str]:
         for event in state.events
         if event.event_type == "graph.route.decided"
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_review_is_never_reported_as_accepted() -> None:
+    """End to end: an exhausted repair must not publish an accepted report.
+
+    The graph ran every agent and the quality pass judged the composition, so
+    every gate the old code consulted is clean. The Critic's own run then
+    produced a critique whose ``should_continue`` is ``False`` with no gaps —
+    the same signals a real acceptance carries — and only ``review_status``
+    tells the two apart. The run that carries it must end ``failed`` with the
+    artifacts ``partial``, and a partial run saves no claim to memory: an
+    unreviewed report is not accepted, and it is not remembered as though it
+    had been.
+    """
+    publisher = FakePublisher()
+    agents = fake_research_agents(
+        synthesizer=FakeAgent(
+            "synthesizer", [], update_factory=fake_synthesis_update
+        ),
+        critic=FakeAgent("critic", [{"critique": fake_failed_critique()}]),
+        publisher=publisher,
+    )
+
+    state = await _run(agents)
+
+    assert _route_reasons(state) == ["critique_failed"]
+    assert graph_status(state) == "failed"
+    # The deterministic quality pass did run, so ``partial`` is a verdict
+    # about the review rather than the absence of one.
+    assert state.quality is not None
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+    assert state.report_path is not None
+    assert publisher.memory_writes == 0
 
 
 def test_the_agent_node_order_matches_the_designed_sequence() -> None:

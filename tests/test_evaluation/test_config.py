@@ -205,7 +205,13 @@ from deep_research.utils.config import (
 # was added. The other five agents' prompt text is byte-identical; they moved
 # because the shared ``agents.prompts`` module did, which is the documented
 # behaviour of this fingerprint and the reason all six are pinned together.
-CRITIC_PROMPT_FINGERPRINT = "3a95336ed551"
+# Task 8's fix round 1 moved the critic alone, ``3a95336ed551`` ->
+# ``c32c826d7024``: the change was in ``agents/critic.py`` (the gap contract
+# enforced at the provider boundary, the typed violation, the real fingerprint
+# guard, whole-section rendering, the repair path's failure handling, and
+# ``review_status`` on the completed event), and no shared prompt string was
+# edited, so the other five did not move.
+CRITIC_PROMPT_FINGERPRINT = "c32c826d7024"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -537,7 +543,7 @@ CRITIC_PROMPT_FINGERPRINT = "3a95336ed551"
 #     closing bracket is no longer an opener, and the abbreviation list
 #     completed). The other five are unchanged by all three rounds: no shared
 #     prompt string was edited.
-#   critic ``15754f64fa12`` -> ``3f0341751794`` -> ``3a95336ed551``
+#   critic ``15754f64fa12`` -> ``3f0341751794`` -> ``c32c826d7024``
 # Task 8 moved all six. The critic's own module changed (the tool path removed,
 # the packet and its fingerprint added, the request sections rebuilt, and the
 # repair path's failure handling split between schema and provider causes), and
@@ -549,7 +555,7 @@ CRITIC_PROMPT_FINGERPRINT = "3a95336ed551"
 #   source_evaluator ``33a71376d3e6`` -> ``6c12c0fffc92``
 #   fact_checker ``f1ccaf38ff02`` -> ``7695ca2d0524``
 #   synthesizer ``17bc15e0131b`` -> ``0ec21503cc00``
-#   critic ``3f0341751794`` -> ``3a95336ed551``
+#   critic ``3f0341751794`` -> ``c32c826d7024``
 # The Judge pin did not move: no judge prompt or template changed.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "02d66a4a2d15",
@@ -557,7 +563,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "7695ca2d0524",
     "synthesizer": "0ec21503cc00",
-    "critic": "3a95336ed551",
+    "critic": "c32c826d7024",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

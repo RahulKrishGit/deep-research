@@ -29,7 +29,7 @@ import re
 from collections.abc import Collection, Sequence
 from typing import ClassVar
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
@@ -60,7 +60,10 @@ from deep_research.providers import (
     StructuredOutputError,
     StructuredValidationDiagnostic,
 )
-from deep_research.providers.validation import validation_summary
+from deep_research.providers.validation import (
+    validation_diagnostic,
+    validation_summary,
+)
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
@@ -85,6 +88,7 @@ from deep_research.utils.types import (
     ResearchStateUpdate,
     ScoredSource,
     SubTopic,
+    gap_contract_problem,
 )
 
 CRITIC_NAME = "critic"
@@ -96,6 +100,14 @@ MIN_CRITIC_SCORE = 1
 MAX_CRITIC_SCORE = 10
 
 CRITIC_REPORT_CHARS = 6000
+"""The size at which a reader section is called out as large in the request.
+
+It is **not** a truncation bound. The request carries every reader section
+whole — a per-section cap only moved the historical prefix failure inside a
+section — and this value decides when a section's heading says how many
+characters it carries, so the model knows it is reading a large section. Long
+report tests also use it as the length a report must exceed to count as long.
+"""
 CRITIC_CLAIM_DIGEST = 40
 CRITIC_EVIDENCE_CHARS = 2000
 DEFAULT_MAX_NOTES = 10
@@ -106,8 +118,7 @@ DEFAULT_MAX_NOTES = 10
 # was a late contradiction, a fabricated limitation, and a citation near the
 # report's end falling outside old prefix boundaries, so the packet carries
 # the complete reader content and every reader statement, and the request
-# renders each reader section under its own cap so no one section can crowd
-# out the sections after it.
+# renders every reader section whole.
 #
 # Evidence is what gets batched, because it is the only part with no natural
 # ceiling. Each item is clamped to a passage-sized excerpt, batches are filled
@@ -188,27 +199,22 @@ def _split_reader_report(report: str) -> dict[str, str]:
     }
 
 
-def _clamp_prompt_section(text: str, *, limit: int) -> str:
-    """Clamp one independent report section without combining sections."""
-    if limit < 1:
-        raise ValueError("limit must be at least 1")
-    value = text.strip()
-    if not value:
-        return _SECTION_NOT_PRESENT
-    if len(value) <= limit:
-        return value
-    if limit <= 3:
-        return value[:limit]
-    return value[: limit - 3].rstrip() + "..."
-
-
 def _render_balanced_report_sections(
     report: str,
     *,
-    limit: int,
     report_sections: dict[str, str] | None = None,
+    note_limit: int = CRITIC_REPORT_CHARS,
 ) -> list[str]:
-    """Render the report identity and every reader section under its own cap."""
+    """Render the report identity and every reader section, each one complete.
+
+    Nothing is truncated. The historical failure was a late contradiction, a
+    fabricated limitation, and a citation near the report's end falling outside
+    a prefix; a per-section cap only moved that failure inside a section, since
+    one long ``## Findings`` would still lose its own tail. The reader report
+    is bounded upstream by the answer contract (<=8,000 words unless the
+    contract asks for more), so the request carries it whole and states which
+    sections are large rather than cutting them.
+    """
     parsed = _split_reader_report(report)
     for raw_key, content in (report_sections or {}).items():
         key = raw_key if raw_key in parsed else _reader_section_key(raw_key)
@@ -230,10 +236,13 @@ def _render_balanced_report_sections(
     )
     rendered: list[str] = []
     for key, label, content in sections:
-        clamped = _clamp_prompt_section(content, limit=limit)
-        fence = _report_fence(clamped)
+        value = content.strip() or _SECTION_NOT_PRESENT
+        fence = _report_fence(value)
         info = identity_fence_info if key == "identity" else f"reader-{key}"
-        rendered.append(f"# {label}\n{fence}{info}\n{clamped}\n{fence}")
+        heading = label
+        if len(value) > note_limit:
+            heading = f"{label} ({len(value)} characters, carried whole)"
+        rendered.append(f"# {heading}\n{fence}{info}\n{value}\n{fence}")
     return rendered
 
 # The report is quoted inside a Markdown fence of its own: the opening fence is
@@ -356,15 +365,24 @@ CRITIQUE_FALLBACK_REASONS = ("missing_report", "provider_unavailable")
 
 
 class CritiqueGapDraft(ContractModel):
-    """One provider-reported gap before local plan-ID validation.
+    """One provider-reported gap, validated to the same contract as the model.
 
     The mirrored shape of ``CritiqueGap`` plus a ``gap_id`` the model may echo
     and this module ignores. The bounded id is stamped locally — it has to be
     stable, unique, and bounded within one review, and a model-chosen id is
     none of those — but an id field the reply examples show is a field the
     model will fill, so the schema accepts it rather than rejecting a
-    well-formed review over an echo. Everything else travels through
-    unchanged, so ``normalize_gaps`` has one shape to read.
+    well-formed review over an echo.
+
+    ``validate_actionable`` applies :func:`gap_contract_problem` — the same
+    rule ``CritiqueGap`` applies — at the *provider* boundary. Model validators
+    are invisible to the JSON schema, so pydantic is what enforces them: the
+    reply is validated into this draft before anything local is stamped, a
+    violation is a structured-output failure like any other, and it takes the
+    repair path. Without this, a reply the schema accepted and the contract
+    rejected would abort the review instead of being repaired — and the shape
+    the previous prompt taught (every gap carrying ``recommended_queries``) is
+    exactly one of those replies.
     """
 
     gap_id: str = ""
@@ -377,6 +395,22 @@ class CritiqueGapDraft(ContractModel):
     repair_action: RepairAction = "acquire"
     problem: str
     recommended_queries: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_actionable(self) -> "CritiqueGapDraft":
+        problem = gap_contract_problem(
+            kind=self.kind,
+            severity=self.severity,
+            repair_action=self.repair_action,
+            coverage_id=self.coverage_id,
+            target_ids=self.target_ids,
+            statement_ids=self.statement_ids,
+            claim_cluster_ids=self.claim_cluster_ids,
+            recommended_queries=self.recommended_queries,
+        )
+        if problem is not None:
+            raise ValueError(problem)
+        return self
 
 
 def normalize_gap_drafts(values: object) -> object:
@@ -1170,11 +1204,17 @@ def normalize_gaps(
     Two rules are inherited from the reviewed Task 7 boundary, and both keep
     the same shape: an id the plan cannot answer is *not obeyed*, and titles
     and problem text are never consulted when deciding what a gap targets, so
-    a similarly named topic cannot receive another topic's gap. What changed
-    is the fallback. A gap that names no resolvable id is now scoped to the
-    whole answer (``target_ids=["question"]``) rather than left with no scope
-    at all, because Task 9 routes ``acquire`` by the target it names and an
-    unscoped acquisition cannot be routed.
+    a similarly named topic cannot receive another topic's gap.
+
+    The whole-answer fallback is applied **only** to a gap that declared a
+    scope which did not resolve — an id the packet cannot answer, the shape
+    Task 7 already handled. A gap that declared *no* scope at all is left
+    exactly as it came, so it fails the contract and takes the repair path:
+    "the report is not good enough" is not an actionable defect, and quietly
+    scoping it to the whole answer would record a vague complaint as a
+    material obligation. The single exception is the legacy *string* gap,
+    which predates the typed contract and named nothing because there was
+    nothing to name.
 
     Scope is resolved locally wherever the packet can resolve it: a known
     ``coverage_id`` contributes the targets planned under it, which is what a
@@ -1182,18 +1222,28 @@ def normalize_gaps(
     and cluster ids resolve only against the packet's own registries — a gap
     may not be raised against a record that does not exist.
 
-    The pre-Task-8 free-text shape is accepted here as well, through
-    ``CritiqueGapDraft``'s own defaults plus the legacy scope below. This is
-    the per-value spelling of ``normalize_gap_drafts``' payload mapping, and a
-    change to the legacy shape has to land in both.
+    A gap the contract still refuses raises ``CritiqueContractViolation``,
+    which is the agent's cue to repair it exactly as it repairs a malformed
+    reply; nothing here silently drops or rewrites a defect.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
     known_statement_ids = set(packet.statement_ids) if packet else set()
     known_cluster_ids = set(packet.claim_cluster_ids) if packet else set()
     known_target_ids = set(packet.target_ids) if packet else set()
+    # The packet knows which sub-topics it carries, so a caller that supplied
+    # one no longer has to pass the ids as well: two sources of the same
+    # knowledge are two sources that can disagree.
+    coverage_ids = set(known_coverage_ids)
+    if packet is not None:
+        coverage_ids.update(
+            target.coverage_id for target in packet.targets
+        )
+        coverage_ids.update(
+            sub_topic.coverage_id for sub_topic in packet.sub_topics
+        )
     gaps: list[CritiqueGap] = []
-    seen: set[tuple[object, ...]] = set()
+    kept: dict[tuple[object, ...], int] = {}
     for value in values:
         draft = (
             CritiqueGapDraft(
@@ -1207,10 +1257,16 @@ def normalize_gaps(
         problem = " ".join(draft.problem.split())
         if not problem:
             continue
+        declared_scope = bool(
+            draft.coverage_id
+            or draft.target_ids
+            or draft.statement_ids
+            or draft.claim_cluster_ids
+        )
         coverage_id = draft.coverage_id or None
         if coverage_id is not None:
             coverage_id = coverage_id.strip() or None
-        if coverage_id not in known_coverage_ids:
+        if coverage_id not in coverage_ids:
             coverage_id = None
         targets = [
             target_id.strip()
@@ -1226,40 +1282,73 @@ def normalize_gaps(
             ]
             if coverage_id is not None and not targets:
                 targets = packet.targets_by_coverage_id(coverage_id)
-        statements = _known_ids(draft.statement_ids, known_statement_ids, packet)
+        statements = _known_ids(
+            draft.statement_ids, known_statement_ids, packet
+        )
         clusters = _known_ids(draft.claim_cluster_ids, known_cluster_ids, packet)
-        if not (targets or statements or clusters or coverage_id):
+        if declared_scope and not (
+            targets or statements or clusters or coverage_id
+        ):
             targets = [QUESTION_TARGET_ID]
         queries = tuple(normalize_notes(draft.recommended_queries))
+        violation = gap_contract_problem(
+            kind=draft.kind,
+            severity=draft.severity,
+            repair_action=draft.repair_action,
+            coverage_id=coverage_id,
+            target_ids=targets,
+            statement_ids=statements,
+            claim_cluster_ids=clusters,
+            recommended_queries=queries,
+        )
+        if violation is not None:
+            raise CritiqueContractViolation(
+                violation, gap_index=len(gaps)
+            )
+        gap = CritiqueGap(
+            gap_id=f"gap-{len(gaps) + 1:02d}",
+            coverage_id=coverage_id,
+            target_ids=targets,
+            claim_cluster_ids=clusters,
+            statement_ids=statements,
+            kind=draft.kind,
+            severity=draft.severity,
+            repair_action=draft.repair_action,
+            problem=problem,
+            recommended_queries=list(queries),
+        )
+        # The same problem restated with a different label is one defect, not
+        # two: the identity is the scope and the text, so a reader is not shown
+        # the duplicate. The most severe reading wins, and an equally severe
+        # one that carries more queries is kept because it is the actionable
+        # version of the same complaint.
         identity = (
             coverage_id,
             tuple(targets),
             tuple(statements),
             tuple(clusters),
-            draft.kind,
-            draft.severity,
-            draft.repair_action,
             problem,
-            queries,
         )
-        if identity in seen:
+        previous = kept.get(identity)
+        if previous is None:
+            kept[identity] = len(gaps)
+            gaps.append(gap)
             continue
-        seen.add(identity)
-        gaps.append(
-            CritiqueGap(
-                gap_id=f"gap-{len(gaps) + 1:02d}",
-                coverage_id=coverage_id,
-                target_ids=targets,
-                claim_cluster_ids=clusters,
-                statement_ids=statements,
-                kind=draft.kind,
-                severity=draft.severity,
-                repair_action=draft.repair_action,
-                problem=problem,
-                recommended_queries=list(queries),
+        incumbent = gaps[previous]
+        if _severity_rank(gap.severity) > _severity_rank(incumbent.severity) or (
+            _severity_rank(gap.severity) == _severity_rank(incumbent.severity)
+            and len(gap.recommended_queries) > len(incumbent.recommended_queries)
+        ):
+            gaps[previous] = gap.model_copy(
+                update={"gap_id": incumbent.gap_id}
             )
-        )
     return gaps[:limit]
+
+
+def _severity_rank(severity: str) -> int:
+    """``critical`` outranks ``major`` outranks ``minor``; anything else is last."""
+    order = {"critical": 3, "major": 2, "minor": 1}
+    return order.get(severity, 0)
 
 
 def _known_ids(
@@ -1543,23 +1632,22 @@ def critique_messages(
     task: CritiqueTask,
     run: ReActRun | None = None,
     *,
-    report_chars: int = CRITIC_REPORT_CHARS,
     claim_digest: int = CRITIC_CLAIM_DIGEST,
 ) -> list[ChatMessage]:
     """Build the messages that request one structured review.
 
     The request renders the packet and nothing else: the frozen question and
-    answer contract, the reader report split into independently bounded fenced
-    sections, every reader statement with its ids, the target inventory with
-    what is still open, the batched read excerpts, the deterministic quality
-    snapshot and hard checks, the canonical claim verdicts, and the cited
-    source assessments. ``run`` is accepted and ignored — the packet carries
-    the evidence — so a caller that still passes the finished run keeps
-    working, and no ReAct transcript can reach the review.
+    answer contract, every reader section whole, every reader statement with
+    its ids, the target inventory with what is still open, the batched read
+    excerpts, the deterministic quality snapshot and hard checks, the canonical
+    claim verdicts, and the cited source assessments. ``run`` is accepted and
+    ignored — the packet carries the evidence — so a caller that still passes
+    the finished run keeps working, and no ReAct transcript can reach the
+    review.
 
-    ``report_chars`` bounds each reader section independently; it never
-    truncates the packet, which carries the complete text, and it can never
-    hide a whole section behind another one's length.
+    Nothing here truncates the report: every reader section is carried whole,
+    and a section larger than ``CRITIC_REPORT_CHARS`` says so in its heading
+    rather than losing its end.
     """
     del run
     packet = packet_for_task(task)
@@ -1574,14 +1662,13 @@ def critique_messages(
         ),
         (
             "# Reader content\n"
-            "The reader report is split into independently bounded fenced "
-            "sections below. Review every section; a section cap must not hide "
-            "later sections; its own headings belong to the report rather than "
-            "to this request. This is the complete candidate, not a prefix."
+            "The reader report is split into fenced sections below, one per "
+            "reader section, each carried in full. Review every one of them; "
+            "its own headings belong to the report rather than to this "
+            "request. This is the complete candidate, not a prefix."
         ),
         *_render_balanced_report_sections(
             packet.reader_content,
-            limit=report_chars,
             report_sections=packet.reader_sections,
         ),
         (
@@ -1671,28 +1758,27 @@ def _fingerprint_section(packet: CriticPacket) -> str:
 
 def critique_repair_messages(
     task: CritiqueTask,
-    error: StructuredOutputError,
+    error: StructuredOutputError | CritiqueContractViolation,
     run: ReActRun | None = None,
     *,
-    report_chars: int = CRITIC_REPORT_CHARS,
     claim_digest: int = CRITIC_CLAIM_DIGEST,
 ) -> list[ChatMessage]:
-    """Build the one repair request for a malformed review reply.
+    """Build the one repair request for an unusable review reply.
 
     The repair re-asks the *same* packet, so the messages are the original
     request plus the bounded, provider-output-free diagnostics the local
-    schema validation produced: field paths taken from the validation error's
-    own locations and a stable category. The rejected payload is never echoed
-    back and never logged — it is provider text, and the whole point of the
+    validation produced: field paths taken from the validation error's own
+    locations and a stable category. The rejected payload is never echoed back
+    and never logged — it is provider text, and the whole point of the
     diagnostic record is that a schema failure can be described without it.
+
+    A reply can be unusable two ways — malformed for the schema, or
+    well-formed and outside the gap contract — and both are described the same
+    way, because from the model's side the fix is the same: return the object
+    again, with the reported field corrected.
     """
-    messages = critique_messages(
-        task,
-        run,
-        report_chars=report_chars,
-        claim_digest=claim_digest,
-    )
-    diagnostics = schema_diagnostics(error)
+    messages = critique_messages(task, run, claim_digest=claim_digest)
+    diagnostics = reply_diagnostics(error)
     lines = [
         f"- {validation_summary(diagnostic)}" for diagnostic in diagnostics
     ] or ["- no bounded diagnostic was available"]
@@ -1724,6 +1810,56 @@ def schema_diagnostics(
 ) -> tuple[StructuredValidationDiagnostic, ...]:
     """The bounded, provider-content-free diagnostics of one schema failure."""
     return tuple(error.validation_diagnostics)
+
+
+def schema_error_from_validation(error: ValidationError) -> StructuredOutputError:
+    """Wrap a local validation failure as the structured error the agent routes.
+
+    The provider raises ``StructuredOutputError`` for a reply its schema
+    rejected. A ``ValidationError`` reaching the agent means the reply got
+    past the schema and failed a contract validator instead — a failure with
+    the same meaning and the same handling, so it is given the same shape
+    rather than a second, parallel path.
+    """
+    return StructuredOutputError(
+        "structured output was rejected by the local review contract",
+        diagnostics=[
+            validation_diagnostic(error, attempt=1, schema=CritiqueDraft)
+        ],
+    )
+
+
+def reply_diagnostics(
+    error: StructuredOutputError | CritiqueContractViolation,
+) -> tuple[StructuredValidationDiagnostic, ...]:
+    """The bounded diagnostics of whichever way a reply was unusable."""
+    if isinstance(error, CritiqueContractViolation):
+        return (
+            StructuredValidationDiagnostic(
+                attempt=1,
+                field_paths=list(error.field_paths()),
+                category="other_schema",
+            ),
+        )
+    return schema_diagnostics(error)
+
+
+def current_packet(
+    task: CritiqueTask, state: ResearchState | None
+) -> CriticPacket:
+    """The packet a repair would be sent, rebuilt from the live state.
+
+    Rebuilding is what makes the fingerprint guard mean something: the packet
+    the review was opened on travels with the task, so comparing *that* object
+    against its own fingerprint can never fail, while a packet rebuilt from
+    the state the run is actually holding reflects any change made to the
+    report or the evidence in between. Without a state — ``finalize``'s hook,
+    or a direct call in a test — the task's own packet is the only one there
+    is, and it is by construction the one that was reviewed.
+    """
+    if state is None:
+        return packet_for_task(task)
+    return build_critic_packet(state, state.composition)
 
 
 def _diagnostic_details(
@@ -1807,6 +1943,28 @@ def critique_repaired(
 
 class CritiqueRepairRefused(RuntimeError):
     """A repair would not have reviewed the packet the review was opened on."""
+
+
+class CritiqueContractViolation(RuntimeError):
+    """A reply the provider schema accepted does not satisfy the gap contract.
+
+    The second boundary of the same rule. ``CritiqueGapDraft`` refuses a
+    violating gap while the reply is being parsed, which is the ordinary path;
+    this is the typed failure for a draft that never went through the schema —
+    a caller that built one by hand, or a transport that returns objects
+    without validating them. It exists so that failure has a name the agent can
+    catch and route to the repair path, instead of surfacing as a bare
+    ``ValueError`` from deep inside a model validator.
+    """
+
+    def __init__(self, problem: str, *, gap_index: int) -> None:
+        super().__init__(problem)
+        self.problem = problem
+        self.gap_index = gap_index
+
+    def field_paths(self) -> tuple[str, ...]:
+        """The bounded schema path of the offending gap, provider-free."""
+        return (f"gaps.{self.gap_index}",)
 
 
 def repair_target(
@@ -1903,6 +2061,7 @@ def critique_completed_event(
         message="Report review complete.",
         metadata={
             "score": critique.score,
+            "review_status": critique.review_status,
             "gap_count": len(critique.gaps),
             "unsupported_claim_count": len(critique.unsupported_claims),
             "recommended_query_count": len(critique.recommended_queries),
@@ -1950,7 +2109,6 @@ class CriticAgent(BaseAgent[Critique]):
         tools: Sequence[BaseTool] = (),
         config: AgentRuntimeConfig | None = None,
         model_profile: EffectiveModelConfig | None = None,
-        report_chars: int = CRITIC_REPORT_CHARS,
         claim_digest: int = CRITIC_CLAIM_DIGEST,
     ) -> None:
         super().__init__(
@@ -1961,11 +2119,8 @@ class CriticAgent(BaseAgent[Critique]):
             config=config,
             model_profile=model_profile,
         )
-        if report_chars < 1:
-            raise ValueError("report_chars must be at least 1")
         if claim_digest < 1:
             raise ValueError("claim_digest must be at least 1")
-        self._report_chars = report_chars
         self._claim_digest = claim_digest
 
     @property
@@ -2006,15 +2161,23 @@ class CriticAgent(BaseAgent[Critique]):
         self,
         task: CritiqueTask,
         run: ReActRun | None = None,
+        *,
+        state: ResearchState | None = None,
     ) -> tuple[Critique, str, list[ResearchError], bool]:
         """Judge one candidate from its packet.
 
         Returns ``(critique, reason, errors, provider_failed)``. No provider
         call is made when there is no report, so a score is never invented
-        over an empty review. A malformed reply gets exactly one repair,
-        refused unless it re-reads the same packet; when that too fails, the
-        review is recorded as failed with its bounded diagnostics rather than
-        scored.
+        over an empty review. Any unusable reply — malformed for the schema, or
+        well-formed but outside the gap contract — gets exactly one repair,
+        which re-reads the packet this review was opened on; when that too
+        fails, the review is recorded as failed with its bounded diagnostics
+        rather than scored.
+
+        ``state`` is the state this review was built from. The repair path uses
+        it to rebuild the packet and prove the repair is about the same text,
+        so an in-flight change to the report or the evidence refuses the repair
+        instead of silently reviewing something else.
         """
         packet = packet_for_task(task)
         if not packet.reader_content.strip():
@@ -2025,16 +2188,39 @@ class CriticAgent(BaseAgent[Critique]):
             )
             return critique, reason, [missing_report_error()], False
 
+        opened = packet.fingerprint
         messages = critique_messages(
             task,
             run,
-            report_chars=self._report_chars,
             claim_digest=self._claim_digest,
         )
         try:
             draft = await self._complete_review(messages)
-        except StructuredOutputError as error:
-            return await self._repair_review(task, error, run)
+            critique, reason = build_critique(
+                draft,
+                iteration=task.iteration,
+                max_iterations=task.max_iterations,
+                packet=packet,
+            )
+        except (StructuredOutputError, CritiqueContractViolation) as error:
+            return await self._repair_review(
+                task,
+                error,
+                run,
+                state=state,
+                reviewed_fingerprint=opened,
+            )
+        except ValidationError as error:
+            # A reply that never went through the schema — the provider bound
+            # objects, or a caller built a draft by hand. Same route as a
+            # malformed one, with the same bounded diagnostic.
+            return await self._repair_review(
+                task,
+                schema_error_from_validation(error),
+                run,
+                state=state,
+                reviewed_fingerprint=opened,
+            )
         except ProviderError as error:
             critique, reason = fallback_critique(
                 reason="provider_unavailable",
@@ -2043,42 +2229,47 @@ class CriticAgent(BaseAgent[Critique]):
             )
             return critique, reason, [critique_provider_error(error)], True
 
-        critique, reason = build_critique(
-            draft,
-            iteration=task.iteration,
-            max_iterations=task.max_iterations,
-            known_coverage_ids={
-                sub_topic.coverage_id for sub_topic in packet.sub_topics
-            },
-            packet=packet,
-        )
         return critique, reason, [], False
 
     async def _complete_review(
         self, messages: Sequence[ChatMessage]
     ) -> CritiqueDraft:
-        """One structured review request under this operation's output budget."""
+        """One structured review request under this operation's output budget.
+
+        A provider that returns a payload rather than a validated model is
+        validated here instead, so every path into ``build_critique`` has been
+        through the schema at least once.
+        """
         self.fingerprint_call(
             "CritiqueDraft", output_limit=self.config.critic_review_max_tokens
         )
-        return await self.provider.complete_structured(
+        reply = await self.provider.complete_structured(
             messages,
             CritiqueDraft,
             agent_name=self.name,
             max_tokens=self.config.critic_review_max_tokens,
         )
+        if isinstance(reply, CritiqueDraft):
+            return reply
+        return CritiqueDraft.model_validate(reply)
 
     async def _repair_review(
         self,
         task: CritiqueTask,
-        error: StructuredOutputError,
+        error: StructuredOutputError | CritiqueContractViolation,
         run: ReActRun | None,
+        *,
+        state: ResearchState | None = None,
+        reviewed_fingerprint: str = "",
     ) -> tuple[Critique, str, list[ResearchError], bool]:
         """Re-ask the same packet once, or record an explicit failed review."""
+        diagnostics = reply_diagnostics(error)
         packet = packet_for_task(task)
-        diagnostics = schema_diagnostics(error)
         try:
-            repair_target(packet, reviewed_fingerprint=packet.fingerprint)
+            repair_target(
+                current_packet(task, state),
+                reviewed_fingerprint=reviewed_fingerprint,
+            )
         except CritiqueRepairRefused as refusal:
             critique, reason = failed_critique(
                 iteration=task.iteration,
@@ -2091,7 +2282,7 @@ class CriticAgent(BaseAgent[Critique]):
                     critique_schema_error(
                         diagnostics,
                         attempts=1,
-                        fingerprint=packet.fingerprint,
+                        fingerprint=reviewed_fingerprint,
                     ),
                     agent_error(
                         agent_name=CRITIC_NAME,
@@ -2101,7 +2292,9 @@ class CriticAgent(BaseAgent[Critique]):
                         details={"operation": "critic_report_review"},
                     ),
                 ],
-                True,
+                # No provider call failed here: the repair was refused locally,
+                # so the run summary must not report a provider error.
+                False,
             )
 
         try:
@@ -2110,15 +2303,33 @@ class CriticAgent(BaseAgent[Critique]):
                     task,
                     error,
                     run,
-                    report_chars=self._report_chars,
                     claim_digest=self._claim_digest,
                 )
             )
-        except ProviderError as failure:
-            critique, reason = failed_critique(
+            critique, reason = build_critique(
+                draft,
                 iteration=task.iteration,
                 max_iterations=task.max_iterations,
+                packet=packet,
             )
+        except CritiqueContractViolation as violation:
+            # The repair arrived and still broke the contract: one repair is
+            # the whole allowance, so this is an explicit failed review.
+            return self._exhausted_review(
+                task,
+                [*diagnostics, *reply_diagnostics(violation)],
+                fingerprint=reviewed_fingerprint,
+                extra=[],
+            )
+        except ValidationError as failure:
+            wrapped = schema_error_from_validation(failure)
+            return self._exhausted_review(
+                task,
+                [*diagnostics, *reply_diagnostics(wrapped)],
+                fingerprint=reviewed_fingerprint,
+                extra=[],
+            )
+        except ProviderError as failure:
             # The repair itself can fail two ways: the second reply was
             # malformed too, or the provider went away mid-repair. Both mean no
             # review exists, and both are recorded: the bounded schema record
@@ -2126,30 +2337,22 @@ class CriticAgent(BaseAgent[Critique]):
             # failure when that is what happened, so the ledger does not blame
             # the schema for an outage.
             repair_diagnostics = (
-                [*diagnostics, *schema_diagnostics(failure)]
+                [*diagnostics, *reply_diagnostics(failure)]
                 if isinstance(failure, StructuredOutputError)
                 else list(diagnostics)
             )
-            errors = [
-                critique_schema_error(
-                    repair_diagnostics,
-                    attempts=CRITIC_REVIEW_ATTEMPTS,
-                    fingerprint=packet.fingerprint,
-                )
-            ]
-            if not isinstance(failure, StructuredOutputError):
-                errors.append(critique_provider_error(failure))
-            return critique, reason, errors, True
+            extra = (
+                []
+                if isinstance(failure, StructuredOutputError)
+                else [critique_provider_error(failure)]
+            )
+            return self._exhausted_review(
+                task,
+                repair_diagnostics,
+                fingerprint=reviewed_fingerprint,
+                extra=extra,
+            )
 
-        critique, reason = build_critique(
-            draft,
-            iteration=task.iteration,
-            max_iterations=task.max_iterations,
-            known_coverage_ids={
-                sub_topic.coverage_id for sub_topic in packet.sub_topics
-            },
-            packet=packet,
-        )
         return (
             critique,
             reason,
@@ -2157,10 +2360,43 @@ class CriticAgent(BaseAgent[Critique]):
                 critique_repaired(
                     diagnostics,
                     attempts=CRITIC_REVIEW_ATTEMPTS,
-                    fingerprint=packet.fingerprint,
+                    fingerprint=reviewed_fingerprint,
                 )
             ],
             False,
+        )
+
+    def _exhausted_review(
+        self,
+        task: CritiqueTask,
+        diagnostics: Sequence[StructuredValidationDiagnostic],
+        *,
+        fingerprint: str,
+        extra: Sequence[ResearchError],
+    ) -> tuple[Critique, str, list[ResearchError], bool]:
+        """The one repair is spent: record a failed review, never a score.
+
+        ``provider_failed`` is ``True``: the review aborted because no usable
+        reply ever arrived, and a caller reading ``react.succeeded`` must not
+        see ``finished`` over that. A refusal *before* any repair request is
+        the one local case, and it returns ``False`` from its own branch.
+        """
+        critique, reason = failed_critique(
+            iteration=task.iteration,
+            max_iterations=task.max_iterations,
+        )
+        return (
+            critique,
+            reason,
+            [
+                critique_schema_error(
+                    diagnostics,
+                    attempts=CRITIC_REVIEW_ATTEMPTS,
+                    fingerprint=fingerprint,
+                ),
+                *extra,
+            ],
+            True,
         )
 
     async def finalize(
@@ -2214,7 +2450,7 @@ class CriticAgent(BaseAgent[Critique]):
         async with self.tracker.agent_span(self.name) as span:
             react = ReActRun(agent_name=self.name, stop_reason="finished")
             critique, reason, review_errors, provider_failed = await self.review(
-                task, react
+                task, react, state=state
             )
             errors.extend(review_errors)
             if provider_failed:

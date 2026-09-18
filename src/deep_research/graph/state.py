@@ -72,6 +72,9 @@ GRAPH_ROUTES = {
         "remains, so the report was sent back for one more research pass."
     ),
     "critique_satisfied": "The critic accepted the report.",
+    "critique_failed": (
+        "The critic's review never validated, so this report was never judged."
+    ),
     "max_iterations_reached": (
         "The refinement budget is exhausted; this is the final report."
     ),
@@ -85,6 +88,7 @@ GRAPH_STATUSES = ("completed", "max_iterations", "incomplete", "failed")
 
 _STATUS_BY_ROUTE_REASON = {
     "critique_satisfied": "completed",
+    "critique_failed": "failed",
     "max_iterations_reached": "max_iterations",
     "missing_critique": "incomplete",
     "refinement_requested": "incomplete",
@@ -199,12 +203,22 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     gates agree, or the best report a spent budget allows. ``ROUTE_END`` skips
     publication entirely, and is reached only by a halted run: a failed run
     publishes nothing rather than a stale earlier pass's artifact.
+
+    A critique that was never *made* cannot satisfy anything. A failed review
+    carries ``should_continue=False`` for the same reason a provider outage
+    does — it says nothing about the report, so it buys no research cycle — and
+    that is exactly why ``review_status`` is consulted here: reading only
+    ``should_continue`` would publish an unreviewed report as accepted. The
+    reason names the real cause and beats the iteration bound, because "the
+    budget ran out" would describe a report that was in fact never judged.
     """
     if is_halted(state):
         return ROUTE_END, "halted"
     critique = state.critique
     if critique is None:
         return ROUTE_FINALIZE, "missing_critique"
+    if critique.review_status == "failed":
+        return ROUTE_FINALIZE, "critique_failed"
     if state.iteration >= state.max_iterations:
         return ROUTE_FINALIZE, "max_iterations_reached"
     if critique.should_continue:
@@ -232,6 +246,13 @@ def graph_quality_status(state: ResearchState) -> str:
     ``partial``. A run no quality pass ever judged is ``partial`` too —
     nothing unjudged may be called accepted, and the finalizer saves no claim
     to memory for a partial run.
+
+    A failed review is the case this distinction exists for: its score is the
+    floor and its gap list is empty, so every other signal it carries reads
+    like a clean acceptance. ``critique_failed`` never reaches
+    ``critique_satisfied``, so an unreviewed report is ``partial`` — visible as
+    unpublished-to-memory and not-accepted rather than indistinguishable from a
+    report the Critic actually cleared.
     """
     if state.quality is None:
         return QUALITY_STATUS_PARTIAL

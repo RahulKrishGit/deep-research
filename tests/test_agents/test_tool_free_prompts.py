@@ -280,7 +280,6 @@ def _critique_messages() -> list:
             ],
         ),
         _finished_run("critic"),
-        report_chars=6000,
         claim_digest=40,
     )
 

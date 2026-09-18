@@ -1486,7 +1486,15 @@ def critic_gap_output(critic_gap_case) -> CriticOutput:
 
 @pytest.fixture
 def critic_budget_output(critic_budget_case) -> CriticOutput:
-    """Budget exhausted: the critique stops and records the failure."""
+    """Budget exhausted: the critique stops because no iteration remains.
+
+    The error ledger is empty on purpose. This fixture used to record a
+    ``search_unavailable`` failure from the spot-check loop Task 8 removed,
+    while the same fixture declared ``tool_calls=0`` — an artifact no
+    tool-free Critic can produce. The case no longer requires a recoverable
+    error either, so the fabricated one is gone rather than left to be read as
+    live coverage.
+    """
     return CriticOutput(
         case_id=critic_budget_case.case_id,
         case_version=critic_budget_case.version,
@@ -1509,15 +1517,7 @@ def critic_budget_output(critic_budget_case) -> CriticOutput:
             }
         },
         state_update={},
-        errors=[
-            {
-                "error_type": "search_unavailable",
-                "source": "web_search",
-                "message": "the scripted provider failure recurred",
-                "timestamp": "2026-08-01T00:00:00+00:00",
-                "recoverable": True,
-            }
-        ],
+        errors=[],
         tracker_errors=[],
         react=ReActSummary(
             iterations=3,

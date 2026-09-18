@@ -190,13 +190,18 @@ class AgentRuntimeConfig(BaseModel):
     and judge calls keep the global ``llm.max_tokens`` cap.
 
     ``critic_review_max_tokens`` is the same kind of budget for the Critic's
-    ``critique_report_review`` request. That call renders the whole report,
-    the claim digest, the source quality signals (a score when available or
-    an explicit evaluation status), and the spot-check evidence, then
-    asks for a score, three lists, and a rationale in one JSON object. At the
-    global cap it returned non-JSON text on both the initial attempt and the
-    single repair in three consecutive live canaries. ReAct decisions keep
-    the global cap.
+    ``critique_report_review`` request. Since Task 8 that call renders the
+    candidate's whole packet — the frozen question and answer contract, every
+    reader section carried in full, every reader statement record, the target
+    inventory, the batched read excerpts, and the deterministic hard checks —
+    beside the claim digest and the source quality signals, then asks for a
+    score, three lists, and a rationale in one JSON object. Carrying the report
+    whole is why this budget stays generous: a per-section cap used to decide
+    what the model could see, and the reviewer measured a normal single-section
+    report losing its final contradiction to it. At the global cap the call
+    returned non-JSON text on both the initial attempt and the single repair in
+    three consecutive live canaries. ReAct decisions keep the global cap, and
+    the Critic no longer makes any.
 
     ``judge_max_tokens`` is the budget for the judge's ``JudgeVerdict``
     request. Once the Critic began producing a real critique, the judge hit
@@ -209,7 +214,9 @@ class AgentRuntimeConfig(BaseModel):
     operation: react_decision}``: the spot-check decision hit the global cap
     and was truncated, which silently degrades the spot-check phase instead of
     failing the run. A decision is not a small reply either — it must carry the
-    agent's reasoning, one tool call, and that call's arguments.
+    agent's reasoning, one tool call, and that call's arguments. The Critic
+    itself no longer makes decision requests at all; the agents that do are the
+    planner, the researcher and the fact checker.
 
     ``max_sub_topics`` is how many planned sub-topics one Researcher pass
     attempts. It defaults to the Planner's own ceiling of seven, so the
@@ -221,7 +228,10 @@ class AgentRuntimeConfig(BaseModel):
     bounded harder than ``tool_budget``. The planner spends at most one
     procedural lookup, because the session's own startup recall is that
     lookup; a planner on the global ten-call budget spent all ten before it
-    produced a plan and discovered no new public evidence doing it. Keys are
+    produced a plan and discovered no new public evidence doing it. The Critic
+    is ``0`` because it has no tool path at all: its requested budget and its
+    declared allowlist have to agree, and it reviews the candidate's packet
+    instead of searching. Keys are
     the six production agent names — a misspelled key would leave the agent
     on the global budget while the configuration read as bound, so an
     unknown key is rejected rather than ignored.

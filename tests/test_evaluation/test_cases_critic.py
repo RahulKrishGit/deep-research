@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import httpx
 import pytest
 
 from deep_research.agents.critic import (
@@ -55,9 +54,8 @@ _METRICS = {
         ("score_bounded", 0.15),
     ),
     "missing-evidence-or-budget-exhausted": (
-        ("route_discipline", 0.40),
+        ("route_discipline", 0.60),
         ("conservative_score", 0.25),
-        ("rationale_present", 0.20),
         ("score_bounded", 0.15),
     ),
     "critic-live-review": (
@@ -67,17 +65,6 @@ _METRICS = {
         ("no_spurious_gaps", 0.25),
     ),
 }
-
-# The scenario search keys are applicable planned queries from each
-# controlled case. The case tests pin that relationship on both sides so a
-# Critic spot check cannot miss merely because a scenario key drifted away
-# from the task context.
-
-_STRONG_SEARCH_KEY = (
-    "urban tree canopy measured surface temperature reductions"
-)
-_GAPPY_SEARCH_KEY = "municipal composting mandates participation rates"
-_BUDGET_SEARCH_KEY = "congestion pricing particulate pollution evidence"
 
 # All URLs are written in the normalized form the agent records (no
 # ``www.``, no trailing slash), so a gate comparison can never
@@ -484,8 +471,10 @@ def test_controlled_scenarios_match_planned_queries_and_contract_version(
     # mistaken for an old v1 run.
     assert case.version == 1
     assert script.contract_version == CONTROLLED_SCENARIO_CONTRACT_VERSION
-    assert script.search_responses
-    assert set(script.search_responses) <= planned_queries
+    # A tool-free Critic reaches no service, so its scenario scripts none, and
+    # the case's own planned queries stay what they always were: the plan's.
+    assert script.search_responses == {}
+    assert planned_queries
 
 
 def test_the_live_case_uses_the_literal_live_scenario() -> None:
@@ -516,18 +505,26 @@ def test_the_budget_case_no_longer_requires_a_tool_failure() -> None:
 
     The expectation was satisfiable only by the spot-check loop Task 8
     removed. Keeping it would have made this case unsatisfiable rather than
-    strict, so the case's forced-stop evidence is the critique's own
-    rationale and the route discipline the other metrics already measure.
+    strict, so its 0.20 weight moved to the metric that can still fail —
+    ``conservative_score`` — instead of to a replacement that cannot.
     """
     case = _case("missing-evidence-or-budget-exhausted")
+    metric_ids = {
+        metric.metric_id for metric in case.expectations.deterministic_metrics
+    }
 
     assert case.expectations.must_record_recoverable_error is False
-    assert "failure_recorded" not in {
-        metric.metric_id for metric in case.expectations.deterministic_metrics
+    assert "failure_recorded" not in metric_ids
+    # The vacuous replacement the reviewer measured: always true for this
+    # case, because it declares no reference themes and a rationale is
+    # guaranteed non-blank.
+    assert "rationale_present" not in metric_ids
+    assert "conservative_score" in metric_ids
+    weights = {
+        metric.metric_id: metric.weight
+        for metric in case.expectations.deterministic_metrics
     }
-    assert "rationale_present" in {
-        metric.metric_id for metric in case.expectations.deterministic_metrics
-    }
+    assert weights["route_discipline"] == 0.60
 
 
 @pytest.mark.parametrize("case_id", CONTROLLED + ("critic-live-review",))
@@ -827,79 +824,27 @@ def test_the_budget_case_routes_to_end_no_matter_the_score() -> None:
         assert reason == "max_iterations_reached"
 
 
-def test_the_strong_scenario_scripts_one_search_and_one_memory_entry() -> None:
-    script = SCENARIOS["critic-strong-report"]
+@pytest.mark.parametrize(
+    "scenario_name",
+    ("critic-strong-report", "critic-gappy-report", "critic-budget-exhausted"),
+)
+def test_every_critic_scenario_scripts_no_service(scenario_name: str) -> None:
+    """The stored invariants of a tool-free agent's scenario.
 
-    assert script.failures == {}
-    assert tuple(script.search_responses) == (_STRONG_SEARCH_KEY,)
-    result = script.search_responses[_STRONG_SEARCH_KEY]
-    assert len(result["results"]) == 1
-    assert result["results"][0]["url"] == _CANOPY_REVIEW_URL
-    assert script.scripted_search_urls == (_CANOPY_REVIEW_URL,)
-    assert [
-        entry["content"] for entry in script.memory_entries
-    ] == [
-        "Prior sessions established that mature urban tree canopy "
-        "measurably lowers daytime surface temperatures in warm climates.",
-    ]
+    These scenarios used to script a search result and a memory entry for the
+    spot-check loop Task 8 removed, which made them read as live coverage for
+    an agent that cannot call a tool. An empty script is the honest fixture:
+    the tools still exist in the bundle, and calling one is a scenario miss.
+    """
+    script = SCENARIOS[scenario_name]
 
-
-def test_the_gappy_scenario_scripts_one_search_and_one_memory_entry() -> None:
-    script = SCENARIOS["critic-gappy-report"]
-
-    assert script.failures == {}
-    assert tuple(script.search_responses) == (_GAPPY_SEARCH_KEY,)
-    result = script.search_responses[_GAPPY_SEARCH_KEY]
-    assert len(result["results"]) == 1
-    assert result["results"][0]["url"] == _PARTICIPATION_URL
-    assert script.scripted_search_urls == (_PARTICIPATION_URL,)
-    assert [
-        entry["content"] for entry in script.memory_entries
-    ] == [
-        "Prior sessions noted that participation rates drive the climate "
-        "effect of organics mandates, and that landfill methane estimates "
-        "depend on measurement methodology.",
-    ]
-
-
-def test_the_gappy_scenario_key_is_the_participation_subtopics_query() -> None:
-    """The scripted search key and the case's own subtopic query are the
-    same literal, pinned on both sides so the two spellings cannot drift."""
-    case = _case("request-more-research")
-    # Found by title, not by position: a case's sub-topics are ordered by
-    # priority, and this one is not the first of the three.
-    participation = next(
-        sub_topic
-        for sub_topic in case.state.sub_topics
-        if sub_topic.title == "Participation in municipal composting mandates"
-    )
-
-    assert _GAPPY_SEARCH_KEY in participation.search_queries
-    assert _GAPPY_SEARCH_KEY in SCENARIOS["critic-gappy-report"].search_responses
-
-
-def test_the_budget_scenario_fails_memory_and_recovers_via_search() -> None:
-    """The memory query raises while the search still succeeds: recovery
-    evidence exists for the failure the case is built around."""
-    script = SCENARIOS["critic-budget-exhausted"]
-
-    failure = script.failures["query_memory"]
-    assert isinstance(failure, RuntimeError)
-    assert "long-term memory is unavailable" in str(failure)
-
-    # Non-httpx, non-retryable: the real tools retry httpx timeouts and
-    # status errors (three attempts each), which would triple-count a
-    # scripted failure in the call ledger.
-    assert not isinstance(failure, httpx.HTTPError)
-
-    assert tuple(script.search_responses) == (_BUDGET_SEARCH_KEY,)
-    result = script.search_responses[_BUDGET_SEARCH_KEY]
-    assert len(result["results"]) == 1
-    assert result["results"][0]["url"] == _WRI_URL
-    assert script.scripted_search_urls == (_WRI_URL,)
+    assert script.search_responses == {}
+    assert script.http_pages == {}
     assert script.memory_entries == ()
-
-    assert set(script.failures) == {"query_memory"}
+    assert script.failures == {}
+    assert script.scripted_search_urls == ()
+    assert script.reputations == {}
+    assert script.reputation_failures == {}
 
 
 def test_every_case_declares_its_known_source_urls() -> None:
@@ -986,13 +931,17 @@ def test_live_no_spurious_gaps_rejects_compressive_strength_covered_gap() -> Non
 
 
 @pytest.mark.asyncio
-async def test_the_budget_double_fails_memory_and_serves_the_search(
+async def test_a_critic_bundle_scripts_no_service_for_any_tool(
     tracker, settings, tmp_path, runtime_config_for
 ) -> None:
-    """The budget scenario's wiring is real: query_memory raises the
-    scripted RuntimeError while web_search returns the scripted recovery
-    result, and the ledger records one failed memory call and one
-    successful search call — never retried, never triple-counted."""
+    """The bundle still builds, and its unscripted tools are a scenario miss.
+
+    This test used to prove that the budget scenario's memory failure was real
+    and its search recovered. Both scripted services are gone with the
+    spot-check loop: a tool-free Critic reaches neither, so the honest
+    invariant is the guard — the tools exist in the bundle, and calling one
+    that nothing scripted is recorded as a miss rather than quietly answered.
+    """
     case = _case("missing-evidence-or-budget-exhausted")
     bundle = build_controlled_dependencies(
         runtime_config_for("critic"),
@@ -1010,28 +959,25 @@ async def test_the_budget_double_fails_memory_and_serves_the_search(
             top_k=5,
         )
         search_result = await search.execute(
-            query=_BUDGET_SEARCH_KEY, max_results=5
+            query="congestion pricing particulate pollution evidence",
+            max_results=5,
         )
 
-    assert memory_result.success is False
-    assert memory_result.error is not None
-    assert memory_result.error.type == "RuntimeError"
-    # A raw non-ToolExecutionError escaping a tool publishes static project
-    # text, never the raw exception text: the failure stays classifiable
-    # through the enumerated error.type asserted above.
-    assert memory_result.error.message == "the tool failed unexpectedly"
-    assert memory_result.error.recoverable is True
+    # Memory still answers: it is a real store with nothing seeded, not a
+    # scripted outage.
+    assert memory_result.success, memory_result.error
+    assert memory_result.data["matches"] == []
 
-    assert search_result.success, search_result.error
-    results = search_result.data["results"]
-    assert results[0]["url"] == _WRI_URL
+    # Search is unscripted on purpose, and the harness says so loudly.
+    assert search_result.success is False
+    assert search_result.error is not None
 
     ledger = bundle.recorder.ledger()
     summaries = {summary.tool_name: summary for summary in ledger.tool_calls}
     assert summaries["query_memory"].calls == 1
-    assert summaries["query_memory"].failures == 1
+    assert summaries["query_memory"].failures == 0
     assert summaries["web_search"].calls == 1
-    assert summaries["web_search"].failures == 0
+    assert summaries["web_search"].failures == 1
     assert ledger.prohibited_calls == []
 
 

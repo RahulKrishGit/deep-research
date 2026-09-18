@@ -41,6 +41,7 @@ from deep_research.utils.types import (
 )
 from tests.graph_fakes import (
     fake_critique,
+    fake_failed_critique,
     fake_quality,
     fake_research_state,
     halting_error,
@@ -259,12 +260,63 @@ def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
                 quality=fake_quality(hard_failures=["duplicate_claims"]),
                 max_iterations=3,
             ),
+            # Task 8's reason: a review that never validated.
+            fake_research_state(critique=fake_failed_critique()),
         )
     }
 
     assert reasons == set(GRAPH_ROUTES)
     for reason in GRAPH_ROUTES:
         assert GRAPH_ROUTES[reason].strip()
+
+
+def test_a_failed_review_is_not_an_acceptance() -> None:
+    """The Critical 2 fix: a failed review is never published as accepted.
+
+    The failed critique carries every signal a clean acceptance carries —
+    ``should_continue=False``, an empty gap list, the score floor — which is
+    exactly why ``should_continue`` alone used to route it to
+    ``critique_satisfied`` and stamp the report ``accepted``. ``review_status``
+    is what tells the two apart, and it is now read here.
+    """
+    accepted = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(),
+    )
+    failed = fake_research_state(
+        critique=fake_failed_critique(),
+        quality=fake_quality(),
+    )
+
+    # The two states carry the signals the old router read identically.
+    assert failed.critique.should_continue == accepted.critique.should_continue
+    assert failed.critique.gaps == accepted.critique.gaps
+
+    assert graph_route(accepted) == (ROUTE_FINALIZE, "critique_satisfied")
+    assert graph_quality_status(accepted) == QUALITY_STATUS_ACCEPTED
+
+    assert graph_route(failed) == (ROUTE_FINALIZE, "critique_failed")
+    assert graph_status(failed) == "failed"
+    assert graph_quality_status(failed) == QUALITY_STATUS_PARTIAL
+
+
+def test_a_failed_review_is_named_even_on_the_last_iteration() -> None:
+    """The honest cause beats the exhausted bound.
+
+    Both reasons end the run without acceptance, but "the budget ran out"
+    would describe a report that was in fact never judged, and the recorded
+    reason is what a reader uses to tell those apart.
+    """
+    failed = fake_research_state(
+        critique=fake_failed_critique(),
+        quality=fake_quality(),
+        iteration=3,
+        max_iterations=3,
+    )
+
+    assert graph_route(failed) == (ROUTE_FINALIZE, "critique_failed")
+    assert graph_status(failed) == "failed"
+    assert graph_quality_status(failed) == QUALITY_STATUS_PARTIAL
 
 
 def test_a_hard_quality_failure_forces_a_pass_the_critic_did_not_ask_for() -> None:

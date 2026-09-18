@@ -1054,6 +1054,68 @@ QUERY_BEARING_REPAIR_ACTION: RepairAction = "acquire"
 QUESTION_TARGET_ID = "question"
 
 
+def gap_contract_problem(
+    *,
+    kind: str,
+    severity: str,
+    repair_action: str,
+    coverage_id: str | None,
+    target_ids: Sequence[str],
+    statement_ids: Sequence[str],
+    claim_cluster_ids: Sequence[str],
+    recommended_queries: Sequence[str],
+) -> str | None:
+    """Why one gap is not actionable, or ``None`` when it is.
+
+    The single rule, shared by both boundaries that carry a gap: the
+    provider-facing draft and the state-facing contract. It is stated once
+    because the two must agree — a reply the provider schema accepts and the
+    contract then rejects would abort the review instead of being repaired,
+    and a rule copied into the second boundary is a rule that can drift out of
+    the first.
+
+    "Actionable" means routable: a material gap names at least one target,
+    statement, cluster, or planned sub-topic it affects; ``acquire`` names the
+    target (or sub-topic) whose obligation is unmet, because acquisition is
+    per obligation and a statement id says which sentence is thin rather than
+    what evidence is owed; and search queries ride on an acquisition gap and
+    on nothing else.
+    """
+    if kind == "presentation" and recommended_queries:
+        return (
+            "a presentation gap is a rewrite, not a search; it carries no "
+            "queries"
+        )
+    affected = [
+        *([coverage_id] if coverage_id else []),
+        *target_ids,
+        *statement_ids,
+        *claim_cluster_ids,
+    ]
+    if severity in GAP_MATERIAL_SEVERITIES and not affected:
+        return (
+            "a critical or major gap must name the target, statement, or "
+            "claim cluster it affects"
+        )
+    if (
+        repair_action == QUERY_BEARING_REPAIR_ACTION
+        and not (coverage_id or target_ids)
+    ):
+        return (
+            "an acquire gap must name the target, or the planned sub-topic, "
+            "whose evidence obligation is missing"
+        )
+    if (
+        repair_action != QUERY_BEARING_REPAIR_ACTION
+        and recommended_queries
+    ):
+        return (
+            "search queries belong to an acquisition gap only; this gap "
+            f"repairs by {repair_action} and runs no search"
+        )
+    return None
+
+
 class CritiqueGap(ContractModel):
     """One targetable report problem returned by the Critic.
 
@@ -1090,22 +1152,6 @@ class CritiqueGap(ContractModel):
     repair_action: RepairAction = "acquire"
     problem: str = Field(min_length=1)
     recommended_queries: list[str] = Field(default_factory=list)
-
-    @property
-    def affected_ids(self) -> list[str]:
-        """Every target, statement, cluster, or sub-topic this gap points at.
-
-        ``coverage_id`` counts: the pre-Task-8 contract's only scope was the
-        planned sub-topic, so a gap that names one has named something
-        concrete and routable.
-        """
-        scope = [self.coverage_id] if self.coverage_id else []
-        return [
-            *scope,
-            *self.target_ids,
-            *self.statement_ids,
-            *self.claim_cluster_ids,
-        ]
 
     @property
     def material(self) -> bool:
@@ -1147,32 +1193,18 @@ class CritiqueGap(ContractModel):
 
     @model_validator(mode="after")
     def validate_actionable(self) -> "CritiqueGap":
-        if self.kind == "presentation" and self.recommended_queries:
-            raise ValueError(
-                "a presentation gap is a rewrite, not a search; it carries no "
-                "queries"
-            )
-        if self.severity in GAP_MATERIAL_SEVERITIES and not self.affected_ids:
-            raise ValueError(
-                "a critical or major gap must name the target, statement, or "
-                "claim cluster it affects"
-            )
-        if (
-            self.repair_action == QUERY_BEARING_REPAIR_ACTION
-            and not (self.target_ids or self.coverage_id)
-        ):
-            raise ValueError(
-                "an acquire gap must name the target, or the planned "
-                "sub-topic, whose evidence obligation is missing"
-            )
-        if (
-            self.repair_action != QUERY_BEARING_REPAIR_ACTION
-            and self.recommended_queries
-        ):
-            raise ValueError(
-                "search queries belong to an acquisition gap only; this gap "
-                f"repairs by {self.repair_action} and runs no search"
-            )
+        problem = gap_contract_problem(
+            kind=self.kind,
+            severity=self.severity,
+            repair_action=self.repair_action,
+            coverage_id=self.coverage_id,
+            target_ids=self.target_ids,
+            statement_ids=self.statement_ids,
+            claim_cluster_ids=self.claim_cluster_ids,
+            recommended_queries=self.recommended_queries,
+        )
+        if problem is not None:
+            raise ValueError(problem)
         return self
 
 

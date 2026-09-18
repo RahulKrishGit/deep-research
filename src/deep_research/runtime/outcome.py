@@ -201,7 +201,13 @@ class ResearchOutcome:
 
     @property
     def failed(self) -> bool:
-        """True when the graph halted on a non-recoverable failure."""
+        """True when the run ended without a judged report.
+
+        Two ways reach it: the graph halted on a non-recoverable failure, or
+        the Critic's review never validated, so the report was never accepted.
+        Both are ``failed`` rather than ``completed``-with-limitations, and
+        ``accepted`` is ``False`` for both.
+        """
         return self.status == "failed"
 
     @property

@@ -943,7 +943,6 @@ def _critic_body(state: ResearchState) -> str:
     return critique_messages(
         agent.build_task(state),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=CRITIC_REPORT_CHARS,
         claim_digest=CRITIC_CLAIM_DIGEST,
     )[1].content
 

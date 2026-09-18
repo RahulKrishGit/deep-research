@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from deep_research.agents.identity import claim_fingerprint
@@ -591,6 +593,9 @@ def test_the_critic_prompt_states_the_gap_and_score_contracts() -> None:
     assert "recommended" in CRITIQUE_INSTRUCTION
 
 
+TOOL_FREE_SENTENCE = re.compile(r"[^.]*\bno tools\b[^.]*\.")
+
+
 def test_the_review_system_prompt_names_no_tools() -> None:
     """Neither Critic prompt offers tools, so neither may name one.
 
@@ -600,15 +605,23 @@ def test_the_review_system_prompt_names_no_tools() -> None:
     which local JSON validation rejected — 16 of 30 first attempts. Task 8
     went further and removed the tool path, so the shared prompt is tool-free
     too and its "no tools" sentence says so.
+
+    The word "tool" is checked by removal, not by exemption: every sentence
+    that states the *absence* of tools is struck out, and the word may not
+    appear in any other sentence. An earlier version skipped the check
+    whenever the word occurred at all, which constrained nothing.
     """
     for prompt in (CRITIC_REVIEW_SYSTEM_PROMPT, CRITIC_SYSTEM_PROMPT):
         lowered = prompt.lower()
-        for forbidden in ("web_search", "query_memory", "tool", "spot-check"):
-            if forbidden == "tool":
-                # The tool-free statement itself names the absence of tools.
-                assert "no tools" in lowered
-                continue
+        for forbidden in ("web_search", "query_memory", "spot-check"):
             assert forbidden not in lowered, forbidden
+        remainder = TOOL_FREE_SENTENCE.sub("", lowered)
+        assert "tool" not in remainder, remainder
+
+    # Both prompts state the absence explicitly, so a model cannot read either
+    # as an invitation to call something.
+    assert "no tools" in CRITIC_REVIEW_SYSTEM_PROMPT.lower()
+    assert "no tools" in CRITIC_SYSTEM_PROMPT.lower()
 
 
 def test_the_review_prompt_describes_the_report_boundaries() -> None:

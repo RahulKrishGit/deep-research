@@ -18,11 +18,13 @@ from deep_research.agents.critic import (
     ACCEPTANCE_SCORE,
     CRITIC_EVIDENCE_BATCH_CHARS,
     CRITIC_MAX_EVIDENCE_UNITS,
+    CRITIC_REPORT_CHARS,
     MAX_CRITIC_SCORE,
     MIN_CRITIC_SCORE,
     ROUTING_REASONS,
     CriticAgent,
     CriticPacket,
+    CritiqueContractViolation,
     CritiqueDraft,
     CritiqueGapDraft,
     CritiqueRepairRefused,
@@ -249,7 +251,6 @@ def test_the_review_call_uses_a_prompt_that_names_no_tools() -> None:
     system = critique_messages(
         _task(),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=6000,
         claim_digest=40,
     )[0].content
 
@@ -329,7 +330,6 @@ def test_a_report_containing_a_fence_cannot_close_the_enclosing_fence() -> None:
     body = critique_messages(
         _task(report=report),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=6000,
         claim_digest=40,
     )[1].content
     lines = body.splitlines()
@@ -344,7 +344,6 @@ def _review_body() -> str:
     return critique_messages(
         _task(),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=6000,
         claim_digest=40,
     )[1].content
 
@@ -934,28 +933,113 @@ def test_both_typed_gap_boundaries_share_one_normalizer(monkeypatch) -> None:
     ]
 
 
-def test_blank_or_title_only_gap_targets_remain_global() -> None:
+def test_title_and_problem_text_never_decide_a_gaps_target() -> None:
+    """Only ids decide a target, and an id the plan cannot answer is dropped.
+
+    The Task 7 invariant, kept: a gap whose *problem text* names a topic
+    targets nothing, and a legacy string gap targets the whole answer. What an
+    unresolvable *declared* id becomes is the whole-answer obligation, because
+    a gap that named a scope and failed to resolve it is a real defect against
+    prose no record can answer.
+    """
     gaps = normalize_gaps(
         [
+            # An id the plan cannot answer, with the topic's title in the text.
             CritiqueGapDraft(
-                coverage_id="   ",
-                problem="The report misses Beta evidence.",
-                recommended_queries=["beta evidence"],
-            ),
-            CritiqueGapDraft(
-                coverage_id=None,
+                coverage_id="topic-999",
                 problem="Alpha appears only as a title in this problem.",
                 recommended_queries=["alpha evidence"],
             ),
+            # The legacy free-text shape, which predates ids entirely.
+            "The report misses Beta evidence.",
         ],
         known_coverage_ids={"topic-01", "topic-02"},
     )
 
     assert [gap.coverage_id for gap in gaps] == [None, None]
+    assert [gap.target_ids for gap in gaps] == [["question"], ["question"]]
     assert [gap.problem for gap in gaps] == [
-        "The report misses Beta evidence.",
         "Alpha appears only as a title in this problem.",
+        "The report misses Beta evidence.",
     ]
+
+
+def test_a_blank_scope_is_refused_where_an_unknown_one_is_not() -> None:
+    """A blank id names nothing, so it is refused; an unknown id is resolved.
+
+    Narrowed deliberately from Task 7, where both became a global gap. The
+    typed contract added the scope requirement, and a whitespace placeholder
+    satisfies no part of it: refusing it costs one repair and buys a gap whose
+    scope is real. An id that is *present* and unknown still takes the reviewed
+    global fallback, because only the packet can say whether it resolves.
+    """
+    with pytest.raises(ValidationError, match="affects"):
+        CritiqueGapDraft(
+            coverage_id="   ",
+            problem="The report misses Beta evidence.",
+            recommended_queries=["beta evidence"],
+        )
+
+
+def test_a_vague_provider_gap_is_refused_not_scoped() -> None:
+    """The important finding: "not good enough" is not an actionable defect.
+
+    The reviewer's probe P2: an unscoped typed gap was silently recorded as a
+    material whole-answer obligation because ``normalize_gaps`` pre-filled the
+    fallback before the validator ever saw it. A gap that declared no scope at
+    all now reaches the contract unchanged and is refused, which is the
+    agent's cue to repair the reply; only a scope that was *declared* and did
+    not resolve falls back to the whole answer.
+    """
+    vague = {
+        "kind": "coverage",
+        "severity": "major",
+        "repair_action": "acquire",
+        "problem": "The report is not good enough.",
+        "recommended_queries": [],
+        "target_ids": [],
+        "statement_ids": [],
+        "claim_cluster_ids": [],
+    }
+
+    with pytest.raises(ValidationError, match="affects"):
+        CritiqueGapDraft.model_validate(vague)
+    with pytest.raises(ValidationError, match="affects"):
+        CritiqueDraft.model_validate(
+            {
+                "score": 5,
+                "gaps": [vague],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "rationale": "Thin.",
+            }
+        )
+
+    # A gap that never went through the schema is refused by the contract seam
+    # with a typed error instead of a bare ValueError.
+    unvalidated = CritiqueGapDraft.model_construct(
+        gap_id="gap-01",
+        coverage_id=None,
+        target_ids=[],
+        claim_cluster_ids=[],
+        statement_ids=[],
+        kind="coverage",
+        severity="major",
+        repair_action="acquire",
+        problem="The report is not good enough.",
+        recommended_queries=[],
+    )
+    draft = CritiqueDraft.model_construct(
+        score=5,
+        gaps=[unvalidated],
+        unsupported_claims=[],
+        recommended_queries=[],
+        rationale="Thin.",
+    )
+    with pytest.raises(CritiqueContractViolation) as caught:
+        build_critique(draft, iteration=0, max_iterations=3)
+    assert caught.value.field_paths() == ("gaps.0",)
+    assert "affects" in caught.value.problem
 
 
 def test_a_blank_model_rationale_still_yields_a_usable_one() -> None:
@@ -1019,7 +1103,6 @@ def test_critique_messages_carry_the_report_and_every_quality_signal() -> None:
     messages = critique_messages(
         _task(),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=6000,
         claim_digest=10,
     )
 
@@ -1090,7 +1173,6 @@ def test_critique_messages_keep_each_reader_section_and_typed_quality_context() 
     body = critique_messages(
         task,
         ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=80,
         claim_digest=10,
     )[1].content
 
@@ -1108,25 +1190,37 @@ def test_critique_messages_keep_each_reader_section_and_typed_quality_context() 
     assert "researcher_sub_topic_skipped" in body
 
 
-def test_critique_messages_clamp_a_long_report_without_flattening_it() -> None:
-    report = "# Title\n\n" + ("x" * 500)
+def test_a_long_reader_section_is_carried_whole() -> None:
+    """No section cap may cut the end off the candidate.
+
+    The reviewer's probe: a ~1,100-word single ``## Findings`` section sits
+    well inside the report bound and still lost its last contradiction to the
+    old 6,000-character per-section cap. The request carries every section
+    whole and says how large a large one is, so nothing is silently dropped.
+    """
+    tail = "The final contradiction is that NOAA reports the opposite."
+    long_section = ("x" * 7000) + "\n" + tail
+    report = (
+        "# Research report: a long one\n\n## Findings\n\n" + long_section
+    )
+    assert len(long_section) > CRITIC_REPORT_CHARS
     body = critique_messages(
         _task(report=report),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=80,
         claim_digest=10,
     )[1].content
 
-    assert "# Title\n" in body
-    assert "x" * 500 not in body
-    assert "..." in body
+    assert "# Research report: a long one" in body
+    assert long_section in body
+    assert tail in body
+    # The section is called out as large rather than cut.
+    assert f"({len(long_section)} characters, carried whole)" in body
 
 
 def test_critique_messages_say_so_when_there_is_no_report() -> None:
     body = critique_messages(
         _task(report="   "),
         ReActRun(agent_name="critic", stop_reason="finished"),
-        report_chars=80,
         claim_digest=10,
     )[1].content
 
@@ -2299,6 +2393,218 @@ async def test_a_provider_failure_during_the_repair_is_not_a_schema_failure(
         if error.error_type == "critic_review_provider_error"
     )
     assert provider.details["provider_failure"]["http_status_code"] == 503
+
+
+@pytest.mark.asyncio
+async def test_a_provider_shaped_reply_outside_the_contract_is_repaired(
+    tracker: Tracker,
+) -> None:
+    """Critical 1: a reply the schema accepts and the contract rejects.
+
+    The reported gap shape is the one the *previous* prompt taught — every gap
+    carrying ``recommended_queries`` — so this is the habit the model brings,
+    not a hypothetical. It used to abort ``agent.run`` with an unhandled
+    ``ValidationError``, bypassing both the repair and the failed review. It
+    now takes the same route a malformed reply takes: one repair, against the
+    same packet fingerprint.
+    """
+    violating = {
+        "score": 6,
+        "gaps": [
+            {
+                "gap_id": "gap-01",
+                "target_ids": ["target-01"],
+                "claim_cluster_ids": [],
+                "statement_ids": [],
+                "kind": "coverage",
+                "severity": "major",
+                "repair_action": "synthesize",
+                "problem": "The cost section has to be rewritten.",
+                "recommended_queries": ["cement cost premium"],
+            }
+        ],
+        "unsupported_claims": [],
+        "recommended_queries": ["cement cost premium"],
+        "rationale": "The cost section is thin.",
+    }
+    completer = ScriptedCompleter(
+        outputs=[lambda messages, schema: violating, _draft(score=8)]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.score == 8
+    assert outcome.result.review_status == "reviewed"
+    repaired = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_repaired"
+    )
+    assert repaired.details["schema_field_paths"]
+    assert repaired.details["attempts"] == 2
+
+    # The repair re-reads the same packet: same fingerprint, both requests.
+    first = completer.calls[0][2][1].content
+    second = completer.calls[1][2][1].content
+    fingerprint = re.search(r"Packet fingerprint: ([0-9a-f]{12})", first)
+    assert fingerprint is not None
+    assert f"Packet fingerprint: {fingerprint.group(1)}" in second
+
+
+@pytest.mark.asyncio
+async def test_a_contract_violating_reply_exhausts_into_a_failed_review(
+    tracker: Tracker,
+) -> None:
+    """Two replies outside the contract are a failed review, never a crash."""
+    violating = {
+        "score": 6,
+        "gaps": [
+            {
+                "gap_id": "gap-01",
+                "target_ids": [],
+                "claim_cluster_ids": [],
+                "statement_ids": ["S001"],
+                "kind": "missing_support",
+                "severity": "major",
+                "repair_action": "acquire",
+                "problem": "This sentence is unsupported.",
+                "recommended_queries": ["qec break-even"],
+            }
+        ],
+        "unsupported_claims": [],
+        "recommended_queries": ["qec break-even"],
+        "rationale": "One sentence is unsupported.",
+    }
+    completer = ScriptedCompleter(
+        outputs=[lambda messages, schema: violating] * 2
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    assert outcome.result.score == MIN_CRITIC_SCORE
+    assert outcome.result.should_continue is False
+    assert outcome.result.gaps == []
+    assert outcome.state_update["events"][-1].metadata["reason"] == "review_failed"
+    error = next(
+        item
+        for item in outcome.errors
+        if item.error_type == "critic_review_schema_error"
+    )
+    assert error.recoverable is False
+    assert error.details["attempts"] == 2
+    assert error.details["schema_field_paths"]
+    # No provider text, report text, or excerpt is retained.
+    assert _PACKET_CLAIM not in json.dumps(error.details)
+
+
+@pytest.mark.asyncio
+async def test_a_draft_that_bypassed_the_schema_is_repaired_too(
+    tracker: Tracker,
+) -> None:
+    """The defensive seam: a draft built without validation is not fatal.
+
+    A transport that hands back objects it never validated never reaches
+    ``CritiqueGapDraft``'s validator, so the contract check inside
+    ``normalize_gaps`` is what catches it — with a typed error the agent
+    repairs, not a bare ``ValueError`` from inside a model validator.
+    """
+    unvalidated = CritiqueGapDraft.model_construct(
+        gap_id="gap-01",
+        coverage_id=None,
+        target_ids=[],
+        claim_cluster_ids=[],
+        statement_ids=[],
+        kind="coverage",
+        severity="major",
+        repair_action="acquire",
+        problem="The report is not good enough.",
+        recommended_queries=[],
+    )
+    bypassing = CritiqueDraft.model_construct(
+        score=5,
+        gaps=[unvalidated],
+        unsupported_claims=[],
+        recommended_queries=[],
+        rationale="Thin.",
+    )
+    completer = ScriptedCompleter(outputs=[bypassing, _draft(score=7)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.score == 7
+    repaired = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_repaired"
+    )
+    assert repaired.details["schema_field_paths"] == ["gaps.0"]
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_changes_before_the_repair_refuses_it(
+    tracker: Tracker,
+) -> None:
+    """I3: the fingerprint guard is real, and needs no monkeypatch to fire.
+
+    The packet the review was opened on travels with the task, so comparing
+    *that* object against its own fingerprint could never fail. The repair now
+    rebuilds the packet from the state the run is holding; a report edited
+    between the two attempts produces a different fingerprint, the repair is
+    refused before any second request, and the review fails explicitly rather
+    than silently reviewing a different report.
+    """
+    state = _packet_state()
+    opened = build_critic_packet(state).fingerprint
+
+    def edit_the_report_then_fail(
+        messages: object, schema: object
+    ) -> StructuredOutputError:
+        del messages, schema
+        state.report = state.report + "\n\nA sentence added while reviewing.\n"
+        return _schema_error()
+
+    completer = ScriptedCompleter(outputs=[edit_the_report_then_fail, _draft(score=8)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    # The report really did change, so the guard had something to catch.
+    assert build_critic_packet(state).fingerprint != opened
+    # One request only: the repair was refused before it was sent.
+    assert [call[0] for call in completer.calls] == ["CritiqueDraft"]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    assert {error.error_type for error in outcome.errors} == {
+        "critic_review_schema_error",
+        "critic_review_repair_refused",
+    }
+    refused = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_repair_refused"
+    )
+    assert refused.recoverable is False
+    # A local refusal is not a provider failure, so the run summary says so.
+    assert outcome.react.stop_reason == "finished"
 
 
 def test_the_critic_prompt_version_is_repinned() -> None:

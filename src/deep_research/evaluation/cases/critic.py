@@ -799,7 +799,7 @@ _BUDGET_CASE = build_case(
         deterministic_metrics=metrics(
             (
                 "route_discipline",
-                0.4,
+                0.6,
                 "should_continue is False because no macro iteration remains, "
                 "regardless of score.",
             ),
@@ -811,13 +811,6 @@ _BUDGET_CASE = build_case(
                 "claims.",
             ),
             (
-                "rationale_present",
-                0.2,
-                "A non-blank rationale that says why the run stopped; the "
-                "critique is the only place a forced stop is explained, since "
-                "the Critic calls no tool that could fail.",
-            ),
-            (
                 "score_bounded",
                 0.15,
                 "The score is an integer in 1-10.",
@@ -827,6 +820,13 @@ _BUDGET_CASE = build_case(
         # satisfied by the scripted memory failure the old spot-check loop hit;
         # a tool-free Critic cannot reach that path, and keeping the expectation
         # would make this case unsatisfiable rather than strict.
+        #
+        # Its 0.20 weight went to ``route_discipline`` rather than to a
+        # replacement metric. ``rationale_present`` was tried and removed: with
+        # no ``reference_themes`` on this case and ``Critique.rationale``
+        # guaranteed non-blank, it returned ``True`` for any input at all, so a
+        # fifth of the case measured nothing. What this case can genuinely fail
+        # is the score ceiling, and that is what ``conservative_score`` is for.
     ),
     judge_rubric=_BUDGET_RUBRIC,
 )
