@@ -393,7 +393,16 @@ class CritiqueGapDraft(ContractModel):
     kind: GapKind = "coverage"
     severity: GapSeverity = "major"
     repair_action: RepairAction = "acquire"
-    problem: str
+    problem: str = Field(min_length=1)
+    """The defect, in the model's words, and never blank.
+
+    ``min_length=1`` matters more than it looks: ``ContractModel`` strips
+    whitespace, so a reply of ``"   "`` arrived as ``""`` and the contract rule
+    — which reads the ids, not the text — had nothing to say about it. The gap
+    was then dropped by the local normalizer, and a material defect with a
+    perfectly valid scope vanished from the review. A blank problem is a
+    malformed reply, so it fails here and takes the repair path.
+    """
     recommended_queries: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -666,41 +675,30 @@ class CriticPacket(ContractModel):
         ]
 
 
-def critic_packet_fingerprint(
-    *,
-    question: str,
-    reader_content: str,
-    statement_ids: Sequence[str],
-    target_ids: Sequence[str],
-    evidence: Sequence[tuple[str, str, str]],
-) -> str:
-    """The stable digest of everything one review is opened on.
+def critic_packet_fingerprint(packet: CriticPacket) -> str:
+    """The stable digest of the exact packet one review is opened on.
 
-    Twelve hex characters over a sorted JSON payload, the same shape the
-    configuration fingerprints use. The report text is hashed by the digest of
-    its own bytes, so the fingerprint is short whether the report is 200
-    characters or 200,000, and each evidence entry contributes its id, its
-    read id, and the digest of its exact excerpt — editing one excerpt changes
-    the packet's identity even though the id did not change.
+    Twelve hex characters over the packet's canonical JSON, with its own
+    ``fingerprint`` field excluded — a hand-written subset was the wrong
+    identity, because *every* field of this packet is rendered into the request
+    or into the review's material: an evidence item's ``source_url`` is the
+    independence signal a reader checks, a target's ``support_policy`` is the
+    obligation's own rule, ``answered_dimensions`` is what the report claims to
+    have answered, and ``hard_checks`` is the deterministic verdict. Hashing a
+    subset meant any of those could change while the fingerprint stayed put, and
+    the repair guard would then wave through a review of different material.
+
+    The canonical dump is sorted and separator-normalized before hashing, so two
+    identical packets always produce one digest and no field can be reordered
+    into a different identity.
     """
-    payload = {
-        "question": question,
-        "reader_content_sha256": hashlib.sha256(
-            reader_content.encode("utf-8")
-        ).hexdigest(),
-        "statement_ids": list(statement_ids),
-        "target_ids": list(target_ids),
-        "evidence": [
-            [
-                evidence_id,
-                read_id,
-                hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
-            ]
-            for evidence_id, read_id, excerpt in evidence
-        ],
-    }
+    payload = packet.model_dump(mode="json", exclude={"fingerprint"})
     encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), default=str
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:PACKET_FINGERPRINT_CHARS]
 
@@ -893,17 +891,8 @@ def build_critic_packet(
             "the read registry"
         )
 
-    fingerprint = critic_packet_fingerprint(
-        question=state.original_question,
-        reader_content=report,
-        statement_ids=[statement.statement_id for statement in statements],
-        target_ids=[target.target_id for target in targets],
-        evidence=[
-            (item.evidence_id, item.read_id, item.excerpt) for item in items
-        ],
-    )
     errors = list(state.errors)
-    return CriticPacket(
+    packet = CriticPacket(
         question=state.original_question,
         answer_contract=state.answer_contract,
         reader_content=report,
@@ -922,7 +911,11 @@ def build_critic_packet(
         error_groups=_group_errors_by_agent_stage(errors),
         evidence_unit_count=len(units),
         unrecorded_statement_count=unrecorded,
-        fingerprint=fingerprint,
+    )
+    # Stamped last, from the packet that will actually be sent: the digest
+    # covers every field above, so it cannot be computed before they exist.
+    return packet.model_copy(
+        update={"fingerprint": critic_packet_fingerprint(packet)}
     )
 
 
@@ -988,7 +981,7 @@ def packet_for_task(task: CritiqueTask) -> CriticPacket:
     )
     if task.quality:
         hard_checks.extend(task.quality.hard_failures)
-    return CriticPacket(
+    packet = CriticPacket(
         question=task.instruction,
         reader_content=task.report,
         reader_sections=task.report_sections or _split_reader_report(task.report),
@@ -1002,13 +995,9 @@ def packet_for_task(task: CritiqueTask) -> CriticPacket:
         error_count=task.error_count or len(errors),
         error_groups=task.error_groups or _group_errors_by_agent_stage(errors),
         unrecorded_statement_count=1 if task.report.strip() else 0,
-        fingerprint=critic_packet_fingerprint(
-            question=task.instruction,
-            reader_content=task.report,
-            statement_ids=[],
-            target_ids=[target.target_id for target in targets],
-            evidence=[],
-        ),
+    )
+    return packet.model_copy(
+        update={"fingerprint": critic_packet_fingerprint(packet)}
     )
 
 
@@ -1256,7 +1245,14 @@ def normalize_gaps(
         )
         problem = " ".join(draft.problem.split())
         if not problem:
-            continue
+            # Defence in depth behind ``CritiqueGapDraft.problem``'s
+            # ``min_length``: a gap whose text says nothing is not a gap, and
+            # silently dropping it deleted a material defect from the review
+            # while the score still counted as an acceptance.
+            raise CritiqueContractViolation(
+                "gap problem must be non-blank",
+                gap_index=len(gaps),
+            )
         declared_scope = bool(
             draft.coverage_id
             or draft.target_ids
@@ -1289,7 +1285,16 @@ def normalize_gaps(
         if declared_scope and not (
             targets or statements or clusters or coverage_id
         ):
-            targets = [QUESTION_TARGET_ID]
+            # The gap named ids this packet cannot resolve. Substituting the
+            # whole-answer sentinel would turn a hallucinated id into a
+            # material obligation about the question, and the sentinel means
+            # one specific thing (an original-question omission, paired with
+            # ``extend_plan`` by the prompt) — it is not a recovery value. A
+            # reply that names records nobody can look up is repaired instead.
+            raise CritiqueContractViolation(
+                "the gap declared scope ids that do not resolve in this packet",
+                gap_index=len(gaps),
+            )
         queries = tuple(normalize_notes(draft.recommended_queries))
         violation = gap_contract_problem(
             kind=draft.kind,
@@ -1486,6 +1491,15 @@ def fallback_critique(
     nothing about the report, and a retry would almost certainly repeat it
     at cost. A missing report does buy one — there is something concrete to
     fix — unless the iteration bound already forbids it.
+
+    ``review_status`` separates the two. An outage produced **no review**, so
+    it is recorded ``failed`` and the graph refuses to accept the unreviewed
+    report; leaving the default ``reviewed`` made an outage byte-identical to a
+    clean acceptance, because the stopped critique's floor score and empty gap
+    list are exactly what an accepted one looks like. A missing report is a
+    different thing: the policy decision not to review is a real judgement about
+    a missing artifact, the gap it records says what is missing, and the run is
+    allowed to buy another pass — so that one stays ``reviewed``.
     """
     if reason not in CRITIQUE_FALLBACK_REASONS:
         raise ValueError(f"unknown fallback reason: {reason}")
@@ -1529,6 +1543,9 @@ def fallback_critique(
             recommended_queries=[],
             should_continue=should_continue,
             rationale=" ".join(sentences),
+            review_status=(
+                "failed" if reason == "provider_unavailable" else "reviewed"
+            ),
         ),
         route,
     )

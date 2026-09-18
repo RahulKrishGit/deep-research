@@ -1080,27 +1080,32 @@ def gap_contract_problem(
     per obligation and a statement id says which sentence is thin rather than
     what evidence is owed; and search queries ride on an acquisition gap and
     on nothing else.
+
+    Every scope token is stripped before it counts, so a whitespace-only id is
+    absent rather than present. The scalar fields are stripped by the model and
+    the list fields are not, and that asymmetry was the same harm through a
+    sibling field: ``target_ids=[""]`` satisfied "must name what it affects"
+    and was then dropped downstream, leaving a material gap with no scope.
     """
     if kind == "presentation" and recommended_queries:
         return (
             "a presentation gap is a rewrite, not a search; it carries no "
             "queries"
         )
+    scope = [coverage_id.strip()] if coverage_id and coverage_id.strip() else []
+    targets = [item.strip() for item in target_ids if item.strip()]
     affected = [
-        *([coverage_id] if coverage_id else []),
-        *target_ids,
-        *statement_ids,
-        *claim_cluster_ids,
+        *scope,
+        *targets,
+        *(item.strip() for item in statement_ids if item.strip()),
+        *(item.strip() for item in claim_cluster_ids if item.strip()),
     ]
     if severity in GAP_MATERIAL_SEVERITIES and not affected:
         return (
             "a critical or major gap must name the target, statement, or "
             "claim cluster it affects"
         )
-    if (
-        repair_action == QUERY_BEARING_REPAIR_ACTION
-        and not (coverage_id or target_ids)
-    ):
+    if repair_action == QUERY_BEARING_REPAIR_ACTION and not (scope or targets):
         return (
             "an acquire gap must name the target, or the planned sub-topic, "
             "whose evidence obligation is missing"

@@ -40,7 +40,13 @@ from deep_research.evaluation.models import (
     GateResult,
     TargetOutput,
 )
-from deep_research.utils.types import Claim, ScoredSource, SubTopic, UnitScore
+from deep_research.utils.types import (
+    Claim,
+    Critique,
+    ScoredSource,
+    SubTopic,
+    UnitScore,
+)
 
 GENERAL_GATE_IDS: tuple[str, ...] = (
     "agent_constructed",
@@ -722,6 +728,44 @@ def _has_typed_provider_fallback(
         if provider_failure.get("kind") in _PROVIDER_FAILURE_KINDS:
             return True
     return False
+
+
+def _typed_critique(output: TargetOutput) -> Critique | None:
+    """The critique as the production contract reads it, or ``None``.
+
+    Production serializes ``run.result.model_dump(mode="json")``, so a typed
+    gap arrives as a dictionary. Parsing it back once here — rather than
+    teaching every evaluator to read dictionaries — means the metrics judge the
+    same contract the agent produced. Before this, eight filters selected only
+    ``isinstance(item, str)``, so every production gap was invisible: a critique
+    with a material typed gap looked like a critique with no gaps,
+    ``critique_actionable`` could fail a real typed gap, and ``no_spurious_gaps``
+    skipped every gap it was meant to judge.
+
+    The legacy string form still parses, because ``Critique`` accepts it, so an
+    old evaluation artifact keeps being gradable. ``None`` means the artifact is
+    not a critique at all, which every caller treats as a failure rather than as
+    an absence of defects.
+    """
+    value = _artifact(output, "critique")
+    if value is None:
+        return None
+    try:
+        return Critique.model_validate(value)
+    except (TypeError, ValidationError):
+        return None
+
+
+def _critique_is_unreviewed(output: TargetOutput, critique: Critique | None) -> bool:
+    """True when no review of this report exists, by either signal.
+
+    ``review_status`` is the contract's own answer and the error ledger is the
+    compatibility one: an artifact written before the field existed still
+    records the fallback as a typed provider failure.
+    """
+    if critique is not None and critique.review_status == "failed":
+        return True
+    return _has_typed_provider_fallback(output, operation="critic_report_review")
 
 
 def _normalized_text(value: object) -> str:
@@ -1577,20 +1621,17 @@ def _gate_bounded_component_scores(
 def _critique_actionable_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    critique = _artifact(output, "critique")
-    if _field(critique, "should_continue") is not True:
+    del case
+    critique = _typed_critique(output)
+    if critique is None:
+        return False
+    if not critique.should_continue:
         return True
-    gaps = _field(critique, "gaps")
-    queries = _field(critique, "recommended_queries")
-    if isinstance(gaps, list) and any(
-        isinstance(item, str) and item.strip() for item in gaps
-    ):
-        return True
-    if isinstance(queries, list) and any(
-        isinstance(item, str) and item.strip() for item in queries
-    ):
-        return True
-    return False
+    return bool(
+        critique.gaps
+        or critique.unsupported_claims
+        or critique.recommended_queries
+    )
 
 
 def _gate_critique_actionable(
@@ -1605,36 +1646,25 @@ def _gate_critique_actionable(
 
 
 def _route_consistent_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    critique = _artifact(output, "critique")
-    if _has_typed_provider_fallback(
-        output, operation="critic_report_review"
-    ):
-        return _field(critique, "should_continue") is False
-    score = _field(critique, "score")
-    if not isinstance(score, int) or isinstance(score, bool):
+    critique = _typed_critique(output)
+    if critique is None:
         return False
-    gaps = [
-        item
-        for item in (_field(critique, "gaps") or [])
-        if isinstance(item, str)
-    ]
-    unsupported = [
-        item
-        for item in (_field(critique, "unsupported_claims") or [])
-        if isinstance(item, str)
-    ]
+    if _critique_is_unreviewed(output, critique):
+        # No judgement exists, so no routing decision can agree with one: a
+        # stopped fallback is not a critique that happened to route to end.
+        return False
     try:
         expected, _ = route_decision(
-            score=score,
-            gaps=gaps,
-            unsupported_claims=unsupported,
+            score=critique.score,
+            gaps=critique.gaps,
+            unsupported_claims=critique.unsupported_claims,
             iteration=case.state.iteration,
             max_iterations=case.state.max_iterations,
             has_report=case.state.report is not None,
         )
     except (TypeError, ValueError):
         return False
-    return expected is (_field(critique, "should_continue") is True)
+    return expected is critique.should_continue
 
 
 def _gate_route_consistent(
@@ -1649,15 +1679,15 @@ def _gate_route_consistent(
 
 
 def _review_produced_passes(output: TargetOutput) -> bool:
-    """A report review that fell back to the provider-unavailable path is not
-    a review.
+    """A run whose report was never reviewed is not a reviewed run.
 
-    When the structured review call fails, ``fallback_critique`` returns a
-    placeholder score of ``1`` with empty gap, unsupported-claim, and
-    recommended-query lists. Those empty lists then satisfy every other gate:
-    ``critique_actionable`` returns ``True`` whenever ``should_continue`` is not
-    ``True``, ``bounded_component_scores`` accepts the placeholder ``1``, and
-    ``route_consistent`` matches the fallback's own stop. A live repetition was
+    When the structured review call fails, ``fallback_critique`` records a
+    ``failed`` review: a placeholder score of ``1`` with empty
+    gap, unsupported-claim, and recommended-query lists. Those empty lists then
+    satisfy every other gate: ``critique_actionable`` returns ``True`` whenever
+    ``should_continue`` is not ``True``, ``bounded_component_scores`` accepts the
+    placeholder ``1``, and ``route_consistent`` matches the fallback's own stop.
+    A live repetition was
     observed passing the aggregate quality threshold with no critique at all.
 
     The fallback remains correct agent behaviour — an outage says nothing about
@@ -1665,9 +1695,12 @@ def _review_produced_passes(output: TargetOutput) -> bool:
     free to score the fallback's honesty. What this gate forbids is a *quality
     gate* certifying a run in which the agent produced no review.
     """
-    return not _has_typed_provider_fallback(
-        output, operation="critic_report_review"
-    )
+    critique = _typed_critique(output)
+    if critique is None:
+        return False
+    if _critique_is_unreviewed(output, critique):
+        return False
+    return True
 
 
 def _gate_review_produced(
@@ -2442,14 +2475,11 @@ def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool
             for clause in report_clauses
         )
 
-    critique = _artifact(output, "critique")
-    gaps = _field(critique, "gaps")
-    if not isinstance(gaps, list):
+    critique = _typed_critique(output)
+    if critique is None:
         return True
-    for gap in gaps:
-        if not isinstance(gap, str):
-            continue
-        gap_tokens = meaningful_tokens(gap)
+    for gap in critique.gaps:
+        gap_tokens = meaningful_tokens(gap.problem)
         if any(
             tokens
             and tokens <= gap_tokens
@@ -2483,13 +2513,11 @@ def _gaps_identified_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     ]
     if not known:
         return True
-    critique = _artifact(output, "critique")
-    candidate_texts = [
-        item for item in (_field(critique, "gaps") or []) if isinstance(item, str)
-    ]
+    critique = _typed_critique(output)
+    candidate_texts = [gap.problem for gap in critique.gaps] if critique else []
     candidate_texts += [
         item
-        for item in (_field(critique, "recommended_queries") or [])
+        for item in (_field(_artifact(output, "critique"), "recommended_queries") or [])
         if isinstance(item, str)
     ]
     folded = " ".join(candidate_texts).casefold()

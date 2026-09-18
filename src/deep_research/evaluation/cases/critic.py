@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 
 from deep_research.agents.critic import (
     ACCEPTANCE_SCORE,
@@ -12,6 +12,7 @@ from deep_research.agents.critic import (
     build_critic_packet,
     build_critique,
 )
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.evaluation.cases import (
     build_case,
     claim,
@@ -25,7 +26,9 @@ from deep_research.evaluation.cases import (
 from deep_research.evaluation.models import CaseExpectations, EvaluationCase
 from deep_research.utils.types import (
     AtomicProposition,
+    Claim,
     ClaimCluster,
+    EvidencePassage,
     EvidenceTarget,
     EvidenceUnit,
     ReportComposition,
@@ -1105,55 +1108,91 @@ CALIBRATION_QUESTION = (
     "does it cost?"
 )
 
-# The candidate's inventory. Every calibration case reviews a candidate with
-# this same shape, so a gap's ids mean the same thing in every case and the
-# scripted reviews can be compared with each other.
+# The three obligations the question itself names, and the ids every candidate
+# shares, so a scripted gap means the same thing in every case. Each candidate
+# answers a different subset of them, which is what makes the labels real.
+CALIBRATION_TARGET_IDS = {
+    "mechanism": "target-mechanism",
+    "emissions": "target-emissions",
+    "cost": "target-cost",
+}
 CALIBRATION_CLUSTER_IDS = {
     "mechanism": "cluster-calibration-mechanism",
-    "figure": "cluster-calibration-figure",
-}
-CALIBRATION_STATEMENT_IDS = {"mechanism": "S001", "figure": "F001"}
-CALIBRATION_TARGET_IDS = {
-    "mechanism": "target-01",
-    "figure": "target-02",
-    "durability": "target-03",
+    "emissions": "cluster-calibration-emissions",
+    "cost": "cluster-calibration-cost",
+    "deployment": "cluster-calibration-deployment",
 }
 CALIBRATION_EVIDENCE_IDS = {
-    "mechanism": "evidence-calibration-01",
-    "figure": "evidence-calibration-02",
+    "mechanism": "evidence-calibration-mechanism",
+    "emissions_nature": "evidence-calibration-emissions-nature",
+    "emissions_roadmap": "evidence-calibration-emissions-roadmap",
+    "cost": "evidence-calibration-cost",
+}
+#: The statement ids ``_fill_statement_map`` mints for this candidate shape:
+#: one summary point first, then the findings section's points in order.
+CALIBRATION_STATEMENT_IDS = {
+    "mechanism": "S001",
+    "emissions": "F001",
+    "cost": "F002",
 }
 
 _CALIBRATION_MECHANISM_CLAIM = (
     "Clinker substitution cuts process emissions by replacing the clinker "
     "fraction of cement with supplementary materials."
 )
-_CALIBRATION_FIGURE_CLAIM = (
-    "Substituting clinker can remove 0.4 tonnes of carbon dioxide per tonne "
+_CALIBRATION_EMISSIONS_CLAIM = (
+    "Substituting clinker removes about 0.4 tonnes of carbon dioxide per tonne "
     "of cement produced."
+)
+_CALIBRATION_COST_CLAIM = (
+    "Clinker substitution carries a cost premium of about 15 percent per tonne "
+    "in the markets that have adopted it."
+)
+_CALIBRATION_DEPLOYMENT_CLAIM = (
+    "Commercial-scale deployment of low-carbon cement is accelerating across "
+    "several markets."
 )
 _CALIBRATION_MECHANISM_EVIDENCE = (
     "Substituting clinker with calcined clay or slag displaces the clinker "
     "fraction and therefore the process emissions it carries."
 )
-_CALIBRATION_FIGURE_EVIDENCE = (
+_CALIBRATION_EMISSIONS_NATURE_EVIDENCE = (
     "Each tonne of clinker avoided removes roughly 0.4 tonnes of process "
     "carbon dioxide."
 )
+_CALIBRATION_EMISSIONS_ROADMAP_EVIDENCE = (
+    "The roadmap's own accounting puts avoided process emissions at about 0.4 "
+    "tonnes of carbon dioxide per tonne of clinker displaced."
+)
+_CALIBRATION_COST_EVIDENCE = (
+    "Adopting markets report a cost premium of roughly 15 percent per tonne "
+    "for blended cement against the ordinary product."
+)
+
+#: The two URLs behind the corroborated reduction, per candidate. One pair is
+#: genuinely independent — a peer-reviewed review and an agency's own analysis —
+#: and the other is two pages of one association's site: the same registrable
+#: publisher, so ``publisher_identity`` resolves them together and
+#: ``independent_domains`` refuses the second as corroboration.
+_GCCA_SECOND_URL = "https://gcca.org/net-zero-roadmap-summary"
+_GCCA_PAIR_URL = "https://gcca.org/net-zero-roadmap"
+_INDEPENDENT_EMISSIONS_PAIR = ("emissions_review", "emissions_agency")
+_FALSE_EMISSIONS_PAIR = ("emissions_roadmap", "emissions_summary")
 
 _CALIBRATION_REPORT = (
     "# Research report: How far can clinker substitution cut cement process "
     "emissions, and what does it cost?\n\n"
     "## Summary\n\nClinker substitution lowers process emissions by displacing "
-    "the clinker fraction of cement, and the GCCA's own roadmap puts the "
-    "figure at roughly 0.4 tonnes of carbon dioxide per tonne of cement "
-    "avoided. [1]\n\n"
-    "## Findings\n\nIndustry analysis estimates that each tonne of clinker "
-    "avoided removes about 0.4 tonnes of process carbon dioxide. [2]\n"
+    "the clinker fraction of cement. [1]\n\n"
+    "## Findings\n\nPeer-reviewed accounting puts the reduction at roughly 0.4 "
+    "tonnes of carbon dioxide per tonne of clinker displaced. [2] Adopting "
+    "markets report a cost premium of about 15 percent per tonne for blended "
+    "cement. [3]\n"
 )
 
-# The polished non-answer: long, confident, and carrying no figure a read
-# supports. Its length is the point — 300+ words of prose must not outscore a
-# short answer that actually answers.
+#: The polished non-answer: long, confident, and carrying no figure a read
+#: supports. Its length is the point — 300+ words of prose must not outscore a
+#: short answer that actually answers.
 _POLISHED_NON_ANSWER_REPORT = (
     "# Research report: How far can clinker substitution cut cement process "
     "emissions, and what does it cost?\n\n"
@@ -1188,6 +1227,22 @@ _POLISHED_NON_ANSWER_REPORT = (
     "are not independently replicated.\n"
 )
 
+#: The honest-but-incomplete candidate's report: it says outright what it could
+#: not establish, which is better than hiding it and is still not an answer.
+_HONEST_INCOMPLETE_REPORT = (
+    "# Research report: How far can clinker substitution cut cement process "
+    "emissions, and what does it cost?\n\n"
+    "## Summary\n\nClinker substitution lowers process emissions by displacing "
+    "the clinker fraction of cement, and that much is established. [1] The "
+    "question's second half is not answered here: no measured substitution "
+    "share and no cost figure were established from the reads this pass "
+    "acquired.\n\n"
+    "## Findings\n\nSubstituting clinker with calcined clay or slag displaces "
+    "the clinker fraction and therefore the process emissions it carries. [1] "
+    "The report states plainly that the emissions-reduction share and the cost "
+    "premium remain unquantified rather than estimating them.\n"
+)
+
 CALIBRATION_BASIS = (
     "These scores are the local build's reading of scripted reviews of fixed "
     "candidates. A model agreeing with its own scripted review is not ground "
@@ -1197,14 +1252,153 @@ CALIBRATION_BASIS = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _Reading:
+    """One registered read excerpt a candidate may cite."""
+
+    evidence_id: str
+    target_key: str
+    url: str
+    title: str
+    locator: str
+    excerpt: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ClaimSpec:
+    """One claim a candidate asserts, and how it was judged."""
+
+    key: str
+    text: str
+    target_key: str
+    atom: AtomicProposition
+    urls: tuple[str, ...]
+    evidence_ids: tuple[str, ...]
+    verdict: str
+    badge: str
+
+
+_MECHANISM_SPEC = _ClaimSpec(
+    key="mechanism",
+    text=_CALIBRATION_MECHANISM_CLAIM,
+    target_key="mechanism",
+    atom=AtomicProposition(
+        text=_CALIBRATION_MECHANISM_CLAIM,
+        subject="clinker substitution",
+        predicate="states_mechanism",
+    ),
+    urls=(_IEA_CE_URL,),
+    evidence_ids=(CALIBRATION_EVIDENCE_IDS["mechanism"],),
+    verdict="insufficient_evidence",
+    badge="source_supported",
+)
+_EMISSIONS_SPEC = _ClaimSpec(
+    key="emissions",
+    text=_CALIBRATION_EMISSIONS_CLAIM,
+    target_key="emissions",
+    atom=AtomicProposition(
+        text=_CALIBRATION_EMISSIONS_CLAIM,
+        subject="clinker substitution",
+        predicate="states_value",
+        value="0.4",
+        unit="tCO2/t",
+    ),
+    urls=(_NATURE_CE_URL, _IEA_CE_URL),
+    evidence_ids=(
+        CALIBRATION_EVIDENCE_IDS["emissions_nature"],
+        "evidence-calibration-emissions-agency",
+    ),
+    verdict="verified",
+    badge="verified_pair",
+)
+_COST_SPEC = _ClaimSpec(
+    key="cost",
+    text=_CALIBRATION_COST_CLAIM,
+    target_key="cost",
+    atom=AtomicProposition(
+        text=_CALIBRATION_COST_CLAIM,
+        subject="clinker substitution",
+        predicate="states_value",
+        value="15",
+        unit="percent premium",
+    ),
+    urls=(_IEA_CE_URL,),
+    evidence_ids=(CALIBRATION_EVIDENCE_IDS["cost"],),
+    verdict="insufficient_evidence",
+    badge="source_supported",
+)
+
+_READINGS: dict[str, _Reading] = {
+    "mechanism": _Reading(
+        evidence_id=CALIBRATION_EVIDENCE_IDS["mechanism"],
+        target_key="mechanism",
+        url=_IEA_CE_URL,
+        title="IEA: cement industry energy analysis",
+        locator="section-mechanism",
+        excerpt=_CALIBRATION_MECHANISM_EVIDENCE,
+    ),
+    "emissions_review": _Reading(
+        evidence_id=CALIBRATION_EVIDENCE_IDS["emissions_nature"],
+        target_key="emissions",
+        url=_NATURE_CE_URL,
+        title="Nature: cement decarbonization at scale",
+        locator="section-emissions",
+        excerpt=_CALIBRATION_EMISSIONS_NATURE_EVIDENCE,
+    ),
+    "emissions_agency": _Reading(
+        evidence_id="evidence-calibration-emissions-agency",
+        target_key="emissions",
+        url=_IEA_CE_URL,
+        title="IEA: cement industry energy analysis",
+        locator="section-emissions-figures",
+        excerpt=(
+            "Agency analysis of cement process emissions repeats the 0.4 "
+            "tonnes of carbon dioxide per tonne of clinker avoided."
+        ),
+    ),
+    "emissions_roadmap": _Reading(
+        evidence_id=CALIBRATION_EVIDENCE_IDS["emissions_roadmap"],
+        target_key="emissions",
+        url=_GCCA_PAIR_URL,
+        title="GCCA: net-zero roadmap",
+        locator="section-emissions-accounting",
+        excerpt=_CALIBRATION_EMISSIONS_ROADMAP_EVIDENCE,
+    ),
+    "emissions_summary": _Reading(
+        evidence_id="evidence-calibration-emissions-summary",
+        target_key="emissions",
+        url=_GCCA_SECOND_URL,
+        title="GCCA: net-zero roadmap summary",
+        locator="section-emissions-summary",
+        excerpt=(
+            "The same association's summary of that roadmap repeats the 0.4 "
+            "tonnes of process carbon dioxide per tonne of clinker displaced."
+        ),
+    ),
+    "cost": _Reading(
+        evidence_id=CALIBRATION_EVIDENCE_IDS["cost"],
+        target_key="cost",
+        url=_IEA_CE_URL,
+        title="IEA: cement industry energy analysis",
+        locator="section-cost",
+        excerpt=_CALIBRATION_COST_EVIDENCE,
+    ),
+}
+
+#: The two readings behind the reduction, chosen per candidate: an independent
+#: pair (a peer-reviewed review and an agency's own analysis) or one
+#: association's roadmap with its own summary, which is the false pair. Both
+#: tuples are declared with the URLs near the top of this section.
+
+
 def _calibration_sub_topic() -> SubTopic:
-    """The candidate's plan: three critical targets, one of them unanswered."""
+    """The candidate's plan: the three obligations the question names."""
     return SubTopic(
         coverage_id="topic-calibration",
         title="Clinker substitution",
-        rationale="The question turns on the substitution share and its cost.",
-        search_queries=["clinker substitution emissions reduction share"],
-        success_criteria=["A measured share with a named source."],
+        rationale="The question turns on the emissions reduction and its cost.",
+        search_queries=["clinker substitution emissions reduction and cost"],
+        success_criteria=["A measured reduction and a cost figure, sourced."],
         priority=1,
         evidence_targets=[
             EvidenceTarget(
@@ -1217,7 +1411,7 @@ def _calibration_sub_topic() -> SubTopic:
                 support_policy="primary_attribution",
             ),
             EvidenceTarget(
-                target_id=CALIBRATION_TARGET_IDS["figure"],
+                target_id=CALIBRATION_TARGET_IDS["emissions"],
                 coverage_id="topic-calibration",
                 question="How much carbon dioxide does substitution remove?",
                 required_dimensions=["scale"],
@@ -1226,96 +1420,152 @@ def _calibration_sub_topic() -> SubTopic:
                 support_policy="independent_pair",
             ),
             EvidenceTarget(
-                target_id=CALIBRATION_TARGET_IDS["durability"],
+                target_id=CALIBRATION_TARGET_IDS["cost"],
                 coverage_id="topic-calibration",
-                question="What field-durability evidence exists for blended "
-                "cements?",
-                required_dimensions=["period"],
+                question="What does substitution cost?",
+                required_dimensions=["scale"],
                 required=True,
                 critical=True,
-                support_policy="independent_pair",
+                support_policy="primary_attribution",
             ),
         ],
     )
 
 
-def _calibration_composition() -> ReportComposition:
-    """The candidate's typed composition: two statements, three targets."""
-    mechanism = claim(
-        _CALIBRATION_MECHANISM_CLAIM,
-        urls=(_GCCA_URL,),
-        verdict="insufficient_evidence",
-        confidence=0.6,
-        evidence=(_CALIBRATION_MECHANISM_EVIDENCE,),
-        verification_urls=(_IEA_CE_URL,),
+def _cluster_for(spec: _ClaimSpec, claim_id: str) -> ClaimCluster:
+    return ClaimCluster(
+        cluster_id=CALIBRATION_CLUSTER_IDS[spec.key],
+        proposition=spec.atom,
+        evidence_ids=list(spec.evidence_ids),
+        member_claim_ids=[claim_id],
+        target_ids=[CALIBRATION_TARGET_IDS[spec.target_key]],
+        source_urls=list(spec.urls),
+        verdicts=[spec.verdict],
+        verdict_evidence_status={spec.verdict: spec.badge},
     )
-    figure = claim(
-        _CALIBRATION_FIGURE_CLAIM,
-        urls=(_GCCA_URL,),
-        verdict="verified",
-        confidence=0.85,
-        evidence=(_CALIBRATION_FIGURE_EVIDENCE,),
-        verification_urls=(_NATURE_CE_URL,),
+
+
+def _calibration_candidate(
+    *,
+    case_id: str,
+    report: str,
+    answered: Sequence[str],
+    readings: Sequence[str],
+    unsupported: Sequence[str] = (),
+    attributed_emissions: bool = False,
+) -> ResearchState:
+    """Build one candidate: a report, its plan, and the records behind it.
+
+    ``answered`` names the claim keys the composition asserts as claim-linked
+    points; everything else stays open. ``readings`` names the registered read
+    excerpts, so a candidate can be *given* a corroborated figure, a single
+    attributed one, or a false pair. ``unsupported`` adds reader points that no
+    claim and no read stands behind — the packet renders them with no evidence
+    ids at all, which is the honest shape of an assertion the evidence does not
+    carry. ``attributed_emissions`` drops the reduction's second reading and its
+    corroboration badge, which is what a correctly attributed primary figure
+    looks like: one publisher's own account, labelled as that.
+
+    Every candidate is a real ``ResearchState`` built through the production
+    composition, so a scripted review is graded against the candidate its label
+    describes rather than against one shared fixture.
+    """
+    wanted = set(readings)
+    emissions_pair = [
+        name
+        for name in readings
+        if name in _INDEPENDENT_EMISSIONS_PAIR + _FALSE_EMISSIONS_PAIR
+    ]
+    emissions_spec = replace(
+        _EMISSIONS_SPEC,
+        urls=tuple(_READINGS[name].url for name in emissions_pair),
+        evidence_ids=tuple(_READINGS[name].evidence_id for name in emissions_pair),
     )
-    clusters = {
-        CALIBRATION_CLUSTER_IDS["mechanism"]: ClaimCluster(
-            cluster_id=CALIBRATION_CLUSTER_IDS["mechanism"],
-            proposition=AtomicProposition(
-                text=_CALIBRATION_MECHANISM_CLAIM,
-                subject="clinker substitution",
-                predicate="states_mechanism",
-            ),
-            evidence_ids=[CALIBRATION_EVIDENCE_IDS["mechanism"]],
-            member_claim_ids=[mechanism.claim_id],
-            target_ids=[CALIBRATION_TARGET_IDS["mechanism"]],
-            source_urls=list(mechanism.source_urls),
-            verdicts=["insufficient_evidence"],
-            verdict_evidence_status={"insufficient_evidence": "source_supported"},
-        ),
-        CALIBRATION_CLUSTER_IDS["figure"]: ClaimCluster(
-            cluster_id=CALIBRATION_CLUSTER_IDS["figure"],
-            proposition=AtomicProposition(
-                text=_CALIBRATION_FIGURE_CLAIM,
-                subject="clinker substitution",
-                predicate="states_value",
-                value="0.4",
-                unit="tCO2/t",
-            ),
-            evidence_ids=[CALIBRATION_EVIDENCE_IDS["figure"]],
-            member_claim_ids=[figure.claim_id],
-            target_ids=[CALIBRATION_TARGET_IDS["figure"]],
-            source_urls=list(figure.source_urls),
-            verdicts=["verified"],
-            verdict_evidence_status={"verified": "verified_pair"},
-        ),
+    if attributed_emissions:
+        emissions_spec = replace(
+            emissions_spec,
+            verdict="insufficient_evidence",
+            badge="source_supported",
+        )
+    specs = {
+        "mechanism": _MECHANISM_SPEC,
+        "emissions": emissions_spec,
+        "cost": _COST_SPEC,
     }
+    claims_out: list[Claim] = []
+    clusters: dict[str, ClaimCluster] = {}
+    for key in answered:
+        spec = specs[key]
+        # Built directly rather than through the ``claim`` fixture helper: that
+        # helper refuses a claim whose verification passage cites one of its own
+        # publishers, and the false-independent-pair candidate *is* that shape.
+        # The guard protects a fixture from accidentally claiming corroboration;
+        # here the false pair is the candidate under test, so it is deliberate
+        # and the fixture-integrity test asserts it really is a false pair.
+        cited_readings = [
+            reading
+            for name, reading in _READINGS.items()
+            if name in wanted and reading.evidence_id in spec.evidence_ids
+        ]
+        passages = [
+            EvidencePassage(
+                source_url=reading.url,
+                source_title=reading.title,
+                locator=f"support-{index + 1}",
+                excerpt=reading.excerpt,
+                stance="supports",
+            )
+            for index, reading in enumerate(cited_readings)
+        ]
+        built = Claim(
+            claim_id=claim_fingerprint(spec.text),
+            text=spec.text,
+            source_urls=list(spec.urls),
+            verdict=spec.verdict,
+            confidence=0.85 if spec.verdict == "verified" else 0.6,
+            evidence=[passage.excerpt for passage in passages]
+            or ["Case fixture evidence."],
+            contradictions=[],
+            verification_evidence=passages,
+            evidence_status=spec.badge,
+        )
+        claims_out.append(built)
+        clusters[CALIBRATION_CLUSTER_IDS[key]] = _cluster_for(spec, built.claim_id)
+
     units = {
-        CALIBRATION_EVIDENCE_IDS["mechanism"]: EvidenceUnit(
-            evidence_id=CALIBRATION_EVIDENCE_IDS["mechanism"],
-            read_id="read-calibration-01",
-            source_url=_IEA_CE_URL,
-            source_title="IEA: cement industry energy analysis",
-            locator="section-mechanism",
-            excerpt=_CALIBRATION_MECHANISM_EVIDENCE,
-            target_ids=[CALIBRATION_TARGET_IDS["mechanism"]],
+        _READINGS[name].evidence_id: EvidenceUnit(
+            evidence_id=_READINGS[name].evidence_id,
+            read_id=f"read-{_READINGS[name].evidence_id}",
+            source_url=_READINGS[name].url,
+            source_title=_READINGS[name].title,
+            locator=_READINGS[name].locator,
+            excerpt=_READINGS[name].excerpt,
+            target_ids=[CALIBRATION_TARGET_IDS[_READINGS[name].target_key]],
             origin="researcher",
-        ),
-        CALIBRATION_EVIDENCE_IDS["figure"]: EvidenceUnit(
-            evidence_id=CALIBRATION_EVIDENCE_IDS["figure"],
-            read_id="read-calibration-02",
-            source_url=_NATURE_CE_URL,
-            source_title="Nature: cement decarbonization at scale",
-            locator="section-figure",
-            excerpt=_CALIBRATION_FIGURE_EVIDENCE,
-            target_ids=[CALIBRATION_TARGET_IDS["figure"]],
-            origin="researcher",
-        ),
+        )
+        for name in readings
     }
-    return ReportComposition(
+    claims_by_key = {key: claim_row for key, claim_row in zip(answered, claims_out)}
+    summary: list[ReportPoint] = []
+    findings: list[ReportPoint] = []
+    for index, key in enumerate(answered):
+        spec = specs[key]
+        row = claims_by_key[key]
+        point = ReportPoint(
+            text=spec.text,
+            claim_ids=[row.claim_id],
+            source_urls=list(spec.urls),
+        )
+        (summary if index == 0 else findings).append(point)
+    findings.extend(
+        ReportPoint(text=text, claim_ids=[], source_urls=[])
+        for text in unsupported
+    )
+    composition = ReportComposition(
         question=CALIBRATION_QUESTION,
-        session_id="evaluation-critic-calibration",
+        session_id=f"evaluation-{case_id}",
         sub_topics=[_calibration_sub_topic()],
-        claims=[mechanism, figure],
+        claims=claims_out,
         sources=[
             scored_source(
                 _GCCA_URL,
@@ -1347,26 +1597,121 @@ def _calibration_composition() -> ReportComposition:
         ],
         claim_clusters=clusters,
         evidence_units=units,
-        summary=[
-            ReportPoint(
-                text=_CALIBRATION_MECHANISM_CLAIM,
-                claim_ids=[mechanism.claim_id],
-                source_urls=list(mechanism.source_urls),
-            )
-        ],
-        sections=[
-            ReportSection(
-                title="Findings",
-                points=[
-                    ReportPoint(
-                        text=_CALIBRATION_FIGURE_CLAIM,
-                        claim_ids=[figure.claim_id],
-                        source_urls=list(figure.source_urls),
-                    )
-                ],
-            )
-        ],
+        summary=summary,
+        sections=[ReportSection(title="Findings", points=findings)],
     )
+    return ResearchState(
+        session_id=f"evaluation-{case_id}",
+        original_question=CALIBRATION_QUESTION,
+        report=report,
+        composition=composition,
+        sub_topics=[_calibration_sub_topic()],
+        verified_claims=list(composition.claims),
+        evaluated_sources=list(composition.sources),
+    )
+
+
+def _strong_calibration_state() -> ResearchState:
+    """Answers the mechanism, the measured reduction, and the cost."""
+    return _calibration_candidate(
+        case_id="calibration-strong-answer",
+        report=_CALIBRATION_REPORT,
+        answered=("mechanism", "emissions", "cost"),
+        readings=("mechanism", *_INDEPENDENT_EMISSIONS_PAIR, "cost"),
+    )
+
+
+def _missing_cost_calibration_state() -> ResearchState:
+    """The same candidate with the cost obligation answered nowhere."""
+    return _calibration_candidate(
+        case_id="calibration-missing-critical-topic",
+        report=_CALIBRATION_REPORT.replace(
+            " Adopting markets report a cost premium of about 15 percent per "
+            "tonne for blended cement. [3]",
+            "",
+        ),
+        answered=("mechanism", "emissions"),
+        readings=("mechanism", *_INDEPENDENT_EMISSIONS_PAIR),
+    )
+
+
+def _unsupported_assertion_calibration_state() -> ResearchState:
+    """Asserts accelerating deployment that no claim and no read carries."""
+    return _calibration_candidate(
+        case_id="calibration-unsupported-central-assertion",
+        report=_CALIBRATION_REPORT.replace(
+            " Adopting markets report a cost premium of about 15 percent per "
+            "tonne for blended cement. [3]",
+            "",
+        ).replace(
+            "## Findings\n\n",
+            "## Findings\n\nCommercial-scale deployment of low-carbon cement is "
+            "accelerating across several markets.\n\n",
+        ),
+        answered=("mechanism", "emissions"),
+        readings=("mechanism", *_INDEPENDENT_EMISSIONS_PAIR),
+        unsupported=(_CALIBRATION_DEPLOYMENT_CLAIM,),
+    )
+
+
+def _attributed_primary_calibration_state() -> ResearchState:
+    """Every figure attributed to the body that states it; none corroborated."""
+    return _calibration_candidate(
+        case_id="calibration-attributed-primary-fact",
+        report=_CALIBRATION_REPORT,
+        answered=("mechanism", "emissions", "cost"),
+        readings=("mechanism", "emissions_agency", "cost"),
+        attributed_emissions=True,
+    )
+
+
+def _false_pair_calibration_state() -> ResearchState:
+    """Two reads behind the figure that resolve to one publisher's identity."""
+    return _calibration_candidate(
+        case_id="calibration-false-independent-pair",
+        report=_CALIBRATION_REPORT,
+        answered=("mechanism", "emissions", "cost"),
+        readings=("mechanism", *_FALSE_EMISSIONS_PAIR, "cost"),
+    )
+
+
+def _polished_non_answer_calibration_state() -> ResearchState:
+    """A long, confident report whose records answer nothing."""
+    return _calibration_candidate(
+        case_id="calibration-polished-verbose-non-answer",
+        report=_POLISHED_NON_ANSWER_REPORT,
+        answered=(),
+        readings=(),
+        unsupported=(
+            "Decarbonising cement is one of the defining industrial challenges "
+            "of the decade, and clinker substitution sits at its centre.",
+            "The premium for lower-carbon cement is narrowing in the markets "
+            "that have moved first.",
+        ),
+    )
+
+
+def _honest_incomplete_calibration_state() -> ResearchState:
+    """A report that says outright which obligations it could not answer."""
+    return _calibration_candidate(
+        case_id="calibration-honest-but-incomplete-answer",
+        report=_HONEST_INCOMPLETE_REPORT,
+        answered=("mechanism",),
+        readings=("mechanism",),
+    )
+
+
+def calibration_packet(case_id: str) -> CriticPacket:
+    """The packet one calibration case's candidate is reviewed from.
+
+    Built from that case's own candidate — report, plan, statements, and read
+    records together — so the ids a scripted gap names are ids that candidate
+    really has, and the packet's open targets are the ones its label claims.
+    Nothing here calls a provider.
+    """
+    case = calibration_case(case_id)
+    state = case.state_factory()
+    return build_critic_packet(state, state.composition)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1389,7 +1734,7 @@ class CriticCalibrationCase:
     expects_acceptance: bool
     expects_a_defect: bool
     draft: dict[str, object]
-    report: str = _CALIBRATION_REPORT
+    state_factory: Callable[[], ResearchState]
 
 
 def _gap(
@@ -1435,8 +1780,9 @@ def _review(
 
 
 _MECHANISM_TARGET = CALIBRATION_TARGET_IDS["mechanism"]
-_DURABILITY_TARGET = CALIBRATION_TARGET_IDS["durability"]
-_FIGURE_CLUSTER = CALIBRATION_CLUSTER_IDS["figure"]
+_EMISSIONS_TARGET = CALIBRATION_TARGET_IDS["emissions"]
+_COST_TARGET = CALIBRATION_TARGET_IDS["cost"]
+_EMISSIONS_CLUSTER = CALIBRATION_CLUSTER_IDS["emissions"]
 _MECHANISM_STATEMENT = CALIBRATION_STATEMENT_IDS["mechanism"]
 
 CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
@@ -1444,9 +1790,9 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
         case_id="calibration-strong-answer",
         title="A complete, well-cited answer",
         purpose=(
-            "Every critical target is answered from named sources, the "
-            "measured figure is independently corroborated, and the report "
-            "states what it does not know."
+            "All three obligations the question names — the mechanism, the "
+            "measured reduction, and the cost — are answered from named "
+            "sources, and the reduction carries independent corroboration."
         ),
         score_band=(8, 10),
         expects_acceptance=True,
@@ -1454,18 +1800,18 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
         draft=_review(
             score=9,
             rationale=(
-                "The mechanism and the measured figure are both attributed to "
-                "named sources, the figure carries independent corroboration, "
-                "and the durability uncertainty is disclosed rather than "
-                "hidden."
+                "The mechanism, the measured reduction, and the cost are each "
+                "attributed to a named source, the reduction carries "
+                "independent corroboration, and no obligation is left open."
             ),
         ),
+        state_factory=_strong_calibration_state,
     ),
     CriticCalibrationCase(
         case_id="calibration-one-minor-gap",
         title="A sound answer with one minor gap",
         purpose=(
-            "The same sound answer, with one wording-level defect: the "
+            "The same sound candidate, with one wording-level defect: the "
             "mechanism is stated twice in different words. A minor defect is "
             "named and does not buy another research pass."
         ),
@@ -1492,16 +1838,16 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
                 "that one mechanism is stated twice."
             ),
         ),
+        state_factory=_strong_calibration_state,
     ),
     CriticCalibrationCase(
         case_id="calibration-missing-critical-topic",
-        title="A critical planned topic the report never answers",
+        title="A critical obligation the report never answers",
         purpose=(
-            "The durability obligation is critical, planned, and answered by "
-            "no statement and no read. The report is otherwise competent, and "
-            "still cannot be accepted."
+            "The question asks what substitution costs; this candidate answers "
+            "the mechanism and the reduction and says nothing about cost, and "
+            "its records answer the cost target nowhere. It cannot be accepted."
         ),
-        report=_CALIBRATION_REPORT,
         score_band=(1, 5),
         expects_acceptance=False,
         expects_a_defect=True,
@@ -1510,30 +1856,34 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
             gaps=[
                 _gap(
                     problem=(
-                        "The report never addresses field-durability evidence "
-                        "for blended cements, which is a critical obligation "
-                        "of this plan and is answered by no statement at all."
+                        "The report never states what substitution costs, which "
+                        "is the second half of the question and a critical "
+                        "obligation of this plan; no statement and no read "
+                        "answers it."
                     ),
-                    target_ids=[_DURABILITY_TARGET],
+                    target_ids=[_COST_TARGET],
                     kind="coverage",
                     severity="critical",
                     repair_action="acquire",
-                    queries=["blended cement field durability trial results"],
+                    queries=["clinker substitution cost premium per tonne"],
                 )
             ],
-            queries=["blended cement field durability trial results"],
+            queries=["clinker substitution cost premium per tonne"],
             rationale=(
-                "One of three critical obligations is untouched, so the "
-                "question is answered only in part."
+                "One of the three obligations is untouched, so the question is "
+                "answered only in part."
             ),
         ),
+        state_factory=_missing_cost_calibration_state,
     ),
     CriticCalibrationCase(
         case_id="calibration-unsupported-central-assertion",
         title="A central assertion no read supports",
         purpose=(
-            "The report's central claim about deployment is presented as "
-            "fact, is attributed to no cited read, and no excerpt carries it."
+            "The report asserts that commercial-scale deployment is "
+            "accelerating. No claim stands behind that sentence and no read "
+            "carries it, so the packet renders it as a statement with no "
+            "evidence at all."
         ),
         score_band=(1, 4),
         expects_acceptance=False,
@@ -1541,23 +1891,25 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
         draft=_review(
             score=3,
             unsupported=[
-                "Commercial-scale deployment is accelerating across several "
-                "markets, which no cited source in this report measures."
+                "Commercial-scale deployment of low-carbon cement is "
+                "accelerating across several markets, which no cited source in "
+                "this report measures."
             ],
             rationale=(
-                "The claim the question turns on is asserted without a source "
-                "that measures it, so the answer rests on nothing checkable."
+                "A load-bearing sentence is asserted with no evidence behind "
+                "it, so part of the answer rests on nothing checkable."
             ),
         ),
+        state_factory=_unsupported_assertion_calibration_state,
     ),
     CriticCalibrationCase(
         case_id="calibration-attributed-primary-fact",
         title="An appropriately attributed primary fact",
         purpose=(
-            "The mechanism statement carries one publisher's own account — "
+            "The mechanism and the cost are one publisher's own accounts — "
             "source-supported attribution, not independent corroboration "
-            "(Section 2.1). A correctly attributed primary fact is not a "
-            "defect, and must not be scored as one."
+            "(Section 2.1) — and both are labelled as such. A correctly "
+            "attributed primary fact is not a defect."
         ),
         score_band=(7, 9),
         expects_acceptance=True,
@@ -1565,20 +1917,22 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
         draft=_review(
             score=8,
             rationale=(
-                "The mechanism is attributed to the issuing body that states "
-                "it and is labelled as that body's own account, which is the "
-                "correct reading of a primary source; the measured figure "
-                "behind it carries independent corroboration."
+                "The mechanism and the cost are attributed to the issuing body "
+                "that states them and are labelled as that body's own account, "
+                "which is the correct reading of a primary source; the "
+                "reduction behind them carries independent corroboration."
             ),
         ),
+        state_factory=_attributed_primary_calibration_state,
     ),
     CriticCalibrationCase(
         case_id="calibration-false-independent-pair",
         title="A false independent-pair claim",
         purpose=(
-            "Two URLs stand behind the measured figure, but they are one "
-            "publisher's roadmap and its own summary: there is no independent "
-            "pair, so nothing is corroborated (Sections 2.1 and 2.2)."
+            "Two reads stand behind the measured reduction, but they resolve "
+            "to one publisher's identity — an association's roadmap and its own "
+            "summary — so there is no independent pair and nothing is "
+            "corroborated (Sections 2.1 and 2.2)."
         ),
         score_band=(1, 4),
         expects_acceptance=False,
@@ -1588,32 +1942,33 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
             gaps=[
                 _gap(
                     problem=(
-                        "The corroboration behind the 0.4-tonne figure is not "
-                        "independent: both passages come from the same "
-                        "publisher's roadmap and its own summary, so the "
-                        "independent pair the report implies does not exist."
+                        "The corroboration behind the 0.4-tonne reduction is "
+                        "not independent: both passages resolve to one "
+                        "publisher's identity, so the independent pair the "
+                        "report implies does not exist."
                     ),
-                    claim_cluster_ids=[_FIGURE_CLUSTER],
+                    claim_cluster_ids=[_EMISSIONS_CLUSTER],
                     kind="identity",
                     severity="major",
                     repair_action="adjudicate",
                 )
             ],
             rationale=(
-                "The headline figure is presented as corroborated when its "
+                "The measured reduction is presented as corroborated when its "
                 "two passages share one origin."
             ),
         ),
+        state_factory=_false_pair_calibration_state,
     ),
     CriticCalibrationCase(
         case_id="calibration-polished-verbose-non-answer",
         title="A polished, verbose non-answer",
         purpose=(
-            "Three hundred words of confident framing, no measured figure a "
-            "read supports, and no obligation discharged. Length and "
-            "confidence cannot buy a passing score."
+            "Three hundred words of confident framing whose records answer "
+            "nothing: both reader statements are unattributed framing and all "
+            "three obligations are open. Length and confidence cannot buy a "
+            "passing score."
         ),
-        report=_POLISHED_NON_ANSWER_REPORT,
         score_band=(1, 4),
         expects_acceptance=False,
         expects_a_defect=True,
@@ -1622,11 +1977,11 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
             gaps=[
                 _gap(
                     problem=(
-                        "The report describes the direction of travel but "
-                        "never states a measured substitution share, which is "
-                        "what the question asks for."
+                        "The report describes the direction of travel but never "
+                        "states a measured reduction, which is what the "
+                        "question asks for."
                     ),
-                    target_ids=[_MECHANISM_TARGET],
+                    target_ids=[_EMISSIONS_TARGET],
                     kind="coverage",
                     severity="critical",
                     repair_action="acquire",
@@ -1643,14 +1998,16 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
                 "discharged and no figure is attributed."
             ),
         ),
+        state_factory=_polished_non_answer_calibration_state,
     ),
     CriticCalibrationCase(
         case_id="calibration-honest-but-incomplete-answer",
         title="An honest but substantively incomplete answer",
         purpose=(
             "The report answers the mechanism plainly and says outright that "
-            "the cost and durability evidence was not found. Candour is not "
-            "an answer: the outstanding obligations are still outstanding."
+            "the reduction and the cost were not established. Candour is not an "
+            "answer: both obligations remain open, and the candidate's records "
+            "answer only the mechanism."
         ),
         score_band=(3, 6),
         expects_acceptance=False,
@@ -1660,38 +2017,40 @@ CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
             gaps=[
                 _gap(
                     problem=(
-                        "The cost of substitution is named as outstanding but "
+                        "The measured reduction is named as unestablished and "
+                        "left unquantified, so the plan's reduction obligation "
+                        "remains unanswered."
+                    ),
+                    target_ids=[_EMISSIONS_TARGET],
+                    kind="coverage",
+                    severity="major",
+                    repair_action="acquire",
+                    queries=["clinker substitution share of cement emissions"],
+                ),
+                _gap(
+                    problem=(
+                        "The cost of substitution is named as unestablished and "
                         "never quantified, and the plan's cost obligation "
                         "remains unanswered."
                     ),
-                    target_ids=[_MECHANISM_TARGET],
-                    kind="acquisition",
+                    target_ids=[_COST_TARGET],
+                    kind="coverage",
                     severity="major",
                     repair_action="acquire",
                     queries=["clinker substitution cost premium per tonne"],
                 ),
-                _gap(
-                    problem=(
-                        "No field-durability evidence was acquired, and the "
-                        "report says so without answering the obligation."
-                    ),
-                    target_ids=[_DURABILITY_TARGET],
-                    kind="coverage",
-                    severity="major",
-                    repair_action="acquire",
-                    queries=["blended cement durability field exposure"],
-                ),
             ],
             queries=[
+                "clinker substitution share of cement emissions",
                 "clinker substitution cost premium per tonne",
-                "blended cement durability field exposure",
             ],
             rationale=(
-                "The report is honest about what it could not establish, "
-                "which is better than hiding it, but two obligations the "
+                "The report is honest about what it could not establish, which "
+                "is better than hiding it, but two of the three obligations the "
                 "question depends on remain unanswered."
             ),
         ),
+        state_factory=_honest_incomplete_calibration_state,
     ),
 )
 
@@ -1864,23 +2223,3 @@ def measure_critic_calibration(
             )
         )
     return CriticCalibrationReport(outcomes=tuple(outcomes))
-
-
-def calibration_packet(case_id: str = CALIBRATION_CASES[0].case_id) -> CriticPacket:
-    """The packet one calibration case's candidate is reviewed from.
-
-    The report text is the case's, and the composition is the shared one, so
-    the ids a scripted gap names resolve in every case. Nothing here calls a
-    provider: the packet is built from fixtures.
-    """
-    case = calibration_case(case_id)
-    composition = _calibration_composition()
-    state = ResearchState(
-        session_id="evaluation-critic-calibration",
-        original_question=CALIBRATION_QUESTION,
-        report=case.report,
-        composition=composition,
-        sub_topics=[_calibration_sub_topic()],
-        verified_claims=list(composition.claims),
-    )
-    return build_critic_packet(state, state.composition)

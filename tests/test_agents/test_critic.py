@@ -19,6 +19,7 @@ from deep_research.agents.critic import (
     CRITIC_EVIDENCE_BATCH_CHARS,
     CRITIC_MAX_EVIDENCE_UNITS,
     CRITIC_REPORT_CHARS,
+    CRITIQUE_INSTRUCTION,
     MAX_CRITIC_SCORE,
     MIN_CRITIC_SCORE,
     ROUTING_REASONS,
@@ -32,6 +33,7 @@ from deep_research.agents.critic import (
     build_critic_packet,
     build_critique,
     clamp_score,
+    critic_packet_fingerprint,
     critique_messages,
     fallback_critique,
     normalize_gaps,
@@ -796,21 +798,29 @@ def test_a_critique_is_validated_clamped_and_routed() -> None:
     assert ROUTING_REASONS["critical_gaps"] in critique.rationale
 
 
-def test_critique_gaps_preserve_known_ids_and_globalize_unknown_ids() -> None:
+def test_a_known_coverage_id_is_kept_and_an_unknown_one_is_refused() -> None:
+    """An id the plan cannot answer is not obeyed *or* invented around.
+
+    Task 7 globalized an unknown id into a whole-answer gap. That turned a
+    hallucinated scope into a material obligation about the question, and the
+    ``question`` sentinel means one specific thing — an original-question
+    omission, which the prompt pairs with ``extend_plan``. A gap that names a
+    record nothing can resolve is now refused, so the reply is repaired rather
+    than recorded as something the model never said.
+    """
+    known = CritiqueGapDraft(
+        coverage_id="topic-01",
+        problem="Alpha lacks cost evidence.",
+        recommended_queries=["alpha cost 2025"],
+    )
+    unknown = CritiqueGapDraft(
+        coverage_id="topic-999",
+        problem="The provider invented this plan id.",
+        recommended_queries=["invented topic evidence"],
+    )
     draft = CritiqueDraft(
         score=4,
-        gaps=[
-            CritiqueGapDraft(
-                coverage_id="topic-01",
-                problem="Alpha lacks cost evidence.",
-                recommended_queries=["alpha cost 2025"],
-            ),
-            CritiqueGapDraft(
-                coverage_id="topic-999",
-                problem="The provider invented this plan id.",
-                recommended_queries=["invented topic evidence"],
-            ),
-        ],
+        gaps=[known],
         unsupported_claims=[],
         recommended_queries=[],
         rationale="The report needs targeted evidence.",
@@ -836,17 +846,23 @@ def test_critique_gaps_preserve_known_ids_and_globalize_unknown_ids() -> None:
             problem="Alpha lacks cost evidence.",
             recommended_queries=["alpha cost 2025"],
         ),
-        # An id the plan cannot answer is not silently obeyed: the gap keeps
-        # its problem and becomes a whole-answer obligation, exactly as a
-        # blank id always did.
-        CritiqueGap(
-            gap_id="gap-02",
-            coverage_id=None,
-            target_ids=["question"],
-            problem="The provider invented this plan id.",
-            recommended_queries=["invented topic evidence"],
-        ),
     ]
+
+    with pytest.raises(CritiqueContractViolation) as caught:
+        build_critique(
+            CritiqueDraft(
+                score=4,
+                gaps=[unknown],
+                unsupported_claims=[],
+                recommended_queries=[],
+                rationale="The report needs targeted evidence.",
+            ),
+            iteration=0,
+            max_iterations=3,
+            known_coverage_ids={"topic-01"},
+        )
+    assert caught.value.field_paths() == ("gaps.0",)
+    assert "do not resolve" in caught.value.problem
 
 
 def test_normalize_gaps_accepts_a_legacy_string_gap() -> None:
@@ -934,50 +950,71 @@ def test_both_typed_gap_boundaries_share_one_normalizer(monkeypatch) -> None:
 
 
 def test_title_and_problem_text_never_decide_a_gaps_target() -> None:
-    """Only ids decide a target, and an id the plan cannot answer is dropped.
+    """Only ids decide a target, and prose decides nothing at all.
 
     The Task 7 invariant, kept: a gap whose *problem text* names a topic
-    targets nothing, and a legacy string gap targets the whole answer. What an
-    unresolvable *declared* id becomes is the whole-answer obligation, because
-    a gap that named a scope and failed to resolve it is a real defect against
-    prose no record can answer.
+    targets nothing, and a legacy string gap targets the whole answer. An id
+    that does not resolve is refused (the sibling test below), so neither the
+    plan a model meant nor the title it wrote can become a target.
     """
     gaps = normalize_gaps(
         [
-            # An id the plan cannot answer, with the topic's title in the text.
-            CritiqueGapDraft(
-                coverage_id="topic-999",
-                problem="Alpha appears only as a title in this problem.",
-                recommended_queries=["alpha evidence"],
-            ),
             # The legacy free-text shape, which predates ids entirely.
             "The report misses Beta evidence.",
         ],
         known_coverage_ids={"topic-01", "topic-02"},
     )
 
-    assert [gap.coverage_id for gap in gaps] == [None, None]
-    assert [gap.target_ids for gap in gaps] == [["question"], ["question"]]
-    assert [gap.problem for gap in gaps] == [
-        "Alpha appears only as a title in this problem.",
-        "The report misses Beta evidence.",
-    ]
+    assert [gap.coverage_id for gap in gaps] == [None]
+    assert [gap.target_ids for gap in gaps] == [["question"]]
+    assert [gap.problem for gap in gaps] == ["The report misses Beta evidence."]
+
+    # Problem text naming a planned topic targets nothing, and with no id at
+    # all the gap is refused rather than scoped by what it mentions.
+    with pytest.raises(CritiqueContractViolation, match="do not resolve"):
+        normalize_gaps(
+            [
+                CritiqueGapDraft(
+                    coverage_id="topic-999",
+                    problem=(
+                        "Alpha appears only as a title in this problem, and "
+                        "Beta likewise."
+                    ),
+                    recommended_queries=["alpha evidence"],
+                ),
+            ],
+            known_coverage_ids={"topic-01", "topic-02"},
+        )
 
 
-def test_a_blank_scope_is_refused_where_an_unknown_one_is_not() -> None:
-    """A blank id names nothing, so it is refused; an unknown id is resolved.
+def test_a_blank_scope_is_refused_like_any_other_unresolved_one() -> None:
+    """A blank id names nothing, so it is refused like an unknown one.
 
-    Narrowed deliberately from Task 7, where both became a global gap. The
-    typed contract added the scope requirement, and a whitespace placeholder
-    satisfies no part of it: refusing it costs one repair and buys a gap whose
-    scope is real. An id that is *present* and unknown still takes the reviewed
-    global fallback, because only the packet can say whether it resolves.
+    Narrowed deliberately from Task 7, where both became a global gap. The typed
+    contract added the scope requirement, and a whitespace placeholder satisfies
+    no part of it: refusing it costs one repair and buys a gap whose scope is
+    real. A blank *list* entry is the same defect through a sibling field, and
+    is refused for the same reason — ``target_ids=[""]`` used to satisfy "must
+    name what it affects" and was then dropped downstream.
     """
     with pytest.raises(ValidationError, match="affects"):
         CritiqueGapDraft(
             coverage_id="   ",
             problem="The report misses Beta evidence.",
             recommended_queries=["beta evidence"],
+        )
+    with pytest.raises(ValidationError, match="affects"):
+        CritiqueGapDraft(
+            target_ids=[""],
+            problem="The report is not good enough.",
+            recommended_queries=[],
+        )
+    with pytest.raises(ValidationError, match="affects"):
+        CritiqueGapDraft(
+            statement_ids=["  "],
+            claim_cluster_ids=[""],
+            problem="The report is not good enough.",
+            recommended_queries=[],
         )
 
 
@@ -2109,8 +2146,9 @@ def test_a_gap_cannot_be_raised_against_prose_with_no_statement_record() -> None
     """Where there is no statement record, that absence is itself the defect.
 
     A composition-less report cannot resolve a cited statement id, so the
-    packet says so as a hard check and the gap becomes a whole-answer
-    obligation rather than a claim about a record nobody can look up.
+    packet says so as a hard check and a gap that cites one is refused: it is a
+    claim about a record nobody can look up. The absence is reported, not
+    silently turned into an obligation about the whole answer.
     """
     state = _packet_state(with_composition=False)
 
@@ -2119,31 +2157,27 @@ def test_a_gap_cannot_be_raised_against_prose_with_no_statement_record() -> None
     assert packet.statements == []
     assert any("statement record" in check for check in packet.hard_checks)
 
-    critique, _ = build_critique(
-        _typed_draft(
-            score=6,
-            gaps=[
-                CritiqueGapDraft(
-                    coverage_id=None,
-                    statement_ids=["S999"],
-                    kind="contradiction",
-                    severity="major",
-                    repair_action="adjudicate",
-                    problem="The report contradicts a source it cites.",
-                )
-            ],
-            rationale="One contradiction is unresolved.",
-        ),
-        iteration=0,
-        max_iterations=3,
-        packet=packet,
-        known_coverage_ids={"topic-01"},
-    )
-
-    gap = critique.gaps[0]
-    assert gap.statement_ids == []
-    assert gap.target_ids == ["question"]
-    assert gap.gap_id == "gap-01"
+    with pytest.raises(CritiqueContractViolation, match="do not resolve"):
+        build_critique(
+            _typed_draft(
+                score=6,
+                gaps=[
+                    CritiqueGapDraft(
+                        coverage_id=None,
+                        statement_ids=["S999"],
+                        kind="contradiction",
+                        severity="major",
+                        repair_action="adjudicate",
+                        problem="The report contradicts a source it cites.",
+                    )
+                ],
+                rationale="One contradiction is unresolved.",
+            ),
+            iteration=0,
+            max_iterations=3,
+            packet=packet,
+            known_coverage_ids={"topic-01"},
+        )
 
 
 def test_a_gap_may_name_the_record_ids_the_packet_carries() -> None:
@@ -2605,6 +2639,242 @@ async def test_a_report_that_changes_before_the_repair_refuses_it(
     assert refused.recoverable is False
     # A local refusal is not a provider failure, so the run summary says so.
     assert outcome.react.stop_reason == "finished"
+
+
+@pytest.mark.asyncio
+async def test_a_blank_problem_is_repaired_and_never_deletes_the_gap(
+    tracker: Tracker,
+) -> None:
+    """Critical 2: a scoped major gap with a blank problem.
+
+    The gap's ids were valid, so the scope rule had nothing to say, and
+    ``problem: "   "`` was stripped to ``""`` and dropped by the normalizer —
+    a material defect that vanished, leaving a high score with an empty gap list
+    and an acceptance. It is now a malformed reply: one repair, and the
+    repaired review keeps its gap.
+    """
+    blank = {
+        "score": 8,
+        "gaps": [
+            {
+                "gap_id": "gap-01",
+                "target_ids": [_PACKET_TARGET_ID],
+                "claim_cluster_ids": [],
+                "statement_ids": [],
+                "kind": "coverage",
+                "severity": "major",
+                "repair_action": "acquire",
+                "problem": "   ",
+                "recommended_queries": ["qec break-even corroboration"],
+            }
+        ],
+        "unsupported_claims": [],
+        "recommended_queries": ["qec break-even corroboration"],
+        "rationale": "One obligation is unsupported.",
+    }
+    completer = ScriptedCompleter(outputs=[lambda m, s: blank, _draft(score=6)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "reviewed"
+    repaired = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_repaired"
+    )
+    assert repaired.details["schema_field_paths"] == ["gaps.problem"]
+
+
+@pytest.mark.asyncio
+async def test_a_blank_problem_repeated_exhausts_into_a_failed_review(
+    tracker: Tracker,
+) -> None:
+    """Two blank problems are no review at all, never a silent acceptance."""
+    blank = {
+        "score": 9,
+        "gaps": [
+            {
+                "gap_id": "gap-01",
+                "target_ids": [_PACKET_TARGET_ID],
+                "claim_cluster_ids": [],
+                "statement_ids": [],
+                "kind": "coverage",
+                "severity": "major",
+                "repair_action": "acquire",
+                "problem": "",
+                "recommended_queries": ["qec break-even corroboration"],
+            }
+        ],
+        "unsupported_claims": [],
+        "recommended_queries": ["qec break-even corroboration"],
+        "rationale": "One obligation is unsupported.",
+    }
+    completer = ScriptedCompleter(outputs=[lambda m, s: blank] * 2)
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    assert outcome.result.gaps == []
+    assert outcome.result.should_continue is False
+    assert outcome.state_update["events"][-1].metadata["reason"] == "review_failed"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_scope_id_is_repaired_not_rewritten(
+    tracker: Tracker,
+) -> None:
+    """Important 3: a hallucinated id does not become the question sentinel."""
+    hallucinated = {
+        "score": 6,
+        "gaps": [
+            {
+                "gap_id": "gap-01",
+                "coverage_id": "hallucinated-topic-999",
+                "target_ids": [],
+                "claim_cluster_ids": [],
+                "statement_ids": [],
+                "kind": "coverage",
+                "severity": "major",
+                "repair_action": "acquire",
+                "problem": "The report misses the deployment evidence.",
+                "recommended_queries": ["qec deployment evidence"],
+            }
+        ],
+        "unsupported_claims": [],
+        "recommended_queries": ["qec deployment evidence"],
+        "rationale": "One topic is uncovered.",
+    }
+    completer = ScriptedCompleter(outputs=[lambda m, s: hallucinated, _draft(score=7)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.score == 7
+    assert outcome.result.review_status == "reviewed"
+
+
+def test_the_generic_gap_forms_are_refused_by_the_contract() -> None:
+    """The two prohibited generic forms, as the contract actually judges them.
+
+    The prompt names "improve the quality" and "find more sources" as
+    non-actionable, and this pins what the *contract* does with them rather
+    than pretending to judge arbitrary prose: a generic complaint that names no
+    record is refused, and a generic acquisition that names no obligation is
+    refused. There is deliberately no keyword blacklist — a contract that
+    rejected any problem text containing a forbidden phrase would prove nothing
+    about the rest of the prose.
+    """
+    generic_feedback = {
+        "kind": "coverage",
+        "severity": "major",
+        "repair_action": "synthesize",
+        "problem": "Improve the quality of the report.",
+        "target_ids": [],
+        "statement_ids": [],
+        "claim_cluster_ids": [],
+        "recommended_queries": [],
+    }
+    generic_acquisition = {
+        "kind": "acquisition",
+        "severity": "major",
+        "repair_action": "acquire",
+        "problem": "Find more sources.",
+        "target_ids": [],
+        "statement_ids": ["S001"],
+        "claim_cluster_ids": [],
+        "recommended_queries": ["clinker substitution sources"],
+    }
+
+    with pytest.raises(ValidationError, match="affects"):
+        CritiqueGapDraft.model_validate(generic_feedback)
+    with pytest.raises(ValidationError, match="acquire"):
+        CritiqueGapDraft.model_validate(generic_acquisition)
+
+    # The prompt names both forms, so a model is told before it answers.
+    instruction = " ".join(CRITIQUE_INSTRUCTION.split())
+    assert '"Improve the quality" and "find more sources" are not actionable' in (
+        instruction
+    )
+
+
+def test_the_fingerprint_covers_the_fields_the_review_actually_reads() -> None:
+    """Important 2: the fingerprint is the packet, not a subset of it.
+
+    The previous digest hashed ids and excerpts only, so editing an evidence
+    item's ``source_url`` — the independence signal a critic checks — or a
+    target's support policy, or the dimensions a statement is recorded as
+    answering, left the identity unchanged and the repair guard blind.
+    """
+    state = _packet_state()
+    packet = build_critic_packet(state)
+    baseline = packet.fingerprint
+
+    def mutated(packet: CriticPacket) -> str:
+        return critic_packet_fingerprint(packet)
+
+    # An evidence item's source URL becomes the same publisher's other page.
+    batches = [
+        batch.model_copy(
+            update={
+                "items": [
+                    batch.items[0].model_copy(
+                        update={"source_url": "https://other.example/same-work"}
+                    ),
+                    *batch.items[1:],
+                ]
+            }
+        )
+        for batch in packet.evidence_batches
+    ]
+    assert mutated(
+        packet.model_copy(update={"evidence_batches": batches})
+    ) != baseline
+
+    # A target's support policy: the obligation's own rule, rendered into the
+    # request.
+    targets = [
+        target.model_copy(update={"support_policy": "primary_attribution"})
+        for target in packet.targets
+    ]
+    assert mutated(packet.model_copy(update={"targets": targets})) != baseline
+
+    # The dimensions a statement is recorded as answering.
+    statements = [
+        statement.model_copy(update={"answered_dimensions": []})
+        for statement in packet.statements
+    ]
+    assert (
+        mutated(packet.model_copy(update={"statements": statements})) != baseline
+    )
+
+    # A deterministic hard check.
+    assert (
+        mutated(
+            packet.model_copy(update={"hard_checks": ["a new hard failure"]})
+        )
+        != baseline
+    )
+
+    # And the digest is stable: the packet's own fingerprint field is excluded
+    # from its payload, so re-computing it changes nothing.
+    assert critic_packet_fingerprint(packet) == baseline
+    assert build_critic_packet(state).fingerprint == baseline
 
 
 def test_the_critic_prompt_version_is_repinned() -> None:

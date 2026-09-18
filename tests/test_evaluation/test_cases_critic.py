@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 
 from deep_research.agents.critic import (
     ACCEPTANCE_SCORE,
+    CriticPacket,
     fallback_critique,
     route_decision,
 )
-from deep_research.agents.sources import normalize_source_url, source_domain
+from deep_research.agents.fact_checker import independent_domains
+from deep_research.agents.sources import (
+    normalize_source_url,
+    publisher_identity,
+    source_domain,
+)
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.cases.critic import (
     CALIBRATION_CASES,
-    CALIBRATION_CLUSTER_IDS,
     CALIBRATION_STATEMENT_IDS,
     CALIBRATION_TARGET_IDS,
-    calibration_case,
     calibration_packet,
     measure_critic_calibration,
 )
@@ -310,7 +316,7 @@ def test_rationale_metric_distinguishes_grounded_review_from_fallback() -> None:
     assert normal_scores["rationale_present"] == 1.0
     assert fallback_scores["rationale_present"] == 0.0
     assert fallback_scores["score_bounded"] == 1.0
-    assert fallback_scores["route_consistent"] == 1.0
+    assert fallback_scores["route_consistent"] == 0.0
     assert fallback_scores["no_spurious_gaps"] == 1.0
 
 
@@ -318,10 +324,11 @@ def test_a_fallback_review_fails_a_hard_gate() -> None:
     """A run with no critique must never be certifiable.
 
     The fallback's placeholder score of 1 with empty lists satisfies
-    ``bounded_component_scores``, ``critique_actionable``, and
-    ``route_consistent``, and its favourable judge reading lifted a live
-    repetition's aggregate to 0.767, above the 0.75 threshold. Quality gates
-    are AND-conditions, so the review gate is what stops that.
+    ``bounded_component_scores`` and ``critique_actionable``, and its favourable
+    judge reading lifted a live repetition's aggregate to 0.767, above the 0.75
+    threshold. Quality gates are AND-conditions, so ``review_produced`` is what
+    stops that — and ``route_consistent`` now fails it too, because a review
+    that never happened cannot be said to have routed anywhere.
     """
     case = _case("critic-live-review")
     fallback, _ = fallback_critique(
@@ -358,10 +365,11 @@ def test_a_fallback_review_fails_a_hard_gate() -> None:
 
     assert gates["review_produced"].passed is False
     assert "fell back" in gates["review_produced"].detail
-    # The other gates still pass, which is exactly why this one is required.
+    # A failed review is now rejected by the routing gate as well.
+    assert gates["route_consistent"].passed is False
+    # The remaining gates still pass, which is exactly why those two are required.
     assert gates["bounded_component_scores"].passed is True
     assert gates["critique_actionable"].passed is True
-    assert gates["route_consistent"].passed is True
 
 
 def test_a_grounded_review_passes_the_review_gate() -> None:
@@ -1064,12 +1072,14 @@ def test_calibration_attributed_primary_fact() -> None:
     no independent pair — and is correctly attributed. That is a legitimate
     reading, not a defect, so the case must not be rejected for it.
     """
-    packet = calibration_packet()
+    packet = calibration_packet("calibration-attributed-primary-fact")
     modes = {
         statement.statement_id: statement.mode for statement in packet.statements
     }
     assert modes[CALIBRATION_STATEMENT_IDS["mechanism"]] == "attributed"
-    assert modes[CALIBRATION_STATEMENT_IDS["figure"]] == "settled"
+    # The reduction is one publisher's own account too, so the whole candidate
+    # is attributed: primary attribution is a legitimate reading, not a failure.
+    assert modes[CALIBRATION_STATEMENT_IDS["emissions"]] == "attributed"
 
     outcome = measure_critic_calibration().outcome(
         "calibration-attributed-primary-fact"
@@ -1082,8 +1092,43 @@ def test_calibration_attributed_primary_fact() -> None:
     assert not outcome.false_rejection
 
 
+def _assert_one_publisher_family(urls: Sequence[str]) -> None:
+    """The repo's own false-pair test: the second URL adds no publisher.
+
+    ``publisher_identity`` resolves one registrable publisher, and
+    ``independent_domains`` refuses a second page of a publisher the claim
+    already rests on — "a second page from the publisher that made the claim is
+    not corroboration". A mirror or a house domain is therefore not an
+    independent source, and this is the fact checker's own rule rather than a
+    rule invented for the fixture.
+    """
+    identities = {publisher_identity(url).casefold() for url in urls}
+    assert len(identities) == 1, urls
+    assert (
+        independent_domains(
+            urls, claimed_domains=[publisher_identity(urls[0])]
+        )
+        == []
+    )
+
+
 def test_calibration_false_independent_pair() -> None:
-    """Two URLs from one publisher are not independent corroboration."""
+    """Two reads behind the figure that are one publisher's identity."""
+    packet = calibration_packet("calibration-false-independent-pair")
+    emissions = packet.statement(CALIBRATION_STATEMENT_IDS["emissions"])
+    assert emissions is not None
+    urls = [
+        item.source_url
+        for batch in packet.evidence_batches
+        for item in batch.items
+        if item.evidence_id in emissions.evidence_ids
+    ]
+    # The candidate really is a false pair: its two "independent" reads are one
+    # association's two domains, which is what makes the label a fact about the
+    # fixture rather than a claim about it.
+    assert len(urls) == 2
+    _assert_one_publisher_family(urls)
+
     outcome = measure_critic_calibration().outcome(
         "calibration-false-independent-pair"
     )
@@ -1096,12 +1141,12 @@ def test_calibration_false_independent_pair() -> None:
 
 def test_calibration_polished_verbose_non_answer() -> None:
     """Length and confidence cannot buy a passing score."""
-    case = calibration_case("calibration-polished-verbose-non-answer")
+    packet = calibration_packet("calibration-polished-verbose-non-answer")
     outcome = measure_critic_calibration().outcome(
         "calibration-polished-verbose-non-answer"
     )
 
-    assert len(case.report.split()) >= 300
+    assert len(packet.reader_content.split()) >= 300
     assert outcome.in_band
     assert outcome.score < ACCEPTANCE_SCORE
     assert outcome.accepted is False
@@ -1155,29 +1200,158 @@ def test_the_calibration_orders_bands_by_evidence_not_prose() -> None:
     ]
 
 
-def test_every_calibration_gap_names_a_record_the_packet_carries() -> None:
-    """The scripted gaps are examples of the contract, not of a loose one."""
-    packet = calibration_packet()
-    statement_ids = {item.statement_id for item in packet.statements}
-    cluster_ids = {
-        cluster_id
-        for item in packet.statements
-        for cluster_id in item.claim_cluster_ids
-    }
-    target_ids = {target.target_id for target in packet.targets}
-    assert statement_ids == set(CALIBRATION_STATEMENT_IDS.values())
-    assert cluster_ids == set(CALIBRATION_CLUSTER_IDS.values())
-    assert target_ids == set(CALIBRATION_TARGET_IDS.values())
+def test_every_calibration_candidate_contains_the_defect_its_label_claims() -> None:
+    """Fixture integrity, asserted before any scripted review is measured.
 
+    The eight cases used to share one candidate, so their labels were claims
+    about nothing: the "missing critical topic" case removed no topic, the
+    "strong answer" left a critical obligation open, and the non-answer kept a
+    strong statement registry behind vague prose. These assertions make each
+    label a fact about the packet the case is graded against, which is what
+    lets the scripted scores below mean anything at all.
+    """
+    strong = calibration_packet("calibration-strong-answer")
+    minor = calibration_packet("calibration-one-minor-gap")
+    missing = calibration_packet("calibration-missing-critical-topic")
+    unsupported = calibration_packet("calibration-unsupported-central-assertion")
+    attributed = calibration_packet("calibration-attributed-primary-fact")
+    false_pair = calibration_packet("calibration-false-independent-pair")
+    polished = calibration_packet("calibration-polished-verbose-non-answer")
+    honest = calibration_packet("calibration-honest-but-incomplete-answer")
+
+    def open_keys(packet: CriticPacket) -> set[str]:
+        return {target.target_id for target in packet.open_targets}
+
+    cost = CALIBRATION_TARGET_IDS["cost"]
+    emissions = CALIBRATION_TARGET_IDS["emissions"]
+    mechanism = CALIBRATION_TARGET_IDS["mechanism"]
+
+    # Strong: every obligation the question names is answered, cost included.
+    assert open_keys(strong) == set()
+    assert all(
+        target.answered_dimension_ids == target.required_dimensions
+        for target in strong.targets
+    )
+    assert cost in {target.target_id for target in strong.targets}
+    assert strong.unrecorded_statement_count == 0
+    # The one-minor-gap case reviews the same substantive candidate.
+    assert open_keys(minor) == set()
+
+    # Missing critical topic: the cost obligation is answered by nothing.
+    assert open_keys(missing) == {cost}
+    assert CALIBRATION_STATEMENT_IDS["cost"] not in missing.statement_ids
+
+    # Unsupported assertion: a reader statement with no claim and no evidence.
+    assertion = unsupported.statement(CALIBRATION_STATEMENT_IDS["cost"])
+    assert assertion is not None
+    assert assertion.claim_cluster_ids == []
+    assert assertion.evidence_ids == []
+    assert not assertion.substantive
+
+    # Attributed primary fact: attribution, not corroboration — no
+    # ``verified_pair`` badge anywhere, and the report says whose account each
+    # figure is.
+    attributed_badges = {
+        item.badge
+        for batch in attributed.evidence_batches
+        for item in batch.items
+    }
+    assert attributed_badges == {"source_supported"}
+    attributed_modes = {statement.mode for statement in attributed.statements}
+    assert attributed_modes == {"attributed"}
+
+    # False independent pair: two reads behind the reduction, one publisher.
+    reduction = false_pair.statement(CALIBRATION_STATEMENT_IDS["emissions"])
+    assert reduction is not None
+    reduction_urls = [
+        item.source_url
+        for batch in false_pair.evidence_batches
+        for item in batch.items
+        if item.evidence_id in reduction.evidence_ids
+    ]
+    assert len(reduction_urls) == 2
+    _assert_one_publisher_family(reduction_urls)
+
+    # ...while the strong candidate's pair really is two publishers.
+    strong_reduction = strong.statement(CALIBRATION_STATEMENT_IDS["emissions"])
+    assert strong_reduction is not None
+    strong_urls = [
+        item.source_url
+        for batch in strong.evidence_batches
+        for item in batch.items
+        if item.evidence_id in strong_reduction.evidence_ids
+    ]
+    assert len({publisher_identity(url) for url in strong_urls}) == 2
+
+    # Polished non-answer: long prose, no obligation discharged, no read cited.
+    assert open_keys(polished) == {mechanism, emissions, cost}
+    assert polished.evidence_ids == []
+    assert len(polished.reader_content.split()) >= 300
+    assert all(
+        statement.claim_cluster_ids == [] for statement in polished.statements
+    )
+
+    # Honest but incomplete: it says so, and its records agree.
+    assert open_keys(honest) == {emissions, cost}
+    assert "not answered here" in honest.reader_content
+
+
+def test_the_calibration_candidate_variants_differ_from_each_other() -> None:
+    """A shared candidate was the defect; these are not one candidate twice."""
+    fingerprints = {
+        case.case_id: calibration_packet(case.case_id).fingerprint
+        for case in CALIBRATION_CASES
+    }
+
+    # The two cases that review the same candidate share its identity; every
+    # other pair is a genuinely different candidate.
+    assert (
+        fingerprints["calibration-strong-answer"]
+        == fingerprints["calibration-one-minor-gap"]
+    )
+    assert (
+        fingerprints["calibration-strong-answer"]
+        != fingerprints["calibration-attributed-primary-fact"]
+    )
+    assert len(set(fingerprints.values())) == len(CALIBRATION_CASES) - 1
+
+
+def test_every_calibration_gap_names_a_record_its_own_packet_carries() -> None:
+    """The scripted gaps are examples of the contract, not of a loose one.
+
+    Checked against each case's *own* packet: with per-case candidates an id
+    that exists in one and not another would be a scripted gap that can never
+    resolve, which is precisely the shape the contract now refuses.
+    """
     for case in CALIBRATION_CASES:
+        packet = calibration_packet(case.case_id)
+        statement_ids = {item.statement_id for item in packet.statements}
+        cluster_ids = {
+            cluster_id
+            for item in packet.statements
+            for cluster_id in item.claim_cluster_ids
+        }
+        target_ids = {target.target_id for target in packet.targets}
         for gap in case.draft["gaps"]:
-            assert set(gap.get("statement_ids", [])) <= statement_ids, case.case_id
-            assert set(gap.get("claim_cluster_ids", [])) <= cluster_ids, case.case_id
+            assert (
+                set(gap.get("statement_ids", [])) <= statement_ids
+            ), (case.case_id, gap.get("statement_ids"))
+            assert (
+                set(gap.get("claim_cluster_ids", [])) <= cluster_ids
+            ), (case.case_id, gap.get("claim_cluster_ids"))
             assert (
                 set(gap.get("target_ids", [])) - {"question"}
-            ) <= target_ids, case.case_id
+            ) <= target_ids, (case.case_id, gap.get("target_ids"))
             if gap.get("repair_action") == "acquire":
                 assert gap["target_ids"], case.case_id
+        # Every obligation a gap says is missing really is open.
+        for gap in case.draft["gaps"]:
+            for target_id in gap.get("target_ids", []):
+                if target_id == "question":
+                    continue
+                assert target_id in {
+                    target.target_id for target in packet.open_targets
+                }, (case.case_id, target_id)
 
 
 def test_every_calibration_draft_validates_against_the_packet() -> None:

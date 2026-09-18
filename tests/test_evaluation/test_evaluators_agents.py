@@ -603,9 +603,16 @@ def test_the_critic_gate_uses_the_production_routing_rule(
     ).passed is False
 
 
-def test_the_critic_gate_accepts_a_typed_provider_fallback_stop(
+def test_the_critic_gate_rejects_a_typed_provider_fallback_stop(
     critic_case, critic_output
 ) -> None:
+    """No review exists, so no routing decision can be consistent with one.
+
+    This test previously asserted the opposite. The fallback's
+    ``should_continue=False`` satisfied ``route_consistent`` — the same reason
+    ``review_produced`` exists — and after Critical 2's fix the critique carries
+    ``review_status="failed"``, which the gate now reads directly.
+    """
     fallback, _ = fallback_critique(
         reason="provider_unavailable",
         iteration=critic_case.state.iteration,
@@ -636,9 +643,12 @@ def test_the_critic_gate_accepts_a_typed_provider_fallback_stop(
     )
 
     assert fallback.should_continue is False
-    assert gate(
-        evaluate_agent_gates(output, critic_case), "route_consistent"
-    ).passed is True
+    assert fallback.review_status == "failed"
+    gates = {
+        item.gate_id: item for item in evaluate_agent_gates(output, critic_case)
+    }
+    assert gates["route_consistent"].passed is False
+    assert gates["review_produced"].passed is False
 
 
 def test_the_critic_gate_forbids_continuing_with_no_budget_left(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.critic import fallback_critique
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.graph.nodes import ReportPublisher
@@ -107,6 +108,61 @@ async def test_a_failed_review_is_never_reported_as_accepted() -> None:
     assert graph_status(state) == "failed"
     # The deterministic quality pass did run, so ``partial`` is a verdict
     # about the review rather than the absence of one.
+    assert state.quality is not None
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+    assert state.report_path is not None
+    assert publisher.memory_writes == 0
+
+
+@pytest.mark.asyncio
+async def test_a_provider_outage_never_publishes_an_accepted_report() -> None:
+    """End to end: an outage stops the run without an acceptance.
+
+    An outage used to produce ``critique_satisfied``, ``completed``,
+    ``accepted``, one memory write and CLI exit 0 — byte-identical to a genuine
+    acceptance, because the outage fallback's floor score and empty gap list are
+    exactly what an accepted critique looks like. The run now ends
+    ``critique_failed``, ``failed``, ``partial``, with nothing remembered.
+    """
+    publisher = FakePublisher()
+    outage, _ = fallback_critique(
+        reason="provider_unavailable", iteration=0, max_iterations=3
+    )
+    agents = fake_research_agents(
+        synthesizer=FakeAgent(
+            "synthesizer", [], update_factory=fake_synthesis_update
+        ),
+        critic=FakeAgent(
+            "critic",
+            [
+                {
+                    "critique": outage,
+                    "errors": [
+                        {
+                            "error_type": "critic_review_provider_error",
+                            "source": "agent.critic",
+                            "message": "the review call failed",
+                            "timestamp": "2026-08-01T00:00:00+00:00",
+                            "recoverable": False,
+                            "details": {
+                                "operation": "critic_report_review",
+                                "provider_failure": {
+                                    "kind": "provider_timeout",
+                                    "exception_type": "ProviderTimeoutError",
+                                },
+                            },
+                        }
+                    ],
+                }
+            ],
+        ),
+        publisher=publisher,
+    )
+
+    state = await _run(agents)
+
+    assert _route_reasons(state) == ["critique_failed"]
+    assert graph_status(state) == "failed"
     assert state.quality is not None
     assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
     assert state.report_path is not None

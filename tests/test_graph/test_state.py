@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.critic import fallback_critique
 from deep_research.agents.evidence import (
     READ_ADMISSION_OPERATION,
     build_boundary_audit,
@@ -317,6 +318,36 @@ def test_a_failed_review_is_named_even_on_the_last_iteration() -> None:
     assert graph_route(failed) == (ROUTE_FINALIZE, "critique_failed")
     assert graph_status(failed) == "failed"
     assert graph_quality_status(failed) == QUALITY_STATUS_PARTIAL
+
+
+def test_a_provider_outage_is_not_an_acceptance() -> None:
+    """Critical 1: the outage fallback is a review that never happened.
+
+    Its own signals — the score floor, the empty gap list,
+    ``should_continue=False`` — are byte-identical to a clean acceptance, so a
+    terminal default of ``reviewed`` turned an outage into an accepted, and then
+    a remembered, report. The fallback now says ``failed`` for exactly that
+    reason, while the missing-report fallback stays ``reviewed`` because it
+    records a real gap and is allowed to buy another pass.
+    """
+    outage, _ = fallback_critique(
+        reason="provider_unavailable", iteration=0, max_iterations=3
+    )
+    missing_report, _ = fallback_critique(
+        reason="missing_report", iteration=0, max_iterations=3
+    )
+
+    assert outage.review_status == "failed"
+    assert outage.should_continue is False
+    assert missing_report.review_status == "reviewed"
+    assert missing_report.should_continue is True
+
+    state = fake_research_state(critique=outage, quality=fake_quality())
+
+    assert graph_route(state) == (ROUTE_FINALIZE, "critique_failed")
+    assert graph_status(state) == "failed"
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+    assert not is_halted(state)
 
 
 def test_a_hard_quality_failure_forces_a_pass_the_critic_did_not_ask_for() -> None:
