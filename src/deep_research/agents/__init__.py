@@ -469,7 +469,6 @@ from deep_research.agents.synthesizer import (
     DEFAULT_MAX_MEMORY_FINDINGS,
     DEFAULT_MAX_SECTIONS,
     DEFAULT_MEMORY_CONFIDENCE,
-    EVIDENCE_BADGE_LABELS,
     STATEMENT_DISPOSITIONS,
     SYNTHESIS_CLAIM_DIGEST,
     SYNTHESIS_CLAIM_PACKET_CHARS,
@@ -516,7 +515,7 @@ from deep_research.agents.synthesizer import (
 )
 from deep_research.agents.toolset import AgentToolset, ToolDescriptor
 from deep_research.tools.passage_selection import select_relevant_passages
-from deep_research.utils.types import CritiqueGap
+from deep_research.utils.types import EVIDENCE_BADGE_LABELS, CritiqueGap
 
 __all__ = [
     "ACCEPTANCE_SCORE",

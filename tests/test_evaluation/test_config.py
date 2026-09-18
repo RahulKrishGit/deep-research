@@ -517,14 +517,18 @@ CRITIC_PROMPT_FINGERPRINT = "3f0341751794"
 #   researcher ``fdc2bc2e8d48`` -> ``b4f9d21a34b4``
 #   source_evaluator ``674593415225`` -> ``33a71376d3e6``
 #   fact_checker ``490342ba8ac0`` -> ``f1ccaf38ff02``
-#   synthesizer ``cccb6dc91c6e`` -> ``37b86926ec09``
+#   synthesizer ``cccb6dc91c6e`` -> ``37b86926ec09``, then -> ``059540bede20``
+#     in the Task 7 fix round (whole-token corpus and cell matching, the
+#     acronym-aware name check, attested answer-row labels, and the shared
+#     statement derivation). The other five are unchanged by that round: the
+#     fix round edited no shared prompt string.
 #   critic ``15754f64fa12`` -> ``3f0341751794``
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "da4407dd9d39",
     "researcher": "b4f9d21a34b4",
     "source_evaluator": "33a71376d3e6",
     "fact_checker": "f1ccaf38ff02",
-    "synthesizer": "37b86926ec09",
+    "synthesizer": "059540bede20",
     "critic": "3f0341751794",
 }
 

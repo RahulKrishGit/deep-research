@@ -1083,6 +1083,22 @@ SUBSTANTIVE_STATEMENT_MODES: tuple[StatementMode, ...] = (
     "contested",
 )
 
+# The qualitative reading of an evidence badge, shared by every surface that
+# reports one — the model-facing packet and the reader report. A reader should
+# learn whether an assertion was independently corroborated, only attributed
+# to its own publisher, disputed, or never classified; ``0.90`` is a model
+# judgement, not a calibrated probability, and printing it as one invites a
+# reader to weigh it as a frequency it never was. The number stays in the
+# evidence ledger's claim registry, where the caveat can sit beside it.
+EVIDENCE_BADGE_LABELS: dict[str, str] = {
+    "verified_pair": "independently corroborated",
+    "source_supported": (
+        "primary-source attribution; independent corroboration not established"
+    ),
+    "contested": "contested; both sides recorded",
+    "": "no corroboration classification recorded",
+}
+
 
 class ReportStatement(ContractModel):
     """One reader statement, with the evidence mapping that makes it auditable.
@@ -1216,26 +1232,25 @@ class ReportConstraint(ReportPoint):
 class ReportAnswerRow(ContractModel):
     """One row of the answer-kind table, as statement-backed cells.
 
-    The cells are in column order: two labels (the subject and the dimension
-    the row is judged on, which are context rather than findings) and one
-    evidenced finding. Keeping the finding as a ``ReportStatement`` is what
-    makes a table cell as traceable as a bullet, and what lets the renderer
-    refuse a cell the evidence does not carry instead of printing it.
+    The cells are in column order: the label cells (the subject and the
+    dimension the row is judged on) and, last, the evidenced finding. The
+    column contract is positional rather than mode-based, because an attested
+    label is a substantive statement too — it names a period or a place the
+    evidence carries — and reading "the row's finding" by mode would hand a
+    caller the subject cell instead.
     """
 
     cells: list[ReportStatement] = Field(min_length=1)
 
     @property
     def statement(self) -> ReportStatement | None:
-        """The row's substantive cell — the one that asserts something."""
-        for cell in self.cells:
-            if cell.substantive:
-                return cell
-        return None
+        """The row's evidenced finding: the last cell, by column contract."""
+        return self.cells[-1] if self.cells else None
 
     @property
     def labels(self) -> list[ReportStatement]:
-        return [cell for cell in self.cells if not cell.substantive]
+        """The row's label cells, in column order: all but the finding."""
+        return list(self.cells[:-1])
 
 
 # The atom dimensions a required dimension can be evidenced by. A statement
@@ -1281,17 +1296,19 @@ _DIMENSION_SIGNALS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 def answered_atom_dimensions(
     propositions: Sequence[AtomicProposition],
 ) -> list[str]:
-    """The atom fields the recorded propositions fill, in signal order."""
+    """The atom fields the recorded propositions fill, in signal order.
+
+    Per field, not per field group: a proposition that states an observation
+    period has not stated a forecast status, and a caller reading this list as
+    a record of what the evidence carries would be wrong to think otherwise.
+    """
     filled: list[str] = []
     for _, fields in _DIMENSION_SIGNALS:
-        if any(
-            getattr(proposition, name)
-            for name in fields
-            for proposition in propositions
-        ):
-            for name in fields:
-                if name not in filled:
-                    filled.append(name)
+        for name in fields:
+            if name in filled:
+                continue
+            if any(getattr(proposition, name) for proposition in propositions):
+                filled.append(name)
     return filled
 
 
@@ -1371,26 +1388,111 @@ def required_dimensions_for_targets(
     return dimensions
 
 
-def _cluster_ids_for_claim(
-    claim: Claim,
+def dimensions_by_target(
+    targets: Sequence[EvidenceTarget],
+) -> dict[str, list[str]]:
+    """Each target's required dimensions, keyed by target id.
+
+    The one input shape the shared derivation takes from either caller: the
+    Synthesizer builds it from its task's targets, the composition from its
+    own plan, and neither has to know how the other stores them.
+    """
+    return {
+        target.target_id: list(target.required_dimensions) for target in targets
+    }
+
+
+def clusters_for_claims(
+    claims: Sequence[Claim],
     clusters: Mapping[str, ClaimCluster],
 ) -> list[str]:
-    """Every cluster id this claim resolves to, through its aliases or its membership.
+    """Every cluster id the named claims resolve to, in registry order.
 
     Resolved in both directions on purpose: a claim records the cluster it
     joined, and a cluster records the claims it absorbed. A refinement that
-    persisted only one side still resolves.
+    persisted only one side still resolves, and a merge that absorbed an alias
+    still resolves through it.
     """
-    ids: list[str] = []
-    for candidate in (claim.cluster_id, *claim.cluster_aliases):
-        if candidate and candidate in clusters and candidate not in ids:
-            ids.append(candidate)
+    member_ids = {claim.claim_id for claim in claims}
+    resolved: list[str] = []
+    for claim in claims:
+        for candidate in (claim.cluster_id, *claim.cluster_aliases):
+            if (
+                candidate
+                and candidate in clusters
+                and candidate not in resolved
+            ):
+                resolved.append(candidate)
     for cluster_id, cluster in clusters.items():
-        if cluster_id in ids:
+        if cluster_id in resolved:
             continue
-        if claim.claim_id in cluster.member_claim_ids:
-            ids.append(cluster_id)
-    return ids
+        if member_ids & set(cluster.member_claim_ids):
+            resolved.append(cluster_id)
+    return resolved
+
+
+def derive_statement(
+    *,
+    statement_id: str,
+    text: str,
+    claims: Sequence[Claim],
+    clusters: Mapping[str, ClaimCluster],
+    evidence: Mapping[str, EvidenceUnit],
+    dimensions_by_target: Mapping[str, Sequence[str]],
+    basis: str = "",
+    mode: StatementMode | None = None,
+) -> ReportStatement:
+    """The one statement derivation both the draft and legacy paths use.
+
+    Resolves the clusters the claims belong to in both directions, unions the
+    cluster and claim evidence ids in that order — keeping only ids the
+    evidence registry can answer — unions the cluster and claim target ids in
+    that order, and records the dimensions the recorded atoms actually carry.
+
+    Two near-verbatim copies of this lived in ``agents.synthesizer`` and here,
+    and they had already diverged: one forced ``inference`` when a basis was
+    present and the other never set a basis at all, so a later fix to either
+    half would have left the other wrong at exactly the boundary between the
+    validated path and the fixture path.
+    """
+    cluster_ids = clusters_for_claims(claims, clusters)
+    evidence_ids: list[str] = []
+    for cluster_id in cluster_ids:
+        for evidence_id in clusters[cluster_id].evidence_ids:
+            if evidence_id in evidence and evidence_id not in evidence_ids:
+                evidence_ids.append(evidence_id)
+    for claim in claims:
+        for evidence_id in claim.evidence_selection.values():
+            if evidence_id in evidence and evidence_id not in evidence_ids:
+                evidence_ids.append(evidence_id)
+    target_ids: list[str] = []
+    for claim in claims:
+        for target_id in claim.target_ids:
+            if target_id not in target_ids:
+                target_ids.append(target_id)
+    for cluster_id in cluster_ids:
+        for target_id in clusters[cluster_id].target_ids:
+            if target_id not in target_ids:
+                target_ids.append(target_id)
+    required: list[str] = []
+    for target_id in target_ids:
+        for dimension in dimensions_by_target.get(target_id, ()):
+            if dimension not in required:
+                required.append(dimension)
+    propositions = [clusters[cluster_id].proposition for cluster_id in cluster_ids]
+    recorded_mode: StatementMode = mode or (
+        "inference" if basis.strip() else statement_mode_for_claims(claims)
+    )
+    return ReportStatement(
+        statement_id=statement_id,
+        text=text,
+        mode=recorded_mode,
+        claim_cluster_ids=cluster_ids,
+        evidence_ids=evidence_ids,
+        target_ids=target_ids,
+        answered_dimensions=answered_required_dimensions(required, propositions),
+        basis=basis.strip() or None,
+    )
 
 
 def statement_for_point(
@@ -1401,11 +1503,12 @@ def statement_for_point(
 ) -> ReportStatement:
     """The record behind one point, derived from the evidence it names.
 
-    Used both by the Synthesizer, which validates a draft into these records,
-    and by the composition itself, which fills one in for a point that was
-    built by hand or written before this contract existed. Every id that can
-    be resolved locally is carried; nothing is invented, so an unresolvable
-    point comes out with empty ids and is caught by the mapping validator.
+    The composition's half of the shared derivation: it resolves the claims
+    the point names and the plan's target dimensions, and hands both to
+    ``derive_statement``. Used by the composition itself, which fills a record
+    in for a point that was built by hand or written before this contract
+    existed. Nothing is invented, so an unresolvable point comes out with
+    empty ids and is caught by the mapping validator.
     """
     claims_by_id = {claim.claim_id: claim for claim in composition.claims}
     claims = [
@@ -1413,49 +1516,18 @@ def statement_for_point(
         for claim_id in point.claim_ids
         if claim_id in claims_by_id
     ]
-    cluster_ids: list[str] = []
-    for claim in claims:
-        for cluster_id in _cluster_ids_for_claim(claim, composition.claim_clusters):
-            if cluster_id not in cluster_ids:
-                cluster_ids.append(cluster_id)
-    evidence_ids: list[str] = []
-    for cluster_id in cluster_ids:
-        for evidence_id in composition.claim_clusters[cluster_id].evidence_ids:
-            if (
-                evidence_id in composition.evidence_units
-                and evidence_id not in evidence_ids
-            ):
-                evidence_ids.append(evidence_id)
-    for claim in claims:
-        for evidence_id in claim.evidence_selection.values():
-            if (
-                evidence_id in composition.evidence_units
-                and evidence_id not in evidence_ids
-            ):
-                evidence_ids.append(evidence_id)
-    target_ids: list[str] = []
-    for claim in claims:
-        for target_id in claim.target_ids:
-            if target_id not in target_ids:
-                target_ids.append(target_id)
-    for cluster_id in cluster_ids:
-        for target_id in composition.claim_clusters[cluster_id].target_ids:
-            if target_id not in target_ids:
-                target_ids.append(target_id)
-    propositions = [
-        composition.claim_clusters[cluster_id].proposition
-        for cluster_id in cluster_ids
-    ]
-    return ReportStatement(
+    return derive_statement(
         statement_id=statement_id,
         text=point.text,
-        mode=statement_mode_for_claims(claims),
-        claim_cluster_ids=cluster_ids,
-        evidence_ids=evidence_ids,
-        target_ids=target_ids,
-        answered_dimensions=answered_required_dimensions(
-            required_dimensions_for_targets(composition, target_ids),
-            propositions,
+        claims=claims,
+        clusters=composition.claim_clusters,
+        evidence=composition.evidence_units,
+        dimensions_by_target=dimensions_by_target(
+            [
+                target
+                for topic in composition.sub_topics
+                for target in topic.evidence_targets
+            ]
         ),
     )
 

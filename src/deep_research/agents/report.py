@@ -40,6 +40,7 @@ from deep_research.agents.identity import (
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import summarize_text
 from deep_research.utils.types import (
+    EVIDENCE_BADGE_LABELS,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_NOT_GATED,
     QUALITY_STATUS_PARTIAL,
@@ -133,18 +134,15 @@ ANSWER_SECTION_HEADINGS: dict[str, str] = {
     "historical": "## Chronology",
 }
 
-#: What each answer form's table is headed by, in column order. The last
-#: column is always the row's evidence strength, rendered locally from the
-#: checked claims behind it.
-ANSWER_TABLE_COLUMNS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "constraints": (
-        ("Constraint", "Constraint"),
-        ("Deployment mechanism", ""),
-        ("Geography", ""),
-    ),
-    "comparison": (("Option", "Option"), ("Dimension", "Dimension")),
-    "factual": (("Subject", "Subject"), ("Dimension", "Dimension")),
-    "historical": (("Period", "Period"), ("Subject", "Subject")),
+#: The label columns of each answer form's table, in column order. The
+#: evidenced finding and the evidence strength are appended by the renderer,
+#: because they are the same two columns for every form. A constraints
+#: question is not here: its table is the ranked constraint table, with its
+#: own header, and ``_reader_table`` routes to it directly.
+ANSWER_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "comparison": ("Option", "Dimension"),
+    "factual": ("Subject", "Dimension"),
+    "historical": ("Period", "Subject"),
 }
 
 DEFAULT_ANSWER_HEADING = "## Constraint ranking"
@@ -472,13 +470,25 @@ def _statement_owner_claims(
     composition: ReportComposition,
     statement: ReportStatement,
 ) -> list[Claim]:
-    """The checked claims whose statement this is, by point link or cluster."""
+    """The checked claims whose statement this is, by point link or cluster.
+
+    Resolved through the point that renders it, through the clusters it
+    names, and through cluster membership — a cluster records the claims it
+    absorbed, so a fixture or a refinement that persisted only one side of
+    the link still resolves.
+    """
     cluster_ids = set(statement.claim_cluster_ids)
     linked = [
         claim
         for claim in composition.claims
         if claim.cluster_id in cluster_ids
         or cluster_ids & set(claim.cluster_aliases)
+        or any(
+            claim.claim_id
+            in composition.claim_clusters[cluster_id].member_claim_ids
+            for cluster_id in cluster_ids
+            if cluster_id in composition.claim_clusters
+        )
     ]
     if linked:
         return linked
@@ -550,14 +560,14 @@ def validate_report_statements(
         statement_source_urls(
             statement.evidence_ids, composition.evidence_units
         )
+        if not statement.substantive:
+            continue
         linked_clusters = [
             cluster_id
             for cluster_id in statement.claim_cluster_ids
             if cluster_id in composition.claim_clusters
         ]
         claims = _statement_owner_claims(composition, statement)
-        if not statement.substantive:
-            continue
         if not statement_has_claim_link(composition, statement):
             raise StatementMappingError(
                 "a substantive reader statement carries no evidence link: "
@@ -609,10 +619,13 @@ def _statement_urls(
     statement: ReportStatement,
     composition: ReportComposition,
 ) -> list[str]:
-    return collapse_mirror_urls(
-        statement_citation_urls(statement, composition), composition.sources
-    )
+    """The URLs one statement cites, already collapsed per work.
 
+    ``statement_citation_urls`` collapses mirrors itself, so this is a name
+    for the single source of a statement's citations rather than a second
+    pass over them.
+    """
+    return statement_citation_urls(statement, composition)
 
 
 def report_as_of(
@@ -863,7 +876,10 @@ def backmatter_ratio(markdown: str) -> float:
     """
     if not markdown:
         return 0.0
-    index = markdown.find("## Methodology")
+    # The *last* Methodology heading, not the first: a statement's own text
+    # may name the heading, and taking the first occurrence would move the
+    # boundary into the body and inflate the ratio it measures.
+    index = markdown.rfind("## Methodology")
     if index < 0:
         return 0.0
     return len(markdown[index:]) / len(markdown)
@@ -888,11 +904,14 @@ def _statement_locations(
 
     The word cost is the *point's* text, which is what the reader loses when
     the statement goes — not the statement record's own wording, which may be
-    a shorter restatement of it.
+    a shorter restatement of it. Only the summary and the findings are listed:
+    the ranked answer is the last thing a report should lose, and a row this
+    loop cannot remove would be popped, free nothing, and still reach a floor
+    while droppable prose remained.
     """
     locations: list[tuple[str, int, str, int]] = []
     position = 0
-    for point in [*composition.summary, *composition.constraints]:
+    for point in composition.summary:
         position += 1
         if point.statement is not None:
             locations.append(
@@ -972,7 +991,7 @@ def fit_report_composition(
     fitted = composition.model_copy(deep=True)
     reasons: list[str] = []
     limit = reader_word_limit(composition)
-    if reader_word_count(_render_reader(fitted, compact_backmatter=False)) <= limit:
+    if reader_word_count(_render_reader(fitted, compact_backmatter=0)) <= limit:
         return fitted, reasons
     restated = _restated_clusters(fitted)
     ordered = sorted(
@@ -1035,13 +1054,18 @@ def reader_sections(answer_kind: str | None) -> tuple[str, ...]:
 def render_reader_report(composition: ReportComposition) -> str:
     """Render the whole reader report from validated, statement-mapped content.
 
-    Fits the composition to the frozen length ceiling, then renders at the
-    most informative backmatter level that satisfies the backmatter ceiling.
-    Both are measured on the rendered text rather than estimated: the ceilings
-    are stated over the artifact a reader receives, and the counts and
-    provenance sentences the methodology carries are what keeps the reader
-    able to check the report's own claims about itself.
+    Validates first: the production path checks the map in
+    ``build_report_composition``, but a composition rehydrated from state and
+    re-rendered would otherwise reach the reader with a substantive statement
+    that carries no evidence link at all. Then fits the composition to the
+    frozen length ceiling, and renders at the most informative backmatter
+    level that satisfies the backmatter ceiling. Both are measured on the
+    rendered text rather than estimated: the ceilings are stated over the
+    artifact a reader receives, and the counts and provenance sentences the
+    methodology carries are what keeps the reader able to check the report's
+    own claims about itself.
     """
+    validate_report_statements(composition)
     fitted, _ = fit_report_composition(composition)
     rendered = _render_reader(fitted, compact_backmatter=0)
     for level in (1, 2):
@@ -1198,17 +1222,23 @@ def _claims_for(
 
 
 def _evidence_strength(claims: Sequence[Claim]) -> str:
-    if not claims:
-        return "no checked claim"
-    return _CELL_SEPARATOR_JOIN.join(
-        f"{claim.verdict} {claim.confidence:.2f}" for claim in claims
-    )
+    """The qualitative reading of the badges behind a row, not a probability.
 
-
-def _weakest_confidence(claims: Sequence[Claim]) -> str:
+    "verified 0.80" reads as a calibrated probability and is not one: the
+    confidence is a model judgement, and a reader who weighs it as a frequency
+    has been misled by the artifact. The badge says what a reader actually
+    needs — independently corroborated, attribution only, contested, or never
+    classified — and the number stays in the ledger's claim registry.
+    """
     if not claims:
         return _CELL_EMPTY
-    return f"{min(claim.confidence for claim in claims):.2f}"
+    labels: list[str] = []
+    for claim in claims:
+        badge = claim.evidence_status or ""
+        label = EVIDENCE_BADGE_LABELS.get(badge, badge or claim.verdict)
+        if label not in labels:
+            labels.append(label)
+    return _CELL_SEPARATOR_JOIN.join(labels)
 
 
 def _reader_table(
@@ -1222,12 +1252,17 @@ def _reader_table(
     gets prose instead of a table, and a form with no rows says so rather than
     printing an empty deployment-ranking grid.
     """
-    kind = composition.answer_kind or "constraints"
+    kind = composition.answer_kind or ""
     if kind == "constraints":
         return _reader_constraints(composition, index)
     if kind == "explanation":
         return _reader_explanation(composition, index)
-    return _reader_answer_rows(composition, index, kind=kind)
+    if kind in ANSWER_TABLE_COLUMNS:
+        return _reader_answer_rows(composition, index, kind=kind)
+    # An answer form this renderer does not know is rendered as the form its
+    # own heading names, which is what ``reader_sections`` fell back to: the
+    # heading and the table cannot disagree about what the section is.
+    return _reader_constraints(composition, index)
 
 
 def _reader_constraints(
@@ -1248,7 +1283,6 @@ def _reader_constraints(
                 _cell(row.deployment_mechanism or "not stated", limit=120),
                 _cell(row.geography or "not stated", limit=120),
                 _cell(_evidence_strength(claims), limit=200),
-                _weakest_confidence(claims),
             ]
         )
     return _table(
@@ -1257,7 +1291,6 @@ def _reader_constraints(
             "Deployment mechanism",
             "Geography",
             "Evidence strength",
-            "Confidence",
         ),
         rows,
     )
@@ -1272,8 +1305,8 @@ def _reader_answer_rows(
     """The answer-kind table: labelled cells plus one evidenced finding."""
     if not composition.answer_rows:
         return f"(no {kind} row was drafted for this pass)"
-    labels = [label for label, _ in ANSWER_TABLE_COLUMNS.get(kind, ())]
-    header = (*labels, "Evidenced finding", "Evidence strength", "Confidence")
+    labels = list(ANSWER_TABLE_COLUMNS.get(kind, ()))
+    header = (*labels, "Evidenced finding", "Evidence strength")
     rows: list[list[str]] = []
     for row in composition.answer_rows:
         cells = list(row.cells)
@@ -1295,7 +1328,6 @@ def _reader_answer_rows(
                 *filled,
                 f"{_cell(finding)}{_marker_suffix(markers)}",
                 _cell(_evidence_strength(claims), limit=200),
-                _weakest_confidence(claims),
             ]
         )
     return _table(header, rows)
@@ -1539,27 +1571,39 @@ def _reader_methodology(
 
 
 def render_evidence_ledger(composition: ReportComposition) -> str:
-    """Render the verbose evidence artifact for the same pass."""
+    """Render the verbose evidence artifact for the same pass.
+
+    Fits the composition once, up front, and renders every block from that
+    fitted composition: the ledger's "reviewed but not cited" list, its
+    statement map and its dispositions must describe the same reader report
+    the other renderer produces, and re-deriving the fit separately is how the
+    two artifacts start disagreeing about one pass.
+    """
+    fitted, fit_reasons = fit_report_composition(composition)
     bodies = (
-        _claim_registry(composition),
-        _source_assessment(composition),
-        _reviewed_not_cited(composition),
-        _verification_passages(composition),
-        _rejected_content(composition),
-        _unchecked_findings(composition),
-        _run_errors(composition),
-        render_statement_map(composition),
+        _claim_registry(fitted),
+        _source_assessment(fitted),
+        _reviewed_not_cited(fitted),
+        _verification_passages(fitted),
+        _rejected_content(fitted),
+        _unchecked_findings(fitted),
+        _run_errors(fitted),
+        render_statement_map(fitted, fit_reasons=fit_reasons),
     )
     blocks = [
-        f"{EVIDENCE_TITLE_PREFIX}{' '.join(composition.question.split())}",
-        _ledger_header(composition),
+        f"{EVIDENCE_TITLE_PREFIX}{' '.join(fitted.question.split())}",
+        _ledger_header(fitted),
     ]
     for heading, body in zip(EVIDENCE_SECTIONS, bodies, strict=True):
         blocks.append(f"{heading}\n\n{body}")
     return "\n\n".join(blocks) + "\n"
 
 
-def render_statement_map(composition: ReportComposition) -> str:
+def render_statement_map(
+    composition: ReportComposition,
+    *,
+    fit_reasons: Sequence[str] | None = None,
+) -> str:
     """Every reader statement, with the mapping that makes it auditable.
 
     This is the audit bulk the reader report deliberately does not carry: one
@@ -1569,6 +1613,11 @@ def render_statement_map(composition: ReportComposition) -> str:
     this pass recorded for refused and repaired prose are stated above the
     table, and the new factual assertions waiting for a fact check are named
     here rather than routed from here.
+
+    ``fit_reasons`` is what the renderer that fitted this composition found.
+    A direct caller that supplies none gets them recomputed here, so a
+    standalone map is still honest; the ledger always supplies them, because a
+    ledger that re-derives the reader's fit can disagree with the reader.
     """
     statements = composition.statements
     prelude = [
@@ -1578,7 +1627,8 @@ def render_statement_map(composition: ReportComposition) -> str:
             "them."
         )
     ]
-    _, fit_reasons = fit_report_composition(composition)
+    if fit_reasons is None:
+        _, fit_reasons = fit_report_composition(composition)
     dispositions = [*composition.statement_dispositions, *fit_reasons]
     if backmatter_ratio(_render_reader(composition, compact_backmatter=2)) > (
         MAX_BACKMATTER_RATIO

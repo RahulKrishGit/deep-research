@@ -20,6 +20,7 @@ import pytest
 
 from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.report import (
+    DEFAULT_ANSWER_HEADING,
     DEFAULT_READER_WORD_LIMIT,
     EVIDENCE_SECTIONS,
     EVIDENCE_TITLE_PREFIX,
@@ -42,6 +43,7 @@ from deep_research.agents.report import (
     citation_markers,
     composition_statements,
     reader_citations,
+    reader_sections,
     reader_word_count,
     reader_word_limit,
     render_citations,
@@ -70,6 +72,7 @@ from deep_research.utils.types import (
     SourceTemporal,
     StatementMode,
     SubTopic,
+    answered_atom_dimensions,
 )
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
@@ -524,7 +527,13 @@ def test_an_empty_findings_section_renders_no_heading_at_all() -> None:
     assert "### Dropped" not in reader
 
 
-def test_the_constraint_table_carries_the_five_decision_columns() -> None:
+def test_the_constraint_table_carries_the_four_decision_columns() -> None:
+    """Evidence strength is a label, not a two-decimal probability.
+
+    The confidence number is a model judgement; printing it invited a reader
+    to weigh "0.80" as a frequency it never was. It stays in the ledger's
+    claim registry, beside the caveat.
+    """
     composition = _composition(
         summary=[],
         sections=[],
@@ -548,14 +557,16 @@ def test_the_constraint_table_carries_the_five_decision_columns() -> None:
     table = _section_body(render_reader_report(composition), "## Constraint ranking")
 
     assert (
-        "| Constraint | Deployment mechanism | Geography | Evidence strength "
-        "| Confidence |"
+        "| Constraint | Deployment mechanism | Geography | Evidence strength |"
     ) in table
+    assert "Confidence" not in table
+    assert "0.80" not in table
     assert "| Cordon tolling inside the central business district [1] " in table
     assert "| area licence with camera enforcement | London |" in table
     assert "| not stated | not stated |" in table
-    # Confidence is the weakest confidence behind the row, rendered locally.
-    assert "| 0.80 |" in table
+    # The evidence strength is the qualitative reading of the badge behind the
+    # row, resolved locally from the claim the row cites.
+    assert "| independently corroborated |" in table
 
 
 def test_uncertainty_prints_gaps_conflicts_and_limitations_once_each() -> None:
@@ -1553,6 +1564,10 @@ def test_factual_prose_outside_the_statement_map_is_invalid() -> None:
 
     with pytest.raises(StatementMappingError, match="S9"):
         validate_report_statements(composition)
+    # The renderer is the only guard a rehydrated composition meets, so it
+    # runs the same check before it prints anything.
+    with pytest.raises(StatementMappingError, match="S9"):
+        render_reader_report(composition)
 
 
 def test_a_context_statement_may_be_source_free_and_is_still_mapped() -> None:
@@ -1991,6 +2006,141 @@ def test_an_answered_dimension_requires_the_evidence_to_carry_it() -> None:
     assert statement is not None
     assert statement.target_ids == ["t1"]
     assert statement.answered_dimensions == ["geography", "scale"]
+
+
+def test_the_word_budget_never_drops_the_ranked_answer() -> None:
+    """A row the fit cannot remove must not be listed as droppable.
+
+    The ranked answer is the last thing a report should lose, and a row that
+    was popped but could not be dropped would free nothing while the loop ran
+    to its floor.
+    """
+    constraint = ReportConstraint(
+        text="Cordon tolling inside the central business district",
+        deployment_mechanism="not stated",
+        geography="not stated",
+        claim_ids=[_claim().claim_id],
+        source_urls=[SOURCE_URL],
+    )
+    findings = [
+        _stated(
+            f"Finding {index} reports a measured result from the study that "
+            "was read for this topic and nothing beyond it.",
+            statement=_statement(
+                f"Finding {index} reports a measured result.",
+                statement_id=f"S{index}",
+            ),
+        )
+        for index in range(12)
+    ]
+    composition = _evidence_composition(
+        requested_word_limit=330,
+        summary=[],
+        constraints=[constraint],
+        sections=[ReportSection(title="Findings", points=findings)],
+    )
+
+    reader = render_reader_report(composition)
+
+    assert "Cordon tolling inside the central business district" in reader
+    assert "Finding 11" not in reader
+    assert "Finding 0 reports" in reader
+    assert reader_word_count(reader) <= 330
+
+
+def test_the_ledger_describes_the_reader_the_reader_rendered() -> None:
+    """Both artifacts are rendered from one fit of one composition.
+
+    A statement dropped to meet the word ceiling takes its citation with it,
+    so a ledger that listed the source as cited would contradict the reader.
+    """
+    dropped_source = _source(url=OTHER_URL, title="Other study")
+    findings = [
+        _stated(
+            f"Finding {index} reports a measured result from the study that "
+            "was read for this topic and nothing beyond it.",
+            statement=_statement(
+                f"Finding {index} reports a measured result.",
+                statement_id=f"S{index}",
+            ),
+        )
+        for index in range(12)
+    ]
+    findings[-1] = _stated(
+        "Only this finding cites the other study, and it is the one the "
+        "ceiling drops because it is the longest statement in the report by "
+        "a wide margin.",
+        claim_ids=[_claim().claim_id],
+        source_urls=[OTHER_URL],
+        statement=_statement(
+            "Only this finding cites the other study.",
+            statement_id="S11",
+        ),
+    )
+    composition = _evidence_composition(
+        requested_word_limit=330,
+        sources=[_source(), dropped_source],
+        summary=[],
+        constraints=[],
+        sections=[ReportSection(title="Findings", points=findings)],
+    )
+
+    reader = render_reader_report(composition)
+    ledger = render_evidence_ledger(composition)
+    references = [
+        line
+        for line in _section_body(reader, "## References").splitlines()
+        if re.match(r"^\d+\. ", line)
+    ]
+    not_cited = _section_body(ledger, "## Reviewed but not cited")
+
+    assert references
+    assert not any(OTHER_URL in line for line in references)
+    assert OTHER_URL in not_cited
+    assert "length_budget_dropped" in _section_body(
+        ledger, "## Statement support map"
+    )
+
+
+def test_the_backmatter_boundary_is_the_last_methodology_heading() -> None:
+    """A statement naming the heading must not move the measured boundary."""
+    body = "# Report\n\n- The source's own ## Methodology section is quoted.\n\n" + (
+        "x" * 400
+    )
+    backmatter = "\n\n## Methodology\n\n- counts\n\n## References\n\n1. Source"
+    rendered = body + backmatter
+    boundary = rendered.rfind("## Methodology")
+
+    # The body names the heading, so the first occurrence is inside the body:
+    # measuring from it would count the body as backmatter.
+    assert rendered.find("## Methodology") < boundary
+    assert backmatter_ratio(rendered) == pytest.approx(
+        len(rendered[boundary:]) / len(rendered)
+    )
+
+
+def test_an_atom_dimension_record_lists_only_the_fields_that_are_filled() -> None:
+    """A period is not evidence of a forecast status."""
+    period_only = AtomicProposition(text="x", observation_period="2026")
+    both = AtomicProposition(
+        text="x", observation_period="2026", forecast_status="observed"
+    )
+
+    assert answered_atom_dimensions([period_only]) == ["observation_period"]
+    assert answered_atom_dimensions([both]) == [
+        "observation_period",
+        "forecast_status",
+    ]
+
+
+def test_an_unknown_answer_form_falls_back_to_the_form_its_heading_names() -> None:
+    """The heading and the table cannot disagree about what the section is."""
+    composition = _composition().model_copy(update={"answer_kind": "estimate"})
+    reader = render_reader_report(composition)
+
+    assert reader_sections("estimate")[1] == DEFAULT_ANSWER_HEADING
+    assert DEFAULT_ANSWER_HEADING in reader
+    assert "(no constraint was ranked for this pass)" in reader
 
 
 # --- helpers ------------------------------------------------------------------

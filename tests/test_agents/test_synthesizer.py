@@ -35,6 +35,7 @@ from deep_research.agents.synthesizer import (
     DEFAULT_MEMORY_CONFIDENCE,
     STATEMENT_DISPOSITIONS,
     SYNTHESIS_OPEN_QUESTIONS_CHARS,
+    AnswerRowDraft,
     ConstraintDraft,
     ReportDraft,
     ReportPointDraft,
@@ -42,6 +43,9 @@ from deep_research.agents.synthesizer import (
     SynthesisTask,
     SynthesizedReport,
     SynthesizerAgent,
+    _corpus_tokens,
+    _significant_figures,
+    _strip_unsupported_figures,
     bounded_claim_packet,
     bounded_finding_digest,
     build_canonical_packet,
@@ -59,6 +63,8 @@ from deep_research.agents.synthesizer import (
     render_revision_guidance,
     report_filename,
     report_messages,
+    unattested_atoms,
+    unattested_words,
 )
 from deep_research.evaluation.cases import cases_for
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -1628,6 +1634,236 @@ def test_every_recorded_disposition_comes_from_the_enumerated_vocabulary() -> No
     assert set(composition.statement_dispositions) <= set(
         STATEMENT_DISPOSITIONS
     )
+
+
+def test_each_uncertainty_kind_reaches_its_own_reader_group() -> None:
+    """The note vocabulary and the renderer's groups are one vocabulary.
+
+    The basis a note carries is the group key the renderer reads. Writing the
+    matched token instead ("disagree", "no read") left six of nine note kinds
+    in the unheaded list, so a reader could not tell a live disagreement from
+    a gap nobody retrieved.
+    """
+    uncertain = "### Uncertain or conflicting"
+    for note, heading in (
+        ("The sources disagree about the projection.", uncertain),
+        ("The evidence conflicts on this point.", uncertain),
+        ("An independent source contradicts the finding.", uncertain),
+        ("No read was acquired for transmission costs.", "### Not acquired"),
+        ("That data was not retrieved this pass.", "### Not acquired"),
+        ("The topic was not acquired.", "### Not acquired"),
+        ("Retail tariffs are out of scope for this pass.", "### Outside scope"),
+        ("That question is outside scope for the pass.", "### Outside scope"),
+    ):
+        composition = _compose_uncertainty(note)
+
+        assert heading in render_reader_report(composition), note
+
+
+def test_an_unclassifiable_uncertainty_note_still_reads_as_uncertainty() -> None:
+    """The fallback group is a group, not an unheaded orphan."""
+    composition = _compose_uncertainty("Confidence is low here.")
+
+    uncertainty = render_reader_report(composition)
+    assert "### Uncertain or conflicting" in uncertainty
+    assert "- Confidence is low here." in uncertainty
+
+
+def _compose_uncertainty(note: str) -> ReportComposition:
+    """One validated composition whose only uncertainty is ``note``.
+
+    The pass records the acquisition failure a "not acquired" note describes,
+    because a note may only assert an evidence state this pass recorded.
+    """
+    composition, _ = build_report_composition(
+        _grounded_task(
+            errors=[
+                ResearchError(
+                    error_type="no_read_acquired",
+                    source="agent.researcher",
+                    message="No read was acquired for a target.",
+                )
+            ]
+        ),
+        ReportDraft(
+            executive_summary=[],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[note],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+    assert len(composition.uncertainty_statements) == 1
+    return composition
+
+
+def test_a_cell_word_is_not_attested_by_a_longer_word_that_contains_it() -> None:
+    """"generation" does not vouch for "gen": the cell check is whole-token."""
+    assert unattested_words("gen", "carbon capture generation") == ["gen"]
+    assert unattested_words("car gen", "carbon capture generation") == [
+        "car",
+        "gen",
+    ]
+    # Positive counterpart: the words the corpus does carry stay attested, so
+    # the check cannot pass by refusing every cell.
+    assert unattested_words("carbon capture", "carbon capture generation") == []
+
+
+def test_a_figure_that_ends_a_sentence_in_the_evidence_is_attested() -> None:
+    """An excerpt is an exact sentence, so its figures often carry a period."""
+    corpus = "Installed capacity reached 1,200."
+
+    assert unattested_atoms("capacity was 1,200 in total", corpus) == []
+    assert (
+        _strip_unsupported_figures("Growth to 1,200 was not examined.", corpus)
+        == "Growth to 1,200 was not examined."
+    )
+    # The lookup side and the corpus side agree on both ends of the token.
+    assert _corpus_tokens(corpus) == {"installed", "capacity", "reached", "1,200"}
+    # A figure the evidence does not carry is still refused, so the repair is
+    # not simply disabled.
+    assert unattested_atoms("capacity was 2,900 in total", corpus) == ["2,900"]
+
+
+def test_a_figure_token_does_not_swallow_the_word_after_it() -> None:
+    """A malformed figure token would land in the ledger's disposition text."""
+    assert _significant_figures("capacity was 1,200 in total") == ["1,200"]
+    assert _significant_figures("reached 12 sites") == ["12"]
+    # A recognised unit still travels with its figure, so the strip path can
+    # remove "890 GW of" as one phrase.
+    assert _significant_figures("capacity reached 890 GW") == ["890 GW"]
+
+
+def test_a_two_letter_place_the_evidence_never_names_is_refused() -> None:
+    assert unattested_atoms("Deployment grew in the EU.", "output rose") == ["EU"]
+
+
+def test_a_sentence_initial_acronym_the_evidence_never_names_is_refused() -> None:
+    """No ordinary sentence opener is all-caps.
+
+    The position exemption covers a mixed-case opener, not an acronym, so a
+    place named only at the start of a sentence is still checked.
+    """
+    assert unattested_atoms("EU capacity rose.", "output rose") == ["EU"]
+    assert unattested_atoms("Deployment grew in the UK.", "output rose") == ["UK"]
+
+
+def test_a_sentence_initial_ordinary_word_is_not_an_unattested_name() -> None:
+    """The positive half of the accepted residual: ordinary openers stay safe.
+
+    "Charge" cannot be told from "California" without an English lexicon, so a
+    sentence-initial mixed-case word is exempt by position. A sentence-initial
+    mixed-case place name in prose therefore stays undetected — carried to
+    Task 10 — which is strictly narrower than missing "UK"/"EU" everywhere.
+    """
+    assert unattested_atoms("The output rose.", "output rose") == []
+    assert (
+        unattested_atoms("Charge for driving inside the zone.", "output rose") == []
+    )
+    assert unattested_atoms("Supported constraint.", "output rose") == []
+    assert unattested_atoms("California added capacity.", "output rose") == []
+
+
+def test_a_mid_sentence_place_the_evidence_never_names_is_still_refused() -> None:
+    assert unattested_atoms("Output rose in California.", "output rose") == [
+        "California"
+    ]
+    # And a place the evidence does carry is not refused.
+    assert (
+        unattested_atoms(
+            "Output rose in California.", "output rose in california"
+        )
+        == []
+    )
+
+
+def test_a_unit_abbreviation_is_not_read_as_a_name() -> None:
+    """A unit is not a name, whatever case the writer gave it."""
+    assert (
+        unattested_atoms(
+            "capacity reached 890 GW", "capacity reached 890 gigawatts"
+        )
+        == []
+    )
+
+
+def test_an_answer_row_label_the_evidence_does_not_carry_is_repaired() -> None:
+    """A Subject or Period cell is a factual assertion like a mechanism cell."""
+    composition, rejected = _compose_comparison(subject="Patagonia")
+
+    row = composition.answer_rows[0]
+    assert row.cells[0].text == "not stated"
+    assert row.cells[0].mode == "context"
+    assert "answer row 1 subject: no evidence for this cell" in rejected
+    assert "unsupported_cell" in composition.statement_dispositions
+
+
+def test_an_answer_row_label_the_evidence_carries_is_published() -> None:
+    """Positive counterpart: an attested label publishes and stays the label."""
+    composition, rejected = _compose_comparison(subject="2025")
+
+    row = composition.answer_rows[0]
+    assert rejected == []
+    assert row.cells[0].text == "2025"
+    assert row.labels == list(row.cells[:-1])
+    assert row.statement is row.cells[-1]
+    assert row.statement is not None
+    assert row.statement.text.startswith("Logical error rates")
+
+
+def _compose_comparison(
+    *, subject: str
+) -> tuple[ReportComposition, list[str]]:
+    """One comparison composition with the given row subject."""
+    task = _grounded_task(
+        answer_contract=AnswerContract(
+            question="How mature is quantum error correction?",
+            scope_statement="2025 logical error rates.",
+            geographic_scope="unspecified",
+            as_of_date="2026-09-16",
+            evidence_period_requirement="the 2025 reported rate",
+            assumptions=["no geography named"],
+            answer_kind="comparison",
+        )
+    )
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[],
+        answer_rows=[
+            AnswerRowDraft(
+                subject=subject,
+                dimension="break-even",
+                finding="Logical error rates fell below break-even in 2025.",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+    )
+    return build_report_composition(task, draft, max_sections=4, limitations=[])
+
+
+def test_the_reader_shows_a_qualitative_strength_not_a_confidence_number() -> None:
+    """The brief: derive labels from status; do not print 0.90 as a probability."""
+    composition, _ = _compose_comparison(subject="2025")
+    reader = render_reader_report(composition)
+
+    assert "| Option | Dimension | Evidenced finding | Evidence strength |" in reader
+    assert "Confidence" not in reader
+    assert "0.80" not in reader
+    assert "independently corroborated" in reader
+
+
+def test_the_ledger_keeps_the_confidence_number_beside_its_caveat() -> None:
+    """The number is not deleted, it moves to where the caveat can sit."""
+    composition, _ = _compose_comparison(subject="2025")
+    ledger = render_evidence_ledger(composition)
+    registry = ledger.split("## Checked claim registry", 1)[1]
+
+    assert "0.80" in registry
+    assert "Confidence" in registry
 
 
 def test_a_new_factual_assertion_is_returned_to_the_fact_checker() -> None:

@@ -67,6 +67,7 @@ from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    EVIDENCE_BADGE_LABELS,
     AcquisitionState,
     AnswerContract,
     Claim,
@@ -83,9 +84,11 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     ScoredSource,
+    StatementMode,
     SubTopic,
-    answered_required_dimensions,
-    statement_mode_for_claims,
+    clusters_for_claims,
+    derive_statement,
+    dimensions_by_target,
 )
 
 SYNTHESIZER_NAME = "synthesizer"
@@ -119,8 +122,26 @@ _CELL_CHARS = 120
 # may reword its evidence freely — that is what prose is for — but a figure or
 # a named entity the evidence does not carry is a new fact, and a new fact is
 # not something a report may assert on its own authority.
-_FIGURE_PATTERN = re.compile(r"\d[\d,.']*(?:\s?(?:%|[A-Za-z]{2,}))?")
-_PROPER_NOUN_PATTERN = re.compile(r"(?<![.!?]\s)(?<!^)\b[A-Z][A-Za-z][\w'-]{2,}\b")
+#
+# The figure pattern captures the number alone; ``_significant_figures``
+# attaches a following word only when that word is a recognised unit, so a
+# figure token can never swallow the next ordinary word ("1,200 in total" is
+# the figure 1,200, not the token "1,200 in").
+_FIGURE_PATTERN = re.compile(r"\d[\d,.'\u2019]*")
+# A capitalised word that is not an acronym is a name candidate only when it
+# is not the first word of a sentence: a sentence opener is capitalised by
+# position, and "Charge" is indistinguishable from "California" without an
+# English lexicon. The alternative — a stopword list that has to contain every
+# word a sentence may open with — is not a list anyone can audit. The accepted
+# cost is that a sentence-initial MIXED-case place name in prose ("California
+# added capacity") stays undetected; Task 10 carries that residual.
+_PROPER_NOUN_PATTERN = re.compile(r"\b[A-Z][A-Za-z][\w'-]*\b")
+# An acronym is the exception to the position exemption, because no ordinary
+# sentence opener is all-caps: "EU" is a name in the middle of a sentence and
+# at the start of one, and the four-character floor that used to hide it was a
+# length rule standing in for a case rule.
+_ACRONYM_PATTERN = re.compile(r"[A-Z]{2,}")
+_SENTENCE_INITIAL = re.compile(r"(?:^|[.!?]\s+)$")
 # The operation words a derivation has to name to count as one: a recorded
 # basis states premises *and* what was done with them.
 _DERIVATION_MARKERS = (
@@ -171,11 +192,24 @@ def _figure_number(token: str) -> str:
 
 
 def _significant_figures(text: str) -> list[str]:
-    return [
-        token
-        for token in _FIGURE_PATTERN.findall(text)
-        if _is_significant_figure(token)
-    ]
+    """Every figure token that asserts a quantity, with its unit attached.
+
+    A unit is attached only when the next word is one this contract knows, so
+    "890 GW" is one token while "1,200 in total" is the figure 1,200 followed
+    by prose — which is what keeps a malformed token out of a disposition.
+    """
+    figures: list[str] = []
+    for match in _FIGURE_PATTERN.finditer(text):
+        number = match.group(0).strip(".,'\u2019")
+        if not number:
+            continue
+        unit = re.match(r"\s+([A-Za-z%][A-Za-z%/-]*)", text[match.end() :])
+        token = number
+        if unit and unit.group(1).casefold() in _UNIT_WORDS:
+            token = f"{number} {unit.group(1)}"
+        if _is_significant_figure(token) and token not in figures:
+            figures.append(token)
+    return figures
 
 
 def _derivation_premises(basis: str, tokens: set[str]) -> list[str]:
@@ -190,6 +224,13 @@ def _derivation_premises(basis: str, tokens: set[str]) -> list[str]:
 def _names_an_operation(basis: str) -> bool:
     lowered = basis.casefold()
     return any(marker in lowered for marker in _DERIVATION_MARKERS)
+
+
+# The words a capitalised token may be without naming anything: function words
+# and connectives that a report's own argument is carried by. Kept to that
+# role on purpose — the position exemption in ``unattested_atoms`` is what
+# keeps ordinary sentence openers safe, and a list grown to cover every word a
+# sentence may open with would make each of those words freely fabricable.
 _ATTESTATION_STOPWORDS = frozenset(
     {
         "the", "and", "for", "with", "that", "this", "from", "into", "than",
@@ -671,19 +712,6 @@ class CanonicalPacket(ContractModel):
     entries: list[PacketEntry] = Field(default_factory=list)
     omitted_ids: list[str] = Field(default_factory=list)
     continuation_batches: list[list[str]] = Field(default_factory=list)
-
-
-# The qualitative reading of an evidence badge. A reader should learn whether
-# an assertion was independently corroborated, only attributed to its own
-# publisher, disputed, or never classified — not a two-decimal probability.
-EVIDENCE_BADGE_LABELS: dict[str, str] = {
-    "verified_pair": "independently corroborated",
-    "source_supported": (
-        "primary-source attribution; independent corroboration not established"
-    ),
-    "contested": "contested; both sides recorded",
-    "": "no corroboration classification recorded",
-}
 
 
 def answer_form_instruction(contract: AnswerContract | None) -> str:
@@ -1212,6 +1240,8 @@ class DraftContext(ContractModel):
     clusters: dict[str, ClaimCluster] = Field(default_factory=dict)
     evidence: dict[str, EvidenceUnit] = Field(default_factory=dict)
     targets: dict[str, EvidenceTarget] = Field(default_factory=dict)
+    dimensions_by_target: dict[str, list[str]] = Field(default_factory=dict)
+    """Each target's required dimensions, as the shared derivation reads them."""
     corpus: str = ""
     note_corpus: str = ""
     """The figures a *question-shaped* note may name.
@@ -1268,9 +1298,18 @@ def _corpus_tokens(corpus: str) -> set[str]:
 
     Whole tokens, not substrings: "1200 hectares" does not attest "12", and a
     substring test would let one measured figure vouch for a different one
-    that happens to share its digits.
+    that happens to share its digits. The trailing separators are stripped so
+    the corpus side and ``_figure_number`` agree: an excerpt is an exact
+    sentence of a source document, so its figures very often end one. Only the
+    ends are stripped, so "1,200" keeps its internal separator and stays
+    distinct from "1200".
     """
-    return set(re.findall(r"[a-z0-9][a-z0-9'.,-]*", corpus.casefold()))
+    tokens = {
+        token.strip(".,'-\u2019")
+        for token in re.findall(r"[a-z0-9][a-z0-9'.,\u2019-]*", corpus.casefold())
+    }
+    tokens.discard("")
+    return tokens
 
 
 def unattested_atoms(text: str, corpus: str) -> list[str]:
@@ -1289,7 +1328,21 @@ def unattested_atoms(text: str, corpus: str) -> list[str]:
             found.append(token)
     for match in _PROPER_NOUN_PATTERN.finditer(text):
         token = match.group(0)
-        if token.casefold() not in tokens and token not in found:
+        # A sentence-opening capitalised word is capitalised by position: this
+        # checker cannot tell "Charge" from "California" without a lexicon, so
+        # the position exemption stays. An acronym is the exception, because
+        # no ordinary sentence opener is all-caps.
+        if _SENTENCE_INITIAL.search(text[: match.start()]) and not (
+            _ACRONYM_PATTERN.fullmatch(token)
+        ):
+            continue
+        folded = token.casefold()
+        # A unit is not a name: "GW" in a statement whose evidence spells out
+        # "gigawatts" is an abbreviation of the same measured quantity, and the
+        # figure it belongs to has already been checked against that evidence.
+        if folded in _UNIT_WORDS:
+            continue
+        if folded not in tokens and token not in found:
             found.append(token)
     return found
 
@@ -1297,15 +1350,13 @@ def unattested_atoms(text: str, corpus: str) -> list[str]:
 def unattested_words(text: str, corpus: str) -> list[str]:
     """Every content word of a short cell the corpus does not carry.
 
-    Used for table cells, which are meant to be lifted from the evidence
-    rather than composed: a mechanism or a geography nobody's evidence states
-    is the uncited cell this check exists to repair.
+    Whole tokens, for the same reason the figures use them: a substring test
+    lets "generation" vouch for "gen", and a cell is meant to be lifted from
+    the evidence rather than composed. A mechanism or a geography nobody's
+    evidence states is the uncited cell this check exists to repair.
     """
-    return [
-        token
-        for token in _content_tokens(text)
-        if token not in corpus
-    ]
+    tokens = _corpus_tokens(corpus)
+    return [token for token in _content_tokens(text) if token not in tokens]
 
 
 def _is_recommendation(text: str) -> bool:
@@ -1362,52 +1413,23 @@ def _statement_for_claims(
     claims: Sequence[Claim],
     context: DraftContext,
     basis: str = "",
+    mode: StatementMode | None = None,
 ) -> ReportStatement:
-    """The statement record behind a validated point."""
-    cluster_ids = _clusters_for_claims(claims, context.clusters)
-    evidence_ids: list[str] = []
-    for cluster_id in cluster_ids:
-        for evidence_id in context.clusters[cluster_id].evidence_ids:
-            if evidence_id in context.evidence and evidence_id not in evidence_ids:
-                evidence_ids.append(evidence_id)
-    for claim in claims:
-        for evidence_id in claim.evidence_selection.values():
-            if evidence_id in context.evidence and evidence_id not in evidence_ids:
-                evidence_ids.append(evidence_id)
-    target_ids: list[str] = []
-    for claim in claims:
-        for target_id in claim.target_ids:
-            if target_id not in target_ids:
-                target_ids.append(target_id)
-    for cluster_id in cluster_ids:
-        for target_id in context.clusters[cluster_id].target_ids:
-            if target_id not in target_ids:
-                target_ids.append(target_id)
-    dimensions: list[str] = []
-    for target_id in target_ids:
-        target = context.targets.get(target_id)
-        if target is None:
-            continue
-        for dimension in target.required_dimensions:
-            if dimension not in dimensions:
-                dimensions.append(dimension)
-    propositions = [
-        context.clusters[cluster_id].proposition for cluster_id in cluster_ids
-    ]
-    mode = statement_mode_for_claims(claims)
-    if basis.strip():
-        mode = "inference"
-    return ReportStatement(
+    """The statement record behind a validated point.
+
+    The draft path's half of the shared derivation: it supplies the task's
+    evidence, clusters and target dimensions, plus the basis and the explicit
+    mode the validated path knows and the fixture path does not.
+    """
+    return derive_statement(
         statement_id=statement_id,
         text=text,
+        claims=claims,
+        clusters=context.clusters,
+        evidence=context.evidence,
+        dimensions_by_target=context.dimensions_by_target,
+        basis=basis,
         mode=mode,
-        claim_cluster_ids=cluster_ids,
-        evidence_ids=evidence_ids,
-        target_ids=target_ids,
-        answered_dimensions=answered_required_dimensions(
-            dimensions, propositions
-        ),
-        basis=basis.strip() or None,
     )
 
 
@@ -1427,7 +1449,7 @@ def _cited_evidence(claims: Sequence[Claim], context: DraftContext) -> str:
             unit = context.evidence.get(evidence_id)
             if unit is not None:
                 parts.append(unit.excerpt)
-    for cluster_id in _clusters_for_claims(claims, context.clusters):
+    for cluster_id in clusters_for_claims(claims, context.clusters):
         cluster = context.clusters[cluster_id]
         proposition = cluster.proposition
         parts.append(proposition.text)
@@ -1665,8 +1687,9 @@ def _build_cell(
         claims=selected,
         context=context,
         basis="cell carried by the row's evidence",
+        mode="attributed" if selected else "context",
     )
-    return written, statement.model_copy(update={"mode": "attributed"})
+    return written, statement
 
 
 def _build_constraint(
@@ -1730,18 +1753,23 @@ def _build_answer_row(
     )
     if point is None:
         return None
-    labels = [
-        ReportStatement(
-            statement_id=context.next_id("A"),
-            text=label,
-            mode="context",
-            basis="row label composed by this pass",
+    # The label columns are factual cells like any other — a Period is a date
+    # and a Subject is usually a named entity — so they are attested against
+    # the row's evidence and repaired to "not stated" when it does not carry
+    # them, exactly as the constraint table's mechanism and geography are.
+    labels: list[ReportStatement] = []
+    for cell_name, raw in (
+        ("subject", draft.subject),
+        ("dimension", draft.dimension),
+    ):
+        _, statement = _build_cell(
+            text=raw,
+            row=point,
+            context=context,
+            where=where,
+            cell=cell_name,
         )
-        for label in (
-            _optional_text(draft.subject, limit=_CELL_CHARS),
-            _optional_text(draft.dimension, limit=_CELL_CHARS),
-        )
-    ]
+        labels.append(statement)
     return ReportAnswerRow(cells=[*labels, point.statement])
 
 
@@ -1796,18 +1824,50 @@ def _build_uncertainty_statements(
     return statements
 
 
+# The basis a source-free note carries is the group key the renderer reads,
+# not the token that happened to match: the note vocabulary and the reader's
+# groups are one vocabulary, and a basis that said "disagree" while the
+# renderer looked for "conflicting" left the note ungrouped. Order matters —
+# an unretrieved topic is a stronger fact than a disagreement about it, and a
+# note that is both conflicting and out of scope belongs in the narrower
+# group.
+_UNCERTAINTY_BASIS_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "not acquired",
+        (
+            "not acquired",
+            "was not retrieved",
+            "no read",
+            "not read",
+            "never retrieved",
+            "could not be retrieved",
+        ),
+    ),
+    (
+        "outside scope",
+        ("outside scope", "out of scope", "beyond the scope", "not in scope"),
+    ),
+    (
+        "uncertain/conflicting",
+        (
+            "disagree",
+            "conflict",
+            "contradict",
+            "uncertain",
+            "contested",
+            "inconsistent",
+        ),
+    ),
+)
+
+
 def _uncertainty_basis(text: str) -> str:
-    """Classify a source-free note by what it is about."""
+    """Classify a source-free note into the group the reader meets it in."""
     lowered = text.casefold()
-    for _, _, tokens in (
-        ("", "", ("not acquired", "was not retrieved", "no read")),
-        ("", "", ("disagree", "conflict", "contradict")),
-        ("", "", ("outside scope", "out of scope", "beyond")),
-    ):
-        for token in tokens:
-            if token in lowered:
-                return token
-    return "uncertainty this pass recorded"
+    for key, tokens in _UNCERTAINTY_BASIS_TOKENS:
+        if any(token in lowered for token in tokens):
+            return key
+    return "uncertain/conflicting"
 
 
 # The units a figure may carry, so that removing an unsupported figure takes
@@ -1849,9 +1909,10 @@ def _strip_unsupported_figures(text: str, corpus: str) -> str:
         repaired = sentence
         for figure in figures:
             number = _figure_number(figure)
+            # `_significant_figures` attaches a unit only when the next word
+            # is one this contract knows, so whatever follows the number here
+            # is that unit and nothing else.
             tail = figure.strip()[len(number) :].strip()
-            if tail.casefold() not in _UNIT_WORDS:
-                tail = ""
             repaired = re.sub(
                 rf"\b{re.escape(number)}\s*"
                 + (rf"{re.escape(tail)}\s*" if tail else "")
@@ -1896,6 +1957,7 @@ def build_report_composition(
         clusters=dict(task.claim_clusters),
         evidence=dict(task.evidence_units),
         targets={target.target_id: target for target in task.targets},
+        dimensions_by_target=dimensions_by_target(task.targets),
         corpus=_attestation_corpus(approved, task.evidence_units),
         failures=measured_failures(task),
     )
