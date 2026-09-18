@@ -221,20 +221,109 @@ def test_a_different_predicate_is_not_compatible() -> None:
     (rose_atom,) = extract_atoms(rose)
     (fell_atom,) = extract_atoms(fell)
 
-    assert rose_atom.predicate == "increased"
-    assert fell_atom.predicate == "decreased"
+    assert rose_atom.predicate == "increases_by"
+    assert fell_atom.predicate == "decreases_by"
     assert not atomic_compatible(rose_atom, fell_atom)
 
 
 def test_an_unknown_subject_or_predicate_is_never_a_conflict() -> None:
-    """An unpopulated qualifier is unknown, not different."""
-    stated = _queue_proposition()
-    unknown_subject = _queue_proposition(subject="")
-    unknown_predicate = _queue_proposition(predicate="")
+    """Two clauses that state no subject agree; one that states another does not.
 
-    assert atomic_compatible(stated, unknown_subject)
-    assert atomic_compatible(stated, unknown_predicate)
-    assert atomic_compatible(unknown_subject, unknown_predicate)
+    Empty-vs-empty is not a conflict — an unpopulated field must not block a
+    legitimate merge — but empty-vs-stated is: an underivable qualifier is not
+    an escape hatch for two clauses that name different things.
+    """
+    stated = _queue_proposition()
+    unknown = _queue_proposition(subject="", predicate="")
+    other = _queue_proposition(subject="wind queue")
+
+    assert atomic_compatible(unknown, unknown.model_copy())
+    assert not atomic_compatible(stated, unknown)
+    assert not atomic_compatible(stated, other)
+
+
+@pytest.mark.parametrize(
+    ("level_side", "delta_side"),
+    [
+        ("The queue hit 10 GW in 2024.", "The queue rose 10 GW in 2024."),
+        ("The queue hit 10 GW in 2024.", "The queue added 10 GW in 2024."),
+        ("The queue hit 10 GW in 2024.", "The queue grew 10 GW in 2024."),
+        ("Revenue doubled in 2024.", "Revenue rose in 2024."),
+        ("Revenue fell 10 percent in 2024.", "Revenue halved 10 percent in 2024."),
+    ],
+)
+def test_a_level_and_a_delta_are_never_one_relation(
+    level_side: str, delta_side: str
+) -> None:
+    """Reaching a level is not changing by it, and doubling is not rising.
+
+    The reviewer's probes: the relation-class table merged these into one
+    settled verified cluster. Every pair here states the same number about the
+    same subject and is still two different facts.
+    """
+    (left,) = extract_atoms(_claim(level_side, claim_id="claim-left"))
+    (right,) = extract_atoms(_claim(delta_side, claim_id="claim-right"))
+
+    assert left.predicate != right.predicate
+    assert not atomic_compatible(left, right)
+
+
+@pytest.mark.asyncio
+async def test_a_level_and_a_delta_never_become_one_settled_claim() -> None:
+    claims = [
+        _claim("The queue hit 10 GW in 2024.", claim_id="claim-hit"),
+        _claim("The queue rose 10 GW in 2024.", claim_id="claim-rose"),
+    ]
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
+
+    consolidation = await consolidate_claims(completer, claims)
+
+    assert len(consolidation.claims) == 2
+    assert consolidation.diagnostics == [
+        "equivalence_candidate_incompatible:1:2"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("trailing_side", "other_side"),
+    [
+        (
+            "10 GW sat in the 2024 wind queue.",
+            "10 GW sat in the 2024 solar queue.",
+        ),
+        (
+            "10 GW sat in the transmission backlog.",
+            "The 2024 interconnection queue held 10 GW.",
+        ),
+        (
+            "10 GW was held by the wind fleet.",
+            "10 GW was held by the solar fleet.",
+        ),
+    ],
+)
+def test_a_post_verbal_entity_is_read_and_never_an_escape_hatch(
+    trailing_side: str, other_side: str
+) -> None:
+    """An empty subject must not let two different entities merge.
+
+    The reviewer's probes: post-verbal and passive clauses came back with an
+    empty subject and merged, settled verified, with no diagnostic. The entity
+    is read from the trailing phrase where the clause puts it there, and a
+    clause that names one never merges with a clause that names another.
+    """
+    (left,) = extract_atoms(_claim(trailing_side, claim_id="claim-left"))
+    (right,) = extract_atoms(_claim(other_side, claim_id="claim-right"))
+
+    assert left.subject
+    assert atomic_compatible(left, right) is False
+
+
+def test_two_clauses_that_name_no_entity_still_merge() -> None:
+    """The positive control: unknown on both sides is not a conflict."""
+    left = AtomicProposition(text="Interconnection delays are growing.")
+    right = AtomicProposition(text="Interconnection delays are increasing.")
+
+    assert atomic_compatible(left, right)
 
 
 def test_an_identical_subject_and_predicate_still_merges() -> None:
@@ -276,7 +365,6 @@ def _stored_cluster(claim_id: str, created_seq: int) -> ClaimCluster:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_distinct_entities_never_become_one_settled_claim() -> None:
     """End to end: the probe's false merge can no longer happen."""
     claims = [
@@ -301,6 +389,59 @@ def test_a_stored_cluster_records_when_it_was_minted() -> None:
     assert older.created_seq == 1
     assert newer.created_seq == 5
     assert merge_claim_clusters(newer, older).created_seq == 1
+
+
+@pytest.mark.asyncio
+async def test_a_real_consolidation_mints_a_monotonic_sequence() -> None:
+    """Every member is stamped, and the survivor keeps the oldest real stamp.
+
+    The reviewer's probe: member clusters were minted with the default zero and
+    ``min()`` dragged the survivor to zero, at which point "oldest" fell back
+    to caller order. A sequence of zero means "nobody stamped this", never
+    "oldest".
+    """
+    claims, evidence = _mergeable_claims()
+    third = _claim(
+        TEXT_C,
+        claim_id="claim-c",
+        source_urls=["https://c.test/queue"],
+    )
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2), (2, 3))]),
+        [*claims, third],
+        evidence=evidence,
+    )
+
+    (cluster,) = consolidation.clusters
+    assert cluster.created_seq > 0
+    assert cluster.member_claim_ids == ["claim-a", "claim-b", "claim-c"]
+
+    # A second consolidation continues the sequence rather than restarting it.
+    later = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]),
+        [third],
+        existing=[cluster],
+        evidence=evidence,
+    )
+    assert later.clusters[0].created_seq == cluster.created_seq
+
+
+@pytest.mark.asyncio
+async def test_a_stored_cluster_beats_an_unstamped_one_whatever_the_order() -> None:
+    """An unstamped sequence is the lowest-priority fallback, never a winner."""
+    stamped = _stored_cluster("claim-a", 7)
+    unstamped = _stored_cluster("claim-b", 0)
+
+    for order in ([stamped, unstamped], [unstamped, stamped]):
+        consolidation = await consolidate_claims(
+            ScriptedCompleter(outputs=[_pairs((1, 2))]),
+            [],
+            existing=order,
+        )
+        (cluster,) = consolidation.clusters
+        assert cluster.cluster_id == stamped.cluster_id
+        assert cluster.created_seq == 7
 
 
 @pytest.mark.asyncio
@@ -1358,7 +1499,7 @@ def test_extraction_populates_the_subject_and_predicate() -> None:
     (atom,) = extract_atoms(claim)
 
     assert atom.subject == "interconnection queue"
-    assert atom.predicate == "states_value"
+    assert atom.predicate == "states_level"
 
 
 def test_extraction_reads_a_sentence_initial_attribution() -> None:

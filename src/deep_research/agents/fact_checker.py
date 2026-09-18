@@ -1527,9 +1527,13 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         afterwards, because ``extract_claims`` resets again once the queue is
         empty.
         """
-        resumable = {
-            claim_fingerprint(draft.text) for draft in self._continuation
-        } | self._resumed_fingerprints
+        resumable = (
+            {
+                claim_fingerprint(draft.text)
+                for draft in (*self._continuation, *self._deferred)
+            }
+            | self._resumed_fingerprints
+        )
         self._pending_provenance = {
             fingerprint: attribution
             for fingerprint, attribution in self._pending_provenance.items()
@@ -1865,6 +1869,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # attribution of a claim this run is about to resume. The queue is
         # drained first so the reset can see which drafts it is keeping.
         resumed = self._drain_continuation()
+        # What the drain could not admit stays deferred. It is captured here
+        # because the end of this pass **replaces** the queue, and a parked
+        # claim that is not carried into that replacement is work destroyed:
+        # neither published, nor pending, nor reported.
+        parked = list(self._deferred)
         self._reset_provenance()
         target_order = target_order_for(state)
         events: list[ResearchEvent] = []
@@ -1976,7 +1985,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 # Adjudicated, and only now: the verdict exists, so this
                 # claim's findings are genuinely consumed.
                 adjudicated.add(claim_fingerprint(draft.text))
-                answered_targets.update(self._obligations_for(draft))
+                # What the *published* claim answers, not what it reached for
+                # before it was judged: an obligation the support policy
+                # refused is still outstanding, and the critical-target
+                # priority list has to see it that way.
+                answered_targets.update(claim.target_ids)
                 events.append(
                     claim_checked_event(
                         claim,
@@ -2002,9 +2015,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             for draft in pool
             if claim_fingerprint(draft.text) not in adjudicated
         ]
-        # Everything this pass did not adjudicate is persisted: what it
-        # admitted and did not reach, then what it never admitted.
-        remaining = [*pending, *deferred_now]
+        # Everything this pass did not adjudicate is persisted, oldest work
+        # first: what an earlier drain parked, then what this pass admitted and
+        # did not reach, then this pass's never-admitted overflow. Deduplicated
+        # because a claim can be both parked and extracted again.
+        remaining = _unique_drafts([*parked, *pending, *deferred_now])
         self._remember_pending(remaining)
         deferred_count = len(self._deferred)
         if remaining:

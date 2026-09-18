@@ -3028,6 +3028,70 @@ def test_the_drain_admits_at_most_one_window_per_pass(
     assert [draft.text for draft in agent._deferred] == [drafts[4].text]
 
 
+@pytest.mark.asyncio
+async def test_a_bounded_pass_never_loses_a_parked_claim(
+    tracker: Tracker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three real passes, a bound of one, and no claim destroyed.
+
+    The reviewer's probe: the drain parked the remainder correctly, but the end
+    of the pass replaced both queues, so a parked claim was neither published
+    nor pending nor reported. This drives ``run`` — the caller that did the
+    replacing — rather than the helper, because a test that exercises the
+    helper instead of the caller does not cover the defect.
+    """
+    monkeypatch.setattr(fact_checker_module, "MAX_PENDING_CLAIMS", 1)
+    all_texts = [draft.text for draft in _obligated_draft().claims]
+    empty = ClaimsDraft(claims=[])
+    completer = ScriptedCompleter(
+        decisions=[
+            *_pair_decisions(),
+            *_pair_decisions(),
+            *_pair_decisions(),
+        ],
+        outputs=[
+            _obligated_draft(),
+            _independent_pair_verdict(),
+            # Later passes extract nothing new: the parked claim is the only
+            # work left, so a pass that replaces the queues without carrying
+            # it forward has destroyed it.
+            empty,
+            _independent_pair_verdict(),
+            empty,
+            _independent_pair_verdict(),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+        max_claims=1,
+        batches_per_pass=1,
+    )
+    state = _obligated_state()
+    adjudicated: list[str] = []
+
+    async with tracker.session_span("session-1", state.original_question):
+        for _ in range(3):
+            outcome = await agent.run(state)
+            assert outcome.result is not None
+            adjudicated.extend(claim.text for claim in outcome.result.claims)
+            outstanding = {
+                claim.text for claim in outcome.result.pending_claims
+            }
+            # Nothing may vanish: after every pass, every claim is either
+            # adjudicated or still pending and reported.
+            assert outstanding | set(adjudicated) == set(all_texts), outcome
+
+    assert sorted(adjudicated) == sorted(all_texts)
+
+
 # --------------------------------------------------------------------------
 # Support policy is a real constraint
 # --------------------------------------------------------------------------

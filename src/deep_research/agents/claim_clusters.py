@@ -189,9 +189,12 @@ def _canonical_unit(unit: str) -> str:
     return _UNIT_CANONICAL_FORMS.get(folded, folded)
 
 
-# The dimensions compared as written text. ``text`` is deliberately absent: it
-# is the surface paraphrase, and comparing it would refuse the duplicate this
-# contract exists to find.
+# ``subject`` and ``predicate`` are compared like every other dimension here:
+# two clauses that state no subject agree — both are unknown — while a clause
+# that names one and a clause that names another disagree, and so do a clause
+# that names one and a clause that names none. An underivable qualifier is not
+# an escape hatch: if one side could not derive a subject and the other names a
+# different one, the merge is unsound and the pair is refused.
 _COMPARED_DIMENSIONS = (
     "subject",
     "predicate",
@@ -203,13 +206,10 @@ _COMPARED_DIMENSIONS = (
     "forecast_status",
 )
 
-# The two dimensions where an EMPTY value means "this contract could not derive
-# it" rather than "the clause does not state one". A surface derivation of the
-# subject cannot read every phrasing, and refusing a merge because one wording
-# put the value first would refuse the paraphrases this module exists to join.
-# A *stated* difference between two subjects is still a refusal — that is what
-# keeps "Revenue rose 10 percent" and "Costs rose 10 percent" apart.
-_UNKNOWN_IS_NOT_A_CONFLICT = frozenset({"subject", "predicate"})
+# The two dimensions that describe *how* a clause is written rather than what
+# it measures. A pair that states neither is not thereby one assertion, which
+# is what ``equivalence_strength`` reports as ``uncertain``.
+_NON_CHECKABLE_DIMENSIONS = frozenset({"subject", "predicate"})
 
 # Every dimension an atom can be asked to state, by the name a plan or a
 # question uses for it.
@@ -314,12 +314,7 @@ def atomic_compatible(
     if _canonical_unit(a.unit) != _canonical_unit(b.unit):
         return False
     for name in _COMPARED_DIMENSIONS:
-        left = _canonical(getattr(a, name))
-        right = _canonical(getattr(b, name))
-        if name in _UNKNOWN_IS_NOT_A_CONFLICT and (not left or not right):
-            # Underivable, not different.
-            continue
-        if left != right:
+        if _canonical(getattr(a, name)) != _canonical(getattr(b, name)):
             return False
     if _stated_numbers(a) != _stated_numbers(b):
         return False
@@ -390,6 +385,19 @@ def cluster_for_atom(
     )
 
 
+def _older_seq(first: int, second: int) -> int:
+    """The surviving creation sequence of a merge.
+
+    Zero means "nobody stamped this cluster", which is not a claim to being the
+    oldest. Taking a plain minimum would let such a cluster drag a stamped one
+    to zero and, with two of them, hand the identity to whichever the caller
+    listed first — so an unstamped sequence is ignored while a stamped one
+    exists, and is only the answer when neither side has one.
+    """
+    stamped = [value for value in (first, second) if value > 0]
+    return min(stamped) if stamped else 0
+
+
 def merge_claim_clusters(
     existing: ClaimCluster, incoming: ClaimCluster
 ) -> ClaimCluster:
@@ -417,7 +425,9 @@ def merge_claim_clusters(
     ]
     return existing.model_copy(
         update={
-            "created_seq": min(existing.created_seq, incoming.created_seq),
+            "created_seq": _older_seq(
+                existing.created_seq, incoming.created_seq
+            ),
             "evidence_ids": sorted(
                 set(existing.evidence_ids) | set(incoming.evidence_ids)
             ),
@@ -476,17 +486,24 @@ def _union_verdict_evidence(
 def oldest_first(clusters: Sequence[ClaimCluster]) -> list[ClaimCluster]:
     """Stored clusters in the order they were first minted.
 
-    ``created_seq`` is the authority, so the surviving identity does not
-    depend on the order a caller lists its clusters in. A cluster nobody
-    stamped — one built by hand, or written before the field existed —
-    carries zero and falls back to its position in the list it arrived in,
-    and that list is the registry, which is append-ordered because a merge
-    keeps first-seen order.
+    ``created_seq`` is the authority, so the surviving identity does not depend
+    on the order a caller lists its clusters in. An unstamped sequence (zero —
+    a cluster built by hand, or written before the field existed) is the
+    *lowest*-priority answer, never a winning one: it sorts after every stamped
+    cluster and is ordered among its peers by registry position, which is
+    append-ordered because a merge keeps first-seen order. Consolidation mints
+    a real sequence for every cluster it builds, so in production this fallback
+    is never reached.
     """
     return [
         cluster
         for _, cluster in sorted(
-            enumerate(clusters), key=lambda pair: (pair[1].created_seq, pair[0])
+            enumerate(clusters),
+            key=lambda pair: (
+                pair[1].created_seq == 0,
+                pair[1].created_seq,
+                pair[0],
+            ),
         )
     ]
 
@@ -707,75 +724,96 @@ _FORECAST = re.compile(
 )
 
 # What a clause DOES to its subject, as the relation a reader would name.
+#
 # The surface verb is not comparable — one assertion is "held", another says
 # "sat", a third "reported", and all three state the same level — so the field
-# holds the relation class, and two clauses that state the same thing about
-# their subject share one. A clause whose relation is not named here states no
-# predicate, which is an honest empty.
+# holds the relation class and two clauses that state the same thing about
+# their subject share one. The classes are deliberately NARROW: a level and a
+# delta are different facts ("hit 10 GW" is not "rose 10 GW"), a doubling is
+# not a rise, and a halving is not a fall. Where two relations cannot be shown
+# to be the same, they are different classes and the pair is refused — the
+# coverage loss is the accepted direction and a false settled claim is not.
 _PREDICATE_RELATIONS: dict[str, str] = {
-    # States a level, a measurement, or a total.
-    "held": "states_value",
-    "holds": "states_value",
-    "hold": "states_value",
-    "carried": "states_value",
-    "carries": "states_value",
-    "sat": "states_value",
-    "sits": "states_value",
-    "sit": "states_value",
-    "stood": "states_value",
-    "stands": "states_value",
-    "remained": "states_value",
-    "stayed": "states_value",
-    "reported": "states_value",
-    "reports": "states_value",
-    "showed": "states_value",
-    "shows": "states_value",
-    "found": "states_value",
-    "measured": "states_value",
-    "measures": "states_value",
-    "indicated": "states_value",
-    "indicates": "states_value",
-    "total": "states_value",
-    "totals": "states_value",
-    "equalled": "states_value",
-    "equaled": "states_value",
-    "equals": "states_value",
-    "cost": "states_value",
-    "costs": "states_value",
-    "accounts for": "states_value",
-    "represents": "states_value",
-    "was": "states_value",
-    "were": "states_value",
-    "is": "states_value",
-    "are": "states_value",
-    "has": "states_value",
-    "have": "states_value",
-    "had": "states_value",
-    # Withholds rather than holds.
+    # The value IS the level: "the queue held 10 GW", "the survey reported 40".
+    "held": "states_level",
+    "holds": "states_level",
+    "hold": "states_level",
+    "carried": "states_level",
+    "carries": "states_level",
+    "sat": "states_level",
+    "sits": "states_level",
+    "sit": "states_level",
+    "stood": "states_level",
+    "stands": "states_level",
+    "remained": "states_level",
+    "stayed": "states_level",
+    "reported": "states_level",
+    "reports": "states_level",
+    "showed": "states_level",
+    "shows": "states_level",
+    "found": "states_level",
+    "measured": "states_level",
+    "measures": "states_level",
+    "indicated": "states_level",
+    "indicates": "states_level",
+    "total": "states_level",
+    "totals": "states_level",
+    "equalled": "states_level",
+    "equaled": "states_level",
+    "equals": "states_level",
+    "cost": "states_level",
+    "costs": "states_level",
+    "accounts for": "states_level",
+    "represents": "states_level",
+    "was": "states_level",
+    "were": "states_level",
+    "is": "states_level",
+    "are": "states_level",
+    "has": "states_level",
+    "have": "states_level",
+    "had": "states_level",
+    # The value is a LEVEL THE SUBJECT REACHED, not a change it underwent.
+    "hit": "reaches_level",
+    "hits": "reaches_level",
+    "reached": "reaches_level",
+    "reaches": "reaches_level",
+    "peaked": "reaches_level",
+    "peaks": "reaches_level",
+    "touched": "reaches_level",
+    "touches": "reaches_level",
+    # The value is a DELTA: how much the subject moved.
+    "rose": "increases_by",
+    "rises": "increases_by",
+    "grew": "increases_by",
+    "grows": "increases_by",
+    "increased": "increases_by",
+    "increases": "increases_by",
+    "climbed": "increases_by",
+    "climbs": "increases_by",
+    "added": "increases_by",
+    "adds": "increases_by",
+    "gained": "increases_by",
+    "gains": "increases_by",
+    "fell": "decreases_by",
+    "falls": "decreases_by",
+    "dropped": "decreases_by",
+    "drops": "decreases_by",
+    "decreased": "decreases_by",
+    "decreases": "decreases_by",
+    "declined": "decreases_by",
+    "declines": "decreases_by",
+    "lost": "decreases_by",
+    "loses": "decreases_by",
+    # A multiplicative change is neither a rise nor a fall.
+    "doubled": "doubled",
+    "doubles": "doubled",
+    "tripled": "tripled",
+    "triples": "tripled",
+    "halved": "halved",
+    "halves": "halved",
+    # Everything else keeps its own relation.
     "withheld": "withholds",
     "withholds": "withholds",
-    # Changes the level.
-    "rose": "increased",
-    "rises": "increased",
-    "grew": "increased",
-    "grows": "increased",
-    "increased": "increased",
-    "increases": "increased",
-    "climbed": "increased",
-    "climbs": "increased",
-    "doubled": "increased",
-    "added": "increased",
-    "adds": "increased",
-    "peaked": "increased",
-    "hit": "increased",
-    "fell": "decreased",
-    "falls": "decreased",
-    "dropped": "decreased",
-    "drops": "decreased",
-    "decreased": "decreased",
-    "decreases": "decreased",
-    "halved": "decreased",
-    # Everything else keeps its own relation.
     "estimated": "projected",
     "estimates": "projected",
     "projected": "projected",
@@ -815,6 +853,17 @@ _SUBJECT_STOPWORDS = frozenset(
 )
 _WORD_TOKEN = re.compile(r"[A-Za-z][\w'-]*")
 MAX_SUBJECT_WORDS = 6
+
+# Where an entity sits when the clause puts it after the value and the verb:
+# "10 GW sat in the 2024 interconnection queue", "10 GW was held by the wind
+# fleet". Read only when nothing precedes the anchor, so a clause that already
+# named its subject is never overridden by a locative tail.
+_TRAILING_ENTITY = re.compile(
+    r"\b(?:by|in|at|on|within|across|for)\s+(?:the\s+)?"
+    r"(?:(?:19|20)\d{2}\s+)?"
+    r"(?P<subject>[a-z][\w'-]*(?:\s+[a-z][\w'-]*){0,3})",
+    re.IGNORECASE,
+)
 
 
 def _split_clauses(text: str) -> list[str]:
@@ -896,19 +945,49 @@ def _predicate(
     return _PREDICATE_RELATIONS[match.group("predicate").casefold()]
 
 
+def _trailing_entity(
+    clause: str, *, excluded: Sequence[tuple[int, int]]
+) -> str:
+    """The entity a clause names after its value and verb, or empty.
+
+    "10 GW sat in the 2024 interconnection queue" and "10 GW was held by the
+    wind fleet" both state their subject after the measurement. Reading it is
+    what keeps an empty subject meaning "this contract could not derive it"
+    rather than "there is nothing here to disagree about" — an underivable
+    qualifier must not become an escape hatch for two different entities.
+    """
+    for match in _TRAILING_ENTITY.finditer(clause):
+        if any(
+            start <= match.start("subject") < end for start, end in excluded
+        ):
+            continue
+        words = [
+            word
+            for word in match.group("subject").split()
+            if word.casefold() not in _SUBJECT_STOPWORDS
+        ]
+        if words:
+            return " ".join(words[:MAX_SUBJECT_WORDS])
+    return ""
+
+
 def _subject(
     clause: str,
     *,
     anchor: re.Match[str] | None,
     excluded: Sequence[tuple[int, int]],
 ) -> str:
-    """The noun phrase the clause predicates over.
+    """The entity the clause asserts about.
 
     Read as the run of words immediately before the clause's predicate — or,
     failing that, before its first stated value or period — that is not a
     stopword. A word inside an excluded span (the period, the value) ends the
     run rather than being read as the subject, so "the 2024 interconnection
     queue held 10 GW" yields "interconnection queue" and not the year.
+
+    A clause that names its entity *after* the measurement — post-verbal or
+    passive — has nothing before the anchor, and falls back to the trailing
+    entity phrase rather than reporting an empty subject.
     """
     if anchor is not None:
         cutoff = anchor.start()
@@ -936,9 +1015,9 @@ def _subject(
         collected.append(word)
         if len(collected) >= MAX_SUBJECT_WORDS:
             break
-    if not collected:
-        return ""
-    return " ".join(reversed(collected))
+    if collected:
+        return " ".join(reversed(collected))
+    return _trailing_entity(clause, excluded=excluded)
 
 
 def _of_phrase(pattern: re.Pattern[str], clause: str) -> str:
@@ -1220,7 +1299,7 @@ def stated_dimensions(proposition: AtomicProposition) -> frozenset[str]:
     stated = {
         name
         for name in _COMPARED_DIMENSIONS
-        if name not in _UNKNOWN_IS_NOT_A_CONFLICT
+        if name not in _NON_CHECKABLE_DIMENSIONS
         if _canonical(getattr(proposition, name))
     }
     if _canonical_number(proposition.value):
@@ -1621,18 +1700,24 @@ async def consolidate_claims(
     clusters: list[ClaimCluster] = []
     aliases: dict[str, str] = {}
     canonical: list[Claim] = []
-    next_seq = max(
-        (cluster.created_seq for cluster in existing), default=-1
+    # Every atom gets a real, monotonic creation sequence, so a member cluster
+    # is never minted with the "nobody stamped this" default and the folded
+    # survivor's sequence is the minimum of the sequences that actually exist.
+    base_seq = max(
+        (cluster.created_seq for cluster in existing), default=0
     ) + 1
     for position, group in enumerate(groups):
-        anchor_atom = atoms[group[0]]
+        anchor_index = group[0]
+        anchor_atom = atoms[anchor_index]
         anchor_claim = (
-            claims[owners[group[0]]]
-            if owners[group[0]] is not None
+            claims[owners[anchor_index]]
+            if owners[anchor_index] is not None
             else None
         )
         cluster = cluster_for_atom(
-            anchor_atom, claim=anchor_claim, created_seq=next_seq + position
+            anchor_atom,
+            claim=anchor_claim,
+            created_seq=base_seq + anchor_index,
         )
         for index in group[1:]:
             if equivalence_strength(anchor_atom, atoms[index]) == "uncertain":
@@ -1652,7 +1737,12 @@ async def consolidate_claims(
                 claims[owners[index]] if owners[index] is not None else None
             )
             cluster = merge_claim_clusters(
-                cluster, cluster_for_atom(atoms[index], claim=member_claim)
+                cluster,
+                cluster_for_atom(
+                    atoms[index],
+                    claim=member_claim,
+                    created_seq=base_seq + index,
+                ),
             )
         # Every stored cluster in this group is older than anything this pass
         # built, and among themselves the oldest is the one whose identity

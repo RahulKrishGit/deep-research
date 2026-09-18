@@ -489,11 +489,17 @@ CRITIC_PROMPT_FINGERPRINT = "15754f64fa12"
 # registry is persisted through ``ResearchState``. Module-source moves again
 # with no prompt string edited; the other five values and the Judge pin are
 # unchanged.
+# Task 5's fix round 3 moved it once more, ``a9cad9387b6e`` -> ``fef54f3dfdcb``:
+# the pass no longer destroys the claim its own drain parked, the scheduler's
+# answered-target set is read from the published claim rather than the
+# obligations it reached for, and the relation vocabulary was narrowed so a
+# level and a delta never compare equal. Module-source moves with no prompt
+# string edited; the other five values and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "599c78243c9e",
     "researcher": "fdc2bc2e8d48",
     "source_evaluator": "674593415225",
-    "fact_checker": "a9cad9387b6e",
+    "fact_checker": "fef54f3dfdcb",
     "synthesizer": "cccb6dc91c6e",
     "critic": "15754f64fa12",
 }
