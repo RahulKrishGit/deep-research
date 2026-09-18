@@ -34,6 +34,7 @@ from deep_research.agents.claim_clusters import (
     merge_claim_cluster_registry,
     merge_claim_clusters,
     metadata_dimension_asked_for,
+    oldest_first,
     reverification_cache_key,
     select_claim_batch,
     select_claim_batch_indices,
@@ -318,6 +319,149 @@ def test_a_post_verbal_entity_is_read_and_never_an_escape_hatch(
     assert atomic_compatible(left, right) is False
 
 
+@pytest.mark.parametrize(
+    ("left_text", "right_text"),
+    [
+        ("10 GW was doubled in 2024.", "10 GW was halved in 2024."),
+        ("10 GW was added in 2024.", "10 GW was held in 2024."),
+        ("10 GW was added in 2024.", "10 GW was cut in 2024."),
+    ],
+)
+def test_the_auxiliary_never_steals_the_relation(
+    left_text: str, right_text: str
+) -> None:
+    """The relation comes from the clause's own relation word, not its auxiliary.
+
+    The reviewer's probes: with the value first, every predicate candidate
+    follows it, so the relation was read from the auxiliary ``was`` — which
+    made a doubling and a halving, a rise and a level, and a rise and an
+    unnameable change all ``states_level`` and all compatible.
+    """
+    (left,) = extract_atoms(_claim(left_text, claim_id="claim-left"))
+    (right,) = extract_atoms(_claim(right_text, claim_id="claim-right"))
+
+    assert left.predicate != right.predicate
+    assert not atomic_compatible(left, right)
+
+
+def test_an_auxiliary_alone_states_no_relation() -> None:
+    """Skip the auxiliary and, with no relation word left, refuse — never guess.
+
+    ``10 GW was cut`` has no relation this contract can name: ``cut`` is not in
+    the vocabulary, so the clause must come back unknown rather than defaulting
+    to the level its auxiliary would have implied.
+    """
+    (unknown,) = extract_atoms(_claim("10 GW was cut in 2024.", claim_id="claim-cut"))
+    (level,) = extract_atoms(
+        _claim("10 GW was held in 2024.", claim_id="claim-held")
+    )
+
+    assert unknown.predicate == ""
+    assert level.predicate == "states_level"
+    assert not atomic_compatible(unknown, level)
+
+
+@pytest.mark.asyncio
+async def test_the_auxiliary_never_merges_two_value_fronted_relations() -> None:
+    """The harm the probe measured: one canonical cluster, settled verified."""
+    claims = [
+        _claim("10 GW was doubled in 2024.", claim_id="claim-doubled"),
+        _claim("10 GW was halved in 2024.", claim_id="claim-halved"),
+    ]
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
+
+    consolidation = await consolidate_claims(completer, claims)
+
+    assert len(consolidation.claims) == 2
+    assert consolidation.diagnostics == [
+        "equivalence_candidate_incompatible:1:2"
+    ]
+
+
+def test_two_value_fronted_levels_still_merge() -> None:
+    """The positive control: skipping the auxiliary must not refuse real levels."""
+    (left,) = extract_atoms(
+        _claim(
+            "10 GW was held in the 2024 interconnection queue.",
+            claim_id="claim-left",
+        )
+    )
+    (right,) = extract_atoms(
+        _claim(
+            "10 GW sat in the 2024 interconnection queue.",
+            claim_id="claim-right",
+        )
+    )
+
+    assert left.predicate == right.predicate == "states_level"
+    assert atomic_compatible(left, right)
+
+
+FULL_QUEUE_ENTITY = "California Independent System Operator interconnection queue"
+LONG_ENTITY_CLAUSE = (
+    "10 GW sat in the 2024 California Independent System Operator "
+    "transmission queue"
+)
+FULL_TRANSMISSION_ENTITY = (
+    "California Independent System Operator transmission queue"
+)
+
+
+@pytest.mark.parametrize(
+    "other_side",
+    [
+        f"10 GW sat in the 2024 {FULL_QUEUE_ENTITY}",
+        "The California Independent System Operator held 10 GW in 2024",
+    ],
+)
+def test_a_long_trailing_entity_is_read_whole_or_not_at_all(
+    other_side: str,
+) -> None:
+    """A truncated entity is more dangerous than a missing one.
+
+    The reviewer's probes: the capture kept only the first four words after the
+    preposition — the modifier side of the noun phrase — so an interconnection
+    queue and a transmission queue both came back as ``California Independent
+    System Operator`` and settled verified, and that truncated subject also
+    matched the operator named on its own. Empty-vs-stated refuses; a plausible
+    prefix does not.
+    """
+    (left,) = extract_atoms(_claim(other_side, claim_id="claim-left"))
+    (right,) = extract_atoms(_claim(LONG_ENTITY_CLAUSE, claim_id="claim-right"))
+
+    assert right.subject != "California Independent System Operator"
+    assert right.subject in ("", FULL_TRANSMISSION_ENTITY)
+    assert atomic_compatible(left, right) is False
+
+
+def test_two_identical_full_entities_still_merge() -> None:
+    """The control: reading the whole entity must not refuse one entity."""
+    text = f"10 GW sat in the 2024 {FULL_QUEUE_ENTITY}"
+    (left,) = extract_atoms(_claim(text, claim_id="claim-left"))
+    (right,) = extract_atoms(
+        _claim(
+            f"10 GW was held in the 2024 {FULL_QUEUE_ENTITY}",
+            claim_id="claim-right",
+        )
+    )
+
+    assert left.subject == right.subject == FULL_QUEUE_ENTITY
+    assert atomic_compatible(left, right)
+
+
+def test_a_trailing_phrase_too_long_to_read_whole_is_unknown() -> None:
+    """A capture this contract cannot complete yields no subject, not a prefix."""
+    (atom,) = extract_atoms(
+        _claim(
+            "10 GW sat in the 2024 one two three four five six seven eight "
+            "nine ten eleven twelve thirteen queue",
+            claim_id="claim-long",
+        )
+    )
+
+    assert atom.subject == ""
+
+
 def test_two_clauses_that_name_no_entity_still_merge() -> None:
     """The positive control: unknown on both sides is not a conflict."""
     left = AtomicProposition(text="Interconnection delays are growing.")
@@ -442,6 +586,32 @@ async def test_a_stored_cluster_beats_an_unstamped_one_whatever_the_order() -> N
         (cluster,) = consolidation.clusters
         assert cluster.cluster_id == stamped.cluster_id
         assert cluster.created_seq == 7
+
+
+def test_an_all_unstamped_group_keeps_one_identity_whatever_the_order() -> None:
+    """With no sequence to compare, the survivor is still not caller order.
+
+    No production path mints an unstamped cluster — consolidation stamps every
+    one it builds — so this is a latent determinism gap rather than a live
+    defect: the fallback ordered its peers by the position the caller listed
+    them in, so ``[a, b]`` kept ``a`` and ``[b, a]`` kept ``b``.
+    """
+    first = _stored_cluster("claim-a", 0)
+    second = _stored_cluster("claim-b", 0)
+
+    forward = oldest_first([first, second])
+    backward = oldest_first([second, first])
+
+    assert [cluster.created_seq for cluster in forward] == [0, 0]
+    assert [cluster.cluster_id for cluster in forward] == [
+        cluster.cluster_id for cluster in backward
+    ]
+    # The fold keeps the first of the ordered pair, so the identity it keeps is
+    # the same one either way the caller listed them.
+    assert (
+        merge_claim_clusters(forward[0], forward[1]).cluster_id
+        == merge_claim_clusters(backward[0], backward[1]).cluster_id
+    )
 
 
 @pytest.mark.asyncio

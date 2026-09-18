@@ -490,10 +490,9 @@ def oldest_first(clusters: Sequence[ClaimCluster]) -> list[ClaimCluster]:
     on the order a caller lists its clusters in. An unstamped sequence (zero —
     a cluster built by hand, or written before the field existed) is the
     *lowest*-priority answer, never a winning one: it sorts after every stamped
-    cluster and is ordered among its peers by registry position, which is
-    append-ordered because a merge keeps first-seen order. Consolidation mints
-    a real sequence for every cluster it builds, so in production this fallback
-    is never reached.
+    cluster and is ordered among its peers by the identity it was minted from,
+    which no caller can reorder. Consolidation mints a real sequence for every
+    cluster it builds, so in production this fallback is never reached.
     """
     return [
         cluster
@@ -502,6 +501,10 @@ def oldest_first(clusters: Sequence[ClaimCluster]) -> list[ClaimCluster]:
             key=lambda pair: (
                 pair[1].created_seq == 0,
                 pair[1].created_seq,
+                # Among the unstamped, the registry position *is* the caller's
+                # own order, so it would hand the identity to whichever came
+                # first. The id is a stable tie-break instead.
+                pair[1].cluster_id if pair[1].created_seq == 0 else "",
                 pair[0],
             ),
         )
@@ -733,6 +736,15 @@ _FORECAST = re.compile(
 # not a rise, and a halving is not a fall. Where two relations cannot be shown
 # to be the same, they are different classes and the pair is refused — the
 # coverage loss is the accepted direction and a false settled claim is not.
+#
+# An auxiliary or light verb is NOT a relation and is deliberately absent from
+# this table. When the value comes first — "10 GW was doubled in 2024" — every
+# relation word follows it, so the nearest candidate before the value was
+# ``was``, and reading it made a doubling, a halving, a rise and a level all
+# one ``states_level`` assertion. A clause whose only verb is one of those
+# states no relation this contract can name: the relation is UNKNOWN, and an
+# unknown relation is refused against a named one rather than defaulted to a
+# level.
 _PREDICATE_RELATIONS: dict[str, str] = {
     # The value IS the level: "the queue held 10 GW", "the survey reported 40".
     "held": "states_level",
@@ -765,13 +777,6 @@ _PREDICATE_RELATIONS: dict[str, str] = {
     "costs": "states_level",
     "accounts for": "states_level",
     "represents": "states_level",
-    "was": "states_level",
-    "were": "states_level",
-    "is": "states_level",
-    "are": "states_level",
-    "has": "states_level",
-    "have": "states_level",
-    "had": "states_level",
     # The value is a LEVEL THE SUBJECT REACHED, not a change it underwent.
     "hit": "reaches_level",
     "hits": "reaches_level",
@@ -851,6 +856,20 @@ _SUBJECT_STOPWORDS = frozenset(
         "according", "reported", "published",
     }
 )
+# Verbs that assert nothing about their subject on their own. They are skipped
+# in the entity run rather than read as part of an entity or as its boundary:
+# once the relation is read from the clause's real relation word, the auxiliary
+# that used to anchor the run falls inside it, and "10 GW of capacity was added"
+# would otherwise name its subject "was capacity".
+_LIGHT_VERBS = frozenset(
+    {
+        "am", "is", "are", "was", "were", "be", "been", "being",
+        "has", "have", "had", "having",
+        "do", "does", "did", "done",
+        "will", "would", "shall", "should", "can", "could", "may", "might",
+        "must",
+    }
+)
 _WORD_TOKEN = re.compile(r"[A-Za-z][\w'-]*")
 MAX_SUBJECT_WORDS = 6
 
@@ -858,12 +877,24 @@ MAX_SUBJECT_WORDS = 6
 # "10 GW sat in the 2024 interconnection queue", "10 GW was held by the wind
 # fleet". Read only when nothing precedes the anchor, so a clause that already
 # named its subject is never overridden by a locative tail.
-_TRAILING_ENTITY = re.compile(
+#
+# The phrase is read to the clause's own boundary and kept whole, or not at all.
+# A fixed-length prefix of a long entity is the dangerous shape: "California
+# Independent System Operator" out of "… Operator interconnection queue" is
+# nonempty, plausible, and silently identical to the opening words of a
+# different entity — an interconnection queue and a transmission queue merged,
+# and so did the operator named on its own. An empty subject REFUSES a merge
+# against a stated one, so a capture this contract cannot show is the whole
+# entity yields EMPTY rather than its first words.
+_TRAILING_ENTITY_HEAD = re.compile(
     r"\b(?:by|in|at|on|within|across|for)\s+(?:the\s+)?"
-    r"(?:(?:19|20)\d{2}\s+)?"
-    r"(?P<subject>[a-z][\w'-]*(?:\s+[a-z][\w'-]*){0,3})",
+    r"(?:(?:19|20)\d{2}\s+)?",
     re.IGNORECASE,
 )
+# Where the noun phrase stops: the clause's own punctuation. This is a real
+# boundary, so it completes the capture rather than truncating it.
+_TRAILING_ENTITY_BOUNDARY = re.compile(r"[,;:.!?()\[\]\u2013\u2014]")
+MAX_TRAILING_ENTITY_WORDS = 12
 
 
 def _split_clauses(text: str) -> list[str]:
@@ -955,19 +986,37 @@ def _trailing_entity(
     what keeps an empty subject meaning "this contract could not derive it"
     rather than "there is nothing here to disagree about" — an underivable
     qualifier must not become an escape hatch for two different entities.
+
+    The phrase runs to the clause's own boundary and is taken whole. A capture
+    that would be cut short is no subject at all: a plausible prefix of a long
+    entity matches entities it does not name, while an empty subject refuses the
+    merge it would have wrongly allowed.
     """
-    for match in _TRAILING_ENTITY.finditer(clause):
+    for head in _TRAILING_ENTITY_HEAD.finditer(clause):
+        if any(start <= head.start() < end for start, end in excluded):
+            continue
+        tail = clause[head.end():]
+        boundary = _TRAILING_ENTITY_BOUNDARY.search(tail)
+        phrase = tail[: boundary.start()] if boundary is not None else tail
+        tokens = list(_WORD_TOKEN.finditer(phrase))
+        if not tokens:
+            continue
         if any(
-            start <= match.start("subject") < end for start, end in excluded
+            start <= head.end() + tokens[0].start() < end
+            for start, end in excluded
         ):
             continue
+        if len(tokens) > MAX_TRAILING_ENTITY_WORDS:
+            # Longer than this contract will read, so it cannot show the
+            # capture is the whole entity. It states none.
+            return ""
         words = [
-            word
-            for word in match.group("subject").split()
-            if word.casefold() not in _SUBJECT_STOPWORDS
+            token.group(0)
+            for token in tokens
+            if token.group(0).casefold() not in _SUBJECT_STOPWORDS
         ]
         if words:
-            return " ".join(words[:MAX_SUBJECT_WORDS])
+            return " ".join(words)
     return ""
 
 
@@ -1008,7 +1057,15 @@ def _subject(
     for start, word in reversed(words):
         if is_excluded(start):
             break
-        if word.casefold() in _SUBJECT_STOPWORDS:
+        folded = word.casefold()
+        # A light verb is noise: not an entity, and not the boundary of one
+        # either — the determiner in front of the entity is. Anything gathered
+        # to its right is on the verb phrase's side of it, not the entity's, so
+        # "delays are growing" keeps "delays" and drops the participle.
+        if folded in _LIGHT_VERBS:
+            collected.clear()
+            continue
+        if folded in _SUBJECT_STOPWORDS:
             if collected:
                 break
             continue
