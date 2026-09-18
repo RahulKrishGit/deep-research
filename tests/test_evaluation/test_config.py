@@ -520,17 +520,20 @@ CRITIC_PROMPT_FINGERPRINT = "3f0341751794"
 #   synthesizer ``cccb6dc91c6e`` -> ``37b86926ec09``, -> ``059540bede20`` in the
 #     Task 7 fix round (whole-token corpus and cell matching, the acronym-aware
 #     name check, attested answer-row labels, and the shared statement
-#     derivation), then -> ``6bd12778d7fe`` in fix round 2 (cells attest figures
-#     and names as well as words, the dead cluster-resolver copy removed, and
-#     the auditable common-abbreviation carve-out). The other five are unchanged
-#     by both rounds: no shared prompt string was edited.
+#     derivation), -> ``6bd12778d7fe`` in fix round 2 (cells attest figures and
+#     names as well as words, the dead cluster-resolver copy removed, and the
+#     auditable common-abbreviation carve-out), then -> ``17bc15e0131b`` in fix
+#     round 3 (the opener rule anchored to a line start, so a mid-line dash or a
+#     closing bracket is no longer an opener, and the abbreviation list
+#     completed). The other five are unchanged by all three rounds: no shared
+#     prompt string was edited.
 #   critic ``15754f64fa12`` -> ``3f0341751794``
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "da4407dd9d39",
     "researcher": "b4f9d21a34b4",
     "source_evaluator": "33a71376d3e6",
     "fact_checker": "f1ccaf38ff02",
-    "synthesizer": "6bd12778d7fe",
+    "synthesizer": "17bc15e0131b",
     "critic": "3f0341751794",
 }
 

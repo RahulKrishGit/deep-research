@@ -1834,17 +1834,52 @@ def test_an_evidence_spelled_out_abbreviation_is_not_refused() -> None:
     """The domain writes "EVs" where its evidence writes "electric vehicles"."""
     corpus = (
         "electric vehicles and solar photovoltaic output rose; carbon dioxide "
-        "fell; gross domestic product grew"
+        "fell; gross domestic product grew; battery electric vehicles and "
+        "plug-in hybrid electric vehicles; levelised cost of energy; battery "
+        "energy storage systems; carbon capture and storage; carbon capture "
+        "utilisation and storage; small modular reactors; capital expenditure "
+        "and operating expenditure; large language models; graphics processing "
+        "units; compound annual growth rate; internal combustion engine; "
+        "distributed energy resources; transmission system operators; "
+        "nationally determined contributions; coronavirus disease; application "
+        "programming interface; nitrogen oxides; greenhouse gases"
     )
-    for text in (
-        "Sales of EVs rose.",
-        "Solar PV output rose.",
-        "Emissions of CO2 fell.",
-        "Growth in GDP continued.",
-        "Use of AI grew.",
-        "It is OK.",
+    for token in (
+        "EVs",
+        "PV",
+        "CO2",
+        "GDP",
+        "AI",
+        "OK",
+        "HVDC",
+        "PPAs",
+        "BEVs",
+        "PHEVs",
+        "LCOE",
+        "BESS",
+        "CCS",
+        "CCUS",
+        "SMRs",
+        "CAPEX",
+        "OPEX",
+        "LLMs",
+        "GPUs",
+        "CAGR",
+        "ICE",
+        "DERs",
+        "TSOs",
+        "NDCs",
+        "COVID",
+        "API",
+        "NOx",
+        # The plural of a listed singular is the same noun.
+        "GHGs",
     ):
-        assert unattested_atoms(text, corpus) == [], text
+        text = f"Output included {token} last year."
+        assert unattested_atoms(text, corpus) == [], token
+    # "R&D" can never be a name candidate: the pattern needs a letter in the
+    # second position, so the entry would be unreachable.
+    assert "r&d" not in _COMMON_ABBREVIATIONS
 
 
 def test_a_place_acronym_is_still_refused_after_the_abbreviation_carve_out() -> None:
@@ -1874,6 +1909,9 @@ def test_a_capitalised_opener_after_markup_is_still_an_opener() -> None:
     """
     for text in (
         "- California added capacity.",
+        "  - California added capacity.",
+        "Line one.\n- California added capacity.",
+        "> California added capacity.",
         '"California added capacity."',
         "(California added capacity.)",
         "- Charge for driving inside the zone.",
@@ -1883,6 +1921,18 @@ def test_a_capitalised_opener_after_markup_is_still_an_opener() -> None:
     assert unattested_atoms("- Output rose in California.", "output rose") == [
         "California"
     ]
+    # A dash inside a line, a hyphenated compound and a closing bracket are
+    # not openers either: the word after them is capitalised because it is a
+    # name, and an em-dash mid-sentence is the commonest construction in model
+    # prose. An earlier, looser opener rule hid every one of these.
+    for text, expected in (
+        ("Output rose \u2014 California added capacity.", ["California"]),
+        ("Output rose - California added capacity.", ["California"]),
+        ("The London\u2013California route.", ["London", "California"]),
+        ("Capacity in mid-California rose.", ["California"]),
+        ("Output rose (est.) California added.", ["California"]),
+    ):
+        assert unattested_atoms(text, "output rose") == expected, text
 
 
 def _compose_comparison(

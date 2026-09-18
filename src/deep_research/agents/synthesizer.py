@@ -142,11 +142,14 @@ _PROPER_NOUN_PATTERN = re.compile(r"\b[A-Z][A-Za-z][\w'-]*\b")
 # length rule standing in for a case rule.
 _ACRONYM_PATTERN = re.compile(r"[A-Z]{2,}")
 # What opens a sentence, for the position exemption: the start of the text, a
-# terminator, or the markup model prose arrives in — a bullet, a quote, a
-# bracket. A capitalised word after any of those is still capitalised by
-# position.
+# terminator, a line-initial bullet or blockquote marker, or an opening quote
+# or bracket. A dash *inside* a line is not an opener — an ordinary word after
+# an em-dash is lowercase, so a capitalised word there is a name — and neither
+# is a closing bracket or the apostrophe inside a word.
 _SENTENCE_INITIAL = re.compile(
-    r"(?:^|[.!?:]\s+|[-*\u2013\u2014>\u201c\u2018\"'(\[)]\s*)$"
+    r"(?:^|[.!?:]\s+"
+    r"|(?:^|\n)\s*[-*>\u2013\u2014]\s+"
+    r"|(?:^|\s)[\u201c\u2018\"'(\[]\s*)$"
 )
 # The operation words a derivation has to name to count as one: a recorded
 # basis states premises *and* what was done with them.
@@ -1876,14 +1879,23 @@ _UNIT_WORDS = frozenset(
 # than a place or an organisation. Auditable on purpose: an entry here is a
 # token the name check will never refuse, so each one has to be defensible —
 # and the domain's own vocabulary (EVs, PV, CO2, GDP, HVDC, PPAs) is written
-# this way constantly, while the evidence spells it out.
+# this way constantly, while the evidence spells it out. Plurals are listed
+# beside their singular for the same reason: "GHGs" is the same noun as "ghg".
 #
 # "UK", "EU", "US" and "IEA" are deliberately absent: catching a place or an
 # agency the evidence never names is what the acronym check is for.
+#
+# This carve-out is for *prose*. A table cell is checked by
+# ``unattested_words`` too, which reads "EVs" as a content word, so a cell
+# still has to be lifted from the evidence rather than abbreviated — the cell
+# path is the one place the wording is copied rather than composed.
 _COMMON_ABBREVIATIONS = frozenset(
     {
-        "ai", "co2", "ch4", "ev", "evs", "pv", "gdp", "ghg", "lng", "r&d",
-        "ok", "it", "ict", "iot", "ml", "hvdc", "ac", "dc", "ppa", "ppas",
+        "ai", "ac", "api", "bess", "bevs", "cagr", "capex", "ccs", "ccus",
+        "ch4", "co2", "covid", "dc", "ders", "ev", "evs", "gdp", "ghg",
+        "ghgs", "gpus", "hvdc", "ice", "ict", "iot", "lcoe", "llms", "lng",
+        "ml", "ndcs", "nox", "ok", "opex", "phevs", "ppa", "ppas", "pv",
+        "smrs", "tsos", "it",
     }
 )
 
