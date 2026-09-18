@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from collections.abc import Sequence
 
 import pytest
@@ -16,13 +17,16 @@ from deep_research.agents.critic import (
     _HIGH_EXAMPLE_SCORE,
     _LOW_EXAMPLE_SCORE,
     ACCEPTANCE_SCORE,
+    CRITIC_CLAIM_DIGEST,
     CRITIC_EVIDENCE_BATCH_CHARS,
+    CRITIC_EVIDENCE_UNIT_CHARS,
     CRITIC_MAX_EVIDENCE_UNITS,
     CRITIC_REPORT_CHARS,
     CRITIQUE_INSTRUCTION,
     DEFAULT_MAX_NOTES,
     MAX_CRITIC_SCORE,
     MIN_CRITIC_SCORE,
+    QUESTION_TARGET_ID,
     ROUTING_REASONS,
     CriticAgent,
     CriticPacket,
@@ -75,6 +79,7 @@ from deep_research.utils.types import (
     ReportPoint,
     ReportQualitySnapshot,
     ReportSection,
+    ReportStatement,
     ResearchError,
     ResearchState,
     ScoredSource,
@@ -140,12 +145,30 @@ def _draft(
     queries: list[str] | None = None,
     rationale: str = "Well sourced and complete.",
 ) -> CritiqueDraft:
+    """One valid draft, with a string gap spelled as the typed provider shape.
+
+    ``CritiqueDraft`` refuses a bare string gap (the provider contract is
+    typed); the shorthand survives here because these tests are about routing
+    and normalization, not about the reply grammar.
+    """
     return CritiqueDraft(
         score=score,
-        gaps=gaps or [],
+        gaps=[_typed_gap(problem) for problem in (gaps or [])],
         unsupported_claims=unsupported or [],
         recommended_queries=queries or [],
         rationale=rationale,
+    )
+
+
+def _typed_gap(problem: str) -> CritiqueGapDraft:
+    """The pre-Task-8 string-gap shape, written out as the provider sends it."""
+    return CritiqueGapDraft(
+        target_ids=[QUESTION_TARGET_ID],
+        kind="coverage",
+        severity="major",
+        repair_action="acquire",
+        problem=problem,
+        recommended_queries=[],
     )
 
 
@@ -845,11 +868,17 @@ def test_a_known_coverage_id_is_kept_and_an_unknown_one_is_refused() -> None:
     """
     known = CritiqueGapDraft(
         coverage_id="topic-01",
+        kind="coverage",
+        severity="major",
+        repair_action="acquire",
         problem="Alpha lacks cost evidence.",
         recommended_queries=["alpha cost 2025"],
     )
     unknown = CritiqueGapDraft(
         coverage_id="topic-999",
+        kind="coverage",
+        severity="major",
+        repair_action="acquire",
         problem="The provider invented this plan id.",
         recommended_queries=["invented topic evidence"],
     )
@@ -903,11 +932,11 @@ def test_a_known_coverage_id_is_kept_and_an_unknown_one_is_refused() -> None:
 def test_normalize_gaps_accepts_a_legacy_string_gap() -> None:
     """The one gap normalizer reads the pre-Task-7 free-text shape too.
 
-    ``CritiqueDraft`` and ``Critique`` both hand a legacy string list to this
-    function, so it is the single place the old shape is understood. A legacy
-    gap named no plan id and no statement, so its honest scope is the whole
-    answer — never a fabricated topic id, and never *no* scope at all, because
-    Task 9 routes ``acquire`` by the target it names.
+    The state-facing ``Critique`` hands a legacy string list to this function,
+    which is the single place the old shape is understood. A legacy gap named no
+    plan id and no statement, so its honest scope is the whole answer — never a
+    fabricated topic id, and never *no* scope at all, because Task 9 routes
+    ``acquire`` by the target it names.
     """
     assert normalize_gaps(["No cost data."]) == [
         CritiqueGap(
@@ -920,13 +949,15 @@ def test_normalize_gaps_accepts_a_legacy_string_gap() -> None:
     ]
 
 
-def test_both_typed_gap_boundaries_share_one_normalizer(monkeypatch) -> None:
-    """One normalizer, called by both entry points, not two copies.
+def test_only_the_state_boundary_reads_the_legacy_gap_shape(monkeypatch) -> None:
+    """One normalizer implementation, and exactly one boundary that calls it.
 
-    Two verbatim copies would drift the moment the gap shape changes: one
-    boundary would keep accepting the legacy string and the other would start
-    rejecting it. Recording the calls proves they share the implementation
-    rather than merely agreeing today.
+    Two verbatim copies would drift the moment the gap shape changes, so the
+    rule lives in one function. The *boundaries* differ deliberately: the
+    state-facing ``Critique`` calls it, so an old persisted artifact stays
+    readable, while the provider-facing ``CritiqueDraft`` does not — a live
+    reply that ignores the typed response contract is repaired rather than
+    rewritten into a material whole-answer gap.
     """
     import deep_research.agents.critic as critic_module
 
@@ -940,15 +971,16 @@ def test_both_typed_gap_boundaries_share_one_normalizer(monkeypatch) -> None:
 
     monkeypatch.setattr(critic_module, "normalize_gap_drafts", recorded)
 
-    draft = CritiqueDraft.model_validate(
-        {
-            "score": 4,
-            "gaps": ["No cost data."],
-            "unsupported_claims": [],
-            "recommended_queries": [],
-            "rationale": "Thin sourcing.",
-        }
-    )
+    with pytest.raises(ValidationError):
+        CritiqueDraft.model_validate(
+            {
+                "score": 4,
+                "gaps": ["No cost data."],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "rationale": "Thin sourcing.",
+            }
+        )
     critique = Critique.model_validate(
         {
             "score": 4,
@@ -960,18 +992,9 @@ def test_both_typed_gap_boundaries_share_one_normalizer(monkeypatch) -> None:
         }
     )
 
-    # Both boundaries handed the legacy list to the same function.
+    # Only the state boundary handed the legacy list to the shared function.
     assert [payload["gaps"] for payload in recorded_payloads] == [
-        ["No cost data."],
-        ["No cost data."],
-    ]
-    assert draft.gaps == [
-        CritiqueGapDraft(
-            coverage_id=None,
-            target_ids=["question"],
-            problem="No cost data.",
-            recommended_queries=[],
-        )
+        ["No cost data."]
     ]
     assert critique.gaps == [
         CritiqueGap(
@@ -1011,6 +1034,9 @@ def test_title_and_problem_text_never_decide_a_gaps_target() -> None:
             [
                 CritiqueGapDraft(
                     coverage_id="topic-999",
+                    kind="coverage",
+                    severity="major",
+                    repair_action="acquire",
                     problem=(
                         "Alpha appears only as a title in this problem, and "
                         "Beta likewise."
@@ -1035,12 +1061,18 @@ def test_a_blank_scope_is_refused_like_any_other_unresolved_one() -> None:
     with pytest.raises(ValidationError, match="affects"):
         CritiqueGapDraft(
             coverage_id="   ",
+            kind="coverage",
+            severity="major",
+            repair_action="acquire",
             problem="The report misses Beta evidence.",
             recommended_queries=["beta evidence"],
         )
     with pytest.raises(ValidationError, match="affects"):
         CritiqueGapDraft(
             target_ids=[""],
+            kind="coverage",
+            severity="major",
+            repair_action="acquire",
             problem="The report is not good enough.",
             recommended_queries=[],
         )
@@ -1048,6 +1080,9 @@ def test_a_blank_scope_is_refused_like_any_other_unresolved_one() -> None:
         CritiqueGapDraft(
             statement_ids=["  "],
             claim_cluster_ids=[""],
+            kind="coverage",
+            severity="major",
+            repair_action="acquire",
             problem="The report is not good enough.",
             recommended_queries=[],
         )
@@ -1839,13 +1874,15 @@ def _packet_state(
     target_dimensions: Sequence[str] | None = None,
     quality: ReportQualitySnapshot | None = None,
     with_composition: bool = True,
+    claims: Sequence[Claim] | None = None,
+    sources: Sequence[ScoredSource] | None = None,
 ) -> ResearchState:
     payload: dict[str, object] = {
         "session_id": "session-1",
         "original_question": QUESTION,
         "sub_topics": [_packet_topic(required_dimensions=target_dimensions)],
-        "evaluated_sources": [_source()],
-        "verified_claims": [_claim()],
+        "evaluated_sources": list(sources) if sources is not None else [_source()],
+        "verified_claims": list(claims) if claims is not None else [_claim()],
         "report": report,
     }
     if with_composition:
@@ -2115,43 +2152,6 @@ def test_the_fingerprint_changes_with_the_report_and_with_the_evidence() -> None
 
     assert other_report.fingerprint != packet.fingerprint
     assert other_evidence.fingerprint != packet.fingerprint
-
-
-def test_oversized_evidence_is_batched_without_omitting_statements() -> None:
-    """Evidence is batched and its overflow is explicit; statements never are.
-
-    The historical packet truncated one prefix, which is how a late
-    contradiction and an end-of-report citation fell outside the review. Every
-    reader statement is carried in full and every evidence id is either in a
-    batch or named as omitted.
-    """
-    units = [
-        _packet_evidence(
-            f"ev-{index:02d}",
-            excerpt=f"Excerpt {index} about the measured logical error rate. " * 20,
-        )
-        for index in range(1, CRITIC_MAX_EVIDENCE_UNITS + 7)
-    ]
-    state = _packet_state(evidence=units)
-
-    packet = build_critic_packet(state)
-
-    assert len(packet.evidence_batches) > 1
-    for batch in packet.evidence_batches:
-        assert batch.chars <= CRITIC_EVIDENCE_BATCH_CHARS or len(batch.items) == 1
-    rendered = [
-        item.evidence_id for batch in packet.evidence_batches for item in batch.items
-    ]
-    assert rendered == [unit.evidence_id for unit in units[:CRITIC_MAX_EVIDENCE_UNITS]]
-    assert packet.omitted_evidence_ids == [
-        unit.evidence_id for unit in units[CRITIC_MAX_EVIDENCE_UNITS:]
-    ]
-    assert [statement.statement_id for statement in packet.statements] == [
-        "S001",
-        "F001",
-    ]
-    # The omitted ids are carried by the packet, never silently dropped.
-    assert len(packet.omitted_evidence_ids) == 6
 
 
 def test_the_packet_reports_the_deterministic_hard_checks() -> None:
@@ -2584,9 +2584,10 @@ async def test_a_draft_that_bypassed_the_schema_is_repaired_too(
     """The defensive seam: a draft built without validation is not fatal.
 
     A transport that hands back objects it never validated never reaches
-    ``CritiqueGapDraft``'s validator, so the contract check inside
-    ``normalize_gaps`` is what catches it — with a typed error the agent
-    repairs, not a bare ``ValueError`` from inside a model validator.
+    ``CritiqueGapDraft``'s validator, so the agent re-validates the reply in
+    ``_complete_review`` before anything reads it; the contract check inside
+    ``normalize_gaps`` remains as the second line. Either way the typed failure
+    is repaired, never a bare ``ValueError`` from inside a model validator.
     """
     unvalidated = CritiqueGapDraft.model_construct(
         gap_id="gap-01",
@@ -2624,7 +2625,7 @@ async def test_a_draft_that_bypassed_the_schema_is_repaired_too(
         for error in outcome.errors
         if error.error_type == "critic_review_repaired"
     )
-    assert repaired.details["schema_field_paths"] == ["gaps.0"]
+    assert repaired.details["schema_field_paths"] == ["gaps"]
 
 
 @pytest.mark.asyncio
@@ -3135,3 +3136,449 @@ async def test_the_registered_live_report_is_reviewed_in_full(
         in collapsed
     )
     assert "rely on assumptions about clinker substitution rates" in collapsed
+
+
+# --- fix round 4: the provider boundary, swept --------------------------------
+#
+# One class, ten instances: a provider value the schema accepted and
+# normalization then transformed — clamped, truncated, dropped, defaulted,
+# coerced, widened or forward-filled — in a way that can move a route, a
+# terminal state, a quality status or an acceptance. Each test below was run
+# against the unfixed tree first; the captures are in the report's fix-round-4
+# section.
+
+
+def _blank_unsupported_reply() -> dict[str, object]:
+    """A score-9 reply whose one defect is a blank unsupported claim."""
+    return {
+        "score": 9,
+        "gaps": [],
+        "unsupported_claims": ["   "],
+        "recommended_queries": [],
+        "rationale": "Otherwise complete.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_blank_unsupported_claim_is_repaired_not_dropped(
+    tracker: Tracker,
+) -> None:
+    """Sweep 1: ``["   "]`` is a defect the provider reported, not nothing.
+
+    ``unsupported_claims`` is ``list[str]``, so a blank entry validated;
+    ``normalize_notes`` then dropped it, ``route_decision`` saw an empty list,
+    and a reply that named an unsupported claim was accepted as though it had
+    named none.
+    """
+    completer = ScriptedCompleter(
+        outputs=[_blank_unsupported_reply(), _draft(score=8)]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "reviewed"
+    repaired = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_repaired"
+    )
+    # The bounded path names the field the reply broke, not the list index:
+    # ``schema_field_path`` keeps only field names the requested schema proves.
+    assert repaired.details["schema_field_paths"] == ["unsupported_claims"]
+
+
+@pytest.mark.asyncio
+async def test_a_blank_unsupported_claim_repeated_exhausts_into_a_failed_review(
+    tracker: Tracker,
+) -> None:
+    """Two blank claims are no review at all, never an empty claim list."""
+    completer = ScriptedCompleter(outputs=[_blank_unsupported_reply()] * 2)
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    assert outcome.result.unsupported_claims == []
+    assert outcome.result.should_continue is False
+    assert outcome.state_update["events"][-1].metadata["reason"] == "review_failed"
+
+
+@pytest.mark.parametrize("coerced", ("9", "9.0", 9.0, True))
+def test_a_coerced_provider_score_is_refused(coerced: object) -> None:
+    """Sweep 2: ``"9"``, ``"9.0"``, ``9.0`` and ``true`` are not the score 9.
+
+    A non-strict ``int`` field coerces all four, so a provider that never sent
+    a number could still hand over a judgement — and ``true`` became the score
+    ``1``, a value no model wrote.
+    """
+    with pytest.raises(ValidationError):
+        CritiqueDraft.model_validate(
+            {
+                "score": coerced,
+                "gaps": [],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "rationale": "Review.",
+            }
+        )
+
+
+def test_the_provider_schema_refuses_a_legacy_string_gap() -> None:
+    """Sweep 3: the live reply contract is typed, so a string gap is malformed.
+
+    The before-validator turned ``["Missing cost evidence"]`` into a material
+    ``target_ids=["question"]`` / ``severity="major"`` / ``acquire`` gap, which
+    rewarded a reply that ignored the typed contract with ``critical_gaps``
+    instead of sending it to repair. The legacy rule stays on the state-facing
+    ``Critique``, where old snapshots are read.
+    """
+    with pytest.raises(ValidationError):
+        CritiqueDraft.model_validate(
+            {
+                "score": 9,
+                "gaps": ["Missing cost evidence"],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "rationale": "One gap.",
+            }
+        )
+
+
+def test_the_state_facing_critique_still_reads_a_legacy_string_gap() -> None:
+    """The compatibility rule moved; it did not disappear."""
+    critique = Critique.model_validate(
+        {
+            "score": 5,
+            "gaps": ["Missing cost evidence"],
+            "unsupported_claims": [],
+            "recommended_queries": [],
+            "should_continue": True,
+            "rationale": "One gap.",
+            "review_status": "reviewed",
+        }
+    )
+
+    assert [gap.problem for gap in critique.gaps] == ["Missing cost evidence"]
+    assert critique.gaps[0].target_ids == [QUESTION_TARGET_ID]
+
+
+@pytest.mark.asyncio
+async def test_a_transport_supplied_draft_is_revalidated_not_trusted(
+    tracker: Tracker,
+) -> None:
+    """Sweep 4: ``model_construct`` gives the right type and no validation.
+
+    ``_complete_review`` returned any object whose Python type was
+    ``CritiqueDraft``, so a transport — or a fake — could hand over a draft
+    that had never passed a single constraint. The reply is re-validated now,
+    and this forged blank claim takes the repair path like any other malformed
+    one.
+    """
+    forged = CritiqueDraft.model_construct(
+        score=9,
+        gaps=[],
+        unsupported_claims=["   "],
+        recommended_queries=[],
+        rationale="Otherwise complete.",
+    )
+    completer = ScriptedCompleter(outputs=[forged, _draft(score=8)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "reviewed"
+    assert outcome.result.score == 8
+
+
+@pytest.mark.asyncio
+async def test_a_forged_non_integer_score_is_repaired_not_routed(
+    tracker: Tracker,
+) -> None:
+    """A forged string score used to travel past the schema into routing."""
+    forged = CritiqueDraft.model_construct(
+        score="9",
+        gaps=[],
+        unsupported_claims=[],
+        recommended_queries=[],
+        rationale="Complete.",
+    )
+    completer = ScriptedCompleter(outputs=[forged, _draft(score=8)])
+    agent = _critic(tracker, completer)
+
+    # Dumping a value that never matched its schema warns, which is exactly what
+    # this forged object is; the warning is not the assertion.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        async with tracker.session_span("session-1", "question"):
+            outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "reviewed"
+    assert outcome.result.score == 8
+
+
+@pytest.mark.parametrize("field", ("kind", "severity", "repair_action"))
+def test_a_gap_draft_requires_the_fields_that_decide_its_route(
+    field: str,
+) -> None:
+    """Sweep 5: a default must not become a judgement the model never made."""
+    gap: dict[str, object] = {
+        "target_ids": [_PACKET_TARGET_ID],
+        "kind": "coverage",
+        "severity": "major",
+        "repair_action": "acquire",
+        "problem": "One obligation is unmet.",
+        "recommended_queries": ["qec independent evidence"],
+    }
+    del gap[field]
+
+    with pytest.raises(ValidationError):
+        CritiqueDraft.model_validate(
+            {
+                "score": 5,
+                "gaps": [gap],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "rationale": "Thin.",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_omitted_severity_is_not_a_routing_judgement(
+    tracker: Tracker,
+) -> None:
+    """Sweep 5, at the agent: a score-9 reply routed on a local default.
+
+    ``severity: GapSeverity = "major"`` on the provider-facing draft meant the
+    run bought another research pass on a field the model never sent.
+    """
+    omitted = {
+        "score": 9,
+        "gaps": [
+            {
+                "target_ids": [_PACKET_TARGET_ID],
+                "problem": "The measured rate is not corroborated.",
+                "recommended_queries": ["qec break-even corroboration"],
+            }
+        ],
+        "unsupported_claims": [],
+        "recommended_queries": [],
+        "rationale": "One obligation is thin.",
+    }
+    completer = ScriptedCompleter(outputs=[omitted, _draft(score=8)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "reviewed"
+
+
+def test_critic_carries_a_long_evidence_passage_whole() -> None:
+    """Sweep 6: the qualifier at the end of a passage is review material.
+
+    ``from_unit`` fed every excerpt through a 1,200-character cut, so a
+    sentence like "However, this estimate excludes process emissions" — the
+    one that turns an acceptance into a contradiction — was removed before the
+    critic could read it.
+    """
+    tail = "TAIL-CONTRADICTION: this estimate excludes process emissions."
+    excerpt = ("supporting context " * 100) + tail
+    assert len(excerpt) > CRITIC_EVIDENCE_UNIT_CHARS
+
+    packet = build_critic_packet(
+        _packet_state(evidence=[_packet_evidence(excerpt=excerpt)])
+    )
+
+    item = packet.evidence_batches[0].items[0]
+    assert item.excerpt == excerpt
+    assert tail in item.excerpt
+
+
+def test_oversized_evidence_is_batched_and_never_omitted() -> None:
+    """Sweep 7: batching is the bound; a 25th passage is not lost material.
+
+    The ceiling kept 24 ids and named the rest as omitted, so the request told
+    the critic that more evidence existed and not what it said — a
+    contradiction in passage 25 was unjudgeable. Every registered unit is
+    carried now, in order, and the batch list bounds the request instead.
+    """
+    units = [
+        _packet_evidence(
+            f"ev-{index:02d}",
+            excerpt=f"Excerpt {index} about the measured logical error rate. " * 20,
+        )
+        for index in range(1, CRITIC_MAX_EVIDENCE_UNITS + 7)
+    ]
+
+    packet = build_critic_packet(_packet_state(evidence=units))
+
+    assert len(packet.evidence_batches) > 1
+    for batch in packet.evidence_batches:
+        assert batch.chars <= CRITIC_EVIDENCE_BATCH_CHARS or len(batch.items) == 1
+    rendered = [
+        item.evidence_id
+        for batch in packet.evidence_batches
+        for item in batch.items
+    ]
+    assert rendered == [unit.evidence_id for unit in units]
+    assert packet.omitted_evidence_ids == []
+    assert len(rendered) == CRITIC_MAX_EVIDENCE_UNITS + 6
+    assert [statement.statement_id for statement in packet.statements] == [
+        "S001",
+        "F001",
+    ]
+
+
+def _many_claims(count: int, *, long_first: bool = False) -> list[Claim]:
+    """Distinct checked claims, the first optionally longer than a digest line."""
+    claims: list[Claim] = []
+    for index in range(1, count + 1):
+        text = f"Checked claim {index} carries its own distinctive marker {index}."
+        if index == 1 and long_first:
+            text = ("Measured detail about the reported rate. " * 20) + (
+                "CLAIM-TAIL-MARKER"
+            )
+        claims.append(
+            _claim().model_copy(
+                update={"claim_id": f"claim-{index:02d}", "text": text}
+            )
+        )
+    return claims
+
+
+def _many_sources(count: int) -> list[ScoredSource]:
+    """Distinct scored sources, in citation order."""
+    return [
+        _source().model_copy(
+            update={
+                "url": f"https://s{index:02d}.example.org/a",
+                "title": f"Source {index}",
+            }
+        )
+        for index in range(1, count + 1)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_claim_section_renders_every_checked_claim_whole(
+    tracker: Tracker,
+) -> None:
+    """Sweep 8: the request rendered 40 claims, each cut at 240 characters.
+
+    The packet fingerprint covers every checked claim, so a claim the request
+    never rendered sat inside the review's authority and outside its view; and
+    a claim whose own text was cut could hide the half that contradicts the
+    report.
+    """
+    claims = _many_claims(CRITIC_CLAIM_DIGEST + 1, long_first=True)
+    completer = ScriptedCompleter(outputs=[_draft(score=8)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(_packet_state(claims=claims))
+
+    collapsed = " ".join(completer.calls[0][2][1].content.split())
+    assert f"distinctive marker {CRITIC_CLAIM_DIGEST + 1}" in collapsed
+    assert "CLAIM-TAIL-MARKER" in collapsed
+
+
+@pytest.mark.asyncio
+async def test_the_source_section_renders_every_cited_source(
+    tracker: Tracker,
+) -> None:
+    """Sweep 9: ``max_sources=36`` dropped source 37 without a marker.
+
+    The dropped row can be the weak or unscored source behind a load-bearing
+    statement, which is exactly what a citation review is for.
+    """
+    sources = _many_sources(37)
+    completer = ScriptedCompleter(outputs=[_draft(score=8)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(_packet_state(sources=sources))
+
+    collapsed = " ".join(completer.calls[0][2][1].content.split())
+    assert "s01.example.org" in collapsed
+    assert "s37.example.org" in collapsed
+
+
+def _badge_state(order: Sequence[str]) -> ResearchState:
+    """One evidence unit cited by a ``verified_pair`` and a ``contested`` statement."""
+    composition = _packet_composition()
+    pair = composition.claim_clusters[_PACKET_CLUSTER_ID]
+    contested = pair.model_copy(
+        update={
+            "cluster_id": "cluster-contested",
+            "verdicts": ["contested"],
+            "verdict_evidence_status": {"contested": "contested"},
+        }
+    )
+    composition.claim_clusters[contested.cluster_id] = contested
+    statements = {
+        "pair": ReportStatement(
+            statement_id="S001",
+            text="The measured rate reached break-even. [1]",
+            claim_cluster_ids=[_PACKET_CLUSTER_ID],
+            evidence_ids=[_PACKET_EVIDENCE_ID],
+            target_ids=[_PACKET_TARGET_ID],
+            answered_dimensions=["attribution"],
+        ),
+        "contested": ReportStatement(
+            statement_id="S002",
+            text="A second reading disputes the measured rate. [1]",
+            claim_cluster_ids=["cluster-contested"],
+            evidence_ids=[_PACKET_EVIDENCE_ID],
+            target_ids=[_PACKET_TARGET_ID],
+            answered_dimensions=["attribution"],
+        ),
+    }
+    composition.summary[0].statement = statements[order[0]]
+    composition.sections[0].points[0].statement = statements[order[1]]
+    return _packet_state(with_composition=False).model_copy(
+        update={"composition": composition}
+    )
+
+
+def test_the_evidence_badge_is_conservative_and_order_independent() -> None:
+    """Sweep 10: first-wins badge aggregation widened optimistically.
+
+    One physical passage can corroborate one statement and contest another.
+    Taking the first badge in statement order made the review's view of that
+    passage depend on order, and a ``verified_pair`` badge could be printed
+    beside a cluster that contests it. The conservative rule already used one
+    level up applies here: disagreeing contributors report no badge.
+    """
+    forward = build_critic_packet(_badge_state(("pair", "contested")))
+    backward = build_critic_packet(_badge_state(("contested", "pair")))
+
+    item = forward.evidence_batches[0].items[0]
+    assert item.badge == ""
+    assert item.badge_label == EVIDENCE_BADGE_LABELS[""]
+    assert backward.evidence_batches[0].items[0].badge == item.badge

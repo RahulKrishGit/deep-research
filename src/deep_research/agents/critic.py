@@ -27,7 +27,7 @@ import hashlib
 import json
 import re
 from collections.abc import Collection, Sequence
-from typing import ClassVar
+from typing import Annotated, ClassVar
 
 from pydantic import Field, ValidationError, model_validator
 
@@ -48,7 +48,6 @@ from deep_research.agents.prompts import (
     CRITIQUE_INSTRUCTION,
     CRITIQUE_REPAIR_INSTRUCTION,
     AgentTask,
-    render_claim_digest,
     render_source_quality,
 )
 from deep_research.agents.steps import ReActRun
@@ -120,13 +119,27 @@ DEFAULT_MAX_NOTES = 10
 # the complete reader content and every reader statement, and the request
 # renders every reader section whole.
 #
-# Evidence is what gets batched, because it is the only part with no natural
-# ceiling. Each item is clamped to a passage-sized excerpt, batches are filled
-# to a shared budget, and the unit count is bounded — with every id beyond the
-# bound named in ``omitted_evidence_ids`` rather than silently dropped.
+# Evidence is batched, because it is the only part with no natural ceiling, and
+# batching is the *only* bound: every item is carried as the exact passage the
+# read registered — a qualifier at the end of a long passage is the sentence
+# that turns an acceptance into a contradiction — and every registered unit is
+# carried, in citation order, however many there are. If a request ever cannot
+# fit, the review must fail closed rather than review a partial view.
 CRITIC_EVIDENCE_UNIT_CHARS = 1200
+"""The passage length above which an excerpt used to be cut.
+
+Historical: ``from_unit`` carried ``excerpt[:1200] + "..."`` until Task 8's fix
+round 4, which removed the cut. The value is kept because it is part of the
+exported agent surface, and a test uses it as "longer than the old cut".
+"""
 CRITIC_EVIDENCE_BATCH_CHARS = 4000
 CRITIC_MAX_EVIDENCE_UNITS = 24
+"""The unit count the packet used to keep before naming the rest as omitted.
+
+Historical: it was a silent-review-material bound, so Task 8's fix round 4
+removed it — ``omitted_evidence_ids`` is now always empty and the packet
+carries every registered unit. Kept as exported surface.
+"""
 
 # One initial request plus exactly one repair. The provider already performs a
 # single transport-level repair; this is the agent-level re-ask that carries
@@ -390,9 +403,9 @@ class CritiqueGapDraft(ContractModel):
     target_ids: list[str] = Field(default_factory=list)
     claim_cluster_ids: list[str] = Field(default_factory=list)
     statement_ids: list[str] = Field(default_factory=list)
-    kind: GapKind = "coverage"
-    severity: GapSeverity = "major"
-    repair_action: RepairAction = "acquire"
+    kind: GapKind
+    severity: GapSeverity
+    repair_action: RepairAction
     problem: str = Field(min_length=1)
     """The defect, in the model's words, and never blank.
 
@@ -425,9 +438,12 @@ class CritiqueGapDraft(ContractModel):
 def normalize_gap_drafts(values: object) -> object:
     """Coerce the pre-Task-8 free-text gap list into typed gap drafts.
 
-    The single place the legacy gap shape is understood *at a payload
-    boundary*. Both typed boundaries that carry gaps call this: the
-    provider-facing ``CritiqueDraft`` and the state-facing ``Critique``.
+    The single place the legacy gap shape is understood *at a state boundary*:
+    the state-facing ``Critique`` calls this so an old persisted artifact stays
+    readable. The provider-facing ``CritiqueDraft`` deliberately does **not**:
+    a live reply that ignores the typed response contract is a malformed reply,
+    and rewriting it here rewarded it with a material ``target_ids=["question"]``
+    gap instead of the one repair.
 
     A legacy gap is a *string*, and only a string is treated as one. That
     distinction is what lets an unscoped **typed** gap fail validation
@@ -467,42 +483,50 @@ def normalize_gap_drafts(values: object) -> object:
     return converted
 
 
+_CritiqueNote = Annotated[str, Field(min_length=1)]
+"""One provider-supplied note that must say something.
+
+``ContractModel`` strips whitespace, so ``"   "`` arrives as ``""``. A blank
+note is not a note: ``normalize_notes`` dropped it, which meant a reply that
+reported an unsupported claim could be read as a reply that reported none, and
+a score of 9 then accepted the report on the strength of a defect that was
+deleted locally. It is a malformed reply instead, and takes the repair.
+
+Private on purpose: the alias spells one field's rule inside one module, and
+every public module-level name here is pinned into the package's exported
+surface (``tests/test_imports.py``).
+"""
+
+
 class CritiqueDraft(ContractModel):
     """One model review, before domain validation.
 
+    Every field here is the provider's own value, or the reply is refused.
     ``score`` is a plain ``int`` bounded to the declared 1-10 range rather than
     ``CriticScore``, so the *range* is part of the reply contract while the
-    error a caller sees stays a schema failure: a model that answers 0 or 42
-    made a formatting mistake, and the reply is refused and re-asked once
-    rather than clamped into a number nobody wrote. ``gaps`` is bounded to the
-    same limit the normalizer applies, so an overflowing reply is refused
-    instead of having its tail silently dropped before routing.
+    error a caller sees stays a schema failure: a model that answers 0, 42,
+    ``"9"`` or ``true`` made a formatting mistake, and the reply is refused and
+    re-asked once rather than coerced or clamped into a number nobody wrote.
+    ``gaps`` is bounded to the same limit the normalizer applies, so an
+    overflowing reply is refused instead of having its tail silently dropped
+    before routing, and a gap's ``kind``, ``severity`` and ``repair_action``
+    are required rather than defaulted: a default would be a routing judgement
+    this module made and the model never sent.
+
+    The legacy *string* gap shape is **not** accepted here. It belongs to old
+    persisted state, which ``Critique`` reads through ``normalize_gap_drafts``;
+    a live reply that ignored the typed contract is repaired rather than
+    rewritten into a material obligation.
     """
 
-    score: int = Field(ge=MIN_CRITIC_SCORE, le=MAX_CRITIC_SCORE)
+    score: int = Field(ge=MIN_CRITIC_SCORE, le=MAX_CRITIC_SCORE, strict=True)
     gaps: list[CritiqueGapDraft] = Field(max_length=DEFAULT_MAX_NOTES)
-    unsupported_claims: list[str]
+    unsupported_claims: list[_CritiqueNote]
     recommended_queries: list[str]
     rationale: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def accept_legacy_gap_strings(cls, values: object) -> object:
-        """Keep pre-Task-8 fixtures readable while the provider schema is typed."""
-        return normalize_gap_drafts(values)
-
 
 # --- the review packet -------------------------------------------------------
-
-
-def _excerpt(text: str, *, limit: int = CRITIC_EVIDENCE_UNIT_CHARS) -> str:
-    """Clamp one excerpt to a passage-sized unit, marking the cut."""
-    value = text.strip()
-    if len(value) <= limit:
-        return value
-    if limit <= 3:
-        return value[:limit]
-    return value[: limit - 3].rstrip() + "..."
 
 
 def _badge_label(badge: str) -> str:
@@ -547,7 +571,7 @@ class CriticEvidenceItem(ContractModel):
             source_url=unit.source_url,
             source_title=unit.source_title,
             locator=unit.locator,
-            excerpt=_excerpt(unit.excerpt),
+            excerpt=unit.excerpt,
             target_ids=list(unit.target_ids),
             badge=badge,
             badge_label=_badge_label(badge),
@@ -807,18 +831,24 @@ def build_critic_packet(
         cluster_id: _cluster_badge(cluster)
         for cluster_id, cluster in clusters.items()
     }
-    badge_by_evidence: dict[str, str] = {}
+    # One physical passage can corroborate one statement and contest another.
+    # Taking the first badge in statement order made the review's view of that
+    # passage depend on the order the statements happened to render in, and it
+    # could print "independently corroborated" beside a cluster that contests
+    # the same read. Any disagreement reports no badge, exactly as
+    # ``_cluster_badge`` treats disagreeing verdicts one level up.
+    badges_by_evidence: dict[str, set[str]] = {}
     for statement in statements:
-        badge = next(
-            (
-                badge_by_cluster[cluster_id]
-                for cluster_id in statement.claim_cluster_ids
-                if badge_by_cluster.get(cluster_id)
-            ),
-            "",
-        )
-        for evidence_id in statement.evidence_ids:
-            badge_by_evidence.setdefault(evidence_id, badge)
+        for cluster_id in statement.claim_cluster_ids:
+            badge = badge_by_cluster.get(cluster_id, "")
+            if not badge:
+                continue
+            for evidence_id in statement.evidence_ids:
+                badges_by_evidence.setdefault(evidence_id, set()).add(badge)
+    badge_by_evidence: dict[str, str] = {
+        evidence_id: (next(iter(badges)) if len(badges) == 1 else "")
+        for evidence_id, badges in badges_by_evidence.items()
+    }
 
     cited_ids: list[str] = []
     for statement in statements:
@@ -829,8 +859,8 @@ def build_critic_packet(
         *cited_ids,
         *(evidence_id for evidence_id in units if evidence_id not in cited_ids),
     ]
-    retained_ids = ordered_ids[:CRITIC_MAX_EVIDENCE_UNITS]
-    omitted_ids = ordered_ids[CRITIC_MAX_EVIDENCE_UNITS:]
+    retained_ids = ordered_ids
+    omitted_ids: list[str] = []
     items = [
         CriticEvidenceItem.from_unit(
             units[evidence_id],
@@ -1252,6 +1282,9 @@ def normalize_gaps(
             CritiqueGapDraft(
                 coverage_id=None,
                 target_ids=[QUESTION_TARGET_ID],
+                kind="coverage",
+                severity="major",
+                repair_action="acquire",
                 problem=value,
             )
             if isinstance(value, str)
@@ -1667,6 +1700,26 @@ def _render_error_groups(packet: CriticPacket) -> str:
     return "\n".join(lines)
 
 
+def _render_critic_claims(claims: Sequence[Claim]) -> str:
+    """Render every checked claim, whole, for the Critic's own request.
+
+    The shared ``render_claim_digest`` is built for prompts that need a bounded
+    display: it slices to a count and collapses each claim to 240 characters.
+    Both are wrong here. The packet fingerprint covers every checked claim, so a
+    claim this section omits is inside the review's authority and outside its
+    view, and a claim whose own text is cut can hide the half that contradicts
+    the report. Nothing in Task 8's review material is summarized.
+    """
+    lines: list[str] = []
+    for position, claim in enumerate(claims, start=1):
+        urls = ", ".join(claim.source_urls)
+        lines.append(
+            f"{position}. [{claim.verdict} {claim.confidence:.2f}] "
+            f"{claim.text} ({urls})"
+        )
+    return "\n".join(lines) or "(no claims were checked)"
+
+
 def critique_messages(
     task: CritiqueTask,
     run: ReActRun | None = None,
@@ -1686,12 +1739,23 @@ def critique_messages(
 
     Nothing here truncates the report: every reader section is carried whole,
     and a section larger than ``CRITIC_REPORT_CHARS`` says so in its heading
-    rather than losing its end.
+    rather than losing its end. Nor is any other review material bounded: every
+    checked claim is rendered whole, every cited source is listed, and every
+    registered excerpt is batched — ``claim_digest`` is accepted for callers
+    that still pass it and deliberately ignored, because a count bound here
+    removed information the packet's own fingerprint covers.
     """
-    del run
+    del run, claim_digest
     packet = packet_for_task(task)
     canonical_claims = merge_claim_snapshot([], packet.claims)
     canonical_sources = merge_source_snapshot([], packet.sources)
+    # ``render_source_quality`` bounds its display to 36 rows because other
+    # prompts legitimately want that; the review does not. The 37th source can
+    # be the weak or unscored one behind a load-bearing statement, and it used
+    # to disappear without even an omission marker.
+    source_quality = render_source_quality(
+        canonical_sources, max_sources=max(1, len(canonical_sources))
+    )
     sections = [
         f"# Research question\n{packet.question}",
         _fingerprint_section(packet),
@@ -1747,11 +1811,17 @@ def critique_messages(
         ),
         (
             "# Claim verdicts — canonical checked claims\n"
-            f"{render_claim_digest(canonical_claims[:claim_digest])}"
+            "Every checked claim, whole: the verdict, the confidence, the "
+            "claim's own text, and the sources it cites. A claim this request "
+            "does not render is a claim the review cannot judge.\n"
+            f"{_render_critic_claims(canonical_claims)}"
         ),
         (
             "# Source quality — cited-source assessments\n"
-            f"{render_source_quality(canonical_sources)}"
+            "Every source this report cites, with the assessment recorded for "
+            "it. A source this request does not list is a source the review "
+            "cannot weigh.\n"
+            f"{source_quality}"
         ),
         (
             "# Recorded problems by agent/stage\n"
@@ -2275,9 +2345,13 @@ class CriticAgent(BaseAgent[Critique]):
     ) -> CritiqueDraft:
         """One structured review request under this operation's output budget.
 
-        A provider that returns a payload rather than a validated model is
-        validated here instead, so every path into ``build_critique`` has been
-        through the schema at least once.
+        The reply is validated here whatever its Python type is. A provider that
+        returns a payload returns a dict; an adapter that returns objects — or a
+        test double — returns something whose type is right and whose fields may
+        never have been checked, because ``model_construct`` and its relatives
+        skip every validator. Re-validating the dumped object is what makes "one
+        trustworthy validation boundary" true of the *values* rather than only
+        of the transport, and it costs one pass over a small payload.
         """
         self.fingerprint_call(
             "CritiqueDraft", output_limit=self.config.critic_review_max_tokens
@@ -2288,9 +2362,12 @@ class CriticAgent(BaseAgent[Critique]):
             agent_name=self.name,
             max_tokens=self.config.critic_review_max_tokens,
         )
-        if isinstance(reply, CritiqueDraft):
-            return reply
-        return CritiqueDraft.model_validate(reply)
+        payload = (
+            reply.model_dump(mode="python")
+            if isinstance(reply, CritiqueDraft)
+            else reply
+        )
+        return CritiqueDraft.model_validate(payload)
 
     async def _repair_review(
         self,

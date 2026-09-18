@@ -224,7 +224,19 @@ from deep_research.utils.config import (
 # and the module that renders the review request changed with it. ``clamp_score``
 # is no longer called by the review path. ``agents.prompts`` is untouched, so
 # the other five moved in neither direction.
-CRITIC_PROMPT_FINGERPRINT = "6da1052f44b6"
+# Task 8's fix round 4 — the systematic provider-boundary sweep — moved it alone
+# once more, ``6da1052f44b6`` -> ``30496ba14ad6``. Every change was in
+# ``agents/critic.py``: the score is strict (so ``"9"``, ``9.0`` and ``true`` are
+# refused rather than coerced), a blank unsupported claim is a schema failure
+# instead of a deleted defect, the legacy string gap is no longer accepted by the
+# live provider schema (only by the state-facing ``Critique``), a gap's ``kind``,
+# ``severity`` and ``repair_action`` are required instead of defaulted, the reply
+# is re-validated after transport so a forged object is not trusted, evidence
+# excerpts and the unit list are carried whole, every checked claim and cited
+# source is rendered instead of sliced or summarized, and the shared evidence
+# badge is blank when contributing badges disagree. ``agents.prompts`` was not
+# touched, so the other five moved in neither direction.
+CRITIC_PROMPT_FINGERPRINT = "30496ba14ad6"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -559,7 +571,10 @@ CRITIC_PROMPT_FINGERPRINT = "6da1052f44b6"
 #   critic ``15754f64fa12`` -> ``3f0341751794`` -> ``98c2864fd56c`` ->
 #     ``6da1052f44b6`` in fix round 3 (the score and gap bounds became part of
 #     the reply contract, so an out-of-range or overflowing reply is repaired
-#     instead of clamped or truncated)
+#     instead of clamped or truncated), -> ``30496ba14ad6`` in fix round 4 (the
+#     provider boundary was swept: strict and non-blank fields, no legacy string
+#     gap on the live schema, a re-validated reply, whole evidence excerpts and
+#     no unit ceiling, every claim and source rendered, conservative badges)
 # Task 8 moved all six. The critic's own module changed (the tool path removed,
 # the packet and its fingerprint added, the request sections rebuilt, and the
 # repair path's failure handling split between schema and provider causes), and
@@ -572,7 +587,9 @@ CRITIC_PROMPT_FINGERPRINT = "6da1052f44b6"
 #   fact_checker ``f1ccaf38ff02`` -> ``7695ca2d0524``
 #   synthesizer ``17bc15e0131b`` -> ``0ec21503cc00``
 #   critic ``3f0341751794`` -> ``98c2864fd56c``, -> ``6da1052f44b6`` in fix
-#     round 3 (no prompt string was edited: the reply contract's bounds moved)
+#     round 3 (no prompt string was edited: the reply contract's bounds moved),
+#     -> ``30496ba14ad6`` in fix round 4 (the same: the swept boundary is the
+#     module that renders the request, not the shared prompt library)
 # The Judge pin did not move: no judge prompt or template changed.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "02d66a4a2d15",
@@ -580,7 +597,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "7695ca2d0524",
     "synthesizer": "0ec21503cc00",
-    "critic": "6da1052f44b6",
+    "critic": "30496ba14ad6",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from deep_research.agents.critic import CriticAgent, CritiqueDraft
+from deep_research.agents.critic import (
+    QUESTION_TARGET_ID,
+    CriticAgent,
+    CritiqueDraft,
+    CritiqueGapDraft,
+)
 from deep_research.agents.fact_checker import (
     ClaimDraft,
     ClaimsDraft,
@@ -298,7 +303,18 @@ async def test_a_weak_pass_reports_its_limits_and_asks_for_another_cycle(
             outputs=[
                 CritiqueDraft(
                     score=3,
-                    gaps=["No source was scored."],
+                    gaps=[
+                        # The typed provider shape: a live reply that sent a
+                        # bare string is repaired, not rewritten (fix round 4).
+                        CritiqueGapDraft(
+                            target_ids=[QUESTION_TARGET_ID],
+                            kind="coverage",
+                            severity="major",
+                            repair_action="acquire",
+                            problem="No source was scored.",
+                            recommended_queries=[],
+                        )
+                    ],
                     unsupported_claims=[],
                     recommended_queries=["qec break-even independent review"],
                     rationale="One unscored source carries everything.",
