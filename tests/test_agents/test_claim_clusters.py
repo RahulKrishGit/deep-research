@@ -23,6 +23,8 @@ import pytest
 
 from deep_research.agents.claim_clusters import (
     MAX_EQUIVALENCE_ATOMS,
+    OVER_CAP_SUBJECT_DIGEST_CHARS,
+    OVER_CAP_SUBJECT_PREFIX,
     AtomicPairDraft,
     ClaimEquivalenceDraft,
     atomic_compatible,
@@ -205,6 +207,13 @@ def test_a_different_subject_is_not_compatible() -> None:
     The reviewer's probe: "Revenue rose 10 percent in 2024" and "Costs rose 10
     percent in 2024" agree on every dimension the contract compared once
     subject was treated as wording, and merged into one settled fact.
+
+    "Costs" is also a relation word in this contract's table, so the breaker's
+    ruling applies to it too: a run that is itself a relation word is not a
+    subject, and the clause reports a derivation failure rather than deriving
+    an entity from the verb. The refusal is unchanged; only its reason is
+    sharper, and the accepted coverage loss is the direction that cannot settle
+    a claim on a word that is not an entity.
     """
     revenue = _claim("Revenue rose 10 percent in 2024.", claim_id="claim-rev")
     costs = _claim("Costs rose 10 percent in 2024.", claim_id="claim-cost")
@@ -213,7 +222,8 @@ def test_a_different_subject_is_not_compatible() -> None:
     (costs_atom,) = extract_atoms(costs)
 
     assert revenue_atom.subject == "Revenue"
-    assert costs_atom.subject == "Costs"
+    assert costs_atom.subject == ""
+    assert costs_atom.subject_state == "unresolved"
     assert not atomic_compatible(revenue_atom, costs_atom)
 
 
@@ -451,8 +461,15 @@ def test_two_identical_full_entities_still_merge() -> None:
     assert atomic_compatible(left, right)
 
 
-def test_a_trailing_phrase_too_long_to_read_whole_is_unknown() -> None:
-    """A capture this contract cannot complete yields no subject, not a prefix."""
+def test_a_trailing_phrase_too_long_to_read_whole_is_never_a_prefix() -> None:
+    """A capture this contract cannot list whole yields its digest, not a prefix.
+
+    Round 5 discarded the phrase entirely, which refused two different over-cap
+    entities correctly and two identical ones wrongly — the identical pair was
+    then minted as two ledger rows under one cluster id. The breaker's ruling
+    keeps the whole-or-empty principle for the *words* (no prefix ever stands
+    for the entity) while taking the complete phrase whole as its digest.
+    """
     (atom,) = extract_atoms(
         _claim(
             "10 GW sat in the 2024 one two three four five six seven eight "
@@ -460,8 +477,25 @@ def test_a_trailing_phrase_too_long_to_read_whole_is_unknown() -> None:
             claim_id="claim-long",
         )
     )
+    (same,) = extract_atoms(
+        _claim(
+            "10 GW sat in the 2024 one two three four five six seven eight "
+            "nine ten eleven twelve thirteen queue",
+            claim_id="claim-same",
+        )
+    )
+    (other,) = extract_atoms(
+        _claim(
+            "10 GW sat in the 2024 one two three four five six seven eight "
+            "nine ten eleven twelve thirteen backlog",
+            claim_id="claim-other",
+        )
+    )
 
-    assert atom.subject == ""
+    assert atom.subject != ""
+    assert atom.subject == same.subject
+    assert atom.subject != other.subject
+    assert not atom.subject.startswith("one two three")
 
 
 def test_two_clauses_that_name_no_entity_still_merge() -> None:
@@ -568,6 +602,96 @@ async def test_a_relation_word_before_the_entity_never_merges_end_to_end() -> No
     ]
 
 
+# --------------------------------------------------------------------------
+# Precondition A (carried from Task 5's breaker): a run that IS a relation
+# word or a light verb is not a subject
+# --------------------------------------------------------------------------
+
+
+def test_two_preceding_relation_words_are_not_a_subject() -> None:
+    """The breaker probe: "Projected and reported …" read its subject as "Projected".
+
+    Two relation words precede the entity, so ``_predicate_match`` selects the
+    later one ("reported") while the run before it is the earlier one
+    ("Projected") — a relation word, not an entity. Both sides then agreed on
+    "Projected", and the wind and solar clauses became ONE canonical verified
+    cluster with no diagnostic.
+    """
+    (wind,) = extract_atoms(
+        _claim("Projected and reported wind capacity is 10 GW.")
+    )
+    (solar,) = extract_atoms(
+        _claim("Projected and reported solar capacity is 10 GW.")
+    )
+
+    assert wind.subject == "wind capacity"
+    assert solar.subject == "solar capacity"
+    assert wind.subject_state == solar.subject_state == "derived"
+    assert not atomic_compatible(wind, solar)
+
+
+@pytest.mark.asyncio
+async def test_two_preceding_relation_words_never_merge_end_to_end() -> None:
+    """The harm the breaker measured: one canonical cluster, settled verified."""
+    claims = [
+        _claim(
+            "Projected and reported wind capacity is 10 GW.",
+            claim_id="claim-wind",
+        ),
+        _claim(
+            "Projected and reported solar capacity is 10 GW.",
+            claim_id="claim-solar",
+        ),
+    ]
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims
+    )
+
+    assert len(consolidation.claims) == 2
+    assert len(consolidation.clusters) == 2
+    assert consolidation.diagnostics == [
+        "equivalence_candidate_incompatible:1:2"
+    ]
+
+
+def test_two_multi_relation_clauses_naming_one_entity_still_merge() -> None:
+    """The control: refusing a relation-word run may not refuse the same entity.
+
+    Both clauses put two relation words before one entity, so both take the gap
+    read and both find "wind capacity". Refusing the *pair* here would be the
+    coverage loss the ruling accepts only where the entities genuinely differ.
+    """
+    (left,) = extract_atoms(
+        _claim("Projected and reported wind capacity is 10 GW.")
+    )
+    (right,) = extract_atoms(
+        _claim("Projected and reported wind capacity equals 10 GW.")
+    )
+
+    assert left.subject == right.subject == "wind capacity"
+    assert left.subject_state == right.subject_state == "derived"
+    assert atomic_compatible(left, right)
+
+
+def test_a_subject_run_made_only_of_relation_words_is_unresolved() -> None:
+    """Falling through the gap read with nothing behind it is a derivation failure.
+
+    "Costs rose 10 percent in 2024" has an entity position whose only candidate
+    word is the relation ``costs``, which this contract may not read as a
+    subject: the run is unusable, the gap behind ``rose`` is empty, and the
+    clause names an entity it could not derive. UNRESOLVED refuses against
+    everything, which is the direction that cannot settle a claim on nothing.
+    """
+    (costs,) = extract_atoms(_claim("Costs rose 10 percent in 2024."))
+    (revenue,) = extract_atoms(_claim("Revenue rose 10 percent in 2024."))
+
+    assert revenue.subject == "Revenue"
+    assert costs.subject == ""
+    assert costs.subject_state == "unresolved"
+    assert not atomic_compatible(revenue, costs)
+
+
 def test_a_light_verb_never_erases_a_real_entity_word() -> None:
     """``Will County`` is an entity, not the modal ``will``.
 
@@ -628,32 +752,101 @@ def test_two_over_cap_entities_never_agree_on_nothing() -> None:
     The reviewer's probe: both clauses carry a thirteen-word entity, so the
     whole-or-empty read returned ``''`` on both sides — and empty-vs-empty is
     the permissive case, so two different operators merged where the base
-    refused on their four-word prefixes. The clause *has* an entity and the
-    derivation failed; that is the absence of evidence, not evidence that the
-    two entities agree.
+    refused on their four-word prefixes. Under the breaker's ruling the
+    complete trailing phrase is no longer thrown away: its fixed-size digest is
+    the subject discriminator, so the two operators are told apart by *what the
+    clause says* rather than by a shared empty string.
     """
     (left,) = extract_atoms(_claim(OVER_CAP_CALIFORNIA, claim_id="claim-ca"))
     (right,) = extract_atoms(
         _claim(OVER_CAP_MIDCONTINENT, claim_id="claim-midcontinent")
     )
 
-    assert left.subject == right.subject == ""
-    assert left.subject_state == right.subject_state == "unresolved"
+    assert left.subject_state == right.subject_state == "derived"
+    assert left.subject != right.subject
     assert not atomic_compatible(left, right)
 
 
-def test_an_identical_over_cap_entity_is_not_an_agreed_unknown_either() -> None:
-    """UNRESOLVED refuses against everything, including another UNRESOLVED.
+def test_two_identical_over_cap_entities_share_one_derived_identity() -> None:
+    """The breaker probe: identical over-cap claims were one identity in two rows.
 
-    Round 2's ruling permitted two *identical* over-cap entities to merge; the
-    round-5 three-state ruling is stricter, because a derivation failure is not
-    evidence that two clauses name the same entity. Refusing is the direction
-    that cannot settle a claim on nothing.
+    Round 5 made an over-cap capture UNRESOLVED, which correctly refuses two
+    *different* over-cap entities — but it also refused two identical ones, and
+    the rejected pair was then minted as two singletons carrying the SAME
+    cluster id (the assertion fingerprint ignores a subject nobody derived).
+    Two ledger rows under one identity breaks the one-semantic-identity rule.
+    The complete normalized trailing phrase is available before the cap check,
+    so its digest is the discriminator: identical phrases agree, different ones
+    still refuse.
     """
     (left,) = extract_atoms(_claim(OVER_CAP_CALIFORNIA, claim_id="claim-a"))
     (right,) = extract_atoms(_claim(OVER_CAP_CALIFORNIA, claim_id="claim-b"))
 
-    assert not atomic_compatible(left, right)
+    assert left.subject_state == right.subject_state == "derived"
+    assert left.subject != ""
+    assert left.subject == right.subject
+    assert atomic_compatible(left, right)
+
+
+def test_the_over_cap_discriminator_is_a_fixed_size_digest() -> None:
+    """Not a truncated prefix, and not unconditional UNRESOLVED.
+
+    A four-word prefix of a long entity is nonempty, plausible, and identical
+    for two different operators; UNRESOLVED refuses the identical case too. The
+    discriminator is therefore the digest of the COMPLETE normalized phrase, so
+    a shared opening cannot merge two entities and a shared phrase still can.
+    """
+    (california,) = extract_atoms(_claim(OVER_CAP_CALIFORNIA, claim_id="claim-ca"))
+    (midcontinent,) = extract_atoms(
+        _claim(OVER_CAP_MIDCONTINENT, claim_id="claim-midcontinent")
+    )
+
+    for atom in (california, midcontinent):
+        assert atom.subject.startswith(OVER_CAP_SUBJECT_PREFIX)
+        digest = atom.subject[len(OVER_CAP_SUBJECT_PREFIX):]
+        assert len(digest) == OVER_CAP_SUBJECT_DIGEST_CHARS
+        assert set(digest) <= set("0123456789abcdef")
+    # The two entities share their opening words and differ only in the
+    # operator's name, which is exactly what a prefix would have lost.
+    assert california.subject != midcontinent.subject
+
+
+@pytest.mark.asyncio
+async def test_identical_over_cap_claims_publish_one_row_not_two() -> None:
+    """The ledger harm: two canonical rows carrying one cluster id."""
+    claims = [
+        _claim(OVER_CAP_CALIFORNIA, claim_id="claim-a"),
+        _claim(OVER_CAP_CALIFORNIA, claim_id="claim-b"),
+    ]
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims
+    )
+
+    assert len(consolidation.claims) == 1
+    assert len(consolidation.clusters) == 1
+    assert len({claim.claim_id for claim in consolidation.claims}) == 1
+
+
+@pytest.mark.asyncio
+async def test_identical_over_cap_claims_are_one_identity_without_a_proposal() -> None:
+    """One assertion fingerprint may never mint two rows, proposal or not.
+
+    The provider proposes duplicates; it is not the authority on identity. Two
+    atoms that mint the SAME cluster id are one assertion by this contract's
+    own fingerprint, so the ledger cannot publish them as two.
+    """
+    claims = [
+        _claim(OVER_CAP_CALIFORNIA, claim_id="claim-a"),
+        _claim(OVER_CAP_CALIFORNIA, claim_id="claim-b"),
+    ]
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs()]), claims
+    )
+
+    assert len(consolidation.clusters) == 1
+    assert len({cluster.cluster_id for cluster in consolidation.clusters}) == 1
 
 
 @pytest.mark.asyncio

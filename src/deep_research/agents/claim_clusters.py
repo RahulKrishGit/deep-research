@@ -897,6 +897,11 @@ _LIGHT_VERBS = frozenset(
 _WORD_TOKEN = re.compile(r"[A-Za-z][\w'-]*")
 MAX_SUBJECT_WORDS = 6
 
+# The relation vocabulary, as the set a subject run may never read an entity
+# from. It is the table's own keys, so a relation this contract learns is a
+# relation here too and the two cannot drift.
+_RELATION_WORDS = frozenset(_PREDICATE_RELATIONS)
+
 # The three outcomes of a subject derivation. ``derived`` means an entity was
 # read and is compared; ``absent`` means the clause names none, so two such
 # clauses may still agree; ``unresolved`` means an entity position is there and
@@ -933,6 +938,22 @@ _TO_HEAD_GUARD_WORDS = frozenset({"according", "up", "prior", "due", "next"})
 # boundary, so it completes the capture rather than truncating it.
 _TRAILING_ENTITY_BOUNDARY = re.compile(r"[,;:.!?()\[\]\u2013\u2014]")
 MAX_TRAILING_ENTITY_WORDS = 12
+
+# What a capture longer than ``MAX_TRAILING_ENTITY_WORDS`` is reduced to. The
+# whole-or-empty rule refused two *different* over-cap entities correctly, but
+# it also refused two identical ones — and the rejected pair was then minted as
+# two ledger rows sharing one cluster id, because the assertion fingerprint
+# ignores a subject nobody derived. The complete normalized phrase IS available
+# before the cap check, so it is digested rather than discarded.
+#
+# A digest, not a prefix: a four-word prefix of "California Independent System
+# Operator interconnection queue" is nonempty, plausible, and identical to the
+# opening words of a different operator's queue, which is the false merge the
+# whole-or-empty rule existed to prevent. 128 bits of SHA-256 keeps collisions
+# out of practical reach while the subject stays a fixed-size token that only
+# ever compares for equality.
+OVER_CAP_SUBJECT_PREFIX = "over-cap:"
+OVER_CAP_SUBJECT_DIGEST_CHARS = 32
 
 
 def _split_clauses(text: str) -> list[str]:
@@ -1014,6 +1035,20 @@ def _predicate(
     return _PREDICATE_RELATIONS[match.group("predicate").casefold()]
 
 
+def _over_cap_subject(phrase: str) -> str:
+    """The fixed-size identity of an entity phrase this contract cannot list whole.
+
+    The phrase is available before the cap check, so it is digested rather than
+    discarded: two clauses that write the same complete entity agree, and two
+    that differ anywhere in it do not. A prefix would do neither — the opening
+    words of two different operators' queues are identical — and an empty
+    subject would do worse, because two clauses that agree on nothing are the
+    permissive case this contract compares as agreement.
+    """
+    digest = hashlib.sha256(_canonical(phrase).encode("utf-8")).hexdigest()
+    return OVER_CAP_SUBJECT_PREFIX + digest[:OVER_CAP_SUBJECT_DIGEST_CHARS]
+
+
 def _trailing_entity(
     clause: str, *, excluded: Sequence[tuple[int, int]]
 ) -> tuple[str, SubjectState]:
@@ -1025,8 +1060,10 @@ def _trailing_entity(
     rather than "there is nothing here to disagree about" — an underivable
     qualifier must not become an escape hatch for two different entities.
 
-    The phrase runs to the clause's own boundary and is taken whole. A capture
-    that would be cut short is no subject at all, and a clause whose entity is
+    The phrase runs to the clause's own boundary and is taken whole, as its
+    words when this contract can list them and as their digest when it cannot.
+    A clause whose entity phrase is longer than ``MAX_TRAILING_ENTITY_WORDS`` is
+    therefore still compared by what it names, and a clause whose entity is
     *present* but unreadable is ``unresolved`` rather than ``absent``: two
     clauses that both name an entity this contract could not read are not two
     clauses that name the same entity.
@@ -1059,9 +1096,12 @@ def _trailing_entity(
             continue
         if len(tokens) > MAX_TRAILING_ENTITY_WORDS:
             # Longer than this contract will read, so it cannot show the
-            # capture is the whole entity — but the entity IS there, so this is
-            # a failed derivation rather than a clause that names none.
-            return "", _SUBJECT_UNRESOLVED
+            # capture is the whole entity as a list of words — but the phrase
+            # itself is right here and is taken whole, as its digest. Discarding
+            # it made an identical entity indistinguishable from a different
+            # one: both came back empty and the refused pair was minted as two
+            # ledger rows sharing one cluster id.
+            return _over_cap_subject(phrase), _SUBJECT_DERIVED
         words = [
             token.group(0)
             for token in tokens
@@ -1108,10 +1148,21 @@ def _run_before(
     stopword ends the run once something has been gathered, and a word inside an
     excluded span (the period, the value, a quantity phrase's unit noun) ends it
     too. A light verb clears whatever was gathered to its right — those words
-    sit on the verb phrase's side of it — and the cleared flag records that real
+    sit on the verb phrase's side of it — and the erased flag records that real
     words were dropped. A run that is empty *because* a light verb ate it is a
     derivation failure, not a clause that names no entity: "Will County" is not
     the modal "will".
+
+    **A run that is itself a relation word is not a subject either.** With two
+    relation words before the entity ("Projected and reported wind capacity is
+    10 GW") the selected relation is the later one and the run before it is the
+    earlier one — a verb, not an entity — so both the wind and the solar clause
+    came back as "Projected" and merged into one settled fact. A relation word
+    therefore never joins the run: it ends a run that already gathered real
+    entity words, and a run that found nothing but relation words is unusable
+    and erases like a light verb, so the caller falls through to the gap the
+    relation leaves and reports a derivation failure if that is empty too. The
+    entity is never DERIVED from a relation word.
     """
 
     def is_excluded(position: int) -> bool:
@@ -1132,6 +1183,11 @@ def _run_before(
             if collected:
                 erased = True
             collected.clear()
+            continue
+        if folded in _RELATION_WORDS:
+            if collected:
+                break
+            erased = True
             continue
         if folded in _SUBJECT_STOPWORDS:
             if collected:
@@ -1845,6 +1901,35 @@ def _accepted_pairs(
     return accepted
 
 
+def _one_row_per_identity(
+    atoms: Sequence[AtomicProposition],
+    groups: Sequence[Sequence[int]],
+) -> list[list[int]]:
+    """Fold together the atoms that mint one cluster id.
+
+    The provider proposes which atoms *might* state one fact; it is not the
+    authority on identity. ``claim_cluster_id`` is a function of the assertion
+    alone, so two atoms that mint the same id ARE one assertion by this
+    contract's own fingerprint, and publishing them as two rows under one id
+    breaks the one-known-duplicate and one-semantic-identity rules the ledger is
+    read for. The fold only ever adds an edge local code can already prove.
+    """
+    first_for: dict[str, int] = {}
+    identical: list[tuple[int, int]] = []
+    for index, atom in enumerate(atoms):
+        first = first_for.setdefault(claim_cluster_id(atom), index)
+        if first != index:
+            identical.append((first, index))
+    if not identical:
+        return [list(group) for group in groups]
+    edges = [
+        (group[0], member)
+        for group in groups
+        for member in group[1:]
+    ]
+    return _grouped(len(atoms), [*edges, *identical])
+
+
 def _grouped(count: int, pairs: Sequence[tuple[int, int]]) -> list[list[int]]:
     """Transitive closure of the accepted pairs, in first-seen order.
 
@@ -1983,6 +2068,10 @@ async def consolidate_claims(
             groups = _grouped(
                 len(atoms), _accepted_pairs(proposal, atoms, diagnostics)
             )
+
+    # Identity is local, and it is not the provider's to grant: two atoms that
+    # mint one cluster id are one assertion whether or not the provider noticed.
+    groups = _one_row_per_identity(atoms, groups)
 
     clusters: list[ClaimCluster] = []
     aliases: dict[str, str] = {}

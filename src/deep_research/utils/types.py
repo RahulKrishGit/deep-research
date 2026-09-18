@@ -827,9 +827,11 @@ class ClaimCluster(ContractModel):
 
     The oldest cluster is the one that survives a merge, so age cannot be
     inferred from the order a caller happens to pass clusters in. A cluster
-    written before this field existed, or built by hand, carries zero and
-    falls back to its position in the registry — which is append-ordered,
-    because a merge keeps first-seen order.
+    written before this field existed, or built by hand, carries zero, which
+    ``claim_clusters.oldest_first`` orders *last* — never first — and peers at
+    one sequence are ordered by cluster id rather than by registry position, so
+    no caller's list order can hand one of two equal clusters the surviving
+    identity.
     """
     evidence_ids: list[str] = Field(default_factory=list)
     member_claim_ids: list[str] = Field(default_factory=list)
