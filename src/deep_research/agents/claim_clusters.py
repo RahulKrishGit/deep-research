@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 
 from pydantic import Field
@@ -67,6 +67,7 @@ __all__ = [
     "atomic_compatible",
     "checkable_dimensions",
     "claim_cluster_id",
+    "claim_meets_support_policy",
     "cluster_for_atom",
     "consolidate_claims",
     "critical_target_ids",
@@ -75,8 +76,10 @@ __all__ = [
     "equivalence_strength",
     "extract_atoms",
     "extract_text_atoms",
+    "merge_claim_cluster_registry",
     "merge_claim_clusters",
     "metadata_dimension_asked_for",
+    "oldest_first",
     "resolved_verdict",
     "reverification_cache_key",
     "select_claim_batch",
@@ -189,13 +192,9 @@ def _canonical_unit(unit: str) -> str:
 # The dimensions compared as written text. ``text`` is deliberately absent: it
 # is the surface paraphrase, and comparing it would refuse the duplicate this
 # contract exists to find.
-#
-# ``subject`` and ``predicate`` are absent for the same reason. They are
-# *wording*: one assertion writes its subject first and another writes it after
-# the value, and a surface derivation that read them as identity would refuse
-# exactly the paraphrases this module exists to join. They are still extracted
-# and reported, because a consumer inspecting an atom wants to see them.
 _COMPARED_DIMENSIONS = (
+    "subject",
+    "predicate",
     "observation_period",
     "geography",
     "population",
@@ -203,6 +202,14 @@ _COMPARED_DIMENSIONS = (
     "attribution",
     "forecast_status",
 )
+
+# The two dimensions where an EMPTY value means "this contract could not derive
+# it" rather than "the clause does not state one". A surface derivation of the
+# subject cannot read every phrasing, and refusing a merge because one wording
+# put the value first would refuse the paraphrases this module exists to join.
+# A *stated* difference between two subjects is still a refusal — that is what
+# keeps "Revenue rose 10 percent" and "Costs rose 10 percent" apart.
+_UNKNOWN_IS_NOT_A_CONFLICT = frozenset({"subject", "predicate"})
 
 # Every dimension an atom can be asked to state, by the name a plan or a
 # question uses for it.
@@ -307,7 +314,12 @@ def atomic_compatible(
     if _canonical_unit(a.unit) != _canonical_unit(b.unit):
         return False
     for name in _COMPARED_DIMENSIONS:
-        if _canonical(getattr(a, name)) != _canonical(getattr(b, name)):
+        left = _canonical(getattr(a, name))
+        right = _canonical(getattr(b, name))
+        if name in _UNKNOWN_IS_NOT_A_CONFLICT and (not left or not right):
+            # Underivable, not different.
+            continue
+        if left != right:
             return False
     if _stated_numbers(a) != _stated_numbers(b):
         return False
@@ -316,29 +328,41 @@ def atomic_compatible(
     return True
 
 
+def _claim_citations(claim: Claim) -> list[str]:
+    """Every citation one adjudicated claim carries, sorted and distinct."""
+    return sorted(
+        set(claim.source_urls)
+        | {passage.source_url for passage in claim.verification_evidence}
+    )
+
+
 def cluster_for_atom(
     atom: AtomicProposition,
     *,
     claim_id: str = "",
     claim: Claim | None = None,
     status: str = "canonical",
+    created_seq: int = 0,
 ) -> ClaimCluster:
     """Mint the cluster one atom anchors, with everything the atom carries.
 
     ``claim`` supplies the provenance the cluster persists — its citations,
-    its passages, its verdict, and what it consumed. A later pass reconstructs
-    all of that from the cluster, so only the run that produced the claim has
-    to hand it over.
+    its passages, its verdict with the evidence that recorded it, and what it
+    consumed. A later pass reconstructs all of that from the cluster, so only
+    the run that produced the claim has to hand it over.
     """
     members = set(atom.member_claim_ids)
     if claim_id:
         members.add(claim_id)
     elif atom.parent_claim_id:
         members.add(atom.parent_claim_id)
-    verdicts = sorted({claim.verdict}) if claim is not None else []
+    verdict_evidence: dict[str, list[str]] = {}
+    if claim is not None:
+        verdict_evidence[claim.verdict] = _claim_citations(claim)
     return ClaimCluster(
         cluster_id=claim_cluster_id(atom),
         proposition=atom,
+        created_seq=created_seq,
         evidence_ids=sorted(set(atom.evidence_ids)),
         member_claim_ids=sorted(members),
         target_ids=sorted(set(atom.target_ids)),
@@ -348,7 +372,8 @@ def cluster_for_atom(
         verification_evidence=(
             list(claim.verification_evidence) if claim is not None else []
         ),
-        verdicts=verdicts,  # type: ignore[arg-type]
+        verdicts=sorted(verdict_evidence),  # type: ignore[arg-type]
+        verdict_evidence=verdict_evidence,
         confidence=claim.confidence if claim is not None else None,
         insufficient_reason=(
             claim.insufficient_reason if claim is not None else None
@@ -370,8 +395,8 @@ def merge_claim_clusters(
 ) -> ClaimCluster:
     """Fold ``incoming`` into ``existing``, keeping the oldest stable identity.
 
-    ``existing`` is the older cluster by construction — consolidation walks
-    its atoms in first-seen order — so its ``cluster_id`` is the survivor and
+    ``existing`` is the older cluster by construction — the caller folds in
+    oldest-first order — so its ``cluster_id`` is the survivor and
     ``incoming``'s becomes an alias. Its proposition is the survivor's too:
     the anchor is what the identity was minted from, and letting a later
     paraphrase rewrite it would drift the cluster away from its own id.
@@ -380,7 +405,9 @@ def merge_claim_clusters(
     deterministic function of the two inputs and two passes that saw the same
     atoms in a different order agree.
     """
-    aliases = set(existing.cluster_aliases) | set(incoming.cluster_aliases)
+    aliases = (
+        set(existing.cluster_aliases) | set(incoming.cluster_aliases)
+    ) - {existing.cluster_id}
     if incoming.cluster_id != existing.cluster_id:
         aliases.add(incoming.cluster_id)
     confidences = [
@@ -390,6 +417,7 @@ def merge_claim_clusters(
     ]
     return existing.model_copy(
         update={
+            "created_seq": min(existing.created_seq, incoming.created_seq),
             "evidence_ids": sorted(
                 set(existing.evidence_ids) | set(incoming.evidence_ids)
             ),
@@ -407,6 +435,9 @@ def merge_claim_clusters(
                 existing.verification_evidence, incoming.verification_evidence
             ),
             "verdicts": sorted(set(existing.verdicts) | set(incoming.verdicts)),
+            "verdict_evidence": _union_verdict_evidence(
+                existing.verdict_evidence, incoming.verdict_evidence
+            ),
             "confidence": min(confidences) if confidences else None,
             "insufficient_reason": (
                 existing.insufficient_reason or incoming.insufficient_reason
@@ -428,6 +459,75 @@ def merge_claim_clusters(
             ),
         }
     )
+
+
+def _union_verdict_evidence(
+    first: Mapping[str, Sequence[str]],
+    second: Mapping[str, Sequence[str]],
+) -> dict[str, list[str]]:
+    """Per-verdict citation sets, unioned under every verdict either recorded."""
+    union: dict[str, list[str]] = {}
+    for source in (first, second):
+        for verdict, urls in source.items():
+            union[verdict] = sorted({*union.get(verdict, []), *urls})
+    return union
+
+
+def oldest_first(clusters: Sequence[ClaimCluster]) -> list[ClaimCluster]:
+    """Stored clusters in the order they were first minted.
+
+    ``created_seq`` is the authority, so the surviving identity does not
+    depend on the order a caller lists its clusters in. A cluster nobody
+    stamped — one built by hand, or written before the field existed —
+    carries zero and falls back to its position in the list it arrived in,
+    and that list is the registry, which is append-ordered because a merge
+    keeps first-seen order.
+    """
+    return [
+        cluster
+        for _, cluster in sorted(
+            enumerate(clusters), key=lambda pair: (pair[1].created_seq, pair[0])
+        )
+    ]
+
+
+def merge_claim_cluster_registry(
+    previous: Mapping[str, ClaimCluster],
+    current: Mapping[str, ClaimCluster],
+) -> dict[str, ClaimCluster]:
+    """Fold cluster snapshots in, keyed by the identity they were minted from.
+
+    A cluster *grows* — evidence, members, verdicts and citations join it as
+    later passes recognise their own work — so two records for one identity
+    are unioned rather than treated as a conflict. What is refused is a record
+    that does not describe the identity it is stored under: a key that is not
+    its own ``cluster_id``, or a proposition that does not mint that id, is a
+    forged or re-anchored cluster, and storing it would let a row claim an
+    identity it does not have.
+    """
+    merged: dict[str, ClaimCluster] = {}
+    for source in (previous, current):
+        for key, cluster in source.items():
+            if key != cluster.cluster_id:
+                raise ValueError(
+                    f"cluster registry key {key!r} is not the cluster's own "
+                    f"id {cluster.cluster_id!r}"
+                )
+            if claim_cluster_id(cluster.proposition) != cluster.cluster_id:
+                raise ValueError(
+                    f"cluster {cluster.cluster_id!r} was re-anchored on a "
+                    "proposition that does not mint it"
+                )
+            stored = _resolve_stored_cluster(cluster.cluster_id, merged.values())
+            if stored is None:
+                merged[cluster.cluster_id] = cluster
+                continue
+            ordered = oldest_first([stored, cluster])
+            survivor = merge_claim_clusters(ordered[0], ordered[1])
+            if survivor.cluster_id != stored.cluster_id:
+                merged.pop(stored.cluster_id, None)
+            merged[survivor.cluster_id] = survivor
+    return merged
 
 
 def _union_passages(
@@ -478,18 +578,44 @@ def resolved_verdict(verdicts: Sequence[str]) -> str:
 def _verdict_disagreements(
     cluster: ClaimCluster,
 ) -> list[str]:
-    """One diagnostic per verdict in a disagreeing cluster, with its citations."""
+    """One diagnostic per verdict in a disagreeing cluster, with ITS evidence.
+
+    Each verdict is reported beside the citations that actually recorded it,
+    so the diagnostic says which sources contradicted the assertion and which
+    supported it rather than repeating one unioned set for both.
+    """
     if len(cluster.verdicts) < 2:
         return []
-    urls = sorted(
-        set(cluster.source_urls)
-        | {passage.source_url for passage in cluster.verification_evidence}
-    )
-    citations = ",".join(urls)
     return [
-        f"cluster_verdict_disagreement:{verdict}:{citations}"
+        f"cluster_verdict_disagreement:{verdict}:"
+        f"{','.join(cluster.verdict_evidence.get(verdict, []))}"
         for verdict in cluster.verdicts
     ]
+
+
+def claim_meets_support_policy(
+    *,
+    support_policy: str,
+    verdict: str,
+    supporting_publishers: int,
+) -> bool:
+    """Whether an *adjudicated* claim satisfies a target's support policy.
+
+    Called after verification, never before: a policy constrains the evidence
+    that exists, and a claim with no verdict has none. Every policy requires a
+    verified claim — an ``insufficient_evidence`` one retrieved nothing
+    independent, a ``contradicted`` one has evidence against it, and an
+    ``unverified`` one has evidence that does not address it — and
+    ``independent_pair`` additionally needs two supporting publishers, because
+    one publisher is one source and a pair of passages from it is not a pair.
+    """
+    if verdict != "verified":
+        return False
+    if support_policy == "independent_pair":
+        return supporting_publishers >= 2
+    if support_policy in ("primary_attribution", "derivation"):
+        return True
+    return False
 
 
 # How a document joins the two ends of a period it states. An abbreviated
@@ -580,23 +706,98 @@ _FORECAST = re.compile(
     re.IGNORECASE,
 )
 
-# What a clause does to its subject. A closed vocabulary, because the point is
-# to name the relation the assertion states — "held", "fell by", "reached" —
-# and not to tag parts of speech. A clause whose relation is not named here
-# simply states no predicate, which is an honest empty.
+# What a clause DOES to its subject, as the relation a reader would name.
+# The surface verb is not comparable — one assertion is "held", another says
+# "sat", a third "reported", and all three state the same level — so the field
+# holds the relation class, and two clauses that state the same thing about
+# their subject share one. A clause whose relation is not named here states no
+# predicate, which is an honest empty.
+_PREDICATE_RELATIONS: dict[str, str] = {
+    # States a level, a measurement, or a total.
+    "held": "states_value",
+    "holds": "states_value",
+    "hold": "states_value",
+    "carried": "states_value",
+    "carries": "states_value",
+    "sat": "states_value",
+    "sits": "states_value",
+    "sit": "states_value",
+    "stood": "states_value",
+    "stands": "states_value",
+    "remained": "states_value",
+    "stayed": "states_value",
+    "reported": "states_value",
+    "reports": "states_value",
+    "showed": "states_value",
+    "shows": "states_value",
+    "found": "states_value",
+    "measured": "states_value",
+    "measures": "states_value",
+    "indicated": "states_value",
+    "indicates": "states_value",
+    "total": "states_value",
+    "totals": "states_value",
+    "equalled": "states_value",
+    "equaled": "states_value",
+    "equals": "states_value",
+    "cost": "states_value",
+    "costs": "states_value",
+    "accounts for": "states_value",
+    "represents": "states_value",
+    "was": "states_value",
+    "were": "states_value",
+    "is": "states_value",
+    "are": "states_value",
+    "has": "states_value",
+    "have": "states_value",
+    "had": "states_value",
+    # Withholds rather than holds.
+    "withheld": "withholds",
+    "withholds": "withholds",
+    # Changes the level.
+    "rose": "increased",
+    "rises": "increased",
+    "grew": "increased",
+    "grows": "increased",
+    "increased": "increased",
+    "increases": "increased",
+    "climbed": "increased",
+    "climbs": "increased",
+    "doubled": "increased",
+    "added": "increased",
+    "adds": "increased",
+    "peaked": "increased",
+    "hit": "increased",
+    "fell": "decreased",
+    "falls": "decreased",
+    "dropped": "decreased",
+    "drops": "decreased",
+    "decreased": "decreased",
+    "decreases": "decreased",
+    "halved": "decreased",
+    # Everything else keeps its own relation.
+    "estimated": "projected",
+    "estimates": "projected",
+    "projected": "projected",
+    "projects": "projected",
+    "expected": "projected",
+    "requires": "requires",
+    "required": "requires",
+    "connects": "connects",
+    "connected": "connects",
+    "uses": "uses",
+    "used": "uses",
+    "approved": "approved",
+    "approves": "approved",
+}
+
 _PREDICATE = re.compile(
     r"\b(?P<predicate>"
-    r"held|holds|hold|sat|sits|sit|stood|stands|remained|stayed|"
-    r"carried|carries|reached|reaches|rose|rises|fell|falls|"
-    r"grew|grows|increased|increases|decreased|decreases|added|adds|"
-    r"dropped|drops|climbed|climbs|doubled|halved|peaked|hit|"
-    r"withheld|withholds|reported|reports|showed|shows|found|"
-    r"measured|measures|estimated|estimates|projected|projects|"
-    r"totals?|equalled|equaled|equals|cost|costs|"
-    r"requires?|required|connects?|connected|uses?|used|approved|approves|"
-    r"accounts? for|represents?|indicated|indicates|"
-    r"was|were|is|are|has|have|had"
-    r")\b",
+    + "|".join(
+        re.escape(verb)
+        for verb in sorted(_PREDICATE_RELATIONS, key=len, reverse=True)
+    )
+    + r")\b",
     re.IGNORECASE,
 )
 
@@ -666,12 +867,33 @@ def _first_group(pattern: re.Pattern[str], clause: str) -> str:
     return " ".join(match.group(1).split())
 
 
-def _predicate(clause: str) -> str:
-    """The relation the clause states, from the closed vocabulary above."""
-    match = _PREDICATE.search(clause)
+def _predicate_match(
+    clause: str, *, anchor: re.Match[str] | None
+) -> re.Match[str] | None:
+    """The clause's relation word, read as the one nearest its measurement.
+
+    A sentence-initial noun can be spelled like a relation — "Costs rose 10
+    percent" matches ``costs`` before it matches ``rose`` — so the relation is
+    the last candidate before the clause's value or period. Without one, the
+    first candidate stands.
+    """
+    matches = list(_PREDICATE.finditer(clause))
+    if not matches:
+        return None
+    if anchor is None:
+        return matches[-1]
+    before = [match for match in matches if match.start() < anchor.start()]
+    return before[-1] if before else matches[0]
+
+
+def _predicate(
+    clause: str, *, anchor: re.Match[str] | None
+) -> str:
+    """The relation class the clause states, from the table above."""
+    match = _predicate_match(clause, anchor=anchor)
     if match is None:
         return ""
-    return " ".join(match.group("predicate").split()).casefold()
+    return _PREDICATE_RELATIONS[match.group("predicate").casefold()]
 
 
 def _subject(
@@ -780,7 +1002,8 @@ def extract_text_atoms(
         )
         value, unit = _value_and_unit(clause, period=period)
         value_match = _VALUE_UNIT_PATTERN.search(clause)
-        predicate_match = _PREDICATE.search(clause)
+        measurement = value_match or period_match
+        predicate_match = _predicate_match(clause, anchor=measurement)
         present = [
             match
             for match in (predicate_match, value_match, period_match)
@@ -806,11 +1029,7 @@ def extract_text_atoms(
                     anchor=predicate_match or value_match or period_match,
                     excluded=excluded,
                 ),
-                predicate=(
-                    predicate_match.group("predicate").casefold()
-                    if predicate_match is not None
-                    else ""
-                ),
+                predicate=_predicate(clause, anchor=measurement),
                 value=value,
                 unit=unit,
                 observation_period=period,
@@ -1001,6 +1220,7 @@ def stated_dimensions(proposition: AtomicProposition) -> frozenset[str]:
     stated = {
         name
         for name in _COMPARED_DIMENSIONS
+        if name not in _UNKNOWN_IS_NOT_A_CONFLICT
         if _canonical(getattr(proposition, name))
     }
     if _canonical_number(proposition.value):
@@ -1401,14 +1621,19 @@ async def consolidate_claims(
     clusters: list[ClaimCluster] = []
     aliases: dict[str, str] = {}
     canonical: list[Claim] = []
-    for group in groups:
+    next_seq = max(
+        (cluster.created_seq for cluster in existing), default=-1
+    ) + 1
+    for position, group in enumerate(groups):
         anchor_atom = atoms[group[0]]
         anchor_claim = (
             claims[owners[group[0]]]
             if owners[group[0]] is not None
             else None
         )
-        cluster = cluster_for_atom(anchor_atom, claim=anchor_claim)
+        cluster = cluster_for_atom(
+            anchor_atom, claim=anchor_claim, created_seq=next_seq + position
+        )
         for index in group[1:]:
             if equivalence_strength(anchor_atom, atoms[index]) == "uncertain":
                 cluster = cluster.model_copy(
@@ -1429,12 +1654,17 @@ async def consolidate_claims(
             cluster = merge_claim_clusters(
                 cluster, cluster_for_atom(atoms[index], claim=member_claim)
             )
-        # A stored cluster in this group is older than anything this pass
-        # built, so its identity and everything it persists survive.
-        for index in group:
-            source = stored_for[index]
-            if source is not None:
-                cluster = merge_claim_clusters(source, cluster)
+        # Every stored cluster in this group is older than anything this pass
+        # built, and among themselves the oldest is the one whose identity
+        # survives. Folding them in oldest-first — rather than in the order
+        # they happened to arrive — is what makes that true.
+        stored = [
+            stored_for[index]
+            for index in group
+            if stored_for[index] is not None
+        ]
+        for source in reversed(oldest_first(stored)):
+            cluster = merge_claim_clusters(source, cluster)
         if len(cluster.verdicts) > 1:
             cluster = cluster.model_copy(
                 update={

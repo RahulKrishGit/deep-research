@@ -745,7 +745,16 @@ class AtomicProposition(ContractModel):
     atomizing exists to remove.
     """
     subject: str = ""
+    """The entity the assertion is about, as a noun phrase, or empty."""
     predicate: str = ""
+    """The *relation class* the assertion states about its subject.
+
+    Not the surface verb: one assertion is written "held", another "sat", a
+    third "reported", and all three state the same level. The field holds what
+    is comparable — ``states_value``, ``increased``, ``decreased``,
+    ``withholds``, ``projected`` and so on — because its job is to be
+    compared, while the clause's own wording stays in ``text``.
+    """
     value: str = ""
     unit: str = ""
     observation_period: str = ""
@@ -785,6 +794,15 @@ class ClaimCluster(ContractModel):
 
     cluster_id: str = Field(min_length=1)
     proposition: AtomicProposition
+    created_seq: int = Field(default=0, ge=0)
+    """When this cluster's identity was first minted, as a persisted counter.
+
+    The oldest cluster is the one that survives a merge, so age cannot be
+    inferred from the order a caller happens to pass clusters in. A cluster
+    written before this field existed, or built by hand, carries zero and
+    falls back to its position in the registry — which is append-ordered,
+    because a merge keeps first-seen order.
+    """
     evidence_ids: list[str] = Field(default_factory=list)
     member_claim_ids: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
@@ -798,6 +816,14 @@ class ClaimCluster(ContractModel):
 
     A set rather than one value because members of one cluster can disagree,
     and a disagreement may never read as a settled fact.
+    """
+    verdict_evidence: dict[str, list[str]] = Field(default_factory=dict)
+    """Each verdict mapped to the citation URLs that actually recorded it.
+
+    Kept per verdict rather than as one unioned set so a reader can see which
+    sources stood behind the contradiction and which behind the verification;
+    a diagnostic that names every citation for every verdict says nothing
+    about which evidence supported which judgement.
     """
     confidence: float | None = None
     """The lowest confidence any member recorded — the conservative one."""
@@ -1074,6 +1100,16 @@ class ResearchState(ContractModel):
     """
     evidence_units: dict[str, EvidenceUnit] = Field(default_factory=dict)
     """Every exact passage admitted as evidence, keyed by ``evidence_id``."""
+    claim_clusters: dict[str, ClaimCluster] = Field(default_factory=dict)
+    """Every atomic claim cluster this session has minted, by ``cluster_id``.
+
+    Carried in state because a refinement is a *different invocation*: the
+    cluster holds the citations, passages, verdicts, and consumed identities
+    its members accumulated, and a later pass that resubmits only one new
+    claim can reconstruct the rest from this registry and nothing else. A
+    snapshot written before the registry existed carries none, and none is
+    invented for it — the empty registry is the honest value.
+    """
     evidence_dispositions: list[EvidenceDisposition] = Field(default_factory=list)
     """Why each non-admitted item was not admitted; never silently dropped."""
     boundary_audits: dict[str, BoundaryAudit] = Field(default_factory=dict)
@@ -1123,6 +1159,7 @@ class ResearchStateUpdate(TypedDict, total=False):
     unique_claim_count: int
     read_records: dict[str, ReadRecord]
     evidence_units: dict[str, EvidenceUnit]
+    claim_clusters: dict[str, ClaimCluster]
     evidence_dispositions: list[EvidenceDisposition]
     boundary_audits: dict[str, BoundaryAudit]
     acquisition_state_by_target: dict[str, AcquisitionState]
@@ -1306,6 +1343,9 @@ def merge_research_state(
     if "iteration" in update:
         raise ValueError("use advance_research_iteration to change iteration")
 
+    from deep_research.agents.claim_clusters import (  # noqa: PLC0415
+        merge_claim_cluster_registry,
+    )
     from deep_research.agents.evidence import (  # noqa: PLC0415
         merge_boundary_audits,
         merge_evidence_dispositions,
@@ -1327,6 +1367,7 @@ def merge_research_state(
         "evidence_dispositions": merge_evidence_dispositions,
         "boundary_audits": merge_boundary_audits,
         "acquisition_state_by_target": merge_acquisition_states,
+        "claim_clusters": merge_claim_cluster_registry,
     }
 
     payload = state.model_dump(mode="python")

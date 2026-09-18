@@ -8,6 +8,7 @@ import pytest
 
 from deep_research.agents import fact_checker as fact_checker_module
 from deep_research.agents.base import AgentRun
+from deep_research.agents.claim_clusters import claim_meets_support_policy
 from deep_research.agents.fact_checker import (
     DEFAULT_CLAIM_BATCH_SIZE,
     DEFAULT_CLAIM_BATCHES_PER_PASS,
@@ -430,6 +431,30 @@ def _verdict_draft(
         verdict=verdict,
         confidence=confidence,
         passages=passages,
+    )
+
+
+def _independent_pair_verdict() -> ClaimVerdictDraft:
+    """One verdict whose support is a genuine pair of independent publishers."""
+    return ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        passages=[
+            EvidencePassageDraft(
+                source_url="https://third.test/x",
+                source_title="Independent review",
+                locator="p. 1",
+                excerpt="A third party agrees.",
+                stance="supports",
+            ),
+            EvidencePassageDraft(
+                source_url="https://fourth.test/y",
+                source_title="Independent regulator",
+                locator="p. 2",
+                excerpt="The regulator recorded the same figure.",
+                stance="supports",
+            ),
+        ],
     )
 
 
@@ -2449,6 +2474,23 @@ def _obligated_draft() -> ClaimsDraft:
     )
 
 
+def _pair_decisions() -> list[object]:
+    """Two reads of two different organisations, then a judgement."""
+    return [
+        use_tool(
+            "Read the independent source before judging the claim.",
+            "web_scraper",
+            '{"url": "https://third.test/x"}',
+        ),
+        use_tool(
+            "Read a second, different organisation.",
+            "web_scraper",
+            '{"url": "https://fourth.test/y"}',
+        ),
+        finish("I have two independent sources.", "Checked."),
+    ]
+
+
 def _three_claim_decisions() -> list[object]:
     return [*_check_decisions(), *_check_decisions()]
 
@@ -2502,8 +2544,12 @@ async def test_a_batch_takes_one_claim_per_target_before_extra_slots(
 ) -> None:
     """Topic two is served in the first batch, not starved behind topic one."""
     completer = ScriptedCompleter(
-        decisions=_three_claim_decisions(),
-        outputs=[_obligated_draft(), _verdict_draft(), _verdict_draft()],
+        decisions=[*_pair_decisions(), *_pair_decisions()],
+        outputs=[
+            _obligated_draft(),
+            _independent_pair_verdict(),
+            _independent_pair_verdict(),
+        ],
     )
     agent = _checker(
         tracker,
@@ -2687,13 +2733,17 @@ async def test_a_resumed_claim_keeps_the_obligation_it_was_extracted_for(
     of being dropped by the next pass's provenance reset.
     """
     completer = ScriptedCompleter(
-        decisions=[*_three_claim_decisions(), *_check_decisions()],
+        decisions=[
+            *_pair_decisions(),
+            *_pair_decisions(),
+            *_pair_decisions(),
+        ],
         outputs=[
             _obligated_draft(),
-            _verdict_draft(),
-            _verdict_draft(),
+            _independent_pair_verdict(),
+            _independent_pair_verdict(),
             ClaimsDraft(claims=[]),
-            _verdict_draft(),
+            _independent_pair_verdict(),
         ],
     )
     agent = _checker(
@@ -2940,3 +2990,155 @@ async def test_a_run_reports_deferred_overflow_as_pending(
     completed = outcome.state_update["events"][-1]
     assert completed.metadata["pending_claim_count"] == 2
     assert completed.metadata["deferred_claim_count"] == 1
+
+
+def test_the_drain_admits_at_most_one_window_per_pass(
+    tracker: Tracker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound binds across passes, and the rest stays deferred."""
+    monkeypatch.setattr(fact_checker_module, "MAX_PENDING_CLAIMS", 2)
+    agent = _checker(tracker, ScriptedCompleter())
+    drafts = _pending_drafts(5)
+
+    agent._remember_pending(drafts)
+
+    assert [draft.text for draft in agent._continuation] == [
+        draft.text for draft in drafts[:2]
+    ]
+    assert [draft.text for draft in agent._deferred] == [
+        draft.text for draft in drafts[2:]
+    ]
+
+    first = agent._drain_continuation()
+
+    assert [draft.text for draft in first] == [
+        draft.text for draft in drafts[:2]
+    ]
+    # The remainder is still deferred, in order, and not activated.
+    assert [draft.text for draft in agent._deferred] == [
+        draft.text for draft in drafts[2:]
+    ]
+
+    second = agent._drain_continuation()
+
+    assert [draft.text for draft in second] == [
+        draft.text for draft in drafts[2:4]
+    ]
+    assert [draft.text for draft in agent._deferred] == [drafts[4].text]
+
+
+# --------------------------------------------------------------------------
+# Support policy is a real constraint
+# --------------------------------------------------------------------------
+
+
+def test_an_independent_pair_needs_two_independent_supporting_publishers() -> None:
+    """An insufficient claim cannot retain an ``independent_pair`` target."""
+    assert not claim_meets_support_policy(
+        support_policy="independent_pair",
+        verdict="insufficient_evidence",
+        supporting_publishers=2,
+    )
+    assert not claim_meets_support_policy(
+        support_policy="independent_pair",
+        verdict="unverified",
+        supporting_publishers=2,
+    )
+    # The control: a genuinely independent pair holds.
+    assert claim_meets_support_policy(
+        support_policy="independent_pair",
+        verdict="verified",
+        supporting_publishers=2,
+    )
+    # One supporting publisher is one source, not a pair.
+    assert not claim_meets_support_policy(
+        support_policy="independent_pair",
+        verdict="verified",
+        supporting_publishers=1,
+    )
+
+
+def test_a_contradicted_claim_earns_no_target_under_any_policy() -> None:
+    for policy in (
+        "independent_pair",
+        "primary_attribution",
+        "derivation",
+    ):
+        assert not claim_meets_support_policy(
+            support_policy=policy,
+            verdict="contradicted",
+            supporting_publishers=3,
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_insufficient_claim_retains_no_target(tracker: Tracker) -> None:
+    """End to end: the policy gate runs on the adjudicated claim."""
+    completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[
+            _obligated_draft(),
+            _verdict_draft(
+                verdict="insufficient_evidence",
+                confidence=0.0,
+                passages=[],
+            ),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [search_response(url="https://third.test/x")]
+            ),
+        ),
+        max_claims=1,
+        batches_per_pass=1,
+    )
+    state = _obligated_state()
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [claim.verdict for claim in outcome.result.claims] == [
+        "insufficient_evidence"
+    ]
+    assert outcome.result.claims[0].target_ids == []
+
+
+@pytest.mark.asyncio
+async def test_a_verified_independent_pair_retains_its_target(
+    tracker: Tracker,
+) -> None:
+    """The control: a claim that genuinely answers the target keeps it."""
+    completer = ScriptedCompleter(
+        decisions=_pair_decisions(),
+        outputs=[_obligated_draft(), _independent_pair_verdict()],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [
+                    search_response(url="https://third.test/x"),
+                    search_response(url="https://fourth.test/y"),
+                ]
+            ),
+        ),
+        max_claims=1,
+        batches_per_pass=1,
+    )
+    state = _obligated_state()
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [claim.verdict for claim in outcome.result.claims] == ["verified"]
+    assert outcome.result.claims[0].target_ids == ["target-1"]

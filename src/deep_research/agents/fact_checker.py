@@ -26,6 +26,7 @@ from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.claim_clusters import (
     LEGACY_COVERAGE_DIMENSION,
     atom_answers_target,
+    claim_meets_support_policy,
     critical_target_ids,
     extract_text_atoms,
     select_claim_batch_indices,
@@ -161,6 +162,12 @@ class ClaimTask(AgentTask):
     consumed_finding_fingerprints: list[str] = []
     consumed_coverage_ids: list[str] = []
     target_ids: list[str] = []
+    target_policies: dict[str, str] = Field(default_factory=dict)
+    """The support policy of each target this claim reached for.
+
+    Carried so the policy is enforced *after* adjudication, when the evidence
+    the claim actually rests on exists.
+    """
 
 
 class ClaimAttribution(ContractModel):
@@ -169,6 +176,7 @@ class ClaimAttribution(ContractModel):
     consumed_finding_fingerprints: list[str] = []
     consumed_coverage_ids: list[str] = []
     target_ids: list[str] = []
+    target_policies: dict[str, str] = Field(default_factory=dict)
 
 
 class PendingClaim(ContractModel):
@@ -431,6 +439,7 @@ def claim_attribution(
     )
     atoms = extract_text_atoms(draft.text)
     obligations: list[str] = []
+    policies: dict[str, str] = {}
     for finding in _attributed_findings(draft, findings=findings).values():
         for target in targets.get(_collapsed(finding.related_sub_topic), ()):
             if any(
@@ -438,10 +447,14 @@ def claim_attribution(
                 for atom in atoms
             ):
                 _append_unique(obligations, target.target_id)
+                policies.setdefault(target.target_id, target.support_policy)
     return ClaimAttribution(
         consumed_finding_fingerprints=fingerprints,
         consumed_coverage_ids=consumed_coverage,
         target_ids=obligations,
+        target_policies={
+            target_id: policies[target_id] for target_id in obligations
+        },
     )
 
 
@@ -724,6 +737,45 @@ def retrieved_source_urls(run: ReActRun) -> list[str]:
             if url not in found:
                 found.append(url)
     return found
+
+
+def supporting_publisher_count(claim: Claim) -> int:
+    """How many distinct publishers support this claim's own verdict.
+
+    One publisher is one source however many passages it supplies, so a pair
+    of passages from the same domain is not the independent pair a
+    ``independent_pair`` target requires.
+    """
+    return len(
+        {
+            publisher_identity(passage.source_url).casefold()
+            for passage in claim.verification_evidence
+            if passage.stance == "supports"
+        }
+    )
+
+
+def admitted_target_ids(claim: Claim, policies: Mapping[str, str]) -> list[str]:
+    """The target ids this *adjudicated* claim still answers.
+
+    The support policy is a constraint on evidence that exists, so it is
+    applied here rather than at extraction: a claim credited with an
+    obligation before it was judged can be found insufficient and keep the
+    obligation anyway. A target whose policy the claim does not meet loses the
+    credit, which is the conservative direction — the obligation stays
+    outstanding instead of being marked answered by evidence that never
+    supported it.
+    """
+    publishers = supporting_publisher_count(claim)
+    return [
+        target_id
+        for target_id in claim.target_ids
+        if claim_meets_support_policy(
+            support_policy=policies.get(target_id, "independent_pair"),
+            verdict=claim.verdict,
+            supporting_publishers=publishers,
+        )
+    ]
 
 
 def claimed_domains_for(source_urls: Sequence[str]) -> list[str]:
@@ -1455,6 +1507,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             ),
             consumed_coverage_ids=attribution.consumed_coverage_ids,
             target_ids=attribution.target_ids,
+            target_policies=attribution.target_policies,
         )
 
     def _obligations_for(self, draft: ClaimDraft) -> list[str]:
@@ -1484,18 +1537,22 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         }
 
     def _drain_continuation(self) -> list[ClaimDraft]:
-        """Take every deferred claim this pass resumes, and remember its identity.
+        """Admit at most one window of deferred work, and leave the rest deferred.
 
-        The window drains first and the persisted overflow after it, so the
-        order the claims were extracted in survives the split.
+        The bound is on the pool a pass actively works, not on what the agent
+        remembers: draining the whole deferred list would activate every claim
+        at once and the window would bound nothing. The remainder keeps its
+        order and stays persisted until a later pass admits it.
         """
-        resumed = [*self._continuation, *self._deferred]
+        window, deferred = partition_pending_claims(
+            [*self._continuation, *self._deferred]
+        )
         self._continuation = []
-        self._deferred = []
+        self._deferred = deferred
         self._resumed_fingerprints = {
-            claim_fingerprint(draft.text) for draft in resumed
+            claim_fingerprint(draft.text) for draft in window
         }
-        return resumed
+        return window
 
     def _remember_pending(self, drafts: Sequence[ClaimDraft]) -> None:
         """Persist this pass's leftover work inside the explicit bound."""
@@ -1637,15 +1694,22 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             retrieved_urls, claimed_domains=task.claimed_domains
         )
         if not independent:
+            claim = insufficient_claim(
+                task.claim,
+                reason="no_independent_source",
+                consumed_finding_fingerprints=(
+                    task.consumed_finding_fingerprints
+                ),
+                consumed_coverage_ids=task.consumed_coverage_ids,
+                target_ids=task.target_ids,
+            )
             return (
-                insufficient_claim(
-                    task.claim,
-                    reason="no_independent_source",
-                    consumed_finding_fingerprints=(
-                        task.consumed_finding_fingerprints
-                    ),
-                    consumed_coverage_ids=task.consumed_coverage_ids,
-                    target_ids=task.target_ids,
+                claim.model_copy(
+                    update={
+                        "target_ids": admitted_target_ids(
+                            claim, task.target_policies
+                        )
+                    }
                 ),
                 "no_independent_source",
                 [],
@@ -1674,19 +1738,26 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 True,
             )
 
+        claim = build_claim(
+            task.claim,
+            draft,
+            independent=independent,
+            retrieved_urls=retrieved_urls,
+            upstream_read_urls=self._upstream_read_urls,
+            claimed_publishers=task.claimed_domains,
+            consumed_finding_fingerprints=(
+                task.consumed_finding_fingerprints
+            ),
+            consumed_coverage_ids=task.consumed_coverage_ids,
+            target_ids=task.target_ids,
+        )
         return (
-            build_claim(
-                task.claim,
-                draft,
-                independent=independent,
-                retrieved_urls=retrieved_urls,
-                upstream_read_urls=self._upstream_read_urls,
-                claimed_publishers=task.claimed_domains,
-                consumed_finding_fingerprints=(
-                    task.consumed_finding_fingerprints
-                ),
-                consumed_coverage_ids=task.consumed_coverage_ids,
-                target_ids=task.target_ids,
+            claim.model_copy(
+                update={
+                    "target_ids": admitted_target_ids(
+                        claim, task.target_policies
+                    )
+                }
             ),
             None,
             [],
@@ -1806,19 +1877,26 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 await self.extract_claims(state)
             )
             errors.extend(extraction_errors)
-            pool = _unique_drafts([*resumed, *drafts])
+            # The pool a pass activates is bounded. ``ClaimsDraft.claims`` is
+            # not, so the extracted set can be any size; what a pass takes on
+            # is at most one window, and the rest is persisted as deferred for
+            # a later pass rather than admitted all at once.
+            pool, deferred_now = partition_pending_claims(
+                _unique_drafts([*resumed, *drafts])
+            )
             span.set_outputs(
                 {
                     "agent_name": self.name,
                     "phase": "extraction",
-                    "claim_count": len(pool),
+                    "claim_count": len(pool) + len(deferred_now),
+                    "admitted_claim_count": len(pool),
                     "resumed_claim_count": len(resumed),
                     "provider_failed": extraction_failed,
                 }
             )
         events.append(
             claims_extracted_event(
-                claim_count=len(pool),
+                claim_count=len(pool) + len(deferred_now),
                 findings_considered=len(state.raw_findings),
                 sources_considered=len(state.evaluated_sources),
             )
@@ -1924,12 +2002,15 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             for draft in pool
             if claim_fingerprint(draft.text) not in adjudicated
         ]
-        self._remember_pending(pending)
+        # Everything this pass did not adjudicate is persisted: what it
+        # admitted and did not reach, then what it never admitted.
+        remaining = [*pending, *deferred_now]
+        self._remember_pending(remaining)
         deferred_count = len(self._deferred)
-        if pending:
+        if remaining:
             events.append(
                 claims_pending_event(
-                    pending,
+                    remaining,
                     batches_run=batches_run,
                     claim_batch_size=self._max_claims,
                     claim_batches_per_pass=self._batches_per_pass,
@@ -1951,7 +2032,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 claim_batch_size=self._max_claims,
                 claim_batches_per_pass=self._batches_per_pass,
                 batches_run=batches_run,
-                pending_claim_count=len(pending),
+                pending_claim_count=len(remaining),
                 deferred_claim_count=deferred_count,
             )
         )

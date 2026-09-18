@@ -31,6 +31,7 @@ from deep_research.agents.claim_clusters import (
     equivalence_messages,
     equivalence_strength,
     extract_atoms,
+    merge_claim_cluster_registry,
     merge_claim_clusters,
     metadata_dimension_asked_for,
     reverification_cache_key,
@@ -46,10 +47,12 @@ from deep_research.providers import (
 from deep_research.utils.types import (
     AtomicProposition,
     Claim,
+    ClaimCluster,
     EvidencePassage,
     EvidenceUnit,
     ResearchState,
     SubTopic,
+    merge_research_state,
 )
 from tests.agent_fakes import ScriptedCompleter
 
@@ -191,6 +194,285 @@ def test_a_negated_proposition_is_not_compatible() -> None:
     b = _queue_proposition(negated=True)
 
     assert not atomic_compatible(a, b)
+
+
+def test_a_different_subject_is_not_compatible() -> None:
+    """A different entity is a different assertion, however alike the rest is.
+
+    The reviewer's probe: "Revenue rose 10 percent in 2024" and "Costs rose 10
+    percent in 2024" agree on every dimension the contract compared once
+    subject was treated as wording, and merged into one settled fact.
+    """
+    revenue = _claim("Revenue rose 10 percent in 2024.", claim_id="claim-rev")
+    costs = _claim("Costs rose 10 percent in 2024.", claim_id="claim-cost")
+
+    (revenue_atom,) = extract_atoms(revenue)
+    (costs_atom,) = extract_atoms(costs)
+
+    assert revenue_atom.subject == "Revenue"
+    assert costs_atom.subject == "Costs"
+    assert not atomic_compatible(revenue_atom, costs_atom)
+
+
+def test_a_different_predicate_is_not_compatible() -> None:
+    rose = _claim("The queue rose 10 percent in 2024.", claim_id="claim-rose")
+    fell = _claim("The queue fell 10 percent in 2024.", claim_id="claim-fell")
+
+    (rose_atom,) = extract_atoms(rose)
+    (fell_atom,) = extract_atoms(fell)
+
+    assert rose_atom.predicate == "increased"
+    assert fell_atom.predicate == "decreased"
+    assert not atomic_compatible(rose_atom, fell_atom)
+
+
+def test_an_unknown_subject_or_predicate_is_never_a_conflict() -> None:
+    """An unpopulated qualifier is unknown, not different."""
+    stated = _queue_proposition()
+    unknown_subject = _queue_proposition(subject="")
+    unknown_predicate = _queue_proposition(predicate="")
+
+    assert atomic_compatible(stated, unknown_subject)
+    assert atomic_compatible(stated, unknown_predicate)
+    assert atomic_compatible(unknown_subject, unknown_predicate)
+
+
+def test_an_identical_subject_and_predicate_still_merges() -> None:
+    """The control: strictness about entities must not block one entity."""
+    a = _queue_proposition(
+        text="The interconnection queue held 10 GW in 2024.",
+        subject="interconnection queue",
+        predicate="held",
+    )
+    b = _queue_proposition(
+        text="In 2024 the interconnection queue held 10 GW.",
+        subject="interconnection queue",
+        predicate="held",
+    )
+
+    assert atomic_compatible(a, b)
+
+
+def _stored_cluster(claim_id: str, created_seq: int) -> ClaimCluster:
+    """One already-minted cluster, anchored on a claim of the paraphrase set."""
+    texts = {
+        "claim-a": TEXT_A,
+        "claim-b": TEXT_B,
+        "claim-c": TEXT_C,
+    }
+    urls = {
+        "claim-a": QUEUE_A,
+        "claim-b": QUEUE_B,
+        "claim-c": "https://c.test/queue",
+    }
+    claim = _claim(
+        texts[claim_id],
+        claim_id=claim_id,
+        source_urls=[urls[claim_id]],
+        verification_evidence=[_passage(urls[claim_id], texts[claim_id])],
+    )
+    (atom,) = extract_atoms(claim)
+    return cluster_for_atom(atom, claim=claim, created_seq=created_seq)
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_distinct_entities_never_become_one_settled_claim() -> None:
+    """End to end: the probe's false merge can no longer happen."""
+    claims = [
+        _claim("Revenue rose 10 percent in 2024.", claim_id="claim-rev"),
+        _claim("Costs rose 10 percent in 2024.", claim_id="claim-cost"),
+    ]
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
+
+    consolidation = await consolidate_claims(completer, claims)
+
+    assert len(consolidation.claims) == 2
+    assert consolidation.diagnostics == [
+        "equivalence_candidate_incompatible:1:2"
+    ]
+
+
+def test_a_stored_cluster_records_when_it_was_minted() -> None:
+    """Age is persisted, not inferred from whatever order a caller passes."""
+    older = _stored_cluster("claim-a", 1)
+    newer = _stored_cluster("claim-b", 5)
+
+    assert older.created_seq == 1
+    assert newer.created_seq == 5
+    assert merge_claim_clusters(newer, older).created_seq == 1
+
+
+@pytest.mark.asyncio
+async def test_the_oldest_stored_cluster_id_survives_a_merge() -> None:
+    """The brief's invariant: the OLDEST stable id is the one that survives."""
+    older = _stored_cluster("claim-a", 1)
+    newer = _stored_cluster("claim-b", 5)
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]),
+        [],
+        existing=[older, newer],
+    )
+
+    assert len(consolidation.clusters) == 1
+    (cluster,) = consolidation.clusters
+    assert cluster.cluster_id == older.cluster_id
+    assert cluster.cluster_aliases == [newer.cluster_id]
+    assert consolidation.aliases == {newer.cluster_id: older.cluster_id}
+
+
+@pytest.mark.asyncio
+async def test_the_oldest_survives_regardless_of_arrival_order(
+) -> None:
+    older = _stored_cluster("claim-a", 1)
+    newer = _stored_cluster("claim-b", 5)
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((2, 1))]),
+        [],
+        existing=[newer, older],
+    )
+
+    (cluster,) = consolidation.clusters
+    assert cluster.cluster_id == older.cluster_id
+
+
+@pytest.mark.asyncio
+async def test_three_stored_clusters_keep_the_oldest_and_alias_the_rest() -> None:
+    oldest = _stored_cluster("claim-a", 1)
+    middle = _stored_cluster("claim-b", 4)
+    newest = _stored_cluster("claim-c", 9)
+
+    consolidation = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((3, 1), (1, 2))]),
+        [],
+        existing=[newest, middle, oldest],
+    )
+
+    (cluster,) = consolidation.clusters
+    assert cluster.cluster_id == oldest.cluster_id
+    assert cluster.cluster_aliases == sorted(
+        {middle.cluster_id, newest.cluster_id}
+    )
+    assert consolidation.aliases == {
+        middle.cluster_id: oldest.cluster_id,
+        newest.cluster_id: oldest.cluster_id,
+    }
+
+
+# --------------------------------------------------------------------------
+# The registry: clusters persist, so a refinement is a different invocation
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_cluster_registry_survives_a_state_round_trip() -> None:
+    """A refinement is another invocation, so the state has to carry them."""
+    claims, evidence = _mergeable_claims()
+    first = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]), claims, evidence=evidence
+    )
+    (stored,) = first.clusters
+
+    state = merge_research_state(
+        ResearchState(session_id="session-1", original_question="How fast?"),
+        {"claim_clusters": {stored.cluster_id: stored}},
+    )
+    reloaded = ResearchState.model_validate_json(state.model_dump_json())
+
+    assert set(reloaded.claim_clusters) == {stored.cluster_id}
+    carried = reloaded.claim_clusters[stored.cluster_id]
+    assert carried.source_urls == sorted({QUEUE_A, QUEUE_B})
+    assert carried.member_claim_ids == ["claim-a", "claim-b"]
+
+    third = _claim(
+        "The 2024 interconnection queue reported 10 GW of capacity.",
+        claim_id="claim-c",
+        source_urls=["https://c.test/queue"],
+    )
+    refined = await consolidate_claims(
+        ScriptedCompleter(outputs=[_pairs((1, 2))]),
+        [third],
+        existing=list(reloaded.claim_clusters.values()),
+        evidence=evidence,
+    )
+
+    assert refined.clusters[0].cluster_id == stored.cluster_id
+    assert refined.claims[0].source_urls == sorted(
+        {QUEUE_A, QUEUE_B, "https://c.test/queue"}
+    )
+    assert refined.claims[0].cluster_id == stored.cluster_id
+
+
+def test_a_snapshot_written_before_the_registry_still_loads() -> None:
+    """No cluster is invented for a snapshot that recorded none."""
+    payload = {
+        "session_id": "session-1",
+        "original_question": "How fast?",
+    }
+
+    state = ResearchState.model_validate(payload)
+
+    assert state.claim_clusters == {}
+
+
+def test_a_cluster_registry_merge_unions_one_id_and_refuses_a_reanchor() -> None:
+    cluster = _stored_cluster("claim-a", 1)
+    grown = cluster.model_copy(
+        update={
+            "member_claim_ids": ["claim-a", "claim-b"],
+            "source_urls": [*cluster.source_urls, "https://b.test/queue"],
+        }
+    )
+
+    merged = merge_claim_cluster_registry(
+        {cluster.cluster_id: cluster}, {cluster.cluster_id: grown}
+    )
+
+    assert merged[cluster.cluster_id].member_claim_ids == [
+        "claim-a",
+        "claim-b",
+    ]
+
+    forged = cluster.model_copy(
+        update={
+            "proposition": _queue_proposition(
+                text="A wholly different assertion about something else."
+            )
+        }
+    )
+    with pytest.raises(ValueError):
+        merge_claim_cluster_registry(
+            {cluster.cluster_id: cluster}, {cluster.cluster_id: forged}
+        )
+
+
+@pytest.mark.asyncio
+async def test_each_verdict_records_the_evidence_behind_it() -> None:
+    """Which sources stood behind the contradiction, and which behind the rest."""
+    claims = [
+        _claim(TEXT_A, claim_id="claim-a", source_urls=[QUEUE_A]),
+        _claim(
+            TEXT_B,
+            claim_id="claim-b",
+            source_urls=[QUEUE_B],
+            verdict="contradicted",
+        ),
+    ]
+    completer = ScriptedCompleter(outputs=[_pairs((1, 2))])
+
+    consolidation = await consolidate_claims(completer, claims)
+
+    (cluster,) = consolidation.clusters
+    assert cluster.verdict_evidence == {
+        "contradicted": [QUEUE_B],
+        "verified": [QUEUE_A],
+    }
+    assert cluster.diagnostics == [
+        f"cluster_verdict_disagreement:contradicted:{QUEUE_B}",
+        f"cluster_verdict_disagreement:verified:{QUEUE_A}",
+    ]
 
 
 def test_a_units_spelling_is_normalized_but_its_scale_is_not() -> None:
@@ -630,6 +912,7 @@ QUEUE_A = "https://a.test/queue"
 QUEUE_B = "https://b.test/queue"
 TEXT_A = "The 2024 interconnection queue held 10 GW of capacity."
 TEXT_B = "10 GW sat in the 2024 interconnection queue."
+TEXT_C = "The 2024 interconnection queue reported 10 GW of capacity."
 
 
 def _mergeable_claims() -> tuple[list[Claim], list[EvidenceUnit]]:
@@ -906,7 +1189,7 @@ async def test_a_refinement_reuses_the_stored_cluster_identity() -> None:
     )
     stored = first.clusters[0]
     third = _claim(
-        "The 2024 queue reported 10 GW of capacity.",
+        "The 2024 interconnection queue reported 10 GW of capacity.",
         claim_id="claim-c",
         source_urls=["https://c.test/queue"],
     )
@@ -943,7 +1226,7 @@ async def test_a_later_pass_adding_only_c_keeps_the_stored_citations() -> None:
     stored = first.clusters[0]
     assert stored.source_urls == sorted({QUEUE_A, QUEUE_B})
     third = _claim(
-        "The 2024 queue reported 10 GW of capacity.",
+        "The 2024 interconnection queue reported 10 GW of capacity.",
         claim_id="claim-c",
         source_urls=["https://c.test/queue"],
         verification_evidence=[_passage("https://c.test/queue", "10 GW in 2024.")],
@@ -989,14 +1272,15 @@ async def test_a_cluster_whose_members_disagree_never_settles_verified() -> None
     assert consolidation.claims[0].verdict != "verified"
     assert cluster.status == "contested"
     assert cluster.verdicts == ["contradicted", "verified"]
-    # Both verdicts are recorded, each with the evidence standing behind the
-    # cluster — one cluster is one assertion, so its citations are the set the
-    # disagreement is over.
+    # Each verdict is recorded with the evidence that actually supported it, so
+    # a reader can see which sources stood behind the contradiction.
+    assert cluster.verdict_evidence == {
+        "contradicted": [QUEUE_B],
+        "verified": [QUEUE_A],
+    }
     assert cluster.diagnostics == [
-        "cluster_verdict_disagreement:contradicted:"
-        "https://a.test/queue,https://b.test/queue",
-        "cluster_verdict_disagreement:verified:"
-        "https://a.test/queue,https://b.test/queue",
+        f"cluster_verdict_disagreement:contradicted:{QUEUE_B}",
+        f"cluster_verdict_disagreement:verified:{QUEUE_A}",
     ]
 
 
@@ -1074,7 +1358,7 @@ def test_extraction_populates_the_subject_and_predicate() -> None:
     (atom,) = extract_atoms(claim)
 
     assert atom.subject == "interconnection queue"
-    assert atom.predicate == "held"
+    assert atom.predicate == "states_value"
 
 
 def test_extraction_reads_a_sentence_initial_attribution() -> None:

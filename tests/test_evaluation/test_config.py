@@ -482,11 +482,18 @@ CRITIC_PROMPT_FINGERPRINT = "15754f64fa12"
 # queue carries an explicit bound with its overflow persisted rather than
 # deleted. Module-source moves once more, with no prompt string edited — the
 # other five values and the Judge pin are unchanged.
+# Task 5's fix round 2 moved it again, ``b57cabd4699d`` -> ``a9cad9387b6e``:
+# the support policy is now enforced on the adjudicated claim
+# (``admitted_target_ids`` / ``supporting_publisher_count``), the active pool
+# one pass admits respects the continuation bound, and the claim cluster
+# registry is persisted through ``ResearchState``. Module-source moves again
+# with no prompt string edited; the other five values and the Judge pin are
+# unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "599c78243c9e",
     "researcher": "fdc2bc2e8d48",
     "source_evaluator": "674593415225",
-    "fact_checker": "b57cabd4699d",
+    "fact_checker": "a9cad9387b6e",
     "synthesizer": "cccb6dc91c6e",
     "critic": "15754f64fa12",
 }
