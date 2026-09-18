@@ -1052,17 +1052,129 @@ class Citation(ContractModel):
     title: str = Field(min_length=1)
 
 
+# How a reader statement stands in the report, which is a different question
+# from what the evidence behind it was adjudicated as. ``Claim.evidence_status``
+# answers "was this independently corroborated, only attributed, or contested";
+# this answers "how is it allowed to read". ``settled`` is reserved for a
+# statement whose every supporting cluster carries the strict independent pair,
+# ``attributed`` is primary-source attribution that is not corroboration,
+# ``inference`` is a locally recorded derivation that must name its premises,
+# ``contested`` states a disagreement without settling it, and ``context`` is
+# framing this pass composed rather than a research finding.
+#
+# Deliberately a separate enumeration from ``Claim.evidence_status``: reusing
+# one field for both would let a reader-statement mode be read as an
+# adjudication badge (or the reverse) with nothing to catch the mistake.
+StatementMode: TypeAlias = Literal[
+    "settled",
+    "attributed",
+    "inference",
+    "contested",
+    "context",
+]
+
+#: The modes that assert something about the world. A statement in one of
+#: these modes must resolve to selected evidence or to a checked claim; only
+#: ``context`` may be published without an evidence link.
+SUBSTANTIVE_STATEMENT_MODES: tuple[StatementMode, ...] = (
+    "settled",
+    "attributed",
+    "inference",
+    "contested",
+)
+
+
+class ReportStatement(ContractModel):
+    """One reader statement, with the evidence mapping that makes it auditable.
+
+    Every substantive sentence the reader report prints is one of these: the
+    text, the mode it is allowed to read in, the claim clusters it rests on,
+    the exact selected evidence ids behind it, the targets and required
+    dimensions it answers, and — for a derivation — the ``basis`` that states
+    its premises. A statement in a substantive mode with no evidence link is
+    invalid, which is what makes "factual prose outside this mapping" a
+    validation failure rather than a style problem.
+
+    ``basis`` is a nullable project-readable explanation: the recorded
+    derivation for an ``inference`` statement, and the classification reason
+    for a ``context`` statement ("not acquired", "uncertain/conflicting",
+    "outside scope"). It is required exactly where an inference would
+    otherwise be an unstated leap.
+    """
+
+    statement_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    mode: StatementMode = "settled"
+    claim_cluster_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    answered_dimensions: list[str] = Field(default_factory=list)
+    basis: str | None = None
+
+    @property
+    def substantive(self) -> bool:
+        """True when this statement asserts something about the world."""
+        return self.mode in SUBSTANTIVE_STATEMENT_MODES
+
+    @model_validator(mode="after")
+    def validate_reader_mode(self) -> ReportStatement:
+        """An inference must name the derivation it rests on."""
+        if self.mode == "inference" and not (self.basis or "").strip():
+            raise ValueError(
+                "an inference statement requires a recorded basis: a derived "
+                "statement shows its premises"
+            )
+        return self
+
+
 class ReportPoint(ContractModel):
     """One settled statement, with the claims and sources it rests on.
 
     ``claim_ids`` and ``source_urls`` are already validated against the
     checked-claim registry by the time a point reaches a renderer; rendering
-    never validates.
+    never validates. ``statement`` is the Task 7 record that makes the point
+    auditable — the reader mode, the selected evidence ids, the targets and
+    dimensions it answers, and any recorded derivation. It is filled for every
+    point by ``ReportComposition`` when a caller (a fixture, or a snapshot
+    written before the field existed) supplies none, so a rendered point
+    always has one.
     """
 
     text: str = Field(min_length=1)
     claim_ids: list[str] = Field(default_factory=list)
     source_urls: list[str] = Field(default_factory=list)
+    statement: ReportStatement | None = None
+
+    @property
+    def statement_id(self) -> str:
+        return self.statement.statement_id if self.statement else ""
+
+    @property
+    def mode(self) -> StatementMode:
+        """The reader mode of this point, or the pre-statement default."""
+        return self.statement.mode if self.statement else "settled"
+
+    @property
+    def claim_cluster_ids(self) -> list[str]:
+        return list(self.statement.claim_cluster_ids) if self.statement else []
+
+    @property
+    def evidence_ids(self) -> list[str]:
+        return list(self.statement.evidence_ids) if self.statement else []
+
+    @property
+    def target_ids(self) -> list[str]:
+        return list(self.statement.target_ids) if self.statement else []
+
+    @property
+    def answered_dimensions(self) -> list[str]:
+        return (
+            list(self.statement.answered_dimensions) if self.statement else []
+        )
+
+    @property
+    def basis(self) -> str | None:
+        return self.statement.basis if self.statement else None
 
 
 class ReportConstraint(ReportPoint):
@@ -1071,10 +1183,145 @@ class ReportConstraint(ReportPoint):
     A constraint row is a claim-linked point like any other; the deployment
     mechanism and the geography are part of the same claim-backed row, and a
     row whose evidence does not state them says ``not stated``.
+
+    Both cells carry their own statement record. A cell is a factual
+    assertion like any other: when the evidence behind the row does not
+    support what the cell says, the cell is repaired to ``not stated`` and the
+    repair is recorded, rather than printed as provider-attested prose with no
+    provenance.
     """
 
     deployment_mechanism: str = ""
     geography: str = ""
+    mechanism_statement: ReportStatement | None = None
+    geography_statement: ReportStatement | None = None
+
+    @property
+    def mechanism_statement_id(self) -> str:
+        return (
+            self.mechanism_statement.statement_id
+            if self.mechanism_statement
+            else ""
+        )
+
+    @property
+    def geography_statement_id(self) -> str:
+        return (
+            self.geography_statement.statement_id
+            if self.geography_statement
+            else ""
+        )
+
+
+class ReportAnswerRow(ContractModel):
+    """One row of the answer-kind table, as statement-backed cells.
+
+    The cells are in column order: two labels (the subject and the dimension
+    the row is judged on, which are context rather than findings) and one
+    evidenced finding. Keeping the finding as a ``ReportStatement`` is what
+    makes a table cell as traceable as a bullet, and what lets the renderer
+    refuse a cell the evidence does not carry instead of printing it.
+    """
+
+    cells: list[ReportStatement] = Field(min_length=1)
+
+    @property
+    def statement(self) -> ReportStatement | None:
+        """The row's substantive cell — the one that asserts something."""
+        for cell in self.cells:
+            if cell.substantive:
+                return cell
+        return None
+
+    @property
+    def labels(self) -> list[ReportStatement]:
+        return [cell for cell in self.cells if not cell.substantive]
+
+
+# The atom dimensions a required dimension can be evidenced by. A statement
+# answers a target's required dimension only when the recorded proposition
+# behind it actually fills one of these atom fields: claiming a dimension the
+# evidence does not carry is the coverage defect this table exists to prevent.
+_DIMENSION_SIGNALS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        ("period", "time", "date", "year", "when", "horizon", "recency"),
+        ("observation_period", "forecast_status"),
+    ),
+    (
+        ("geography", "region", "place", "location", "country", "jurisdiction"),
+        ("geography",),
+    ),
+    (
+        (
+            "scale",
+            "magnitude",
+            "quantity",
+            "size",
+            "capacity",
+            "amount",
+            "value",
+            "rate",
+            "level",
+        ),
+        ("value", "unit"),
+    ),
+    (("population", "subject", "entity", "who"), ("subject", "population")),
+    (
+        ("mechanism", "how", "cause", "driver", "method", "instrument"),
+        ("predicate", "quantity_noun"),
+    ),
+    (("attribution", "source", "issuer", "publisher"), ("attribution",)),
+    (
+        ("share", "proportion", "percent", "denominator", "comparison"),
+        ("denominator",),
+    ),
+)
+
+
+def answered_atom_dimensions(
+    propositions: Sequence[AtomicProposition],
+) -> list[str]:
+    """The atom fields the recorded propositions fill, in signal order."""
+    filled: list[str] = []
+    for _, fields in _DIMENSION_SIGNALS:
+        if any(
+            getattr(proposition, name)
+            for name in fields
+            for proposition in propositions
+        ):
+            for name in fields:
+                if name not in filled:
+                    filled.append(name)
+    return filled
+
+
+def answered_required_dimensions(
+    dimensions: Sequence[str],
+    propositions: Sequence[AtomicProposition],
+) -> list[str]:
+    """The required dimensions this recorded evidence actually carries.
+
+    A dimension whose wording matches no recorded atom field is *not*
+    answered: an unmatched obligation is an unanswered one, and saying
+    otherwise would let a statement claim coverage it cannot show.
+    """
+    evidenced = answered_atom_dimensions(propositions)
+    answered: list[str] = []
+    for dimension in dimensions:
+        tokens = {
+            token.strip(".,:;()").casefold()
+            for token in dimension.replace("-", " ").replace("_", " ").split()
+        }
+        if not tokens:
+            continue
+        for signals, fields in _DIMENSION_SIGNALS:
+            if tokens & set(signals) and any(
+                name in evidenced for name in fields
+            ):
+                if dimension not in answered:
+                    answered.append(dimension)
+                break
+    return answered
 
 
 class ReportSection(ContractModel):
@@ -1082,6 +1329,215 @@ class ReportSection(ContractModel):
 
     title: str = Field(min_length=1)
     points: list[ReportPoint] = Field(default_factory=list)
+
+
+def statement_mode_for_claims(claims: Sequence[Claim]) -> StatementMode:
+    """The reader mode the evidence behind a statement actually supports.
+
+    ``settled`` is never granted by a verdict alone: every claim behind the
+    statement must carry the strict independent-pair badge. Anything less is
+    attribution, a disagreement is contested, and a statement resting on no
+    checked claim at all is context — this pass's own framing.
+    """
+    if not claims:
+        return "context"
+    if any(
+        claim.evidence_status == "contested" or claim.verdict == "contradicted"
+        for claim in claims
+    ):
+        return "contested"
+    if all(
+        claim.verdict == "verified" and claim.evidence_status == "verified_pair"
+        for claim in claims
+    ):
+        return "settled"
+    return "attributed"
+
+
+def required_dimensions_for_targets(
+    composition: ReportComposition,
+    target_ids: Sequence[str],
+) -> list[str]:
+    """The required dimensions the named targets carry, in plan order."""
+    wanted = set(target_ids)
+    dimensions: list[str] = []
+    for topic in composition.sub_topics:
+        for target in topic.evidence_targets:
+            if target.target_id not in wanted:
+                continue
+            for dimension in target.required_dimensions:
+                if dimension not in dimensions:
+                    dimensions.append(dimension)
+    return dimensions
+
+
+def _cluster_ids_for_claim(
+    claim: Claim,
+    clusters: Mapping[str, ClaimCluster],
+) -> list[str]:
+    """Every cluster id this claim resolves to, through its aliases or its membership.
+
+    Resolved in both directions on purpose: a claim records the cluster it
+    joined, and a cluster records the claims it absorbed. A refinement that
+    persisted only one side still resolves.
+    """
+    ids: list[str] = []
+    for candidate in (claim.cluster_id, *claim.cluster_aliases):
+        if candidate and candidate in clusters and candidate not in ids:
+            ids.append(candidate)
+    for cluster_id, cluster in clusters.items():
+        if cluster_id in ids:
+            continue
+        if claim.claim_id in cluster.member_claim_ids:
+            ids.append(cluster_id)
+    return ids
+
+
+def statement_for_point(
+    composition: ReportComposition,
+    point: ReportPoint,
+    *,
+    statement_id: str,
+) -> ReportStatement:
+    """The record behind one point, derived from the evidence it names.
+
+    Used both by the Synthesizer, which validates a draft into these records,
+    and by the composition itself, which fills one in for a point that was
+    built by hand or written before this contract existed. Every id that can
+    be resolved locally is carried; nothing is invented, so an unresolvable
+    point comes out with empty ids and is caught by the mapping validator.
+    """
+    claims_by_id = {claim.claim_id: claim for claim in composition.claims}
+    claims = [
+        claims_by_id[claim_id]
+        for claim_id in point.claim_ids
+        if claim_id in claims_by_id
+    ]
+    cluster_ids: list[str] = []
+    for claim in claims:
+        for cluster_id in _cluster_ids_for_claim(claim, composition.claim_clusters):
+            if cluster_id not in cluster_ids:
+                cluster_ids.append(cluster_id)
+    evidence_ids: list[str] = []
+    for cluster_id in cluster_ids:
+        for evidence_id in composition.claim_clusters[cluster_id].evidence_ids:
+            if (
+                evidence_id in composition.evidence_units
+                and evidence_id not in evidence_ids
+            ):
+                evidence_ids.append(evidence_id)
+    for claim in claims:
+        for evidence_id in claim.evidence_selection.values():
+            if (
+                evidence_id in composition.evidence_units
+                and evidence_id not in evidence_ids
+            ):
+                evidence_ids.append(evidence_id)
+    target_ids: list[str] = []
+    for claim in claims:
+        for target_id in claim.target_ids:
+            if target_id not in target_ids:
+                target_ids.append(target_id)
+    for cluster_id in cluster_ids:
+        for target_id in composition.claim_clusters[cluster_id].target_ids:
+            if target_id not in target_ids:
+                target_ids.append(target_id)
+    propositions = [
+        composition.claim_clusters[cluster_id].proposition
+        for cluster_id in cluster_ids
+    ]
+    return ReportStatement(
+        statement_id=statement_id,
+        text=point.text,
+        mode=statement_mode_for_claims(claims),
+        claim_cluster_ids=cluster_ids,
+        evidence_ids=evidence_ids,
+        target_ids=target_ids,
+        answered_dimensions=answered_required_dimensions(
+            required_dimensions_for_targets(composition, target_ids),
+            propositions,
+        ),
+    )
+
+
+def _fill_statement_map(composition: ReportComposition) -> None:
+    """Give every rendered statement a record, without disturbing one.
+
+    A statement the producer already built is kept exactly as it was: this is
+    the compatibility path for a fixture or an older snapshot, and rewriting
+    a record the Synthesizer validated would silently discard the mode,
+    derivation, and dispositions it recorded.
+    """
+    counters = {"S": 0, "C": 0, "F": 0, "A": 0, "U": 0}
+
+    def next_id(prefix: str) -> str:
+        counters[prefix] += 1
+        return f"{prefix}{counters[prefix]:03d}"
+
+    def fill_point(point: ReportPoint, prefix: str) -> ReportPoint:
+        if point.statement is not None:
+            return point
+        return point.model_copy(
+            update={
+                "statement": statement_for_point(
+                    composition, point, statement_id=next_id(prefix)
+                )
+            }
+        )
+
+    composition.summary = [
+        fill_point(point, "S") for point in composition.summary
+    ]
+    filled_constraints: list[ReportConstraint] = []
+    for row in composition.constraints:
+        row = fill_point(row, "C")
+        cells: dict[str, ReportStatement] = {}
+        for field_name, cell_text in (
+            ("mechanism_statement", row.deployment_mechanism),
+            ("geography_statement", row.geography),
+        ):
+            existing = getattr(row, field_name)
+            if existing is not None:
+                continue
+            cells[field_name] = ReportStatement(
+                statement_id=next_id("C"),
+                text=cell_text.strip() or "not stated",
+                mode="attributed" if cell_text.strip() else "context",
+                claim_cluster_ids=list(row.claim_cluster_ids),
+                evidence_ids=list(row.evidence_ids),
+                target_ids=list(row.target_ids),
+                answered_dimensions=list(row.answered_dimensions),
+                basis=(
+                    "cell carried by the row's evidence"
+                    if cell_text.strip()
+                    else "the row's evidence does not state this cell"
+                ),
+            )
+        filled_constraints.append(
+            row.model_copy(update=cells) if cells else row
+        )
+    composition.constraints = filled_constraints
+    composition.sections = [
+        section.model_copy(
+            update={
+                "points": [
+                    fill_point(point, "F") for point in section.points
+                ]
+            }
+        )
+        for section in composition.sections
+    ]
+    if not composition.uncertainty_statements:
+        composition.uncertainty_statements = [
+            ReportStatement(
+                statement_id=next_id("U"),
+                text=note,
+                mode="context",
+                basis="uncertainty note carried by this pass",
+            )
+            for note in composition.uncertainty_notes
+            if note.strip()
+        ]
 
 
 class ReportComposition(ContractModel):
@@ -1099,6 +1555,13 @@ class ReportComposition(ContractModel):
     rather than at module scope: ``agents.identity`` imports this module, so
     a module-level import would be a cycle, and a validator only ever runs
     once every module is loaded.
+
+    ``answer_kind``, ``generated_on``, ``date_basis`` and
+    ``requested_word_limit`` are the frozen contract's values, copied here so
+    a renderer never has to re-derive them. ``claim_clusters`` and
+    ``evidence_units`` are the registries that turn a statement's evidence ids
+    into citations. All of them are optional so a fixture or a snapshot
+    written before this contract still composes, in the shape it always had.
     """
 
     question: str = Field(min_length=1)
@@ -1122,6 +1585,25 @@ class ReportComposition(ContractModel):
     uncertainty_notes: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
     """Drafted content this pass refused, as project-generated reasons."""
+    answer_kind: AnswerKind | None = None
+    """The frozen answer form, or ``None`` for a legacy composition."""
+    answer_rows: list[ReportAnswerRow] = Field(default_factory=list)
+    """The answer-kind table's rows, for every form but ``constraints``."""
+    uncertainty_statements: list[ReportStatement] = Field(
+        default_factory=list
+    )
+    """Statement-backed uncertainty prose, grouped by its recorded basis."""
+    claim_clusters: dict[str, ClaimCluster] = Field(default_factory=dict)
+    evidence_units: dict[str, EvidenceUnit] = Field(default_factory=dict)
+    statement_dispositions: list[str] = Field(default_factory=list)
+    """Enumerated dispositions for statements this pass refused or repaired."""
+    returned_to_fact_checker: list[str] = Field(default_factory=list)
+    """New factual assertions this pass detected; Task 9 owns the routing."""
+    generated_on: str = ""
+    """The frozen run date, which is not the date of the evidence."""
+    date_basis: str = ""
+    """Which date the question is actually about; see AnswerContract."""
+    requested_word_limit: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def canonicalize_evidence(self) -> ReportComposition:
@@ -1132,7 +1614,45 @@ class ReportComposition(ContractModel):
 
         self.sources = merge_source_snapshot([], self.sources)
         self.claims = merge_claim_snapshot([], self.claims)
+        _fill_statement_map(self)
         return self
+
+    @property
+    def statements(self) -> list[ReportStatement]:
+        """Every statement this composition renders, in render order."""
+        rows: list[ReportStatement] = []
+        for point in [*self.summary, *self.constraints]:
+            if point.statement is not None:
+                rows.append(point.statement)
+        for row in self.constraints:
+            for cell in (row.mechanism_statement, row.geography_statement):
+                if cell is not None:
+                    rows.append(cell)
+        for row in self.answer_rows:
+            rows.extend(row.cells)
+        for section in self.sections:
+            for point in section.points:
+                if point.statement is not None:
+                    rows.append(point.statement)
+        rows.extend(self.uncertainty_statements)
+        return rows
+
+    @property
+    def distinct_statement_count(self) -> int:
+        """How many distinct facts the reader statements rest on.
+
+        A brief restatement of one cluster in the summary and a detailed
+        discussion of it in the findings are two statements of *one* fact, so
+        the fact is counted once. This is the count a length or quality
+        metric reads; the rendered bullets are not.
+        """
+        keys: set[tuple[str, ...]] = set()
+        for statement in self.statements:
+            if not statement.substantive:
+                continue
+            key = tuple(sorted(statement.claim_cluster_ids))
+            keys.add(key or ("text", " ".join(statement.text.casefold().split())))
+        return len(keys)
 
 
 class ResearchState(ContractModel):

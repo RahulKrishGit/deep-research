@@ -23,6 +23,7 @@ Two consequences are deliberate:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 
 from pydantic import Field, JsonValue
@@ -56,6 +57,7 @@ from deep_research.agents.report import (
     render_reader_report,
     report_as_of,
     report_scope,
+    validate_report_statements,
 )
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActRun, summarize_text
@@ -65,15 +67,25 @@ from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    AcquisitionState,
+    AnswerContract,
     Claim,
+    ClaimCluster,
     ContractModel,
+    EvidenceDisposition,
+    EvidenceTarget,
+    EvidenceUnit,
     Finding,
+    ReportAnswerRow,
+    ReportStatement,
     ResearchError,
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
     ScoredSource,
     SubTopic,
+    answered_required_dimensions,
+    statement_mode_for_claims,
 )
 
 SYNTHESIZER_NAME = "synthesizer"
@@ -99,6 +111,147 @@ DEFAULT_MAX_MEMORY_FINDINGS = 10
 _POINT_CHARS = 600
 _SECTION_TITLE_CHARS = 120
 _GUIDANCE_CHARS = 200
+_CLAIM_TEXT_CHARS = 240
+_EVIDENCE_CHARS = 200
+_CELL_CHARS = 120
+
+# What a factual assertion introduces that a paraphrase does not. A statement
+# may reword its evidence freely — that is what prose is for — but a figure or
+# a named entity the evidence does not carry is a new fact, and a new fact is
+# not something a report may assert on its own authority.
+_FIGURE_PATTERN = re.compile(r"\d[\d,.']*(?:\s?(?:%|[A-Za-z]{2,}))?")
+_PROPER_NOUN_PATTERN = re.compile(r"(?<![.!?]\s)(?<!^)\b[A-Z][A-Za-z][\w'-]{2,}\b")
+# The operation words a derivation has to name to count as one: a recorded
+# basis states premises *and* what was done with them.
+_DERIVATION_MARKERS = (
+    "=",
+    "convert",
+    "conversion",
+    "sum",
+    "total",
+    "average",
+    "mean",
+    "ratio",
+    "share of",
+    "scaled",
+    "multiplied",
+    "divided",
+    "per ",
+    " x ",
+    "*",
+    "×",
+    "/",
+)
+
+
+def _is_significant_figure(token: str) -> bool:
+    """True when a numeric token asserts a quantity rather than numbers a word.
+
+    "890 GW", "12", "2025" and "0.76" are measurements: each carries a unit, a
+    separator, or at least two digits. A bare single digit is a label — a list
+    position, an ordinal, the full stop after a sentence — and treating one as
+    an unsupported figure would refuse prose for its numbering rather than for
+    its content.
+    """
+    stripped = token.strip().strip(".,'")
+    if not stripped:
+        return False
+    if re.search(r"[A-Za-z%]", stripped):
+        return True
+    digits = re.sub(r"[^\d]", "", stripped)
+    if len(digits) >= 2:
+        return True
+    return bool(re.search(r"[.,']", stripped))
+
+
+def _figure_number(token: str) -> str:
+    """The numeric value of a figure token, without its unit."""
+    match = re.match(r"[\d,.']+", token)
+    return (match.group(0) if match else token).strip(".,'")
+
+
+def _significant_figures(text: str) -> list[str]:
+    return [
+        token
+        for token in _FIGURE_PATTERN.findall(text)
+        if _is_significant_figure(token)
+    ]
+
+
+def _derivation_premises(basis: str, tokens: set[str]) -> list[str]:
+    """The figures a stated derivation rests on that the corpus attests."""
+    return [
+        _figure_number(figure)
+        for figure in _significant_figures(basis)
+        if _figure_number(figure) in tokens
+    ]
+
+
+def _names_an_operation(basis: str) -> bool:
+    lowered = basis.casefold()
+    return any(marker in lowered for marker in _DERIVATION_MARKERS)
+_ATTESTATION_STOPWORDS = frozenset(
+    {
+        "the", "and", "for", "with", "that", "this", "from", "into", "than",
+        "then", "they", "their", "there", "these", "those", "have", "has",
+        "had", "was", "were", "are", "is", "be", "been", "being", "not",
+        "but", "its", "it's", "also", "such", "when", "which", "while",
+        "would", "could", "should", "must", "may", "might", "can", "will",
+        "about", "after", "before", "between", "during", "each", "every",
+        "more", "most", "other", "some", "only", "over", "under", "very",
+    }
+)
+
+# A recommendation is an action for someone else to take. It may be published
+# in the answer section the question asked for — a constraint, a comparison
+# conclusion, a decision — and nowhere else: a findings bullet that tells a
+# reader what to do is a recommendation the research never evaluated.
+_PRESCRIPTIVE_MARKERS = (
+    "should ",
+    "should,",
+    "ought to",
+    "must ",
+    "recommend ",
+    "we advise",
+    "policymakers ",
+    "needs to ",
+    "have to ",
+)
+
+# A limitation note may only describe an evidence state this pass recorded.
+# Each entry is the word a reader would use, the vocabulary the note may
+# contain, and the recorded facts that license it; "never assert unavailable
+# or truncated evidence without a recorded disposition" is this table.
+_UNSUPPORTED_STATE_TOKENS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "truncated",
+        ("truncat", "incomplete", "cut off", "partial extraction"),
+        ("truncat", "incomplete", "partial"),
+    ),
+    (
+        "denied",
+        ("denied", "blocked", "refused", "paywall"),
+        ("denied", "refused", "blocked", "paywall"),
+    ),
+    (
+        "missing",
+        ("not acquired", "was not retrieved", "no read was", "not read"),
+        ("not_acquired", "denied", "no_read", "missing", "unavailable"),
+    ),
+)
+
+#: The enumerated dispositions one composition records for the statements it
+#: refused, repaired, or could not check. Task 9 routes the returned ones.
+STATEMENT_DISPOSITIONS = (
+    "unsupported_cell",
+    "unsupported_figure",
+    "unsupported_recommendation",
+    "unsupported_limitation",
+    "unsupported_extrapolation",
+    "duplicate_statement",
+    "unlinked_statement",
+    "returned_to_fact_checker",
+)
 
 # Characters kept verbatim in a report filename. Narrow on purpose:
 # WriteDocumentTool rejects absolute paths and traversal segments, and a
@@ -124,11 +277,18 @@ class ReportPointDraft(ContractModel):
     ``claim_ids`` carries the registry labels the prompt showed (``C001``);
     the validator resolves each label to a canonical ``Claim.claim_id`` and
     never trusts a free-form id.
+
+    ``basis`` is the model's own derivation, when it states one: a converted
+    value, a summed total, a compared pair. Empty means the statement asserts
+    no more than its evidence does, which is the default. A statement that
+    introduces a figure its evidence does not carry is admitted only through a
+    basis whose premises the evidence does state.
     """
 
     text: str
     claim_ids: list[str]
     source_urls: list[str]
+    basis: str = ""
 
 
 class ConstraintDraft(ContractModel):
@@ -137,14 +297,32 @@ class ConstraintDraft(ContractModel):
     A constraint is a claim-linked point plus the two decision columns the
     reader report prints. ``deployment_mechanism`` and ``geography`` are
     provider-attested prose in the Task 6 contract: no typed evidence field
-    locally proves their semantic contents. The local validator therefore
-    checks only the row's claim and source links, while the prompt requires
-    ``not stated`` when the supplied evidence does not say.
+    locally proves their semantic contents. Task 7 checks them against the
+    evidence the row cites instead of trusting them: a cell whose wording the
+    cited evidence does not carry is repaired to ``not stated`` and recorded,
+    because an uncited factual table cell is a factual assertion like any
+    other.
     """
 
     constraint: str
     deployment_mechanism: str
     geography: str
+    claim_ids: list[str]
+    source_urls: list[str]
+
+
+class AnswerRowDraft(ContractModel):
+    """One row of the answer-kind table, before validation.
+
+    ``subject`` and ``dimension`` are labels — what is being compared, and on
+    what basis — and ``finding`` is the evidenced statement the row makes.
+    The columns are chosen by the frozen answer form, not by the model, so a
+    comparison question cannot be answered with a deployment ranking.
+    """
+
+    subject: str
+    dimension: str
+    finding: str
     claim_ids: list[str]
     source_urls: list[str]
 
@@ -163,6 +341,7 @@ class ReportDraft(ContractModel):
     ranked_constraints: list[ConstraintDraft]
     sections: list[ReportSectionDraft]
     uncertainty_notes: list[str]
+    answer_rows: list[AnswerRowDraft] = []
 
 
 # One example. The report contract above already states the empty
@@ -175,14 +354,16 @@ _REPORT_REPLY_EXAMPLES = (
         "evidence from other settings.",
         '{"executive_summary":[{"text":"The supplied evidence supports a '
         'measured reduction.","claim_ids":["C001"],"source_urls":'
-        '["https://evidence.example.test/report"]}],"ranked_constraints":'
+        '["https://evidence.example.test/report"],"basis":""}],'
+        '"ranked_constraints":'
         '[{"constraint":"Charge for road use inside the measured zone.",'
         '"deployment_mechanism":"area licence with camera enforcement",'
         '"geography":"not stated","claim_ids":["C001"],"source_urls":'
         '["https://evidence.example.test/report"]}],"sections":[{"title":'
         '"Measured result","points":[{"text":"The example study reports the '
         'measured result and its stated limits.","claim_ids":["C001"],'
-        '"source_urls":["https://evidence.example.test/report"]}]}],'
+        '"source_urls":["https://evidence.example.test/report"],'
+        '"basis":""}]}],"answer_rows":[],'
         '"uncertainty_notes":["Evidence from other settings was not '
         'supplied."]}',
     ),
@@ -197,6 +378,12 @@ class SynthesisTask(AgentTask):
     points — the same reason ``SourceEvaluationTask`` exists. It is also the
     whole input of both renderers, which is why the plan's topics, the
     evidence timestamps, and the run's recorded errors travel here.
+
+    Task 7 adds the frozen answer contract and the evidence registries: the
+    answer form decides the report's structure, and the evidence units and
+    claim clusters are what turn a statement's ids into citations. The
+    dispositions and acquisition states travel too, because a limitation may
+    only be asserted when the pass recorded the fact it describes.
     """
 
     session_id: str = Field(min_length=1)
@@ -210,10 +397,28 @@ class SynthesisTask(AgentTask):
     findings: list[Finding] = []
     limitations: list[str] = []
     errors: list[ResearchError] = []
+    answer_contract: AnswerContract | None = None
+    evidence_units: dict[str, EvidenceUnit] = Field(default_factory=dict)
+    claim_clusters: dict[str, ClaimCluster] = Field(default_factory=dict)
+    evidence_dispositions: list[EvidenceDisposition] = Field(
+        default_factory=list
+    )
+    acquisition_state_by_target: dict[str, AcquisitionState] = Field(
+        default_factory=dict
+    )
     # The exact bounded registry shown to the provider.  The full ``claims``
     # snapshot remains available for the evidence ledger, but settled draft
     # points may resolve labels only through this prompt-visible subset.
     claim_packet: list[tuple[str, Claim]] | None = None
+
+    @property
+    def targets(self) -> list[EvidenceTarget]:
+        """Every evidence target this run owes an answer, in plan order."""
+        return [
+            target
+            for topic in self.sub_topics
+            for target in topic.evidence_targets
+        ]
 
 
 class SynthesizedReport(ContractModel):
@@ -421,6 +626,467 @@ def bounded_claim_packet(
     return [], len(ranked)
 
 
+class PacketEntry(ContractModel):
+    """One checked claim in the canonical packet, with everything behind it.
+
+    The packet is what the writer is shown, so it carries the support and the
+    counterevidence separately, the source assessment and the dates of each
+    citation, the targets and required dimensions the claim owes, the
+    obligations still open on those targets, and the failures this pass
+    measured. ``evidence_label`` is a qualitative reading of the badge rather
+    than a bare confidence, because "0.90" is not a calibrated probability.
+    """
+
+    label: str
+    claim_id: str
+    cluster_id: str | None = None
+    text: str
+    verdict: str
+    confidence: float
+    evidence_status: str | None = None
+    evidence_label: str = ""
+    citation_urls: list[str] = Field(default_factory=list)
+    support: list[str] = Field(default_factory=list)
+    counter: list[str] = Field(default_factory=list)
+    source_assessment: list[str] = Field(default_factory=list)
+    dates: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    required_dimensions: list[str] = Field(default_factory=list)
+    answered_dimensions: list[str] = Field(default_factory=list)
+    obligations: list[str] = Field(default_factory=list)
+    measured_failures: list[str] = Field(default_factory=list)
+
+
+class CanonicalPacket(ContractModel):
+    """The compact packet, its explicit omissions, and its continuation plan.
+
+    Selection is balanced across the critical targets before it is ranked by
+    recorded impact, so a target with one narrow claim is represented rather
+    than crowded out by a target with many. What does not fit is named:
+    ``omitted_ids`` lists every claim the packet left out, and
+    ``continuation_batches`` groups them into the batches a next pass would
+    take. A continuation is not a deletion.
+    """
+
+    entries: list[PacketEntry] = Field(default_factory=list)
+    omitted_ids: list[str] = Field(default_factory=list)
+    continuation_batches: list[list[str]] = Field(default_factory=list)
+
+
+# The qualitative reading of an evidence badge. A reader should learn whether
+# an assertion was independently corroborated, only attributed to its own
+# publisher, disputed, or never classified — not a two-decimal probability.
+EVIDENCE_BADGE_LABELS: dict[str, str] = {
+    "verified_pair": "independently corroborated",
+    "source_supported": (
+        "primary-source attribution; independent corroboration not established"
+    ),
+    "contested": "contested; both sides recorded",
+    "": "no corroboration classification recorded",
+}
+
+
+def answer_form_instruction(contract: AnswerContract | None) -> str:
+    """The structure the frozen answer form requires of this report.
+
+    Section 2.3 freezes the answer form before any evidence is gathered, and a
+    report that answers a comparison question with a deployment ranking has
+    answered a question nobody asked. The form decides which second section
+    the reader meets and which rows the writer returns; the renderer is what
+    enforces it, so this text and ``report.reader_sections`` state the same
+    thing.
+    """
+    if contract is None:
+        return (
+            "No answer form was frozen for this pass: return the ranked "
+            "constraint list, and return an empty answer_rows list."
+        )
+    kind = contract.answer_kind
+    common = (
+        f"This is a {kind} question. Frozen scope: "
+        f"{contract.scope_statement} Geographic scope: "
+        f"{contract.geographic_scope}. The question is about "
+        f"{contract.evidence_period_requirement} as of {contract.as_of_date}."
+    )
+    if kind == "constraints":
+        return (
+            f"{common} Return the ranked constraint list, most consequential "
+            "first, and return an empty answer_rows list. Rank only on the "
+            "comparison basis the evidence states; when no such basis exists, "
+            "group the constraints by type or region and say so in the text "
+            "instead of inventing an order."
+        )
+    shape = {
+        "comparison": (
+            "Return one answer_rows entry per compared option, with "
+            "dimension naming the basis of comparison the evidence supports."
+        ),
+        "factual": (
+            "Return one answer_rows entry per established fact, with "
+            "dimension naming what the fact is about."
+        ),
+        "historical": (
+            "Return one answer_rows entry per dated development, with "
+            "dimension naming the period the entry's data cover — never the "
+            "publication date of the source that reported it."
+        ),
+        "explanation": (
+            "Return one answer_rows entry per mechanism, with subject naming "
+            "what is explained and dimension naming the driver."
+        ),
+    }.get(kind, "Return an empty answer_rows list.")
+    return (
+        f"{common} {shape} Every entry carries subject, dimension, finding, "
+        "claim_ids and source_urls; the finding is a settlement statement "
+        "like any other, so it needs a checked claim and its urls. Return an "
+        "empty ranked_constraints list: this question is not a deployment "
+        "ranking."
+    )
+
+
+def _note_corpus(task: SynthesisTask, corpus: str) -> str:
+    """The recorded facts an uncertainty note may state about the question.
+
+    The frozen contract's scope and period, the plan's sub-topic titles, and
+    each source's four recorded dates. All of them are records this run made
+    before the note was written, so a note that names the question's horizon
+    or a source's data period is reporting this pass, not asserting the world.
+    """
+    parts = [corpus]
+    contract = task.answer_contract
+    if contract is not None:
+        parts.extend(
+            (
+                contract.scope_statement,
+                contract.evidence_period_requirement,
+                contract.geographic_scope,
+                contract.as_of_date,
+                contract.question,
+            )
+        )
+    parts.extend(topic.title for topic in task.sub_topics)
+    for source in task.sources:
+        temporal = source.temporal
+        parts.extend(
+            value
+            for value in (
+                temporal.publication_date,
+                temporal.data_period,
+                temporal.forecast_horizon,
+                temporal.effective_date,
+            )
+            if value
+        )
+    return " ".join(parts).casefold()
+
+
+def measured_failures(task: SynthesisTask) -> list[str]:
+    """The evidence failures this pass actually recorded, as enumerated tokens.
+
+    A limitation note may describe a truncated read, a denied retrieval, or an
+    evidence gap only when one of these exists. The tokens are project
+    vocabulary — error types, disposition reasons, and refused URLs — never
+    model prose.
+    """
+    tokens: list[str] = []
+    for error in task.errors:
+        token = error.error_type.strip()
+        if token and token not in tokens:
+            tokens.append(token)
+    for disposition in task.evidence_dispositions:
+        for raw in (disposition.reason, disposition.stage):
+            token = raw.strip()
+            if token and token not in tokens:
+                tokens.append(token)
+    for state in task.acquisition_state_by_target.values():
+        for url in state.denied_urls:
+            token = f"denied:{url}"
+            if token not in tokens:
+                tokens.append(token)
+    return tokens
+
+
+def _targets_by_id(task: SynthesisTask) -> dict[str, EvidenceTarget]:
+    return {target.target_id: target for target in task.targets}
+
+
+def _packet_rank(
+    claims: Sequence[Claim],
+    *,
+    targets: Mapping[str, EvidenceTarget],
+) -> list[Claim]:
+    """Claims in packet order: critical targets first, then recorded impact.
+
+    This is the balance the packet exists for. A highest-confidence prefix
+    answers the question the model found easiest; one claim per critical
+    target answers the question that was asked.
+    """
+    claimed_by_target: dict[str, list[Claim]] = {}
+    for claim in claims:
+        for target_id in claim.target_ids:
+            claimed_by_target.setdefault(target_id, []).append(claim)
+    ordered: list[Claim] = []
+    seen: set[str] = set()
+
+    def take(source: Sequence[Claim]) -> None:
+        for claim in source:
+            if claim.claim_id not in seen:
+                seen.add(claim.claim_id)
+                ordered.append(claim)
+
+    for critical in (True, False):
+        for target in targets.values():
+            if target.critical is not critical:
+                continue
+            take(claimed_by_target.get(target.target_id, ()))
+    take(ordered_claims_for_report(claims))
+    return ordered
+
+
+def _evidence_lines(
+    evidence_ids: Sequence[str],
+    evidence: Mapping[str, EvidenceUnit],
+) -> list[str]:
+    """``id locator "excerpt"`` for each selected passage, in selected order."""
+    lines: list[str] = []
+    for evidence_id in evidence_ids:
+        unit = evidence.get(evidence_id)
+        if unit is None:
+            continue
+        lines.append(
+            f"{evidence_id} {unit.locator} "
+            f'"{summarize_text(unit.excerpt, limit=_EVIDENCE_CHARS)}"'
+        )
+    return lines
+
+
+def _selected_ids(claim: Claim, cluster: ClaimCluster | None) -> list[str]:
+    if cluster is not None and cluster.evidence_ids:
+        return list(cluster.evidence_ids)
+    return list(claim.evidence_selection.values())
+
+
+def _packet_dates(
+    urls: Sequence[str],
+    sources: Mapping[str, ScoredSource],
+) -> list[str]:
+    dates: list[str] = []
+    for url in urls:
+        source = sources.get(url)
+        if source is None:
+            continue
+        for label, value in (
+            ("publication", source.temporal.publication_date),
+            ("data_period", source.temporal.data_period),
+            ("forecast", source.temporal.forecast_horizon),
+            ("effective", source.temporal.effective_date),
+        ):
+            if value:
+                dates.append(f"{label}={value}")
+        if dates:
+            break
+    return dates
+
+
+def _packet_source_assessment(
+    urls: Sequence[str],
+    sources: Mapping[str, ScoredSource],
+) -> list[str]:
+    lines: list[str] = []
+    for url in urls:
+        source = sources.get(url)
+        if source is None:
+            lines.append(f"{url}: not assessed")
+            continue
+        if source.evaluation_status == "scored":
+            flag = " low_confidence=true" if source.low_confidence else ""
+            lines.append(
+                f"{url}: scored overall={source.overall_score:.2f}{flag}"
+                if source.overall_score is not None
+                else f"{url}: scored"
+            )
+        else:
+            lines.append(f"{url}: {source.evaluation_status}")
+    return lines
+
+
+def build_canonical_packet(
+    *,
+    claims: Sequence[Claim],
+    clusters: Mapping[str, ClaimCluster],
+    evidence: Mapping[str, EvidenceUnit],
+    targets: Sequence[EvidenceTarget],
+    sources: Sequence[ScoredSource],
+    limit: int,
+    batch_size: int | None = None,
+    failures: Sequence[str] = (),
+) -> CanonicalPacket:
+    """Assemble the compact packet the writer receives.
+
+    ``limit`` bounds how many claims the writer may cite. Everything past it
+    is listed in ``omitted_ids`` and grouped into continuation batches, so the
+    prompt states what it is missing instead of presenting a truncated packet
+    as the whole record.
+    """
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    target_index = {target.target_id: target for target in targets}
+    source_index = {normalize_source_url(source.url): source for source in sources}
+    canonical = canonical_claims(claims)
+    ranked = _packet_rank(canonical, targets=target_index)
+    entries: list[PacketEntry] = []
+    for position, claim in enumerate(ranked, start=1):
+        if len(entries) >= limit:
+            break
+        cluster = clusters.get(claim.cluster_id or "")
+        selected = _selected_ids(claim, cluster)
+        support = list(
+            dict.fromkeys(
+                [
+                    *(
+                        cluster.verdict_evidence.get("verified", [])
+                        if cluster is not None
+                        else []
+                    ),
+                    *claim.source_urls,
+                ]
+            )
+        )
+        urls: list[str] = []
+        for raw in (*claim.source_urls, *support):
+            url = normalize_source_url(raw)
+            if url and url not in urls:
+                urls.append(url)
+        for evidence_id in selected:
+            unit = evidence.get(evidence_id)
+            if unit is None:
+                continue
+            url = normalize_source_url(unit.source_url)
+            if url and url not in urls:
+                urls.append(url)
+        badge = (
+            cluster.verdict_evidence_status.get("verified", "")
+            if cluster is not None
+            else ""
+        ) or (claim.evidence_status or "")
+        target_ids = list(
+            dict.fromkeys(
+                [
+                    *claim.target_ids,
+                    *(cluster.target_ids if cluster is not None else []),
+                ]
+            )
+        )
+        required: list[str] = []
+        obligations: list[str] = []
+        for target_id in target_ids:
+            target = target_index.get(target_id)
+            if target is None:
+                continue
+            for dimension in target.required_dimensions:
+                if dimension not in required:
+                    required.append(dimension)
+            missing = [
+                dimension
+                for dimension in target.required_dimensions
+                if dimension not in claim.consumed_coverage_ids
+            ]
+            if not selected:
+                obligations.append(
+                    f"{target_id} has no selected evidence yet"
+                )
+            elif missing:
+                obligations.append(
+                    f"{target_id} still owes: {', '.join(missing)}"
+                )
+        entries.append(
+            PacketEntry(
+                label=claim_label(position),
+                claim_id=claim.claim_id,
+                cluster_id=claim.cluster_id,
+                text=summarize_text(claim.text, limit=_CLAIM_TEXT_CHARS),
+                verdict=claim.verdict,
+                confidence=claim.confidence,
+                evidence_status=claim.evidence_status,
+                evidence_label=EVIDENCE_BADGE_LABELS.get(badge, badge),
+                citation_urls=urls,
+                support=_evidence_lines(selected, evidence),
+                counter=_evidence_lines(
+                    [
+                        evidence_id
+                        for evidence_id in selected
+                        if evidence.get(evidence_id) is not None
+                        and evidence[evidence_id].origin == "fact_checker"
+                        and claim.contradictions
+                    ],
+                    evidence,
+                ),
+                source_assessment=_packet_source_assessment(urls, source_index),
+                dates=_packet_dates(urls, source_index),
+                target_ids=target_ids,
+                required_dimensions=required,
+                answered_dimensions=list(claim.consumed_coverage_ids),
+                obligations=obligations,
+                measured_failures=list(failures),
+            )
+        )
+    omitted = [
+        claim_label(position)
+        for position, claim in enumerate(ranked[len(entries) :], start=len(entries) + 1)
+    ]
+    size = batch_size if batch_size is not None else max(1, limit)
+    batches = [
+        omitted[start : start + size] for start in range(0, len(omitted), size)
+    ]
+    return CanonicalPacket(
+        entries=entries, omitted_ids=omitted, continuation_batches=batches
+    )
+
+
+def render_canonical_packet(packet: CanonicalPacket) -> str:
+    """Render the packet as the addressable, self-describing block a model reads."""
+    lines: list[str] = []
+    for entry in packet.entries:
+        lines.append(
+            f"{entry.label} [{entry.verdict} {entry.confidence:.2f} | "
+            f"{entry.evidence_label}] {entry.text}"
+        )
+        if entry.citation_urls:
+            lines.append(f"  cites: {', '.join(entry.citation_urls)}")
+        lines.append(
+            "  supports: " + ("; ".join(entry.support) or "none recorded")
+        )
+        lines.append(
+            "  contradicts: " + ("; ".join(entry.counter) or "none recorded")
+        )
+        for assessment in entry.source_assessment:
+            lines.append(f"  source: {assessment}")
+        if entry.dates:
+            lines.append(f"  dates: {', '.join(entry.dates)}")
+        if entry.target_ids:
+            lines.append(
+                f"  targets: {', '.join(entry.target_ids)}; "
+                f"dimensions: {', '.join(entry.required_dimensions) or 'none'}"
+            )
+        for obligation in entry.obligations:
+            lines.append(f"  obligation: {obligation}")
+        for failure in entry.measured_failures:
+            lines.append(f"  failure: {failure}")
+    if not packet.entries:
+        lines.append("(no checked claim was available for this packet)")
+    if packet.omitted_ids:
+        lines.append(
+            f"({len(packet.omitted_ids)} further checked claim(s) were omitted "
+            "for length; they cannot be cited by this draft.)"
+        )
+        lines.append(f"omitted: {', '.join(packet.omitted_ids)}")
+        for position, batch in enumerate(packet.continuation_batches, start=1):
+            lines.append(
+                f"continuation batch {position}: {', '.join(batch)}"
+            )
+    return "\n".join(lines)
+
+
 def bounded_finding_digest(
     findings: Sequence[Finding],
     *,
@@ -533,31 +1199,289 @@ def _resolve_claims(
     return resolved, unknown
 
 
+class DraftContext(ContractModel):
+    """Everything one validation pass needs to judge a drafted statement.
+
+    Carried as one object rather than as six parameters: the checks below all
+    need the same evidence, targets, declared corpus and record lists, and a
+    signature that grows a parameter per check is how a later check gets
+    forgotten at one call site and not another.
+    """
+
+    approved: dict[str, Claim] = Field(default_factory=dict)
+    clusters: dict[str, ClaimCluster] = Field(default_factory=dict)
+    evidence: dict[str, EvidenceUnit] = Field(default_factory=dict)
+    targets: dict[str, EvidenceTarget] = Field(default_factory=dict)
+    corpus: str = ""
+    note_corpus: str = ""
+    """The figures a *question-shaped* note may name.
+
+    Wider than the evidence corpus on purpose: a note about the question's own
+    horizon, period, or scope is stating a fact this run recorded — in the
+    frozen contract, the plan's sub-topics, or a source's recorded dates — and
+    removing those figures would make the note say something else.
+    """
+    failures: list[str] = Field(default_factory=list)
+    rejected: list[str] = Field(default_factory=list)
+    dispositions: list[str] = Field(default_factory=list)
+    returned: list[str] = Field(default_factory=list)
+    counter: int = 0
+
+    def next_id(self, prefix: str) -> str:
+        self.counter += 1
+        return f"{prefix}{self.counter:03d}"
+
+    def note(self, disposition: str, where: str, reason: str) -> None:
+        """Record one disposition and the project-generated reason for it."""
+        if disposition not in self.dispositions:
+            self.dispositions.append(disposition)
+        self.rejected.append(f"{where}: {reason}")
+
+
+def _attestation_corpus(
+    approved: Mapping[str, Claim],
+    evidence: Mapping[str, EvidenceUnit],
+) -> str:
+    """The text a drafted statement's specific atoms must appear in.
+
+    The checked claims themselves are included: a statement is allowed to
+    restate its claim's wording, and a figure that is in the claim is in the
+    evidence the claim was checked against. Nothing else is added — a corpus
+    padded with a model's own prose would attest itself.
+    """
+    parts = [claim.text for claim in approved.values()]
+    parts.extend(unit.excerpt for unit in evidence.values())
+    return " ".join(parts).casefold()
+
+
+def _content_tokens(text: str) -> list[str]:
+    """The words a claim to be *about something* is carried by."""
+    return [
+        token
+        for token in re.findall(r"[a-z][a-z0-9'-]{2,}", text.casefold())
+        if token not in _ATTESTATION_STOPWORDS
+    ]
+
+
+def _corpus_tokens(corpus: str) -> set[str]:
+    """The words and figures the corpus carries, as whole tokens.
+
+    Whole tokens, not substrings: "1200 hectares" does not attest "12", and a
+    substring test would let one measured figure vouch for a different one
+    that happens to share its digits.
+    """
+    return set(re.findall(r"[a-z0-9][a-z0-9'.,-]*", corpus.casefold()))
+
+
+def unattested_atoms(text: str, corpus: str) -> list[str]:
+    """Specific factual atoms the corpus does not carry.
+
+    Figures and names are what a paraphrase does not invent and a fabrication
+    does. An unattested ordinary word is prose; an unattested figure or proper
+    noun is a new fact, and this is the deterministic half of the support
+    review — the half that cannot be argued with.
+    """
+    tokens = _corpus_tokens(corpus)
+    found: list[str] = []
+    for token in _significant_figures(text):
+        number = _figure_number(token)
+        if number and number not in tokens and token not in found:
+            found.append(token)
+    for match in _PROPER_NOUN_PATTERN.finditer(text):
+        token = match.group(0)
+        if token.casefold() not in tokens and token not in found:
+            found.append(token)
+    return found
+
+
+def unattested_words(text: str, corpus: str) -> list[str]:
+    """Every content word of a short cell the corpus does not carry.
+
+    Used for table cells, which are meant to be lifted from the evidence
+    rather than composed: a mechanism or a geography nobody's evidence states
+    is the uncited cell this check exists to repair.
+    """
+    return [
+        token
+        for token in _content_tokens(text)
+        if token not in corpus
+    ]
+
+
+def _is_recommendation(text: str) -> bool:
+    lowered = f" {text.casefold()} "
+    return any(marker in lowered for marker in _PRESCRIPTIVE_MARKERS)
+
+
+def _unrecorded_evidence_claim(text: str, failures: Sequence[str]) -> str:
+    """The evidence state a note asserts that this pass did not record."""
+    lowered = text.casefold()
+    recorded = " ".join(failures).casefold()
+    for label, wanted, recorded_tokens in _UNSUPPORTED_STATE_TOKENS:
+        if not any(token in lowered for token in wanted):
+            continue
+        if any(token in recorded for token in recorded_tokens):
+            continue
+        return label
+    return ""
+
+
+def _clusters_for_claims(
+    claims: Sequence[Claim],
+    clusters: Mapping[str, ClaimCluster],
+) -> list[str]:
+    """The cluster ids the named claims belong to, in registry order.
+
+    Resolved in both directions on purpose: a claim records the cluster it
+    joined, and a cluster records the claims it absorbed. A refinement that
+    persisted only one side still resolves, and a merge that absorbed an
+    alias still resolves through it.
+    """
+    member_ids = {claim.claim_id for claim in claims}
+    resolved: list[str] = []
+    for claim in claims:
+        for candidate in (claim.cluster_id, *claim.cluster_aliases):
+            if (
+                candidate
+                and candidate in clusters
+                and candidate not in resolved
+            ):
+                resolved.append(candidate)
+    for cluster_id, cluster in clusters.items():
+        if cluster_id in resolved:
+            continue
+        if member_ids & set(cluster.member_claim_ids):
+            resolved.append(cluster_id)
+    return resolved
+
+
+def _statement_for_claims(
+    *,
+    statement_id: str,
+    text: str,
+    claims: Sequence[Claim],
+    context: DraftContext,
+    basis: str = "",
+) -> ReportStatement:
+    """The statement record behind a validated point."""
+    cluster_ids = _clusters_for_claims(claims, context.clusters)
+    evidence_ids: list[str] = []
+    for cluster_id in cluster_ids:
+        for evidence_id in context.clusters[cluster_id].evidence_ids:
+            if evidence_id in context.evidence and evidence_id not in evidence_ids:
+                evidence_ids.append(evidence_id)
+    for claim in claims:
+        for evidence_id in claim.evidence_selection.values():
+            if evidence_id in context.evidence and evidence_id not in evidence_ids:
+                evidence_ids.append(evidence_id)
+    target_ids: list[str] = []
+    for claim in claims:
+        for target_id in claim.target_ids:
+            if target_id not in target_ids:
+                target_ids.append(target_id)
+    for cluster_id in cluster_ids:
+        for target_id in context.clusters[cluster_id].target_ids:
+            if target_id not in target_ids:
+                target_ids.append(target_id)
+    dimensions: list[str] = []
+    for target_id in target_ids:
+        target = context.targets.get(target_id)
+        if target is None:
+            continue
+        for dimension in target.required_dimensions:
+            if dimension not in dimensions:
+                dimensions.append(dimension)
+    propositions = [
+        context.clusters[cluster_id].proposition for cluster_id in cluster_ids
+    ]
+    mode = statement_mode_for_claims(claims)
+    if basis.strip():
+        mode = "inference"
+    return ReportStatement(
+        statement_id=statement_id,
+        text=text,
+        mode=mode,
+        claim_cluster_ids=cluster_ids,
+        evidence_ids=evidence_ids,
+        target_ids=target_ids,
+        answered_dimensions=answered_required_dimensions(
+            dimensions, propositions
+        ),
+        basis=basis.strip() or None,
+    )
+
+
+def _cited_evidence(claims: Sequence[Claim], context: DraftContext) -> str:
+    """The exact passages the named claims selected, as one text.
+
+    A statement may restate its evidence; this is the text it may restate
+    *from*. It is the selected support, not the whole read, so a figure pulled
+    from elsewhere in the document is still an unattested atom here. The
+    recorded proposition's own dimensions are included: an atom that records
+    its subject, place, period, or attribution is the extractor's finding
+    about the evidence, and a cell may state what the atom records.
+    """
+    parts: list[str] = []
+    for claim in claims:
+        for evidence_id in claim.evidence_selection.values():
+            unit = context.evidence.get(evidence_id)
+            if unit is not None:
+                parts.append(unit.excerpt)
+    for cluster_id in _clusters_for_claims(claims, context.clusters):
+        cluster = context.clusters[cluster_id]
+        proposition = cluster.proposition
+        parts.append(proposition.text)
+        parts.extend(
+            value
+            for value in (
+                proposition.subject,
+                proposition.geography,
+                proposition.observation_period,
+                proposition.population,
+                proposition.quantity_noun,
+                proposition.attribution,
+                proposition.forecast_status,
+            )
+            if value
+        )
+        for evidence_id in cluster.evidence_ids:
+            unit = context.evidence.get(evidence_id)
+            if unit is not None:
+                parts.append(unit.excerpt)
+    return " ".join(parts).casefold()
+
+
 def _build_point(
     *,
     text: str,
     labels: Sequence[str],
     urls: Sequence[str],
-    approved: Mapping[str, Claim],
+    context: DraftContext,
     where: str,
-    rejected: list[str],
+    statement_prefix: str = "S",
+    basis: str = "",
+    decision_section: bool = False,
 ) -> ReportPoint | None:
     """Validate one drafted point against the checked-claim registry.
 
     Returns ``None`` and appends a project-generated reason when the point
-    cannot be printed: no text, no known checked claim, no source URL, or a
-    URL the claims it names do not carry. Reasons never quote provider text,
-    so they are safe for ``ResearchError.details`` and for the ledger.
+    cannot be printed: no text, no known checked claim, no source URL, a URL
+    the claims it names do not carry, a figure or a name its selected evidence
+    does not state, or a recommendation outside the answer section the
+    question asked for. Reasons never quote provider text, so they are safe
+    for ``ResearchError.details`` and for the ledger.
     """
     if not text.strip():
-        rejected.append(f"{where}: blank statement")
+        context.note("unlinked_statement", where, "blank statement")
         return None
-    claims, unknown = _resolve_claims(labels, approved=approved)
+    claims, unknown = _resolve_claims(labels, approved=context.approved)
     if not claims:
-        rejected.append(f"{where}: no known checked claim")
+        context.note("unlinked_statement", where, "no known checked claim")
         return None
     if unknown:
-        rejected.append(f"{where}: {unknown} claim id(s) outside the registry")
+        context.rejected.append(
+            f"{where}: {unknown} claim id(s) outside the registry"
+        )
     approved_urls = {
         normalize_source_url(url)
         for claim in claims
@@ -573,16 +1497,104 @@ def _build_point(
         if url not in accepted:
             accepted.append(url)
     if invented:
-        rejected.append(f"{where}: {invented} source url(s) not on those claims")
+        context.rejected.append(
+            f"{where}: {invented} source url(s) not on those claims"
+        )
         return None
     if not accepted:
-        rejected.append(f"{where}: no source url for a settled statement")
+        context.note(
+            "unlinked_statement", where, "no source url for a settled statement"
+        )
+        return None
+    if not decision_section and _is_recommendation(text):
+        context.note(
+            "unsupported_recommendation",
+            where,
+            "a recommendation outside the answer",
+        )
+        context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
+        return None
+    missing = _unsupported_figures(text, claims, context, basis)
+    if missing:
+        context.note(
+            "unsupported_figure",
+            where,
+            "an unsupported figure",
+        )
+        context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
+        return None
+    extrapolation = _unsupported_names(text, claims, context)
+    if extrapolation:
+        context.note(
+            "unsupported_extrapolation",
+            where,
+            "a name or place the evidence does not state",
+        )
+        context.dispositions.append("returned_to_fact_checker")
+        context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
     return ReportPoint(
         text=summarize_text(text, limit=_POINT_CHARS),
         claim_ids=[claim.claim_id for claim in claims],
         source_urls=accepted,
+        statement=_statement_for_claims(
+            statement_id=context.next_id(statement_prefix),
+            text=summarize_text(text, limit=_POINT_CHARS),
+            claims=claims,
+            context=context,
+            basis=basis,
+        ),
     )
+
+
+def _unsupported_names(
+    text: str,
+    claims: Sequence[Claim],
+    context: DraftContext,
+) -> list[str]:
+    """Named entities the cited evidence does not state.
+
+    A statement that carries a result into a country, a company, or a
+    programme its evidence never names has extrapolated. The check is the same
+    attestation the figures get, applied to the names: a geography is either
+    in the evidence or it is a new claim.
+    """
+    corpus = _cited_evidence(claims, context) or context.corpus
+    return [
+        atom
+        for atom in unattested_atoms(text, corpus)
+        if not re.match(r"\d", atom)
+    ]
+
+
+def _unsupported_figures(
+    text: str,
+    claims: Sequence[Claim],
+    context: DraftContext,
+    basis: str,
+) -> list[str]:
+    """Figures the cited evidence does not state.
+
+    A unit conversion or an arithmetic step passes only as a recorded
+    derivation: the statement declares a ``basis``, that basis names the
+    operation, and the premises it rests on — the figures the evidence does
+    state — are attested. That is what separates a checked derivation from a
+    model that did some arithmetic and called it a conversion.
+    """
+    corpus = _cited_evidence(claims, context) or context.corpus
+    missing = [
+        atom for atom in unattested_atoms(text, corpus) if re.match(r"\d", atom)
+    ]
+    if not missing:
+        return []
+    if not basis.strip():
+        return missing
+    tokens = _corpus_tokens(corpus)
+    if not _names_an_operation(basis):
+        return missing
+    if not _derivation_premises(basis, tokens):
+        return missing
+    return []
 
 
 def _optional_text(text: str, *, limit: int) -> str:
@@ -598,32 +1610,259 @@ def _optional_text(text: str, *, limit: int) -> str:
     return summarize_text(text, limit=limit)
 
 
+def _build_cell(
+    *,
+    text: str,
+    row: ReportPoint,
+    context: DraftContext,
+    where: str,
+    cell: str,
+) -> tuple[str, ReportStatement]:
+    """One table cell: published only when the cited evidence carries it.
+
+    A cell is a factual assertion like any other, so it is either attested by
+    the evidence its row cites or it is repaired to ``not stated`` with the
+    repair recorded. ``not stated`` is the contract's own sentinel — the
+    prompt asks for it when the evidence is silent — so it is read as "no
+    cell", never as prose to attest. The returned statement is always present,
+    so the reader can see that the cell was considered and what happened to
+    it.
+    """
+    written = _optional_text(text, limit=_CELL_CHARS)
+    if written.casefold().strip(" .") == "not stated":
+        written = ""
+    if not written:
+        return "", ReportStatement(
+            statement_id=context.next_id("C"),
+            text="not stated",
+            mode="context",
+            basis="the row's evidence does not state this cell",
+        )
+    selected = [
+        claim
+        for claim in context.approved.values()
+        if claim.claim_id in set(row.claim_ids)
+    ]
+    evidence_text = _cited_evidence(selected, context) or context.corpus
+    unattested = unattested_words(written, evidence_text)
+    if unattested:
+        context.note(
+            "unsupported_cell",
+            f"{where} {cell}",
+            "no evidence for this cell",
+        )
+        context.dispositions.append("returned_to_fact_checker")
+        context.returned.append(summarize_text(written, limit=_CELL_CHARS))
+        return "", ReportStatement(
+            statement_id=context.next_id("C"),
+            text="not stated",
+            mode="context",
+            basis="the cited evidence does not carry this cell",
+        )
+    statement = _statement_for_claims(
+        statement_id=context.next_id("C"),
+        text=written,
+        claims=selected,
+        context=context,
+        basis="cell carried by the row's evidence",
+    )
+    return written, statement.model_copy(update={"mode": "attributed"})
+
+
 def _build_constraint(
     draft: ConstraintDraft,
     *,
-    approved: Mapping[str, Claim],
+    context: DraftContext,
     where: str,
-    rejected: list[str],
 ) -> ReportConstraint | None:
     point = _build_point(
         text=draft.constraint,
         labels=draft.claim_ids,
         urls=draft.source_urls,
-        approved=approved,
+        context=context,
         where=where,
-        rejected=rejected,
+        statement_prefix="C",
+        decision_section=True,
     )
     if point is None:
         return None
+    mechanism, mechanism_statement = _build_cell(
+        text=draft.deployment_mechanism,
+        row=point,
+        context=context,
+        where=where,
+        cell="deployment mechanism",
+    )
+    geography, geography_statement = _build_cell(
+        text=draft.geography,
+        row=point,
+        context=context,
+        where=where,
+        cell="geography",
+    )
     return ReportConstraint(
         text=point.text,
         claim_ids=point.claim_ids,
         source_urls=point.source_urls,
-        deployment_mechanism=_optional_text(
-            draft.deployment_mechanism, limit=_SECTION_TITLE_CHARS
-        ),
-        geography=_optional_text(draft.geography, limit=_SECTION_TITLE_CHARS),
+        statement=point.statement,
+        deployment_mechanism=mechanism,
+        geography=geography,
+        mechanism_statement=mechanism_statement,
+        geography_statement=geography_statement,
     )
+
+
+def _build_answer_row(
+    draft: AnswerRowDraft,
+    *,
+    context: DraftContext,
+    where: str,
+) -> ReportAnswerRow | None:
+    """Validate one answer-kind row: two labels and one evidenced finding."""
+    point = _build_point(
+        text=draft.finding,
+        labels=draft.claim_ids,
+        urls=draft.source_urls,
+        context=context,
+        where=where,
+        statement_prefix="A",
+        decision_section=True,
+    )
+    if point is None:
+        return None
+    labels = [
+        ReportStatement(
+            statement_id=context.next_id("A"),
+            text=label,
+            mode="context",
+            basis="row label composed by this pass",
+        )
+        for label in (
+            _optional_text(draft.subject, limit=_CELL_CHARS),
+            _optional_text(draft.dimension, limit=_CELL_CHARS),
+        )
+    ]
+    return ReportAnswerRow(cells=[*labels, point.statement])
+
+
+def _build_uncertainty_statements(
+    notes: Sequence[str],
+    *,
+    context: DraftContext,
+) -> list[ReportStatement]:
+    """Turn drafted uncertainty prose into checked, figure-free statements.
+
+    A note is allowed to be source-free — it is the one place this pass's own
+    framing belongs — but it is *not* allowed to be unchecked: a figure it
+    prints is a factual assertion, and an evidence state it asserts must have
+    a recorded disposition. An unsupported figure is removed with the phrase
+    that carried it, and the note keeps the topic it was about.
+    """
+    statements: list[ReportStatement] = []
+    for position, note in enumerate(notes, start=1):
+        if not note.strip():
+            continue
+        where = f"uncertainty note {position}"
+        text = " ".join(note.split())
+        unrecorded = _unrecorded_evidence_claim(text, context.failures)
+        if unrecorded:
+            context.note(
+                "unsupported_limitation",
+                where,
+                f"no recorded disposition for a {unrecorded} read",
+            )
+            continue
+        repaired = _strip_unsupported_figures(text, context.note_corpus)
+        if repaired != text:
+            context.note(
+                "unsupported_figure",
+                where,
+                "an unsupported figure",
+            )
+            context.dispositions.append("returned_to_fact_checker")
+            context.returned.append(
+                summarize_text(text, limit=_CLAIM_TEXT_CHARS)
+            )
+        if not repaired.strip():
+            continue
+        statements.append(
+            ReportStatement(
+                statement_id=context.next_id("U"),
+                text=summarize_text(repaired, limit=_POINT_CHARS),
+                mode="context",
+                basis=_uncertainty_basis(repaired),
+            )
+        )
+    return statements
+
+
+def _uncertainty_basis(text: str) -> str:
+    """Classify a source-free note by what it is about."""
+    lowered = text.casefold()
+    for _, _, tokens in (
+        ("", "", ("not acquired", "was not retrieved", "no read")),
+        ("", "", ("disagree", "conflict", "contradict")),
+        ("", "", ("outside scope", "out of scope", "beyond")),
+    ):
+        for token in tokens:
+            if token in lowered:
+                return token
+    return "uncertainty this pass recorded"
+
+
+# The units a figure may carry, so that removing an unsupported figure takes
+# its unit with it and nothing else. "890 GW" is one phrase; "2030 horizon" is
+# a year and a noun, and the noun has to survive the repair.
+_UNIT_WORDS = frozenset(
+    {
+        "gw", "gws", "mw", "mws", "kw", "kws", "tw", "gwh", "mwh", "kwh",
+        "kwh/y", "gw/y", "mw/y", "twh", "km", "km2", "sq", "kg", "t", "mt",
+        "kt", "bn", "million", "billion", "trillion", "usd", "eur", "gbp",
+        "dollars", "euros", "pounds", "percent", "%", "pct", "tonnes",
+        "tons", "jobs", "units", "seconds", "minutes", "hours", "days",
+        "weeks", "months", "years", "people", "households", "vehicles",
+    }
+)
+
+
+def _strip_unsupported_figures(text: str, corpus: str) -> str:
+    """Remove every figure the recorded evidence does not state.
+
+    The unit goes with the figure — "the 890 GW of installed storage was not
+    reported" becomes "the installed storage was not reported" — because a
+    caveat that prints the number it says is missing has still told the reader
+    the number. Only a recognised *unit* is consumed with it: a year followed
+    by an ordinary noun ("the 2030 horizon") keeps its noun, so the repair
+    cannot leave a sentence without its subject.
+    """
+    sentences: list[str] = []
+    tokens = _corpus_tokens(corpus)
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        figures = [
+            figure
+            for figure in _significant_figures(sentence)
+            if _figure_number(figure) not in tokens
+        ]
+        if not figures:
+            sentences.append(sentence)
+            continue
+        repaired = sentence
+        for figure in figures:
+            number = _figure_number(figure)
+            tail = figure.strip()[len(number) :].strip()
+            if tail.casefold() not in _UNIT_WORDS:
+                tail = ""
+            repaired = re.sub(
+                rf"\b{re.escape(number)}\s*"
+                + (rf"{re.escape(tail)}\s*" if tail else "")
+                + r"(?:of\s+)?",
+                "",
+                repaired,
+            )
+        repaired = " ".join(repaired.split())
+        if _content_tokens(repaired):
+            sentences.append(repaired)
+    return " ".join(sentences).strip()
 
 
 def build_report_composition(
@@ -638,7 +1877,11 @@ def build_report_composition(
 
     Returns the composition and the enumerated reasons any drafted content was
     refused. Nothing is silently dropped: an empty reader report says which
-    drafted statements were refused and why.
+    drafted statements were refused and why. Every statement that survives is
+    a ``ReportStatement`` — the reader mode its evidence supports, the exact
+    selected evidence ids behind it, the targets and dimensions it answers,
+    and any derivation it declared — so the reader map is complete by
+    construction rather than by inspection.
     """
     if max_sections < 1:
         raise ValueError("max_sections must be at least 1")
@@ -648,49 +1891,56 @@ def build_report_composition(
         else claim_registry(task.claims)
     )
     approved = {label: claim for label, claim in prompt_registry}
-    rejected: list[str] = []
+    context = DraftContext(
+        approved=approved,
+        clusters=dict(task.claim_clusters),
+        evidence=dict(task.evidence_units),
+        targets={target.target_id: target for target in task.targets},
+        corpus=_attestation_corpus(approved, task.evidence_units),
+        failures=measured_failures(task),
+    )
+    context.note_corpus = _note_corpus(task, context.corpus)
     summary: list[ReportPoint] = []
     constraints: list[ReportConstraint] = []
+    rows: list[ReportAnswerRow] = []
     sections: list[ReportSection] = []
-    notes: list[str] = []
+    uncertainty: list[ReportStatement] = []
     if draft is not None:
-        seen: set[tuple[str, tuple[str, ...], tuple[str, ...]]] = set()
+        seen: set[tuple[str, tuple[str, ...]]] = set()
         summary = _build_points(
             draft.executive_summary,
-            approved=approved,
+            context=context,
             where="executive summary",
-            rejected=rejected,
             seen=seen,
         )
-        constraints = _build_constraints(
-            draft.ranked_constraints, approved=approved, rejected=rejected
-        )
+        constraints = _build_constraints(draft.ranked_constraints, context=context)
+        rows = _build_answer_rows(draft.answer_rows, context=context)
         if len(draft.sections) > max_sections:
-            rejected.append(
+            context.rejected.append(
                 f"{len(draft.sections) - max_sections} section(s) past the "
                 "section cap"
             )
         for position, item in enumerate(draft.sections[:max_sections], start=1):
             title = " ".join(item.title.split())
             if not title:
-                rejected.append(f"section {position}: blank title")
+                context.rejected.append(f"section {position}: blank title")
                 continue
             points = _build_points(
                 item.points,
-                approved=approved,
+                context=context,
                 where=f"section {position}",
-                rejected=rejected,
                 seen=seen,
             )
             if not points:
-                rejected.append(f"section {position}: no printable point")
+                context.rejected.append(
+                    f"section {position}: no printable point"
+                )
                 continue
             sections.append(ReportSection(title=title, points=points))
-        notes = [
-            summarize_text(note, limit=_POINT_CHARS)
-            for note in draft.uncertainty_notes
-            if note.strip()
-        ]
+        uncertainty = _build_uncertainty_statements(
+            draft.uncertainty_notes, context=context
+        )
+    contract = task.answer_contract
     composition = ReportComposition(
         question=task.instruction,
         session_id=task.session_id,
@@ -708,40 +1958,67 @@ def build_report_composition(
         summary=summary,
         constraints=constraints,
         sections=sections,
-        uncertainty_notes=notes,
-        rejected=rejected,
+        uncertainty_notes=[statement.text for statement in uncertainty],
+        uncertainty_statements=uncertainty,
+        rejected=context.rejected,
+        answer_kind=contract.answer_kind if contract is not None else None,
+        answer_rows=rows,
+        claim_clusters=dict(task.claim_clusters),
+        evidence_units=dict(task.evidence_units),
+        statement_dispositions=list(dict.fromkeys(context.dispositions)),
+        returned_to_fact_checker=list(dict.fromkeys(context.returned)),
+        generated_on=contract.as_of_date if contract is not None else "",
+        date_basis=(
+            contract.evidence_period_requirement if contract is not None else ""
+        ),
+        requested_word_limit=(
+            contract.requested_word_limit if contract is not None else None
+        ),
     )
-    return composition, rejected
+    # The statement map is checked before anything renders: an unknown
+    # evidence id or a substantive statement with no link behind it is a
+    # refusal, not a rendering surprise.
+    validate_report_statements(composition)
+    return composition, context.rejected
 
 
 def _build_points(
     drafts: Sequence[ReportPointDraft],
     *,
-    approved: Mapping[str, Claim],
+    context: DraftContext,
     where: str,
-    rejected: list[str],
-    seen: set[tuple[str, tuple[str, ...], tuple[str, ...]]],
+    seen: set[tuple[str, tuple[str, ...]]],
 ) -> list[ReportPoint]:
-    """Validate a list of drafted points, refusing repeats of an earlier one."""
+    """Validate a list of drafted points, refusing repeats of an earlier one.
+
+    Repetition is refused by the *fact* a statement rests on, not by its
+    wording: a summary restatement of one cluster and a detailed discussion of
+    it are two statements of one fact, which is allowed but counted once,
+    while a second near-identical statement of the same fact in the same
+    section is the duplicate inflation this check removes.
+    """
     points: list[ReportPoint] = []
     for position, item in enumerate(drafts, start=1):
         point = _build_point(
             text=item.text,
             labels=item.claim_ids,
             urls=item.source_urls,
-            approved=approved,
+            context=context,
             where=f"{where} point {position}",
-            rejected=rejected,
+            basis=item.basis,
         )
         if point is None:
             continue
         key = (
-            point.text,
-            tuple(point.claim_ids),
-            tuple(point.source_urls),
+            " ".join(point.text.casefold().split()),
+            tuple(point.claim_cluster_ids),
         )
         if key in seen:
-            rejected.append(f"{where} point {position}: repeats an earlier point")
+            context.note(
+                "duplicate_statement",
+                f"{where} point {position}",
+                "repeats an earlier statement",
+            )
             continue
         seen.add(key)
         points.append(point)
@@ -751,26 +2028,44 @@ def _build_points(
 def _build_constraints(
     drafts: Sequence[ConstraintDraft],
     *,
-    approved: Mapping[str, Claim],
-    rejected: list[str],
+    context: DraftContext,
 ) -> list[ReportConstraint]:
     rows: list[ReportConstraint] = []
-    seen: set[tuple[str, tuple[str, ...], tuple[str, ...]]] = set()
+    seen: set[tuple[str, tuple[str, ...]]] = set()
     for position, item in enumerate(drafts, start=1):
         row = _build_constraint(
-            item,
-            approved=approved,
-            where=f"constraint {position}",
-            rejected=rejected,
+            item, context=context, where=f"constraint {position}"
         )
         if row is None:
             continue
-        key = (row.text, tuple(row.claim_ids), tuple(row.source_urls))
+        key = (
+            " ".join(row.text.casefold().split()),
+            tuple(row.claim_cluster_ids),
+        )
         if key in seen:
-            rejected.append(f"constraint {position}: repeats an earlier row")
+            context.note(
+                "duplicate_statement",
+                f"constraint {position}",
+                "repeats an earlier statement",
+            )
             continue
         seen.add(key)
         rows.append(row)
+    return rows
+
+
+def _build_answer_rows(
+    drafts: Sequence[AnswerRowDraft],
+    *,
+    context: DraftContext,
+) -> list[ReportAnswerRow]:
+    rows: list[ReportAnswerRow] = []
+    for position, item in enumerate(drafts, start=1):
+        row = _build_answer_row(
+            item, context=context, where=f"answer row {position}"
+        )
+        if row is not None:
+            rows.append(row)
     return rows
 
 
@@ -838,6 +2133,15 @@ def report_messages(
         limit=finding_digest,
         budget_chars=SYNTHESIS_OPEN_QUESTIONS_CHARS,
     )
+    canonical = build_canonical_packet(
+        claims=[claim for _, claim in packet],
+        clusters=task.claim_clusters,
+        evidence=task.evidence_units,
+        targets=task.targets,
+        sources=task.sources,
+        limit=claim_digest,
+        failures=measured_failures(task),
+    )
     sections = [f"# Research question\n{task.instruction}"]
     if task.guidance.strip():
         sections.append(f"# Context\n{task.guidance}")
@@ -848,9 +2152,14 @@ def report_messages(
                 f"As of: {task.as_of.strip() or 'no dated evidence recorded'}\n"
                 f"Scope: {task.scope.strip() or 'not stated'}"
             ),
+            f"# Answer form\n{answer_form_instruction(task.answer_contract)}",
             (
                 "# Checked claims to cite\n"
                 f"{render_report_claim_packet(packet, omitted=omitted)}"
+            ),
+            (
+                "# Canonical evidence packet\n"
+                f"{render_canonical_packet(canonical)}"
             ),
             (
                 "# Retrieved findings (open questions only)\n"
@@ -1053,6 +2362,13 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
             findings=list(state.raw_findings),
             limitations=limitation_reasons(state),
             errors=list(state.errors),
+            answer_contract=state.answer_contract,
+            evidence_units=dict(state.evidence_units),
+            claim_clusters=dict(state.claim_clusters),
+            evidence_dispositions=list(state.evidence_dispositions),
+            acquisition_state_by_target=dict(
+                state.acquisition_state_by_target
+            ),
         )
 
     async def draft_report(

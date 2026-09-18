@@ -14,14 +14,17 @@ Nothing here performs I/O, so both artifacts are asserted directly.
 from __future__ import annotations
 
 import re
+from typing import get_args
 
 import pytest
 
 from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.report import (
+    DEFAULT_READER_WORD_LIMIT,
     EVIDENCE_SECTIONS,
     EVIDENCE_TITLE_PREFIX,
     LIMITATION_REASONS,
+    LIMITATION_TOPICS,
     QUALITY_STATUS_NOT_GATED,
     REPORT_SECTIONS,
     REPORT_SUMMARY_FALLBACK,
@@ -31,24 +34,41 @@ from deep_research.agents.report import (
     ReportConstraint,
     ReportPoint,
     ReportSection,
+    StatementMappingError,
+    UnknownEvidenceError,
+    backmatter_ratio,
     canonical_claims,
     canonical_sources,
     citation_markers,
+    composition_statements,
     reader_citations,
+    reader_word_count,
+    reader_word_limit,
     render_citations,
     render_evidence_ledger,
     render_limitations,
     render_reader_report,
+    render_statement_map,
     report_as_of,
     report_scope,
+    statement_source_urls,
+    validate_report_statements,
 )
 from deep_research.utils.types import (
+    AtomicProposition,
     Claim,
+    ClaimCluster,
     EvidencePassage,
+    EvidenceTarget,
+    EvidenceUnit,
     Finding,
+    ReportAnswerRow,
+    ReportStatement,
     ResearchError,
     ResearchEvent,
     ScoredSource,
+    SourceTemporal,
+    StatementMode,
     SubTopic,
 )
 
@@ -77,7 +97,16 @@ def _source(
     status: str = "scored",
     low_confidence: bool = False,
     rationale: str = "Peer-reviewed and corroborated.",
+    work_id: str | None = None,
+    transport: str = "unknown",
+    temporal: SourceTemporal | None = None,
 ) -> ScoredSource:
+    extra: dict[str, object] = {
+        "work_id": work_id,
+        "transport_relation": transport,
+    }
+    if temporal is not None:
+        extra["temporal"] = temporal
     if status == "scored":
         return ScoredSource(
             url=url,
@@ -88,12 +117,14 @@ def _source(
             overall_score=overall,
             rationale=rationale,
             low_confidence=low_confidence,
+            **extra,  # type: ignore[arg-type]
         )
     return ScoredSource(
         url=url,
         title=title,
         rationale=rationale,
         evaluation_status=status,
+        **extra,  # type: ignore[arg-type]
     )
 
 
@@ -1191,6 +1222,775 @@ def test_citations_render_one_numbered_line_each() -> None:
 def test_a_citation_object_rejects_a_zero_number() -> None:
     with pytest.raises(ValueError):
         Citation(number=0, url=SOURCE_URL, title="A")
+
+
+# --- Task 7: the statement map ------------------------------------------------
+
+
+def _unit(
+    url: str = THIRD_URL,
+    *,
+    evidence_id: str = "e1",
+    excerpt: str = "An independent review states the same figure.",
+    target_ids: list[str] | None = None,
+    origin: str = "fact_checker",
+) -> EvidenceUnit:
+    return EvidenceUnit(
+        evidence_id=evidence_id,
+        read_id=f"read-{evidence_id}",
+        source_url=url,
+        source_title="Independent review",
+        locator="p. 1",
+        excerpt=excerpt,
+        target_ids=target_ids if target_ids is not None else ["t1"],
+        origin=origin,
+    )
+
+
+def _cluster(
+    *,
+    cluster_id: str = "cluster-1",
+    claim_ids: list[str] | None = None,
+    evidence_ids: list[str] | None = None,
+    source_urls: list[str] | None = None,
+    verdicts: list[str] | None = None,
+    target_ids: list[str] | None = None,
+    verdict_evidence: dict[str, list[str]] | None = None,
+) -> ClaimCluster:
+    claim = _claim()
+    return ClaimCluster(
+        cluster_id=cluster_id,
+        proposition=AtomicProposition(text=claim.text),
+        evidence_ids=evidence_ids if evidence_ids is not None else ["e1"],
+        member_claim_ids=claim_ids if claim_ids is not None else [claim.claim_id],
+        target_ids=target_ids if target_ids is not None else ["t1"],
+        source_urls=source_urls if source_urls is not None else [THIRD_URL],
+        verdicts=verdicts if verdicts is not None else ["verified"],
+        verdict_evidence=(
+            verdict_evidence
+            if verdict_evidence is not None
+            else {"verified": [THIRD_URL]}
+        ),
+        verdict_evidence_status={"verified": "verified_pair"},
+    )
+
+
+def _statement(
+    text: str = "Break-even was reached.",
+    *,
+    statement_id: str = "S1",
+    mode: str = "attributed",
+    cluster_ids: list[str] | None = None,
+    evidence_ids: list[str] | None = None,
+    target_ids: list[str] | None = None,
+    dimensions: list[str] | None = None,
+    basis: str | None = None,
+) -> ReportStatement:
+    return ReportStatement(
+        statement_id=statement_id,
+        text=text,
+        mode=mode,
+        claim_cluster_ids=(
+            cluster_ids if cluster_ids is not None else ["cluster-1"]
+        ),
+        evidence_ids=evidence_ids if evidence_ids is not None else ["e1"],
+        target_ids=target_ids if target_ids is not None else ["t1"],
+        answered_dimensions=dimensions if dimensions is not None else [],
+        basis=basis,
+    )
+
+
+def _stated(
+    text: str = "Break-even was reached.",
+    *,
+    statement: ReportStatement | None = None,
+    claim_ids: list[str] | None = None,
+    source_urls: list[str] | None = None,
+) -> ReportPoint:
+    return ReportPoint(
+        text=text,
+        claim_ids=claim_ids if claim_ids is not None else [_claim().claim_id],
+        source_urls=source_urls if source_urls is not None else [SOURCE_URL],
+        statement=statement if statement is not None else _statement(text),
+    )
+
+
+def _answer_row(
+    subject: str = "Option A",
+    dimension: str = "cost",
+    finding: str = "Option A cost less.",
+) -> ReportAnswerRow:
+    return ReportAnswerRow(
+        cells=[
+            ReportStatement(
+                statement_id="row-label-1", text=subject, mode="context"
+            ),
+            ReportStatement(
+                statement_id="row-label-2", text=dimension, mode="context"
+            ),
+            _statement(
+                finding, statement_id="row-finding", mode="settled"
+            ),
+        ]
+    )
+
+
+def _evidence_composition(**overrides: object) -> ReportComposition:
+    """A composition whose statements cite the evidence it actually carries."""
+    payload: dict[str, object] = {
+        "evidence_units": {"e1": _unit()},
+        "claim_clusters": {"cluster-1": _cluster()},
+    }
+    payload.update(overrides)
+    return _composition(**payload)
+
+
+def test_citation_urls_come_from_selected_support() -> None:
+    evidence = {
+        "e1": EvidenceUnit(
+            evidence_id="e1",
+            read_id="r1",
+            source_url="https://independent.example/study",
+            source_title="Independent study",
+            locator="p3",
+            excerpt="Study finding.",
+            target_ids=["t1"],
+            origin="fact_checker",
+        )
+    }
+
+    assert statement_source_urls(["e1"], evidence) == [
+        "https://independent.example/study"
+    ]
+    assert statement_source_urls([], evidence) == []
+
+
+def test_statement_source_urls_rejects_an_unknown_id() -> None:
+    with pytest.raises(UnknownEvidenceError, match="missing"):
+        statement_source_urls(["missing"], {})
+
+
+def test_a_statement_mode_is_not_a_claim_evidence_status() -> None:
+    assert set(get_args(StatementMode)) == {
+        "settled",
+        "attributed",
+        "inference",
+        "contested",
+        "context",
+    }
+    assert "verified_pair" not in get_args(StatementMode)
+    assert "verified_pair" not in set(get_args(StatementMode))
+
+
+def test_an_inference_statement_records_the_derivation_it_rests_on() -> None:
+    statement = _statement(
+        "The converted value is 100 units.",
+        mode="inference",
+        basis="unit conversion: 1 GW = 1000 MW",
+    )
+
+    assert statement.mode == "inference"
+    assert statement.basis == "unit conversion: 1 GW = 1000 MW"
+    with pytest.raises(ValueError, match="basis"):
+        _statement("A derived figure.", mode="inference", basis=None)
+
+
+def test_reader_citations_carry_the_statements_selected_evidence() -> None:
+    """The verified cluster's own selected sources reach the references.
+
+    A statement that resolved its support to an independent verification
+    passage must cite that passage, not only the URL of the finding that first
+    raised the claim.
+    """
+    composition = _composition(
+        summary=[],
+        evidence_units={"e1": _unit()},
+        claim_clusters={"cluster-1": _cluster()},
+        constraints=[],
+        sections=[
+            ReportSection(
+                title="Error correction",
+                points=[_stated()],
+            )
+        ],
+    )
+    index = reader_citations(composition)
+
+    assert [citation.url for citation in index] == [SOURCE_URL, THIRD_URL]
+    body = _section_body(render_reader_report(composition), "## Findings")
+    assert "- Break-even was reached. [1][2]" in body
+
+
+def test_a_mirror_pair_collapses_to_one_reader_reference() -> None:
+    """One work served twice is one reference, and the copy is readable.
+
+    The mirror is cited first and the original second, so collapsing cannot be
+    an accident of the order the statement happened to select them in.
+    """
+    mirror = "https://mirror.test/qec"
+    composition = _composition(
+        summary=[],
+        constraints=[],
+        sources=[
+            _source(
+                url=mirror,
+                title="QEC 2025 (mirror)",
+                work_id="work-qec-2025",
+                transport="mirror",
+            ),
+            _source(
+                url=SOURCE_URL,
+                title="QEC 2025",
+                work_id="work-qec-2025",
+                transport="original",
+            ),
+        ],
+        evidence_units={
+            "e1": _unit(mirror, evidence_id="e1"),
+            "e2": _unit(SOURCE_URL, evidence_id="e2"),
+        },
+        claim_clusters={
+            "cluster-1": _cluster(
+                evidence_ids=["e1", "e2"],
+                source_urls=[],
+                verdict_evidence={},
+            )
+        },
+        sections=[
+            ReportSection(
+                title="Error correction",
+                points=[
+                    _stated(
+                        statement=_statement(evidence_ids=["e1", "e2"])
+                    )
+                ],
+            )
+        ],
+    )
+
+    index = reader_citations(composition)
+
+    assert [citation.url for citation in index] == [SOURCE_URL]
+    assert mirror not in render_reader_report(composition)
+
+
+def test_every_reader_statement_is_mapped_in_the_ledger() -> None:
+    composition = _evidence_composition(
+        evidence_units={"e1": _unit()},
+        claim_clusters={"cluster-1": _cluster()},
+        summary=[
+            _stated(
+                "Break-even was reached in 2025.",
+                statement=_statement(
+                    "Break-even was reached in 2025.", statement_id="S1"
+                ),
+            )
+        ],
+        sections=[
+            ReportSection(
+                title="Error correction",
+                points=[
+                    _stated(statement=_statement(statement_id="S2"))
+                ],
+            )
+        ],
+    )
+    statements = composition_statements(composition)
+    mapping = render_statement_map(composition)
+    ledger = render_evidence_ledger(composition)
+
+    assert [statement.statement_id for statement in statements] == ["S1", "S2"]
+    assert "| Statement | Mode |" in mapping
+    assert "cluster-1" in mapping
+    assert "e1" in mapping
+    assert mapping in ledger
+
+
+def test_an_unknown_evidence_id_fails_validation_before_rendering() -> None:
+    composition = _evidence_composition(
+        evidence_units={},
+        claim_clusters={},
+        summary=[],
+        sections=[
+            ReportSection(
+                title="Error correction",
+                points=[
+                    _stated(
+                        statement=_statement(evidence_ids=["missing"])
+                    )
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(UnknownEvidenceError, match="missing"):
+        validate_report_statements(composition)
+    with pytest.raises(UnknownEvidenceError, match="missing"):
+        render_reader_report(composition)
+
+
+def test_factual_prose_outside_the_statement_map_is_invalid() -> None:
+    composition = _evidence_composition(
+        evidence_units={},
+        claim_clusters={},
+        summary=[],
+        sections=[
+            ReportSection(
+                title="Error correction",
+                points=[
+                    ReportPoint(
+                        text="An unmapped factual sentence.",
+                        statement=ReportStatement(
+                            statement_id="S9",
+                            text="An unmapped factual sentence.",
+                            mode="settled",
+                        ),
+                    )
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(StatementMappingError, match="S9"):
+        validate_report_statements(composition)
+
+
+def test_a_context_statement_may_be_source_free_and_is_still_mapped() -> None:
+    composition = _evidence_composition(
+        evidence_units={},
+        claim_clusters={},
+        constraints=[],
+        summary=[],
+        sections=[
+            ReportSection(
+                title="Error correction",
+                points=[
+                    ReportPoint(
+                        text="No read was acquired for this topic.",
+                        statement=ReportStatement(
+                            statement_id="S9",
+                            text="No read was acquired for this topic.",
+                            mode="context",
+                            basis="not acquired: no read was retrieved",
+                        ),
+                    )
+                ],
+            )
+        ],
+    )
+
+    assert validate_report_statements(composition) == []
+    assert "No read was acquired" in render_reader_report(composition)
+
+
+def test_the_summary_leads_with_the_answer_before_the_details() -> None:
+    composition = _evidence_composition(
+        constraints=[],
+        summary=[
+            _stated(
+                "Break-even was reached in 2025.",
+                statement=_statement(
+                    "Break-even was reached in 2025.",
+                    statement_id="S1",
+                    mode="settled",
+                ),
+            )
+        ],
+        sections=[ReportSection(title="Error correction", points=[_stated()])],
+        limitations=["no_verified_claims"],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert "**What the evidence establishes**" in summary
+    assert "**What would change the answer**" not in summary
+    assert "**The most important unresolved limitation**" in summary
+    assert LIMITATION_TOPICS["no_verified_claims"] in summary
+
+
+@pytest.mark.parametrize(
+    ("kind", "heading", "column"),
+    [
+        ("constraints", "## Constraint ranking", "| Constraint |"),
+        ("comparison", "## Comparison", "| Option |"),
+        ("factual", "## Key facts", "| Subject |"),
+        ("historical", "## Chronology", "| Period |"),
+        ("explanation", "## Explanation", None),
+    ],
+)
+def test_each_answer_kind_generates_its_own_second_section(
+    kind: str, heading: str, column: str | None
+) -> None:
+    composition = _evidence_composition(
+        answer_kind=kind,
+        constraints=(
+            [
+                ReportConstraint(
+                    text="Cordon tolling",
+                    deployment_mechanism="licence",
+                    geography="London",
+                    claim_ids=[_claim().claim_id],
+                    source_urls=[SOURCE_URL],
+                )
+            ]
+            if kind == "constraints"
+            else []
+        ),
+        answer_rows=[] if kind == "constraints" else [_answer_row()],
+    )
+    reader = render_reader_report(composition)
+    body = _section_body(reader, heading)
+
+    assert heading in reader
+    if column is None:
+        assert "| " not in body
+        assert "Option A cost less." in body
+    else:
+        assert column in body
+    if kind == "constraints":
+        assert "## Constraint ranking" in reader
+    else:
+        assert "## Constraint ranking" not in reader
+
+
+def test_a_question_that_is_not_about_constraints_gets_no_empty_table() -> None:
+    reader = render_reader_report(
+        _evidence_composition(
+            answer_kind="comparison", constraints=[], answer_rows=[]
+        )
+    )
+    body = _section_body(reader, "## Comparison")
+
+    assert "| " not in body
+    assert body.strip() != ""
+
+
+def test_the_reader_word_ceiling_follows_the_frozen_contract() -> None:
+    assert reader_word_limit(_composition()) == DEFAULT_READER_WORD_LIMIT
+    assert (
+        reader_word_limit(_composition(requested_word_limit=12000)) == 12000
+    )
+
+    points = [
+        _stated(
+            f"Statement {index} reports a measured result from the study that "
+            "was read for this topic and nothing beyond it.",
+            statement=_statement(
+                f"Statement {index} reports a measured result.",
+                statement_id=f"S{index}",
+            ),
+        )
+        for index in range(12)
+    ]
+    composition = _evidence_composition(
+        requested_word_limit=250,
+        summary=points[:6],
+        sections=[ReportSection(title="Error correction", points=points[6:])],
+    )
+    reader = render_reader_report(composition)
+
+    assert reader_word_count(reader) <= 250
+    assert "Statement 11" not in reader
+    assert "Statement 0 reports" in reader
+
+
+def test_the_backmatter_stays_within_the_reader_ceiling() -> None:
+    claims = [
+        _claim(
+            text=f"Measured result {index} was reported.",
+            urls=[f"https://example.test/study-{index}"],
+        )
+        for index in range(10)
+    ]
+    composition = _evidence_composition(
+        claims=claims,
+        sources=[
+            _source(
+                url=f"https://example.test/study-{index}",
+                title=f"Study {index}",
+            )
+            for index in range(10)
+        ],
+        constraints=[],
+        summary=[
+            _stated(
+                "One measured result was reported.",
+                claim_ids=[claims[0].claim_id],
+                source_urls=[claims[0].source_urls[0]],
+                statement=_statement("One measured result was reported."),
+            )
+        ],
+        sections=[
+            ReportSection(
+                title="Load-bearing evidence",
+                points=[
+                    _stated(
+                        f"Study {index} reports that its own measurement was "
+                        "taken over the recorded period, that the measurement "
+                        "was independently reviewed before publication, and "
+                        "that the review found no material disagreement with "
+                        "the reported figure or with the method used to "
+                        "obtain it.",
+                        claim_ids=[claim.claim_id],
+                        source_urls=[claim.source_urls[0]],
+                        statement=_statement(
+                            f"Study {index} reports a reviewed measurement.",
+                            statement_id=f"F{index}",
+                        ),
+                    )
+                    for index, claim in enumerate(claims[:8])
+                ],
+            )
+        ],
+    )
+    reader = render_reader_report(composition)
+
+    assert backmatter_ratio(reader) <= 0.35
+    # The ratio is not met by deleting citations: every cited URL survives.
+    for claim in claims[:2]:
+        assert reader.count(claim.source_urls[0]) == 1
+
+
+def test_citations_survive_when_the_backmatter_floor_cannot_be_met() -> None:
+    """A reference-heavy, prose-light report keeps its citations and says so.
+
+    Deleting a citation to reach a ratio is forbidden, so the honest outcome
+    is an over-ratio artifact with the reason recorded in the ledger.
+    """
+    claims = [
+        _claim(
+            text=f"Measured result {index} was reported.",
+            urls=[f"https://example.test/study-{index}"],
+        )
+        for index in range(10)
+    ]
+    composition = _evidence_composition(
+        claims=claims,
+        sources=[
+            _source(
+                url=f"https://example.test/study-{index}",
+                title=f"Study {index}",
+            )
+            for index in range(10)
+        ],
+        constraints=[],
+        sections=[
+            ReportSection(
+                title="Load-bearing evidence",
+                points=[
+                    _stated(
+                        "One measured result was reported.",
+                        claim_ids=[claims[0].claim_id],
+                        source_urls=[claims[0].source_urls[0]],
+                        statement=_statement(
+                            "One measured result was reported."
+                        ),
+                    )
+                ],
+            )
+        ],
+    )
+
+    reader = render_reader_report(composition)
+    ledger = render_evidence_ledger(composition)
+    references = [
+        line
+        for line in _section_body(reader, "## References").splitlines()
+        if re.match(r"^\d+\. ", line)
+    ]
+
+    assert backmatter_ratio(reader) > 0.35
+    # No citation was deleted to reach a ratio that cannot be reached.
+    assert len(references) == len(reader_citations(composition))
+    assert "backmatter_floor_reached" in ledger
+
+
+def test_methodology_does_not_claim_more_linkage_than_the_report_shows() -> None:
+    unlinked = ReportStatement(
+        statement_id="S7",
+        text="No cost evidence was acquired for this topic.",
+        mode="context",
+        basis="not acquired: no read was retrieved",
+    )
+    composition = _evidence_composition(
+        constraints=[],
+        summary=[_stated("Break-even was reached in 2025.")],
+        sections=[
+            ReportSection(
+                title="Error correction",
+                points=[
+                    _stated(),
+                    ReportPoint(text=unlinked.text, statement=unlinked),
+                ],
+            )
+        ],
+    )
+    section = _section_body(
+        render_reader_report(composition), "## Methodology"
+    )
+
+    assert "Every statement above is a claim-linked point" not in section
+    assert "1 statement(s) above carry no checked claim link" in section
+
+
+def test_methodology_claims_full_linkage_when_the_report_shows_it() -> None:
+    composition = _evidence_composition(
+        constraints=[],
+        summary=[_stated("Break-even was reached in 2025.")],
+        sections=[ReportSection(title="Error correction", points=[_stated()])],
+    )
+    section = _section_body(
+        render_reader_report(composition), "## Methodology"
+    )
+
+    assert "Every statement above carries a checked claim link" in section
+
+
+def test_the_header_separates_generation_from_the_evidence_date() -> None:
+    reader = render_reader_report(
+        _composition(
+            generated_on="2026-09-16",
+            date_basis="the question asks for current installed capacity",
+        )
+    )
+
+    assert f"**As of:** {EXTRACTED_AT}" in reader
+    assert "**Generated on:** 2026-09-16" in reader
+    assert "**Date basis:** the question asks for current installed capacity" in (
+        reader
+    )
+
+
+def test_source_dates_stay_distinct_in_the_ledger() -> None:
+    ledger = render_evidence_ledger(
+        _composition(
+            sources=[
+                _source(
+                    temporal=SourceTemporal(
+                        publication_date="2026-01-01",
+                        data_period="2024",
+                        forecast_horizon="2035",
+                        effective_date="2026-06-01",
+                        status="current",
+                    )
+                )
+            ]
+        )
+    )
+    row = _table_rows(_section_body(ledger, "## Source assessment"))[2]
+
+    assert "publication=2026-01-01" in row
+    assert "data_period=2024" in row
+    assert "forecast=2035" in row
+    assert "effective=2026-06-01" in row
+
+
+def test_uncertainty_context_is_grouped_by_what_it_is() -> None:
+    composition = _composition(
+        constraints=[],
+        summary=[],
+        sections=[],
+        uncertainty_notes=[],
+        uncertainty_statements=[
+            ReportStatement(
+                statement_id="S1",
+                text="No read was acquired for the cost topic.",
+                mode="context",
+                basis="not acquired: no read was retrieved",
+            ),
+            ReportStatement(
+                statement_id="S2",
+                text="Two reads disagree about the measured rate.",
+                mode="context",
+                basis="uncertain/conflicting: same period, different result",
+            ),
+            ReportStatement(
+                statement_id="S3",
+                text="The 2035 horizon is outside this pass's scope.",
+                mode="context",
+                basis="outside scope: the contract froze an earlier period",
+            ),
+        ],
+    )
+    uncertainty = _section_body(
+        render_reader_report(composition), "## Uncertainty and conflicting evidence"
+    )
+
+    assert "### Not acquired" in uncertainty
+    assert "### Uncertain or conflicting" in uncertainty
+    assert "### Outside scope" in uncertainty
+    assert "No read was acquired for the cost topic." in uncertainty
+
+
+def test_an_answered_dimension_requires_the_evidence_to_carry_it() -> None:
+    """A statement answers a required dimension only when its atom states it.
+
+    The proposition behind the cluster fills a place and a quantity, so a
+    target asking for geography and scale is answered on both; a target asking
+    for a mechanism is not, because nothing in the recorded evidence states
+    one.
+    """
+    claim = _claim()
+    cluster = _cluster(
+        claim_ids=[claim.claim_id],
+        evidence_ids=["e1"],
+    ).model_copy(
+        update={
+            "proposition": AtomicProposition(
+                text=claim.text,
+                subject="London pilot",
+                value="12",
+                unit="GW",
+                geography="London",
+            )
+        }
+    )
+    composition = _evidence_composition(
+        claims=[claim],
+        claim_clusters={"cluster-1": cluster},
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-01",
+                title="Alpha",
+                rationale="First.",
+                search_queries=["alpha"],
+                success_criteria=["alpha evidence"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="t1",
+                        coverage_id="topic-01",
+                        question="Where, how much, and how?",
+                        required_dimensions=[
+                            "geography",
+                            "scale",
+                            "mechanism",
+                        ],
+                        required=True,
+                        critical=True,
+                        support_policy="independent_pair",
+                    )
+                ],
+            )
+        ],
+        constraints=[],
+        summary=[
+            ReportPoint(
+                text="The London pilot added 12 GW.",
+                claim_ids=[claim.claim_id],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+    )
+
+    # The composition derives the record from the evidence it actually holds,
+    # which is where the answered dimensions come from.
+    statement = composition.summary[0].statement
+    assert statement is not None
+    assert statement.target_ids == ["t1"]
+    assert statement.answered_dimensions == ["geography", "scale"]
 
 
 # --- helpers ------------------------------------------------------------------

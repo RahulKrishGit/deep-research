@@ -482,12 +482,19 @@ def test_new_prompt_constants_state_their_contracts() -> None:
     assert "exact url" in SOURCE_EVALUATOR_SYSTEM_PROMPT
 
 
-def test_constraint_cells_disclose_the_provider_only_trust_boundary() -> None:
-    """Mechanism/geography have no structured provenance in Task 6."""
+def test_constraint_cells_state_how_they_are_checked() -> None:
+    """Mechanism/geography have no structured provenance, so they are checked.
+
+    Task 6 could only tell the model to be careful. Task 7 checks the cell
+    against the evidence its row cites and repairs it, which is a different
+    contract and has to be stated as one: the prompt must say the wording
+    comes from the evidence and that an unbacked cell is replaced.
+    """
     instruction = REPORT_INSTRUCTION.casefold()
 
-    assert "provider-only" in instruction
-    assert "not structurally validated" in instruction
+    assert "checked against the evidence the row cites" in instruction
+    assert "the wording of a cell must come from that evidence" in instruction
+    assert "replaced with 'not stated'" in instruction
 
 
 def test_source_consumers_distinguish_quality_scores_from_statuses() -> None:

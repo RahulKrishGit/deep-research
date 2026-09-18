@@ -22,7 +22,11 @@ from deep_research.agents.fact_checker import (
     FactCheckerAgent,
     PassageVerdictDraft,
 )
-from deep_research.agents.report import REPORT_SECTIONS
+from deep_research.agents.report import (
+    REPORT_SECTIONS,
+    composition_statements,
+    validate_report_statements,
+)
 from deep_research.agents.synthesizer import (
     ConstraintDraft,
     ReportDraft,
@@ -230,6 +234,19 @@ async def test_verified_claims_become_a_cited_report_the_critic_accepts(
     # Researcher actually retrieved, inline in the point that rests on it.
     assert "- Break-even was reached. [1]" in state.report
     assert f"1. QEC 2025 — {SEAM_SOURCE_URL}" in state.report
+    # Task 7: every reader statement is mapped, and the independent passage
+    # that carried the attribution is a reference in its own right.
+    assert state.composition is not None
+    assert validate_report_statements(state.composition) == []
+    statements = composition_statements(state.composition)
+    # The claim is primary-source attribution, not corroboration, so no
+    # statement may read as settled; the "not stated" table cell is this
+    # pass's own context statement rather than a finding.
+    assert "attributed" in {statement.mode for statement in statements}
+    assert "settled" not in {statement.mode for statement in statements}
+    assert f"2. Independent review — {SEAM_INDEPENDENT_URL}" in state.report
+    assert "## Statement support map" in (state.report_evidence or "")
+    assert "- Break-even was reached. [1][2]" in state.report
     # Both artifacts are composed into state; synthesis publishes neither and
     # keeps nothing in long-term memory.
     assert state.report_evidence is not None

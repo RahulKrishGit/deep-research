@@ -439,6 +439,22 @@ def _example_tables() -> tuple:
     )
 
 
+def test_the_report_request_states_the_statement_contract() -> None:
+    """The writer is told what a statement is, and what backs one.
+
+    Task 7 makes every reader statement traceable: the request has to ask for
+    the derivation basis, the answer rows the frozen form needs, and the
+    uncertainty rules, or a model that followed the old contract would have
+    every figure-bearing sentence refused.
+    """
+    body = _report_messages()[1].content
+
+    assert "basis" in body
+    assert "answer_rows" in body
+    assert "do not print a figure here" in body.casefold()
+    assert "truncated, denied, or missing" in body.casefold()
+
+
 @pytest.mark.parametrize(
     ("examples", "schema"),
     _example_tables(),

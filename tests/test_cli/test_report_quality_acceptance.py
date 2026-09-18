@@ -71,6 +71,7 @@ from deep_research.agents.report import (
     ReportConstraint,
     ReportPoint,
     ReportSection,
+    reader_citations,
     render_evidence_ledger,
     render_reader_report,
     report_as_of,
@@ -1336,7 +1337,7 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
     assert (
         reviewed_not_cited.count("- https://")
         == len(source_rows) - len(references)
-        == len(unscored_rows) + len(_VERIFIERS)
+        == len(unscored_rows)
     )
     # 2/7 critic-visible required sections -> 7/7, on a report longer than the
     # per-section review budget.
@@ -1476,18 +1477,20 @@ def test_the_renderers_collapse_repeated_records_onto_one_row_each() -> None:
 def test_reader_references_hold_only_sources_a_reader_point_cites() -> None:
     """The mechanism behind the 89 unused references, asserted directly.
 
-    A composition that reviews thirteen sources but relies on five must number
-    five, and the eight it never relies on must stay in the ledger.
+    A composition that reviews thirteen sources must number exactly the ones
+    its statements resolve to: the five the model cited, plus the independent
+    verification sources that actually carried the verdicts (Task 7 — a
+    verified claim cites its selected support, not only the finding that first
+    raised it). The rest stay in the ledger.
     """
     fixture = _fixture()
     composition = fixture.state.composition
     assert composition is not None
-    cited = {
-        url
-        for point in _reader_points(composition)
-        for url in point.source_urls
-    }
+    cited = {citation.url for citation in reader_citations(composition)}
     assert len(cited) < len(composition.sources)
+    assert {
+        url for point in _reader_points(composition) for url in point.source_urls
+    } <= cited
 
     report = render_reader_report(composition)
     references = _references(report)

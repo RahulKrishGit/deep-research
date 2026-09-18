@@ -387,7 +387,13 @@ def deterministic_evaluation(
     duplicate_source_rows = len(sources) - len(source_url_set)
 
     points = _points(composition)
-    cited_urls = _urls([url for point in points for url in point.source_urls])
+    # The cited set is what the reader report prints, read from the same index
+    # the renderer numbers its markers with: Task 7 resolves each statement's
+    # citations from its selected evidence, so a verified cluster cites the
+    # passages that carried its verdict and not only the finding that first
+    # raised it. The per-point model-supplied links are still what the linkage
+    # check below judges.
+    cited_urls = _urls([citation.url for citation in reader_citations(composition)])
     scored_by_url = {
         normalize_source_url(source.url): source.evaluation_status == "scored"
         for source in canonical_sources(sources)

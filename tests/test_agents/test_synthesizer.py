@@ -33,6 +33,7 @@ from deep_research.agents.report import (
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import (
     DEFAULT_MEMORY_CONFIDENCE,
+    STATEMENT_DISPOSITIONS,
     SYNTHESIS_OPEN_QUESTIONS_CHARS,
     ConstraintDraft,
     ReportDraft,
@@ -43,6 +44,7 @@ from deep_research.agents.synthesizer import (
     SynthesizerAgent,
     bounded_claim_packet,
     bounded_finding_digest,
+    build_canonical_packet,
     build_report_composition,
     claim_label,
     claim_registry,
@@ -53,6 +55,7 @@ from deep_research.agents.synthesizer import (
     limitation_reasons,
     memory_payload,
     ordered_claims_for_report,
+    render_canonical_packet,
     render_revision_guidance,
     report_filename,
     report_messages,
@@ -68,12 +71,19 @@ from deep_research.providers import (
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    AnswerContract,
+    AtomicProposition,
     Claim,
+    ClaimCluster,
     Critique,
+    EvidencePassage,
+    EvidenceTarget,
+    EvidenceUnit,
     Finding,
     ResearchError,
     ResearchState,
     ScoredSource,
+    SourceTemporal,
     SubTopic,
 )
 from tests.agent_fakes import ScriptedCompleter
@@ -111,16 +121,30 @@ def _source(
     url: str = SOURCE_URL,
     overall: float = 0.76,
     low_confidence: bool = False,
+    temporal: SourceTemporal | None = None,
 ) -> ScoredSource:
-    return ScoredSource(
-        url=url,
-        title="QEC 2025",
-        authority_score=0.8,
-        recency_score=0.7,
-        relevance_score=0.9,
-        overall_score=overall,
-        rationale="Peer-reviewed and corroborated.",
-        low_confidence=low_confidence,
+    payload: dict[str, object] = {
+        "url": url,
+        "title": "QEC 2025",
+        "authority_score": 0.8,
+        "recency_score": 0.7,
+        "relevance_score": 0.9,
+        "overall_score": overall,
+        "rationale": "Peer-reviewed and corroborated.",
+        "low_confidence": low_confidence,
+    }
+    if temporal is not None:
+        payload["temporal"] = temporal
+    return ScoredSource.model_validate(payload)
+
+
+def _passage(url: str = OTHER_URL) -> EvidencePassage:
+    return EvidencePassage(
+        source_url=url,
+        source_title="Independent review",
+        locator="p. 1",
+        excerpt="An independent review states the same figure.",
+        stance="supports",
     )
 
 
@@ -132,6 +156,9 @@ def _claim(
     urls: list[str] | None = None,
     coverage_ids: list[str] | None = None,
     finding_fingerprints: list[str] | None = None,
+    contradictions: list[str] | None = None,
+    passages: list[EvidencePassage] | None = None,
+    target_ids: list[str] | None = None,
 ) -> Claim:
     return Claim(
         claim_id=claim_fingerprint(text),
@@ -147,10 +174,11 @@ def _claim(
         ),
         confidence=confidence,
         evidence=[],
-        contradictions=[],
-        verification_evidence=[],
+        contradictions=contradictions or [],
+        verification_evidence=passages or [],
         consumed_finding_fingerprints=finding_fingerprints or [],
         consumed_coverage_ids=coverage_ids or [],
+        target_ids=target_ids or [],
     )
 
 
@@ -173,6 +201,7 @@ def _state(**overrides: object) -> ResearchState:
         "raw_findings": [_finding()],
         "evaluated_sources": [_source()],
         "verified_claims": [_claim()],
+        "evidence_units": {EVIDENCE_ID: _unit()},
     }
     payload.update(overrides)
     return ResearchState.model_validate(payload)
@@ -191,6 +220,7 @@ def _task(**overrides: object) -> SynthesisTask:
         "findings": [_finding()],
         "limitations": [],
         "errors": [],
+        "evidence_units": {EVIDENCE_ID: _unit()},
     }
     payload.update(overrides)
     return SynthesisTask.model_validate(payload)
@@ -649,7 +679,7 @@ def test_a_repeated_point_is_refused() -> None:
 
     assert len(composition.summary) == 1
     assert rejected == [
-        "executive summary point 2: repeats an earlier point"
+        "executive summary point 2: repeats an earlier statement"
     ]
 
 
@@ -779,13 +809,14 @@ def test_a_blank_constraint_cell_renders_as_not_stated() -> None:
     assert composition.constraints[0].geography == ""
 
 
-def test_constraint_semantics_are_provider_attested_without_text_heuristics() -> None:
-    """The typed contract has no field that can prove these cell values.
+def test_constraint_cells_are_checked_against_the_evidence_their_row_cites() -> None:
+    """An uncited factual table cell is repaired, not printed.
 
-    Claim and source links are still validated, but mechanism/geography remain
-    provider-attested prose until a future contract carries structured evidence
-    for them. Arbitrary-looking values therefore must not be accepted as local
-    provenance merely because they are nonblank, nor rejected by text guesses.
+    The typed contract still has no field that *proves* a cell's semantics, so
+    the check is provenance rather than guesswork: the wording of a published
+    cell must come from the evidence the row cites. A cell the evidence does
+    not carry is replaced with ``not stated`` and the repair is recorded —
+    printing it as provider-attested prose is the defect this replaces.
     """
     draft = ReportDraft(
         executive_summary=[],
@@ -806,11 +837,14 @@ def test_constraint_semantics_are_provider_attested_without_text_heuristics() ->
         _task(), draft, max_sections=4, limitations=[]
     )
 
-    assert rejected == []
-    assert composition.constraints[0].deployment_mechanism == (
-        "invented mechanism with no typed support"
-    )
-    assert composition.constraints[0].geography == "Atlantis"
+    row = composition.constraints[0]
+    assert row.deployment_mechanism == ""
+    assert row.geography == ""
+    assert rejected == [
+        "constraint 1 deployment mechanism: no evidence for this cell",
+        "constraint 1 geography: no evidence for this cell",
+    ]
+    assert "unsupported_cell" in composition.statement_dispositions
 
 
 def test_uncertainty_notes_may_carry_source_free_text() -> None:
@@ -1012,6 +1046,763 @@ def test_build_task_carries_the_evidence_limitations_and_revision_notes(
     assert task.limitations == ["low_confidence_sources"]
     assert task.errors == []
     assert "No cost data." in task.guidance
+
+
+# --- Task 7: the answer, not the claim inventory -------------------------------
+
+EVIDENCE_ID = "e1"
+CLUSTER_ID = "cluster-1"
+GROUNDING_EXCERPT = (
+    "The 2025 review reports that logical error rates fell below break-even, "
+    "and that the London pilot used an area licence with camera enforcement."
+)
+
+
+def _unit(
+    *,
+    evidence_id: str = EVIDENCE_ID,
+    url: str = SOURCE_URL,
+    excerpt: str = GROUNDING_EXCERPT,
+    origin: str = "fact_checker",
+) -> EvidenceUnit:
+    return EvidenceUnit(
+        evidence_id=evidence_id,
+        read_id=f"read-{evidence_id}",
+        source_url=url,
+        source_title="QEC 2025",
+        locator="p. 4",
+        excerpt=excerpt,
+        target_ids=["t1"],
+        origin=origin,
+    )
+
+
+def _cluster(
+    *,
+    cluster_id: str = CLUSTER_ID,
+    claim_ids: list[str] | None = None,
+    evidence_ids: list[str] | None = None,
+    verdicts: list[str] | None = None,
+    contradictions: list[str] | None = None,
+) -> ClaimCluster:
+    claim = _claim()
+    return ClaimCluster(
+        cluster_id=cluster_id,
+        proposition=AtomicProposition(text=claim.text),
+        evidence_ids=evidence_ids if evidence_ids is not None else [EVIDENCE_ID],
+        member_claim_ids=claim_ids if claim_ids is not None else [claim.claim_id],
+        target_ids=["t1"],
+        source_urls=list(claim.source_urls),
+        verdicts=verdicts if verdicts is not None else ["verified"],
+        verdict_evidence={"verified": list(claim.source_urls)},
+        verdict_evidence_status={"verified": "verified_pair"},
+    )
+
+
+def _target(
+    target_id: str = "t1",
+    *,
+    critical: bool = True,
+    dimensions: list[str] | None = None,
+) -> EvidenceTarget:
+    return EvidenceTarget(
+        target_id=target_id,
+        coverage_id="topic-01",
+        question=f"What does {target_id} require?",
+        required_dimensions=dimensions or ["mechanism", "scale"],
+        required=True,
+        critical=critical,
+        support_policy="independent_pair",
+    )
+
+
+def _grounded_task(**overrides: object) -> SynthesisTask:
+    payload: dict[str, object] = {
+        "evidence_units": {EVIDENCE_ID: _unit()},
+        "claim_clusters": {CLUSTER_ID: _cluster()},
+    }
+    payload.update(overrides)
+    return _task(**payload)
+
+
+def _dispositions(composition: ReportComposition) -> list[str]:
+    return list(composition.statement_dispositions)
+
+
+def test_a_correctly_cited_but_unsupported_mechanism_is_repaired() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for road use inside the measured zone.",
+                deployment_mechanism="a carbon levy on freight",
+                geography="not stated",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, _ = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    row = composition.constraints[0]
+    assert row.deployment_mechanism == ""
+    assert "unsupported_cell" in _dispositions(composition)
+    assert "returned_to_fact_checker" in _dispositions(composition)
+    mechanism = row.mechanism_statement
+    assert mechanism is not None
+    assert mechanism.mode == "context"
+
+
+def test_an_attested_mechanism_and_geography_are_published_with_their_evidence() -> (
+    None
+):
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for road use inside the measured zone.",
+                deployment_mechanism="area licence with camera enforcement",
+                geography="London",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    row = composition.constraints[0]
+    assert rejected == []
+    assert row.deployment_mechanism == "area licence with camera enforcement"
+    assert row.geography == "London"
+    assert row.mechanism_statement is not None
+    assert row.mechanism_statement.mode == "attributed"
+    assert row.mechanism_statement.evidence_ids == [EVIDENCE_ID]
+
+
+def test_a_wrong_geographic_extrapolation_is_repaired() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for road use inside the measured zone.",
+                deployment_mechanism="not stated",
+                geography="Germany",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, _ = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    row = composition.constraints[0]
+    assert row.geography == ""
+    assert "unsupported_cell" in _dispositions(composition)
+
+
+def test_a_wrong_geographic_extrapolation_in_prose_is_refused() -> None:
+    """The evidence names London; a statement carrying it to Germany does not.
+
+    A named place the cited evidence never states is a new fact whether it
+    sits in a table cell or in a sentence, so the same attestation check
+    applies to both.
+    """
+    draft = ReportDraft(
+        executive_summary=[
+            ReportPointDraft(
+                text="The London pilot's result applies across Germany.",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.summary == []
+    assert rejected == [
+        "executive summary point 1: a name or place the evidence does not state"
+    ]
+    assert "unsupported_extrapolation" in _dispositions(composition)
+    assert "returned_to_fact_checker" in _dispositions(composition)
+
+
+def test_a_made_up_recommendation_is_refused() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[
+            ReportSectionDraft(
+                title="Error correction",
+                points=[
+                    ReportPointDraft(
+                        text=(
+                            "Policymakers should ban error-corrected qubits "
+                            "until 2035."
+                        ),
+                        claim_ids=["C001"],
+                        source_urls=[SOURCE_URL],
+                    )
+                ],
+            )
+        ],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.sections == []
+    assert rejected == [
+        "section 1 point 1: a recommendation outside the answer",
+        "section 1: no printable point",
+    ]
+    assert "unsupported_recommendation" in _dispositions(composition)
+
+
+def test_an_invented_truncation_limitation_is_refused() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[
+            "The source document was truncated before its capacity table."
+        ],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.uncertainty_statements == []
+    assert rejected == [
+        "uncertainty note 1: no recorded disposition for a truncated read"
+    ]
+    assert "unsupported_limitation" in _dispositions(composition)
+
+
+def test_a_truncation_limitation_with_a_recorded_disposition_is_kept() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[
+            "The source document was truncated before its capacity table."
+        ],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(
+            errors=[
+                ResearchError(
+                    error_type="document_truncated",
+                    source="agent.researcher",
+                    message="The document reader stopped at the page limit.",
+                )
+            ]
+        ),
+        draft,
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == []
+    assert len(composition.uncertainty_statements) == 1
+
+
+def test_an_uncertainty_sentence_cannot_print_an_unchecked_figure() -> None:
+    """The reader must explain the gap without printing the figure."""
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[
+            "The 890 GW of installed storage was not reported by any read "
+            "source."
+        ],
+    )
+
+    report, _ = compose_report(
+        _grounded_task(), draft=draft, limitations=[]
+    )
+
+    assert "890" not in report.markdown
+    assert "GW" not in report.markdown
+    assert "installed storage" in report.markdown
+    assert "unsupported_figure" in _dispositions(report.composition)
+    assert "returned_to_fact_checker" in _dispositions(report.composition)
+
+
+def test_a_settled_statement_cannot_carry_an_unattested_figure() -> None:
+    draft = ReportDraft(
+        executive_summary=[
+            ReportPointDraft(
+                text="Capacity reached 890 GW in 2025.",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.summary == []
+    assert rejected == ["executive summary point 1: an unsupported figure"]
+    assert "unsupported_figure" in _dispositions(composition)
+
+
+def test_an_attested_figure_is_published() -> None:
+    draft = ReportDraft(
+        executive_summary=[
+            ReportPointDraft(
+                text="Logical error rates fell below break-even in 2025.",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert rejected == []
+    assert composition.summary[0].statement is not None
+    assert composition.summary[0].statement.mode == "settled"
+    assert composition.summary[0].statement.evidence_ids == [EVIDENCE_ID]
+
+
+def test_a_checked_derivation_passes_through_recorded_premises() -> None:
+    evidence = {
+        EVIDENCE_ID: _unit(excerpt="The pilot covered 1200 hectares in 2025.")
+    }
+    draft = ReportDraft(
+        executive_summary=[
+            ReportPointDraft(
+                text="The pilot covered 12 square kilometres.",
+                basis="unit conversion: 1200 hectares = 12 square kilometres",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(evidence_units=evidence),
+        draft,
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == []
+    statement = composition.summary[0].statement
+    assert statement is not None
+    assert statement.mode == "inference"
+    assert "1200 hectares" in (statement.basis or "")
+
+
+def test_a_derivation_without_premises_is_refused() -> None:
+    evidence = {
+        EVIDENCE_ID: _unit(excerpt="The pilot covered 1200 hectares in 2025.")
+    }
+    draft = ReportDraft(
+        executive_summary=[
+            ReportPointDraft(
+                text="The pilot covered 12 square kilometres.",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(evidence_units=evidence),
+        draft,
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary == []
+    assert rejected == ["executive summary point 1: an unsupported figure"]
+    assert "unsupported_figure" in _dispositions(composition)
+
+
+def test_a_repeated_fact_cannot_inflate_the_report() -> None:
+    repeated = ReportPointDraft(
+        text="Break-even was reached in 2025.",
+        claim_ids=["C001"],
+        source_urls=[SOURCE_URL],
+    )
+    draft = ReportDraft(
+        executive_summary=[repeated],
+        ranked_constraints=[],
+        sections=[
+            ReportSectionDraft(title="Error correction", points=[repeated]),
+        ],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert len(composition.summary) == 1
+    # The fact behind both copies is counted once, and the copy that would
+    # have added nothing to the reader's information is refused.
+    assert composition.distinct_statement_count == 1
+    assert "duplicate_statement" in _dispositions(composition)
+    assert "section 1 point 1: repeats an earlier statement" in rejected
+
+
+def test_a_summary_restatement_and_its_body_discussion_are_counted_once() -> None:
+    """Repetition is not itself the defect; inflation is.
+
+    A brief restatement in the summary and a longer discussion in the findings
+    are two statements of one fact. Both render, and the fact is counted once.
+    """
+    draft = ReportDraft(
+        executive_summary=[
+            ReportPointDraft(
+                text="Break-even was reached in 2025.",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        ranked_constraints=[],
+        sections=[
+            ReportSectionDraft(
+                title="Error correction",
+                points=[
+                    ReportPointDraft(
+                        text=(
+                            "Logical error rates fell below break-even in the "
+                            "2025 review."
+                        ),
+                        claim_ids=["C001"],
+                        source_urls=[SOURCE_URL],
+                    )
+                ],
+            )
+        ],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert rejected == []
+    assert len(composition.summary) == 1
+    assert len(composition.sections[0].points) == 1
+    assert composition.distinct_statement_count == 1
+
+
+def test_an_uncertainty_note_may_name_the_questions_own_recorded_dates() -> None:
+    """A note about the question's own horizon states a recorded fact.
+
+    The frozen contract's period and the sources' recorded dates are records
+    this pass made, so naming them is reporting the pass rather than asserting
+    the world. Removing those figures would make the note say something else.
+    """
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[
+            "The 2035 forecast horizon is outside this pass's scope."
+        ],
+    )
+
+    composition, _ = build_report_composition(
+        _grounded_task(
+            sources=[
+                _source(
+                    temporal=SourceTemporal(
+                        publication_date="2026-01-01",
+                        forecast_horizon="2035",
+                    )
+                )
+            ]
+        ),
+        draft,
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.uncertainty_statements[0].text == (
+        "The 2035 forecast horizon is outside this pass's scope."
+    )
+    assert "unsupported_figure" not in _dispositions(composition)
+
+
+def test_a_repair_keeps_the_subject_of_the_sentence_it_strips() -> None:
+    """A year is not a unit: the noun after it survives the repair."""
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=["The 2035 horizon was not reported by any read."],
+    )
+
+    composition, _ = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.uncertainty_statements[0].text == (
+        "The horizon was not reported by any read."
+    )
+    assert "2035" not in composition.uncertainty_statements[0].text
+    assert "unsupported_figure" in _dispositions(composition)
+
+
+def test_every_recorded_disposition_comes_from_the_enumerated_vocabulary() -> None:
+    """A disposition is a token a consumer can group on, not free prose."""
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for road use inside the measured zone.",
+                deployment_mechanism="a carbon levy on freight",
+                geography="Germany",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[
+            ReportSectionDraft(
+                title="Error correction",
+                points=[
+                    ReportPointDraft(
+                        text="Policymakers should ban error-corrected qubits.",
+                        claim_ids=["C001"],
+                        source_urls=[SOURCE_URL],
+                    )
+                ],
+            )
+        ],
+        uncertainty_notes=[
+            "The source document was truncated before its capacity table.",
+            "The 890 GW of installed storage was not reported by any read.",
+        ],
+    )
+
+    composition, _ = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.statement_dispositions
+    assert set(composition.statement_dispositions) <= set(
+        STATEMENT_DISPOSITIONS
+    )
+
+
+def test_a_new_factual_assertion_is_returned_to_the_fact_checker() -> None:
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for road use inside the measured zone.",
+                deployment_mechanism="a carbon levy on freight",
+                geography="not stated",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, _ = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+    returned = composition.returned_to_fact_checker
+
+    assert returned == ["a carbon levy on freight"]
+    # Detection and disposition only: nothing here routes a new claim.
+    assert "returned_to_fact_checker" in _dispositions(composition)
+
+
+def test_the_canonical_packet_is_balanced_across_critical_targets() -> None:
+    claims = [
+        _claim(
+            text="Alpha fact was measured.",
+            urls=[OTHER_URL],
+            target_ids=["t2"],
+        ),
+        _claim(text="Beta fact was measured.", target_ids=["t3"]),
+        _claim(text="Gamma fact was measured.", target_ids=["t1"]),
+    ]
+
+    packet = build_canonical_packet(
+        claims=claims,
+        clusters={},
+        evidence={EVIDENCE_ID: _unit()},
+        targets=[_target("t1"), _target("t2"), _target("t3")],
+        sources=[_source()],
+        limit=2,
+    )
+
+    covered = {target for entry in packet.entries for target in entry.target_ids}
+    assert len(covered) == 2
+    assert claims[2].text in render_canonical_packet(packet)
+    assert packet.omitted_ids
+    assert packet.continuation_batches
+
+
+def test_the_canonical_packet_carries_support_counterevidence_and_dates() -> None:
+    claim = _claim(
+        contradictions=["A vendor report disagrees."],
+        passages=[_passage()],
+        target_ids=["t1"],
+    )
+    cluster = _cluster(verdicts=["verified", "contradicted"])
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={CLUSTER_ID: cluster},
+        evidence={
+            EVIDENCE_ID: _unit(),
+            "e2": _unit(
+                evidence_id="e2",
+                url=OTHER_URL,
+                excerpt="A vendor report disagrees.",
+            ),
+        },
+        targets=[_target()],
+        sources=[
+            _source(
+                temporal=SourceTemporal(
+                    publication_date="2026-01-01",
+                    data_period="2024",
+                )
+            )
+        ],
+        limit=10,
+    )
+    rendered = render_canonical_packet(packet)
+
+    assert "supports:" in rendered
+    assert "contradicts:" in rendered
+    assert "publication=2026-01-01" in rendered
+    assert "data_period=2024" in rendered
+    assert "obligation:" in rendered
+
+
+def test_the_canonical_packet_lists_omitted_ids_and_continuation_batches() -> None:
+    claims = [
+        _claim(
+            text=f"Measured result {index} was reported.",
+            urls=[SOURCE_URL],
+            target_ids=["t1"],
+        )
+        for index in range(6)
+    ]
+    packet = build_canonical_packet(
+        claims=claims,
+        clusters={},
+        evidence={EVIDENCE_ID: _unit()},
+        targets=[_target()],
+        sources=[_source()],
+        limit=2,
+        batch_size=2,
+    )
+    rendered = render_canonical_packet(packet)
+
+    assert len(packet.entries) == 2
+    assert len(packet.omitted_ids) == 4
+    assert len(packet.continuation_batches) == 2
+    assert "continuation batch 1:" in rendered
+    assert "cannot be cited by this draft" in rendered
+
+
+def test_report_messages_carry_the_canonical_packet_and_the_answer_form() -> None:
+    body = report_messages(
+        _grounded_task(
+            answer_contract=AnswerContract(
+                question="How mature is quantum error correction?",
+                scope_statement="A comparison of the recorded approaches.",
+                geographic_scope="unspecified",
+                as_of_date="2026-09-16",
+                evidence_period_requirement="current reported maturity",
+                assumptions=["the question names no geography"],
+                answer_kind="comparison",
+            )
+        ),
+        finding_digest=10,
+        claim_digest=10,
+    )[1].content
+
+    assert "# Canonical evidence packet" in body
+    assert "# Answer form" in body
+    assert "comparison" in body
+    assert "answer_rows" in body
+
+
+def test_build_task_carries_the_frozen_contract_and_the_registries(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    contract = AnswerContract(
+        question="How mature is quantum error correction?",
+        scope_statement="What the recorded evidence establishes.",
+        geographic_scope="unspecified",
+        as_of_date="2026-09-16",
+        evidence_period_requirement="current reported maturity",
+        assumptions=["the question names no geography"],
+        answer_kind="factual",
+        requested_word_limit=9000,
+    )
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(),
+        synthesizer_tools(tracker, output_root=tmp_path),
+    )
+    state = _state(
+        answer_contract=contract,
+        evidence_units={EVIDENCE_ID: _unit()},
+        claim_clusters={CLUSTER_ID: _cluster()},
+    )
+
+    task = agent.build_task(state)
+
+    assert task.answer_contract is not None
+    assert task.answer_contract.answer_kind == "factual"
+    assert task.answer_contract.requested_word_limit == 9000
+    assert list(task.evidence_units) == [EVIDENCE_ID]
+    assert list(task.claim_clusters) == [CLUSTER_ID]
 
 
 # --- the run writes nothing ---------------------------------------------------

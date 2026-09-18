@@ -17,7 +17,11 @@ from deep_research.agents.identity import (
     merge_claim_snapshot,
     merge_source_snapshot,
 )
-from deep_research.agents.report import ReportComposition, ReportPoint
+from deep_research.agents.report import (
+    ReportComposition,
+    ReportPoint,
+    reader_citations,
+)
 from deep_research.agents.sources import normalize_source_url
 from deep_research.utils.types import (
     Claim,
@@ -209,7 +213,14 @@ def compute_report_quality(
         if any(url not in assessed_urls for url in point_urls):
             unresolved_citations = True
 
-    cited_urls = _normalized_unique(cited_urls)
+    # The citation count is what the reader report prints, not what the model
+    # typed: Task 7 resolves each statement's citations from its selected
+    # evidence, so a verified cluster cites the passages that carried its
+    # verdict. Reading the number from the same index the renderer uses is
+    # what keeps the quality snapshot and the artifact from disagreeing.
+    cited_urls = [
+        citation.url for citation in reader_citations(composition)
+    ]
     source_by_url = {
         normalize_source_url(source.url): source for source in canonical_sources
     }

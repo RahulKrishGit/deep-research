@@ -190,7 +190,12 @@ from deep_research.utils.config import (
 # other five: the shared ``agents.prompts`` module gained the claim-equivalence
 # prompt and its two schema-version constants, and the Critic shares that
 # module. No critic prompt string changed.
-CRITIC_PROMPT_FINGERPRINT = "15754f64fa12"
+# Task 7 moved it again, ``15754f64fa12`` -> ``3f0341751794``, with the other
+# five: the shared ``REPORT_INSTRUCTION`` now states the four-field point
+# contract (``basis``), the answer-rows contract, and that a mechanism or
+# geography cell is checked against the evidence its row cites. No critic
+# prompt string changed; a shared-module edit moves all six by design.
+CRITIC_PROMPT_FINGERPRINT = "3f0341751794"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -501,13 +506,26 @@ CRITIC_PROMPT_FINGERPRINT = "15754f64fa12"
 # legacy passage-shaped verdict contract is now ``PassageVerdictDraft``. Again a
 # module-source move with no shared prompt string edited, so the other five
 # values and the Judge pin are unchanged.
+# Task 7 moved all six at once: the shared ``agents.prompts`` module's
+# ``REPORT_INSTRUCTION`` gained the reader-statement contract (the ``basis``
+# field, the answer-rows shape, the checked mechanism/geography cell, the
+# uncertainty rules), and every agent's fingerprint hashes that module. The
+# Synthesizer also gained the canonical-packet, statement-validation, and
+# answer-form code in its own module. The Judge pin did **not** move: no judge
+# template changed.
+#   planner ``599c78243c9e`` -> ``da4407dd9d39``
+#   researcher ``fdc2bc2e8d48`` -> ``b4f9d21a34b4``
+#   source_evaluator ``674593415225`` -> ``33a71376d3e6``
+#   fact_checker ``490342ba8ac0`` -> ``f1ccaf38ff02``
+#   synthesizer ``cccb6dc91c6e`` -> ``37b86926ec09``
+#   critic ``15754f64fa12`` -> ``3f0341751794``
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "599c78243c9e",
-    "researcher": "fdc2bc2e8d48",
-    "source_evaluator": "674593415225",
-    "fact_checker": "490342ba8ac0",
-    "synthesizer": "cccb6dc91c6e",
-    "critic": "15754f64fa12",
+    "planner": "da4407dd9d39",
+    "researcher": "b4f9d21a34b4",
+    "source_evaluator": "33a71376d3e6",
+    "fact_checker": "f1ccaf38ff02",
+    "synthesizer": "37b86926ec09",
+    "critic": "3f0341751794",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
