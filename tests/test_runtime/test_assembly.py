@@ -1079,6 +1079,33 @@ def test_all_six_agents_receive_the_same_shared_tool_registry(
     assert {tool.name for tool in received[0]} == EXPECTED_TOOL_NAMES
 
 
+def test_the_assembled_critic_gets_no_tools(tracker) -> None:
+    """Task 8's wiring: the Critic is a tool-free editor of the candidate.
+
+    The shared registry still reaches every constructor, so the guard that an
+    agent declares no tool nobody built stays in one place; the Critic's own
+    allowlist is empty, so its toolset is empty whatever the registry holds.
+    """
+    tools = build_tools(
+        ConfigSettings(),
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    agents = build_agents(
+        ConfigSettings(),
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    assert agents.critic.allowed_tools == ()
+    assert agents.critic.toolset.names == ()
+
+
 @pytest.mark.asyncio
 async def test_build_runtime_uses_the_local_embedding_provider_by_default(
     tracker, tmp_path, monkeypatch

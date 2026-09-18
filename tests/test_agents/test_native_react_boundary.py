@@ -1,10 +1,12 @@
 """The one native tool boundary every model-directed agent crosses.
 
-A regression guard, not a unit test of one agent. Each of the four agents that
+A regression guard, not a unit test of one agent. Each of the three agents that
 ask a model to select a tool is run end to end through its own ``run`` — so an
 agent that reintroduced a local ``decide`` closure calling
 ``complete_structured(..., ReActDecision, ...)`` fails here, because
-``ScriptedCompleter.complete_structured`` raises for that schema.
+``ScriptedCompleter.complete_structured`` raises for that schema. The Critic is
+no longer one of them: Task 8 removed its ReAct loop, and ``test_critic.py``
+pins that an injected tool and a generous budget still buy no ReAct turn.
 """
 
 from __future__ import annotations
@@ -13,7 +15,6 @@ from collections.abc import Callable
 
 import pytest
 
-from deep_research.agents.critic import CriticAgent, CritiqueDraft
 from deep_research.agents.fact_checker import (
     ClaimDraft,
     ClaimsDraft,
@@ -39,7 +40,6 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import Finding, ResearchState, SubTopic
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
 from tests.research_fakes import (
-    critic_tools,
     fact_checker_tools,
     planner_tools,
     research_tools,
@@ -158,34 +158,18 @@ def _fact_checker_case() -> tuple[ResearchState, list, list]:
     )
 
 
-def _critic_case() -> tuple[ResearchState, list, list]:
-    state = _state(
-        report="# Research report: the measured capacity is reported.",
-        iteration=1,
-    )
-    return (
-        state,
-        [finish("The report is enough.", "No spot check needed.")],
-        [
-            CritiqueDraft(
-                score=8,
-                gaps=[],
-                unsupported_claims=[],
-                recommended_queries=[],
-                rationale="The report answers the question from cited sources.",
-            )
-        ],
-    )
-
-
 TOOL_SELECTING_AGENTS: tuple[
     tuple[type, Callable[[Tracker], list[BaseTool]], Callable[[], tuple]], ...
 ] = (
     (PlannerAgent, planner_tools, _planner_case),
     (ResearcherAgent, research_tools, _researcher_case),
     (FactCheckerAgent, fact_checker_tools, _fact_checker_case),
-    (CriticAgent, critic_tools, _critic_case),
 )
+
+# The Critic is deliberately absent: Task 8 removed its ReAct loop, so it has
+# no tool-selecting turn to exercise on this boundary. ``test_critic.py`` pins
+# the other half of that — a Critic handed tools and a budget still makes no
+# ``complete_react`` call at all.
 
 AGENT_IDS = [agent_class.name for agent_class, _, _ in TOOL_SELECTING_AGENTS]
 

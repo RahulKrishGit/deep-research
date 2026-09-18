@@ -101,6 +101,10 @@ from deep_research.tools import (
 )
 from deep_research.utils.config import LLMConfig
 from deep_research.utils.types import (
+    GAP_KINDS,
+    GAP_SEVERITIES,
+    QUESTION_TARGET_ID,
+    REPAIR_ACTIONS,
     Claim,
     Finding,
     ResearchState,
@@ -656,6 +660,75 @@ def _advertised_tools(text: str) -> set[str]:
         for name in REGISTERED_TOOL_NAMES
         if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text)
     }
+
+
+def test_the_critique_reply_contract_names_every_kind_and_repair_action() -> None:
+    """Task 8's literal sets are normative: Task 9 routes on the actions.
+
+    The model can only return a value the contract names, so the request has
+    to name every kind, every severity, and every repair action, and it has to
+    say which of them may carry search queries.
+    """
+    body = _critique_messages()[1].content
+
+    for kind in GAP_KINDS:
+        assert kind in body, kind
+    for action in REPAIR_ACTIONS:
+        assert action in body, action
+    for severity in GAP_SEVERITIES:
+        assert severity in body, severity
+    for field in (
+        "gap_id",
+        "target_ids",
+        "claim_cluster_ids",
+        "statement_ids",
+        "kind",
+        "severity",
+        "repair_action",
+        "problem",
+        "recommended_queries",
+    ):
+        assert f'"{field}"' in body, field
+    assert "only on an acquisition gap" in body
+
+
+def test_the_critique_request_carries_every_record_inventory() -> None:
+    """A gap names ids, so the review has to print the ids it may name.
+
+    The request renders the reader statements, the evidence targets, the
+    evidence batches, the answer contract, and the deterministic hard checks,
+    and it names the whole-answer sentinel an original-question omission uses.
+    """
+    body = _critique_messages()[1].content
+
+    for section in (
+        "# Answer contract",
+        "# Reader content",
+        "# Reader statements",
+        "# Evidence targets",
+        "# Evidence",
+        "# Hard checks",
+    ):
+        assert section in body, section
+    assert QUESTION_TARGET_ID in body
+    assert "No reader statement record exists" in body
+
+
+def test_every_critique_example_is_a_legal_typed_gap() -> None:
+    """Both reply examples use the typed gap shape, not the legacy one."""
+    weak = CritiqueDraft.model_validate_json(_CRITIQUE_LOW_EXAMPLE_JSON)
+    strong = CritiqueDraft.model_validate_json(_CRITIQUE_HIGH_EXAMPLE_JSON)
+
+    for draft in (weak, strong):
+        for gap in draft.gaps:
+            assert gap.gap_id
+            assert gap.kind in GAP_KINDS
+            assert gap.severity in GAP_SEVERITIES
+            assert gap.repair_action in REPAIR_ACTIONS
+            if gap.repair_action != "acquire":
+                assert gap.recommended_queries == []
+    assert {gap.kind for gap in weak.gaps} - {"presentation"}
+    assert strong.gaps[0].severity == "minor"
 
 
 def test_the_matrix_covers_exactly_the_planned_operation_inventory() -> None:

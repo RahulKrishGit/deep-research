@@ -5,9 +5,22 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from deep_research.agents.critic import fallback_critique, route_decision
+from deep_research.agents.critic import (
+    ACCEPTANCE_SCORE,
+    fallback_critique,
+    route_decision,
+)
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import cases_for
+from deep_research.evaluation.cases.critic import (
+    CALIBRATION_CASES,
+    CALIBRATION_CLUSTER_IDS,
+    CALIBRATION_STATEMENT_IDS,
+    CALIBRATION_TARGET_IDS,
+    calibration_case,
+    calibration_packet,
+    measure_critic_calibration,
+)
 from deep_research.evaluation.dependencies import (
     CONTROLLED_SCENARIO_CONTRACT_VERSION,
     SCENARIOS,
@@ -44,7 +57,7 @@ _METRICS = {
     "missing-evidence-or-budget-exhausted": (
         ("route_discipline", 0.40),
         ("conservative_score", 0.25),
-        ("failure_recorded", 0.20),
+        ("rationale_present", 0.20),
         ("score_bounded", 0.15),
     ),
     "critic-live-review": (
@@ -498,10 +511,29 @@ def test_each_case_declares_weighted_metrics(case_id: str) -> None:
     )
 
 
-def test_the_budget_case_requires_a_recorded_recoverable_error() -> None:
+def test_the_budget_case_no_longer_requires_a_tool_failure() -> None:
+    """A tool-free Critic cannot hit the scripted memory failure.
+
+    The expectation was satisfiable only by the spot-check loop Task 8
+    removed. Keeping it would have made this case unsatisfiable rather than
+    strict, so the case's forced-stop evidence is the critique's own
+    rationale and the route discipline the other metrics already measure.
+    """
     case = _case("missing-evidence-or-budget-exhausted")
 
-    assert case.expectations.must_record_recoverable_error is True
+    assert case.expectations.must_record_recoverable_error is False
+    assert "failure_recorded" not in {
+        metric.metric_id for metric in case.expectations.deterministic_metrics
+    }
+    assert "rationale_present" in {
+        metric.metric_id for metric in case.expectations.deterministic_metrics
+    }
+
+
+@pytest.mark.parametrize("case_id", CONTROLLED + ("critic-live-review",))
+def test_every_critic_case_allows_no_tool_call(case_id: str) -> None:
+    """The budget gate is the agent's declaration, spelled as a ceiling."""
+    assert _case(case_id).expectations.max_tool_calls == 0
 
 
 def test_each_case_pins_its_finding_and_claim_counts() -> None:
@@ -518,15 +550,16 @@ def test_each_case_pins_its_finding_and_claim_counts() -> None:
 
 
 def test_the_live_case_declares_the_dependencies_it_needs() -> None:
-    """The live Critic spot-checks with real web searches and real memory
-    reads; it never fetches pages, so only tavily and memory are live
-    dependencies."""
+    """A tool-free Critic reaches no live service but the model provider.
+
+    The case used to require tavily and memory, because the spot-check loop
+    searched the web and read memory. Task 8 removed that loop, so the honest
+    declaration is empty: one that still demanded a Tavily key would ask Task
+    13 for a credential the agent cannot spend.
+    """
     live = cases_for("critic", "live")[0]
 
-    assert live.expectations.required_live_dependencies == [
-        "tavily",
-        "memory",
-    ]
+    assert live.expectations.required_live_dependencies == []
 
 
 @pytest.mark.parametrize("case_id", sorted(_METRICS))
@@ -1000,3 +1033,220 @@ async def test_the_budget_double_fails_memory_and_serves_the_search(
     assert summaries["web_search"].calls == 1
     assert summaries["web_search"].failures == 0
     assert ledger.prohibited_calls == []
+
+
+# --- Task 8: the eight paired calibration cases ------------------------------
+#
+# Each case is one scripted review of one fixed report, scored by the real
+# local build. The assertions are bands and orderings, never a demanded exact
+# score: the point is that a strong answer is not pulled down by polish-free
+# honesty, that a minor omission does not collapse a sound answer, and that
+# confident prose cannot buy acceptance. Paid semantic calibration is Task 13;
+# this is the contract the live run is measured against.
+
+
+def test_the_calibration_cases_are_the_eight_named_cases() -> None:
+    assert tuple(case.case_id for case in CALIBRATION_CASES) == (
+        "calibration-strong-answer",
+        "calibration-one-minor-gap",
+        "calibration-missing-critical-topic",
+        "calibration-unsupported-central-assertion",
+        "calibration-attributed-primary-fact",
+        "calibration-false-independent-pair",
+        "calibration-polished-verbose-non-answer",
+        "calibration-honest-but-incomplete-answer",
+    )
+
+
+def test_calibration_strong_answer() -> None:
+    """A complete, well-cited answer is accepted near the top of the scale."""
+    outcome = measure_critic_calibration().outcome("calibration-strong-answer")
+
+    assert outcome.in_band
+    assert outcome.score >= ACCEPTANCE_SCORE
+    assert outcome.accepted is True
+    assert outcome.defect_found is False
+    assert not outcome.false_acceptance
+    assert not outcome.false_rejection
+
+
+def test_calibration_one_minor_gap() -> None:
+    """One minor omission must not collapse an otherwise sound answer.
+
+    The defect is real and has to be named, and it is deliberately a wording
+    defect with no search behind it: naming it costs no research pass.
+    """
+    outcome = measure_critic_calibration().outcome("calibration-one-minor-gap")
+
+    assert outcome.in_band
+    assert outcome.score >= ACCEPTANCE_SCORE
+    assert outcome.accepted is True
+    assert outcome.defect_found is True
+    assert not outcome.false_rejection
+    assert not outcome.false_acceptance
+
+
+def test_calibration_missing_critical_topic() -> None:
+    """A critical planned topic the report never answers is a rejection."""
+    outcome = measure_critic_calibration().outcome(
+        "calibration-missing-critical-topic"
+    )
+
+    assert outcome.in_band
+    assert outcome.score < ACCEPTANCE_SCORE
+    assert outcome.accepted is False
+    assert outcome.defect_found is True
+    assert not outcome.false_acceptance
+
+
+def test_calibration_unsupported_central_assertion() -> None:
+    """The central conclusion rests on no read, so the answer is rejected."""
+    outcome = measure_critic_calibration().outcome(
+        "calibration-unsupported-central-assertion"
+    )
+
+    assert outcome.in_band
+    assert outcome.score < ACCEPTANCE_SCORE
+    assert outcome.accepted is False
+    assert outcome.defect_found is True
+
+
+def test_calibration_attributed_primary_fact() -> None:
+    """Primary-source attribution is not a failure (Section 2.1).
+
+    The statement under review carries ``source_supported`` — one publisher,
+    no independent pair — and is correctly attributed. That is a legitimate
+    reading, not a defect, so the case must not be rejected for it.
+    """
+    packet = calibration_packet()
+    modes = {
+        statement.statement_id: statement.mode for statement in packet.statements
+    }
+    assert modes[CALIBRATION_STATEMENT_IDS["mechanism"]] == "attributed"
+    assert modes[CALIBRATION_STATEMENT_IDS["figure"]] == "settled"
+
+    outcome = measure_critic_calibration().outcome(
+        "calibration-attributed-primary-fact"
+    )
+
+    assert outcome.in_band
+    assert outcome.score >= ACCEPTANCE_SCORE
+    assert outcome.accepted is True
+    assert outcome.defect_found is False
+    assert not outcome.false_rejection
+
+
+def test_calibration_false_independent_pair() -> None:
+    """Two URLs from one publisher are not independent corroboration."""
+    outcome = measure_critic_calibration().outcome(
+        "calibration-false-independent-pair"
+    )
+
+    assert outcome.in_band
+    assert outcome.score < ACCEPTANCE_SCORE
+    assert outcome.accepted is False
+    assert outcome.defect_found is True
+
+
+def test_calibration_polished_verbose_non_answer() -> None:
+    """Length and confidence cannot buy a passing score."""
+    case = calibration_case("calibration-polished-verbose-non-answer")
+    outcome = measure_critic_calibration().outcome(
+        "calibration-polished-verbose-non-answer"
+    )
+
+    assert len(case.report.split()) >= 300
+    assert outcome.in_band
+    assert outcome.score < ACCEPTANCE_SCORE
+    assert outcome.accepted is False
+    assert outcome.defect_found is True
+
+
+def test_calibration_honest_but_incomplete_answer() -> None:
+    """Honest insufficiency is not accepted in place of a useful answer.
+
+    Section 2.1 removed the blanket-abstention reward: a report that says
+    plainly it could not answer is scored on what it established, not on its
+    candour.
+    """
+    outcome = measure_critic_calibration().outcome(
+        "calibration-honest-but-incomplete-answer"
+    )
+
+    assert outcome.in_band
+    assert outcome.score < ACCEPTANCE_SCORE
+    assert outcome.accepted is False
+    assert outcome.defect_found is True
+
+
+def test_the_calibration_orders_bands_by_evidence_not_prose() -> None:
+    """Ordering, not one demanded score, is what the pairs calibrate.
+
+    Every flag below is one direction of a pair: an attributed primary fact
+    outranks an honest non-answer, which outranks a polished non-answer, and
+    a sound answer with one minor gap outranks a missing critical topic.
+    """
+    report = measure_critic_calibration()
+    score = {
+        case.case_id: report.outcome(case.case_id).score
+        for case in CALIBRATION_CASES
+    }
+
+    assert score["calibration-strong-answer"] > score[
+        "calibration-honest-but-incomplete-answer"
+    ]
+    assert score["calibration-attributed-primary-fact"] > score[
+        "calibration-polished-verbose-non-answer"
+    ]
+    assert score["calibration-honest-but-incomplete-answer"] > score[
+        "calibration-polished-verbose-non-answer"
+    ]
+    assert score["calibration-one-minor-gap"] > score[
+        "calibration-missing-critical-topic"
+    ]
+    assert score["calibration-strong-answer"] > score[
+        "calibration-unsupported-central-assertion"
+    ]
+
+
+def test_every_calibration_gap_names_a_record_the_packet_carries() -> None:
+    """The scripted gaps are examples of the contract, not of a loose one."""
+    packet = calibration_packet()
+    statement_ids = {item.statement_id for item in packet.statements}
+    cluster_ids = {
+        cluster_id
+        for item in packet.statements
+        for cluster_id in item.claim_cluster_ids
+    }
+    target_ids = {target.target_id for target in packet.targets}
+    assert statement_ids == set(CALIBRATION_STATEMENT_IDS.values())
+    assert cluster_ids == set(CALIBRATION_CLUSTER_IDS.values())
+    assert target_ids == set(CALIBRATION_TARGET_IDS.values())
+
+    for case in CALIBRATION_CASES:
+        for gap in case.draft["gaps"]:
+            assert set(gap.get("statement_ids", [])) <= statement_ids, case.case_id
+            assert set(gap.get("claim_cluster_ids", [])) <= cluster_ids, case.case_id
+            assert (
+                set(gap.get("target_ids", [])) - {"question"}
+            ) <= target_ids, case.case_id
+            if gap.get("repair_action") == "acquire":
+                assert gap["target_ids"], case.case_id
+
+
+def test_every_calibration_draft_validates_against_the_packet() -> None:
+    """Every scripted review is a legal ``CritiqueDraft``, checked locally."""
+    report = measure_critic_calibration()
+
+    for case in CALIBRATION_CASES:
+        outcome = report.outcome(case.case_id)
+        assert outcome.gap_count == len(case.draft["gaps"]), case.case_id
+        assert outcome.band == case.score_band, case.case_id
+
+
+def test_the_calibration_build_is_offline_and_provider_free() -> None:
+    """No provider, no network: the scores here are the local build's."""
+    report = measure_critic_calibration()
+
+    assert report.provider_calls == 0
+    assert len(report.outcomes) == len(CALIBRATION_CASES)

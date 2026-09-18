@@ -45,10 +45,17 @@ count. Character and token counts are measured from the object actually
 returned, never hard-coded.
 
 This script builds its request through the repository's own helpers
-(``cases_for``, ``EvaluationCase.fresh_state``, ``CriticAgent.build_task``,
+(``cases_for``, ``EvaluationCase.fresh_state``, ``PlannerAgent.build_task``,
 ``render_react_messages``, ``AgentToolset.provider_definitions``) and calls only
 the public ``DeepSeekSchemaChatProvider.complete_react``. It copies no private
 provider serialization code and no prompt text.
+
+The probed subject is the **planner**. It was the critic until Task 8 made the
+critic tool-free: a native ReAct request needs an agent that offers tools, and
+the planner is the agent that still declares exactly the same pair
+(``query_memory``, ``web_search``) under the same ``max`` reasoning profile, so
+what this probe measures — the outgoing envelope, the tool definitions, the
+retry policy, and the parser's behaviour on the reply — is unchanged in kind.
 """
 
 from __future__ import annotations
@@ -66,7 +73,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from deep_research.agents.critic import CriticAgent
+from deep_research.agents.planner import PlannerAgent
 from deep_research.agents.prompts import render_react_messages
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.config import (
@@ -91,8 +98,8 @@ from deep_research.providers import (
 from deep_research.providers.deepseek_provider import _build_client
 from deep_research.providers.native_output import native_text_violation
 
-AGENT_NAME = "critic"
-CASE_ID = "critic-live-review"
+AGENT_NAME = "planner"
+CASE_ID = "planner-live-scope"
 EXPERIMENT_PREFIX = "native-react-shape-probe"
 PROBE_SPAN_ID = "probe-shape"
 
@@ -101,7 +108,7 @@ EXPECTED_REASONING_EFFORT = "max"
 EXPECTED_THINKING = "enabled"
 EXPECTED_MAX_TOKENS = 32768
 EXPECTED_TOOL_CHOICE = "auto"
-EXPECTED_NATIVE_TOOLS = ("web_search", "query_memory")
+EXPECTED_NATIVE_TOOLS = ("query_memory", "web_search")
 
 AUTHORIZED_REQUESTS = 30
 
@@ -717,7 +724,7 @@ def _runtime(settings: Any) -> Any:
     )
 
 
-def _critic_case() -> Any:
+def _live_case() -> Any:
     return next(
         case for case in cases_for(AGENT_NAME, "live") if case.case_id == CASE_ID
     )
@@ -728,22 +735,22 @@ def _tools(tracker: Tracker, counter: list[str]) -> list[Any]:
     from deep_research.tools.web_search import WebSearchTool
 
     return [
+        QueryMemoryTool(tracker, _ForbiddenMemory(counter)),
         WebSearchTool(
             tracker, api_key="", client=_ForbiddenToolClient(counter)
         ),
-        QueryMemoryTool(tracker, _ForbiddenMemory(counter)),
     ]
 
 
 def build_first_request(settings: Any, tracker: Tracker, counter: list[str]) -> Any:
-    """The real first spot-check messages and tool definitions.
+    """The real first decision messages and tool definitions.
 
     Built through the agent's own public surface so the probe measures the
     request a live turn would send, not a hand-written imitation of it.
     """
-    case = _critic_case()
+    case = _live_case()
     state = case.fresh_state()
-    agent = CriticAgent(
+    agent = PlannerAgent(
         provider=_UnusedStructuredProvider(),
         tracker=tracker,
         scratchpad=ScratchpadMemory(
@@ -928,7 +935,7 @@ async def measure_one_request(
             "the provider does not hold the probe's zero-retry config"
         )
     allowed = frozenset(definition.name for definition in definitions)
-    async with tracker.session_span(PROBE_SPAN_ID, "critic native react shape"):
+    async with tracker.session_span(PROBE_SPAN_ID, "planner native react shape"):
         try:
             turn = await provider.complete_react(
                 messages,
@@ -1081,7 +1088,7 @@ async def execute(requests: int, output: Path) -> int:
     )
     allowed = frozenset(definition.name for definition in definitions)
     records: list[dict[str, Any]] = []
-    async with tracker.session_span(PROBE_SPAN_ID, "critic native react shape"):
+    async with tracker.session_span(PROBE_SPAN_ID, "planner native react shape"):
         for index in range(1, requests + 1):
             records.append(
                 await _one_request(

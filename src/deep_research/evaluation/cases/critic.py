@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+
+from deep_research.agents.critic import (
+    ACCEPTANCE_SCORE,
+    CriticPacket,
+    CritiqueDraft,
+    build_critic_packet,
+    build_critique,
+)
 from deep_research.evaluation.cases import (
     build_case,
     claim,
@@ -13,6 +23,17 @@ from deep_research.evaluation.cases import (
     sub_topic,
 )
 from deep_research.evaluation.models import CaseExpectations, EvaluationCase
+from deep_research.utils.types import (
+    AtomicProposition,
+    ClaimCluster,
+    EvidenceTarget,
+    EvidenceUnit,
+    ReportComposition,
+    ReportPoint,
+    ReportSection,
+    ResearchState,
+    SubTopic,
+)
 
 # Every case carries its own JudgeRubric instance: build_case stores the
 # rubric by reference, so sharing one module constant across cases would
@@ -235,9 +256,9 @@ _STRONG_CASE = build_case(
         "Critique a complete, well-cited report on urban tree canopy and summer "
         "surface temperature: five sources, four claims verified at high "
         "confidence, and one unverified headline figure disclosed in a "
-        "limitations section. The scripted scenario gives the spot-check loop "
-        "one corroborating search result and one prior memory finding, so a "
-        "strong critique can route to end on the evidence alone."
+        "limitations section. Task 8's Critic runs no spot check: the state "
+        "carries the exact candidate, and a strong critique routes to end on "
+        "the packet's evidence alone."
     ),
     state=evaluation_state(
         case_id="approve-strong-report",
@@ -453,7 +474,9 @@ _STRONG_CASE = build_case(
         reference=_STRONG_REFERENCE,
         known_source_urls=_STRONG_URLS,
         max_iterations=5,
-        max_tool_calls=10,
+        # The Critic declares no tools, so its ceiling is zero: a run that
+        # executed one would fail this budget gate rather than pass it.
+        max_tool_calls=0,
         required_output_fields=["critique"],
         deterministic_metrics=metrics(
             (
@@ -513,11 +536,10 @@ _GAPPY_CASE = build_case(
     purpose=(
         "Critique a report that covers only one of three planned subtopics on "
         "composting mandates and landfill methane: participation rates and "
-        "measurement methodology are missing, one of two sources is low "
-        "confidence, and the report's only claim is unverified. The scripted "
-        "scenario gives the spot-check loop a search result on participation "
-        "rates and a memory entry naming both gaps, so the critique can list "
-        "them and route to refine."
+        "measurement methodology are missing and one of two sources is low "
+        "confidence. The Critic runs no spot check, so the gaps come from the "
+        "packet's open targets and unresolved claims, and the critique routes "
+        "to refine."
     ),
     state=evaluation_state(
         case_id="request-more-research",
@@ -648,7 +670,7 @@ _GAPPY_CASE = build_case(
         },
         known_source_urls=_GAPPY_URLS,
         max_iterations=5,
-        max_tool_calls=10,
+        max_tool_calls=0,
         required_output_fields=["critique"],
         deterministic_metrics=metrics(
             (
@@ -708,10 +730,10 @@ _BUDGET_CASE = build_case(
         "Critique a thin report on congestion pricing and particulate pollution "
         "at the final allowed macro iteration: no verified claims, one "
         "low-confidence source, and a budget that forbids another pass. The "
-        "scripted memory query fails with the memory backend unavailable while "
-        "the search still succeeds, so the run records the failure as "
-        "recoverable and still produces a critique that must stop regardless of "
-        "its score."
+        "critique must stop regardless of its score and say why, and it must "
+        "do so without a tool: Task 8 removed the Critic's spot-check loop, so "
+        "the run's failure ledger is no longer the source of this case's "
+        "evidence and the case no longer requires a recorded tool failure."
     ),
     state=evaluation_state(
         case_id="missing-evidence-or-budget-exhausted",
@@ -772,7 +794,7 @@ _BUDGET_CASE = build_case(
         },
         known_source_urls=_BUDGET_URLS,
         max_iterations=5,
-        max_tool_calls=10,
+        max_tool_calls=0,
         required_output_fields=["critique"],
         deterministic_metrics=metrics(
             (
@@ -789,10 +811,11 @@ _BUDGET_CASE = build_case(
                 "claims.",
             ),
             (
-                "failure_recorded",
+                "rationale_present",
                 0.2,
-                "The run records the scripted recoverable failure in its failure "
-                "ledger.",
+                "A non-blank rationale that says why the run stopped; the "
+                "critique is the only place a forced stop is explained, since "
+                "the Critic calls no tool that could fail.",
             ),
             (
                 "score_bounded",
@@ -800,7 +823,10 @@ _BUDGET_CASE = build_case(
                 "The score is an integer in 1-10.",
             ),
         ),
-        must_record_recoverable_error=True,
+        # ``must_record_recoverable_error`` is deliberately absent. It was
+        # satisfied by the scripted memory failure the old spot-check loop hit;
+        # a tool-free Critic cannot reach that path, and keeping the expectation
+        # would make this case unsatisfiable rather than strict.
     ),
     judge_rubric=_BUDGET_RUBRIC,
 )
@@ -868,13 +894,15 @@ _LIVE_CASE = build_case(
     case_id="critic-live-review",
     agent_name="critic",
     tier="live",
-    title="Live spot-check review of low-carbon cement evidence",
+    title="Live review of low-carbon cement evidence",
     purpose=(
         "Critique a fixed, current report on low-carbon cement performance at "
-        "scale using live web searches and live memory reads, reusing the "
-        "strong controlled case's four metrics unchanged. The report and its "
-        "themes are fixed in the case state, so no_spurious_gaps stays gradable "
-        "against the declared reference themes."
+        "scale, reusing the strong controlled case's four metrics unchanged. "
+        "The report and its themes are fixed in the case state, so "
+        "no_spurious_gaps stays gradable against the declared reference themes. "
+        "The Critic declares no tools, so this case needs no live dependency of "
+        "its own: what it exercises live is the review request and the model's "
+        "reading of the packet."
     ),
     state=evaluation_state(
         case_id="critic-live-review",
@@ -1014,7 +1042,7 @@ _LIVE_CASE = build_case(
         },
         known_source_urls=_LIVE_URLS,
         max_iterations=5,
-        max_tool_calls=10,
+        max_tool_calls=0,
         required_output_fields=["critique"],
         deterministic_metrics=metrics(
             (
@@ -1042,7 +1070,9 @@ _LIVE_CASE = build_case(
                 "judged by the reference themes.",
             ),
         ),
-        required_live_dependencies=("tavily", "memory"),
+        # No live service is reachable from this agent: the Critic declares no
+        # tools, so a live run of this case reaches only the model provider.
+        required_live_dependencies=(),
     ),
     judge_rubric=_LIVE_RUBRIC,
 )
@@ -1054,3 +1084,803 @@ CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
 )
 
 LIVE_CASES: tuple[EvaluationCase, ...] = (_LIVE_CASE,)
+
+
+# --- Task 8: the paired calibration contract ---------------------------------
+#
+# Eight paired examples, each one scripted review of one fixed candidate,
+# scored by the real local build (``agents.critic.build_critique``). The
+# assertions built on these are bands and *orderings*, never a demanded exact
+# score: what has to hold is that a strong answer is not pulled down, that a
+# minor omission does not collapse a sound answer, and that confident prose
+# cannot buy acceptance.
+#
+# Paid semantic calibration is Task 13. Nothing here calls a provider, and the
+# rates the report measures say nothing about whether a review was *right*:
+# the Critic agreeing with its own scripted review is not ground truth, and
+# independent report review plus source checks remain required.
+
+CALIBRATION_QUESTION = (
+    "How far can clinker substitution cut cement process emissions, and what "
+    "does it cost?"
+)
+
+# The candidate's inventory. Every calibration case reviews a candidate with
+# this same shape, so a gap's ids mean the same thing in every case and the
+# scripted reviews can be compared with each other.
+CALIBRATION_CLUSTER_IDS = {
+    "mechanism": "cluster-calibration-mechanism",
+    "figure": "cluster-calibration-figure",
+}
+CALIBRATION_STATEMENT_IDS = {"mechanism": "S001", "figure": "F001"}
+CALIBRATION_TARGET_IDS = {
+    "mechanism": "target-01",
+    "figure": "target-02",
+    "durability": "target-03",
+}
+CALIBRATION_EVIDENCE_IDS = {
+    "mechanism": "evidence-calibration-01",
+    "figure": "evidence-calibration-02",
+}
+
+_CALIBRATION_MECHANISM_CLAIM = (
+    "Clinker substitution cuts process emissions by replacing the clinker "
+    "fraction of cement with supplementary materials."
+)
+_CALIBRATION_FIGURE_CLAIM = (
+    "Substituting clinker can remove 0.4 tonnes of carbon dioxide per tonne "
+    "of cement produced."
+)
+_CALIBRATION_MECHANISM_EVIDENCE = (
+    "Substituting clinker with calcined clay or slag displaces the clinker "
+    "fraction and therefore the process emissions it carries."
+)
+_CALIBRATION_FIGURE_EVIDENCE = (
+    "Each tonne of clinker avoided removes roughly 0.4 tonnes of process "
+    "carbon dioxide."
+)
+
+_CALIBRATION_REPORT = (
+    "# Research report: How far can clinker substitution cut cement process "
+    "emissions, and what does it cost?\n\n"
+    "## Summary\n\nClinker substitution lowers process emissions by displacing "
+    "the clinker fraction of cement, and the GCCA's own roadmap puts the "
+    "figure at roughly 0.4 tonnes of carbon dioxide per tonne of cement "
+    "avoided. [1]\n\n"
+    "## Findings\n\nIndustry analysis estimates that each tonne of clinker "
+    "avoided removes about 0.4 tonnes of process carbon dioxide. [2]\n"
+)
+
+# The polished non-answer: long, confident, and carrying no figure a read
+# supports. Its length is the point — 300+ words of prose must not outscore a
+# short answer that actually answers.
+_POLISHED_NON_ANSWER_REPORT = (
+    "# Research report: How far can clinker substitution cut cement process "
+    "emissions, and what does it cost?\n\n"
+    "## Summary\n\nDecarbonising cement is one of the defining industrial "
+    "challenges of the decade, and clinker substitution sits at the centre of "
+    "every credible pathway. The technology is mature, the materials are "
+    "widely available, and the direction of travel across the industry is "
+    "unambiguous. What follows sets out the landscape, the forces shaping it, "
+    "and the considerations that will determine how far substitution can go.\n"
+    "\n## A technology whose time has come\n\nClinker is the emissions-"
+    "intensive component of cement, and reducing it has long been recognised "
+    "as the most direct lever available to producers. Substitution "
+    "technologies have advanced considerably, standards bodies have adapted "
+    "their specifications, and producers across many markets have gained "
+    "operational experience with blended cements. The momentum is real and it "
+    "is accelerating.\n\n## The economics are moving in the right direction"
+    "\n\nCost has historically been the principal obstacle, but the picture "
+    "is changing. Scale effects, policy support, and carbon pricing all push "
+    "in the same direction, and the premium for lower-carbon cement is "
+    "narrowing in the markets that have moved first. Producers who move early "
+    "position themselves well for the transition that is clearly coming.\n\n"
+    "## What to watch\n\nThe pace of change will depend on policy design, on "
+    "the availability of suitable supplementary materials, and on the "
+    "willingness of purchasers to specify blended cements in structural "
+    "applications. Each of these is a live question, and each will shape the "
+    "outcome. The overall direction, however, is not in doubt. Producers who "
+    "move early will be best placed to capture the opportunities that "
+    "follow, and those who wait will find the transition harder and more "
+    "expensive when it arrives. The industry knows this, the regulators know "
+    "this, and the market is beginning to price it.\n\n"
+    "## Limitations\n\nThis analysis draws on industry sources whose figures "
+    "are not independently replicated.\n"
+)
+
+CALIBRATION_BASIS = (
+    "These scores are the local build's reading of scripted reviews of fixed "
+    "candidates. A model agreeing with its own scripted review is not ground "
+    "truth: independent report review and source checks remain required, and "
+    "the rates below measure the contract's behaviour, not whether any "
+    "individual judgement was right."
+)
+
+
+def _calibration_sub_topic() -> SubTopic:
+    """The candidate's plan: three critical targets, one of them unanswered."""
+    return SubTopic(
+        coverage_id="topic-calibration",
+        title="Clinker substitution",
+        rationale="The question turns on the substitution share and its cost.",
+        search_queries=["clinker substitution emissions reduction share"],
+        success_criteria=["A measured share with a named source."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id=CALIBRATION_TARGET_IDS["mechanism"],
+                coverage_id="topic-calibration",
+                question="By what mechanism does substitution cut emissions?",
+                required_dimensions=["mechanism"],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            ),
+            EvidenceTarget(
+                target_id=CALIBRATION_TARGET_IDS["figure"],
+                coverage_id="topic-calibration",
+                question="How much carbon dioxide does substitution remove?",
+                required_dimensions=["scale"],
+                required=True,
+                critical=True,
+                support_policy="independent_pair",
+            ),
+            EvidenceTarget(
+                target_id=CALIBRATION_TARGET_IDS["durability"],
+                coverage_id="topic-calibration",
+                question="What field-durability evidence exists for blended "
+                "cements?",
+                required_dimensions=["period"],
+                required=True,
+                critical=True,
+                support_policy="independent_pair",
+            ),
+        ],
+    )
+
+
+def _calibration_composition() -> ReportComposition:
+    """The candidate's typed composition: two statements, three targets."""
+    mechanism = claim(
+        _CALIBRATION_MECHANISM_CLAIM,
+        urls=(_GCCA_URL,),
+        verdict="insufficient_evidence",
+        confidence=0.6,
+        evidence=(_CALIBRATION_MECHANISM_EVIDENCE,),
+        verification_urls=(_IEA_CE_URL,),
+    )
+    figure = claim(
+        _CALIBRATION_FIGURE_CLAIM,
+        urls=(_GCCA_URL,),
+        verdict="verified",
+        confidence=0.85,
+        evidence=(_CALIBRATION_FIGURE_EVIDENCE,),
+        verification_urls=(_NATURE_CE_URL,),
+    )
+    clusters = {
+        CALIBRATION_CLUSTER_IDS["mechanism"]: ClaimCluster(
+            cluster_id=CALIBRATION_CLUSTER_IDS["mechanism"],
+            proposition=AtomicProposition(
+                text=_CALIBRATION_MECHANISM_CLAIM,
+                subject="clinker substitution",
+                predicate="states_mechanism",
+            ),
+            evidence_ids=[CALIBRATION_EVIDENCE_IDS["mechanism"]],
+            member_claim_ids=[mechanism.claim_id],
+            target_ids=[CALIBRATION_TARGET_IDS["mechanism"]],
+            source_urls=list(mechanism.source_urls),
+            verdicts=["insufficient_evidence"],
+            verdict_evidence_status={"insufficient_evidence": "source_supported"},
+        ),
+        CALIBRATION_CLUSTER_IDS["figure"]: ClaimCluster(
+            cluster_id=CALIBRATION_CLUSTER_IDS["figure"],
+            proposition=AtomicProposition(
+                text=_CALIBRATION_FIGURE_CLAIM,
+                subject="clinker substitution",
+                predicate="states_value",
+                value="0.4",
+                unit="tCO2/t",
+            ),
+            evidence_ids=[CALIBRATION_EVIDENCE_IDS["figure"]],
+            member_claim_ids=[figure.claim_id],
+            target_ids=[CALIBRATION_TARGET_IDS["figure"]],
+            source_urls=list(figure.source_urls),
+            verdicts=["verified"],
+            verdict_evidence_status={"verified": "verified_pair"},
+        ),
+    }
+    units = {
+        CALIBRATION_EVIDENCE_IDS["mechanism"]: EvidenceUnit(
+            evidence_id=CALIBRATION_EVIDENCE_IDS["mechanism"],
+            read_id="read-calibration-01",
+            source_url=_IEA_CE_URL,
+            source_title="IEA: cement industry energy analysis",
+            locator="section-mechanism",
+            excerpt=_CALIBRATION_MECHANISM_EVIDENCE,
+            target_ids=[CALIBRATION_TARGET_IDS["mechanism"]],
+            origin="researcher",
+        ),
+        CALIBRATION_EVIDENCE_IDS["figure"]: EvidenceUnit(
+            evidence_id=CALIBRATION_EVIDENCE_IDS["figure"],
+            read_id="read-calibration-02",
+            source_url=_NATURE_CE_URL,
+            source_title="Nature: cement decarbonization at scale",
+            locator="section-figure",
+            excerpt=_CALIBRATION_FIGURE_EVIDENCE,
+            target_ids=[CALIBRATION_TARGET_IDS["figure"]],
+            origin="researcher",
+        ),
+    }
+    return ReportComposition(
+        question=CALIBRATION_QUESTION,
+        session_id="evaluation-critic-calibration",
+        sub_topics=[_calibration_sub_topic()],
+        claims=[mechanism, figure],
+        sources=[
+            scored_source(
+                _GCCA_URL,
+                title="GCCA: net-zero roadmap",
+                rationale="Industry association roadmap with plant-level reporting.",
+                authority=0.85,
+                recency=0.90,
+                relevance=0.90,
+                overall=0.86,
+            ),
+            scored_source(
+                _IEA_CE_URL,
+                title="IEA: cement industry energy analysis",
+                rationale="International agency analysis of the cement sector.",
+                authority=0.92,
+                recency=0.90,
+                relevance=0.88,
+                overall=0.88,
+            ),
+            scored_source(
+                _NATURE_CE_URL,
+                title="Nature: cement decarbonization at scale",
+                rationale="Peer-reviewed review of low-carbon cement performance.",
+                authority=0.90,
+                recency=0.85,
+                relevance=0.85,
+                overall=0.85,
+            ),
+        ],
+        claim_clusters=clusters,
+        evidence_units=units,
+        summary=[
+            ReportPoint(
+                text=_CALIBRATION_MECHANISM_CLAIM,
+                claim_ids=[mechanism.claim_id],
+                source_urls=list(mechanism.source_urls),
+            )
+        ],
+        sections=[
+            ReportSection(
+                title="Findings",
+                points=[
+                    ReportPoint(
+                        text=_CALIBRATION_FIGURE_CLAIM,
+                        claim_ids=[figure.claim_id],
+                        source_urls=list(figure.source_urls),
+                    )
+                ],
+            )
+        ],
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CriticCalibrationCase:
+    """One paired calibration example: a candidate and its scripted review.
+
+    ``score_band`` is the range the local build's reading has to land in, not
+    a demanded value — the pair calibrates direction, and an exact score
+    requirement would turn a calibration contract into a golden file.
+    ``expects_acceptance`` and ``expects_a_defect`` are the two independent
+    facts about the candidate: whether the answer may be accepted, and whether
+    it has a defect the review has to surface. They differ, deliberately: the
+    one-minor-gap case has a defect and is still acceptable.
+    """
+
+    case_id: str
+    title: str
+    purpose: str
+    score_band: tuple[int, int]
+    expects_acceptance: bool
+    expects_a_defect: bool
+    draft: dict[str, object]
+    report: str = _CALIBRATION_REPORT
+
+
+def _gap(
+    *,
+    problem: str,
+    target_ids: Sequence[str] = (),
+    statement_ids: Sequence[str] = (),
+    claim_cluster_ids: Sequence[str] = (),
+    kind: str = "coverage",
+    severity: str = "major",
+    repair_action: str = "acquire",
+    queries: Sequence[str] = (),
+) -> dict[str, object]:
+    """One scripted gap, in the exact shape ``CritiqueGapDraft`` accepts."""
+    return {
+        "target_ids": list(target_ids),
+        "statement_ids": list(statement_ids),
+        "claim_cluster_ids": list(claim_cluster_ids),
+        "kind": kind,
+        "severity": severity,
+        "repair_action": repair_action,
+        "problem": problem,
+        "recommended_queries": list(queries),
+    }
+
+
+def _review(
+    *,
+    score: int,
+    rationale: str,
+    gaps: Sequence[dict[str, object]] = (),
+    unsupported: Sequence[str] = (),
+    queries: Sequence[str] = (),
+) -> dict[str, object]:
+    """One scripted ``CritiqueDraft`` payload."""
+    return {
+        "score": score,
+        "gaps": list(gaps),
+        "unsupported_claims": list(unsupported),
+        "recommended_queries": list(queries),
+        "rationale": rationale,
+    }
+
+
+_MECHANISM_TARGET = CALIBRATION_TARGET_IDS["mechanism"]
+_DURABILITY_TARGET = CALIBRATION_TARGET_IDS["durability"]
+_FIGURE_CLUSTER = CALIBRATION_CLUSTER_IDS["figure"]
+_MECHANISM_STATEMENT = CALIBRATION_STATEMENT_IDS["mechanism"]
+
+CALIBRATION_CASES: tuple[CriticCalibrationCase, ...] = (
+    CriticCalibrationCase(
+        case_id="calibration-strong-answer",
+        title="A complete, well-cited answer",
+        purpose=(
+            "Every critical target is answered from named sources, the "
+            "measured figure is independently corroborated, and the report "
+            "states what it does not know."
+        ),
+        score_band=(8, 10),
+        expects_acceptance=True,
+        expects_a_defect=False,
+        draft=_review(
+            score=9,
+            rationale=(
+                "The mechanism and the measured figure are both attributed to "
+                "named sources, the figure carries independent corroboration, "
+                "and the durability uncertainty is disclosed rather than "
+                "hidden."
+            ),
+        ),
+    ),
+    CriticCalibrationCase(
+        case_id="calibration-one-minor-gap",
+        title="A sound answer with one minor gap",
+        purpose=(
+            "The same sound answer, with one wording-level defect: the "
+            "mechanism is stated twice in different words. A minor defect is "
+            "named and does not buy another research pass."
+        ),
+        score_band=(7, 9),
+        expects_acceptance=True,
+        expects_a_defect=True,
+        draft=_review(
+            score=8,
+            gaps=[
+                _gap(
+                    problem=(
+                        "The summary and the first finding restate the "
+                        "mechanism in different words, which reads as two "
+                        "separate findings."
+                    ),
+                    statement_ids=[_MECHANISM_STATEMENT],
+                    kind="presentation",
+                    severity="minor",
+                    repair_action="synthesize",
+                )
+            ],
+            rationale=(
+                "The answer is complete and corroborated; its only defect is "
+                "that one mechanism is stated twice."
+            ),
+        ),
+    ),
+    CriticCalibrationCase(
+        case_id="calibration-missing-critical-topic",
+        title="A critical planned topic the report never answers",
+        purpose=(
+            "The durability obligation is critical, planned, and answered by "
+            "no statement and no read. The report is otherwise competent, and "
+            "still cannot be accepted."
+        ),
+        report=_CALIBRATION_REPORT,
+        score_band=(1, 5),
+        expects_acceptance=False,
+        expects_a_defect=True,
+        draft=_review(
+            score=4,
+            gaps=[
+                _gap(
+                    problem=(
+                        "The report never addresses field-durability evidence "
+                        "for blended cements, which is a critical obligation "
+                        "of this plan and is answered by no statement at all."
+                    ),
+                    target_ids=[_DURABILITY_TARGET],
+                    kind="coverage",
+                    severity="critical",
+                    repair_action="acquire",
+                    queries=["blended cement field durability trial results"],
+                )
+            ],
+            queries=["blended cement field durability trial results"],
+            rationale=(
+                "One of three critical obligations is untouched, so the "
+                "question is answered only in part."
+            ),
+        ),
+    ),
+    CriticCalibrationCase(
+        case_id="calibration-unsupported-central-assertion",
+        title="A central assertion no read supports",
+        purpose=(
+            "The report's central claim about deployment is presented as "
+            "fact, is attributed to no cited read, and no excerpt carries it."
+        ),
+        score_band=(1, 4),
+        expects_acceptance=False,
+        expects_a_defect=True,
+        draft=_review(
+            score=3,
+            unsupported=[
+                "Commercial-scale deployment is accelerating across several "
+                "markets, which no cited source in this report measures."
+            ],
+            rationale=(
+                "The claim the question turns on is asserted without a source "
+                "that measures it, so the answer rests on nothing checkable."
+            ),
+        ),
+    ),
+    CriticCalibrationCase(
+        case_id="calibration-attributed-primary-fact",
+        title="An appropriately attributed primary fact",
+        purpose=(
+            "The mechanism statement carries one publisher's own account — "
+            "source-supported attribution, not independent corroboration "
+            "(Section 2.1). A correctly attributed primary fact is not a "
+            "defect, and must not be scored as one."
+        ),
+        score_band=(7, 9),
+        expects_acceptance=True,
+        expects_a_defect=False,
+        draft=_review(
+            score=8,
+            rationale=(
+                "The mechanism is attributed to the issuing body that states "
+                "it and is labelled as that body's own account, which is the "
+                "correct reading of a primary source; the measured figure "
+                "behind it carries independent corroboration."
+            ),
+        ),
+    ),
+    CriticCalibrationCase(
+        case_id="calibration-false-independent-pair",
+        title="A false independent-pair claim",
+        purpose=(
+            "Two URLs stand behind the measured figure, but they are one "
+            "publisher's roadmap and its own summary: there is no independent "
+            "pair, so nothing is corroborated (Sections 2.1 and 2.2)."
+        ),
+        score_band=(1, 4),
+        expects_acceptance=False,
+        expects_a_defect=True,
+        draft=_review(
+            score=3,
+            gaps=[
+                _gap(
+                    problem=(
+                        "The corroboration behind the 0.4-tonne figure is not "
+                        "independent: both passages come from the same "
+                        "publisher's roadmap and its own summary, so the "
+                        "independent pair the report implies does not exist."
+                    ),
+                    claim_cluster_ids=[_FIGURE_CLUSTER],
+                    kind="identity",
+                    severity="major",
+                    repair_action="adjudicate",
+                )
+            ],
+            rationale=(
+                "The headline figure is presented as corroborated when its "
+                "two passages share one origin."
+            ),
+        ),
+    ),
+    CriticCalibrationCase(
+        case_id="calibration-polished-verbose-non-answer",
+        title="A polished, verbose non-answer",
+        purpose=(
+            "Three hundred words of confident framing, no measured figure a "
+            "read supports, and no obligation discharged. Length and "
+            "confidence cannot buy a passing score."
+        ),
+        report=_POLISHED_NON_ANSWER_REPORT,
+        score_band=(1, 4),
+        expects_acceptance=False,
+        expects_a_defect=True,
+        draft=_review(
+            score=3,
+            gaps=[
+                _gap(
+                    problem=(
+                        "The report describes the direction of travel but "
+                        "never states a measured substitution share, which is "
+                        "what the question asks for."
+                    ),
+                    target_ids=[_MECHANISM_TARGET],
+                    kind="coverage",
+                    severity="critical",
+                    repair_action="acquire",
+                    queries=["clinker substitution share of cement emissions"],
+                )
+            ],
+            queries=["clinker substitution share of cement emissions"],
+            unsupported=[
+                "The premium for lower-carbon cement is narrowing in the "
+                "markets that moved first, which no cited source measures."
+            ],
+            rationale=(
+                "The prose is confident and long, but no obligation is "
+                "discharged and no figure is attributed."
+            ),
+        ),
+    ),
+    CriticCalibrationCase(
+        case_id="calibration-honest-but-incomplete-answer",
+        title="An honest but substantively incomplete answer",
+        purpose=(
+            "The report answers the mechanism plainly and says outright that "
+            "the cost and durability evidence was not found. Candour is not "
+            "an answer: the outstanding obligations are still outstanding."
+        ),
+        score_band=(3, 6),
+        expects_acceptance=False,
+        expects_a_defect=True,
+        draft=_review(
+            score=5,
+            gaps=[
+                _gap(
+                    problem=(
+                        "The cost of substitution is named as outstanding but "
+                        "never quantified, and the plan's cost obligation "
+                        "remains unanswered."
+                    ),
+                    target_ids=[_MECHANISM_TARGET],
+                    kind="acquisition",
+                    severity="major",
+                    repair_action="acquire",
+                    queries=["clinker substitution cost premium per tonne"],
+                ),
+                _gap(
+                    problem=(
+                        "No field-durability evidence was acquired, and the "
+                        "report says so without answering the obligation."
+                    ),
+                    target_ids=[_DURABILITY_TARGET],
+                    kind="coverage",
+                    severity="major",
+                    repair_action="acquire",
+                    queries=["blended cement durability field exposure"],
+                ),
+            ],
+            queries=[
+                "clinker substitution cost premium per tonne",
+                "blended cement durability field exposure",
+            ],
+            rationale=(
+                "The report is honest about what it could not establish, "
+                "which is better than hiding it, but two obligations the "
+                "question depends on remain unanswered."
+            ),
+        ),
+    ),
+)
+
+CALIBRATION_CASES_BY_ID = {case.case_id: case for case in CALIBRATION_CASES}
+
+
+def calibration_case(case_id: str) -> CriticCalibrationCase:
+    """One calibration case by id, or a loud failure naming the known ids."""
+    try:
+        return CALIBRATION_CASES_BY_ID[case_id]
+    except KeyError:
+        known = ", ".join(CALIBRATION_CASES_BY_ID)
+        raise KeyError(
+            f"unknown critic calibration case {case_id!r}; expected one of: "
+            f"{known}"
+        ) from None
+
+
+@dataclass(frozen=True, slots=True)
+class CriticCalibrationOutcome:
+    """What the local build made of one scripted calibration review."""
+
+    case_id: str
+    score: int
+    band: tuple[int, int]
+    accepted: bool
+    expects_acceptance: bool
+    defect_found: bool
+    expects_a_defect: bool
+    gap_count: int
+    material_gap_count: int
+    reason: str
+
+    @property
+    def in_band(self) -> bool:
+        return self.band[0] <= self.score <= self.band[1]
+
+    @property
+    def false_acceptance(self) -> bool:
+        """Accepted an answer that should have been rejected."""
+        return self.accepted and not self.expects_acceptance
+
+    @property
+    def false_rejection(self) -> bool:
+        """Rejected an answer that should have been accepted."""
+        return (not self.accepted) and self.expects_acceptance
+
+    @property
+    def missed_defect(self) -> bool:
+        """The candidate had a defect and the review named none."""
+        return self.expects_a_defect and not self.defect_found
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    return numerator / denominator if denominator else 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class CriticCalibrationReport:
+    """The three calibration error rates, each over its own denominator.
+
+    Reported separately on purpose. False acceptance, false rejection, and
+    missed defects are three different mistakes: folding them into one
+    accuracy figure hides which of them a change made worse. The denominator
+    is always the cases that could make that mistake — only an answer that
+    should be rejected can be falsely accepted, and only a candidate with a
+    defect can have that defect missed — so the three rates are not
+    commensurable and are never summed.
+    """
+
+    outcomes: tuple[CriticCalibrationOutcome, ...]
+    provider_calls: int = 0
+    basis: str = CALIBRATION_BASIS
+    self_agreement_is_ground_truth: bool = False
+
+    def outcome(self, case_id: str) -> CriticCalibrationOutcome:
+        return next(
+            item for item in self.outcomes if item.case_id == case_id
+        )
+
+    @property
+    def cases_expecting_rejection(self) -> int:
+        return sum(1 for item in self.outcomes if not item.expects_acceptance)
+
+    @property
+    def cases_expecting_acceptance(self) -> int:
+        return sum(1 for item in self.outcomes if item.expects_acceptance)
+
+    @property
+    def cases_expecting_a_defect(self) -> int:
+        return sum(1 for item in self.outcomes if item.expects_a_defect)
+
+    @property
+    def false_acceptances(self) -> int:
+        return sum(1 for item in self.outcomes if item.false_acceptance)
+
+    @property
+    def false_rejections(self) -> int:
+        return sum(1 for item in self.outcomes if item.false_rejection)
+
+    @property
+    def missed_defects(self) -> int:
+        return sum(1 for item in self.outcomes if item.missed_defect)
+
+    @property
+    def false_acceptance_rate(self) -> float:
+        """Accepted-but-should-reject, over the cases that should reject."""
+        return _rate(self.false_acceptances, self.cases_expecting_rejection)
+
+    @property
+    def false_rejection_rate(self) -> float:
+        """Rejected-but-should-accept, over the cases that should accept."""
+        return _rate(self.false_rejections, self.cases_expecting_acceptance)
+
+    @property
+    def missed_defect_rate(self) -> float:
+        """Defect named nowhere, over the candidates that carry one."""
+        return _rate(self.missed_defects, self.cases_expecting_a_defect)
+
+
+def measure_critic_calibration(
+    *,
+    score_overrides: Mapping[str, int] | None = None,
+    gap_overrides: Mapping[str, Sequence[dict[str, object]]] | None = None,
+) -> CriticCalibrationReport:
+    """Read every calibration case with the real local build, offline.
+
+    The overrides exist so a test can inject exactly one mistake and see which
+    of the three counts moves; no production caller passes them. Nothing here
+    reaches a provider, which is why ``provider_calls`` is a constant zero
+    rather than a measurement.
+    """
+    scores = dict(score_overrides or {})
+    gaps = {key: list(value) for key, value in (gap_overrides or {}).items()}
+    outcomes: list[CriticCalibrationOutcome] = []
+    for case in CALIBRATION_CASES:
+        draft = dict(case.draft)
+        if case.case_id in scores:
+            draft["score"] = scores[case.case_id]
+        if case.case_id in gaps:
+            draft["gaps"] = gaps[case.case_id]
+        packet = calibration_packet(case.case_id)
+        critique, reason = build_critique(
+            CritiqueDraft.model_validate(draft),
+            iteration=0,
+            max_iterations=3,
+            known_coverage_ids={
+                topic.coverage_id for topic in packet.sub_topics
+            },
+            packet=packet,
+        )
+        accepted = not critique.should_continue and critique.score >= (
+            ACCEPTANCE_SCORE
+        )
+        outcomes.append(
+            CriticCalibrationOutcome(
+                case_id=case.case_id,
+                score=critique.score,
+                band=case.score_band,
+                accepted=accepted,
+                expects_acceptance=case.expects_acceptance,
+                defect_found=bool(critique.gaps)
+                or bool(critique.unsupported_claims),
+                expects_a_defect=case.expects_a_defect,
+                gap_count=len(critique.gaps),
+                material_gap_count=sum(
+                    1 for gap in critique.gaps if gap.material
+                ),
+                reason=reason,
+            )
+        )
+    return CriticCalibrationReport(outcomes=tuple(outcomes))
+
+
+def calibration_packet(case_id: str = CALIBRATION_CASES[0].case_id) -> CriticPacket:
+    """The packet one calibration case's candidate is reviewed from.
+
+    The report text is the case's, and the composition is the shared one, so
+    the ids a scripted gap names resolve in every case. Nothing here calls a
+    provider: the packet is built from fixtures.
+    """
+    case = calibration_case(case_id)
+    composition = _calibration_composition()
+    state = ResearchState(
+        session_id="evaluation-critic-calibration",
+        original_question=CALIBRATION_QUESTION,
+        report=case.report,
+        composition=composition,
+        sub_topics=[_calibration_sub_topic()],
+        verified_claims=list(composition.claims),
+    )
+    return build_critic_packet(state, state.composition)

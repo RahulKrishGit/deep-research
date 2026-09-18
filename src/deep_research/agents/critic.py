@@ -1,10 +1,20 @@
-"""The Critic: score the report and recommend whether research continues.
+"""The Critic: review the exact candidate and emit typed repair actions.
 
 The provider is asked for ``CritiqueDraft`` and never for ``Critique``:
 ``Critique`` declares ``CriticScore`` (1..10) and a non-blank rationale,
 which strict structured outputs reject. Local code stamps the parts the
 model must not be trusted with — the clamped score, the de-duplicated
-notes, and above all the routing decision.
+notes, the bounded gap ids, and above all the routing decision.
+
+The Critic has **no tools**. The historical spot-check loop spent ten
+search/memory calls per pass and could open no page, so its searches could
+not establish missing support, and a search snippet is not read-bearing
+evidence (Section 2.1). What it reviews instead is one ``CriticPacket``
+built from the exact candidate: the frozen question and answer contract,
+the complete reader content, every reader statement with the evidence ids
+behind it, the batched read excerpts, the deterministic hard checks, and
+the open targets. The packet is fingerprinted, and the one permitted
+repair of a malformed reply is refused unless it is the same packet.
 
 Routing convention: ``route_decision`` checks the iteration bound *first*.
 "The critic must not continue forever" is the one rule no model judgement
@@ -13,9 +23,11 @@ may override, so it is settled before anything the model said is read.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Collection, Sequence
+from typing import ClassVar
 
 from pydantic import Field, model_validator
 
@@ -34,24 +46,39 @@ from deep_research.agents.prompts import (
     CRITIC_REVIEW_SYSTEM_PROMPT,
     CRITIC_SYSTEM_PROMPT,
     CRITIQUE_INSTRUCTION,
+    CRITIQUE_REPAIR_INSTRUCTION,
     AgentTask,
     render_claim_digest,
     render_source_quality,
 )
-from deep_research.agents.react import run_react_loop
-from deep_research.agents.researcher import render_evidence
-from deep_research.agents.steps import ReActDecision, ReActRun, ReActStep
+from deep_research.agents.steps import ReActRun
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import ChatMessage, ProviderError
+from deep_research.providers import (
+    ChatMessage,
+    ProviderError,
+    StructuredOutputError,
+    StructuredValidationDiagnostic,
+)
+from deep_research.providers.validation import validation_summary
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    EVIDENCE_BADGE_LABELS,
+    QUESTION_TARGET_ID,
+    AnswerContract,
     Claim,
+    ClaimCluster,
     ContractModel,
     Critique,
     CritiqueGap,
+    EvidenceUnit,
+    GapKind,
+    GapSeverity,
+    RepairAction,
+    ReportComposition,
     ReportQualitySnapshot,
+    ReportStatement,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -72,6 +99,30 @@ CRITIC_REPORT_CHARS = 6000
 CRITIC_CLAIM_DIGEST = 40
 CRITIC_EVIDENCE_CHARS = 2000
 DEFAULT_MAX_NOTES = 10
+
+# --- the review packet's bounds ---------------------------------------------
+#
+# The report is never the thing that gets truncated: the historical failure
+# was a late contradiction, a fabricated limitation, and a citation near the
+# report's end falling outside old prefix boundaries, so the packet carries
+# the complete reader content and every reader statement, and the request
+# renders each reader section under its own cap so no one section can crowd
+# out the sections after it.
+#
+# Evidence is what gets batched, because it is the only part with no natural
+# ceiling. Each item is clamped to a passage-sized excerpt, batches are filled
+# to a shared budget, and the unit count is bounded — with every id beyond the
+# bound named in ``omitted_evidence_ids`` rather than silently dropped.
+CRITIC_EVIDENCE_UNIT_CHARS = 1200
+CRITIC_EVIDENCE_BATCH_CHARS = 4000
+CRITIC_MAX_EVIDENCE_UNITS = 24
+
+# One initial request plus exactly one repair. The provider already performs a
+# single transport-level repair; this is the agent-level re-ask that carries
+# the schema diagnostics back to the model.
+CRITIC_REVIEW_ATTEMPTS = 2
+
+PACKET_FINGERPRINT_CHARS = 12
 
 # ``_render_balanced_report_sections`` renders this for the identity block of
 # an empty report; a report that is present renders every reader section,
@@ -224,13 +275,17 @@ _LOW_EXAMPLE_SCORE = 3
 _HIGH_EXAMPLE_SCORE = 9
 
 _CRITIQUE_LOW_EXAMPLE_JSON = (
-    '{"score": 3, "gaps": [{"coverage_id": null, "problem": "The report '
+    '{"score": 3, "gaps": [{"gap_id": "gap-01", "target_ids": ["topic-02"], '
+    '"claim_cluster_ids": [], "statement_ids": ["F004"], "kind": "coverage", '
+    '"severity": "major", "repair_action": "acquire", "problem": "The report '
     'never states what share of cement emissions clinker substitution can '
     'remove, which is the figure the question turns on.", '
     '"recommended_queries": ["clinker substitution share of cement '
-    'emissions"]}, {"coverage_id": null, "problem": "It gives no cost '
-    'figures for the alternatives it recommends.", "recommended_queries": '
-    '["low-carbon cement cost premium per tonne"]}], '
+    'emissions"]}, {"gap_id": "gap-02", "target_ids": ["topic-03"], '
+    '"claim_cluster_ids": [], "statement_ids": [], "kind": "missing_support", '
+    '"severity": "major", "repair_action": "acquire", "problem": "It gives no '
+    'cost figures for the alternatives it recommends.", '
+    '"recommended_queries": ["low-carbon cement cost premium per tonne"]}], '
     '"unsupported_claims": ["The claim that commercial-scale '
     'deployment is accelerating, which no cited source measures."], '
     '"recommended_queries": ["clinker substitution share of cement emissions", '
@@ -241,11 +296,12 @@ _CRITIQUE_LOW_EXAMPLE_JSON = (
 )
 
 _CRITIQUE_HIGH_EXAMPLE_JSON = (
-    '{"score": 9, "gaps": [{"coverage_id": null, "problem": "The report '
-    'does not cover how durability data are expected to arrive.", '
-    '"recommended_queries": ["low-carbon cement durability field trial '
-    'results"]}], "unsupported_claims": [], "recommended_queries": '
-    '["low-carbon cement durability field trial results"], "rationale": "The '
+    '{"score": 9, "gaps": [{"gap_id": "gap-01", "target_ids": [], '
+    '"claim_cluster_ids": [], "statement_ids": ["S002"], "kind": '
+    '"presentation", "severity": "minor", "repair_action": "synthesize", '
+    '"problem": "The same durability figure is restated in the summary and '
+    'again in the first finding.", "recommended_queries": []}], '
+    '"unsupported_claims": [], "recommended_queries": [], "rationale": "The '
     'report answers the question completely, every load-bearing figure is '
     'attributed to a strong and diverse set of named sources, and it states '
     'its own durability uncertainty plainly instead of hiding it."}'
@@ -286,34 +342,62 @@ ROUTING_REASONS = {
     "provider_unavailable": (
         "The model provider failed while the report was reviewed."
     ),
+    "review_failed": (
+        "The model's review never validated, so the report was not judged; "
+        "the run ended rather than accepting an unreviewed report."
+    ),
 }
 
-# The two conditions under which no model review exists at all.
+# The two conditions under which no model review exists at all. A failed
+# review is the third, and it has its own constructor (``failed_critique``)
+# because it must also record the attempt count and the bounded diagnostics
+# that ``fallback_critique`` has no way to carry.
 CRITIQUE_FALLBACK_REASONS = ("missing_report", "provider_unavailable")
 
 
 class CritiqueGapDraft(ContractModel):
-    """One provider-reported gap before local plan-ID validation."""
+    """One provider-reported gap before local plan-ID validation.
 
+    The mirrored shape of ``CritiqueGap`` plus a ``gap_id`` the model may echo
+    and this module ignores. The bounded id is stamped locally — it has to be
+    stable, unique, and bounded within one review, and a model-chosen id is
+    none of those — but an id field the reply examples show is a field the
+    model will fill, so the schema accepts it rather than rejecting a
+    well-formed review over an echo. Everything else travels through
+    unchanged, so ``normalize_gaps`` has one shape to read.
+    """
+
+    gap_id: str = ""
     coverage_id: str | None = None
+    target_ids: list[str] = Field(default_factory=list)
+    claim_cluster_ids: list[str] = Field(default_factory=list)
+    statement_ids: list[str] = Field(default_factory=list)
+    kind: GapKind = "coverage"
+    severity: GapSeverity = "major"
+    repair_action: RepairAction = "acquire"
     problem: str
-    recommended_queries: list[str]
+    recommended_queries: list[str] = Field(default_factory=list)
 
 
 def normalize_gap_drafts(values: object) -> object:
-    """Coerce the pre-Task-7 free-text gap list into typed gap drafts.
+    """Coerce the pre-Task-8 free-text gap list into typed gap drafts.
 
     The single place the legacy gap shape is understood *at a payload
     boundary*. Both typed boundaries that carry gaps call this: the
-    provider-facing ``CritiqueDraft`` and the state-facing ``Critique``. Two
-    copies of this rule would drift the moment the gap shape changes — one
-    boundary would keep accepting a bare string and the other would start
-    rejecting the same input — so both call the one function.
+    provider-facing ``CritiqueDraft`` and the state-facing ``Critique``.
 
-    ``normalize_gaps`` below holds a deliberate per-value copy of the same
-    mapping, because it works on an already-parsed sequence rather than on a
-    payload. That copy is documented there, and a change to the legacy shape
-    has to land in both places.
+    A legacy gap is a *string*, and only a string is treated as one. That
+    distinction is what lets an unscoped **typed** gap fail validation
+    instead of being quietly given a scope: a dict with no target, statement,
+    or cluster came from the model and is exactly the unactionable gap the
+    contract refuses, while a bare string predates the typed contract and
+    named nothing because there was nothing to name.
+
+    A legacy gap was listed only when closing it would materially change the
+    answer, so it becomes a material ``coverage`` gap scoped to the whole
+    answer — ``target_ids=["question"]``. No planned topic id is invented for
+    it: the sentinel says "the answer to the question", which is what the old
+    contract meant and what Task 9 has to route.
 
     A non-dict or non-list value is returned untouched, leaving the error to
     the field validator that owns it.
@@ -324,6 +408,12 @@ def normalize_gap_drafts(values: object) -> object:
     converted["gaps"] = [
         {
             "coverage_id": None,
+            "target_ids": [QUESTION_TARGET_ID],
+            "claim_cluster_ids": [],
+            "statement_ids": [],
+            "kind": "coverage",
+            "severity": "major",
+            "repair_action": "acquire",
             "problem": gap,
             "recommended_queries": [],
         }
@@ -351,26 +441,473 @@ class CritiqueDraft(ContractModel):
     @model_validator(mode="before")
     @classmethod
     def accept_legacy_gap_strings(cls, values: object) -> object:
-        """Keep pre-Task-7 fixtures readable while the provider schema is typed."""
+        """Keep pre-Task-8 fixtures readable while the provider schema is typed."""
         return normalize_gap_drafts(values)
 
 
-class CritiqueTask(AgentTask):
-    """An ``AgentTask`` bound to the report and budget it reviews.
+# --- the review packet -------------------------------------------------------
 
-    Carrying the report and the iteration bounds on the task is what lets
-    ``finalize(task, run)`` route without the agent holding mutable state
-    across await points — the same reason ``ClaimTask`` exists.
 
-    ``sub_topics`` holds the planner's own ``SubTopic`` objects rather than
-    parallel title and coverage-id lists. ``CRITIQUE_INSTRUCTION`` requires the
-    model to copy a ``coverage_id`` *exactly from a planned sub-topic* and
-    forbids inferring one from a title, so the two values have to travel
-    together out of one ordered sequence: a second list can drift out of step
-    with the first, and a title-only rendering leaves the contract pointing at
-    data the request never carried.
+def _excerpt(text: str, *, limit: int = CRITIC_EVIDENCE_UNIT_CHARS) -> str:
+    """Clamp one excerpt to a passage-sized unit, marking the cut."""
+    value = text.strip()
+    if len(value) <= limit:
+        return value
+    if limit <= 3:
+        return value[:limit]
+    return value[: limit - 3].rstrip() + "..."
+
+
+def _badge_label(badge: str) -> str:
+    """The reader-facing label of one evidence badge, or an honest blank."""
+    return EVIDENCE_BADGE_LABELS.get(
+        badge, EVIDENCE_BADGE_LABELS[""]
+    )
+
+
+class CriticEvidenceItem(ContractModel):
+    """One read excerpt the Critic may treat as evidence.
+
+    Only a registered ``EvidenceUnit`` becomes one of these: an exact passage
+    of a successful same-run read, with its read id, locator, and badge. A
+    search result, a snippet, or a memory recall can never construct one, so
+    "a search snippet cannot appear as verification evidence" is a property of
+    the type rather than of the prompt.
     """
 
+    evidence_id: str = Field(min_length=1)
+    read_id: str = Field(min_length=1)
+    source_url: str = Field(min_length=1)
+    source_title: str = Field(min_length=1)
+    locator: str = Field(min_length=1)
+    excerpt: str = Field(min_length=1)
+    target_ids: list[str] = Field(default_factory=list)
+    badge: str = ""
+    badge_label: str = Field(min_length=1)
+    cited_by_statement_ids: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def from_unit(
+        cls,
+        unit: EvidenceUnit,
+        *,
+        badge: str,
+        cited_by_statement_ids: Sequence[str] = (),
+    ) -> "CriticEvidenceItem":
+        return cls(
+            evidence_id=unit.evidence_id,
+            read_id=unit.read_id,
+            source_url=unit.source_url,
+            source_title=unit.source_title,
+            locator=unit.locator,
+            excerpt=_excerpt(unit.excerpt),
+            target_ids=list(unit.target_ids),
+            badge=badge,
+            badge_label=_badge_label(badge),
+            cited_by_statement_ids=list(cited_by_statement_ids),
+        )
+
+
+class CriticEvidenceBatch(ContractModel):
+    """A bounded group of evidence items, rendered under one heading.
+
+    ``chars`` is the rendered length of the batch, recorded on the batch so
+    "no batch exceeds the budget" is checkable without re-rendering it. A
+    single item larger than the budget is its own batch and is allowed to
+    exceed it: dropping or re-cutting an exact excerpt would change the
+    evidence, which is worse than one long batch.
+    """
+
+    batch_id: str = Field(min_length=1)
+    items: list[CriticEvidenceItem] = Field(min_length=1)
+    chars: int = Field(ge=1)
+
+
+class CriticTarget(ContractModel):
+    """One evidence obligation, with what the report actually answered."""
+
+    target_id: str = Field(min_length=1)
+    coverage_id: str = Field(min_length=1)
+    coverage_title: str = ""
+    question: str = Field(min_length=1)
+    required_dimensions: list[str] = Field(default_factory=list)
+    required: bool = True
+    critical: bool = False
+    support_policy: str = "independent_pair"
+    answered_dimension_ids: list[str] = Field(default_factory=list)
+    answered_by_statement_ids: list[str] = Field(default_factory=list)
+
+    @property
+    def open(self) -> bool:
+        """True when the report has not answered every required dimension."""
+        if not self.answered_by_statement_ids:
+            return True
+        uncovered = set(self.required_dimensions) - set(
+            self.answered_dimension_ids
+        )
+        return bool(uncovered)
+
+
+class CriticPacket(ContractModel):
+    """Everything one review is allowed to judge, and nothing else.
+
+    The single input to a review: the frozen question and answer contract, the
+    complete reader content, every reader statement with the evidence ids
+    behind it, the batched read excerpts, the deterministic hard checks, and
+    the target inventory with what is still open. It carries no score, no
+    verdict from a later reviewer, and no prior run's judgement — the Critic
+    judges evidence, and a packet that carried a score would be asking it to
+    agree with one.
+
+    ``fingerprint`` covers the exact text and ids the review was opened on.
+    The one permitted repair is refused unless it re-reads the same
+    fingerprint, so a repaired critique can never be a second review of
+    different text wearing the first one's authority.
+    """
+
+    question: str = Field(min_length=1)
+    answer_contract: AnswerContract | None = None
+    reader_content: str = ""
+    reader_sections: dict[str, str] = Field(default_factory=dict)
+    statements: list[ReportStatement] = Field(default_factory=list)
+    targets: list[CriticTarget] = Field(default_factory=list)
+    evidence_batches: list[CriticEvidenceBatch] = Field(default_factory=list)
+    omitted_evidence_ids: list[str] = Field(default_factory=list)
+    hard_checks: list[str] = Field(default_factory=list)
+    quality: ReportQualitySnapshot | None = None
+    claims: list[Claim] = Field(default_factory=list)
+    sources: list[ScoredSource] = Field(default_factory=list)
+    sub_topics: list[SubTopic] = Field(default_factory=list)
+    errors: list[ResearchError] = Field(default_factory=list)
+    error_count: int = Field(default=0, ge=0)
+    error_groups: dict[str, list[ResearchError]] = Field(default_factory=dict)
+    evidence_unit_count: int = Field(default=0, ge=0)
+    unrecorded_statement_count: int = Field(default=0, ge=0)
+    fingerprint: str = ""
+
+    @property
+    def open_targets(self) -> list[CriticTarget]:
+        return [target for target in self.targets if target.open]
+
+    @property
+    def statement_ids(self) -> list[str]:
+        return [statement.statement_id for statement in self.statements]
+
+    @property
+    def claim_cluster_ids(self) -> list[str]:
+        seen: list[str] = []
+        for statement in self.statements:
+            for cluster_id in statement.claim_cluster_ids:
+                if cluster_id not in seen:
+                    seen.append(cluster_id)
+        return seen
+
+    @property
+    def target_ids(self) -> list[str]:
+        return [target.target_id for target in self.targets]
+
+    @property
+    def evidence_ids(self) -> list[str]:
+        return [
+            item.evidence_id
+            for batch in self.evidence_batches
+            for item in batch.items
+        ]
+
+    def statement(self, statement_id: str) -> ReportStatement | None:
+        return next(
+            (
+                statement
+                for statement in self.statements
+                if statement.statement_id == statement_id
+            ),
+            None,
+        )
+
+    def targets_by_coverage_id(self, coverage_id: str) -> list[str]:
+        return [
+            target.target_id
+            for target in self.targets
+            if target.coverage_id == coverage_id
+        ]
+
+
+def critic_packet_fingerprint(
+    *,
+    question: str,
+    reader_content: str,
+    statement_ids: Sequence[str],
+    target_ids: Sequence[str],
+    evidence: Sequence[tuple[str, str, str]],
+) -> str:
+    """The stable digest of everything one review is opened on.
+
+    Twelve hex characters over a sorted JSON payload, the same shape the
+    configuration fingerprints use. The report text is hashed by the digest of
+    its own bytes, so the fingerprint is short whether the report is 200
+    characters or 200,000, and each evidence entry contributes its id, its
+    read id, and the digest of its exact excerpt — editing one excerpt changes
+    the packet's identity even though the id did not change.
+    """
+    payload = {
+        "question": question,
+        "reader_content_sha256": hashlib.sha256(
+            reader_content.encode("utf-8")
+        ).hexdigest(),
+        "statement_ids": list(statement_ids),
+        "target_ids": list(target_ids),
+        "evidence": [
+            [
+                evidence_id,
+                read_id,
+                hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+            ]
+            for evidence_id, read_id, excerpt in evidence
+        ],
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:PACKET_FINGERPRINT_CHARS]
+
+
+def _cluster_badge(cluster: ClaimCluster) -> str:
+    """The one badge a cluster's recorded verdicts agree on, or a blank.
+
+    A cluster whose members disagree has no single badge: ``verified_pair``
+    beside a ``source_supported`` verdict would let a review read the weaker
+    evidence as the stronger one, so an ambiguous cluster reports no badge and
+    the label says exactly that.
+    """
+    badges = {
+        badge
+        for badge in cluster.verdict_evidence_status.values()
+        if badge in EVIDENCE_BADGE_LABELS
+    }
+    return badges.pop() if len(badges) == 1 else ""
+
+
+def _batch_evidence(
+    items: Sequence[CriticEvidenceItem],
+) -> list[CriticEvidenceBatch]:
+    """Fill bounded batches in order, never dropping or re-cutting an item."""
+    batches: list[CriticEvidenceBatch] = []
+    current: list[CriticEvidenceItem] = []
+    current_chars = 0
+
+    def rendered_chars(item: CriticEvidenceItem) -> int:
+        return len(item.excerpt) + len(item.source_title) + len(item.locator) + 64
+
+    def flush() -> None:
+        nonlocal current, current_chars
+        if not current:
+            return
+        batches.append(
+            CriticEvidenceBatch(
+                batch_id=f"batch-{len(batches) + 1:02d}",
+                items=list(current),
+                chars=max(1, current_chars),
+            )
+        )
+        current = []
+        current_chars = 0
+
+    for item in items:
+        size = rendered_chars(item)
+        if current and current_chars + size > CRITIC_EVIDENCE_BATCH_CHARS:
+            flush()
+        current.append(item)
+        current_chars += size
+    flush()
+    return batches
+
+
+def _unrecorded_statement_count(composition: ReportComposition | None) -> int:
+    """Rendered reader prose blocks with no statement record.
+
+    A composition guarantees one record per rendered statement, so this is
+    zero for a current pass. A report with no composition at all is the honest
+    non-zero case: the report exists as Markdown and nothing behind it can be
+    looked up, which is itself a defect and is reported as a hard check rather
+    than as a gap this module invents.
+    """
+    if composition is None:
+        return 1
+    rendered = len(composition.summary) + len(composition.constraints)
+    rendered += sum(len(section.points) for section in composition.sections)
+    rendered += len(composition.answer_rows)
+    recorded = len(composition.statements)
+    return max(0, rendered - recorded)
+
+
+def build_critic_packet(
+    state: ResearchState,
+    composition: ReportComposition | None = None,
+) -> CriticPacket:
+    """Build the one packet a review reads, from the exact candidate.
+
+    ``composition`` defaults to ``state.composition``. The report text comes
+    from ``state.report`` verbatim; the statements, targets, and evidence come
+    from the composition, which is why a gap can only ever cite a record the
+    packet actually carries.
+    """
+    if composition is None:
+        composition = state.composition
+    report = state.report or ""
+
+    statements = list(composition.statements) if composition is not None else []
+    clusters = dict(composition.claim_clusters) if composition is not None else {}
+    units = dict(composition.evidence_units) if composition is not None else {}
+    sub_topics = list(composition.sub_topics) if composition is not None else (
+        list(state.sub_topics)
+    )
+
+    cited_by: dict[str, list[str]] = {}
+    for statement in statements:
+        for evidence_id in statement.evidence_ids:
+            cited_by.setdefault(evidence_id, []).append(statement.statement_id)
+
+    badge_by_cluster = {
+        cluster_id: _cluster_badge(cluster)
+        for cluster_id, cluster in clusters.items()
+    }
+    badge_by_evidence: dict[str, str] = {}
+    for statement in statements:
+        badge = next(
+            (
+                badge_by_cluster[cluster_id]
+                for cluster_id in statement.claim_cluster_ids
+                if badge_by_cluster.get(cluster_id)
+            ),
+            "",
+        )
+        for evidence_id in statement.evidence_ids:
+            badge_by_evidence.setdefault(evidence_id, badge)
+
+    cited_ids: list[str] = []
+    for statement in statements:
+        for evidence_id in statement.evidence_ids:
+            if evidence_id not in cited_ids:
+                cited_ids.append(evidence_id)
+    ordered_ids = [
+        *cited_ids,
+        *(evidence_id for evidence_id in units if evidence_id not in cited_ids),
+    ]
+    retained_ids = ordered_ids[:CRITIC_MAX_EVIDENCE_UNITS]
+    omitted_ids = ordered_ids[CRITIC_MAX_EVIDENCE_UNITS:]
+    items = [
+        CriticEvidenceItem.from_unit(
+            units[evidence_id],
+            badge=badge_by_evidence.get(evidence_id, ""),
+            cited_by_statement_ids=cited_by.get(evidence_id, ()),
+        )
+        for evidence_id in retained_ids
+        if evidence_id in units
+    ]
+
+    targets: list[CriticTarget] = []
+    for topic in sub_topics:
+        for target in topic.evidence_targets:
+            answering = [
+                statement
+                for statement in statements
+                if target.target_id in statement.target_ids
+            ]
+            answered: list[str] = []
+            for statement in answering:
+                for dimension in statement.answered_dimensions:
+                    if dimension not in answered:
+                        answered.append(dimension)
+            targets.append(
+                CriticTarget(
+                    target_id=target.target_id,
+                    coverage_id=target.coverage_id,
+                    coverage_title=topic.title,
+                    question=target.question,
+                    required_dimensions=list(target.required_dimensions),
+                    required=target.required,
+                    critical=target.critical,
+                    support_policy=target.support_policy,
+                    answered_dimension_ids=answered,
+                    answered_by_statement_ids=[
+                        statement.statement_id for statement in answering
+                    ],
+                )
+            )
+
+    unrecorded = _unrecorded_statement_count(composition)
+    hard_checks = list(state.quality.hard_failures) if state.quality else []
+    if composition is None:
+        hard_checks.append(
+            "the report carries no typed composition, so no reader statement "
+            "record exists to tie a finding to its evidence"
+        )
+    if unrecorded:
+        hard_checks.append(
+            f"{unrecorded} reader prose block(s) carry no statement record; a "
+            "gap may not be raised against prose no record can resolve"
+        )
+    missing_evidence = [
+        evidence_id
+        for statement in statements
+        for evidence_id in statement.evidence_ids
+        if evidence_id not in units
+    ]
+    if missing_evidence:
+        hard_checks.append(
+            f"{len(set(missing_evidence))} statement evidence id(s) are not in "
+            "the read registry"
+        )
+
+    fingerprint = critic_packet_fingerprint(
+        question=state.original_question,
+        reader_content=report,
+        statement_ids=[statement.statement_id for statement in statements],
+        target_ids=[target.target_id for target in targets],
+        evidence=[
+            (item.evidence_id, item.read_id, item.excerpt) for item in items
+        ],
+    )
+    errors = list(state.errors)
+    return CriticPacket(
+        question=state.original_question,
+        answer_contract=state.answer_contract,
+        reader_content=report,
+        reader_sections=_split_reader_report(report),
+        statements=statements,
+        targets=targets,
+        evidence_batches=_batch_evidence(items),
+        omitted_evidence_ids=omitted_ids,
+        hard_checks=hard_checks,
+        quality=state.quality,
+        claims=merge_claim_snapshot([], state.verified_claims),
+        sources=merge_source_snapshot([], state.evaluated_sources),
+        sub_topics=sub_topics,
+        errors=errors,
+        error_count=len(errors),
+        error_groups=_group_errors_by_agent_stage(errors),
+        evidence_unit_count=len(units),
+        unrecorded_statement_count=unrecorded,
+        fingerprint=fingerprint,
+    )
+
+
+class CritiqueTask(AgentTask):
+    """An ``AgentTask`` bound to the packet it reviews.
+
+    Carrying the packet on the task is what lets ``review`` route without the
+    agent holding mutable state across await points — the same reason
+    ``ClaimTask`` exists — and it is what makes the repair's fingerprint check
+    meaningful: the packet the review was opened on travels with the review.
+
+    The report, claim, source, and quality fields are the pre-Task-8 shape,
+    kept for a caller that builds a task by hand (a fixture, or a test of the
+    request itself). They are never both authoritative: ``packet`` wins
+    wherever it is present, and ``packet_for_task`` assembles one from these
+    fields only when it is not.
+    """
+
+    packet: CriticPacket | None = None
     report: str = ""
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=1, ge=1)
@@ -384,42 +921,220 @@ class CritiqueTask(AgentTask):
     error_groups: dict[str, list[ResearchError]] = {}
 
 
+def packet_for_task(task: CritiqueTask) -> CriticPacket:
+    """The packet this task reviews, assembled from its own fields if needed.
+
+    The compatibility half of ``CritiqueTask``: a task built by hand carries
+    no composition, so its packet has no statements, no read evidence, and the
+    hard check that says so. Nothing is invented for it — an empty statement
+    registry is the honest value for a caller that supplied no records.
+    """
+    if task.packet is not None:
+        return task.packet
+    errors = list(task.errors)
+    targets = [
+        CriticTarget(
+            target_id=target.target_id,
+            coverage_id=target.coverage_id,
+            question=target.question,
+            required_dimensions=list(target.required_dimensions),
+            required=target.required,
+            critical=target.critical,
+            support_policy=target.support_policy,
+        )
+        for topic in task.sub_topics
+        for target in topic.evidence_targets
+    ]
+    hard_checks: list[str] = []
+    if not task.report.strip():
+        hard_checks.append("no reader report was supplied for this review")
+    hard_checks.append(
+        "the task carries no typed composition, so no reader statement record "
+        "exists to tie a finding to its evidence"
+    )
+    if task.quality:
+        hard_checks.extend(task.quality.hard_failures)
+    return CriticPacket(
+        question=task.instruction,
+        reader_content=task.report,
+        reader_sections=task.report_sections or _split_reader_report(task.report),
+        targets=targets,
+        hard_checks=hard_checks,
+        quality=task.quality,
+        claims=list(task.claims),
+        sources=list(task.sources),
+        sub_topics=list(task.sub_topics),
+        errors=errors,
+        error_count=task.error_count or len(errors),
+        error_groups=task.error_groups or _group_errors_by_agent_stage(errors),
+        unrecorded_statement_count=1 if task.report.strip() else 0,
+        fingerprint=critic_packet_fingerprint(
+            question=task.instruction,
+            reader_content=task.report,
+            statement_ids=[],
+            target_ids=[target.target_id for target in targets],
+            evidence=[],
+        ),
+    )
+
+
 def _render_planned_sub_topic(sub_topic: SubTopic) -> str:
     """One planned sub-topic as ``- <coverage_id>: <title>``.
 
-    The single place either request builds that line. The id comes first so a
-    model copying ``coverage_id`` has one unambiguous token per topic, and the
-    title stays beside it so the gap it writes can be recognised by a reader.
+    The id comes first so a model naming a ``coverage_id`` has one unambiguous
+    token per topic, and the title stays beside it so the gap it writes can be
+    recognised by a reader. A gap's scope is resolved against the target
+    inventory below; this list is what the ids in that inventory belong to.
     """
     return f"- {sub_topic.coverage_id}: {sub_topic.title}"
 
 
-def _render_spot_check_guidance(
-    report: str,
-    sub_topics: Sequence[SubTopic],
-    *,
-    report_chars: int,
-) -> str:
-    """Render the report and the planner's search context for the spot check.
-
-    The report is clamped with the same helper and budget the review prompt
-    uses, so the spot-check view can never be larger than the review view and
-    a long report is truncated identically in both.
-    """
-    lines: list[str] = []
-    if report.strip():
-        lines.append("Report under review:")
-        lines.extend(_render_balanced_report_sections(report, limit=report_chars))
-        lines.append("")
-    lines.append(
-        "When performing a spot check, use an applicable planned search "
-        "query verbatim."
+def _render_sub_topics(packet: CriticPacket) -> str:
+    """The planned sub-topics, or the honest absence of a plan."""
+    if not packet.sub_topics:
+        return "(no sub-topic was planned for this pass)"
+    return "\n".join(
+        _render_planned_sub_topic(sub_topic) for sub_topic in packet.sub_topics
     )
-    lines.append("Planned sub-topics and search queries:")
-    for sub_topic in sub_topics:
-        lines.append(_render_planned_sub_topic(sub_topic))
-        lines.extend(f"  - {query}" for query in sub_topic.search_queries)
+
+
+def _render_reader_statement(statement: ReportStatement) -> str:
+    """One reader statement as the review reads it: id, mode, and its links.
+
+    The id comes first because it is the token a gap has to copy, and the
+    evidence ids travel beside the text so a review can tell an attributed
+    sentence from a corroborated one without consulting anything else.
+    """
+    evidence = ", ".join(statement.evidence_ids) or "none"
+    targets = ", ".join(statement.target_ids) or "none"
+    dimensions = ", ".join(statement.answered_dimensions) or "none"
+    lines = [
+        f"- {statement.statement_id} [{statement.mode}]: {statement.text}",
+        f"  clusters: {', '.join(statement.claim_cluster_ids) or 'none'}",
+        f"  evidence: {evidence}",
+        f"  targets: {targets}",
+        f"  answered dimensions: {dimensions}",
+    ]
+    if statement.basis:
+        lines.append(f"  basis: {statement.basis}")
     return "\n".join(lines)
+
+
+def _render_target(target: CriticTarget) -> str:
+    """One evidence obligation, with what the report already answered."""
+    status = "OPEN" if target.open else "answered"
+    flags = ", ".join(
+        flag
+        for flag, on in (
+            ("required", target.required),
+            ("critical", target.critical),
+        )
+        if on
+    )
+    title = f' "{target.coverage_title}"' if target.coverage_title else ""
+    dimensions = ", ".join(target.required_dimensions) or "none"
+    answered = ", ".join(target.answered_dimension_ids) or "none"
+    answering = ", ".join(target.answered_by_statement_ids) or "no statement"
+    return "\n".join(
+        [
+            f"- {target.target_id} ({target.coverage_id}{title}) "
+            f"[{status}; {flags or 'optional'}]",
+            f"  obligation: {target.question}",
+            f"  required dimensions: {dimensions}",
+            f"  answered dimensions: {answered}",
+            f"  answered by: {answering}",
+            f"  support policy: {target.support_policy}",
+        ]
+    )
+
+
+def _render_evidence_item(item: CriticEvidenceItem) -> str:
+    """One read excerpt: its id, its badge, and where it came from."""
+    cited = ", ".join(item.cited_by_statement_ids) or "no statement"
+    return "\n".join(
+        [
+            f"- {item.evidence_id} [{item.badge_label}] read={item.read_id} "
+            f"locator={item.locator}",
+            f"  source: {item.source_title} — {item.source_url}",
+            f"  cited by: {cited}",
+            f"  excerpt: {item.excerpt}",
+        ]
+    )
+
+
+def _render_evidence_batches(packet: CriticPacket) -> str:
+    """Every evidence batch under its own heading, with its own budget."""
+    if not packet.evidence_batches:
+        registry = (
+            f"{packet.evidence_unit_count} registered read excerpt(s) exist, "
+            "but none of them is cited by a reader statement"
+            if packet.evidence_unit_count
+            else "no read excerpt was registered for this pass"
+        )
+        lines = [f"({registry})"]
+    else:
+        lines = []
+        for batch in packet.evidence_batches:
+            lines.append(f"## {batch.batch_id}")
+            lines.extend(_render_evidence_item(item) for item in batch.items)
+    if packet.omitted_evidence_ids:
+        lines.append(
+            "## Omitted from this request\n"
+            f"{len(packet.omitted_evidence_ids)} further registered excerpt(s) "
+            "were not selected for this packet because the packet's unit bound "
+            "is reached; their ids are recorded rather than dropped: "
+            f"{', '.join(packet.omitted_evidence_ids)}"
+        )
+    return "\n".join(lines)
+
+
+def _render_statements(packet: CriticPacket) -> str:
+    """Every reader statement, or the honest absence of any record."""
+    if not packet.statements:
+        return (
+            "No reader statement record exists for this report, so a gap may "
+            "not cite a statement id. Raising a defect against prose no record "
+            "can resolve is itself the defect."
+        )
+    return "\n".join(
+        _render_reader_statement(statement) for statement in packet.statements
+    )
+
+
+def _render_targets(packet: CriticPacket) -> str:
+    """The target inventory, open obligations first so they cannot be missed."""
+    if not packet.targets:
+        return (
+            "No evidence target was recorded for this pass; the only scope a "
+            f'gap may name is "{QUESTION_TARGET_ID}".'
+        )
+    ordered = sorted(packet.targets, key=lambda target: not target.open)
+    lines = [
+        _render_target(target) for target in ordered
+    ]
+    lines.append(
+        f'An original-question omission names "{QUESTION_TARGET_ID}" in '
+        "target_ids and repairs by extend_plan; it never invents a target id."
+    )
+    return "\n".join(lines)
+
+
+def _render_hard_checks(packet: CriticPacket) -> str:
+    """The deterministic integrity facts, stated as facts rather than scores."""
+    if not packet.hard_checks:
+        return (
+            "(no deterministic hard check failed for this pass)"
+        )
+    return "\n".join(f"- {check}" for check in packet.hard_checks)
+
+
+def _render_answer_contract(contract: AnswerContract | None) -> str:
+    """The frozen answer form, or the honest absence of one."""
+    if contract is None:
+        return "(no frozen answer contract was recorded for this pass)"
+    return json.dumps(
+        contract.model_dump(mode="json"), ensure_ascii=False, sort_keys=True
+    )
 
 
 def clamp_score(value: int) -> int:
@@ -447,29 +1162,44 @@ def normalize_gaps(
     values: Sequence[str | CritiqueGapDraft],
     *,
     known_coverage_ids: Collection[str] = (),
+    packet: CriticPacket | None = None,
     limit: int = DEFAULT_MAX_NOTES,
 ) -> list[CritiqueGap]:
-    """Normalize provider gaps and retain only plan-valid target IDs.
+    """Normalize provider gaps into actionable, bounded, id-stamped defects.
 
-    A blank or unknown provider ID is intentionally converted to a global
-    gap.  Titles and problem text are never consulted when deciding the
-    target, so a similarly named topic cannot receive another topic's gap.
+    Two rules are inherited from the reviewed Task 7 boundary, and both keep
+    the same shape: an id the plan cannot answer is *not obeyed*, and titles
+    and problem text are never consulted when deciding what a gap targets, so
+    a similarly named topic cannot receive another topic's gap. What changed
+    is the fallback. A gap that names no resolvable id is now scoped to the
+    whole answer (``target_ids=["question"]``) rather than left with no scope
+    at all, because Task 9 routes ``acquire`` by the target it names and an
+    unscoped acquisition cannot be routed.
 
-    The pre-Task-7 free-text shape is accepted here as well. This is a SECOND
-    COPY of that rule, not a call to ``normalize_gap_drafts``: the shared
-    normalizer rewrites a whole provider payload's ``gaps`` list, while this
-    loop already holds one parsed value at a time. The two must agree, so the
-    mapping below is the per-value spelling of the payload mapping above and
-    any change to the legacy shape has to land in both.
+    Scope is resolved locally wherever the packet can resolve it: a known
+    ``coverage_id`` contributes the targets planned under it, which is what a
+    model means when it names a sub-topic and asks for acquisition. Statement
+    and cluster ids resolve only against the packet's own registries — a gap
+    may not be raised against a record that does not exist.
+
+    The pre-Task-8 free-text shape is accepted here as well, through
+    ``CritiqueGapDraft``'s own defaults plus the legacy scope below. This is
+    the per-value spelling of ``normalize_gap_drafts``' payload mapping, and a
+    change to the legacy shape has to land in both.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
+    known_statement_ids = set(packet.statement_ids) if packet else set()
+    known_cluster_ids = set(packet.claim_cluster_ids) if packet else set()
+    known_target_ids = set(packet.target_ids) if packet else set()
     gaps: list[CritiqueGap] = []
-    seen: set[tuple[str | None, str, tuple[str, ...]]] = set()
+    seen: set[tuple[object, ...]] = set()
     for value in values:
         draft = (
             CritiqueGapDraft(
-                coverage_id=None, problem=value, recommended_queries=[]
+                coverage_id=None,
+                target_ids=[QUESTION_TARGET_ID],
+                problem=value,
             )
             if isinstance(value, str)
             else value
@@ -482,19 +1212,87 @@ def normalize_gaps(
             coverage_id = coverage_id.strip() or None
         if coverage_id not in known_coverage_ids:
             coverage_id = None
+        targets = [
+            target_id.strip()
+            for target_id in draft.target_ids
+            if target_id.strip()
+        ]
+        if packet is not None:
+            targets = [
+                target_id
+                for target_id in targets
+                if target_id in known_target_ids
+                or target_id == QUESTION_TARGET_ID
+            ]
+            if coverage_id is not None and not targets:
+                targets = packet.targets_by_coverage_id(coverage_id)
+        statements = _known_ids(draft.statement_ids, known_statement_ids, packet)
+        clusters = _known_ids(draft.claim_cluster_ids, known_cluster_ids, packet)
+        if not (targets or statements or clusters or coverage_id):
+            targets = [QUESTION_TARGET_ID]
         queries = tuple(normalize_notes(draft.recommended_queries))
-        identity = (coverage_id, problem, queries)
+        identity = (
+            coverage_id,
+            tuple(targets),
+            tuple(statements),
+            tuple(clusters),
+            draft.kind,
+            draft.severity,
+            draft.repair_action,
+            problem,
+            queries,
+        )
         if identity in seen:
             continue
         seen.add(identity)
         gaps.append(
             CritiqueGap(
+                gap_id=f"gap-{len(gaps) + 1:02d}",
                 coverage_id=coverage_id,
+                target_ids=targets,
+                claim_cluster_ids=clusters,
+                statement_ids=statements,
+                kind=draft.kind,
+                severity=draft.severity,
+                repair_action=draft.repair_action,
                 problem=problem,
                 recommended_queries=list(queries),
             )
         )
     return gaps[:limit]
+
+
+def _known_ids(
+    values: Sequence[str],
+    known: Collection[str],
+    packet: CriticPacket | None,
+) -> list[str]:
+    """The cited ids that exist, in order.
+
+    With no packet there is no registry to check against, so the ids are kept
+    as they came: a caller reviewing a report outside a packet has nothing to
+    validate against, and dropping them would silently discard the only
+    targeting information the gap carries.
+    """
+    retained: list[str] = []
+    for value in values:
+        item = value.strip()
+        if not item or item in retained:
+            continue
+        if packet is not None and item not in known:
+            continue
+        retained.append(item)
+    return retained
+
+
+def _gap_is_material(gap: object) -> bool:
+    """Whether one gap must be closed before the report is accepted.
+
+    ``minor`` is the one non-material severity. A legacy string gap carries no
+    severity and stays material: the pre-Task-8 contract asked for a gap only
+    when closing it would change the answer.
+    """
+    return getattr(gap, "severity", None) != "minor"
 
 
 def route_decision(
@@ -510,9 +1308,14 @@ def route_decision(
 
     The iteration bound comes first and beats every quality signal. After
     that: a missing report is the most concrete thing to fix, then the
-    score threshold, then gaps, then unsupported claims. Every gap the
-    model listed counts as critical — ``CRITIQUE_INSTRUCTION`` tells it to
-    list a gap only when closing it would materially change the answer.
+    score threshold, then *material* gaps, then unsupported claims.
+
+    Materiality is severity, not existence. A minor defect is a real finding
+    the reader should see, and the historical rule that every listed gap buys
+    a whole research pass is what made one wording observation as expensive as
+    a missing answer. A gap that declares no severity — a legacy string, or a
+    snapshot written before severities existed — stays material, because that
+    contract only ever listed gaps worth another pass.
     """
     if iteration >= max_iterations:
         return False, "max_iterations_reached"
@@ -520,7 +1323,7 @@ def route_decision(
         return True, "missing_report"
     if score < ACCEPTANCE_SCORE:
         return True, "low_score"
-    if gaps:
+    if [gap for gap in gaps if _gap_is_material(gap)]:
         return True, "critical_gaps"
     if unsupported_claims:
         return True, "unsupported_claims"
@@ -541,14 +1344,26 @@ def build_critique(
     iteration: int,
     max_iterations: int,
     known_coverage_ids: Collection[str] = (),
+    packet: CriticPacket | None = None,
 ) -> tuple[Critique, str]:
-    """Stamp one model review into a validated ``Critique`` and its route."""
+    """Stamp one model review into a validated ``Critique`` and its route.
+
+    ``packet`` is what a gap's ids are validated against. The top-level query
+    list is the union of the model's own list and every acquisition gap's
+    queries, de-duplicated in order: a query a gap carries is a query the next
+    pass must run, and the two lists must not be able to disagree about it.
+    """
     score = clamp_score(draft.score)
     gaps = normalize_gaps(
-        draft.gaps, known_coverage_ids=known_coverage_ids
+        draft.gaps, known_coverage_ids=known_coverage_ids, packet=packet
     )
     unsupported = normalize_notes(draft.unsupported_claims)
-    queries = normalize_notes(draft.recommended_queries)
+    queries = normalize_notes(
+        [
+            *draft.recommended_queries,
+            *(query for gap in gaps for query in gap.recommended_queries),
+        ]
+    )
     should_continue, reason = route_decision(
         score=score,
         gaps=gaps,
@@ -604,7 +1419,12 @@ def fallback_critique(
         )
         gaps = [
             CritiqueGap(
+                gap_id="gap-01",
                 coverage_id=None,
+                target_ids=[QUESTION_TARGET_ID],
+                kind="presentation",
+                severity="critical",
+                repair_action="synthesize",
                 problem="No report was available to review.",
                 recommended_queries=[],
             )
@@ -620,6 +1440,42 @@ def fallback_critique(
             recommended_queries=[],
             should_continue=should_continue,
             rationale=" ".join(sentences),
+        ),
+        route,
+    )
+
+
+def failed_critique(
+    *,
+    iteration: int,
+    max_iterations: int,
+) -> tuple[Critique, str]:
+    """Record that no review exists, without inventing a judgement.
+
+    The reply never validated, so nothing about the report was judged. The
+    score is the floor and ``review_status`` says why, the gap list is empty
+    *and* the run does not continue — an exhausted repair must never read as
+    an acceptance, which is what a high score with no gaps would mean, and
+    must never read as a low score, which would claim the report was judged
+    poor. Routing stops for the same reason a provider outage does: a schema
+    failure says nothing about the report, and another research cycle would
+    not fix a malformed reply.
+    """
+    route = (
+        "max_iterations_reached" if iteration >= max_iterations else "review_failed"
+    )
+    sentences = [ROUTING_REASONS["review_failed"]]
+    if route != "review_failed":
+        sentences.append(ROUTING_REASONS[route])
+    return (
+        Critique(
+            score=MIN_CRITIC_SCORE,
+            gaps=[],
+            unsupported_claims=[],
+            recommended_queries=[],
+            should_continue=False,
+            rationale=" ".join(sentences),
+            review_status="failed",
         ),
         route,
     )
@@ -653,16 +1509,16 @@ def _render_quality_snapshot(
     )
 
 
-def _render_error_groups(task: CritiqueTask) -> str:
+def _render_error_groups(packet: CriticPacket) -> str:
     """Render all typed errors grouped by agent and operation/stage."""
-    groups = task.error_groups or _group_errors_by_agent_stage(task.errors)
+    groups = packet.error_groups or _group_errors_by_agent_stage(packet.errors)
     if not groups:
         return (
-            f"{task.error_count} error(s) were recorded during this pass; "
+            f"{packet.error_count} error(s) were recorded during this pass; "
             "no typed error details were supplied."
         )
     lines = [
-        f"{task.error_count or sum(len(rows) for rows in groups.values())} "
+        f"{packet.error_count or sum(len(rows) for rows in groups.values())} "
         "error(s) were recorded during this pass."
     ]
     for group in sorted(groups):
@@ -685,42 +1541,83 @@ def _render_error_groups(task: CritiqueTask) -> str:
 
 def critique_messages(
     task: CritiqueTask,
-    run: ReActRun,
+    run: ReActRun | None = None,
     *,
-    report_chars: int,
-    claim_digest: int,
+    report_chars: int = CRITIC_REPORT_CHARS,
+    claim_digest: int = CRITIC_CLAIM_DIGEST,
 ) -> list[ChatMessage]:
-    """Build the messages that request one structured review."""
-    sub_topics = (
-        "\n".join(
-            _render_planned_sub_topic(sub_topic)
-            for sub_topic in task.sub_topics
-        )
-        or "(none planned)"
-    )
-    canonical_claims = merge_claim_snapshot([], task.claims)
-    canonical_sources = merge_source_snapshot([], task.sources)
+    """Build the messages that request one structured review.
+
+    The request renders the packet and nothing else: the frozen question and
+    answer contract, the reader report split into independently bounded fenced
+    sections, every reader statement with its ids, the target inventory with
+    what is still open, the batched read excerpts, the deterministic quality
+    snapshot and hard checks, the canonical claim verdicts, and the cited
+    source assessments. ``run`` is accepted and ignored — the packet carries
+    the evidence — so a caller that still passes the finished run keeps
+    working, and no ReAct transcript can reach the review.
+
+    ``report_chars`` bounds each reader section independently; it never
+    truncates the packet, which carries the complete text, and it can never
+    hide a whole section behind another one's length.
+    """
+    del run
+    packet = packet_for_task(task)
+    canonical_claims = merge_claim_snapshot([], packet.claims)
+    canonical_sources = merge_source_snapshot([], packet.sources)
     sections = [
-        f"# Research question\n{task.instruction}",
+        f"# Research question\n{packet.question}",
+        _fingerprint_section(packet),
         (
-            "# Report under review\n"
+            "# Answer contract\n"
+            f"{_render_answer_contract(packet.answer_contract)}"
+        ),
+        (
+            "# Reader content\n"
             "The reader report is split into independently bounded fenced "
             "sections below. Review every section; a section cap must not hide "
             "later sections; its own headings belong to the report rather than "
-            "to this request."
+            "to this request. This is the complete candidate, not a prefix."
         ),
         *_render_balanced_report_sections(
-            task.report,
+            packet.reader_content,
             limit=report_chars,
-            report_sections=task.report_sections,
+            report_sections=packet.reader_sections,
+        ),
+        (
+            "# Reader statements\n"
+            "Every substantive sentence the report prints, as its record: the "
+            "id, the reader mode, the claim clusters, the selected evidence "
+            "ids, and the targets and dimensions it answers. A gap may cite a "
+            "statement id from this list and no other.\n"
+            f"{_render_statements(packet)}"
         ),
         (
             "# Sub-topics planned\n"
-            f"{sub_topics}"
+            f"{_render_sub_topics(packet)}"
+        ),
+        (
+            "# Evidence targets\n"
+            "The obligations this pass owed, open ones first, with the "
+            "dimensions each already answers.\n"
+            f"{_render_targets(packet)}"
+        ),
+        (
+            "# Evidence — batched read excerpts\n"
+            "Exact passages of successful reads this run registered. An "
+            "excerpt is evidence; a search result, a snippet, or a memory "
+            "recall is not, and none of them appears here.\n"
+            f"{_render_evidence_batches(packet)}"
         ),
         (
             "# Deterministic quality snapshot\n"
-            f"{_render_quality_snapshot(task.quality)}"
+            f"{_render_quality_snapshot(packet.quality)}"
+        ),
+        (
+            "# Hard checks\n"
+            "Deterministic integrity results. A failed check is a fact about "
+            "the candidate, not a score and not a verdict.\n"
+            f"{_render_hard_checks(packet)}"
         ),
         (
             "# Claim verdicts — canonical checked claims\n"
@@ -732,11 +1629,7 @@ def critique_messages(
         ),
         (
             "# Recorded problems by agent/stage\n"
-            f"{_render_error_groups(task)}"
-        ),
-        (
-            "# Spot checks\n"
-            f"{render_evidence(run, limit=CRITIC_EVIDENCE_CHARS)}"
+            f"{_render_error_groups(packet)}"
         ),
         f"# Response contract\n{CRITIQUE_INSTRUCTION}",
         f"# How to choose the score\n{_CRITIQUE_SCORE_BANDS}",
@@ -756,6 +1649,189 @@ def critique_messages(
         ChatMessage(role="developer", content=CRITIC_REVIEW_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
+
+
+def _fingerprint_section(packet: CriticPacket) -> str:
+    """Attest which exact packet this request is a review of.
+
+    The line travels in the request so the repair that follows can be shown to
+    be about the same text, and it is one bounded digest: nothing about the
+    report, the evidence, or the model's reply is added to the request by
+    recording it. It sits near the top rather than at the end, because the
+    reply format has to be the last thing the model reads.
+    """
+    return (
+        "# Packet fingerprint\n"
+        f"Packet fingerprint: {packet.fingerprint}\n"
+        "This review, and any repair of it, is of exactly this packet: the "
+        "reader content, the statement records, the targets, and the evidence "
+        "above and below are the whole of what is being judged."
+    )
+
+
+def critique_repair_messages(
+    task: CritiqueTask,
+    error: StructuredOutputError,
+    run: ReActRun | None = None,
+    *,
+    report_chars: int = CRITIC_REPORT_CHARS,
+    claim_digest: int = CRITIC_CLAIM_DIGEST,
+) -> list[ChatMessage]:
+    """Build the one repair request for a malformed review reply.
+
+    The repair re-asks the *same* packet, so the messages are the original
+    request plus the bounded, provider-output-free diagnostics the local
+    schema validation produced: field paths taken from the validation error's
+    own locations and a stable category. The rejected payload is never echoed
+    back and never logged — it is provider text, and the whole point of the
+    diagnostic record is that a schema failure can be described without it.
+    """
+    messages = critique_messages(
+        task,
+        run,
+        report_chars=report_chars,
+        claim_digest=claim_digest,
+    )
+    diagnostics = schema_diagnostics(error)
+    lines = [
+        f"- {validation_summary(diagnostic)}" for diagnostic in diagnostics
+    ] or ["- no bounded diagnostic was available"]
+    return [
+        messages[0],
+        ChatMessage(
+            role="user",
+            content="\n\n".join(
+                [
+                    messages[1].content,
+                    (
+                        "# Repair request\n"
+                        "The previous reply to this exact request was not valid "
+                        "for the requested schema. Return the same five-field "
+                        "JSON object again, corrected. The only thing wrong "
+                        "with it was its shape; the report, the evidence, and "
+                        "the packet are unchanged, and their fingerprint is "
+                        "the one above.\n" + "\n".join(lines)
+                    ),
+                    f"# Repair instructions\n{CRITIQUE_REPAIR_INSTRUCTION}",
+                ]
+            ),
+        ),
+    ]
+
+
+def schema_diagnostics(
+    error: StructuredOutputError,
+) -> tuple[StructuredValidationDiagnostic, ...]:
+    """The bounded, provider-content-free diagnostics of one schema failure."""
+    return tuple(error.validation_diagnostics)
+
+
+def _diagnostic_details(
+    diagnostics: Sequence[StructuredValidationDiagnostic],
+    *,
+    attempts: int,
+    fingerprint: str,
+) -> dict[str, object]:
+    """The bounded schema record: categories, field paths, and the attempt count."""
+    categories: list[str] = []
+    paths: list[str] = []
+    for diagnostic in diagnostics:
+        category = diagnostic.category
+        if isinstance(category, str) and category and category not in categories:
+            categories.append(category)
+        for path in diagnostic.field_paths:
+            if path not in paths:
+                paths.append(path)
+    return {
+        "operation": "critic_report_review",
+        "attempts": attempts,
+        "schema_categories": categories,
+        "schema_field_paths": paths,
+        "packet_fingerprint": fingerprint,
+    }
+
+
+def critique_schema_error(
+    diagnostics: Sequence[StructuredValidationDiagnostic],
+    *,
+    attempts: int,
+    fingerprint: str,
+) -> ResearchError:
+    """Record that the review reply never validated, without its payload.
+
+    Non-recoverable: no review of this report exists. Recorded here rather
+    than in ``agent_provider_failure_details`` because this is not a provider
+    outage — the provider answered, and what it answered could not be read.
+    """
+    return agent_error(
+        agent_name=CRITIC_NAME,
+        error_type="critic_review_schema_error",
+        message=(
+            f"The model's review did not match the required schema after "
+            f"{attempts} attempt(s); the report was not judged and the run was "
+            "ended rather than accepting an unreviewed report."
+        ),
+        recoverable=False,
+        details=_diagnostic_details(
+            diagnostics, attempts=attempts, fingerprint=fingerprint
+        ),
+    )
+
+
+def critique_repaired(
+    diagnostics: Sequence[StructuredValidationDiagnostic],
+    *,
+    attempts: int,
+    fingerprint: str,
+) -> ResearchError:
+    """Record that a malformed review was repaired into a usable one.
+
+    Recoverable: the repair produced a validated review, so the pass is
+    reviewable. The record exists because a repaired reply's finish reason is
+    ``stop``, exactly like a clean one, and the bounded diagnostics are the
+    only trace that the first attempt was rejected.
+    """
+    return agent_error(
+        agent_name=CRITIC_NAME,
+        error_type="critic_review_repaired",
+        message=(
+            "The model's first review reply did not match the required schema; "
+            "one repair against the same packet produced a valid review."
+        ),
+        recoverable=True,
+        details=_diagnostic_details(
+            diagnostics, attempts=attempts, fingerprint=fingerprint
+        ),
+    )
+
+
+class CritiqueRepairRefused(RuntimeError):
+    """A repair would not have reviewed the packet the review was opened on."""
+
+
+def repair_target(
+    packet: CriticPacket, *, reviewed_fingerprint: str
+) -> CriticPacket:
+    """The packet a repair may be built from, or a refusal.
+
+    A repair re-asks the same model about the same text, with the first
+    request's authority. If the packet that would be sent no longer carries
+    the fingerprint the review was opened on — a caller that rebuilt it after
+    the report or the evidence changed — the repair would be a *second*,
+    different review wearing the first one's authority, so it is refused and
+    the caller records an explicit failed review instead.
+    """
+    if not reviewed_fingerprint:
+        raise CritiqueRepairRefused(
+            "no packet fingerprint was recorded for this review, so a repair "
+            "cannot be shown to be about the same packet"
+        )
+    if packet.fingerprint != reviewed_fingerprint:
+        raise CritiqueRepairRefused(
+            "the report/evidence packet changed between the review and its "
+            "repair"
+        )
+    return packet
 
 
 def critique_provider_error(error: Exception) -> ResearchError:
@@ -841,17 +1917,29 @@ def critique_completed_event(
 
 
 class CriticAgent(BaseAgent[Critique]):
-    """Review the report, score it, and recommend a route.
+    """Review the exact candidate and recommend a route.
 
-    ``run`` is overridden to emit progress events and to skip the
-    spot-check loop when there is no report or no tool budget; everything
-    below it — bounds, tracing, tool execution, scratchpad writes — is
-    still the shared runtime's.
+    No tools, and the frozen ``prompt_version`` says so: the historical
+    spot-check loop could search but could not open a page, so its snippets
+    could not establish anything about support. What replaced it is the packet
+    — the complete reader content, every statement record, and the registered
+    read excerpts — so the only request this agent makes is the structured
+    review and, if that reply is malformed, one repair of it.
     """
 
     name = CRITIC_NAME
     description = "Judge the report and recommend whether research continues."
-    allowed_tools = ("web_search", "query_memory")
+    allowed_tools: ClassVar[tuple[str, ...]] = ()
+    prompt_version: ClassVar[str] = "critic-2"
+    """The prompt and reply contract this agent's requests are versioned under.
+
+    Re-pinned with Task 8, deliberately: the system prompt lost every tool
+    instruction, the response contract gained the typed gap object, and both
+    examples were rewritten, so a Task 7-era request and a Task 8 one are
+    different requests whose artifacts must not compare equal. The call
+    fingerprint already includes this value, which is why the version is the
+    one place the change has to be recorded rather than a comment.
+    """
 
     def __init__(
         self,
@@ -896,42 +1984,40 @@ class CriticAgent(BaseAgent[Critique]):
         return CRITIC_SYSTEM_PROMPT
 
     def build_task(self, state: ResearchState) -> CritiqueTask:
-        """Bind this review to the report and the remaining budget."""
-        claims = merge_claim_snapshot([], state.verified_claims)
-        sources = merge_source_snapshot([], state.evaluated_sources)
-        errors = list(state.errors)
+        """Bind this review to the exact packet it judges."""
+        packet = build_critic_packet(state, state.composition)
         return CritiqueTask(
             instruction=state.original_question,
-            guidance=_render_spot_check_guidance(
-                state.report or "",
-                state.sub_topics,
-                report_chars=self._report_chars,
-            ),
-            report=state.report or "",
+            packet=packet,
+            report=packet.reader_content,
             iteration=state.iteration,
             max_iterations=state.max_iterations,
-            claims=claims,
-            sources=sources,
-            sub_topics=list(state.sub_topics),
-            error_count=len(errors),
-            quality=state.quality,
-            report_sections=_split_reader_report(state.report or ""),
-            errors=errors,
-            error_groups=_group_errors_by_agent_stage(errors),
+            claims=list(packet.claims),
+            sources=list(packet.sources),
+            sub_topics=list(packet.sub_topics),
+            error_count=packet.error_count,
+            quality=packet.quality,
+            report_sections=dict(packet.reader_sections),
+            errors=list(packet.errors),
+            error_groups=dict(packet.error_groups),
         )
 
     async def review(
         self,
         task: CritiqueTask,
-        run: ReActRun,
+        run: ReActRun | None = None,
     ) -> tuple[Critique, str, list[ResearchError], bool]:
-        """Judge one report from one finished spot-check loop.
+        """Judge one candidate from its packet.
 
         Returns ``(critique, reason, errors, provider_failed)``. No provider
         call is made when there is no report, so a score is never invented
-        over an empty review.
+        over an empty review. A malformed reply gets exactly one repair,
+        refused unless it re-reads the same packet; when that too fails, the
+        review is recorded as failed with its bounded diagnostics rather than
+        scored.
         """
-        if not task.report.strip():
+        packet = packet_for_task(task)
+        if not packet.reader_content.strip():
             critique, reason = fallback_critique(
                 reason="missing_report",
                 iteration=task.iteration,
@@ -939,18 +2025,16 @@ class CriticAgent(BaseAgent[Critique]):
             )
             return critique, reason, [missing_report_error()], False
 
+        messages = critique_messages(
+            task,
+            run,
+            report_chars=self._report_chars,
+            claim_digest=self._claim_digest,
+        )
         try:
-            draft = await self.provider.complete_structured(
-                critique_messages(
-                    task,
-                    run,
-                    report_chars=self._report_chars,
-                    claim_digest=self._claim_digest,
-                ),
-                CritiqueDraft,
-                agent_name=self.name,
-                max_tokens=self.config.critic_review_max_tokens,
-            )
+            draft = await self._complete_review(messages)
+        except StructuredOutputError as error:
+            return await self._repair_review(task, error, run)
         except ProviderError as error:
             critique, reason = fallback_critique(
                 reason="provider_unavailable",
@@ -964,10 +2048,120 @@ class CriticAgent(BaseAgent[Critique]):
             iteration=task.iteration,
             max_iterations=task.max_iterations,
             known_coverage_ids={
-                sub_topic.coverage_id for sub_topic in task.sub_topics
+                sub_topic.coverage_id for sub_topic in packet.sub_topics
             },
+            packet=packet,
         )
         return critique, reason, [], False
+
+    async def _complete_review(
+        self, messages: Sequence[ChatMessage]
+    ) -> CritiqueDraft:
+        """One structured review request under this operation's output budget."""
+        self.fingerprint_call(
+            "CritiqueDraft", output_limit=self.config.critic_review_max_tokens
+        )
+        return await self.provider.complete_structured(
+            messages,
+            CritiqueDraft,
+            agent_name=self.name,
+            max_tokens=self.config.critic_review_max_tokens,
+        )
+
+    async def _repair_review(
+        self,
+        task: CritiqueTask,
+        error: StructuredOutputError,
+        run: ReActRun | None,
+    ) -> tuple[Critique, str, list[ResearchError], bool]:
+        """Re-ask the same packet once, or record an explicit failed review."""
+        packet = packet_for_task(task)
+        diagnostics = schema_diagnostics(error)
+        try:
+            repair_target(packet, reviewed_fingerprint=packet.fingerprint)
+        except CritiqueRepairRefused as refusal:
+            critique, reason = failed_critique(
+                iteration=task.iteration,
+                max_iterations=task.max_iterations,
+            )
+            return (
+                critique,
+                reason,
+                [
+                    critique_schema_error(
+                        diagnostics,
+                        attempts=1,
+                        fingerprint=packet.fingerprint,
+                    ),
+                    agent_error(
+                        agent_name=CRITIC_NAME,
+                        error_type="critic_review_repair_refused",
+                        message=str(refusal),
+                        recoverable=False,
+                        details={"operation": "critic_report_review"},
+                    ),
+                ],
+                True,
+            )
+
+        try:
+            draft = await self._complete_review(
+                critique_repair_messages(
+                    task,
+                    error,
+                    run,
+                    report_chars=self._report_chars,
+                    claim_digest=self._claim_digest,
+                )
+            )
+        except ProviderError as failure:
+            critique, reason = failed_critique(
+                iteration=task.iteration,
+                max_iterations=task.max_iterations,
+            )
+            # The repair itself can fail two ways: the second reply was
+            # malformed too, or the provider went away mid-repair. Both mean no
+            # review exists, and both are recorded: the bounded schema record
+            # (with every attempt's diagnostics) always, and the provider
+            # failure when that is what happened, so the ledger does not blame
+            # the schema for an outage.
+            repair_diagnostics = (
+                [*diagnostics, *schema_diagnostics(failure)]
+                if isinstance(failure, StructuredOutputError)
+                else list(diagnostics)
+            )
+            errors = [
+                critique_schema_error(
+                    repair_diagnostics,
+                    attempts=CRITIC_REVIEW_ATTEMPTS,
+                    fingerprint=packet.fingerprint,
+                )
+            ]
+            if not isinstance(failure, StructuredOutputError):
+                errors.append(critique_provider_error(failure))
+            return critique, reason, errors, True
+
+        critique, reason = build_critique(
+            draft,
+            iteration=task.iteration,
+            max_iterations=task.max_iterations,
+            known_coverage_ids={
+                sub_topic.coverage_id for sub_topic in packet.sub_topics
+            },
+            packet=packet,
+        )
+        return (
+            critique,
+            reason,
+            [
+                critique_repaired(
+                    diagnostics,
+                    attempts=CRITIC_REVIEW_ATTEMPTS,
+                    fingerprint=packet.fingerprint,
+                )
+            ],
+            False,
+        )
 
     async def finalize(
         self,
@@ -997,40 +2191,14 @@ class CriticAgent(BaseAgent[Critique]):
             update["critique"] = result
         return update
 
-    async def _spot_check(self, task: CritiqueTask) -> ReActRun:
-        """Run one bounded ReAct loop inside the caller's agent span.
-
-        The scratchpad is cleared first: notes from a previous iteration's
-        review are noise in this one's prompt.
-        """
-        self.scratchpad.clear()
-        toolset = self.toolset
-
-        async def decide(
-            iteration: int,
-            steps: Sequence[ReActStep],
-        ) -> ReActDecision:
-            del steps
-            return await self._complete_react_decision(task, iteration=iteration)
-
-        react = await run_react_loop(
-            agent_name=self.name,
-            tracker=self.tracker,
-            tools=toolset,
-            decide=decide,
-            max_iterations=self.config.max_iterations,
-            tool_budget=self.config.tool_budget_for(self.name),
-            on_step=self._record_step,
-            is_sufficient=self.is_sufficient,
-            summary_limit=self.config.observation_summary_chars,
-            propagate_provider_errors=False,
-        )
-        return react.model_copy(
-            update={"errors": [*react.errors, *self.scratchpad.drain_errors()]}
-        )
-
     async def run(self, state: ResearchState) -> AgentRun[Critique]:
-        """Spot-check what is worth checking, then score and route."""
+        """Review the packet, then score and route.
+
+        No tool loop runs and none can: the agent declares no tools, so its
+        toolset is empty and the only provider request in this method is the
+        structured review. The synthesizer's own work is reviewed as this
+        pass left it — the exact candidate, not an abridged earlier draft.
+        """
         task = self.build_task(state)
         has_report = bool(task.report.strip())
         events: list[ResearchEvent] = [
@@ -1044,14 +2212,7 @@ class CriticAgent(BaseAgent[Critique]):
         errors: list[ResearchError] = []
 
         async with self.tracker.agent_span(self.name) as span:
-            if has_report and self.config.tool_budget_for(self.name) > 0:
-                react = await self._spot_check(task)
-            else:
-                # Nothing to check against (no report) or nothing to check
-                # with (no tool budget): spending a provider call here would
-                # buy no information the review could use.
-                react = ReActRun(agent_name=self.name, stop_reason="finished")
-            errors.extend(react.errors)
+            react = ReActRun(agent_name=self.name, stop_reason="finished")
             critique, reason, review_errors, provider_failed = await self.review(
                 task, react
             )
@@ -1075,9 +2236,13 @@ class CriticAgent(BaseAgent[Critique]):
                 {
                     "agent_name": self.name,
                     "score": critique.score,
+                    "review_status": critique.review_status,
                     "gap_count": len(critique.gaps),
                     "should_continue": critique.should_continue,
                     "reason": reason,
+                    "packet_fingerprint": (
+                        task.packet.fingerprint if task.packet else ""
+                    ),
                     "tool_calls": react.tool_calls,
                     "stop_reason": react.stop_reason,
                 }

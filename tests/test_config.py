@@ -906,7 +906,12 @@ def test_an_agent_budget_override_rejects_a_negative_budget(budget: int) -> None
 
 
 def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
-    """The shipped overrides are the plan's exact values, and no seventh key."""
+    """The shipped overrides are the plan's exact values, and no seventh key.
+
+    ``critic: 0`` is Task 8's value: the Critic reviews the candidate's packet
+    and runs no ReAct loop at all, so its budget is a declaration rather than
+    a bound it might spend.
+    """
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
     assert raw["agents"]["tool_budget"] == 10
@@ -916,6 +921,7 @@ def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
         "fact_checker": 10,
         "source_evaluator": 0,
         "synthesizer": 0,
+        "critic": 0,
     }
 
 

@@ -760,7 +760,7 @@ def test_the_dry_run_inventory_proves_request_construction(probe: Any) -> None:
     assert inventory["max_tokens"] == 32768
     assert inventory["tool_choice"] == "auto"
     assert inventory["response_format_present"] is False
-    assert inventory["native_tool_names"] == ["web_search", "query_memory"]
+    assert inventory["native_tool_names"] == ["query_memory", "web_search"]
     assert inventory["repository_retry_count"] == _configured_retry_count()
     assert inventory["probe_retry_override"] == 0
     assert inventory["sdk_retry_count"] == 0

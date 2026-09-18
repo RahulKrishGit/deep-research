@@ -5,6 +5,7 @@ from __future__ import annotations
 from deep_research.agents.critic import fallback_critique
 from deep_research.agents.steps import ReActObservation, ReActStep
 from deep_research.evaluation.cases import all_cases
+from deep_research.evaluation.cases.critic import measure_critic_calibration
 from deep_research.evaluation.dependencies import (
     bounded_url_fingerprints,
     read_url_fingerprints,
@@ -755,4 +756,98 @@ def test_evaluate_target_combines_general_and_agent_gates(
     assert "run_completed" in ids
     assert "subtopic_count" in ids
     assert 0.0 <= quality <= 1.0
+
+
+# --- Task 8: the three calibration error rates, measured separately ----------
+#
+# False acceptance, false rejection, and missed defects are three different
+# mistakes with three different denominators. Folding them into one accuracy
+# number hides which one a change made worse, so each has its own count and
+# its own rate. The denominator is always the cases that could make that
+# mistake: only a case whose answer should be rejected can be falsely
+# accepted, and only a case with a defect can have that defect missed.
+
+
+def test_the_calibration_report_measures_the_three_rates_separately() -> None:
+    report = measure_critic_calibration()
+
+    assert report.false_acceptance_rate == 0.0
+    assert report.false_rejection_rate == 0.0
+    assert report.missed_defect_rate == 0.0
+    assert report.cases_expecting_rejection >= 1
+    assert report.cases_expecting_acceptance >= 1
+    assert report.cases_expecting_a_defect >= 1
+    # Three separate denominators, not one shared accuracy figure.
+    assert report.cases_expecting_a_defect != report.cases_expecting_rejection
+
+
+def test_false_acceptance_is_measured_against_the_rejections_only() -> None:
+    """A review that waves a bad answer through is one specific error.
+
+    The injected override is exactly that mistake, applied to one case: a
+    review that names no defect and scores the candidate at the top of the
+    scale. Only the false-acceptance count may move.
+    """
+    baseline = measure_critic_calibration()
+    injected = measure_critic_calibration(
+        gap_overrides={"calibration-missing-critical-topic": []},
+        score_overrides={"calibration-missing-critical-topic": 9},
+    )
+
+    assert injected.false_acceptances == baseline.false_acceptances + 1
+    assert injected.false_acceptance_rate > baseline.false_acceptance_rate
+    # The other two rates have their own denominators and did not move.
+    assert injected.false_rejections == baseline.false_rejections
+    assert injected.false_rejection_rate == baseline.false_rejection_rate
+    # Accepting a defective answer while naming no defect is both mistakes at
+    # once, and each is counted once, against its own denominator.
+    assert injected.missed_defects == baseline.missed_defects + 1
+    assert injected.cases_expecting_rejection != injected.cases_expecting_a_defect
+
+
+def test_false_rejection_is_measured_against_the_acceptances_only() -> None:
+    """Thin-sourcing a sound answer is a different error from accepting one."""
+    baseline = measure_critic_calibration()
+    injected = measure_critic_calibration(
+        score_overrides={"calibration-strong-answer": 3}
+    )
+
+    assert injected.false_rejections == baseline.false_rejections + 1
+    assert injected.false_rejection_rate > baseline.false_rejection_rate
+    assert injected.false_acceptances == baseline.false_acceptances
+    assert injected.missed_defects == baseline.missed_defects
+
+
+def test_missed_defects_are_measured_against_the_defective_cases_only() -> None:
+    """A defect named nowhere is its own error, scored below the threshold.
+
+    The override drops the gap list and scores the candidate low, so the
+    defect exists, nothing names it, and the answer is still rejected: the
+    missed-defect count moves while neither acceptance count does.
+    """
+    baseline = measure_critic_calibration()
+    injected = measure_critic_calibration(
+        gap_overrides={"calibration-missing-critical-topic": []},
+        score_overrides={"calibration-missing-critical-topic": 4},
+    )
+
+    assert injected.missed_defects == baseline.missed_defects + 1
+    assert injected.missed_defect_rate > baseline.missed_defect_rate
+    assert injected.false_acceptances == baseline.false_acceptances
+    assert injected.false_rejections == baseline.false_rejections
+    assert injected.cases_expecting_a_defect != injected.cases_expecting_acceptance
+
+
+def test_critic_self_agreement_is_recorded_as_not_ground_truth() -> None:
+    """These rates measure the contract, not whether the report is good.
+
+    The Critic scoring its own scripted review cannot establish that the
+    review was right: independent report review and source checks remain
+    required, and the report says so rather than implying a validation it did
+    not perform.
+    """
+    report = measure_critic_calibration()
+
+    assert report.self_agreement_is_ground_truth is False
+    assert "not ground truth" in report.basis
 

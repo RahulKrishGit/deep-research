@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents.critic import CriticAgent
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.planner import (
     MAX_PLAN_REVIEW_CALLS,
@@ -3343,8 +3344,8 @@ async def test_recalled_findings_are_leads_for_planning_not_premises(
 
 
 def test_graph_budgets_let_the_planner_look_once_and_the_rest_work() -> None:
-    """The shipped budgets total one planner lookup and no zero-tool agent
-    that still needs a tool."""
+    """The shipped budgets total one planner lookup and no tool path an agent
+    that needs none still carries."""
     settings = load_config(str(Path("config.yaml")))
 
     assert settings.agents.tool_budget_for("planner") == 1
@@ -3352,8 +3353,10 @@ def test_graph_budgets_let_the_planner_look_once_and_the_rest_work() -> None:
     assert settings.agents.tool_budget_for("fact_checker") == 10
     assert settings.agents.tool_budget_for("source_evaluator") == 0
     assert settings.agents.tool_budget_for("synthesizer") == 0
-    # Task 8 sets critic: 0; until then the critic keeps the global budget.
-    assert settings.agents.tool_budget_for("critic") == 10
+    # Task 8 removed the Critic's tool path; the declaration and the shipped
+    # budget have to agree, so both are pinned here.
+    assert settings.agents.tool_budget_for("critic") == 0
+    assert CriticAgent.allowed_tools == ()
 
 
 @pytest.mark.asyncio

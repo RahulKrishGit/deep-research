@@ -416,7 +416,9 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
     )
 
     assert CriticAgent.name == "critic"
-    assert CriticAgent.allowed_tools == ("web_search", "query_memory")
+    # Task 8: the Critic reviews the candidate's packet and calls no tool at
+    # all, so its allowlist is empty by declaration.
+    assert CriticAgent.allowed_tools == ()
     assert PlannerAgent.name == "planner"
     assert PlannerAgent.allowed_tools == ("query_memory", "web_search")
     assert ResearcherAgent.name == "researcher"

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 
 import pytest
+from pydantic import ValidationError
 
 from deep_research.agents.critic import (
     _CRITIQUE_HIGH_EXAMPLE_JSON,
@@ -14,20 +16,25 @@ from deep_research.agents.critic import (
     _HIGH_EXAMPLE_SCORE,
     _LOW_EXAMPLE_SCORE,
     ACCEPTANCE_SCORE,
+    CRITIC_EVIDENCE_BATCH_CHARS,
+    CRITIC_MAX_EVIDENCE_UNITS,
     MAX_CRITIC_SCORE,
     MIN_CRITIC_SCORE,
     ROUTING_REASONS,
     CriticAgent,
+    CriticPacket,
     CritiqueDraft,
     CritiqueGapDraft,
+    CritiqueRepairRefused,
     CritiqueTask,
-    _render_spot_check_guidance,
+    build_critic_packet,
     build_critique,
     clamp_score,
     critique_messages,
     fallback_critique,
     normalize_gaps,
     normalize_notes,
+    repair_target,
     route_decision,
 )
 from deep_research.agents.errors import AgentConfigurationError
@@ -36,7 +43,7 @@ from deep_research.agents.prompts import (
     CRITIC_REVIEW_SYSTEM_PROMPT,
     AgentTask,
 )
-from deep_research.agents.steps import ReActDecision, ReActRun
+from deep_research.agents.steps import ReActRun
 from deep_research.evaluation.cases.critic import LIVE_CASES
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
@@ -44,20 +51,32 @@ from deep_research.providers import (
     ProviderOutputLimitError,
     ProviderResponseError,
     ProviderResponseTelemetry,
+    StructuredOutputError,
+    StructuredValidationDiagnostic,
 )
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    EVIDENCE_BADGE_LABELS,
+    REPAIR_ACTIONS,
+    REPAIR_NODES,
+    AtomicProposition,
     Claim,
+    ClaimCluster,
     Critique,
     CritiqueGap,
+    EvidenceTarget,
+    EvidenceUnit,
+    ReportComposition,
+    ReportPoint,
     ReportQualitySnapshot,
+    ReportSection,
     ResearchError,
     ResearchState,
     ScoredSource,
     SubTopic,
 )
-from tests.agent_fakes import ScriptedCompleter, finish, use_tool
+from tests.agent_fakes import ScriptedCompleter
 from tests.research_fakes import FakeSearchClient, critic_tools
 
 CRITIC_SOURCE_URL = "https://example.org/a"
@@ -172,67 +191,28 @@ def _live_report() -> str:
     return report
 
 
-def test_spot_check_guidance_carries_the_report_under_review() -> None:
-    guidance = _render_spot_check_guidance(
-        _live_report(), [], report_chars=6000
-    )
-
-    assert _LIVE_REPORT_PROBE in guidance
-    assert "Report under review:" in guidance
-
-
-def test_spot_check_guidance_keeps_the_planned_queries_beside_the_report() -> None:
-    guidance = _render_spot_check_guidance(
-        _live_report(),
-        [_alpha()],
-        report_chars=6000,
-    )
-
-    assert _LIVE_REPORT_PROBE in guidance
-    # The spot-check prompt is the second place a planned sub-topic is shown,
-    # so it must carry the same ``coverage_id: title`` line the review request
-    # does: a model that finds the id here and not there has been told two
-    # different things about the same plan.
-    assert "- topic-01: Alpha" in guidance
-    assert "  - alpha 2025" in guidance
-
-
-def test_spot_check_guidance_clamps_the_report_like_the_review_prompt() -> None:
-    report = "R" * 5000
-
-    guidance = _render_spot_check_guidance(report, [], report_chars=100)
-
-    assert report not in guidance
-    assert "R" * 97 + "..." in guidance
-
-
-def test_spot_check_guidance_omits_the_report_section_when_there_is_none() -> None:
-    guidance = _render_spot_check_guidance("", [], report_chars=6000)
-
-    assert "Report under review" not in guidance
-
-
 @pytest.mark.asyncio
-async def test_the_spot_check_prompt_renders_the_report(
+async def test_the_review_request_renders_the_report_without_any_tool_turn(
     tracker: Tracker,
 ) -> None:
-    completer = ScriptedCompleter(
-        decisions=[finish("Enough context.", "No spot check needed.")],
-        outputs=[_draft(score=9)],
-    )
+    """The review is the Critic's only request, and it carries the report.
+
+    Task 8 removed the spot-check loop: the Critic reviews the exact candidate
+    and performs no discovery call at all, so the first provider request is the
+    structured review and there is no ReAct turn in front of it.
+    """
+    completer = ScriptedCompleter(outputs=[_draft(score=9)])
     agent = _critic(tracker, completer, tool_budget=1)
     state = _critic_state(report="# Research report: report-body-marker")
 
     async with tracker.session_span("session-1", "question"):
-        await agent.run(state)
+        outcome = await agent.run(state)
 
-    first_call = completer.react_calls[0]
-    assert first_call.agent_name == "critic"
-    assert "report-body-marker" in first_call.messages[1].content
-    assert [definition.name for definition in first_call.tools] == [
-        "web_search",
-        "query_memory",
-    ]
+    assert completer.react_calls == []
+    assert [call[0] for call in completer.calls] == ["CritiqueDraft"]
+    assert "report-body-marker" in completer.calls[0][2][1].content
+    assert outcome.react.tool_calls == 0
+    assert outcome.react.stop_reason == "finished"
 
 
 def test_the_critic_weak_and_strong_examples_are_valid_and_in_band() -> None:
@@ -263,8 +243,8 @@ def test_the_review_call_uses_a_prompt_that_names_no_tools() -> None:
     ``tool_choice``, yet the shared system prompt announced ``web_search`` and
     ``query_memory``. The model obeyed and emitted DeepSeek tool-invocation
     markup into the message text, where local JSON validation rejected it — 16
-    of 30 first attempts. The tool-aware prompt still belongs to the ReAct
-    spot-check loop, which does offer the tools.
+    of 30 first attempts. Task 8 removed the tool path entirely, so the prompt
+    states the absence of tools instead of advertising one.
     """
     system = critique_messages(
         _task(),
@@ -275,8 +255,16 @@ def test_the_review_call_uses_a_prompt_that_names_no_tools() -> None:
 
     assert system == CRITIC_REVIEW_SYSTEM_PROMPT
     lowered = system.lower()
-    for forbidden in ("web_search", "query_memory", "tool"):
+    for forbidden in (
+        "web_search",
+        "query_memory",
+        "web_scraper",
+        "document_reader",
+        "save_to_memory",
+        "write_document",
+    ):
         assert forbidden not in lowered, forbidden
+    assert "no tools" in lowered
 
 
 def _fence_bounds(body: str) -> tuple[int, int, str]:
@@ -314,7 +302,6 @@ def test_the_review_request_fences_the_report() -> None:
     assert "<<<REPORT END>>>" not in body
     # Supporting context follows the closing fence, not inside the report.
     assert lines.index("# Sub-topics planned") > closing
-
 
 def test_no_request_line_uses_angle_bracket_markers() -> None:
     """Nothing outside the report may be tagged with angle brackets.
@@ -381,15 +368,20 @@ def test_no_request_heading_can_be_confused_with_a_report_heading() -> None:
     assert not collisions, f"request sections at H2: {collisions}"
     for section in (
         "# Research question",
-        "# Report under review",
+        "# Answer contract",
+        "# Reader content",
         "# Sub-topics planned",
+        "# Reader statements",
+        "# Evidence targets",
+        "# Evidence — batched read excerpts",
+        "# Hard checks",
         "# Claim verdicts",
         "# Source quality",
         "# Recorded problems",
-        "# Spot checks",
         "# Response contract",
         "# How to choose the score",
         "# Reply format",
+        "# Packet fingerprint",
     ):
         assert section in envelope, section
 
@@ -648,8 +640,8 @@ def test_the_json_demand_preserves_the_scoring_contract() -> None:
 
     for requirement in (
         "an integer from 1 to 10",
-        "list a gap only when closing it would materially change the",
-        "an empty list when the report is materially complete",
+        "list a gap only when it is a real, material defect",
+        "an empty gap",
         "Do not decide whether research continues",
         "Never restate the score alone",
     ):
@@ -660,31 +652,25 @@ def test_the_json_demand_preserves_the_scoring_contract() -> None:
 async def test_only_the_review_call_gets_the_operation_output_budget(
     tracker: Tracker,
 ) -> None:
-    """The report review is the one call that may exceed the global cap.
+    """The report review is the one call the Critic makes.
 
-    The Critic's review renders the report, claims, source quality signals, and
-    spot-check evidence and then asks for a score plus three lists plus a
-    rationale in one JSON object. At the global cap it returned non-JSON text
-    on both the initial attempt and the single repair in three consecutive
-    live canaries, so it carries an operation-specific budget. ReAct decisions
-    must stay at the global cap: widening them would change every agent's
-    loop, not this one call.
+    The review renders the report, the claim verdicts, the source quality
+    signals, and the packet's evidence and then asks for a score plus three
+    lists plus a rationale in one JSON object. At the global cap it returned
+    non-JSON text on both the initial attempt and the single repair in three
+    consecutive live canaries, so it carries an operation-specific budget.
+    Task 8 removed the ReAct spot-check loop, so no decision request shares it.
     """
-    completer = ScriptedCompleter(
-        decisions=[finish("Enough context.", "No spot check needed.")],
-        outputs=[_draft(score=9)],
-    )
+    completer = ScriptedCompleter(outputs=[_draft(score=9)])
     agent = _critic(tracker, completer, tool_budget=1)
 
     async with tracker.session_span("session-1", "question"):
         await agent.run(_critic_state())
 
+    assert completer.react_budgets == []
     budgets = dict(
         zip((call[0] for call in completer.calls), completer.budgets, strict=True)
     )
-    assert completer.react_budgets == [
-        AgentRuntimeConfig().react_decision_max_tokens
-    ]
     assert budgets["CritiqueDraft"] == AgentRuntimeConfig().critic_review_max_tokens
 
 
@@ -692,10 +678,7 @@ async def test_only_the_review_call_gets_the_operation_output_budget(
 async def test_the_review_budget_follows_the_agent_configuration(
     tracker: Tracker,
 ) -> None:
-    completer = ScriptedCompleter(
-        decisions=[finish("Enough context.", "No spot check needed.")],
-        outputs=[_draft(score=9)],
-    )
+    completer = ScriptedCompleter(outputs=[_draft(score=9)])
     agent = _critic(
         tracker,
         completer,
@@ -843,13 +826,24 @@ def test_critique_gaps_preserve_known_ids_and_globalize_unknown_ids() -> None:
 
     assert reason == "low_score"
     assert critique.gaps == [
+        # A gap that named a known planned sub-topic keeps that id. No target
+        # id is invented for it: without a packet there is no target registry
+        # to resolve the sub-topic against, and the coverage id is a real,
+        # routable scope on its own.
         CritiqueGap(
+            gap_id="gap-01",
             coverage_id="topic-01",
+            target_ids=[],
             problem="Alpha lacks cost evidence.",
             recommended_queries=["alpha cost 2025"],
         ),
+        # An id the plan cannot answer is not silently obeyed: the gap keeps
+        # its problem and becomes a whole-answer obligation, exactly as a
+        # blank id always did.
         CritiqueGap(
+            gap_id="gap-02",
             coverage_id=None,
+            target_ids=["question"],
             problem="The provider invented this plan id.",
             recommended_queries=["invented topic evidence"],
         ),
@@ -860,11 +854,16 @@ def test_normalize_gaps_accepts_a_legacy_string_gap() -> None:
     """The one gap normalizer reads the pre-Task-7 free-text shape too.
 
     ``CritiqueDraft`` and ``Critique`` both hand a legacy string list to this
-    function, so it is the single place the old shape is understood.
+    function, so it is the single place the old shape is understood. A legacy
+    gap named no plan id and no statement, so its honest scope is the whole
+    answer — never a fabricated topic id, and never *no* scope at all, because
+    Task 9 routes ``acquire`` by the target it names.
     """
     assert normalize_gaps(["No cost data."]) == [
         CritiqueGap(
+            gap_id="gap-01",
             coverage_id=None,
+            target_ids=["question"],
             problem="No cost data.",
             recommended_queries=[],
         )
@@ -919,13 +918,16 @@ def test_both_typed_gap_boundaries_share_one_normalizer(monkeypatch) -> None:
     assert draft.gaps == [
         CritiqueGapDraft(
             coverage_id=None,
+            target_ids=["question"],
             problem="No cost data.",
             recommended_queries=[],
         )
     ]
     assert critique.gaps == [
         CritiqueGap(
+            gap_id="gap-01",
             coverage_id=None,
+            target_ids=["question"],
             problem="No cost data.",
             recommended_queries=[],
         )
@@ -1024,22 +1026,23 @@ def test_critique_messages_carry_the_report_and_every_quality_signal() -> None:
     assert [message.role for message in messages] == ["developer", "user"]
     body = messages[1].content
     assert "# Research question" in body
-    assert "# Report under review" in body
+    assert "# Reader content" in body
     assert "# Research report:" in body
     assert "# Sub-topics planned" in body
-    # ``CRITIQUE_INSTRUCTION`` tells the model to copy a ``coverage_id``
-    # "exactly from a planned sub-topic" and never to infer one from a title.
-    # The id therefore has to appear in this rendered request next to its
-    # title, or the response contract points at a list of titles and every
-    # gap it targets is nulled by ``normalize_gaps``. The exact line pins both
-    # values and their order, so it subsumes the older title-only assertion.
+    # ``CRITIQUE_INSTRUCTION`` tells the model to copy an id exactly from the
+    # statement, target, or cluster lists, so the planned sub-topic's id has to
+    # appear next to its title or every gap it writes is nulled locally. The
+    # exact line pins both values and their order.
     assert "- topic-01: Alpha" in body
+    assert "# Reader statements" in body
+    assert "# Evidence targets" in body
     assert "# Claim verdicts" in body
     assert "[verified 0.80]" in body
     assert "# Source quality" in body
     assert "# Recorded problems" in body
     assert "2 error(s)" in body
-    assert "# Spot checks" in body
+    assert "# Evidence — batched read excerpts" in body
+    assert "# Hard checks" in body
     assert "# Response contract" in body
 
 
@@ -1196,37 +1199,42 @@ def test_build_task_carries_the_report_budget_and_quality_signals(
 
 
 @pytest.mark.asyncio
-async def test_first_spot_check_receives_planned_search_query_guidance(
+async def test_the_review_request_carries_the_planned_topics_and_targets(
     tracker: Tracker,
 ) -> None:
-    completer = ScriptedCompleter(
-        decisions=[finish("Enough context.", "No spot check needed.")],
-        outputs=[_draft(score=9)],
-    )
+    """The review is where a gap learns which ids it may name.
+
+    ``CRITIQUE_INSTRUCTION`` requires every gap to name the target or
+    statement it affects, so the request has to render both inventories: the
+    planned sub-topics with their coverage ids and the evidence targets with
+    their required dimensions.
+    """
+    completer = ScriptedCompleter(outputs=[_draft(score=9)])
     agent = _critic(tracker, completer, tool_budget=1)
 
     async with tracker.session_span("session-1", "question"):
-        outcome = await agent.run(_critic_state())
+        outcome = await agent.run(_packet_state())
 
     assert outcome.react.stop_reason == "finished"
-    first_call = completer.react_calls[0]
-    assert first_call.agent_name == "critic"
-    user_prompt = first_call.messages[1].content
-    assert "Alpha" in user_prompt
-    assert "alpha 2025" in user_prompt
-    assert "use an applicable planned search query verbatim" in user_prompt
+    body = completer.calls[0][2][1].content
+    assert "- topic-01: Alpha" in body
+    assert _PACKET_TARGET_ID in body
+    assert "target-01" in body
+    # Every statement id the packet review may name is printed beside its text.
+    assert "S001" in body
+    assert "Alpha lacks cost evidence" not in body
 
 
 @pytest.mark.asyncio
-async def test_a_zero_critic_budget_override_skips_the_spot_check(
+async def test_a_zero_critic_budget_leaves_no_tool_path_at_all(
     tracker: Tracker,
 ) -> None:
-    """The critic's own override bounds its direct ReAct loop.
+    """``critic: 0`` is the shipped value, and the gate in front of the loop
+    is gone rather than merely closed.
 
-    ``critic: 0`` is the value Task 8 sets. It must reach both the loop's
-    budget and the ``has_report and budget > 0`` gate in front of it: a gate
-    still reading the global ``tool_budget`` would run a whole ReAct loop the
-    configuration says the agent may not run.
+    A gate that still read the global ``tool_budget`` would run a whole ReAct
+    loop whenever the override was missing; Task 8 removed the loop, so the
+    configuration and the code agree by construction.
     """
     completer = ScriptedCompleter(outputs=[_draft(score=9)])
     agent = _critic(
@@ -1249,33 +1257,35 @@ async def test_a_zero_critic_budget_override_skips_the_spot_check(
 
 
 @pytest.mark.asyncio
-async def test_a_critic_budget_override_bounds_the_spot_check_loop(
+async def test_a_generous_tool_budget_still_runs_no_spot_check(
     tracker: Tracker,
 ) -> None:
-    """An override of one stops the spot check after one executed call."""
-    completer = ScriptedCompleter(
-        decisions=[
-            use_tool("Search once.", "web_search", '{"query": "qec 2025"}'),
-            use_tool("Search again.", "web_search", '{"query": "qec 2026"}'),
-            finish("Enough.", "No further check."),
-        ],
-        outputs=[_draft(score=9)],
-    )
+    """The Critic is tool-free whatever its budget says.
+
+    The historical Critic spent ten search/memory calls per pass and could
+    open no page, so its searches could not establish missing support. A
+    budget override of four no longer buys four calls, and the injected tools
+    are never offered to the provider.
+    """
+    completer = ScriptedCompleter(outputs=[_draft(score=9)])
     agent = _critic(
         tracker,
         completer,
+        tools=critic_tools(tracker),
         config=AgentRuntimeConfig(
             max_iterations=4,
             tool_budget=4,
-            tool_budget_overrides={"critic": 1},
+            tool_budget_overrides={"critic": 4},
         ),
     )
 
     async with tracker.session_span("session-1", "question"):
         outcome = await agent.run(_critic_state())
 
-    assert outcome.react.tool_calls == 1
-    assert outcome.react.stop_reason == "tool_budget_exhausted"
+    assert completer.react_calls == []
+    assert outcome.react.tool_calls == 0
+    assert outcome.react.stop_reason == "finished"
+    assert agent.toolset.names == ()
 
 
 @pytest.mark.asyncio
@@ -1462,74 +1472,59 @@ async def test_an_http_provider_failure_still_routes_and_stops(
 
 
 @pytest.mark.asyncio
-async def test_a_spot_check_reaches_the_review_prompt(tracker: Tracker) -> None:
-    completer = ScriptedCompleter(
-        decisions=[
-            use_tool(
-                "Check the cost figure.",
-                "web_search",
-                '{"query": "qec cost 2025"}',
-            ),
-            finish("Enough to judge.", "The cost figure checks out."),
-        ],
-        outputs=[_draft(score=9)],
-    )
+async def test_a_search_snippet_can_never_appear_as_verification_evidence(
+    tracker: Tracker,
+) -> None:
+    """Only a registered read excerpt is evidence; a search hit never is.
+
+    Section 2.1: search results and snippets are not read-bearing evidence.
+    The historical Critic could only search, so its snippets were offered to
+    the review as if they were checks. The tools are still injected here and
+    the search client still returns a snippet, and the snippet must reach
+    neither the review request nor the packet.
+    """
+    sentinel = "SEARCH-SNIPPET-SENTINEL"
+    completer = ScriptedCompleter(outputs=[_draft(score=8)])
     agent = _critic(
         tracker,
         completer,
-        tools=critic_tools(tracker),
+        tools=critic_tools(
+            tracker,
+            search=FakeSearchClient(
+                responses=[
+                    [
+                        {
+                            "title": "A snippet",
+                            "url": CRITIC_SOURCE_URL,
+                            "content": sentinel,
+                        }
+                    ]
+                ]
+            ),
+        ),
         tool_budget=2,
     )
 
     async with tracker.session_span("session-1", "question"):
-        outcome = await agent.run(_critic_state())
+        outcome = await agent.run(_packet_state())
 
-    assert outcome.react.tool_calls == 1
-    review_call = next(
-        call for call in completer.calls if call[0] == "CritiqueDraft"
+    body = completer.calls[0][2][1].content
+    assert sentinel not in body
+    assert sentinel not in json.dumps(
+        outcome.state_update["critique"].model_dump(mode="json")
     )
-    assert "[web_search]" in review_call[2][1].content
-    event = outcome.state_update["events"][-1]
-    assert event.metadata["tool_calls"] == 1
+    # The packet's evidence is the registered read excerpt, by id.
+    assert _PACKET_EVIDENCE_ID in body
+    assert "Break-even was reached in 2025." in body
+    assert outcome.react.tool_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_critic_react_handles_empty_unused_final_answer(
+async def test_a_failing_tool_cannot_stop_a_review_that_never_calls_one(
     tracker: Tracker,
 ) -> None:
-    completer = ScriptedCompleter(
-        decisions=[
-            ReActDecision(
-                thought="Check the cost figure.",
-                action="use_tool",
-                tool_name="web_search",
-                tool_input_json='{"query": "qec cost 2025"}',
-                final_answer="",
-            ),
-            finish("Enough to judge.", "The cost figure checks out."),
-        ],
-        outputs=[_draft(score=9)],
-    )
-    agent = _critic(tracker, completer, tool_budget=2)
-
-    async with tracker.session_span("session-1", "question"):
-        outcome = await agent.run(_critic_state())
-
-    assert outcome.react.stop_reason == "finished"
-    assert outcome.react.steps[0].final_answer is None
-
-
-@pytest.mark.asyncio
-async def test_a_failing_spot_check_never_stops_the_review(
-    tracker: Tracker,
-) -> None:
-    completer = ScriptedCompleter(
-        decisions=[
-            use_tool("Search first.", "web_search", '{"query": "qec"}'),
-            finish("Judge without it.", "The search failed."),
-        ],
-        outputs=[_draft(score=8)],
-    )
+    """A provider outage on the tool side is unreachable from this path."""
+    completer = ScriptedCompleter(outputs=[_draft(score=8)])
     agent = _critic(
         tracker,
         completer,
@@ -1546,6 +1541,7 @@ async def test_a_failing_spot_check_never_stops_the_review(
     assert critique is not None
     assert critique.score == 8
     assert outcome.react.stop_reason == "finished"
+    assert outcome.react.tool_calls == 0
 
 
 @pytest.mark.asyncio
@@ -1559,9 +1555,784 @@ async def test_finalize_requires_a_critique_task(tracker: Tracker) -> None:
         )
 
 
-def test_the_critic_declares_its_spot_check_tools(tracker: Tracker) -> None:
+def test_the_critic_declares_no_tools(tracker: Tracker) -> None:
     agent = _critic(tracker, ScriptedCompleter(), tools=critic_tools(tracker))
 
     assert CriticAgent.name == "critic"
-    assert CriticAgent.allowed_tools == ("web_search", "query_memory")
+    assert CriticAgent.allowed_tools == ()
+    assert agent.toolset.names == ()
     assert agent.output_schema is Critique
+
+
+# --- Task 8: the complete packet, typed gaps, and typed repair actions -------
+
+QUESTION = "How mature is quantum error correction?"
+_PACKET_CLAIM = "Logical error rates fell below break-even in 2025."
+_PACKET_CLUSTER_ID = "cluster-01"
+_PACKET_EVIDENCE_ID = "ev-01"
+_PACKET_TARGET_ID = "target-01"
+_PACKET_REPORT = (
+    "# Research report: How mature is quantum error correction?\n\n"
+    "## Summary\n\nLogical error rates fell below break-even in 2025. [1]"
+)
+
+
+def _packet_evidence(
+    evidence_id: str = _PACKET_EVIDENCE_ID,
+    *,
+    excerpt: str = "Break-even was reached in 2025.",
+    target_id: str = _PACKET_TARGET_ID,
+) -> EvidenceUnit:
+    return EvidenceUnit(
+        evidence_id=evidence_id,
+        read_id="read-1",
+        source_url=CRITIC_SOURCE_URL,
+        source_title="QEC 2025",
+        locator=f"section-{evidence_id}",
+        excerpt=excerpt,
+        target_ids=[target_id],
+        origin="researcher",
+    )
+
+
+def _packet_topic(
+    *, required_dimensions: Sequence[str] | None = None
+) -> SubTopic:
+    return SubTopic(
+        coverage_id="topic-01",
+        title="Alpha",
+        rationale="Alpha is load-bearing.",
+        search_queries=["alpha 2025"],
+        success_criteria=["A named source about Alpha."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id=_PACKET_TARGET_ID,
+                coverage_id="topic-01",
+                question="What is the measured logical error rate?",
+                required_dimensions=list(required_dimensions or ["attribution"]),
+                required=True,
+                critical=True,
+                support_policy="independent_pair",
+            )
+        ],
+    )
+
+
+def _packet_composition(
+    *,
+    evidence: Sequence[EvidenceUnit] | None = None,
+    target_dimensions: Sequence[str] | None = None,
+) -> ReportComposition:
+    units = list(evidence) if evidence is not None else [_packet_evidence()]
+    claim = _claim()
+    cluster = ClaimCluster(
+        cluster_id=_PACKET_CLUSTER_ID,
+        proposition=AtomicProposition(text=_PACKET_CLAIM, attribution="QEC 2025"),
+        evidence_ids=[unit.evidence_id for unit in units],
+        member_claim_ids=[claim.claim_id],
+        target_ids=[_PACKET_TARGET_ID],
+        source_urls=[CRITIC_SOURCE_URL],
+        verdicts=["verified"],
+        verdict_evidence_status={"verified": "verified_pair"},
+    )
+    return ReportComposition(
+        question=QUESTION,
+        session_id="session-1",
+        sub_topics=[_packet_topic(required_dimensions=target_dimensions)],
+        claims=[claim],
+        sources=[_source()],
+        claim_clusters={cluster.cluster_id: cluster},
+        evidence_units={unit.evidence_id: unit for unit in units},
+        summary=[
+            ReportPoint(
+                text=_PACKET_CLAIM,
+                claim_ids=[claim.claim_id],
+                source_urls=[CRITIC_SOURCE_URL],
+            )
+        ],
+        sections=[
+            ReportSection(
+                title="Findings",
+                points=[
+                    ReportPoint(
+                        text="Two mechanisms dominate the measured effect.",
+                        claim_ids=[claim.claim_id],
+                        source_urls=[CRITIC_SOURCE_URL],
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def _packet_state(
+    *,
+    report: str = _PACKET_REPORT,
+    evidence: Sequence[EvidenceUnit] | None = None,
+    target_dimensions: Sequence[str] | None = None,
+    quality: ReportQualitySnapshot | None = None,
+    with_composition: bool = True,
+) -> ResearchState:
+    payload: dict[str, object] = {
+        "session_id": "session-1",
+        "original_question": QUESTION,
+        "sub_topics": [_packet_topic(required_dimensions=target_dimensions)],
+        "evaluated_sources": [_source()],
+        "verified_claims": [_claim()],
+        "report": report,
+    }
+    if with_composition:
+        payload["composition"] = _packet_composition(
+            evidence=evidence, target_dimensions=target_dimensions
+        )
+    if quality is not None:
+        payload["quality"] = quality
+    return ResearchState.model_validate(payload)
+
+
+def _schema_error(*categories: str) -> StructuredOutputError:
+    return StructuredOutputError(
+        "structured output remained invalid after one repair request",
+        diagnostics=[
+            StructuredValidationDiagnostic(
+                attempt=1,
+                field_paths=("gaps.0.severity",),
+                category=category,
+            )
+            for category in (categories or ("other_schema",))
+        ],
+    )
+
+
+def _typed_draft(
+    *,
+    score: int = 8,
+    gaps: list[CritiqueGapDraft] | None = None,
+    rationale: str = "Well sourced and complete.",
+) -> CritiqueDraft:
+    return CritiqueDraft(
+        score=score,
+        gaps=gaps or [],
+        unsupported_claims=[],
+        recommended_queries=[],
+        rationale=rationale,
+    )
+
+
+def test_presentation_gap_does_not_request_search():
+    gap = CritiqueGap(
+        gap_id="g1", target_ids=["t1"], claim_cluster_ids=[],
+        statement_ids=["s1"], kind="presentation", severity="major",
+        repair_action="synthesize", problem="The answer is repeated in three lists.",
+        recommended_queries=[])
+    assert gap.repair_action == "synthesize"
+    assert not gap.recommended_queries
+
+
+def test_a_major_gap_must_name_what_it_affects() -> None:
+    """A major defect names a target, a statement, or a cluster.
+
+    “Improve quality” and a vague “more sources” are not actionable, and Task
+    9 routes by the ids a gap carries. A minor gap is exempt: it is allowed to
+    be a wording-level observation with no owner.
+    """
+    with pytest.raises(ValidationError, match="affects"):
+        CritiqueGap(
+            gap_id="g1",
+            kind="coverage",
+            severity="major",
+            repair_action="adjudicate",
+            problem="The report is not good enough.",
+        )
+
+    minor = CritiqueGap(
+        gap_id="g2",
+        kind="presentation",
+        severity="minor",
+        repair_action="synthesize",
+        problem="The same figure is restated in three consecutive bullets.",
+    )
+    assert minor.severity == "minor"
+    assert minor.claim_cluster_ids == []
+
+
+def test_an_acquire_gap_must_name_the_target_whose_obligation_is_missing() -> None:
+    """Acquisition is per obligation, so the gap has to name the obligation.
+
+    A statement-only reference says which sentence is thin; it does not say
+    what evidence is owed, and ``acquire`` is the action that goes and gets
+    it. The whole-answer sentinel is a legitimate name here — that is how an
+    original-question omission is expressed.
+    """
+    with pytest.raises(ValidationError, match="acquire"):
+        CritiqueGap(
+            gap_id="g1",
+            statement_ids=["S001"],
+            kind="missing_support",
+            severity="major",
+            repair_action="acquire",
+            problem="This sentence is not backed by any read.",
+            recommended_queries=["quantum error correction break-even"],
+        )
+
+    obligation = CritiqueGap(
+        gap_id="g2",
+        target_ids=["target-01"],
+        kind="missing_support",
+        severity="major",
+        repair_action="acquire",
+        problem="The measured logical error rate is owed but unsupported.",
+        recommended_queries=["quantum error correction break-even"],
+    )
+    assert obligation.recommended_queries
+
+
+def test_queries_belong_to_acquisition_gaps_only() -> None:
+    """A rewrite, an adjudication, or a consolidation runs no search."""
+    with pytest.raises(ValidationError, match="acquisition"):
+        CritiqueGap(
+            gap_id="g1",
+            target_ids=["target-01"],
+            kind="contradiction",
+            severity="major",
+            repair_action="adjudicate",
+            problem="Two reads disagree about the rate.",
+            recommended_queries=["quantum error correction rate 2025"],
+        )
+
+    with pytest.raises(ValidationError, match="acquisition"):
+        CritiqueGap(
+            gap_id="g2",
+            target_ids=["question"],
+            kind="coverage",
+            severity="major",
+            repair_action="extend_plan",
+            problem="The question asks for a cost the plan never targeted.",
+            recommended_queries=["low-carbon cement cost premium"],
+        )
+
+
+def test_the_repair_actions_are_exactly_the_router_keys() -> None:
+    """``REPAIR_NODES`` keys are the literals, and Task 9 routes on them."""
+    assert REPAIR_ACTIONS == (
+        "extend_plan",
+        "acquire",
+        "assess_source",
+        "adjudicate",
+        "consolidate",
+        "synthesize",
+    )
+    assert tuple(REPAIR_NODES) == REPAIR_ACTIONS
+    for action in REPAIR_ACTIONS:
+        gap = CritiqueGap(
+            gap_id=f"g-{action}",
+            target_ids=["target-01"],
+            kind="coverage",
+            severity="major",
+            repair_action=action,
+            problem="One obligation is unmet.",
+        )
+        assert gap.repair_action == action
+
+    with pytest.raises(ValidationError):
+        CritiqueGap(
+            gap_id="g-unknown",
+            target_ids=["target-01"],
+            kind="coverage",
+            severity="major",
+            repair_action="search_more",
+            problem="One obligation is unmet.",
+        )
+
+
+def test_a_minor_gap_does_not_force_another_research_pass() -> None:
+    """An otherwise sound answer with one minor defect is accepted.
+
+    The historical rule made every listed gap a reason to research again, so a
+    wording-level observation bought a whole pass. Severity now decides
+    materiality, while a legacy gap — which carries no severity at all — still
+    counts, because the pre-Task-8 contract only asked for material gaps.
+    """
+    minor = CritiqueGap(
+        gap_id="g1",
+        statement_ids=["S001"],
+        kind="presentation",
+        severity="minor",
+        repair_action="synthesize",
+        problem="The same figure is restated in three consecutive bullets.",
+    )
+    assert route_decision(
+        score=8,
+        gaps=[minor],
+        unsupported_claims=[],
+        iteration=0,
+        max_iterations=3,
+        has_report=True,
+    ) == (False, "accepted_quality")
+
+    major = minor.model_copy(update={"severity": "major"})
+    assert route_decision(
+        score=8,
+        gaps=[major],
+        unsupported_claims=[],
+        iteration=0,
+        max_iterations=3,
+        has_report=True,
+    ) == (True, "critical_gaps")
+
+    assert route_decision(
+        score=8,
+        gaps=["No cost data."],
+        unsupported_claims=[],
+        iteration=0,
+        max_iterations=3,
+        has_report=True,
+    ) == (True, "critical_gaps")
+
+
+def test_the_packet_carries_the_full_reader_content_and_every_statement() -> None:
+    state = _packet_state()
+
+    packet = build_critic_packet(state, state.composition)
+
+    assert packet.question == QUESTION
+    assert packet.reader_content == _PACKET_REPORT
+    assert packet.answer_contract is None
+    assert [statement.statement_id for statement in packet.statements] == [
+        "S001",
+        "F001",
+    ]
+    assert packet.statements[0].target_ids == [_PACKET_TARGET_ID]
+    assert packet.statements[0].evidence_ids == [_PACKET_EVIDENCE_ID]
+    assert [batch.items[0].evidence_id for batch in packet.evidence_batches] == [
+        _PACKET_EVIDENCE_ID
+    ]
+    assert packet.evidence_batches[0].items[0].badge == "verified_pair"
+    assert packet.evidence_batches[0].items[0].badge_label == (
+        EVIDENCE_BADGE_LABELS["verified_pair"]
+    )
+    assert packet.omitted_evidence_ids == []
+    assert [target.target_id for target in packet.targets] == [_PACKET_TARGET_ID]
+    assert packet.targets[0].answered_dimension_ids == ["attribution"]
+    assert packet.open_targets == []
+    # The fingerprint covers the exact text and ids one review was opened on.
+    assert re.fullmatch(r"[0-9a-f]{12}", packet.fingerprint)
+    assert build_critic_packet(state).fingerprint == packet.fingerprint
+
+
+def test_a_target_with_an_unanswered_dimension_stays_open() -> None:
+    state = _packet_state(target_dimensions=["attribution", "geography"])
+
+    packet = build_critic_packet(state)
+
+    assert packet.targets[0].required_dimensions == ["attribution", "geography"]
+    assert packet.targets[0].answered_dimension_ids == ["attribution"]
+    assert [target.target_id for target in packet.open_targets] == [
+        _PACKET_TARGET_ID
+    ]
+
+
+def test_the_fingerprint_changes_with_the_report_and_with_the_evidence() -> None:
+    packet = build_critic_packet(_packet_state())
+
+    other_report = build_critic_packet(
+        _packet_state(report=_PACKET_REPORT + "\nOne more sentence. [1]\n")
+    )
+    other_evidence = build_critic_packet(
+        _packet_state(
+            evidence=[
+                _packet_evidence(excerpt="A different exact excerpt about 2025.")
+            ]
+        )
+    )
+
+    assert other_report.fingerprint != packet.fingerprint
+    assert other_evidence.fingerprint != packet.fingerprint
+
+
+def test_oversized_evidence_is_batched_without_omitting_statements() -> None:
+    """Evidence is batched and its overflow is explicit; statements never are.
+
+    The historical packet truncated one prefix, which is how a late
+    contradiction and an end-of-report citation fell outside the review. Every
+    reader statement is carried in full and every evidence id is either in a
+    batch or named as omitted.
+    """
+    units = [
+        _packet_evidence(
+            f"ev-{index:02d}",
+            excerpt=f"Excerpt {index} about the measured logical error rate. " * 20,
+        )
+        for index in range(1, CRITIC_MAX_EVIDENCE_UNITS + 7)
+    ]
+    state = _packet_state(evidence=units)
+
+    packet = build_critic_packet(state)
+
+    assert len(packet.evidence_batches) > 1
+    for batch in packet.evidence_batches:
+        assert batch.chars <= CRITIC_EVIDENCE_BATCH_CHARS or len(batch.items) == 1
+    rendered = [
+        item.evidence_id for batch in packet.evidence_batches for item in batch.items
+    ]
+    assert rendered == [unit.evidence_id for unit in units[:CRITIC_MAX_EVIDENCE_UNITS]]
+    assert packet.omitted_evidence_ids == [
+        unit.evidence_id for unit in units[CRITIC_MAX_EVIDENCE_UNITS:]
+    ]
+    assert [statement.statement_id for statement in packet.statements] == [
+        "S001",
+        "F001",
+    ]
+    # The omitted ids are carried by the packet, never silently dropped.
+    assert len(packet.omitted_evidence_ids) == 6
+
+
+def test_the_packet_reports_the_deterministic_hard_checks() -> None:
+    quality = ReportQualitySnapshot(
+        coverage_ratio=0.5,
+        planned_topics=2,
+        covered_topics=1,
+        unresolved_topic_ids=["topic-02"],
+        unique_findings=1,
+        unique_sources=1,
+        cited_sources=1,
+        scored_cited_source_ratio=1.0,
+        verified_claims=1,
+        contradicted_claims=0,
+        duplicate_claims=0,
+        duplicate_source_rows=0,
+        uncited_settled_points=0,
+        hard_failures=["broad_plan_coverage_below_0.80"],
+    )
+
+    packet = build_critic_packet(_packet_state(quality=quality))
+
+    assert "broad_plan_coverage_below_0.80" in packet.hard_checks
+
+
+def test_a_gap_cannot_be_raised_against_prose_with_no_statement_record() -> None:
+    """Where there is no statement record, that absence is itself the defect.
+
+    A composition-less report cannot resolve a cited statement id, so the
+    packet says so as a hard check and the gap becomes a whole-answer
+    obligation rather than a claim about a record nobody can look up.
+    """
+    state = _packet_state(with_composition=False)
+
+    packet = build_critic_packet(state)
+
+    assert packet.statements == []
+    assert any("statement record" in check for check in packet.hard_checks)
+
+    critique, _ = build_critique(
+        _typed_draft(
+            score=6,
+            gaps=[
+                CritiqueGapDraft(
+                    coverage_id=None,
+                    statement_ids=["S999"],
+                    kind="contradiction",
+                    severity="major",
+                    repair_action="adjudicate",
+                    problem="The report contradicts a source it cites.",
+                )
+            ],
+            rationale="One contradiction is unresolved.",
+        ),
+        iteration=0,
+        max_iterations=3,
+        packet=packet,
+        known_coverage_ids={"topic-01"},
+    )
+
+    gap = critique.gaps[0]
+    assert gap.statement_ids == []
+    assert gap.target_ids == ["question"]
+    assert gap.gap_id == "gap-01"
+
+
+def test_a_gap_may_name_the_record_ids_the_packet_carries() -> None:
+    state = _packet_state()
+    packet = build_critic_packet(state)
+
+    critique, _ = build_critique(
+        _typed_draft(
+            score=5,
+            gaps=[
+                CritiqueGapDraft(
+                    coverage_id="topic-01",
+                    target_ids=[_PACKET_TARGET_ID],
+                    statement_ids=["S001"],
+                    claim_cluster_ids=[_PACKET_CLUSTER_ID],
+                    kind="missing_support",
+                    severity="major",
+                    repair_action="acquire",
+                    problem="The measured rate is attributed but never corroborated.",
+                    recommended_queries=["quantum error correction rate 2026"],
+                )
+            ],
+        ),
+        iteration=0,
+        max_iterations=3,
+        packet=packet,
+        known_coverage_ids={"topic-01"},
+    )
+
+    gap = critique.gaps[0]
+    assert gap.target_ids == [_PACKET_TARGET_ID]
+    assert gap.statement_ids == ["S001"]
+    assert gap.claim_cluster_ids == [_PACKET_CLUSTER_ID]
+    assert gap.repair_action == "acquire"
+    assert critique.recommended_queries == ["quantum error correction rate 2026"]
+
+
+@pytest.mark.asyncio
+async def test_a_late_contradiction_limitation_and_citation_stay_visible(
+    tracker: Tracker,
+) -> None:
+    """Nothing at the end of a long report may fall outside the review.
+
+    The historical failure was a late contradiction, a fabricated limitation,
+    and a citation near the report's end falling outside old prefix
+    boundaries. All three markers sit beyond the old 6,000-character prefix
+    here and must still reach the review request.
+    """
+    contradiction = "EPA reports a fall while NOAA reports a rise."
+    limitation = "replication has not been attempted by anyone else"
+    citation = "https://late.example/end-of-report-citation"
+    report = (
+        "# Research report: How mature is quantum error correction?\n\n"
+        "## Findings\n\n"
+        + ("Filler sentence about logical error rates and hardware. " * 110)
+        + "\n\n## Uncertainty and conflicting evidence\n\n"
+        + contradiction
+        + "\n\n## Limitations\n\nThe headline figure rests on one vendor blog and "
+        + limitation
+        + f" ({citation}).\n"
+    )
+    assert len(report) > 6000
+    assert report.index(contradiction) > 6000
+    assert report.index(limitation) > 6000
+    assert report.index(citation) > 6000
+    completer = ScriptedCompleter(outputs=[_draft(score=6)])
+    agent = _critic(tracker, completer)
+    state = _packet_state(report=report)
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(state)
+
+    body = completer.calls[0][2][1].content
+    assert contradiction in body
+    assert limitation in body
+    assert citation in body
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_draft_is_repaired_against_the_same_fingerprint(
+    tracker: Tracker,
+) -> None:
+    """The one repair re-asks the same model about the same packet.
+
+    The repair request carries the fingerprint of the packet the review was
+    opened on, so a repaired critique can never be a second review of
+    different text wearing the first one's authority.
+    """
+    completer = ScriptedCompleter(outputs=[_schema_error("missing"), _draft(score=8)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    first = completer.calls[0][2][1].content
+    second = completer.calls[1][2][1].content
+    fingerprint = re.search(r"Packet fingerprint: ([0-9a-f]{12})", first)
+    assert fingerprint is not None
+    assert f"Packet fingerprint: {fingerprint.group(1)}" in second
+    assert outcome.result is not None
+    assert outcome.result.score == 8
+    repaired = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_repaired"
+    )
+    assert repaired.recoverable is True
+    assert repaired.details["attempts"] == 2
+    assert repaired.details["schema_categories"] == ["missing"]
+    assert repaired.details["schema_field_paths"] == ["gaps.0.severity"]
+
+
+def test_a_changed_packet_is_refused_as_a_repair_target() -> None:
+    reviewed = build_critic_packet(_packet_state())
+    changed = build_critic_packet(
+        _packet_state(report=_PACKET_REPORT + "\nA sentence added after review.\n")
+    )
+    assert changed.fingerprint != reviewed.fingerprint
+
+    assert repair_target(reviewed, reviewed_fingerprint=reviewed.fingerprint) is (
+        reviewed
+    )
+    with pytest.raises(CritiqueRepairRefused, match="changed"):
+        repair_target(changed, reviewed_fingerprint=reviewed.fingerprint)
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_repair_returns_an_explicit_failed_review(
+    tracker: Tracker,
+) -> None:
+    """Two malformed replies are a failed review, never a guessed score.
+
+    Nothing about the report was judged, so no score is invented and no
+    acceptance is recorded: the routing stops the run with an enumerated
+    reason, the failure is non-recoverable, and the diagnostics that are
+    recorded are bounded field paths and categories, never provider text.
+    """
+    completer = ScriptedCompleter(
+        outputs=[_schema_error("missing"), _schema_error("type_mismatch")]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    critique = outcome.result
+    assert critique is not None
+    assert critique.review_status == "failed"
+    assert critique.score == MIN_CRITIC_SCORE
+    assert critique.score < ACCEPTANCE_SCORE
+    assert critique.should_continue is False
+    assert critique.gaps == []
+    assert critique.rationale == ROUTING_REASONS["review_failed"]
+    assert [call[0] for call in completer.calls] == [
+        "CritiqueDraft",
+        "CritiqueDraft",
+    ]
+    event = outcome.state_update["events"][-1]
+    assert event.metadata["reason"] == "review_failed"
+    assert event.metadata["should_continue"] is False
+    error = next(
+        item
+        for item in outcome.errors
+        if item.error_type == "critic_review_schema_error"
+    )
+    assert error.recoverable is False
+    assert error.details["operation"] == "critic_report_review"
+    assert error.details["attempts"] == 2
+    assert error.details["schema_categories"] == ["missing", "type_mismatch"]
+    assert error.details["schema_field_paths"] == ["gaps.0.severity"]
+    # No provider payload, report text, or excerpt is retained.
+    assert _PACKET_CLAIM not in json.dumps(error.details)
+    assert _PACKET_REPORT not in json.dumps(error.details)
+    assert outcome.react.stop_reason == "provider_error"
+
+
+@pytest.mark.asyncio
+async def test_a_repair_refusal_is_reported_as_a_failed_review(
+    tracker: Tracker, monkeypatch
+) -> None:
+    """A refused repair is a failed review, not a silent retry."""
+    import deep_research.agents.critic as critic_module
+
+    def refuse(*args: object, **kwargs: object) -> CriticPacket:
+        raise CritiqueRepairRefused(
+            "the report/evidence packet changed between the review and its repair"
+        )
+
+    monkeypatch.setattr(critic_module, "repair_target", refuse)
+    completer = ScriptedCompleter(outputs=[_schema_error(), _draft(score=9)])
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == ["CritiqueDraft"]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    assert outcome.result.should_continue is False
+    assert outcome.state_update["events"][-1].metadata["reason"] == "review_failed"
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_during_the_repair_is_not_a_schema_failure(
+    tracker: Tracker,
+) -> None:
+    """The ledger must not blame the reply for an outage.
+
+    The first reply was malformed and the repair never arrived, so the review
+    failed for two distinct reasons. Both are recorded, and the provider
+    failure is the one that says why the second attempt produced nothing.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            _schema_error("missing"),
+            ProviderResponseError(
+                "provider returned an HTTP error",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+                failure_origin="sdk",
+            ),
+        ]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    kinds = {error.error_type for error in outcome.errors}
+    assert kinds == {"critic_review_schema_error", "critic_review_provider_error"}
+    schema = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_schema_error"
+    )
+    assert schema.details["attempts"] == 2
+    provider = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_provider_error"
+    )
+    assert provider.details["provider_failure"]["http_status_code"] == 503
+
+
+def test_the_critic_prompt_version_is_repinned() -> None:
+    """The prompt and reply schema both changed, so the version changed.
+
+    The call fingerprint includes the prompt version; leaving it at ``"1"``
+    would let a Task 7-era request compare equal to a Task 8 one whose reply
+    contract is a different shape.
+    """
+    assert CriticAgent.prompt_version == "critic-2"
+
+
+@pytest.mark.asyncio
+async def test_the_registered_live_report_is_reviewed_in_full(
+    tracker: Tracker,
+) -> None:
+    """The registered live case's own report is carried whole, end included.
+
+    Its limitations paragraph is the report's last section and the reason the
+    case exists: a review that cannot see it cannot judge the disclosure.
+    """
+    report = _live_report()
+    completer = ScriptedCompleter(outputs=[_draft(score=7)])
+    agent = _critic(tracker, completer)
+    state = _packet_state(report=report)
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(state)
+
+    body = completer.calls[0][2][1].content
+    collapsed = " ".join(body.split())
+    assert report in build_critic_packet(state).reader_content
+    assert (
+        "the durability and long-term performance data under field exposure"
+        in collapsed
+    )
+    assert "rely on assumptions about clinker substitution rates" in collapsed

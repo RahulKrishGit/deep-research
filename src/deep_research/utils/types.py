@@ -975,12 +975,213 @@ class ReportQualitySnapshot(ContractModel):
     hard_failures: list[str] = Field(default_factory=list)
 
 
-class CritiqueGap(ContractModel):
-    """One targetable report problem returned by the Critic."""
+# --- Task 8: the Critic's typed defect vocabulary ---------------------------
+#
+# Ten kinds and six repair actions, and both sets are *normative*: Task 9's
+# route table keys are exactly ``REPAIR_ACTIONS``, and the kind names what is
+# wrong rather than how to fix it. A kind outside this list is a schema
+# failure, not a new category — a free-text kind would make "which defects does
+# this system find?" unanswerable.
+GapKind: TypeAlias = Literal[
+    "coverage",
+    "missing_support",
+    "acquisition",
+    "identity",
+    "contradiction",
+    "semantic_duplicate",
+    "source_quality",
+    "mechanism",
+    "freshness",
+    "presentation",
+]
+GAP_KINDS: tuple[GapKind, ...] = (
+    "coverage",
+    "missing_support",
+    "acquisition",
+    "identity",
+    "contradiction",
+    "semantic_duplicate",
+    "source_quality",
+    "mechanism",
+    "freshness",
+    "presentation",
+)
 
+# ``critical`` and ``major`` are the material defects: a report cannot be
+# accepted while one is open. ``minor`` is a real but editorial observation,
+# which is what keeps one wording defect from buying a whole research pass.
+GapSeverity: TypeAlias = Literal["critical", "major", "minor"]
+GAP_SEVERITIES: tuple[GapSeverity, ...] = ("critical", "major", "minor")
+GAP_MATERIAL_SEVERITIES: tuple[GapSeverity, ...] = ("critical", "major")
+
+RepairAction: TypeAlias = Literal[
+    "extend_plan",
+    "acquire",
+    "assess_source",
+    "adjudicate",
+    "consolidate",
+    "synthesize",
+]
+REPAIR_ACTIONS: tuple[RepairAction, ...] = (
+    "extend_plan",
+    "acquire",
+    "assess_source",
+    "adjudicate",
+    "consolidate",
+    "synthesize",
+)
+
+# The repair route each action names, keyed by the action literal itself.
+# Task 9's router reads exactly these keys; the identity mapping is deliberate,
+# so an action cannot be routed to a differently named node by accident.
+REPAIR_NODES: dict[RepairAction, str] = {
+    action: action for action in REPAIR_ACTIONS
+}
+
+# The action that runs a search. Queries are acquisition only: a rewrite, an
+# adjudication, a consolidation, a source assessment, or a plan extension runs
+# no search, so a query attached to one is a contract violation rather than a
+# harmless extra.
+QUERY_BEARING_REPAIR_ACTION: RepairAction = "acquire"
+
+#: The reserved ``target_ids`` entry that scopes a defect to the whole answer.
+#:
+#: An original-question omission has no planned target to name — that is what
+#: makes it an omission — so it points at the question instead of inventing a
+#: topic id. It is also the honest scope of a legacy gap that named no plan id
+#: at all, because such a gap was only ever listed when closing it would change
+#: the answer to the question.
+QUESTION_TARGET_ID = "question"
+
+
+class CritiqueGap(ContractModel):
+    """One targetable report problem returned by the Critic.
+
+    Every field but ``gap_id`` and ``problem`` is additive over the first
+    contract, so a snapshot written before this one still reads: such a gap
+    resolves to ``coverage``/``major``/``acquire``, which is exactly what the
+    old prompt asked the model for ("list a gap only when closing it would
+    materially change the answer"). The severity default is what keeps a
+    legacy gap material — a default of ``minor`` would silently stop it
+    routing anywhere.
+
+    The validators encode what makes a defect *actionable*, because a vague
+    gap cannot be routed: a material gap names at least one target, statement,
+    or claim cluster it affects; ``acquire`` names the target whose obligation
+    is unmet (acquisition is per obligation, and a statement id says which
+    sentence is thin, not what evidence is owed); and search queries ride on
+    an acquisition gap and on nothing else.
+    """
+
+    gap_id: str = ""
+    """The bounded, project-stamped identity of this gap within one review."""
     coverage_id: str | None = None
+    """The planned sub-topic this gap belongs to, when one is named.
+
+    Kept beside ``target_ids`` rather than replaced by it: the Researcher
+    groups refinement work by coverage id, and a gap that names a target
+    still belongs to the sub-topic that target was planned under.
+    """
+    target_ids: list[str] = Field(default_factory=list)
+    claim_cluster_ids: list[str] = Field(default_factory=list)
+    statement_ids: list[str] = Field(default_factory=list)
+    kind: GapKind = "coverage"
+    severity: GapSeverity = "major"
+    repair_action: RepairAction = "acquire"
     problem: str = Field(min_length=1)
     recommended_queries: list[str] = Field(default_factory=list)
+
+    @property
+    def affected_ids(self) -> list[str]:
+        """Every target, statement, cluster, or sub-topic this gap points at.
+
+        ``coverage_id`` counts: the pre-Task-8 contract's only scope was the
+        planned sub-topic, so a gap that names one has named something
+        concrete and routable.
+        """
+        scope = [self.coverage_id] if self.coverage_id else []
+        return [
+            *scope,
+            *self.target_ids,
+            *self.statement_ids,
+            *self.claim_cluster_ids,
+        ]
+
+    @property
+    def material(self) -> bool:
+        """True when this gap must be closed before the report is accepted."""
+        return self.severity in GAP_MATERIAL_SEVERITIES
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_a_prescope_gap(cls, values: object) -> object:
+        """Keep a pre-Task-8 gap readable, exactly where it really is one.
+
+        A gap that declares neither a severity nor any scope is the shape this
+        contract replaced: nothing in the old schema *could* state either, and
+        the old prompt asked for a gap only when closing it would change the
+        answer. Scoping it to the whole answer is therefore what it always
+        meant, and it is the only scope that invents nothing.
+
+        The rule is deliberately narrow. A payload that declares a severity is
+        held to the new contract, and a payload that names any target,
+        statement, cluster, or sub-topic is left exactly as it came — so a
+        provider gap that forgot to say what it affects still fails loudly
+        instead of being waved through with a scope it never claimed.
+        """
+        if not isinstance(values, dict):
+            return values
+        if {"severity", "kind", "repair_action"}.intersection(values):
+            return values
+        if any(
+            values.get(field)
+            for field in (
+                "coverage_id",
+                "target_ids",
+                "statement_ids",
+                "claim_cluster_ids",
+            )
+        ):
+            return values
+        return {**values, "target_ids": [QUESTION_TARGET_ID]}
+
+    @model_validator(mode="after")
+    def validate_actionable(self) -> "CritiqueGap":
+        if self.kind == "presentation" and self.recommended_queries:
+            raise ValueError(
+                "a presentation gap is a rewrite, not a search; it carries no "
+                "queries"
+            )
+        if self.severity in GAP_MATERIAL_SEVERITIES and not self.affected_ids:
+            raise ValueError(
+                "a critical or major gap must name the target, statement, or "
+                "claim cluster it affects"
+            )
+        if (
+            self.repair_action == QUERY_BEARING_REPAIR_ACTION
+            and not (self.target_ids or self.coverage_id)
+        ):
+            raise ValueError(
+                "an acquire gap must name the target, or the planned "
+                "sub-topic, whose evidence obligation is missing"
+            )
+        if (
+            self.repair_action != QUERY_BEARING_REPAIR_ACTION
+            and self.recommended_queries
+        ):
+            raise ValueError(
+                "search queries belong to an acquisition gap only; this gap "
+                f"repairs by {self.repair_action} and runs no search"
+            )
+        return self
+
+
+# What a critique is worth when nothing could be judged at all. ``reviewed`` is
+# every critique a model produced; ``failed`` records that the reply never
+# validated, so the score beside it is the floor rather than a judgement. The
+# distinction has to be on the record: "the report scored 1" and "the report
+# was never scored" route the same way but mean opposite things.
+CritiqueReviewStatus: TypeAlias = Literal["reviewed", "failed"]
 
 
 class Critique(ContractModel):
@@ -990,6 +1191,25 @@ class Critique(ContractModel):
     recommended_queries: list[str]
     should_continue: bool
     rationale: str = Field(min_length=1)
+    review_status: CritiqueReviewStatus = "reviewed"
+
+    @model_validator(mode="after")
+    def stamp_gap_ids(self) -> "Critique":
+        """Give every gap a bounded id, without disturbing one it has.
+
+        A review's gaps are addressed by id — Task 9 routes by them and a
+        reader cites them — and a gap built by hand or read back from an older
+        snapshot carries none. The id is positional within this review and
+        never content-derived: the same defect twice in two reviews must not
+        look like one finding.
+        """
+        self.gaps = [
+            gap
+            if gap.gap_id
+            else gap.model_copy(update={"gap_id": f"gap-{index + 1:02d}"})
+            for index, gap in enumerate(self.gaps)
+        ]
+        return self
 
     @model_validator(mode="before")
     @classmethod

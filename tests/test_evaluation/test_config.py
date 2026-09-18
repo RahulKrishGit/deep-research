@@ -195,7 +195,17 @@ from deep_research.utils.config import (
 # contract (``basis``), the answer-rows contract, and that a mechanism or
 # geography cell is checked against the evidence its row cites. No critic
 # prompt string changed; a shared-module edit moves all six by design.
-CRITIC_PROMPT_FINGERPRINT = "3f0341751794"
+# Task 8 moved it once more, ``3f0341751794`` -> ``3a95336ed551``, with the
+# other five, and this time the critic's own strings changed too: the Critic is
+# a tool-free editor of one packet, so ``CRITIC_REVIEW_SYSTEM_PROMPT`` lost
+# every tool instruction and gained the read-excerpt evidence rule,
+# ``CRITIQUE_INSTRUCTION`` gained the typed gap object (id fields, kind,
+# severity, action, and "queries ride on an acquisition gap only"), the two
+# reply examples were rewritten to the typed shape, and a repair instruction
+# was added. The other five agents' prompt text is byte-identical; they moved
+# because the shared ``agents.prompts`` module did, which is the documented
+# behaviour of this fingerprint and the reason all six are pinned together.
+CRITIC_PROMPT_FINGERPRINT = "3a95336ed551"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -527,14 +537,27 @@ CRITIC_PROMPT_FINGERPRINT = "3f0341751794"
 #     closing bracket is no longer an opener, and the abbreviation list
 #     completed). The other five are unchanged by all three rounds: no shared
 #     prompt string was edited.
-#   critic ``15754f64fa12`` -> ``3f0341751794``
+#   critic ``15754f64fa12`` -> ``3f0341751794`` -> ``3a95336ed551``
+# Task 8 moved all six. The critic's own module changed (the tool path removed,
+# the packet and its fingerprint added, the request sections rebuilt, and the
+# repair path's failure handling split between schema and provider causes), and
+# the shared ``agents.prompts`` module changed (the tool-free review prompt, the
+# typed gap contract, the rewritten examples, and the repair instruction), which
+# moves the other five even though their prompt text is byte-identical:
+#   planner ``da4407dd9d39`` -> ``02d66a4a2d15``
+#   researcher ``b4f9d21a34b4`` -> ``438bd632edce``
+#   source_evaluator ``33a71376d3e6`` -> ``6c12c0fffc92``
+#   fact_checker ``f1ccaf38ff02`` -> ``7695ca2d0524``
+#   synthesizer ``17bc15e0131b`` -> ``0ec21503cc00``
+#   critic ``3f0341751794`` -> ``3a95336ed551``
+# The Judge pin did not move: no judge prompt or template changed.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "da4407dd9d39",
-    "researcher": "b4f9d21a34b4",
-    "source_evaluator": "33a71376d3e6",
-    "fact_checker": "f1ccaf38ff02",
-    "synthesizer": "17bc15e0131b",
-    "critic": "3f0341751794",
+    "planner": "02d66a4a2d15",
+    "researcher": "438bd632edce",
+    "source_evaluator": "6c12c0fffc92",
+    "fact_checker": "7695ca2d0524",
+    "synthesizer": "0ec21503cc00",
+    "critic": "3a95336ed551",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

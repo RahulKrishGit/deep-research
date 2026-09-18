@@ -83,13 +83,17 @@ agents:
   # its procedural lookup: the planner runs no second hidden recall, and its
   # one permitted lookup happens only when startup recall returned no
   # guidance. source_evaluator and synthesizer need no tools at all; the fact
-  # checker keeps the researcher's ten. Task 8 sets critic: 0.
+  # checker keeps the researcher's ten. The critic is 0 because Task 8 removed
+  # its tool path entirely: it reviews the exact candidate's packet, and its
+  # historical search/memory spot check could not open a page, so it could
+  # never establish missing support and its snippets were never evidence.
   tool_budget_overrides:
     planner: 1
     researcher: 10
     fact_checker: 10
     source_evaluator: 0
     synthesizer: 0
+    critic: 0
   # How many planned sub-topics one Researcher pass attempts
   # (AGENTS_MAX_SUB_TOPICS overrides this). Seven is the Planner's own ceiling,
   # so the default attempts the whole plan. A smaller cap silently drops the

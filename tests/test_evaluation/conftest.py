@@ -1419,7 +1419,7 @@ def critic_output(critic_case) -> CriticOutput:
         tracker_errors=[],
         react=ReActSummary(
             iterations=1,
-            tool_calls=1,
+            tool_calls=0,
             stop_reason="finished",
             max_iterations=critic_case.expectations.max_iterations,
             tool_budget=critic_case.expectations.max_tool_calls,
@@ -1470,7 +1470,7 @@ def critic_gap_output(critic_gap_case) -> CriticOutput:
         tracker_errors=[],
         react=ReActSummary(
             iterations=1,
-            tool_calls=1,
+            tool_calls=0,
             stop_reason="finished",
             max_iterations=critic_gap_case.expectations.max_iterations,
             tool_budget=critic_gap_case.expectations.max_tool_calls,
@@ -1521,7 +1521,7 @@ def critic_budget_output(critic_budget_case) -> CriticOutput:
         tracker_errors=[],
         react=ReActSummary(
             iterations=3,
-            tool_calls=6,
+            tool_calls=0,
             stop_reason="finished",
             max_iterations=critic_budget_case.expectations.max_iterations,
             tool_budget=critic_budget_case.expectations.max_tool_calls,

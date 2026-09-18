@@ -580,26 +580,35 @@ def test_the_synthesizer_prompt_forbids_inventing_evidence() -> None:
 
 
 def test_the_critic_prompt_states_the_gap_and_score_contracts() -> None:
-    assert "spot-check" in CRITIC_SYSTEM_PROMPT
+    assert "no tools" in CRITIC_SYSTEM_PROMPT
     assert "1 to 10" in CRITIQUE_INSTRUCTION
-    # Decision 9: every listed gap is treated as critical, so the prompt
-    # must say only material gaps belong in the list.
-    assert "materially" in CRITIQUE_INSTRUCTION
+    # Materiality is now declared rather than implied: a gap carries a
+    # severity, and only critical and major gaps block acceptance.
+    assert "material defect" in CRITIQUE_INSTRUCTION
+    assert "severity" in CRITIQUE_INSTRUCTION
+    assert "minor" in CRITIQUE_INSTRUCTION
     assert "routing" not in CRITIQUE_INSTRUCTION
     assert "recommended" in CRITIQUE_INSTRUCTION
 
 
 def test_the_review_system_prompt_names_no_tools() -> None:
-    """The review request offers no tools, so its prompt must not name any.
+    """Neither Critic prompt offers tools, so neither may name one.
 
     Measured: the review payload carries no ``tools`` and no ``tool_choice``,
     yet the prompt announced ``web_search`` and ``query_memory``. The model
     obeyed and emitted DeepSeek tool-invocation markup into the message text,
-    which local JSON validation rejected — 16 of 30 first attempts.
+    which local JSON validation rejected — 16 of 30 first attempts. Task 8
+    went further and removed the tool path, so the shared prompt is tool-free
+    too and its "no tools" sentence says so.
     """
-    lowered = CRITIC_REVIEW_SYSTEM_PROMPT.lower()
-    for forbidden in ("web_search", "query_memory", "tool", "spot-check"):
-        assert forbidden not in lowered, forbidden
+    for prompt in (CRITIC_REVIEW_SYSTEM_PROMPT, CRITIC_SYSTEM_PROMPT):
+        lowered = prompt.lower()
+        for forbidden in ("web_search", "query_memory", "tool", "spot-check"):
+            if forbidden == "tool":
+                # The tool-free statement itself names the absence of tools.
+                assert "no tools" in lowered
+                continue
+            assert forbidden not in lowered, forbidden
 
 
 def test_the_review_prompt_describes_the_report_boundaries() -> None:
@@ -608,9 +617,11 @@ def test_the_review_prompt_describes_the_report_boundaries() -> None:
     assert "BEGIN" not in CRITIC_REVIEW_SYSTEM_PROMPT
     assert "END marker" not in CRITIC_REVIEW_SYSTEM_PROMPT
     assert "<" not in CRITIC_REVIEW_SYSTEM_PROMPT
-    # The tool-aware prompt still belongs to the ReAct spot-check loop.
-    assert "web_search" in CRITIC_SYSTEM_PROMPT
-    assert "query_memory" in CRITIC_SYSTEM_PROMPT
+    # The old tool-aware prompt announced a spot-check loop; the Critic has
+    # none, so no prompt of this agent may advertise a tool again.
+    assert "web_search" not in CRITIC_SYSTEM_PROMPT
+    assert "query_memory" not in CRITIC_SYSTEM_PROMPT
+    assert "exact excerpt of a successful read" in CRITIC_REVIEW_SYSTEM_PROMPT
 
 
 def test_unsupported_claims_are_defined_leniently_with_an_override() -> None:
@@ -645,7 +656,11 @@ def test_unsupported_claims_are_defined_leniently_with_an_override() -> None:
         "separate verified-claim entry" in prose
     )
     # …and the override keeps the lenient reading from laundering citations.
-    assert "A contrary claim verdict or spot-check evidence still makes a " in prose
+    # Task 8 replaced "spot-check evidence" with the packet's read excerpts:
+    # the Critic no longer searches, so a snippet can no longer stand in for a
+    # contradiction.
+    assert "A contrary " in prose
+    assert "claim verdict or a read excerpt that disagrees still makes a " in prose
     assert "statement unsupported, however it is cited" in prose
     # The superseded strict wording must be gone.
     assert "that no cited source or verified claim backs" not in prose

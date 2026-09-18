@@ -331,10 +331,10 @@ def critic_tools(
     search: FakeSearchClient | None = None,
     memory: FakeMemory | None = None,
 ) -> list[BaseTool]:
-    """Build the two tools ``CriticAgent`` declares, all offline.
+    """The two tools the Critic used to declare, all offline.
 
-    The same pair ``PlannerAgent`` declares — spot-checking a suspected gap
-    is scoping work, not research — so this delegates rather than
-    re-listing them.
+    Task 8 made the Critic tool-free, so nothing it declares needs these. They
+    are kept because a test that hands a Critic an injected tool and a budget
+    is how "no ReAct turn happens anyway" is proved.
     """
     return planner_tools(tracker, search=search, memory=memory)

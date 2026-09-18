@@ -359,66 +359,135 @@ CLAIM_VERIFICATION_SCHEMA_VERSION = "1"
 CRITIC_SYSTEM_PROMPT = (
     "You are the critic of a multi-agent research system. You judge one "
     "finished report and say what another research pass would have to fix.\n"
-    "Use web_search to spot-check a suspected gap or a figure that looks "
-    "wrong, and query_memory to compare this report against what previous "
-    "sessions established. Finish without calling a tool when the report "
-    "and the evidence summary are enough to judge.\n"
+    "You have no tools and need none: the exact candidate is printed for you. "
     "Judge completeness against the research question, accuracy against the "
-    "claim verdicts, source diversity and strength against each source's "
-    "quality score when scored or explicit evaluation status otherwise, and "
-    "whether uncertainty is disclosed rather than hidden.\n"
-    "Report what the evidence in front of you supports. Do not invent a gap "
+    "claim verdicts and the read excerpts, source diversity and strength "
+    "against each source's quality score when scored or explicit evaluation "
+    "status otherwise, and whether uncertainty is disclosed rather than "
+    "hidden.\n"
+    "Report what the material in front of you supports. Do not invent a gap "
     "to look thorough, and do not excuse a thin report to look agreeable."
 )
 
 # The review request offers NO tools, so its prompt must not mention any.
 # Announcing tools the request cannot accept made the model emit DeepSeek
 # tool-invocation markup into the message text, where local JSON validation
-# rejected it: 16 of 30 first attempts in a measured shape probe. This prompt
-# is for the single structured judgement only; the tool-aware prompt above
-# belongs to the ReAct spot-check loop, which does offer the tools.
+# rejected it: 16 of 30 first attempts in a measured shape probe. Task 8
+# removed the tool path entirely, so this prompt is the agent's only one.
 CRITIC_REVIEW_SYSTEM_PROMPT = (
-    "You are the critic of a multi-agent research system. You judge one "
-    "finished report and say what another research pass would have to fix.\n"
-    "Everything needed is printed below: the research question, every reader "
-    "report section in its own fenced block, the deterministic quality "
-    "snapshot, the sub-topics that were planned, canonical checked claims, "
-    "each cited source's quality score when scored or its explicit "
-    "evaluation status otherwise, and typed errors grouped by "
-    "agent and stage. Judge "
-    "that material alone.\n"
-    "Judge completeness against the research question, accuracy against the "
-    "claim verdicts, source diversity and strength against the source quality "
-    "signals, and whether uncertainty is disclosed rather than hidden.\n"
-    "Report what the evidence in front of you supports. Do not invent a gap "
+    "You are the critic of a multi-agent research system, and the last editor "
+    "before this report reaches a reader. You judge one finished report and "
+    "say, precisely, what is wrong with it and what would fix it.\n"
+    "Everything needed is printed below and nothing else is available: you "
+    "have no tools for this request, so nothing may be looked up. The material "
+    "is the "
+    "research question, the frozen answer contract, every reader section in "
+    "its own fenced block, every reader statement with the evidence ids "
+    "behind it, the evidence targets and which of their required dimensions "
+    "are still unanswered, the exact read excerpts this run registered, the "
+    "deterministic quality snapshot and hard checks, canonical checked "
+    "claims, each cited source's quality score when scored or its explicit "
+    "evaluation status otherwise, and typed errors grouped by agent and "
+    "stage. Judge that material alone, and never claim to have checked "
+    "anything that is not printed here.\n"
+    "A search result, a snippet, or a remembered claim is not evidence: only "
+    "an exact excerpt of a successful read is, and those are listed with "
+    "their read ids and locators.\n"
+    "Judge completeness against the question, accuracy against the claim "
+    "verdicts and the excerpts, source diversity and strength against the "
+    "source quality signals, and whether uncertainty is disclosed rather "
+    "than hidden.\n"
+    "Score the whole answer against the question. Deterministic hard checks "
+    "can block acceptance; they can never earn a high score for a report the "
+    "evidence does not support.\n"
+    "Report what the material in front of you supports. Do not invent a gap "
     "to look thorough, and do not excuse a thin report to look agreeable."
 )
 
+# The typed defect vocabulary. Both lists are normative: the kind names what
+# is wrong, and the action names the one thing that would fix it. Task 9
+# routes on the action, so an action this contract does not name is a defect
+# nobody can repair.
+CRITIQUE_GAP_KINDS = (
+    "coverage (a required obligation the report does not answer), "
+    "missing_support (a statement with no evidence behind it), "
+    "acquisition (required evidence no read supplied), "
+    "identity (sources that are not actually independent, or not what they "
+    "claim to be), "
+    "contradiction (recorded evidence that disagrees, unresolved), "
+    "semantic_duplicate (the same fact asserted twice), "
+    "source_quality (cited evidence too weak for the claim it carries), "
+    "mechanism (how or why is unstated), "
+    "freshness (the evidence is older than the question allows), "
+    "presentation (the answer is hard to read or repeats itself)"
+)
+
+CRITIQUE_GAP_ACTIONS = (
+    "extend_plan (the question asks for something no planned target covers), "
+    "acquire (evidence must be found for a named target), "
+    "assess_source (a cited source must be evaluated), "
+    "adjudicate (evidence that disagrees must be settled), "
+    "consolidate (duplicate facts must be merged), "
+    "synthesize (the answer must be rewritten or re-derived)"
+)
+
 CRITIQUE_INSTRUCTION = (
-    "Return a score, targetable gap objects, the unsupported claims, the "
-    "queries a further pass should run, and a rationale.\n"
+    "Return a score, typed gap objects, the unsupported claims, the queries a "
+    "further pass should run, and a rationale.\n"
     "score: an integer from 1 to 10. 1 is unusable; 10 answers the question "
-    "completely from strong, diverse, well-cited sources.\n"
-    "gaps: list a gap only when closing it would materially change the "
-    "answer to the research question. Each gap is an object with "
-    "coverage_id, problem, and recommended_queries. Copy coverage_id "
-    "exactly from a planned sub-topic; use null when the gap is global or "
-    "you cannot identify one from the plan. Never infer a coverage_id from a "
-    "sub-topic title or from the problem text. A missing nicety is not a gap. "
-    "Return an empty list when the report is materially complete.\n"
+    "completely from strong, diverse, well-cited sources. Score the whole "
+    "answer against the question, from its weakest load-bearing element. "
+    "Length, confident prose, and a long source list are not quality.\n"
+    "gaps: list a gap only when it is a real, material defect of this report. "
+    "Each gap is an object with gap_id, target_ids, claim_cluster_ids, "
+    "statement_ids, kind, severity, repair_action, problem, and "
+    "recommended_queries. Copy every id exactly from the statement, target, "
+    "or cluster lists above; never invent one, and never infer an id from a "
+    "title or from the problem text.\n"
+    f"kind is one of: {CRITIQUE_GAP_KINDS}.\n"
+    f"repair_action is one of: {CRITIQUE_GAP_ACTIONS}.\n"
+    "severity is critical, major, or minor. critical and major mean the "
+    "defect must be closed before this report can be accepted; minor is a "
+    "real but editorial observation, and one minor defect is not a reason to "
+    "research again.\n"
+    "Every critical or major gap must name at least one target, statement, "
+    "or cluster it affects. An acquire gap must also name the target whose "
+    "evidence obligation is missing: acquisition is per obligation, so a "
+    'statement reference alone does not say what is owed. When the question '
+    "itself asks for something no planned target covers, name "
+    '"question" in target_ids with repair_action extend_plan; do not '
+    "fabricate a target id.\n"
+    "recommended_queries: concrete search queries, and only on an acquisition "
+    "gap. A gap that repairs by extend_plan, assess_source, adjudicate, "
+    "consolidate, or synthesize runs no search, so it carries no queries. "
+    '"Improve the quality" and "find more sources" are not actionable gaps; '
+    "say what is missing and which action can supply it. Return an empty gap "
+    "list when the report is materially complete.\n"
     "unsupported_claims: statements presented as fact that are neither "
     "clearly attributed to one of the report's cited sources nor backed by a "
     "verified claim. Do not mark a cited statement unsupported solely because "
     "it lacks a separate verified-claim entry: the claim digest is deliberately "
     "partial, so absence from it is not evidence of unsupportedness. A contrary "
-    "claim verdict or spot-check evidence still makes a statement unsupported, "
-    "however it is cited. Quote or closely paraphrase each one.\n"
-    "recommended_queries: concrete search queries that would close the gaps "
-    "you listed, in the order they should be run.\n"
+    "claim verdict or a read excerpt that disagrees still makes a statement "
+    "unsupported, however it is cited. Quote or closely paraphrase each one.\n"
+    "recommended_queries at the top level: the same acquisition queries, in "
+    "the order they should be run. Leave it empty when no acquisition is "
+    "needed.\n"
     "rationale: two to four sentences naming the concrete signals behind "
     "the score. Never restate the score alone.\n"
     "Do not decide whether research continues — this system computes that "
     "from your score, your gaps, and the remaining budget."
+)
+
+# The one repair request. It is deliberately not a second review: the model is
+# told the packet is unchanged and asked only to correct the reply's shape, so
+# a repaired review cannot quietly become a different judgement.
+CRITIQUE_REPAIR_INSTRUCTION = (
+    "Return the same five-field JSON object again, corrected. Do not re-review "
+    "the report, do not change a score or a gap because of this request, and "
+    "do not add commentary: the report, the evidence, and the packet "
+    "fingerprint are unchanged. Return exactly one JSON object with no text "
+    "before or after it."
 )
 
 
