@@ -38,6 +38,7 @@ from deep_research.utils.types import (
     EvidenceDisposition,
     EvidenceUnit,
     ReadRecord,
+    _canonical_acquisition_url,
 )
 
 AcquisitionAction = Literal["search", "read", "extract", "finish"]
@@ -488,6 +489,47 @@ def _url_was_discovered(url: str, state: AcquisitionState) -> bool:
     return record is not None and record.discovered_via in _DISCOVERED_VIA
 
 
+def cache_reuse_problem(
+    record: ReadRecord,
+    *,
+    requested_url: str,
+    cited_identity: tuple[str, str] | None,
+) -> str | None:
+    """Why a stored read may not stand in for one being requested, or ``None``.
+
+    Three fingerprints have to agree before a cache entry is reused. **Identity**:
+    the entry must be the artifact for the URL being requested, resolved either
+    way, or it is a different page. **Content and version**: when this run has
+    already cited that URL, the entry must be the very read the citation was
+    made against — same read id, same content hash. A different read of the
+    same URL is a changed body, and serving the new one under the old citation
+    (or the old one after the page changed) publishes a citation to text nobody
+    re-read; the reuse is refused and the URL is actually fetched.
+
+    An uncited URL has no fingerprint to disagree with, so it stays a plain
+    reuse: this rule is about citations surviving, not about disabling the
+    cache. The caller resolves the cited identity from the run's own claim
+    record — never from the cached entry itself, which would make the check
+    vacuous — and ``validate_cached_read`` still runs behind this for the
+    content hash, completeness, and passage checks it owns.
+    """
+    requested = _canonical_acquisition_url(requested_url)
+    known = {
+        _canonical_acquisition_url(record.requested_url),
+        _canonical_acquisition_url(record.resolved_url),
+    }
+    if not requested or requested not in known:
+        return "identity_mismatch"
+    if cited_identity is None:
+        return None
+    cited_read_id, cited_hash = cited_identity
+    if cited_read_id != record.read_id:
+        return "content_version_changed"
+    if cited_hash.strip().casefold() != record.content_sha256.strip().casefold():
+        return "content_hash_changed"
+    return None
+
+
 def _cached_payload(record: ReadRecord, tool_name: str) -> dict[str, JsonValue]:
     body = "".join(record.passages.values())
     if tool_name == "web_scraper":
@@ -552,6 +594,13 @@ class AcquisitionPolicy:
     configuration_fingerprint: str = "acquisition-v1"
     cache: MutableMapping[str, ReadRecord] | None = None
     network_read_ids: set[str] | None = None
+    cited_reads: Mapping[str, tuple[str, str]] | None = None
+    """``{canonical URL: (read_id, content_sha256)}`` this run already cited.
+
+    Supplied by the caller from the run's own claim record. A cache entry for
+    one of these URLs is reusable only while it is still the read the citation
+    was made against; everything else is fetched again.
+    """
     _seen_queries: set[str] = field(default_factory=set, init=False)
     _last_search_failed: bool = field(default=False, init=False)
     _network_read_ids: set[str] = field(default_factory=set, init=False)
@@ -589,6 +638,12 @@ class AcquisitionPolicy:
         """Count unique network bodies, excluding cache admissions."""
         return len(self._network_read_ids)
 
+    def _cited_identity(self, url: str) -> tuple[str, str] | None:
+        """The read a citation was made against for this URL, if this run cited it."""
+        if not self.cited_reads:
+            return None
+        return self.cited_reads.get(_canonical_acquisition_url(url))
+
     def start_turn(self) -> None:
         if self.state.remaining_model_turns > 0:
             self.state = self.state.model_copy(
@@ -605,7 +660,9 @@ class AcquisitionPolicy:
         at most once per read — and whatever the bound leaves over is recorded
         in that batch's selection manifest and dropped from the pending list,
         so persisted state can never re-enter "extract" for the rest of the
-        run. Only the read IDs whose batch was handed over are consumed here.
+        run. Only the read IDs whose batch was handed over are consumed here,
+        and they are consumed *because the extraction succeeded*: a handoff
+        that produced no result is deferred instead (``defer_extraction``).
         """
         self.extract_passage_batch()
         self.state = self.state.model_copy(
@@ -613,6 +670,18 @@ class AcquisitionPolicy:
                 "pending_extraction_ids": [],
             }
         )
+
+    def defer_extraction(self) -> int:
+        """Hand over the current batch, and keep it owed.
+
+        Called when the extraction that was supposed to consume this batch
+        failed retryably — a provider outage, or a reply that never validated.
+        The passages were handed to an extractor that produced nothing, so the
+        read ids stay in ``pending_extraction_ids``: the work is still owed,
+        the next pass or a resumed run can see exactly which reads are
+        outstanding, and no later stage may read the batch as consumed.
+        """
+        return self.extract_passage_batch()
 
     def record_extraction_dispositions(
         self,
@@ -691,6 +760,7 @@ class AcquisitionPolicy:
         selected_ids: list[str] = []
         terminal: list[str] = [*unresolved]
         carried: list[str] = []
+        handed_over: list[str] = []
         admitted = 0
         for read_id, locators in groups.items():
             read = self.reads[read_id]
@@ -700,6 +770,7 @@ class AcquisitionPolicy:
                     f"{read_id}/{locator}" for locator in locators
                 )
                 continue
+            handed_over.append(read_id)
             texts = {locator: read.passages[locator] for locator in locators}
             selected = select_relevant_passages(
                 texts, self.query, self.selected_passages_per_read
@@ -750,8 +821,19 @@ class AcquisitionPolicy:
         )
         self.boundary_audits[audit.audit_id] = audit
         self._sequence += 1
+        # The reads whose batch was handed over are recorded as owed until the
+        # extraction that consumes them succeeds. Clearing the list here (as
+        # this used to do by never filling it) meant a failed extraction became
+        # indistinguishable from a completed one.
         self.state = self.state.model_copy(
-            update={"pending_passage_ids": list(dict.fromkeys(carried))}
+            update={
+                "pending_passage_ids": list(dict.fromkeys(carried)),
+                "pending_extraction_ids": list(
+                    dict.fromkeys(
+                        [*self.state.pending_extraction_ids, *handed_over]
+                    )
+                ),
+            }
         )
         return admitted
 
@@ -896,7 +978,11 @@ class AcquisitionPolicy:
                 reason="this exact URL was denied; acquire a different candidate",
             )
         cached = self._cache.get(url)
-        if cached is not None:
+        if cached is not None and cache_reuse_problem(
+            cached,
+            requested_url=url,
+            cited_identity=self._cited_identity(url),
+        ) is None:
             validated = validate_cached_read(
                 cached,
                 "".join(cached.passages.values()),

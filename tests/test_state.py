@@ -17,16 +17,25 @@ from deep_research.utils.types import (
     Claim,
     Critique,
     EvidenceDisposition,
+    EvidenceTarget,
     Finding,
     MemorySnapshot,
     ReadRecord,
+    RefinementTarget,
+    ReportComposition,
+    ReportPoint,
+    ReportStatement,
     ResearchError,
     ResearchEvent,
+    ResearchProgress,
     ResearchState,
     ScoredSource,
     SubTopic,
     advance_research_iteration,
     merge_research_state,
+    progress_improved,
+    target_is_answered,
+    unanswered_required_targets,
 )
 
 PASSAGE = "Example Lab measured that 1,200 MW of interconnection capacity was withheld"
@@ -510,6 +519,308 @@ def test_graph_iteration_advance_returns_a_new_state() -> None:
 
     assert advanced.iteration == 2
     assert state.iteration == 1
+
+
+def evidence_target(
+    target_id: str = "target-01",
+    *,
+    coverage_id: str = "topic-01",
+    required_dimensions: list[str] | None = None,
+    support_policy: str = "independent_pair",
+    required: bool = True,
+) -> EvidenceTarget:
+    return EvidenceTarget(
+        target_id=target_id,
+        coverage_id=coverage_id,
+        question="What does it cost?",
+        required_dimensions=list(required_dimensions or ["cost"]),
+        required=required,
+        critical=True,
+        support_policy=support_policy,
+    )
+
+
+def statement(
+    *,
+    statement_id: str = "S001",
+    target_ids: list[str] | None = None,
+    answered_dimensions: list[str] | None = None,
+    mode: str = "settled",
+    text: str = "It costs 40 EUR per tonne.",
+) -> ReportStatement:
+    return ReportStatement(
+        statement_id=statement_id,
+        text=text,
+        mode=mode,
+        answered_dimensions=list(answered_dimensions or ["cost"]),
+        target_ids=list(target_ids or ["target-01"]),
+    )
+
+
+def composition(
+    *,
+    statements: list[ReportStatement] | None = None,
+    claims: list[Claim] | None = None,
+    sub_topics: list[SubTopic] | None = None,
+) -> ReportComposition:
+    rows = list(statements or [])
+    return ReportComposition(
+        question="What does it cost?",
+        session_id="session-1",
+        claims=list(claims or []),
+        sub_topics=list(sub_topics or []),
+        summary=[
+            ReportPoint(text=row.text, statement=row) for row in rows
+        ],
+    )
+
+
+def test_new_support_is_progress_even_before_a_verdict_changes() -> None:
+    before = ResearchProgress(
+        completed_target_ids=[],
+        assessed_support_fingerprints=["a"],
+        resolved_gap_ids=[],
+        pending_work_ids=["b"],
+        unresolved_major_gap_ids=["g1"],
+        composition_fingerprint="old",
+    )
+    after = before.model_copy(
+        update={
+            "assessed_support_fingerprints": ["a", "b"],
+            "pending_work_ids": [],
+        }
+    )
+    assert progress_improved(before, after)
+    assert not progress_improved(after, after)
+
+
+def test_irrelevant_searches_and_pages_are_not_progress() -> None:
+    before = ResearchProgress(
+        completed_target_ids=["target-01"],
+        assessed_support_fingerprints=["a"],
+        resolved_gap_ids=[],
+        pending_work_ids=[],
+        unresolved_major_gap_ids=["g1"],
+        composition_fingerprint="same",
+    )
+    more_work = before.model_copy(
+        update={"pending_work_ids": ["https://lab.example/one", "read-2"]}
+    )
+
+    assert not progress_improved(before, more_work)
+    assert not progress_improved(more_work, before)
+
+
+def test_a_fixed_duplicated_paragraph_is_presentation_progress() -> None:
+    before = ResearchProgress(composition_fingerprint="before-cleanup")
+    after = before.model_copy(
+        update={"composition_fingerprint": "after-cleanup"}
+    )
+
+    assert progress_improved(before, after)
+
+
+def attributed_claim(text: str = "It costs 40 EUR per tonne.") -> Claim:
+    """A claim with primary-source attribution and no independent pair."""
+    return Claim(
+        claim_id=claim_fingerprint(text),
+        text=text,
+        source_urls=["https://example.com/source"],
+        verdict="insufficient_evidence",
+        evidence_status="source_supported",
+        confidence=0.7,
+        evidence=["The ministry publishes this figure."],
+        contradictions=[],
+        verification_evidence=[],
+    )
+
+
+def test_a_settled_statement_answers_its_target() -> None:
+    target = evidence_target()
+    checked = claim("It costs 40 EUR per tonne.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
+    )
+    row = statement().model_copy(
+        update={"claim_cluster_ids": ["cluster-01"]}
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[checked]),
+    )
+
+    assert target_is_answered(state, target)
+
+
+def test_a_statement_missing_a_required_dimension_does_not_answer() -> None:
+    target = evidence_target(required_dimensions=["cost", "financing"])
+    checked = claim("It costs 40 EUR per tonne.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
+    )
+    row = statement(answered_dimensions=["cost"]).model_copy(
+        update={"claim_cluster_ids": ["cluster-01"]}
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[checked]),
+    )
+
+    assert not target_is_answered(state, target)
+
+
+def test_an_uncorroborated_statement_does_not_answer_an_independent_target() -> None:
+    target = evidence_target(support_policy="independent_pair")
+    checked = attributed_claim().model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
+    )
+    row = statement(mode="attributed").model_copy(
+        update={"claim_cluster_ids": ["cluster-01"]}
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[checked]),
+    )
+
+    assert not target_is_answered(state, target)
+
+
+def test_primary_attribution_answers_a_target_that_asks_for_it() -> None:
+    target = evidence_target(support_policy="primary_attribution")
+    checked = attributed_claim().model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
+    )
+    row = statement(mode="attributed").model_copy(
+        update={"claim_cluster_ids": ["cluster-01"]}
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[checked]),
+    )
+
+    assert target_is_answered(state, target)
+
+
+def test_a_raw_metadata_finding_completes_no_required_target() -> None:
+    """A finding is not a reader statement: the target is still unanswered."""
+    target = evidence_target()
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        sub_topics=[
+            sub_topic().model_copy(update={"evidence_targets": [target]})
+        ],
+        raw_findings=[finding("A publication date was recorded.")],
+        composition=composition(
+            statements=[statement(target_ids=["target-09"])],
+            claims=[claim("Another target was answered.")],
+        ),
+    )
+
+    assert not target_is_answered(state, target)
+    assert unanswered_required_targets(state) == [target]
+
+
+def test_an_answered_target_is_not_reported_as_unmet() -> None:
+    answered = evidence_target("target-01")
+    unmet = evidence_target("target-02", required_dimensions=["financing"])
+    topic = sub_topic().model_copy(
+        update={"evidence_targets": [answered, unmet]}
+    )
+    claim_one = claim("It costs 40 EUR per tonne.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        sub_topics=[topic],
+        composition=composition(
+            statements=[
+                statement(target_ids=["target-01"]).model_copy(
+                    update={"claim_cluster_ids": ["cluster-01"]}
+                )
+            ],
+            claims=[claim_one],
+        ),
+    )
+
+    assert unanswered_required_targets(state) == [unmet]
+    assert unanswered_required_targets(state, topic) == [unmet]
+    assert unanswered_required_targets(state, sub_topic("Other")) == []
+
+
+def test_an_optional_target_is_not_an_outstanding_obligation() -> None:
+    optional = evidence_target("target-02", required=False)
+    topic = sub_topic().model_copy(update={"evidence_targets": [optional]})
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        sub_topics=[topic],
+    )
+
+    assert unanswered_required_targets(state) == []
+
+
+def test_refinement_targets_are_persisted_and_replaced_per_pass() -> None:
+    first = RefinementTarget(
+        gap_id="gap-01",
+        target_ids=["target-01"],
+        action="acquire",
+        problem="No cost data.",
+    )
+    second = RefinementTarget(
+        target_ids=["target-02"],
+        action="adjudicate",
+        origin="unanswered_target",
+        problem="The obligation was never adjudicated.",
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        refinement_targets=[first],
+    )
+
+    merged = merge_research_state(state, {"refinement_targets": [second]})
+
+    assert merged.refinement_targets == [second]
+    assert state.refinement_targets == [first]
+
+
+def test_progress_history_appends_and_is_bounded_by_the_iteration_ceiling() -> None:
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        max_iterations=2,
+    )
+
+    for index in range(5):
+        state = merge_research_state(
+            state,
+            {
+                "progress_history": [
+                    ResearchProgress(composition_fingerprint=f"pass-{index}")
+                ]
+            },
+        )
+
+    assert [row.composition_fingerprint for row in state.progress_history] == [
+        "pass-2",
+        "pass-3",
+        "pass-4",
+    ]
+
+
+def test_a_repair_stop_reason_round_trips_through_state() -> None:
+    state = ResearchState(session_id="session-1", original_question="A question?")
+
+    merged = merge_research_state(state, {"repair_stop_reason": "no_progress"})
+
+    assert merged.repair_stop_reason == "no_progress"
+    assert state.repair_stop_reason is None
+    with pytest.raises(ValidationError):
+        merge_research_state(state, {"repair_stop_reason": "gave_up"})
 
 
 def test_graph_iteration_cannot_advance_past_maximum() -> None:

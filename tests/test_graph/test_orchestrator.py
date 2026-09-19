@@ -56,6 +56,7 @@ from tests.graph_fakes import (
     fake_scored_source,
     fake_sub_topic,
     fake_synthesis_update,
+    progressing_fact_checker,
 )
 from tests.research_fakes import synthesizer_tools
 
@@ -453,9 +454,10 @@ async def test_the_iteration_bound_forces_an_end_the_critic_did_not_want(
 async def test_the_shipped_default_budget_exhausts_without_a_recursion_error(
 ) -> None:
     agents = fake_research_agents(
+        fact_checker=progressing_fact_checker(),
         critic=FakeAgent(
             "critic", [{"critique": fake_critique(should_continue=True, score=3)}]
-        )
+        ),
     )
 
     state = await _run(agents, max_iterations=DEFAULT_MAX_ITERATIONS)
@@ -640,6 +642,42 @@ async def test_the_observed_report_shape_publishes_once_after_three_refinements(
     assert final.report_path == "report-session-1-3.md"
     assert final.evidence_path == "report-session-1-3-evidence.md"
     assert graph_status(final) == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_refinement_stops_before_a_second_unchanged_pass() -> None:
+    """End to end: a repair that changes nothing does not buy another pass.
+
+    Every fake here answers with the same state on every pass, so the second
+    refinement compares two identical snapshots. The run must stop there — at
+    the refinement hop, without spending a third research pass — publish the
+    report it has, and say why in a reason that is not a quality verdict: the
+    report was reviewed, and the machine declined to repeat work that would
+    change nothing.
+    """
+    publisher = FakePublisher()
+    agents = fake_research_agents(
+        critic=FakeAgent(
+            "critic", [{"critique": fake_critique(should_continue=True, score=4)}]
+        ),
+        publisher=publisher,
+    )
+
+    state = await _run(agents, max_iterations=3)
+
+    assert _route_reasons(state) == [
+        "refinement_requested",
+        "refinement_requested",
+        "no_progress",
+    ]
+    assert state.iteration == 1
+    assert len(agents.researcher.calls) == 2
+    assert state.repair_stop_reason == "no_progress"
+    assert graph_status(state) == "incomplete"
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+    # The report it had is still published; a partial run is not remembered.
+    assert state.report_path is not None
+    assert publisher.memory_writes == 0
 
 
 @pytest.mark.asyncio

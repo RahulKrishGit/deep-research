@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.synthesizer import SynthesizerAgent
-from deep_research.graph.errors import GRAPH_ERROR_REASONS
+from deep_research.graph.errors import GRAPH_ERROR_REASONS, GraphConfigurationError
 from deep_research.graph.nodes import (
+    REPAIR_NODES,
     GraphNode,
     agent_node,
     critic_node,
     finalize_report_node,
+    invalidation_update,
     refine_node,
+    refinement_targets_for,
     route_after_critic,
+    route_after_refine,
+    route_refinement,
     synthesizer_node,
 )
 from deep_research.graph.state import (
@@ -27,6 +33,7 @@ from deep_research.graph.state import (
     dump_state,
     is_halted,
     load_state,
+    progress_snapshot,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
@@ -40,9 +47,15 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
+    REPAIR_ACTIONS,
+    Critique,
+    CritiqueGap,
+    EvidenceTarget,
+    RefinementTarget,
     ReportQualitySnapshot,
     ResearchError,
     ResearchState,
+    SubTopic,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.graph_fakes import (
@@ -839,3 +852,435 @@ async def test_a_halted_run_is_never_finalized() -> None:
     assert publisher.documents == []
     assert state.report_path is None
     assert _event_types(state) == ["graph.node.skipped"]
+
+
+# --- Task 9: typed repair routing -------------------------------------------
+
+
+def _evidence_target(
+    target_id: str = "target-01",
+    *,
+    coverage_id: str = "topic-01",
+    required_dimensions: Sequence[str] = ("cost",),
+    support_policy: str = "independent_pair",
+) -> EvidenceTarget:
+    return EvidenceTarget(
+        target_id=target_id,
+        coverage_id=coverage_id,
+        question="What does it cost?",
+        required_dimensions=list(required_dimensions),
+        required=True,
+        critical=True,
+        support_policy=support_policy,
+    )
+
+
+def _planned_topic(*targets: EvidenceTarget) -> SubTopic:
+    return fake_sub_topic().model_copy(
+        update={"evidence_targets": list(targets)}
+    )
+
+
+def _gap(
+    *,
+    gap_id: str = "gap-01",
+    action: str = "acquire",
+    kind: str = "coverage",
+    severity: str = "major",
+    coverage_id: str | None = "topic-01",
+    target_ids: Sequence[str] = (),
+    statement_ids: Sequence[str] = (),
+    claim_cluster_ids: Sequence[str] = (),
+    queries: Sequence[str] = (),
+    problem: str = "One obligation is unmet.",
+) -> CritiqueGap:
+    return CritiqueGap(
+        gap_id=gap_id,
+        coverage_id=coverage_id,
+        target_ids=list(target_ids),
+        statement_ids=list(statement_ids),
+        claim_cluster_ids=list(claim_cluster_ids),
+        kind=kind,
+        severity=severity,
+        repair_action=action,
+        problem=problem,
+        recommended_queries=list(queries),
+    )
+
+
+def _critique(*gaps: CritiqueGap, should_continue: bool = True) -> Critique:
+    return Critique(
+        score=5,
+        gaps=list(gaps),
+        unsupported_claims=[],
+        recommended_queries=[],
+        should_continue=should_continue,
+        rationale="Recorded for routing tests.",
+    )
+
+
+def test_the_repair_route_table_is_keyed_by_the_typed_action_literals() -> None:
+    assert REPAIR_ACTIONS == (
+        "extend_plan",
+        "acquire",
+        "assess_source",
+        "adjudicate",
+        "consolidate",
+        "synthesize",
+    )
+    assert tuple(REPAIR_NODES) == REPAIR_ACTIONS
+    assert REPAIR_NODES == {
+        "extend_plan": "planner",
+        "acquire": "researcher",
+        "assess_source": "source_evaluator",
+        "adjudicate": "fact_checker",
+        "consolidate": "fact_checker",
+        "synthesize": "synthesizer",
+    }
+
+
+def test_a_missing_obligation_routes_only_its_affected_target_to_acquisition() -> None:
+    state = fake_research_state(
+        critique=_critique(
+            _gap(
+                target_ids=["target-02"],
+                kind="missing_support",
+                queries=["low-carbon cement cost premium"],
+            )
+        )
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert [target.target_ids for target in targets] == [["target-02"]]
+    assert [target.claim_cluster_ids for target in targets] == [[]]
+    assert targets[0].queries == ["low-carbon cement cost premium"]
+    assert route_refinement(targets[0]) == "researcher"
+
+
+def test_a_source_assessment_failure_routes_to_the_source_evaluator() -> None:
+    state = fake_research_state(
+        critique=_critique(
+            _gap(
+                action="assess_source",
+                kind="source_quality",
+                target_ids=["target-01"],
+            )
+        )
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert route_refinement(targets[0]) == "source_evaluator"
+
+
+def test_an_omitted_mechanism_already_in_evidence_routes_to_synthesis() -> None:
+    state = fake_research_state(
+        critique=_critique(
+            _gap(
+                action="synthesize",
+                kind="presentation",
+                coverage_id=None,
+                statement_ids=["S003"],
+            )
+        )
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert targets[0].statement_ids == ["S003"]
+    assert route_refinement(targets[0]) == "synthesizer"
+
+
+def test_absent_mechanism_evidence_routes_to_acquisition() -> None:
+    state = fake_research_state(
+        critique=_critique(
+            _gap(
+                action="acquire",
+                kind="mechanism",
+                target_ids=["target-01"],
+                queries=["how does direct air capture work"],
+            )
+        )
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert route_refinement(targets[0]) == "researcher"
+    assert targets[0].queries == ["how does direct air capture work"]
+
+
+def test_a_contradiction_routes_to_adjudication() -> None:
+    state = fake_research_state(
+        critique=_critique(
+            _gap(
+                action="adjudicate",
+                kind="contradiction",
+                coverage_id=None,
+                claim_cluster_ids=["cluster-01"],
+            )
+        )
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert route_refinement(targets[0]) == "fact_checker"
+
+
+def test_a_semantic_duplicate_routes_to_consolidation() -> None:
+    state = fake_research_state(
+        critique=_critique(
+            _gap(
+                action="consolidate",
+                kind="semantic_duplicate",
+                coverage_id=None,
+                claim_cluster_ids=["cluster-01"],
+            )
+        )
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert route_refinement(targets[0]) == "fact_checker"
+
+
+def test_an_original_question_omission_routes_to_planner_extension() -> None:
+    state = fake_research_state(
+        critique=_critique(
+            _gap(
+                action="extend_plan",
+                kind="coverage",
+                severity="critical",
+                coverage_id=None,
+                target_ids=["question"],
+                problem="The question asks for a cost the plan never targeted.",
+            )
+        )
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert targets[0].target_ids == ["question"]
+    assert route_refinement(targets[0]) == "planner"
+
+
+def test_an_unknown_repair_action_is_refused_rather_than_routed() -> None:
+    """A value this contract does not know must not fall back to a node."""
+    target = RefinementTarget(
+        target_ids=["target-01"], action="acquire", problem="No cost data."
+    ).model_copy(update={"action": "search_more"})
+
+    with pytest.raises(GraphConfigurationError):
+        route_refinement(target)
+
+
+def test_critic_silence_does_not_suppress_an_unanswered_required_target() -> None:
+    """A topic with no Critic gap is still repairable while it owes an answer."""
+    unmet = _evidence_target()
+    state = fake_research_state(
+        sub_topics=[_planned_topic(unmet)],
+        critique=_critique(),
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert [target.target_ids for target in targets] == [["target-01"]]
+    assert targets[0].origin == "unanswered_target"
+    assert targets[0].coverage_id == "topic-01"
+    assert route_refinement(targets[0]) == "researcher"
+
+
+def test_one_raw_metadata_finding_does_not_complete_a_required_target() -> None:
+    """The reviewed baseline's defect: a finding is not a satisfied target."""
+    unmet = _evidence_target()
+    state = fake_research_state(
+        sub_topics=[_planned_topic(unmet)],
+        raw_findings=[fake_finding("The source was published in 2024.")],
+        critique=_critique(),
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert [target.target_ids for target in targets] == [["target-01"]]
+
+
+def test_an_answered_target_with_a_critic_gap_is_repaired_by_its_gap() -> None:
+    """A gap on a target the report already answers is still the Critic's job."""
+    answered = _evidence_target()
+    topic = _planned_topic(answered)
+    composition = fake_reader_composition(
+        fake_research_state(sub_topics=[topic])
+    )
+    state = fake_research_state(
+        sub_topics=[topic],
+        composition=composition,
+        critique=_critique(
+            _gap(target_ids=["target-01"], problem="The cost figure is stale.")
+        ),
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert [target.origin for target in targets] == ["critic_gap"]
+
+
+def test_gaps_differing_only_in_action_are_two_repair_jobs() -> None:
+    """Routing identity includes the action: two nodes, two jobs."""
+    state = fake_research_state(
+        critique=_critique(
+            _gap(gap_id="gap-01", action="acquire", target_ids=["target-01"]),
+            _gap(gap_id="gap-02", action="adjudicate", target_ids=["target-01"]),
+        )
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert [route_refinement(target) for target in targets] == [
+        "researcher",
+        "fact_checker",
+    ]
+
+
+def test_a_critic_gap_and_a_mechanical_defect_on_one_scope_are_one_job() -> None:
+    unmet = _evidence_target()
+    state = fake_research_state(
+        sub_topics=[_planned_topic(unmet)],
+        critique=_critique(
+            _gap(
+                gap_id="gap-03",
+                action="acquire",
+                target_ids=["target-01"],
+                queries=["cost 2026"],
+            )
+        ),
+    )
+
+    targets = refinement_targets_for(state)
+
+    assert len(targets) == 1
+    assert targets[0].gap_id == "gap-03"
+    assert targets[0].origin == "critic_gap"
+    assert targets[0].queries == ["cost 2026"]
+
+
+def test_new_factual_assertions_route_back_to_the_fact_checker() -> None:
+    composition = fake_reader_composition(fake_research_state()).model_copy(
+        update={"returned_to_fact_checker": ["It costs 12 EUR per tonne."]}
+    )
+    state = fake_research_state(composition=composition)
+
+    targets = refinement_targets_for(state)
+
+    assert [target.origin for target in targets] == ["returned_assertion"]
+    assert route_refinement(targets[0]) == "fact_checker"
+
+
+def test_a_presentation_repair_invalidates_no_verified_claim() -> None:
+    state = fake_research_state(
+        verified_claims=[fake_claim()],
+        quality=fake_quality(),
+    )
+    presentation = RefinementTarget(
+        statement_ids=["S001"],
+        action="synthesize",
+        problem="The paragraph is duplicated.",
+    )
+
+    assert invalidation_update(state, [presentation]) == {}
+
+
+def test_invalidation_removes_only_the_claims_a_repair_touches() -> None:
+    touched = fake_claim("The cost is 40 EUR.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
+    )
+    untouched = fake_claim("Safety improved.").model_copy(
+        update={"target_ids": ["target-02"], "cluster_id": "cluster-02"}
+    )
+    state = fake_research_state(
+        verified_claims=[touched, untouched],
+        quality=fake_quality(),
+    )
+    repair = RefinementTarget(
+        target_ids=["target-01"], action="acquire", problem="No cost data."
+    )
+
+    update = invalidation_update(state, [repair])
+
+    assert [row.claim_id for row in update["verified_claims"]] == [
+        untouched.claim_id
+    ]
+    assert update["quality"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_refinement_hop_persists_the_typed_repair_jobs() -> None:
+    state = fake_research_state(
+        sub_topics=[_planned_topic(_evidence_target())],
+        critique=_critique(
+            _gap(
+                action="adjudicate",
+                kind="contradiction",
+                coverage_id=None,
+                claim_cluster_ids=["cluster-01"],
+            )
+        ),
+        max_iterations=3,
+    )
+
+    refined = load_state(await refine_node(dump_state(state)))
+
+    assert refined.iteration == 1
+    assert [job.action for job in refined.refinement_targets] == [
+        "adjudicate",
+        "acquire",
+    ]
+    assert refined.progress_history
+    assert refined.progress_history[-1].pending_work_ids == []
+    assert refined.repair_stop_reason is None
+
+
+@pytest.mark.asyncio
+async def test_a_second_unchanged_refinement_hop_records_no_progress() -> None:
+    state = fake_research_state(
+        sub_topics=[_planned_topic(_evidence_target())],
+        max_iterations=3,
+    )
+
+    first = await refine_node(dump_state(state))
+    refined = load_state(await refine_node(first))
+
+    assert refined.iteration == 2
+    assert len(refined.progress_history) == 2
+    assert refined.repair_stop_reason == "no_progress"
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_repair_hop_opens_no_another_research_pass() -> None:
+    """The stall is acted on here, not after another pass has been spent."""
+    state = fake_research_state(
+        sub_topics=[_planned_topic(_evidence_target())],
+        max_iterations=3,
+        iteration=1,
+        critique=fake_critique(should_continue=True, score=4),
+    )
+    unchanged = state.model_copy(
+        update={"progress_history": [progress_snapshot(state)]}
+    )
+
+    result = await refine_node(dump_state(unchanged))
+    refined = load_state(result)
+
+    assert refined.iteration == 1
+    assert refined.repair_stop_reason == "no_progress"
+    assert route_after_refine(result) == "finalize"
+    assert refined.events[-1].metadata["reason"] == "no_progress"
+
+
+@pytest.mark.asyncio
+async def test_a_refinement_that_is_still_working_opens_the_next_pass() -> None:
+    state = fake_research_state(max_iterations=3, iteration=0)
+
+    result = await refine_node(dump_state(state))
+
+    assert load_state(result).iteration == 1
+    assert route_after_refine(result) == "researcher"

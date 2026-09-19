@@ -1984,6 +1984,169 @@ class ReportComposition(ContractModel):
         return len(keys)
 
 
+# --- Task 9: typed repair targets, required-target completion, and progress -
+#
+# Task 8 gives the Critic a typed defect vocabulary; this is what the graph
+# *does* with one. A ``RefinementTarget`` is one repair job: the typed action
+# naming the node that performs it, the scope the Critic (or the plan itself)
+# declared, and the queries that ride on an acquisition. It is a job rather
+# than a log of defects — the critique keeps those — so two defects that route
+# identically and affect the same scope are one job with one node to run.
+
+RepairStopReason: TypeAlias = Literal[
+    "no_progress",
+    "pending_capacity",
+    "evidence_unavailable",
+    "provider_failure",
+    "max_iterations",
+]
+"""Why a repair loop stopped, and never a verdict on the report.
+
+Kept apart from ``CritiqueReviewStatus`` on purpose: a graph stop says what the
+*machine* did, a failed review says the report was never judged. Conflating
+them would let "we stopped acquiring" read as "quality failed", and the two
+route to different statuses.
+"""
+REPAIR_STOP_REASONS: tuple[RepairStopReason, ...] = (
+    "no_progress",
+    "pending_capacity",
+    "evidence_unavailable",
+    "provider_failure",
+    "max_iterations",
+)
+
+RefinementOrigin: TypeAlias = Literal[
+    "critic_gap", "unanswered_target", "returned_assertion"
+]
+"""Where one repair job came from.
+
+``critic_gap`` is a defect the Critic named, routed exactly as it typed it.
+``unanswered_target`` is a mechanically unmet planned obligation: a required
+target whose reader statement does not satisfy it yet. The second origin is
+what makes "the Critic said nothing" unable to suppress a required target.
+``returned_assertion`` is a factual assertion the Synthesizer detected and sent
+back (Task 7's ``ReportComposition.returned_to_fact_checker``); Task 9 owns
+routing it to adjudication rather than letting it re-enter the report.
+"""
+
+
+class RefinementTarget(ContractModel):
+    """One repair job: a typed action, its scope, and where it came from."""
+
+    gap_id: str = ""
+    """The Critic gap this job repairs, or ``""`` for a mechanical defect."""
+    coverage_id: str | None = None
+    """The planned sub-topic whose work this is, when one is named.
+
+    Read from the gap's own ``coverage_id`` and never re-derived: a gap whose
+    scope ids did not resolve was refused at the Critic boundary, so nothing
+    here has to guess which topic a defect belongs to.
+    """
+    target_ids: list[str] = Field(default_factory=list)
+    claim_cluster_ids: list[str] = Field(default_factory=list)
+    statement_ids: list[str] = Field(default_factory=list)
+    action: RepairAction
+    requested_dimension: str | None = None
+    queries: list[str] = Field(default_factory=list)
+    origin: RefinementOrigin = "critic_gap"
+    severity: GapSeverity = "major"
+    problem: str = Field(min_length=1)
+    """The representative defect, in the Critic's own words or project text.
+
+    One per job: when two gaps collapse into one route, the more severe one's
+    wording is kept. The critique itself remains the record of every gap.
+    """
+
+    @property
+    def identity(self) -> tuple[object, ...]:
+        """What makes two defects one repair job: the action and the scope.
+
+        The action is part of the identity because it *is* the routing
+        decision: two gaps that differ only in ``repair_action`` are two jobs
+        for two different nodes, and collapsing them would silently adopt one
+        node's repair for the other's defect. Severity and problem text are
+        deliberately absent — they choose which wording survives, never
+        whether a job exists.
+        """
+        return (
+            self.action,
+            self.coverage_id,
+            tuple(sorted(self.target_ids)),
+            tuple(sorted(self.claim_cluster_ids)),
+            tuple(sorted(self.statement_ids)),
+            self.requested_dimension,
+        )
+
+    @property
+    def material(self) -> bool:
+        """True when this job must be done before the report can be accepted."""
+        return self.severity in GAP_MATERIAL_SEVERITIES
+
+    @property
+    def publication_changing(self) -> bool:
+        """True when doing this job can change what the report asserts.
+
+        ``synthesize`` rewrites prose over evidence already held, and
+        ``extend_plan`` only adds a plan obligation nothing has acquired for
+        yet; neither moves a fact. Every other action acquires or re-judges
+        evidence, so the report's factual content can move and the review that
+        covered the old content no longer covers it.
+        """
+        return self.action not in ("synthesize", "extend_plan")
+
+
+class ResearchProgress(ContractModel):
+    """One snapshot of what a completed pass substantively changed.
+
+    Deliberately about *state*, not effort: which required targets are now
+    answered, which assessed support is new, which gaps closed, and which
+    composition was produced. Counts of searches, tool calls, or events are
+    absent because they measure spending rather than progress, and
+    ``pending_work_ids`` is carried — not scored — so a run that is still
+    holding deferred evidence can say so instead of being called stalled.
+    """
+
+    completed_target_ids: list[str] = Field(default_factory=list)
+    assessed_support_fingerprints: list[str] = Field(default_factory=list)
+    resolved_gap_ids: list[str] = Field(default_factory=list)
+    pending_work_ids: list[str] = Field(default_factory=list)
+    unresolved_major_gap_ids: list[str] = Field(default_factory=list)
+    composition_fingerprint: str = ""
+
+
+def _gained(after: Sequence[str], before: Sequence[str]) -> bool:
+    """True when ``after`` holds an entry ``before`` did not."""
+    return bool(set(after).difference(before))
+
+
+def progress_improved(
+    before: ResearchProgress,
+    after: ResearchProgress,
+) -> bool:
+    """True when a completed repair changed something substantive.
+
+    Substantive means the answer moved: a required target became completed, a
+    gap resolved, an assessed support fingerprint appeared, a material defect
+    closed, or the composition itself changed — a repaired duplicate paragraph
+    is presentation progress. It deliberately ignores ``pending_work_ids``: an
+    extra search, an extra candidate page, or one more queued read is *work*,
+    and scoring work as progress is how a run spends its whole budget
+    rediscovering that nothing new exists. Neither a critic score nor critic
+    wording is read here: neither is a fact about the report.
+    """
+    if _gained(after.completed_target_ids, before.completed_target_ids):
+        return True
+    if _gained(after.resolved_gap_ids, before.resolved_gap_ids):
+        return True
+    if _gained(before.unresolved_major_gap_ids, after.unresolved_major_gap_ids):
+        return True
+    if _gained(
+        after.assessed_support_fingerprints, before.assessed_support_fingerprints
+    ):
+        return True
+    return after.composition_fingerprint != before.composition_fingerprint
+
+
 class ResearchState(ContractModel):
     session_id: str = Field(min_length=1)
     original_question: str = Field(min_length=1)
@@ -2091,6 +2254,24 @@ class ResearchState(ContractModel):
     cannot prove its reads. New runs stamp ``QUALITY_CONTRACT_VERSION``.
     """
     critique: Critique | None = None
+    refinement_targets: list[RefinementTarget] = Field(default_factory=list)
+    """The repair jobs the graph routed for the pass it is about to run.
+
+    Replaced per pass rather than accumulated: this is the worklist of the
+    current repair loop, and a job that is still owed reappears in the next
+    pass by construction — it is either still an unresolved defect or still an
+    unanswered required target. Persisting it is what lets a resumed run name
+    exactly what it was about to repair.
+    """
+    progress_history: list[ResearchProgress] = Field(default_factory=list)
+    """One snapshot per completed pass, oldest first, bounded.
+
+    Bounded by the macro-iteration ceiling plus the initial checkpoint: a
+    snapshot per pass is all the stop decision reads, and an unbounded history
+    would grow the checkpoint without ever being consulted.
+    """
+    repair_stop_reason: RepairStopReason | None = None
+    """Why the last repair loop stopped, or ``None`` while it has not."""
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=3, ge=1)
     memory_context: MemorySnapshot = Field(default_factory=MemorySnapshot)
@@ -2130,10 +2311,151 @@ class ResearchStateUpdate(TypedDict, total=False):
     acquisition_state_by_target: dict[str, AcquisitionState]
     quality_contract_version: str
     critique: Critique | None
+    refinement_targets: list[RefinementTarget]
+    progress_history: list[ResearchProgress]
+    repair_stop_reason: RepairStopReason | None
     max_iterations: int
     memory_context: MemorySnapshot
     events: list[ResearchEvent]
     errors: list[ResearchError]
+
+
+# --- Task 9: is a planned obligation actually answered? ---------------------
+#
+# Section 2.3 states the rule: a target is answered only when its reader
+# statement satisfies its required dimensions and its support policy. Every
+# earlier stage measured something weaker — a finding exists, a claim exists,
+# a topic was researched — and "one raw metadata finding means this topic is
+# done" is precisely the shortcut that skipped the economics topic in the
+# reviewed baseline. These two functions are that rule, stated once, so the
+# Researcher's eligibility test and the graph's progress decision cannot
+# disagree about what "answered" means.
+
+
+def _canonical_dimension(value: str) -> str:
+    return " ".join(value.replace("-", " ").replace("_", " ").split()).casefold()
+
+
+def statement_claims(
+    composition: ReportComposition,
+    statement: ReportStatement,
+) -> list[Claim]:
+    """The checked claims one statement rests on, in the order it names them.
+
+    Resolved through both directions of the cluster link: a statement names
+    clusters, a claim names the cluster it joined, and a refinement that
+    persisted only one side still resolves.
+    """
+    by_id: dict[str, Claim] = {}
+    by_cluster: dict[str, Claim] = {}
+    for claim in composition.claims:
+        by_id[claim.claim_id] = claim
+        if claim.cluster_id:
+            by_cluster.setdefault(claim.cluster_id, claim)
+        for alias in claim.cluster_aliases:
+            by_cluster.setdefault(alias, claim)
+
+    resolved: list[Claim] = []
+    for cluster_id in statement.claim_cluster_ids:
+        claim = by_id.get(cluster_id) or by_cluster.get(cluster_id)
+        if claim is not None and claim not in resolved:
+            resolved.append(claim)
+    return resolved
+
+
+def statement_satisfies_support_policy(
+    statement: ReportStatement,
+    claims: Sequence[Claim],
+    *,
+    support_policy: str,
+) -> bool:
+    """Whether a statement's evidence carries the policy its target declared.
+
+    ``independent_pair`` is the strict badge and nothing less: a claim with
+    primary-source attribution is not a corroborated pair, and treating it as
+    one is the "one publisher is a pair" defect Section 2.1 names. The weaker
+    policies accept that attribution, and ``derivation`` additionally accepts
+    a recorded inference — a statement that shows its premises has done what a
+    derivation owes, whether or not a lone publisher is behind them.
+    """
+    if support_policy == "independent_pair":
+        return any(
+            claim.verdict == "verified"
+            and claim.evidence_status == "verified_pair"
+            for claim in claims
+        )
+    attributed = any(
+        claim.evidence_status in ("verified_pair", "source_supported")
+        for claim in claims
+    )
+    if support_policy == "derivation":
+        return attributed or (
+            statement.mode == "inference" and bool((statement.basis or "").strip())
+        )
+    if support_policy == "primary_attribution":
+        return attributed
+    return False
+
+
+def target_is_answered(state: ResearchState, target: EvidenceTarget) -> bool:
+    """True when one reader statement satisfies this target's obligation.
+
+    Deliberately strict, and deliberately not "some evidence exists": the
+    statement has to name the target, assert something (``context`` and
+    ``contested`` are not answers), fill every required dimension the target
+    declared, and rest on evidence that carries the target's support policy.
+    A state with no composition answers nothing — a pass that composed no
+    report has shown no reader statement for any obligation.
+    """
+    composition = state.composition
+    if composition is None:
+        return False
+    required = {
+        _canonical_dimension(dimension)
+        for dimension in target.required_dimensions
+        if _canonical_dimension(dimension)
+    }
+    for statement in composition.statements:
+        if target.target_id not in statement.target_ids:
+            continue
+        if not statement.substantive:
+            continue
+        answered = {
+            _canonical_dimension(dimension)
+            for dimension in statement.answered_dimensions
+        }
+        if not required.issubset(answered):
+            continue
+        if not statement_satisfies_support_policy(
+            statement,
+            statement_claims(composition, statement),
+            support_policy=target.support_policy,
+        ):
+            continue
+        return True
+    return False
+
+
+def unanswered_required_targets(
+    state: ResearchState,
+    sub_topic: SubTopic | None = None,
+) -> list[EvidenceTarget]:
+    """The counted obligations still owing an answer, in plan order.
+
+    Only ``required`` targets are returned. An optional target is a nice-to-
+    have the plan recorded; treating one as an outstanding obligation would
+    keep a finished topic eligible for repair forever, which is the unbounded
+    loop the macro-iteration ceiling exists to prevent. ``sub_topic`` narrows
+    the question to one topic — the Researcher asks per topic, the graph asks
+    across the plan.
+    """
+    topics = state.sub_topics if sub_topic is None else [sub_topic]
+    return [
+        target
+        for topic in topics
+        for target in counted_evidence_targets(topic.evidence_targets)
+        if target.required and not target_is_answered(state, target)
+    ]
 
 
 # Fields whose update is a delta appended to what the state already holds.
@@ -2345,6 +2667,14 @@ def merge_research_state(
             if not isinstance(value, list):
                 raise TypeError(f"{field_name} update must be a list")
             payload[field_name] = [*payload[field_name], *deepcopy(value)]
+        elif field_name == "progress_history":
+            # Appended like a log, then bounded by the macro-iteration ceiling
+            # plus the initial checkpoint below. The ceiling is a bound, not a
+            # reason to refuse the snapshot: refusing one would lose the very
+            # comparison the stop decision reads.
+            if not isinstance(value, list):
+                raise TypeError("progress_history update must be a list")
+            payload[field_name] = [*payload[field_name], *deepcopy(value)]
         elif field_name in reducers:
             # Folded from the state's own records rather than from its dump:
             # the dump has already turned them into plain mappings, and the
@@ -2354,6 +2684,13 @@ def merge_research_state(
             payload[field_name] = deepcopy(merged)
         else:
             payload[field_name] = deepcopy(value)
+
+    # The macro-iteration ceiling plus the initial checkpoint: one snapshot per
+    # pass, and the oldest are dropped so a long run's checkpoint stays bounded
+    # by its own declared budget rather than by how long it ran.
+    history_bound = int(payload["max_iterations"]) + 1
+    if len(payload["progress_history"]) > history_bound:
+        payload["progress_history"] = payload["progress_history"][-history_bound:]
 
     return ResearchState.model_validate(payload)
 

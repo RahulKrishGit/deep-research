@@ -2048,6 +2048,67 @@ def test_queries_belong_to_acquisition_gaps_only() -> None:
         )
 
 
+def test_gaps_differing_only_in_action_are_two_defects() -> None:
+    """The dedupe identity carries the action, because the action is the route.
+
+    Two gaps with the same scope and the same words that repair differently
+    are two nodes' work. Collapsing them kept only the more severe reading,
+    which silently adopted one node's repair for the other's defect.
+    """
+    shared = {
+        "coverage_id": "topic-01",
+        "target_ids": ["target-01"],
+        "problem": "The cost obligation is not met.",
+    }
+    gaps = normalize_gaps(
+        [
+            CritiqueGapDraft(
+                **shared,
+                kind="coverage",
+                severity="major",
+                repair_action="acquire",
+                recommended_queries=["cement cost 2026"],
+            ),
+            CritiqueGapDraft(
+                **shared,
+                kind="missing_support",
+                severity="critical",
+                repair_action="adjudicate",
+            ),
+        ],
+        known_coverage_ids=["topic-01"],
+    )
+
+    assert [gap.repair_action for gap in gaps] == ["acquire", "adjudicate"]
+    assert [gap.kind for gap in gaps] == ["coverage", "missing_support"]
+
+
+def test_the_same_defect_restated_with_a_different_label_is_still_one() -> None:
+    """One action and one scope: the more severe, better-queried reading wins."""
+    shared = {
+        "coverage_id": "topic-01",
+        "target_ids": ["target-01"],
+        "kind": "coverage",
+        "repair_action": "acquire",
+        "problem": "The cost obligation is not met.",
+    }
+    gaps = normalize_gaps(
+        [
+            CritiqueGapDraft(**shared, severity="minor"),
+            CritiqueGapDraft(
+                **shared,
+                severity="critical",
+                recommended_queries=["cement cost 2026"],
+            ),
+        ],
+        known_coverage_ids=["topic-01"],
+    )
+
+    assert len(gaps) == 1
+    assert gaps[0].severity == "critical"
+    assert gaps[0].recommended_queries == ["cement cost 2026"]
+
+
 def test_the_repair_actions_are_exactly_the_router_keys() -> None:
     """``REPAIR_NODES`` keys are the literals, and Task 9 routes on them."""
     assert REPAIR_ACTIONS == (

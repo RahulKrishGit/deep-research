@@ -20,7 +20,7 @@ recorded error would hide it.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias, runtime_checkable
 
@@ -63,8 +63,13 @@ from deep_research.graph.events import (
 )
 from deep_research.graph.state import (
     CRITIC_NODE,
+    FACT_CHECKER_NODE,
     FINALIZE_NODE,
+    PLANNER_NODE,
     REFINE_NODE,
+    RESEARCHER_NODE,
+    ROUTE_FINALIZE,
+    SOURCE_EVALUATOR_NODE,
     SYNTHESIZER_NODE,
     ResearchGraphState,
     dump_state,
@@ -72,17 +77,25 @@ from deep_research.graph.state import (
     graph_route,
     is_halted,
     load_state,
+    progress_snapshot,
+    repair_is_terminal,
+    repair_stop_reason,
 )
 from deep_research.providers import ProviderConfigurationError
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
+    Claim,
+    RefinementOrigin,
+    RefinementTarget,
+    RepairAction,
     ReportComposition,
     ResearchError,
     ResearchState,
     ResearchStateUpdate,
     advance_research_iteration,
     merge_research_state,
+    unanswered_required_targets,
 )
 
 GraphNode: TypeAlias = Callable[
@@ -524,11 +537,26 @@ def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
 
 
 async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
-    """Open the next macro iteration before research runs again.
+    """Open the next macro iteration, routing the repair it is about to run.
 
     This exists as its own node because a LangGraph conditional edge routes
-    but cannot write, and the macro-iteration increment has to happen
-    somewhere the graph can see and a test can call.
+    but cannot write, and both the macro-iteration increment and the repair
+    plan have to happen somewhere the graph can see and a test can call.
+
+    Two things are settled here, and both are about the pass that just
+    finished rather than the one about to start:
+
+    * the typed repair jobs the next pass owes — the Critic's defects unioned
+      with the plan's mechanically unmet required targets — so a resumed run
+      can name exactly what it was about to repair;
+    * whether the pass just finished changed anything substantive, compared
+      against the snapshot the previous hop recorded. A whole repair job is
+      one unit here: a plan extension and the acquisition it triggered finish
+      together, so adding a target is never mistaken for answering one.
+
+    The comparison is only made once a previous snapshot exists, so the first
+    refinement can never be called a stall, and the stop reason is evaluated
+    only while budget remains — the ceiling keeps its own reason.
     """
     state = load_state(channel)
     if is_halted(state):
@@ -543,7 +571,46 @@ async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
             ),
         )
 
-    advanced = advance_research_iteration(state)
+    previous = state.progress_history[-1] if state.progress_history else None
+    after = progress_snapshot(state, previous=previous)
+    stopped = (
+        None
+        if previous is None
+        else repair_stop_reason(state, before=previous, after=after)
+    )
+    targets = refinement_targets_for(state)
+    recorded = merge_research_state(
+        state,
+        {
+            "refinement_targets": targets,
+            "progress_history": [after],
+            "repair_stop_reason": stopped,
+        },
+    )
+    if repair_is_terminal(recorded):
+        # The pass just finished changed nothing another pass would change, so
+        # no further pass is opened: the iteration does not advance, no agent
+        # runs again, and the run goes straight to publication with the reason
+        # recorded on the same route vocabulary every other decision uses.
+        return _with(
+            recorded,
+            {
+                "events": [
+                    route_decided_event(
+                        destination=ROUTE_FINALIZE,
+                        reason=stopped or "no_progress",
+                        iteration=state.iteration,
+                        max_iterations=state.max_iterations,
+                        should_continue=bool(
+                            recorded.critique is not None
+                            and recorded.critique.should_continue
+                        ),
+                    )
+                ]
+            },
+        )
+
+    advanced = advance_research_iteration(recorded)
     return _with(
         advanced,
         {
@@ -560,3 +627,264 @@ async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
 def route_after_critic(channel: ResearchGraphState) -> str:
     """The conditional edge out of the Critic. Pure read of state."""
     return graph_route(load_state(channel))[0]
+
+
+def route_after_refine(channel: ResearchGraphState) -> str:
+    """The refinement hop's own edge: another research pass, or publication.
+
+    ``refine`` is where the stop reason is decided, so it is also where it can
+    take effect without paying for one more pass first. The names are the two
+    destinations the orchestrator wires; the decision itself is
+    ``repair_is_terminal``.
+    """
+    return "finalize" if repair_is_terminal(load_state(channel)) else "researcher"
+
+
+# --- Task 9: the typed repair route -----------------------------------------
+
+REPAIR_NODES: dict[RepairAction, str] = {
+    "extend_plan": PLANNER_NODE,
+    "acquire": RESEARCHER_NODE,
+    "assess_source": SOURCE_EVALUATOR_NODE,
+    "adjudicate": FACT_CHECKER_NODE,
+    "consolidate": FACT_CHECKER_NODE,
+    "synthesize": SYNTHESIZER_NODE,
+}
+"""One node per typed repair action, keyed by ``CritiqueGap.repair_action``.
+
+The keys are Task 8's normative ``REPAIR_ACTIONS`` literals and nothing else,
+so a defect the Critic typed is routed by exactly the vocabulary it was typed
+with. ``consolidate`` and ``adjudicate`` share the Fact Checker because
+merging duplicate claims *is* adjudication of them; the two actions stay
+distinct in the contract because the defect they repair is not the same.
+
+A test asserts this table's keys equal ``REPAIR_ACTIONS``: an action added
+without a node, or a node added without an action, is a routing hole rather
+than a new capability.
+"""
+
+# Which origin wins when two defects become one job. A Critic-named defect is
+# the most specific record of it — it carries the queries and the gap id — so
+# it outranks an assertion the Synthesizer returned, which in turn outranks
+# the graph's own mechanical reading of an unmet target.
+_ORIGIN_RANK: dict[RefinementOrigin, int] = {
+    "critic_gap": 0,
+    "returned_assertion": 1,
+    "unanswered_target": 2,
+}
+
+_SEVERITY_RANK: dict[str, int] = {"critical": 3, "major": 2, "minor": 1}
+
+
+def route_refinement(target: RefinementTarget) -> str:
+    """The node one repair job runs, from its typed action alone.
+
+    An action this table does not know is an error, never a fallback: routing
+    an unknown defect to synthesis would publish a repair nobody asked for,
+    and would hide the contract drift that produced the unknown value.
+    """
+    node = REPAIR_NODES.get(target.action)
+    if node is None:
+        raise GraphConfigurationError(
+            f"no repair node is wired for repair action {target.action!r}"
+        )
+    return node
+
+
+def refinement_targets_for(state: ResearchState) -> list[RefinementTarget]:
+    """Every repair job this pass owes: the Critic's defects and the plan's.
+
+    The union is the point. A defect the Critic named is routed exactly as it
+    was typed — its action, its resolved scope, and its queries, never
+    re-resolved and never widened to the whole answer — and a mechanically
+    unmet required target is routed to acquisition whether or not the Critic
+    mentioned it. Critic silence therefore suppresses nothing a plan still
+    owes: the reviewed baseline skipped topic-04, topic-02 and topic-05
+    because one raw finding existed and no gap named them.
+
+    There is one job per ``(action, scope)``. Two defects that route to the
+    same node over the same records are one errand, and the Critic's version
+    survives because it carries the queries and the gap id. Two jobs that
+    differ in action stay apart even when their scope and their words are
+    identical: they are two nodes' work, and collapsing them would adopt one
+    node's repair for the other's defect.
+
+    ``target_ids=["question"]`` is read as what it is — an original-question
+    omission — and is carried through unchanged. It is never expanded into
+    planned ids here: the token is only ever correct because the plan has no
+    id for that obligation yet.
+    """
+    jobs: list[RefinementTarget] = []
+    critique = state.critique
+    if critique is not None and critique.review_status == "reviewed":
+        for gap in critique.gaps:
+            jobs.append(
+                RefinementTarget(
+                    gap_id=gap.gap_id,
+                    coverage_id=gap.coverage_id,
+                    target_ids=list(gap.target_ids),
+                    claim_cluster_ids=list(gap.claim_cluster_ids),
+                    statement_ids=list(gap.statement_ids),
+                    action=gap.repair_action,
+                    queries=list(gap.recommended_queries),
+                    origin="critic_gap",
+                    severity=gap.severity,
+                    problem=gap.problem,
+                )
+            )
+
+    for topic in state.sub_topics:
+        for target in unanswered_required_targets(state, topic):
+            jobs.append(
+                RefinementTarget(
+                    coverage_id=topic.coverage_id,
+                    target_ids=[target.target_id],
+                    action="acquire",
+                    origin="unanswered_target",
+                    severity="critical" if target.critical else "major",
+                    problem=(
+                        f"{topic.title}: the required obligation "
+                        f"{target.target_id!r} is not answered by any reader "
+                        "statement."
+                    ),
+                )
+            )
+
+    composition = state.composition
+    if composition is not None:
+        for assertion in composition.returned_to_fact_checker:
+            jobs.append(
+                RefinementTarget(
+                    action="adjudicate",
+                    origin="returned_assertion",
+                    severity="major",
+                    problem=assertion,
+                )
+            )
+    return _merged_jobs(jobs)
+
+
+def _merged_jobs(jobs: Sequence[RefinementTarget]) -> list[RefinementTarget]:
+    """Fold jobs that route identically over the same scope into one.
+
+    Order is first-seen, so a job's position is stable across passes. The
+    surviving wording is the most severe one's, the queries are the union of
+    every reading, and the gap id is kept from whichever job had one — a job
+    that came from a Critic gap stays addressable by that gap.
+    """
+    merged: list[RefinementTarget] = []
+    index: dict[tuple[object, ...], int] = {}
+    for job in jobs:
+        previous = index.get(job.identity)
+        if previous is None:
+            index[job.identity] = len(merged)
+            merged.append(job)
+            continue
+        incumbent = merged[previous]
+        survivor = (
+            job
+            if _ORIGIN_RANK[job.origin] < _ORIGIN_RANK[incumbent.origin]
+            else incumbent
+        )
+        other = incumbent if survivor is job else job
+        factual = max(
+            (survivor, other), key=lambda item: _SEVERITY_RANK[item.severity]
+        )
+        merged[previous] = survivor.model_copy(
+            update={
+                "queries": list(
+                    dict.fromkeys([*survivor.queries, *other.queries])
+                ),
+                "severity": factual.severity,
+                "problem": factual.problem,
+                "gap_id": survivor.gap_id or other.gap_id,
+            }
+        )
+    return merged
+
+
+def invalidation_update(
+    state: ResearchState,
+    targets: Sequence[RefinementTarget],
+) -> ResearchStateUpdate:
+    """The reviews a repair invalidates, and nothing else.
+
+    A publication-changing repair drops the verified claims it touches — a
+    claim whose target, cluster, or statement the repair names — along with
+    the quality snapshot that judged a report those claims no longer support.
+    Surviving claims keep their ``claim_id``, their cluster, and their
+    citations, so unrelated verified claims and the target coverage they
+    carry are preserved rather than re-derived.
+
+    A presentation-only repair invalidates nothing at all: ``synthesize``
+    rewrites prose over evidence the run already holds, and dropping verified
+    claims for a re-worded paragraph is exactly the evidence loss this
+    distinction prevents.
+
+    Nothing is *deleted* here: the claim cluster registry keeps every identity
+    and its provenance, so the invalidation is visible as "not currently
+    reviewed" rather than as evidence that never existed.
+    """
+    changing = [target for target in targets if target.publication_changing]
+    if not changing:
+        return {}
+
+    target_scope = {
+        target_id for target in changing for target_id in target.target_ids
+    }
+    cluster_scope = {
+        cluster_id
+        for target in changing
+        for cluster_id in target.claim_cluster_ids
+    }
+    statement_scope = {
+        statement_id
+        for target in changing
+        for statement_id in target.statement_ids
+    }
+    cluster_scope.update(_clusters_of_statements(state.composition, statement_scope))
+
+    kept = [
+        claim
+        for claim in state.verified_claims
+        if not _claim_is_invalidated(claim, target_scope, cluster_scope)
+    ]
+    update: ResearchStateUpdate = {"quality": None}
+    if len(kept) != len(state.verified_claims):
+        update["verified_claims"] = kept
+    return update
+
+
+def _clusters_of_statements(
+    composition: ReportComposition | None,
+    statement_ids: set[str],
+) -> set[str]:
+    """The clusters the named reader statements rest on."""
+    if composition is None or not statement_ids:
+        return set()
+    return {
+        cluster_id
+        for statement in composition.statements
+        if statement.statement_id in statement_ids
+        for cluster_id in statement.claim_cluster_ids
+    }
+
+
+def _claim_is_invalidated(
+    claim: Claim,
+    target_scope: set[str],
+    cluster_scope: set[str],
+) -> bool:
+    """True when a repair touches this claim's obligation or cluster."""
+    if target_scope.intersection(claim.target_ids):
+        return True
+    if claim.cluster_id is not None and claim.cluster_id in cluster_scope:
+        return True
+    if cluster_scope.intersection(claim.cluster_aliases):
+        return True
+    if claim.claim_id in cluster_scope:
+        return True
+    return any(
+        coverage_id in cluster_scope
+        for coverage_id in claim.consumed_coverage_ids
+    )

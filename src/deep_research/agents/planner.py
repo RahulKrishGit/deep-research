@@ -2054,6 +2054,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         # Set for the duration of one run by ``run`` from the state it was
         # handed: the contract this session already froze, if any.
         self._frozen_contract: AnswerContract | None = None
+        # Set for the duration of one run by ``run`` from the state it was
+        # handed: the coverage ids this session already planned, so a later
+        # non-extension pass cannot re-emit one beside itself.
+        self._planned_coverage_ids: frozenset[str] = frozenset()
         # Counted per run so the review/repair cycle stays bounded.
         self._review_calls = 0
 
@@ -2118,6 +2122,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             else None
         )
         self._frozen_contract = state.answer_contract
+        self._planned_coverage_ids = frozenset(
+            sub_topic.coverage_id for sub_topic in state.sub_topics
+        )
         self._review_calls = 0
         events = [
             planning_started_event(state),
@@ -2316,6 +2323,16 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         inventory, so neither the frozen contract nor the initial inventory is
         rewritten by a later pass.
 
+        A non-extension pass on a session that already carries a plan reports
+        only the sub-topics whose coverage ids the session does not have —
+        which for a re-plan of the same question is none of them. That is what
+        keeps the live topic list and the frozen inventory in agreement:
+        ``sub_topics`` appends, so re-emitting ``topic-01`` beside the existing
+        ``topic-01`` would put two different topics under one id while
+        ``initial_target_ids`` — union-protected — kept counting both. The plan
+        already reviewed stands, and a pass cannot replace or weaken it
+        (Section 2.3); only genuinely new ids cross this boundary.
+
         The contract is stamped only when the session has none. A later
         non-extension plan therefore cannot re-anchor a session's as-of date
         or scope: the state keeps the contract it froze, and the pass's own
@@ -2326,14 +2343,21 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is None:
             return update
-        update["sub_topics"] = list(result.sub_topics)
-        target_ids = inventory_target_ids(result.sub_topics)
+        added = [
+            sub_topic
+            for sub_topic in result.sub_topics
+            if sub_topic.coverage_id not in self._planned_coverage_ids
+        ]
+        target_ids = inventory_target_ids(added)
         if result.extension:
+            update["sub_topics"] = list(added)
             update["expanded_target_ids"] = target_ids
             return update
         if self._frozen_contract is None and result.answer_contract is not None:
             update["answer_contract"] = result.answer_contract
-        update["initial_target_ids"] = target_ids
+        if added:
+            update["sub_topics"] = list(added)
+            update["initial_target_ids"] = target_ids
         return update
 
     async def extend_plan(

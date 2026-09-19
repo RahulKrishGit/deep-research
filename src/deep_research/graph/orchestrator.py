@@ -41,6 +41,7 @@ from deep_research.graph.nodes import (
     finalize_report_node,
     refine_node,
     route_after_critic,
+    route_after_refine,
     synthesizer_node,
 )
 from deep_research.graph.state import (
@@ -157,7 +158,17 @@ def build_research_graph(agents: ResearchAgents) -> StateGraph:
             ROUTE_END: END,
         },
     )
-    builder.add_edge(REFINE_NODE, RESEARCHER_NODE)
+    # The refinement hop decides whether the pass that just finished earned
+    # another one, so it routes as well: a stall goes straight to publication
+    # instead of buying a pass that would repeat it.
+    builder.add_conditional_edges(
+        REFINE_NODE,
+        route_after_refine,
+        {
+            "researcher": RESEARCHER_NODE,
+            "finalize": FINALIZE_NODE,
+        },
+    )
     builder.add_edge(FINALIZE_NODE, END)
     return builder
 
@@ -236,6 +247,8 @@ def _session_outputs(state: ResearchState, *, status: str) -> dict[str, Any]:
         ],
         "iteration": state.iteration,
         "max_iterations": state.max_iterations,
+        "repair_stop_reason": state.repair_stop_reason,
+        "refinement_target_count": len(state.refinement_targets),
         "sub_topic_count": len(state.sub_topics),
         "finding_count": len(state.raw_findings),
         "source_count": len(state.evaluated_sources),

@@ -20,16 +20,27 @@ release. Primitives sidestep that entirely and keep checkpoints readable.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import TypedDict
 
 from pydantic import JsonValue
 
 from deep_research.utils.types import (
+    GAP_MATERIAL_SEVERITIES,
     QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
+    AcquisitionState,
+    Critique,
     MemorySnapshot,
+    RepairStopReason,
+    ResearchProgress,
     ResearchState,
+    counted_evidence_targets,
+    progress_improved,
+    target_is_answered,
+    unanswered_required_targets,
 )
 
 GRAPH_SOURCE = "graph"
@@ -78,6 +89,22 @@ GRAPH_ROUTES = {
     "max_iterations_reached": (
         "The refinement budget is exhausted; this is the final report."
     ),
+    "no_progress": (
+        "The last repair changed nothing substantive, so another pass would "
+        "repeat it; this is the final report."
+    ),
+    "pending_capacity": (
+        "Evidence this run already deferred is still unprocessed and the "
+        "repair budget cannot reach it; the deferral is recorded, not lost."
+    ),
+    "evidence_unavailable": (
+        "Every route to the evidence a repair still owes was tried and none "
+        "supplied it; the obligation stays open and is reported as open."
+    ),
+    "provider_failure": (
+        "A repair pass ended on a model-provider failure rather than a "
+        "result, so the repair did not happen."
+    ),
     "missing_critique": (
         "No critique was recorded, so no refinement can be justified."
     ),
@@ -93,6 +120,16 @@ _STATUS_BY_ROUTE_REASON = {
     "missing_critique": "incomplete",
     "refinement_requested": "incomplete",
     "quality_gate_failed": "incomplete",
+    # A repair stop is a statement about the machine, never about the report:
+    # the report was reviewed, and the loop stopped because repeating it would
+    # change nothing, because deferred evidence could not fit, because the
+    # evidence does not exist, or because the provider failed. None of those is
+    # a quality verdict, and none may read as ``failed`` — that status belongs
+    # to ``critique_failed``, where no review ever happened at all.
+    "no_progress": "incomplete",
+    "pending_capacity": "incomplete",
+    "evidence_unavailable": "incomplete",
+    "provider_failure": "incomplete",
     "halted": "failed",
 }
 
@@ -221,6 +258,18 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
         return ROUTE_FINALIZE, "critique_failed"
     if state.iteration >= state.max_iterations:
         return ROUTE_FINALIZE, "max_iterations_reached"
+    stopped = state.repair_stop_reason
+    if stopped is not None and stopped != "max_iterations" and _wants_another_pass(
+        state, critique
+    ):
+        # Another pass is wanted — by the Critic, or by the deterministic gate —
+        # and the last repair loop already established that buying one would
+        # repeat work. The budget is spent on the stall's own terms rather than
+        # on another identical pass, and the reason names which stall it was.
+        # Checked *after* the iteration bound so "the budget ran out" keeps
+        # naming the ceiling, and after a failed review so a review that never
+        # happened is never reported as a stalled repair.
+        return ROUTE_FINALIZE, stopped
     if critique.should_continue:
         return ROUTE_REFINE, "refinement_requested"
     if state.quality is not None and state.quality.hard_failures:
@@ -228,6 +277,35 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
         # budget remains, the gate sends the report back for another pass.
         return ROUTE_REFINE, "quality_gate_failed"
     return ROUTE_FINALIZE, "critique_satisfied"
+
+
+def _wants_another_pass(state: ResearchState, critique: Critique) -> bool:
+    """True when something other than the budget is asking for another pass."""
+    if critique.should_continue:
+        return True
+    return state.quality is not None and bool(state.quality.hard_failures)
+
+
+def repair_is_terminal(state: ResearchState) -> bool:
+    """True when the recorded repair stop ends the loop instead of buying a pass.
+
+    Read by the refinement hop's own edge, so the run stops *before* spending
+    the pass a stall would only repeat — acting on it after the next Critic
+    would mean the second unchanged pass had already been paid for.
+
+    ``max_iterations`` is not terminal here: that reason says the loop is
+    working and the budget is what stops it, and the ceiling has its own
+    route reason once the final pass has run. A critique that is missing or
+    that never validated is not terminal either — the stall is not what ended
+    those runs, and reporting it as the cause would misname them.
+    """
+    stopped = state.repair_stop_reason
+    if stopped is None or stopped == "max_iterations":
+        return False
+    critique = state.critique
+    if critique is None or critique.review_status == "failed":
+        return False
+    return _wants_another_pass(state, critique)
 
 
 def graph_status(state: ResearchState) -> str:
@@ -261,6 +339,239 @@ def graph_quality_status(state: ResearchState) -> str:
         if graph_route(state)[1] == "critique_satisfied"
         else QUALITY_STATUS_PARTIAL
     )
+
+
+# --- Task 9: repair progress and repair stop reasons ------------------------
+
+
+def open_material_gap_ids(critique: Critique | None) -> list[str]:
+    """The stable identity of every open material defect, sorted.
+
+    A ``gap_id`` is positional *within one review* (``gap-01``, ``gap-02``), so
+    two reviews' ids cannot be compared: the same defect that was ``gap-02``
+    last pass can be ``gap-01`` now. The identity used here is the action plus
+    the scope, which is what makes "this defect is still open" answerable
+    across passes — and it is the same identity routing folds jobs by, so a
+    defect cannot be open for the router and closed for the progress check.
+    """
+    if critique is None or critique.review_status != "reviewed":
+        return []
+    keys = {
+        "|".join(
+            (
+                gap.repair_action,
+                gap.coverage_id or "",
+                ",".join(sorted(gap.target_ids)),
+                ",".join(sorted(gap.statement_ids)),
+                ",".join(sorted(gap.claim_cluster_ids)),
+            )
+        )
+        for gap in critique.gaps
+        if gap.severity in GAP_MATERIAL_SEVERITIES
+    }
+    return sorted(keys)
+
+
+def pending_repair_work(state: ResearchState) -> list[str]:
+    """Every piece of evidence work this run still holds unprocessed.
+
+    Per target and in acquisition order: a passage batch still owed, an
+    extraction that was handed over but not consumed, a queued candidate, and
+    a deferred candidate record. Deferred is the one that matters most — a
+    deferral is a decision to do the work later, and a run that reports
+    ``no_progress`` while holding one has relabelled a capacity limit as a
+    dead end.
+    """
+    items: list[str] = []
+    for target_id, acquisition in state.acquisition_state_by_target.items():
+        items.extend(
+            f"{target_id}:passage:{item}"
+            for item in acquisition.pending_passage_ids
+        )
+        items.extend(
+            f"{target_id}:extraction:{item}"
+            for item in acquisition.pending_extraction_ids
+        )
+        items.extend(
+            f"{target_id}:candidate:{url}" for url in acquisition.candidate_urls
+        )
+        items.extend(
+            f"{target_id}:deferred:{url}"
+            for url, record in acquisition.candidate_records.items()
+            if record.status in ("queued", "deferred")
+        )
+    return list(dict.fromkeys(items))
+
+
+def composition_fingerprint(state: ResearchState) -> str:
+    """A stable fingerprint of the report this pass produced.
+
+    Both rendered artifacts and every reader statement behind them, so a fixed
+    duplicated paragraph and a re-derived statement both move it. It is the
+    one part of the progress snapshot that is *presentation* rather than
+    evidence, which is exactly why a presentation repair can count as progress
+    without pretending a fact changed.
+    """
+    payload = {
+        "report": state.report or "",
+        "evidence": state.report_evidence or "",
+        "statements": [
+            {
+                "statement_id": statement.statement_id,
+                "text": statement.text,
+                "mode": statement.mode,
+                "targets": statement.target_ids,
+                "dimensions": statement.answered_dimensions,
+                "clusters": statement.claim_cluster_ids,
+                "evidence": statement.evidence_ids,
+            }
+            for statement in (
+                state.composition.statements if state.composition else []
+            )
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:32]
+
+
+def progress_snapshot(
+    state: ResearchState,
+    *,
+    previous: ResearchProgress | None = None,
+) -> ResearchProgress:
+    """What one completed pass substantively changed, as of now.
+
+    ``completed_target_ids`` is the strict Section 2.3 reading — a reader
+    statement that satisfies the target's dimensions and policy — so an added
+    plan obligation is not progress until its evidence exists. Assessed
+    support is fingerprinted per checked claim and its badge, so a new
+    independent passage moves it while an extra search or an unread page does
+    not. ``resolved_gap_ids`` is read against the previous snapshot's open
+    defects, because a defect that is gone from this review is what "resolved"
+    means.
+    """
+    completed = [
+        target.target_id
+        for topic in state.sub_topics
+        for target in counted_evidence_targets(topic.evidence_targets)
+        if target_is_answered(state, target)
+    ]
+    unresolved = open_material_gap_ids(state.critique)
+    resolved = (
+        []
+        if previous is None
+        else sorted(set(previous.unresolved_major_gap_ids).difference(unresolved))
+    )
+    return ResearchProgress(
+        completed_target_ids=completed,
+        assessed_support_fingerprints=[
+            f"{claim.claim_id}|{claim.evidence_status or claim.verdict}"
+            for claim in state.verified_claims
+        ],
+        resolved_gap_ids=resolved,
+        pending_work_ids=pending_repair_work(state),
+        unresolved_major_gap_ids=unresolved,
+        composition_fingerprint=composition_fingerprint(state),
+    )
+
+
+def repair_capacity_spent(state: ResearchState) -> bool:
+    """True when no further acquisition can be bought for the work still owed.
+
+    The macro-iteration ceiling for the next pass, or every target's own
+    acquisition state reporting no remaining calls. A run that still holds
+    deferred evidence and still has calls to spend has not run out of capacity
+    — it has simply not spent it yet.
+    """
+    if state.iteration + 1 >= state.max_iterations:
+        return True
+    states = list(state.acquisition_state_by_target.values())
+    if not states:
+        return False
+    return all(entry.remaining_calls <= 0 for entry in states)
+
+
+def _leads_exhausted(acquisition: AcquisitionState) -> bool:
+    """True when one target's acquisition has nothing left to try."""
+    if (
+        acquisition.candidate_urls
+        or acquisition.pending_passage_ids
+        or acquisition.pending_extraction_ids
+    ):
+        return False
+    return acquisition.empty_searches >= 2 or bool(acquisition.denied_urls)
+
+
+def evidence_exhausted(state: ResearchState) -> bool:
+    """True when every outstanding obligation is out of leads.
+
+    Requires an acquisition attempt for every unanswered required target: a
+    target nobody has tried to acquire for yet is not evidence anyone failed
+    to find, and calling that "unavailable" would report a dead end where the
+    truth is that the work has not started.
+    """
+    outstanding = {
+        target.target_id for target in unanswered_required_targets(state)
+    }
+    if not outstanding:
+        return False
+    attempts = [
+        state.acquisition_state_by_target[target_id]
+        for target_id in sorted(outstanding)
+        if target_id in state.acquisition_state_by_target
+    ]
+    if len(attempts) != len(outstanding):
+        return False
+    return all(_leads_exhausted(attempt) for attempt in attempts)
+
+
+def provider_failed(state: ResearchState) -> bool:
+    """True when a recorded non-recoverable provider error ended a pass.
+
+    Read from the recorded errors rather than guessed from a missing result: a
+    provider outage and a pass that simply found nothing are different facts,
+    and only the first may be reported as ``provider_failure``. The route
+    consults this only when another pass is wanted, so the record stops the
+    repair loop the first time it is seen instead of being re-read forever.
+    """
+    return any(
+        not error.recoverable and "provider" in error.error_type
+        for error in state.errors
+    )
+
+
+def repair_stop_reason(
+    state: ResearchState,
+    *,
+    before: ResearchProgress,
+    after: ResearchProgress,
+) -> RepairStopReason | None:
+    """Why the repair loop stopped, or ``None`` while it should continue.
+
+    Evaluated after a *whole* repair job has finished — the plan extension and
+    the acquisition it triggered are one job, so "a target was added" is never
+    measured as progress on its own. The order is the order of certainty:
+
+    * progress means the loop is working; only the budget can stop it, and the
+      reason then names the budget;
+    * a recorded provider outage is a fact about the machine, and is reported
+      as one rather than as a stall;
+    * work this run deferred is *owed*, so it continues unless capacity is
+      genuinely spent, and then says so — ``pending_capacity``, never
+      ``no_progress``;
+    * leads that were all tried and all failed are ``evidence_unavailable``,
+      which is a real answer about the world rather than a stall;
+    * anything else that changed nothing is ``no_progress``.
+    """
+    if progress_improved(before, after):
+        return "max_iterations" if state.iteration + 1 >= state.max_iterations else None
+    if provider_failed(state):
+        return "provider_failure"
+    if after.pending_work_ids:
+        return "pending_capacity" if repair_capacity_spent(state) else None
+    if evidence_exhausted(state):
+        return "evidence_unavailable"
+    return "no_progress"
 
 
 def graph_recursion_limit(max_iterations: int) -> int:

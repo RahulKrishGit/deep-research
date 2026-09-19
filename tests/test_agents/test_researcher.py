@@ -10,6 +10,7 @@ import pytest
 
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.evidence import build_read_record
+from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
@@ -52,11 +53,16 @@ from deep_research.providers import (
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    Claim,
     Critique,
     CritiqueGap,
+    EvidenceTarget,
     Finding,
     MemorySnapshot,
     ReadRecord,
+    ReportComposition,
+    ReportPoint,
+    ReportStatement,
     ResearchError,
     ResearchState,
     SubTopic,
@@ -122,6 +128,7 @@ def _state(
     raw_findings: list[Finding] | None = None,
     critique: Critique | None = None,
     memory_context: MemorySnapshot | None = None,
+    composition: ReportComposition | None = None,
 ) -> ResearchState:
     return ResearchState(
         session_id="session-1",
@@ -130,6 +137,7 @@ def _state(
         raw_findings=raw_findings or [],
         critique=critique,
         memory_context=memory_context or MemorySnapshot(),
+        composition=composition,
     )
 
 
@@ -144,6 +152,64 @@ def _gap(
         coverage_id=coverage_id,
         problem=problem,
         recommended_queries=recommended_queries or [],
+    )
+
+
+def _required_target(
+    target_id: str = "target-01",
+    *,
+    coverage_id: str = "topic-01",
+    required_dimensions: list[str] | None = None,
+) -> EvidenceTarget:
+    return EvidenceTarget(
+        target_id=target_id,
+        coverage_id=coverage_id,
+        question="What does it cost?",
+        required_dimensions=list(required_dimensions or ["cost"]),
+        required=True,
+        critical=True,
+        support_policy="independent_pair",
+    )
+
+
+def _answering_composition(*target_ids: str) -> ReportComposition:
+    """A report that answers exactly the named targets, and nothing else."""
+    statements: list[ReportStatement] = []
+    claims: list[Claim] = []
+    for index, target_id in enumerate(target_ids, start=1):
+        text = f"The obligation {target_id} is settled."
+        claim_id = claim_fingerprint(text)
+        claims.append(
+            Claim(
+                claim_id=claim_id,
+                text=text,
+                source_urls=["https://example.test/qec"],
+                verdict="verified",
+                evidence_status="verified_pair",
+                confidence=0.9,
+                evidence=["Two independent reads state it."],
+                contradictions=[],
+                verification_evidence=[],
+                target_ids=[target_id],
+            )
+        )
+        statements.append(
+            ReportStatement(
+                statement_id=f"S{index:03d}",
+                text=text,
+                mode="settled",
+                claim_cluster_ids=[claim_id],
+                target_ids=[target_id],
+                answered_dimensions=["cost"],
+            )
+        )
+    return ReportComposition(
+        question="How mature is quantum error correction?",
+        session_id="session-1",
+        claims=claims,
+        summary=[
+            ReportPoint(text=row.text, statement=row) for row in statements
+        ],
     )
 
 
@@ -345,6 +411,91 @@ def test_refinement_selection_uses_one_slot_for_unsatisfied_topic() -> None:
     selected = select_sub_topics(state, max_sub_topics=1)
 
     assert [sub_topic.title for sub_topic in selected] == ["Beta"]
+
+
+def test_one_raw_finding_does_not_complete_a_required_target() -> None:
+    """The reviewed baseline's TR-07: a finding is not an answered target.
+
+    The topic has one raw metadata finding and the Critic named no gap for it.
+    Its required target is still unanswered, so the topic owes research and
+    must be eligible — the old rule skipped exactly this topic.
+    """
+    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
+        update={"evidence_targets": [_required_target()]}
+    )
+    state = _state(
+        sub_topics=[topic],
+        raw_findings=[
+            _finding(
+                "Economics",
+                "https://example.test/metadata",
+                content="The page was published in 2024.",
+            )
+        ],
+        critique=_critique(),
+    )
+
+    assert [row.title for row in select_sub_topics(state)] == ["Economics"]
+
+
+def test_a_topic_whose_required_target_is_answered_is_skipped() -> None:
+    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
+        update={"evidence_targets": [_required_target()]}
+    )
+    state = _state(
+        sub_topics=[topic],
+        critique=_critique(),
+        composition=_answering_composition("target-01"),
+    )
+
+    assert select_sub_topics(state) == []
+
+
+def test_a_presentation_gap_does_not_send_an_answered_topic_to_acquisition() -> None:
+    """``synthesize`` is a rewrite: it reuses the evidence already held."""
+    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
+        update={"evidence_targets": [_required_target()]}
+    )
+    state = _state(
+        sub_topics=[topic],
+        critique=_critique(
+            gaps=[
+                CritiqueGap(
+                    coverage_id="topic-01",
+                    kind="presentation",
+                    severity="major",
+                    repair_action="synthesize",
+                    problem="The mechanism is stated twice.",
+                )
+            ]
+        ),
+        composition=_answering_composition("target-01"),
+    )
+
+    assert select_sub_topics(state) == []
+
+
+def test_an_acquisition_gap_sends_an_answered_topic_back_to_research() -> None:
+    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
+        update={"evidence_targets": [_required_target()]}
+    )
+    state = _state(
+        sub_topics=[topic],
+        critique=_critique(
+            gaps=[
+                CritiqueGap(
+                    coverage_id="topic-01",
+                    kind="missing_support",
+                    severity="major",
+                    repair_action="acquire",
+                    problem="The cost figure has no independent pair.",
+                )
+            ]
+        ),
+        composition=_answering_composition("target-01"),
+    )
+
+    assert [row.title for row in select_sub_topics(state)] == ["Economics"]
 
 
 def test_refinement_gap_target_is_selected_even_when_prior_findings_exist() -> None:

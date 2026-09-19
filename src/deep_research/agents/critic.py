@@ -1360,15 +1360,21 @@ def normalize_gaps(
             recommended_queries=list(queries),
         )
         # The same problem restated with a different label is one defect, not
-        # two: the identity is the scope and the text, so a reader is not shown
-        # the duplicate. The most severe reading wins, and an equally severe
-        # one that carries more queries is kept because it is the actionable
+        # two: the identity is the scope, the text, **and what the repair
+        # does**. The action and the kind are part of it because they are the
+        # routing decision — two gaps that differ only in ``repair_action`` are
+        # two nodes' work, and collapsing them kept whichever was more severe,
+        # silently adopting one node's repair for the other's defect. Within
+        # one action and one scope the most severe reading wins, and an equally
+        # severe one carrying more queries is kept because it is the actionable
         # version of the same complaint.
         identity = (
             coverage_id,
             tuple(targets),
             tuple(statements),
             tuple(clusters),
+            draft.kind,
+            draft.repair_action,
             problem,
         )
         previous = kept.get(identity)

@@ -242,7 +242,13 @@ from deep_research.utils.config import (
 # accepted-but-ignored ``claim_digest`` parameter were removed, so no bound the
 # code no longer applies survives to be re-wired. ``agents.prompts`` again
 # untouched; the other five again unmoved.
-CRITIC_PROMPT_FINGERPRINT = "24f2a9be4630"
+# Task 9's re-pin: ``agents/critic.py`` gained the repair action and the kind
+# in ``normalize_gaps``' dedupe identity, so two defects that route to
+# different nodes are no longer collapsed into one. No prompt string was
+# edited; the module source is what the fingerprint hashes, so a routing fix
+# that lives in ``critic.py`` moves a value whose name implies a prompt change
+# — the same false positive the researcher's first re-pin records below.
+CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -600,13 +606,22 @@ CRITIC_PROMPT_FINGERPRINT = "24f2a9be4630"
 #     module that renders the request, not the shared prompt library), and
 #     -> ``24f2a9be4630`` when that round's dead bound constants were removed
 # The Judge pin did not move: no judge prompt or template changed.
+# Task 9 re-pinned planner, researcher, and critic together, and left the other
+# three untouched. None of the three moved for a prompt edit: the planner's
+# ``state_update`` stopped re-emitting a topic list the session already has, the
+# researcher's refinement eligibility moved from "a prior finding exists" to
+# "the required target is still unanswered", and the critic's gap dedupe gained
+# the repair action. Each is a behavioural fix inside a module the fingerprint
+# hashes in full — the same false positive of its design already recorded for
+# the researcher above, and the reason these pins are re-recorded deliberately
+# rather than silently invalidated.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "02d66a4a2d15",
-    "researcher": "438bd632edce",
+    "planner": "750abb515728",
+    "researcher": "4f68ae8f190d",
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "7695ca2d0524",
     "synthesizer": "0ec21503cc00",
-    "critic": "24f2a9be4630",
+    "critic": "9694e44926d3",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

@@ -35,6 +35,7 @@ from tests.graph_fakes import (
     fake_research_agents,
     fake_research_state,
     fake_scored_source,
+    progressing_fact_checker,
 )
 from tests.test_observability_tracker import RecordingTraceFactory
 
@@ -231,6 +232,8 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace() -> None
         "route_decisions": ["refinement_requested", "critique_satisfied"],
         "iteration": 1,
         "max_iterations": DEFAULT_MAX_ITERATIONS,
+        "repair_stop_reason": None,
+        "refinement_target_count": 1,
         "sub_topic_count": 1,
         "finding_count": 2,
         "source_count": 2,
@@ -310,6 +313,7 @@ async def test_a_resume_uses_the_checkpointed_iteration_budget(
             "researcher",
             [RuntimeError("crash"), {"raw_findings": [fake_finding()]}],
         ),
+        fact_checker=progressing_fact_checker(),
         critic=FakeAgent(
             "critic", [{"critique": fake_critique(should_continue=True, score=3)}]
         ),
@@ -538,6 +542,7 @@ async def test_an_unfinished_resume_streams_events_in_order_without_duplicates(
             "researcher",
             [RuntimeError("crash"), {"raw_findings": [fake_finding()]}],
         ),
+        fact_checker=progressing_fact_checker(),
         critic=FakeAgent(
             "critic", [{"critique": fake_critique(should_continue=True, score=3)}]
         ),

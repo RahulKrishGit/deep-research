@@ -30,21 +30,33 @@ from deep_research.graph.state import (
     initial_graph_state,
     is_halted,
     load_state,
+    pending_repair_work,
+    progress_snapshot,
+    repair_stop_reason,
 )
 from deep_research.utils.types import (
     LEGACY_QUALITY_CONTRACT_VERSION,
     QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
+    REPAIR_STOP_REASONS,
+    AcquisitionState,
+    CandidateRecord,
+    Critique,
+    CritiqueGap,
+    EvidenceTarget,
     MemorySnapshot,
     ResearchError,
+    ResearchProgress,
     SubTopic,
+    progress_improved,
 )
 from tests.graph_fakes import (
     fake_critique,
     fake_failed_critique,
     fake_quality,
     fake_research_state,
+    fake_sub_topic,
     halting_error,
 )
 
@@ -263,6 +275,24 @@ def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
             ),
             # Task 8's reason: a review that never validated.
             fake_research_state(critique=fake_failed_critique()),
+            # Task 9's reasons: a repair loop that stopped for its own
+            # recorded cause while the report still wanted another pass.
+            fake_research_state(
+                critique=fake_critique(should_continue=True),
+                repair_stop_reason="no_progress",
+            ),
+            fake_research_state(
+                critique=fake_critique(should_continue=True),
+                repair_stop_reason="pending_capacity",
+            ),
+            fake_research_state(
+                critique=fake_critique(should_continue=True),
+                repair_stop_reason="evidence_unavailable",
+            ),
+            fake_research_state(
+                critique=fake_critique(should_continue=True),
+                repair_stop_reason="provider_failure",
+            ),
         )
     }
 
@@ -467,3 +497,276 @@ def test_the_request_attempt_limit_error_type_halts_a_run() -> None:
     assert is_halted(state)
     assert graph_route(state) == (ROUTE_END, "halted")
     assert graph_status(state) == "failed"
+
+
+# --- Task 9: repair progress and repair stop reasons ------------------------
+
+
+def _unmet_topic(target_id: str = "target-01") -> SubTopic:
+    return fake_sub_topic().model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id=target_id,
+                    coverage_id="topic-01",
+                    question="What does it cost?",
+                    required_dimensions=["cost"],
+                    required=True,
+                    critical=True,
+                    support_policy="independent_pair",
+                )
+            ]
+        }
+    )
+
+
+def _deferred_state(
+    *,
+    remaining_calls: int,
+    status: str = "deferred",
+) -> AcquisitionState:
+    url = "https://lab.example/queue"
+    return AcquisitionState(
+        target_id="target-01",
+        remaining_calls=remaining_calls,
+        candidate_records={
+            url: CandidateRecord(
+                candidate_id="candidate-01",
+                url=url,
+                discovered_via="search",
+                status=status,
+            )
+        },
+        candidate_urls=[] if status == "deferred" else [url],
+    )
+
+
+def _provider_error() -> ResearchError:
+    return ResearchError(
+        error_type="researcher_extraction_provider_error",
+        source="researcher",
+        message="The provider failed while extracting findings.",
+        recoverable=False,
+    )
+
+
+def test_the_repair_stop_reasons_are_exactly_the_five_named_ones() -> None:
+    assert REPAIR_STOP_REASONS == (
+        "no_progress",
+        "pending_capacity",
+        "evidence_unavailable",
+        "provider_failure",
+        "max_iterations",
+    )
+    for reason in REPAIR_STOP_REASONS:
+        if reason == "max_iterations":
+            # The ceiling already has its own route reason, and that is what
+            # the router reports; the field still names the ceiling.
+            continue
+        assert reason in GRAPH_ROUTES
+
+
+def test_an_unchanged_pass_after_a_processed_repair_is_no_progress() -> None:
+    state = fake_research_state(
+        sub_topics=[_unmet_topic()],
+        max_iterations=3,
+        iteration=1,
+    )
+    before = progress_snapshot(state)
+    after = progress_snapshot(state, previous=before)
+
+    assert repair_stop_reason(state, before=before, after=after) == "no_progress"
+
+
+def test_an_identical_snapshot_stops_a_run_that_still_wants_a_pass() -> None:
+    state = fake_research_state(
+        critique=fake_critique(should_continue=True, score=4),
+        max_iterations=3,
+        iteration=1,
+        repair_stop_reason="no_progress",
+    )
+
+    assert graph_route(state) == (ROUTE_FINALIZE, "no_progress")
+    assert graph_status(state) == "incomplete"
+    # A graph stop is never a failed review: the report was judged, and the
+    # machine stopped buying passes that change nothing.
+    assert graph_status(state) != "failed"
+
+
+def test_a_completed_repair_with_budget_left_keeps_going() -> None:
+    state = fake_research_state(max_iterations=3, iteration=1)
+    before = ResearchProgress(composition_fingerprint="pass-1")
+    after = ResearchProgress(
+        assessed_support_fingerprints=["a"],
+        composition_fingerprint="pass-1",
+    )
+
+    assert repair_stop_reason(state, before=before, after=after) is None
+
+
+def test_a_repair_that_worked_and_ran_out_of_budget_names_the_budget() -> None:
+    state = fake_research_state(max_iterations=2, iteration=1)
+    before = ResearchProgress(composition_fingerprint="pass-1")
+    after = ResearchProgress(
+        assessed_support_fingerprints=["a"],
+        composition_fingerprint="pass-1",
+    )
+
+    assert repair_stop_reason(state, before=before, after=after) == "max_iterations"
+
+
+def test_a_new_independent_support_fingerprint_is_progress() -> None:
+    """The support is progress before the Critic's verdict moves."""
+    before = ResearchProgress(
+        assessed_support_fingerprints=["claim-1|verified_pair"]
+    )
+    after = ResearchProgress(
+        assessed_support_fingerprints=[
+            "claim-1|verified_pair",
+            "claim-2|verified_pair",
+        ]
+    )
+
+    assert progress_improved(before, after)
+    assert not progress_improved(after, before)
+
+
+def test_pending_deferred_evidence_is_not_labelled_no_progress() -> None:
+    """Unprocessed deferred evidence is work owed, not a stall."""
+    state = fake_research_state(
+        sub_topics=[_unmet_topic()],
+        max_iterations=3,
+        iteration=1,
+        acquisition_state_by_target={
+            "target-01": _deferred_state(remaining_calls=4)
+        },
+    )
+    before = progress_snapshot(state)
+    after = progress_snapshot(state, previous=before)
+
+    assert pending_repair_work(state)
+    assert repair_stop_reason(state, before=before, after=after) is None
+    assert graph_route(
+        state.model_copy(
+            update={"critique": fake_critique(should_continue=True, score=4)}
+        )
+    ) == (ROUTE_REFINE, "refinement_requested")
+
+
+def test_deferred_evidence_that_cannot_fit_is_capacity_limited() -> None:
+    state = fake_research_state(
+        sub_topics=[_unmet_topic()],
+        max_iterations=3,
+        iteration=1,
+        acquisition_state_by_target={
+            "target-01": _deferred_state(remaining_calls=0)
+        },
+        critique=fake_critique(should_continue=True, score=4),
+    )
+    before = progress_snapshot(state)
+    after = progress_snapshot(state, previous=before)
+    reason = repair_stop_reason(state, before=before, after=after)
+
+    assert reason == "pending_capacity"
+    stopped = state.model_copy(update={"repair_stop_reason": reason})
+    assert graph_route(stopped) == (ROUTE_FINALIZE, "pending_capacity")
+    assert graph_status(stopped) == "incomplete"
+
+
+def test_exhausted_leads_are_evidence_unavailable_rather_than_a_stall() -> None:
+    state = fake_research_state(
+        sub_topics=[_unmet_topic()],
+        max_iterations=3,
+        iteration=1,
+        acquisition_state_by_target={
+            "target-01": AcquisitionState(
+                target_id="target-01",
+                remaining_calls=0,
+                empty_searches=2,
+                denied_urls=["https://lab.example/denied"],
+            )
+        },
+    )
+    before = progress_snapshot(state)
+    after = progress_snapshot(state, previous=before)
+
+    assert repair_stop_reason(state, before=before, after=after) == (
+        "evidence_unavailable"
+    )
+
+
+def test_a_provider_outage_is_never_reported_as_a_stalled_repair() -> None:
+    state = fake_research_state(
+        sub_topics=[_unmet_topic()],
+        max_iterations=3,
+        iteration=1,
+        errors=[_provider_error()],
+        critique=fake_critique(should_continue=True, score=4),
+    )
+    before = progress_snapshot(state)
+    after = progress_snapshot(state, previous=before)
+    reason = repair_stop_reason(state, before=before, after=after)
+
+    assert reason == "provider_failure"
+    stopped = state.model_copy(update={"repair_stop_reason": reason})
+    assert graph_route(stopped) == (ROUTE_FINALIZE, "provider_failure")
+    # Distinct from the review that never happened: the report was reviewed,
+    # the repair is what could not run.
+    assert graph_route(stopped)[1] != "critique_failed"
+    assert graph_status(stopped) == "incomplete"
+
+
+def test_a_failed_review_still_outranks_every_repair_stop_reason() -> None:
+    state = fake_research_state(
+        critique=fake_failed_critique(),
+        max_iterations=3,
+        iteration=1,
+        repair_stop_reason="no_progress",
+    )
+
+    assert graph_route(state) == (ROUTE_FINALIZE, "critique_failed")
+    assert graph_status(state) == "failed"
+
+
+def test_a_fixed_duplicated_paragraph_moves_the_composition_fingerprint() -> None:
+    state = fake_research_state(report="# Report\n\nSame paragraph.\n")
+    duplicated = state.model_copy(
+        update={"report": "# Report\n\nSame paragraph.\n\nSame paragraph.\n"}
+    )
+
+    assert progress_snapshot(state).composition_fingerprint != (
+        progress_snapshot(duplicated).composition_fingerprint
+    )
+
+
+def test_the_progress_snapshot_names_completed_targets_and_open_defects() -> None:
+    state = fake_research_state(
+        sub_topics=[_unmet_topic()],
+        critique=Critique(
+            score=5,
+            gaps=[
+                CritiqueGap(
+                    gap_id="gap-01",
+                    coverage_id="topic-01",
+                    target_ids=["target-01"],
+                    kind="missing_support",
+                    severity="major",
+                    repair_action="acquire",
+                    problem="No cost data.",
+                )
+            ],
+            unsupported_claims=[],
+            recommended_queries=[],
+            should_continue=True,
+            rationale="Recorded for progress tests.",
+        ),
+    )
+
+    snapshot = progress_snapshot(state)
+
+    assert snapshot.completed_target_ids == []
+    assert snapshot.unresolved_major_gap_ids == [
+        "acquire|topic-01|target-01||"
+    ]
+    assert snapshot.composition_fingerprint
+    assert not snapshot.pending_work_ids

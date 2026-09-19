@@ -9,6 +9,7 @@ from deep_research.agents.acquisition import (
     admit_read_result,
     build_acquisition_context,
     build_read_record_from_tool_result,
+    cache_reuse_problem,
     next_acquisition_action,
 )
 from deep_research.agents.base import (
@@ -770,6 +771,7 @@ __all__ = [
     "build_boundary_audit",
     "build_proposal_id",
     "build_read_record_from_tool_result",
+    "cache_reuse_problem",
     "build_citation_index",
     "build_claim",
     "build_claim_drafts",

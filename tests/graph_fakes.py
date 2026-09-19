@@ -241,6 +241,25 @@ def fake_research_state(**overrides: object) -> ResearchState:
     return ResearchState.model_validate(payload)
 
 
+def progressing_fact_checker() -> FakeAgent:
+    """A Fact Checker whose every pass adjudicates one more distinct claim.
+
+    A run that stops changing anything now stops itself, which is the point of
+    the no-progress rule. Tests about the iteration bound or about resuming a
+    checkpoint are therefore about a run that *is* making progress, and this
+    double is what makes one: each pass checks one new claim, so the assessed
+    support grows and the loop has a reason to continue.
+    """
+
+    def update(state: ResearchState) -> ResearchStateUpdate:
+        settled = fake_claim(
+            f"Pass {state.iteration} settled one more fact."
+        )
+        return {"verified_claims": [*state.verified_claims, settled]}
+
+    return FakeAgent("fact_checker", [], update_factory=update)
+
+
 def fake_critique(*, should_continue: bool, score: int = 5) -> Critique:
     return Critique(
         score=score,

@@ -14,6 +14,7 @@ from deep_research.agents.acquisition import (
     AcquisitionPolicy,
     build_acquisition_context,
     build_read_record_from_tool_result,
+    cache_reuse_problem,
     next_acquisition_action,
 )
 from deep_research.agents.evidence import merge_evidence_units
@@ -706,6 +707,88 @@ def test_a_bound_of_one_batch_hands_everything_over_immediately() -> None:
     assert len(policy.evidence) == 4
     assert policy.state.pending_passage_ids == []
     assert next_acquisition_action(policy.state) != "extract"
+
+
+def test_a_cache_entry_changed_since_its_citation_forces_a_recheck() -> None:
+    """A citation-bearing cache entry is reused only at a matching fingerprint.
+
+    The run cited this URL at one content version. The cache now holds a
+    different read of it — a changed body, or a different read id — so reusing
+    the stored entry would publish a citation to text nobody re-read. The
+    reuse is refused instead, and the reader fetches the URL again.
+    """
+    record = _policy(remaining_calls=3)
+    record.after_action(
+        _document_step(_paged_result(4, text="queue delay commissioning"))
+    )
+    read = next(iter(record.reads.values()))
+    cited = (read.read_id, read.content_sha256)
+
+    assert (
+        cache_reuse_problem(
+            read,
+            requested_url=read.resolved_url,
+            cited_identity=cited,
+        )
+        is None
+    )
+    assert (
+        cache_reuse_problem(
+            read,
+            requested_url=read.resolved_url,
+            cited_identity=(read.read_id, "0" * 64),
+        )
+        == "content_hash_changed"
+    )
+    assert (
+        cache_reuse_problem(
+            read,
+            requested_url=read.resolved_url,
+            cited_identity=("read-other", read.content_sha256),
+        )
+        == "content_version_changed"
+    )
+    assert (
+        cache_reuse_problem(
+            read,
+            requested_url="https://elsewhere.test/other",
+            cited_identity=cited,
+        )
+        == "identity_mismatch"
+    )
+    # An uncited URL has no cited fingerprint to disagree with: the entry is
+    # reusable, which is what keeps a plain re-read free.
+    assert (
+        cache_reuse_problem(
+            read,
+            requested_url=read.resolved_url,
+            cited_identity=None,
+        )
+        is None
+    )
+
+
+def test_a_retryable_extraction_failure_leaves_the_reads_pending() -> None:
+    """A handoff that produced nothing has consumed nothing.
+
+    ``pending_extraction_ids`` names the reads whose batch was handed to an
+    extractor. When that extraction fails retryably the reads stay pending —
+    the next pass (or a resumed run) can see exactly what is still owed — and
+    only a successful extraction clears them.
+    """
+    policy = _policy(remaining_calls=3)
+    policy.after_action(
+        _document_step(_paged_result(8, text="queue delay commissioning"))
+    )
+    read_id = next(iter(policy.reads))
+
+    policy.defer_extraction()
+
+    assert policy.state.pending_extraction_ids == [read_id]
+
+    policy.complete_extraction()
+
+    assert policy.state.pending_extraction_ids == []
 
 
 def test_both_targets_survive_a_second_admission_of_one_body() -> None:

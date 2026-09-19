@@ -44,6 +44,7 @@ from deep_research.agents.planner import (
 )
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
+from deep_research.graph.nodes import refinement_targets_for, route_refinement
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -56,12 +57,16 @@ from deep_research.providers import (
 from deep_research.utils.config import AgentRuntimeConfig, load_config
 from deep_research.utils.types import (
     ORIGINAL_QUESTION_OMISSION_REFERENCE,
+    QUESTION_TARGET_ID,
+    Critique,
+    CritiqueGap,
     EvidenceTarget,
     Finding,
     MemorySnapshot,
     ResearchState,
     SubTopic,
     merge_research_state,
+    unanswered_required_targets,
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
 from tests.research_fakes import (
@@ -2894,6 +2899,89 @@ async def test_the_state_update_freezes_the_contract_and_the_initial_inventory(
     assert "expanded_target_ids" not in outcome.state_update
 
 
+def test_an_original_question_omission_grows_the_inventory_and_is_researched(
+) -> None:
+    """Task 9's route, end to end at the plan boundary.
+
+    The Critic expresses an original-question omission as ``extend_plan`` over
+    the ``question`` sentinel. That routes to the Planner; the extension then
+    adds a sub-topic whose target joins the *expanded* inventory, so the
+    denominator grows rather than shrinks, every existing obligation and id
+    survives, and the new target arrives owed — adding it is not answering it.
+    """
+    contract = _contract("What limits battery storage deployment?")
+    existing = apply_answer_contract(
+        validate_plan_draft(_sorting_plan())[0], contract
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question=contract.question,
+        answer_contract=contract,
+        sub_topics=existing,
+        initial_target_ids=inventory_target_ids(existing),
+        critique=Critique(
+            score=5,
+            gaps=[
+                CritiqueGap(
+                    target_ids=[QUESTION_TARGET_ID],
+                    kind="coverage",
+                    severity="critical",
+                    repair_action="extend_plan",
+                    problem=(
+                        "The question asks for a cost the plan never targeted."
+                    ),
+                )
+            ],
+            unsupported_claims=[],
+            recommended_queries=[],
+            should_continue=True,
+            rationale="The plan omits an obligation the question names.",
+        ),
+    )
+
+    jobs = refinement_targets_for(state)
+    assert jobs[0].target_ids == [QUESTION_TARGET_ID]
+    assert route_refinement(jobs[0]) == "planner"
+    assert jobs[0].origin == "critic_gap"
+    # The plan's own unanswered obligations ride along: Critic silence never
+    # suppresses a required target, and here the Critic named only the omission.
+    assert [route_refinement(job) for job in jobs[1:]] == ["researcher"] * len(
+        jobs[1:]
+    )
+
+    additions, problems = extend_plan(
+        existing,
+        ResearchPlanDraft(
+            sub_topics=[_draft("Levelised cost per tonne", priority=4)]
+        ),
+        contract=contract,
+    )
+    assert problems == []
+    merged = merge_research_state(
+        state,
+        {
+            "sub_topics": additions,
+            "expanded_target_ids": inventory_target_ids(additions),
+        },
+    )
+
+    # The frozen denominator only ever grows: the original ids are all still
+    # counted, and the added target is counted with them.
+    assert state.initial_target_ids == inventory_target_ids(existing)
+    assert set(merged.initial_target_ids).issubset(
+        inventory_target_ids(merged.sub_topics)
+    )
+    assert inventory_target_ids(merged.sub_topics) == [
+        *state.initial_target_ids,
+        "topic-04-target-01",
+    ]
+    # And the added obligation is owed research, not "covered by the plan".
+    assert [target.target_id for target in unanswered_required_targets(merged)] == [
+        *state.initial_target_ids,
+        "topic-04-target-01",
+    ]
+
+
 def test_extend_plan_adds_topics_and_targets_without_touching_what_exists() -> None:
     """The siting/permitting case: an omission is added, never substituted.
 
@@ -3409,6 +3497,49 @@ async def test_the_plan_and_review_calls_carry_distinct_fingerprints(
     assert changed.call_fingerprints["ResearchPlanDraft"] != (
         outcome.call_fingerprints["ResearchPlanDraft"]
     )
+
+
+@pytest.mark.asyncio
+async def test_a_second_non_extension_pass_cannot_replace_the_live_topic_list(
+    tracker: Tracker,
+) -> None:
+    """Carried from Task 2's review: the live topics and the inventory agree.
+
+    ``initial_target_ids`` is union-protected, so a second non-extension pass
+    that re-emitted a whole topic list would append a second ``topic-01``
+    beside the first while the frozen denominator kept counting both. The
+    plan already in the session stands: a re-plan contributes only the topics
+    whose ids the session does not have, which here is none of them.
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            finish("No lookup needed.", "Three angles matter."),
+            finish("No lookup needed.", "Three angles matter."),
+        ],
+        outputs=[_sorting_plan(), _review(), _sorting_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+    question = "What limits battery storage deployment?"
+
+    async with tracker.session_span("session-1", "q"):
+        first = await agent.run(_state(question))
+        state = merge_research_state(_state(question), first.state_update)
+        replanned = await agent.run(state)
+
+    update = replanned.state_update
+
+    # Nothing crosses the boundary: no topic replaces the frozen plan, and the
+    # coverage denominator does not move.
+    assert "sub_topics" not in update
+    assert "initial_target_ids" not in update
+    assert "expanded_target_ids" not in update
+    merged = merge_research_state(state, update)
+    assert [topic.coverage_id for topic in merged.sub_topics] == [
+        "topic-01",
+        "topic-02",
+        "topic-03",
+    ]
+    assert merged.initial_target_ids == state.initial_target_ids
 
 
 @pytest.mark.asyncio
