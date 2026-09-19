@@ -22,6 +22,7 @@ from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
     AgentConfigurationError,
     PlanningError,
+    agent_error,
     planning_provider_error,
 )
 from deep_research.agents.events import agent_event
@@ -50,6 +51,7 @@ from deep_research.utils.types import (
     ContractModel,
     EvidenceTarget,
     MemorySnapshot,
+    ResearchError,
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
@@ -2190,10 +2192,47 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         re-planned, so no existing id, priority, obligation, or the frozen
         contract can move (Section 2.3) — ``extend_plan`` itself refuses a
         capacity conflict rather than dropping a difficult topic.
+
+        A failed extension is *recorded*, never raised. This node runs mid-loop,
+        after a report already exists, so letting the ``PlanningError`` escape
+        would halt the run as ``failed`` and discard a publishable artifact —
+        while every other agent treats the same provider outage as a recoverable
+        fact about the pass. ``state_update(None, react)`` surfaces the recorded
+        error, and an ``error_type`` naming the provider is what the graph's
+        ``provider_failure`` stop reason reads.
         """
         async with self.tracker.agent_span(self.name) as span:
-            plan = await self.extend_plan(state, omission=omission)
-            react = ReActRun(agent_name=self.name, stop_reason="finished")
+            errors: list[ResearchError] = []
+            plan: ResearchPlan | None
+            try:
+                plan = await self.extend_plan(state, omission=omission)
+            except PlanningError as error:
+                plan = None
+                errors.append(
+                    agent_error(
+                        agent_name=self.name,
+                        error_type=(
+                            "planner_extension_provider_error"
+                            if isinstance(error.__cause__, ProviderError)
+                            else "planner_extension_failed"
+                        ),
+                        message=(
+                            "The plan extension for a reviewed omission could "
+                            "not be completed; the plan already in state stands "
+                            "and the report is unaffected."
+                        ),
+                        recoverable=False,
+                        details={
+                            "exception_type": type(error).__name__,
+                            "problems": list(error.problems),
+                        },
+                    )
+                )
+            react = ReActRun(
+                agent_name=self.name,
+                stop_reason="provider_error" if errors else "finished",
+                errors=errors,
+            )
             span.set_outputs(
                 {
                     "agent_name": self.name,
@@ -2208,7 +2247,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             agent_name=self.name,
             result=plan,
             react=react,
-            errors=[],
+            errors=list(errors),
             state_update=self.state_update(plan, react),
             call_fingerprints=dict(self._call_fingerprints),
         )

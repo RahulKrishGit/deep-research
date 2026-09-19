@@ -1375,14 +1375,63 @@ async def test_the_refinement_hop_invalidates_only_the_claims_a_job_touches(
 
 
 @pytest.mark.asyncio
+async def test_a_terminal_hop_does_not_invalidate_the_ledger_it_publishes(
+) -> None:
+    """No pass follows a stall, so nothing may be dropped on the way out.
+
+    Invalidating here would leave finalization reading a ledger no review
+    judged: the dropped claim's ``claim_id`` would vanish from state while the
+    report rendered from the composition still cites it, and the quality
+    snapshot would be cleared although nothing replaced it.
+    """
+    touched = fake_claim("The cost is 40 EUR.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
+    )
+    untouched = fake_claim("Safety improved.").model_copy(
+        update={"target_ids": ["target-02"], "cluster_id": "cluster-02"}
+    )
+    state = fake_research_state(
+        sub_topics=[_planned_topic(_evidence_target())],
+        verified_claims=[touched, untouched],
+        quality=fake_quality(),
+        critique=_critique(
+            _gap(
+                action="adjudicate",
+                kind="contradiction",
+                coverage_id=None,
+                target_ids=["target-01"],
+            )
+        ),
+        max_iterations=3,
+        iteration=1,
+    )
+    unchanged = state.model_copy(
+        update={"progress_history": [progress_snapshot(state)]}
+    )
+
+    result = await refine_node(dump_state(unchanged))
+    refined = load_state(result)
+
+    assert refined.repair_stop_reason == "no_progress"
+    assert route_after_refine(result) == "finalize"
+    assert [claim.claim_id for claim in refined.verified_claims] == [
+        touched.claim_id,
+        untouched.claim_id,
+    ]
+    assert refined.quality is not None
+
+
+@pytest.mark.asyncio
 async def test_an_unanswered_target_job_invalidates_no_claim() -> None:
     """A pending obligation is not a changed input: its claims stand.
 
-    The claim here is exactly the shape a still-open obligation carries — it
-    does not satisfy the target's policy, which is why the target is open — so
-    invalidating on the mechanical job would delete it on every pass.
+    The claim here carries the very target the mechanical job names, and it
+    does not satisfy that target's policy — which is why the target is open —
+    so invalidating on the mechanical job would delete it on every pass.
     """
-    open_obligation = fake_claim("Later work bears on the cost.", confidence=0.4)
+    open_obligation = fake_claim(
+        "Later work bears on the cost.", confidence=0.4
+    ).model_copy(update={"target_ids": ["target-01"]})
     state = fake_research_state(
         sub_topics=[_planned_topic(_evidence_target())],
         verified_claims=[open_obligation],

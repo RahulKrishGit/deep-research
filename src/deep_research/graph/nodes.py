@@ -28,7 +28,7 @@ from pydantic import JsonValue
 
 from deep_research.agents.base import AgentRun
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
-from deep_research.agents.identity import merge_claim_snapshot
+from deep_research.agents.identity import merge_claim_snapshot, normalize_source_url
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
@@ -586,14 +586,9 @@ async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
         else repair_stop_reason(state, before=previous, after=after)
     )
     targets = refinement_targets_for(state)
-    invalidation = invalidation_update(
-        state,
-        [job for job in targets if job.origin != "unanswered_target"],
-    )
     recorded = merge_research_state(
         state,
         {
-            **invalidation,
             "refinement_targets": targets,
             "progress_history": [after],
             "repair_stop_reason": stopped,
@@ -604,6 +599,13 @@ async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
         # no further pass is opened: the iteration does not advance, no agent
         # runs again, and the run goes straight to publication with the reason
         # recorded on the same route vocabulary every other decision uses.
+        #
+        # Nothing is invalidated on this path. No pass follows to re-derive
+        # what an invalidation drops, so the ledger the publication reads has
+        # to stay the one the last review judged — otherwise the state behind
+        # the report (its claim count, its quality snapshot, the checkpoint)
+        # stops agreeing with the artifact, which is rendered from a
+        # composition that still cites the dropped claim.
         return _with(
             recorded,
             {
@@ -622,6 +624,17 @@ async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
             },
         )
 
+    # A pass will run, so the reviews the typed jobs change are dropped here and
+    # re-derived there. Mechanically unmet targets are excluded: their
+    # ``acquire`` job exists on every pass, so invalidating on one would delete
+    # the claims of every still-open obligation each time the loop turned.
+    recorded = merge_research_state(
+        recorded,
+        invalidation_update(
+            state,
+            [job for job in targets if job.origin != "unanswered_target"],
+        ),
+    )
     advanced = advance_research_iteration(recorded)
     return _with(
         advanced,
@@ -879,14 +892,19 @@ def invalidation_update(
         update["verified_claims"] = kept
 
     if any(target.action == "assess_source" for target in changing):
+        # Normalized on both sides: a cited URL and a scored row can be written
+        # in two spellings of one address, and comparing the raw strings would
+        # leave a stale score standing for a source that was just invalidated.
         cited = {
-            url
+            normalize_source_url(url)
             for claim in state.verified_claims
             if _claim_is_invalidated(claim, target_scope, cluster_scope)
             for url in claim.source_urls
         }
         kept_sources = [
-            source for source in state.evaluated_sources if source.url not in cited
+            source
+            for source in state.evaluated_sources
+            if normalize_source_url(source.url) not in cited
         ]
         if len(kept_sources) != len(state.evaluated_sources):
             update["evaluated_sources"] = kept_sources

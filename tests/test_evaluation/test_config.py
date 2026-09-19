@@ -621,8 +621,13 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # *extends* rather than re-plans when the graph routes an ``extend_plan`` job to
 # it, and the fact checker gained the read of ``refinement_targets`` that makes
 # an ``adjudicate``/``consolidate`` route land on a node which acts on it.
+#
+# Task 9 fix round 2 re-pinned the planner alone (`f2507b56d0c6`): the routed
+# extension now records a failed extension instead of letting the PlanningError
+# halt a run that already holds a publishable report. Same false positive, same
+# reason — a behavioural fix inside a module the fingerprint hashes in full.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "ee4b982ed671",
+    "planner": "f2507b56d0c6",
     "researcher": "4f68ae8f190d",
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "77ac66835773",

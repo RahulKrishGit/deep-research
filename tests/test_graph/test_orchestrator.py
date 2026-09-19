@@ -828,6 +828,73 @@ async def test_an_original_question_omission_reaches_the_planner_and_is_research
 
 
 @pytest.mark.asyncio
+async def test_a_provider_failure_in_the_routed_extension_does_not_halt_the_run(
+    tracker: Tracker,
+) -> None:
+    """An outage mid-loop is a recorded fact, not grounds to discard a report.
+
+    The extension runs after a report already exists, so halting would publish
+    nothing: ``failed`` with ``report_path=None``. Every other agent records a
+    provider outage and survives it, and the repair vocabulary this task added
+    says ``provider_failure`` → ``incomplete`` — the planner is not exempt just
+    because its failure arrives as a ``PlanningError``.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(),
+            ProviderResponseError(
+                "the provider returned a 503",
+                failure_origin="sdk",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+            ),
+        ],
+    )
+    planner = PlannerAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="planner", max_entries=20
+        ),
+        tools=planner_tools(tracker),
+        config=AgentRuntimeConfig(max_iterations=3, tool_budget=3),
+        clock=lambda: datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc),
+    )
+    publisher = FakePublisher()
+    agents = fake_research_agents(
+        planner=planner,
+        critic=FakeAgent(
+            "critic",
+            # The same omission every pass: nothing but the failed extension
+            # moves, so the pass just finished has no progress to report and
+            # the outage is what the stop reason must name.
+            [{"critique": _omission_critique()}],
+        ),
+        publisher=publisher,
+    )
+
+    run = await run_research_graph(
+        graph=compile_research_graph(agents),
+        tracker=tracker,
+        session_id="session-1",
+        question="What limits battery storage deployment?",
+        max_iterations=3,
+    )
+    state = run.state
+
+    assert is_halted(state) is False
+    assert graph_status(state) == "incomplete"
+    assert state.repair_stop_reason == "provider_failure"
+    assert any("provider" in error.error_type for error in state.errors)
+    # The report the run already held is still published.
+    assert state.report_path is not None
+    assert publisher.report_writes == 2
+
+
+@pytest.mark.asyncio
 async def test_a_gate_failure_sends_a_critic_approved_report_back() -> None:
     """Step 2 end to end: the deterministic gate outranks the model's score."""
     agents = fake_research_agents(
