@@ -113,6 +113,7 @@ from deep_research.utils.types import (
     EvidenceUnit,
     Finding,
     MemorySnapshot,
+    RefinementTarget,
     ResearchState,
     ScoredSource,
     SubTopic,
@@ -2095,6 +2096,91 @@ async def test_a_critic_reverification_replaces_the_claim_without_duplicating(
         first_claim.consumed_finding_fingerprints
     )
     assert snapshot[0].consumed_coverage_ids == ["topic-01"]
+
+
+@pytest.mark.asyncio
+async def test_a_typed_adjudication_job_re_opens_a_claim_without_prose(
+    tracker: Tracker,
+) -> None:
+    """The typed route must land on a node that reads it.
+
+    The critique here carries no "reverify"/"recheck" prose at all: the
+    instruction is the typed ``adjudicate`` job the refinement hop persisted in
+    ``refinement_targets``. Without reading that job, the Fact Checker returns
+    early on a pass with no new URLs and the routed repair is a no-op.
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            *_verification_decisions(),
+            *_verification_decisions(),
+        ],
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=CLAIM_A_TEXT, source_urls=[SHARED_URL])
+                ]
+            ),
+            _verdict_draft(verdict="verified"),
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=CLAIM_A_TEXT, source_urls=[SHARED_URL])
+                ]
+            ),
+            _verdict_draft(
+                verdict="verified",
+                contradictions=["A regulator disputes the figure."],
+            ),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=2)
+    state = _coverage_state([_alpha_finding()])
+
+    first = await _research_pass(agent, tracker, state)
+    first_claim = _snapshot(first)[0]
+    after_first = len(completer.calls)
+    carried = merge_research_state(state, first.state_update).model_copy(
+        update={
+            "critique": Critique(
+                score=4,
+                gaps=[
+                    CritiqueGap(
+                        claim_cluster_ids=[
+                            first_claim.cluster_id or first_claim.claim_id
+                        ],
+                        kind="contradiction",
+                        severity="major",
+                        repair_action="adjudicate",
+                        problem="The break-even figure needs a decision.",
+                    )
+                ],
+                unsupported_claims=[],
+                recommended_queries=[],
+                should_continue=True,
+                rationale="One claim is load-bearing.",
+            ),
+            "refinement_targets": [
+                RefinementTarget(
+                    claim_cluster_ids=[
+                        first_claim.cluster_id or first_claim.claim_id
+                    ],
+                    action="adjudicate",
+                    origin="critic_gap",
+                    severity="major",
+                    problem="The break-even figure needs a decision.",
+                )
+            ],
+        }
+    )
+
+    second = await _research_pass(agent, tracker, carried)
+
+    assert _structured_names(completer, after_first) == [
+        "ClaimsDraft",
+        "PassageVerdictDraft",
+    ]
+    snapshot = _snapshot(second)
+    assert snapshot[0].claim_id == first_claim.claim_id
+    assert snapshot[0].contradictions == ["A regulator disputes the figure."]
 
 
 def test_consumed_provenance_attributes_one_shared_url_to_one_finding() -> None:

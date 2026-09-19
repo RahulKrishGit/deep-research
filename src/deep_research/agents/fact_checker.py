@@ -104,6 +104,7 @@ from deep_research.utils.types import (
     EvidenceUnit,
     Finding,
     ReadRecord,
+    RefinementTarget,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -572,6 +573,38 @@ def ordered_findings_for_extraction(
     return [finding for _, finding in indexed]
 
 
+def _job_requests_adjudication(
+    claim: Claim,
+    jobs: Sequence[RefinementTarget],
+) -> bool:
+    """True when a typed repair job asks *this* claim to be adjudicated again.
+
+    The typed equivalent of "reverify this claim", and deliberately
+    scope-aware: the job names the clusters, claims, or targets it is about, so
+    a contradiction routed at one cluster re-opens that cluster's claims and
+    leaves the rest of the ledger alone. A job that names no scope at all —
+    an assertion the Synthesizer returned, which has no claim link by
+    construction — re-opens nothing here; it is what the pass-level check
+    reads.
+    """
+    scope: set[str] = set()
+    for job in jobs:
+        if job.action not in ("adjudicate", "consolidate"):
+            continue
+        scope.update(job.claim_cluster_ids)
+        scope.update(job.target_ids)
+    if not scope:
+        return False
+    owned = {
+        claim.claim_id,
+        *claim.cluster_aliases,
+        *claim.target_ids,
+    }
+    if claim.cluster_id:
+        owned.add(claim.cluster_id)
+    return bool(scope.intersection(owned))
+
+
 def build_claim_drafts(
     draft: ClaimsDraft,
     *,
@@ -579,6 +612,7 @@ def build_claim_drafts(
     prior_claims: Sequence[Claim] = (),
     new_source_urls: Sequence[str] = (),
     critique_texts: Sequence[str] = (),
+    refinement_targets: Sequence[RefinementTarget] = (),
 ) -> tuple[list[ClaimDraft], list[str]]:
     """Keep the claims whose sources exist, naming the ones dropped.
 
@@ -591,9 +625,10 @@ def build_claim_drafts(
     URLs carry a finding no prior claim recorded consuming"
     (``extract_claims`` computes it with ``_finding_is_new``). A claim whose
     fingerprint is already in the snapshot is therefore dropped as already
-    checked unless one of its own sources carries such new evidence, or the
-    Critic explicitly asked for re-verification — the Critic's free-text
-    override stays separate from provenance-based idempotence.
+    checked unless one of its own sources carries such new evidence, or a
+    repair asked for it: a typed ``adjudicate``/``consolidate`` job whose scope
+    names this claim, or the Critic's free-text override, which stays separate
+    from provenance-based idempotence.
     """
     allowed = {normalize_source_url(url) for url in known_urls}
     new_urls = {normalize_source_url(url) for url in new_source_urls}
@@ -624,6 +659,7 @@ def build_claim_drafts(
             if not (
                 set(urls) & new_urls
                 or _critique_requests_reverification(text, critique_texts)
+                or _job_requests_adjudication(previous, refinement_targets)
             ):
                 rejected.append(f"claim {index}: already checked")
                 continue
@@ -2882,7 +2918,17 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             for finding in findings
             if _finding_is_new(finding, self._prior_claims)
         ]
+        # Two ways a pass can be told to look again at evidence it already
+        # holds. The typed one is the route: ``adjudicate`` and ``consolidate``
+        # jobs are what the graph's refinement hop dispatched here, and reading
+        # them is what keeps that route from landing on a node that does
+        # nothing. The prose markers are the legacy signal a critique written
+        # before the typed contract carries, and they stay as the fallback for
+        # exactly that reason.
         has_reverification_request = any(
+            job.action in ("adjudicate", "consolidate")
+            for job in state.refinement_targets
+        ) or any(
             marker in _collapsed(text)
             for text in critique_texts
             for marker in (
@@ -2921,6 +2967,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             prior_claims=self._prior_claims,
             new_source_urls=new_evidence_urls,
             critique_texts=critique_texts,
+            refinement_targets=state.refinement_targets,
         )
         errors = [invalid_claim_error(rejected)] if rejected else []
         self._reset_provenance()

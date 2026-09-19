@@ -404,33 +404,33 @@ def pending_repair_work(state: ResearchState) -> list[str]:
 
 
 def composition_fingerprint(state: ResearchState) -> str:
-    """A stable fingerprint of the report this pass produced.
+    """A stable fingerprint of the *structure* of the report this pass produced.
 
-    Both rendered artifacts and every reader statement behind them, so a fixed
-    duplicated paragraph and a re-derived statement both move it. It is the
-    one part of the progress snapshot that is *presentation* rather than
-    evidence, which is exactly why a presentation repair can count as progress
-    without pretending a fact changed.
+    The substantive reader statements and the shape of each one — its mode, the
+    targets and dimensions it answers, and the clusters and evidence behind it.
+    Deliberately not the rendered prose: a real synthesizer re-words every
+    pass, so hashing the text made every pass look like progress and left
+    ``no_progress`` reachable only against byte-identical fakes. What is
+    structural is what a repair changes — a duplicated paragraph is the same
+    key twice (the keys are a list, never a set), while restating one fact in
+    new words is not.
     """
-    payload = {
-        "report": state.report or "",
-        "evidence": state.report_evidence or "",
-        "statements": [
+    statements = state.composition.statements if state.composition else []
+    keys = sorted(
+        json.dumps(
             {
-                "statement_id": statement.statement_id,
-                "text": statement.text,
                 "mode": statement.mode,
-                "targets": statement.target_ids,
-                "dimensions": statement.answered_dimensions,
-                "clusters": statement.claim_cluster_ids,
-                "evidence": statement.evidence_ids,
-            }
-            for statement in (
-                state.composition.statements if state.composition else []
-            )
-        ],
-    }
-    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+                "targets": sorted(statement.target_ids),
+                "dimensions": sorted(statement.answered_dimensions),
+                "clusters": sorted(statement.claim_cluster_ids),
+                "evidence": sorted(statement.evidence_ids),
+            },
+            sort_keys=True,
+        )
+        for statement in statements
+        if statement.substantive
+    )
+    encoded = json.dumps(keys)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:32]
 
 
@@ -443,12 +443,13 @@ def progress_snapshot(
 
     ``completed_target_ids`` is the strict Section 2.3 reading — a reader
     statement that satisfies the target's dimensions and policy — so an added
-    plan obligation is not progress until its evidence exists. Assessed
-    support is fingerprinted per checked claim and its badge, so a new
-    independent passage moves it while an extra search or an unread page does
-    not. ``resolved_gap_ids`` is read against the previous snapshot's open
-    defects, because a defect that is gone from this review is what "resolved"
-    means.
+    plan obligation is not progress until its evidence exists. Assessed support
+    is fingerprinted per *assessed source* and per checked claim: a source's
+    identity (publisher, work, assessment revision, temporal status) and a
+    claim's badge are what a repair changes, while a re-scored source is the
+    same support at a new number and is deliberately not progress.
+    ``resolved_gap_ids`` is read against the previous snapshot's open defects,
+    because a defect that is gone from this review is what "resolved" means.
     """
     completed = [
         target.target_id
@@ -465,13 +466,32 @@ def progress_snapshot(
     return ResearchProgress(
         completed_target_ids=completed,
         assessed_support_fingerprints=[
-            f"{claim.claim_id}|{claim.evidence_status or claim.verdict}"
-            for claim in state.verified_claims
+            *(
+                "source:"
+                + "|".join(
+                    (
+                        source.url,
+                        source.publisher_id or "",
+                        source.work_id or "",
+                        source.assessment_revision,
+                        source.temporal.status,
+                    )
+                )
+                for source in state.evaluated_sources
+            ),
+            *(
+                "claim:"
+                + "|".join(
+                    (claim.claim_id, claim.evidence_status or claim.verdict)
+                )
+                for claim in state.verified_claims
+            ),
         ],
         resolved_gap_ids=resolved,
         pending_work_ids=pending_repair_work(state),
         unresolved_major_gap_ids=unresolved,
         composition_fingerprint=composition_fingerprint(state),
+        error_count=len(state.errors),
     )
 
 
@@ -482,8 +502,14 @@ def repair_capacity_spent(state: ResearchState) -> bool:
     acquisition state reporting no remaining calls. A run that still holds
     deferred evidence and still has calls to spend has not run out of capacity
     — it has simply not spent it yet.
+
+    The ceiling is read as "no pass can be opened", not "the next pass is the
+    last": the refinement hop can open pass ``iteration + 1`` whenever
+    ``iteration < max_iterations``, so declaring capacity spent at
+    ``iteration + 1 >= max_iterations`` stopped a run one pass early while a
+    deferred candidate and a pass were both still available.
     """
-    if state.iteration + 1 >= state.max_iterations:
+    if state.iteration >= state.max_iterations:
         return True
     states = list(state.acquisition_state_by_target.values())
     if not states:
@@ -525,18 +551,22 @@ def evidence_exhausted(state: ResearchState) -> bool:
     return all(_leads_exhausted(attempt) for attempt in attempts)
 
 
-def provider_failed(state: ResearchState) -> bool:
-    """True when a recorded non-recoverable provider error ended a pass.
+def provider_failed(state: ResearchState, *, since: int = 0) -> bool:
+    """True when a non-recoverable provider error ended the pass just finished.
 
     Read from the recorded errors rather than guessed from a missing result: a
     provider outage and a pass that simply found nothing are different facts,
-    and only the first may be reported as ``provider_failure``. The route
-    consults this only when another pass is wanted, so the record stops the
-    repair loop the first time it is seen instead of being re-read forever.
+    and only the first may be reported as ``provider_failure``.
+
+    ``since`` is the error count the previous snapshot recorded, so only the
+    errors of the pass being judged are read. Reading the whole list let one
+    old outage outrank pending deferred work with capacity still available —
+    the run stopped on a failure that had already been survived instead of
+    processing the evidence it was holding.
     """
     return any(
         not error.recoverable and "provider" in error.error_type
-        for error in state.errors
+        for error in state.errors[since:]
     )
 
 
@@ -553,9 +583,12 @@ def repair_stop_reason(
     measured as progress on its own. The order is the order of certainty:
 
     * progress means the loop is working; only the budget can stop it, and the
-      reason then names the budget;
-    * a recorded provider outage is a fact about the machine, and is reported
-      as one rather than as a stall;
+      reason then names the budget — ``max_iterations`` means the pass this hop
+      is opening is the run's last, which is informational and never terminal,
+      because ``graph_route`` reports the ceiling itself once that pass has run;
+    * a provider outage *in the pass just finished* is a fact about the
+      machine, and is reported as one rather than as a stall. An outage the run
+      already survived is not re-read;
     * work this run deferred is *owed*, so it continues unless capacity is
       genuinely spent, and then says so — ``pending_capacity``, never
       ``no_progress``;
@@ -564,8 +597,12 @@ def repair_stop_reason(
     * anything else that changed nothing is ``no_progress``.
     """
     if progress_improved(before, after):
-        return "max_iterations" if state.iteration + 1 >= state.max_iterations else None
-    if provider_failed(state):
+        return (
+            "max_iterations"
+            if state.iteration + 1 >= state.max_iterations
+            else None
+        )
+    if provider_failed(state, since=before.error_count):
         return "provider_failure"
     if after.pending_work_ids:
         return "pending_capacity" if repair_capacity_spent(state) else None

@@ -56,6 +56,7 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchState,
     SubTopic,
+    unanswered_required_targets,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.graph_fakes import (
@@ -1284,3 +1285,174 @@ async def test_a_refinement_that_is_still_working_opens_the_next_pass() -> None:
 
     assert load_state(result).iteration == 1
     assert route_after_refine(result) == "researcher"
+
+
+@pytest.mark.asyncio
+async def test_an_extend_plan_job_dispatches_the_hop_to_the_planner() -> None:
+    """The typed route is dispatched, not merely recorded.
+
+    An original-question omission is expressed as ``extend_plan`` over the
+    ``question`` sentinel. Computing and persisting that job while sending the
+    next pass to the researcher is how the omission went unrepaired: the
+    planner has to be the node the hop routes to.
+    """
+    state = fake_research_state(
+        sub_topics=[_planned_topic(_evidence_target())],
+        critique=_critique(
+            _gap(
+                action="extend_plan",
+                kind="coverage",
+                severity="critical",
+                coverage_id=None,
+                target_ids=["question"],
+                problem="The question asks for a cost the plan never targeted.",
+            )
+        ),
+        max_iterations=3,
+        iteration=0,
+    )
+
+    result = await refine_node(dump_state(state))
+    refined = load_state(result)
+
+    assert refined.refinement_targets[0].action == "extend_plan"
+    assert refined.refinement_targets[0].target_ids == ["question"]
+    assert route_after_refine(result) == "planner"
+
+
+@pytest.mark.asyncio
+async def test_an_acquisition_repair_still_opens_a_research_pass() -> None:
+    state = fake_research_state(
+        sub_topics=[_planned_topic(_evidence_target())],
+        critique=_critique(_gap(target_ids=["target-01"])),
+        max_iterations=3,
+        iteration=0,
+    )
+
+    result = await refine_node(dump_state(state))
+
+    assert route_after_refine(result) == "researcher"
+
+
+@pytest.mark.asyncio
+async def test_the_refinement_hop_invalidates_only_the_claims_a_job_touches(
+) -> None:
+    """The hop applies the invalidation, and only for typed jobs.
+
+    A mechanically unmet target gets an ``acquire`` job every pass, so
+    invalidating on those would drop the claims of every still-open target on
+    every pass. A Critic-typed job is a statement that its own scope changed,
+    and that scope is what may be invalidated.
+    """
+    touched = fake_claim("The cost is 40 EUR.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
+    )
+    untouched = fake_claim("Safety improved.").model_copy(
+        update={"target_ids": ["target-02"], "cluster_id": "cluster-02"}
+    )
+    state = fake_research_state(
+        sub_topics=[_planned_topic(_evidence_target())],
+        verified_claims=[touched, untouched],
+        quality=fake_quality(),
+        critique=_critique(
+            _gap(
+                action="adjudicate",
+                kind="contradiction",
+                coverage_id=None,
+                target_ids=["target-01"],
+            )
+        ),
+        max_iterations=3,
+        iteration=0,
+    )
+
+    refined = load_state(await refine_node(dump_state(state)))
+
+    assert [claim.claim_id for claim in refined.verified_claims] == [
+        untouched.claim_id
+    ]
+    assert refined.quality is None
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_target_job_invalidates_no_claim() -> None:
+    """A pending obligation is not a changed input: its claims stand.
+
+    The claim here is exactly the shape a still-open obligation carries — it
+    does not satisfy the target's policy, which is why the target is open — so
+    invalidating on the mechanical job would delete it on every pass.
+    """
+    open_obligation = fake_claim("Later work bears on the cost.", confidence=0.4)
+    state = fake_research_state(
+        sub_topics=[_planned_topic(_evidence_target())],
+        verified_claims=[open_obligation],
+        critique=_critique(),
+        max_iterations=3,
+        iteration=0,
+    )
+    assert unanswered_required_targets(state)
+
+    refined = load_state(await refine_node(dump_state(state)))
+
+    assert [job.origin for job in refined.refinement_targets] == [
+        "unanswered_target"
+    ]
+    assert [claim.claim_id for claim in refined.verified_claims] == [
+        open_obligation.claim_id
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_assess_source_job_drops_the_sources_its_claims_cite() -> None:
+    """The requirement names source reviews: a re-assessment invalidates them."""
+    url = "https://example.org/a"
+    stale = fake_claim("The cost is 40 EUR.").model_copy(
+        update={"target_ids": ["target-01"], "source_urls": [url]}
+    )
+    state = fake_research_state(
+        sub_topics=[_planned_topic(_evidence_target())],
+        verified_claims=[stale],
+        evaluated_sources=[fake_scored_source(url)],
+        critique=_critique(
+            _gap(
+                action="assess_source",
+                kind="source_quality",
+                target_ids=["target-01"],
+            )
+        ),
+        max_iterations=3,
+        iteration=0,
+    )
+
+    refined = load_state(await refine_node(dump_state(state)))
+
+    assert refined.verified_claims == []
+    assert refined.evaluated_sources == []
+
+
+@pytest.mark.asyncio
+async def test_a_synthesize_job_invalidates_nothing_at_the_hop() -> None:
+    claim = fake_claim("The cost is 40 EUR.").model_copy(
+        update={"target_ids": ["target-01"]}
+    )
+    state = fake_research_state(
+        verified_claims=[claim],
+        evaluated_sources=[fake_scored_source()],
+        quality=fake_quality(),
+        critique=_critique(
+            _gap(
+                action="synthesize",
+                kind="presentation",
+                coverage_id=None,
+                statement_ids=["S001"],
+            )
+        ),
+        max_iterations=3,
+        iteration=0,
+    )
+
+    refined = load_state(await refine_node(dump_state(state)))
+
+    assert [row.claim_id for row in refined.verified_claims] == [claim.claim_id]
+    assert refined.evaluated_sources
+    assert refined.quality is not None

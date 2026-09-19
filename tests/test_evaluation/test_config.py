@@ -615,11 +615,17 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # hashes in full — the same false positive of its design already recorded for
 # the researcher above, and the reason these pins are re-recorded deliberately
 # rather than silently invalidated.
+#
+# Task 9 fix round 1 re-pinned planner and fact_checker; the other four did not
+# move. Again no prompt text changed: the planner gained the branch that
+# *extends* rather than re-plans when the graph routes an ``extend_plan`` job to
+# it, and the fact checker gained the read of ``refinement_targets`` that makes
+# an ``adjudicate``/``consolidate`` route land on a node which acts on it.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "750abb515728",
+    "planner": "ee4b982ed671",
     "researcher": "4f68ae8f190d",
     "source_evaluator": "6c12c0fffc92",
-    "fact_checker": "7695ca2d0524",
+    "fact_checker": "77ac66835773",
     "synthesizer": "0ec21503cc00",
     "critic": "9694e44926d3",
 }

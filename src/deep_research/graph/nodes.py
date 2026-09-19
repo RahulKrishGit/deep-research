@@ -548,11 +548,18 @@ async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
 
     * the typed repair jobs the next pass owes — the Critic's defects unioned
       with the plan's mechanically unmet required targets — so a resumed run
-      can name exactly what it was about to repair;
+      can name exactly what it was about to repair, and the hop's own edge can
+      dispatch them;
     * whether the pass just finished changed anything substantive, compared
       against the snapshot the previous hop recorded. A whole repair job is
       one unit here: a plan extension and the acquisition it triggered finish
       together, so adding a target is never mistaken for answering one.
+
+    The reviews a *typed* repair invalidates are dropped here too, because this
+    is where the repair's inputs are declared to have changed. Mechanically
+    unmet targets are excluded on purpose: they produce an ``acquire`` job on
+    every pass, so invalidating on those would delete the claims of every
+    still-open obligation each time the loop turned.
 
     The comparison is only made once a previous snapshot exists, so the first
     refinement can never be called a stall, and the stop reason is evaluated
@@ -579,15 +586,20 @@ async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
         else repair_stop_reason(state, before=previous, after=after)
     )
     targets = refinement_targets_for(state)
+    invalidation = invalidation_update(
+        state,
+        [job for job in targets if job.origin != "unanswered_target"],
+    )
     recorded = merge_research_state(
         state,
         {
+            **invalidation,
             "refinement_targets": targets,
             "progress_history": [after],
             "repair_stop_reason": stopped,
         },
     )
-    if repair_is_terminal(recorded):
+    if stopped is not None and repair_is_terminal(recorded):
         # The pass just finished changed nothing another pass would change, so
         # no further pass is opened: the iteration does not advance, no agent
         # runs again, and the run goes straight to publication with the reason
@@ -598,7 +610,7 @@ async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
                 "events": [
                     route_decided_event(
                         destination=ROUTE_FINALIZE,
-                        reason=stopped or "no_progress",
+                        reason=stopped,
                         iteration=state.iteration,
                         max_iterations=state.max_iterations,
                         should_continue=bool(
@@ -630,14 +642,21 @@ def route_after_critic(channel: ResearchGraphState) -> str:
 
 
 def route_after_refine(channel: ResearchGraphState) -> str:
-    """The refinement hop's own edge: another research pass, or publication.
+    """The refinement hop's own edge: planner, researcher, or publication.
 
-    ``refine`` is where the stop reason is decided, so it is also where it can
-    take effect without paying for one more pass first. The names are the two
-    destinations the orchestrator wires; the decision itself is
-    ``repair_is_terminal``.
+    ``refine`` is where the stop reason and the typed worklist are decided, so
+    it is also where they take effect: a stall publishes without paying for one
+    more pass, and an ``extend_plan`` job goes to the Planner — which is the
+    only node that can add the obligation an original-question omission asks
+    for. Everything else opens an ordinary research pass. The names are the
+    three destinations the orchestrator wires.
     """
-    return "finalize" if repair_is_terminal(load_state(channel)) else "researcher"
+    state = load_state(channel)
+    if repair_is_terminal(state):
+        return "finalize"
+    if any(job.action == "extend_plan" for job in state.refinement_targets):
+        return "planner"
+    return "researcher"
 
 
 # --- Task 9: the typed repair route -----------------------------------------
@@ -816,6 +835,12 @@ def invalidation_update(
     citations, so unrelated verified claims and the target coverage they
     carry are preserved rather than re-derived.
 
+    A source re-assessment additionally drops the *source* reviews its claims
+    rested on: ``evaluated_sources`` rows for the URLs those claims cite, since
+    a score for a body whose assessment is being redone is the same stale
+    judgement the claims were just told to stop relying on. No other action
+    touches source rows.
+
     A presentation-only repair invalidates nothing at all: ``synthesize``
     rewrites prose over evidence the run already holds, and dropping verified
     claims for a re-worded paragraph is exactly the evidence loss this
@@ -852,6 +877,19 @@ def invalidation_update(
     update: ResearchStateUpdate = {"quality": None}
     if len(kept) != len(state.verified_claims):
         update["verified_claims"] = kept
+
+    if any(target.action == "assess_source" for target in changing):
+        cited = {
+            url
+            for claim in state.verified_claims
+            if _claim_is_invalidated(claim, target_scope, cluster_scope)
+            for url in claim.source_urls
+        }
+        kept_sources = [
+            source for source in state.evaluated_sources if source.url not in cited
+        ]
+        if len(kept_sources) != len(state.evaluated_sources):
+            update["evaluated_sources"] = kept_sources
     return update
 
 

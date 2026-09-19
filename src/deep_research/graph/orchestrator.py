@@ -159,12 +159,15 @@ def build_research_graph(agents: ResearchAgents) -> StateGraph:
         },
     )
     # The refinement hop decides whether the pass that just finished earned
-    # another one, so it routes as well: a stall goes straight to publication
-    # instead of buying a pass that would repeat it.
+    # another one, and which node the next repair starts at: a stall goes
+    # straight to publication, an original-question omission goes to the
+    # Planner (whose own edge then reaches the Researcher), and everything else
+    # opens an ordinary research pass.
     builder.add_conditional_edges(
         REFINE_NODE,
         route_after_refine,
         {
+            "planner": PLANNER_NODE,
             "researcher": RESEARCHER_NODE,
             "finalize": FINALIZE_NODE,
         },

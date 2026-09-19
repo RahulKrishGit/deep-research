@@ -63,6 +63,7 @@ from deep_research.utils.types import (
     EvidenceTarget,
     Finding,
     MemorySnapshot,
+    RefinementTarget,
     ResearchState,
     SubTopic,
     merge_research_state,
@@ -3540,6 +3541,60 @@ async def test_a_second_non_extension_pass_cannot_replace_the_live_topic_list(
         "topic-03",
     ]
     assert merged.initial_target_ids == state.initial_target_ids
+
+
+@pytest.mark.asyncio
+async def test_the_planner_extends_the_plan_when_re_entered_with_an_extension_job(
+    tracker: Tracker,
+) -> None:
+    """The graph's ``extend_plan`` route lands here, so this must extend.
+
+    Being re-entered with a plan already in state and an ``extend_plan`` job is
+    the graph asking for the missing obligation to be *added*. Re-planning
+    instead would ask the model for a whole new topic list and then report only
+    the ids the session does not already have — which, for a re-plan of the
+    same question, is none of them.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(),
+            ResearchPlanDraft(
+                sub_topics=[_draft("Siting and permitting", priority=4)]
+            ),
+        ],
+    )
+    agent = _planner(tracker, completer)
+    question = "What limits battery storage deployment?"
+
+    async with tracker.session_span("session-1", "q"):
+        first = await agent.run(_state(question))
+        planned = merge_research_state(_state(question), first.state_update)
+        asked = planned.model_copy(
+            update={
+                "refinement_targets": [
+                    RefinementTarget(
+                        target_ids=[QUESTION_TARGET_ID],
+                        action="extend_plan",
+                        origin="critic_gap",
+                        severity="critical",
+                        problem="The question asks for a cost the plan never targeted.",
+                    )
+                ]
+            }
+        )
+        extended = await agent.run(asked)
+
+    update = extended.state_update
+    assert update["expanded_target_ids"] == ["topic-04-target-01"]
+    assert [topic.coverage_id for topic in update["sub_topics"]] == ["topic-04"]
+    assert "answer_contract" not in update
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+        "PlanExtensionDraft",
+    ]
 
 
 @pytest.mark.asyncio

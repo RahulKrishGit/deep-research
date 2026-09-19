@@ -50,6 +50,7 @@ from deep_research.agents.prompts import (
 )
 from deep_research.agents.steps import ReActRun
 from deep_research.evaluation.cases.critic import LIVE_CASES
+from deep_research.graph.nodes import REPAIR_NODES
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -64,7 +65,6 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     EVIDENCE_BADGE_LABELS,
     REPAIR_ACTIONS,
-    REPAIR_NODES,
     AtomicProposition,
     Claim,
     ClaimCluster,
@@ -2110,7 +2110,12 @@ def test_the_same_defect_restated_with_a_different_label_is_still_one() -> None:
 
 
 def test_the_repair_actions_are_exactly_the_router_keys() -> None:
-    """``REPAIR_NODES`` keys are the literals, and Task 9 routes on them."""
+    """``REPAIR_NODES`` keys are the literals, and the graph routes on them.
+
+    The route table itself lives in ``graph.nodes`` — one table, keyed by the
+    contract — so the key equality is asserted against the table the router
+    actually reads.
+    """
     assert REPAIR_ACTIONS == (
         "extend_plan",
         "acquire",

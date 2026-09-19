@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import io
+from datetime import datetime, timezone
 
 import pytest
 
 from deep_research.agents.critic import CriticAgent, fallback_critique
 from deep_research.agents.errors import AgentConfigurationError
+from deep_research.agents.planner import (
+    PlannerAgent,
+    ResearchPlanDraft,
+)
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.cli import EXIT_GRAPH_FAILED
 from deep_research.cli import main as cli_main
@@ -17,6 +22,7 @@ from deep_research.graph.orchestrator import (
     GraphRun,
     build_checkpointer,
     compile_research_graph,
+    run_research_graph,
     session_config,
     terminal_publisher,
 )
@@ -41,10 +47,13 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
+    QUESTION_TARGET_ID,
+    Critique,
+    CritiqueGap,
     ResearchError,
     ResearchState,
 )
-from tests.agent_fakes import ScriptedCompleter
+from tests.agent_fakes import ScriptedCompleter, finish
 from tests.graph_fakes import (
     FakeAgent,
     FakePublisher,
@@ -58,7 +67,8 @@ from tests.graph_fakes import (
     fake_synthesis_update,
     progressing_fact_checker,
 )
-from tests.research_fakes import synthesizer_tools
+from tests.research_fakes import planner_tools, synthesizer_tools
+from tests.test_agents.test_planner import _draft, _review, _sorting_plan
 
 QUESTION = "How mature is quantum error correction?"
 
@@ -90,6 +100,64 @@ def _route_reasons(state: ResearchState) -> list[str]:
         for event in state.events
         if event.event_type == "graph.route.decided"
     ]
+
+
+def _defect(coverage_id: str, target_id: str, problem: str) -> CritiqueGap:
+    return CritiqueGap(
+        coverage_id=coverage_id,
+        target_ids=[target_id],
+        kind="missing_support",
+        severity="major",
+        repair_action="acquire",
+        problem=problem,
+    )
+
+
+def _two_defect_critique() -> Critique:
+    """Two open obligations, so the next review can close one of them."""
+    return Critique(
+        score=4,
+        gaps=[
+            _defect("topic-01", "topic-01-target-01", "No cost data."),
+            _defect("topic-02", "topic-02-target-01", "No financing data."),
+        ],
+        unsupported_claims=[],
+        recommended_queries=[],
+        should_continue=True,
+        rationale="Two obligations are open.",
+    )
+
+
+def _one_defect_critique() -> Critique:
+    """The first obligation is answered; the second is still open."""
+    return Critique(
+        score=5,
+        gaps=[_defect("topic-02", "topic-02-target-01", "No financing data.")],
+        unsupported_claims=[],
+        recommended_queries=[],
+        should_continue=True,
+        rationale="One obligation is still open.",
+    )
+
+
+def _omission_critique() -> Critique:
+    """One original-question omission, typed as a plan extension."""
+    return Critique(
+        score=5,
+        gaps=[
+            CritiqueGap(
+                target_ids=[QUESTION_TARGET_ID],
+                kind="coverage",
+                severity="critical",
+                repair_action="extend_plan",
+                problem="The question asks for a cost the plan never targeted.",
+            )
+        ],
+        unsupported_claims=[],
+        recommended_queries=[],
+        should_continue=True,
+        rationale="The plan omits an obligation the question names.",
+    )
 
 
 @pytest.mark.asyncio
@@ -618,8 +686,11 @@ async def test_the_observed_report_shape_publishes_once_after_three_refinements(
         critic=FakeAgent(
             "critic",
             [
-                {"critique": fake_critique(should_continue=True, score=4)},
-                {"critique": fake_critique(should_continue=True, score=4)},
+                # A real critic closes defects as they are repaired, and one
+                # resolution per pass is what keeps this run making progress
+                # rather than merely spending budget.
+                {"critique": _two_defect_critique()},
+                {"critique": _one_defect_critique()},
                 {"critique": fake_critique(should_continue=True, score=4)},
                 {"critique": fake_critique(should_continue=False, score=9)},
             ],
@@ -681,20 +752,106 @@ async def test_a_stalled_refinement_stops_before_a_second_unchanged_pass() -> No
 
 
 @pytest.mark.asyncio
+async def test_an_original_question_omission_reaches_the_planner_and_is_researched(
+    tracker: Tracker,
+) -> None:
+    """End to end: the typed route is dispatched, so the omission is repaired.
+
+    A real Planner runs in the graph. Pass 0 plans; the Critic then expresses an
+    original-question omission as an ``extend_plan`` job over the ``question``
+    sentinel. The refinement hop must route that job to the Planner, the
+    Planner must *extend* rather than re-plan, the added target must join the
+    expanded inventory, and the research pass that follows must see the new
+    topic — the three halves of "routes to Planner extension ... increases ...
+    the coverage inventory, and then researches the new target".
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(),
+            ResearchPlanDraft(
+                sub_topics=[_draft("Levelised cost per tonne", priority=4)]
+            ),
+        ],
+    )
+    planner = PlannerAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="planner", max_entries=20
+        ),
+        tools=planner_tools(tracker),
+        config=AgentRuntimeConfig(max_iterations=3, tool_budget=3),
+        clock=lambda: datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc),
+    )
+    agents = fake_research_agents(
+        planner=planner,
+        critic=FakeAgent(
+            "critic",
+            [
+                {"critique": _omission_critique()},
+                {"critique": fake_critique(should_continue=False, score=9)},
+            ],
+        ),
+    )
+
+    run = await run_research_graph(
+        graph=compile_research_graph(agents),
+        tracker=tracker,
+        session_id="session-1",
+        question="What limits battery storage deployment?",
+        max_iterations=3,
+    )
+    state = run.state
+
+    assert [name for name, _, _ in completer.calls] == [
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+        "PlanExtensionDraft",
+    ]
+    assert state.expanded_target_ids == ["topic-04-target-01"]
+    assert [topic.coverage_id for topic in state.sub_topics] == [
+        "topic-01",
+        "topic-02",
+        "topic-03",
+        "topic-04",
+    ]
+    # The pass that followed the extension researched the added topic.
+    assert len(agents.researcher.calls) == 2
+    assert [topic.coverage_id for topic in agents.researcher.calls[1].sub_topics] == [
+        "topic-01",
+        "topic-02",
+        "topic-03",
+        "topic-04",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_gate_failure_sends_a_critic_approved_report_back() -> None:
     """Step 2 end to end: the deterministic gate outranks the model's score."""
     agents = fake_research_agents(
         source_evaluator=FakeAgent(
             "source_evaluator",
             [
-                # The same canonical URL twice: a duplicate source row, which
-                # is a hard failure however good the report looks.
+                # A source evaluator that makes progress — it assesses a new
+                # source — while the duplicate-row defect it was sent back for
+                # persists. Both halves matter: the gate must keep failing, and
+                # the pass must not look stalled, because the assessed set did
+                # change.
                 {
                     "evaluated_sources": [
                         fake_scored_source("https://example.org/a"),
                         fake_scored_source("https://example.org/a"),
                     ]
-                }
+                },
+                {
+                    "evaluated_sources": [
+                        fake_scored_source("https://example.org/a"),
+                        fake_scored_source("https://example.org/a"),
+                        fake_scored_source("https://example.org/b"),
+                    ]
+                },
             ],
         ),
         synthesizer=FakeAgent(

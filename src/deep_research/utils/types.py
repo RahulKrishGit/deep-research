@@ -977,11 +977,12 @@ class ReportQualitySnapshot(ContractModel):
 
 # --- Task 8: the Critic's typed defect vocabulary ---------------------------
 #
-# Ten kinds and six repair actions, and both sets are *normative*: Task 9's
-# route table keys are exactly ``REPAIR_ACTIONS``, and the kind names what is
-# wrong rather than how to fix it. A kind outside this list is a schema
-# failure, not a new category — a free-text kind would make "which defects does
-# this system find?" unanswerable.
+# Ten kinds and six repair actions, and both sets are *normative*: the kind
+# names what is wrong rather than how to fix it, and ``REPAIR_ACTIONS`` is the
+# key set of the route table in ``graph.nodes`` (``REPAIR_NODES``), which maps
+# each action to the node that performs it. A kind outside this list is a
+# schema failure, not a new category — a free-text kind would make "which
+# defects does this system find?" unanswerable.
 GapKind: TypeAlias = Literal[
     "coverage",
     "missing_support",
@@ -1030,13 +1031,6 @@ REPAIR_ACTIONS: tuple[RepairAction, ...] = (
     "consolidate",
     "synthesize",
 )
-
-# The repair route each action names, keyed by the action literal itself.
-# Task 9's router reads exactly these keys; the identity mapping is deliberate,
-# so an action cannot be routed to a differently named node by accident.
-REPAIR_NODES: dict[RepairAction, str] = {
-    action: action for action in REPAIR_ACTIONS
-}
 
 # The action that runs a search. Queries are acquisition only: a rewrite, an
 # adjudication, a consolidation, a source assessment, or a plan extension runs
@@ -2104,6 +2098,12 @@ class ResearchProgress(ContractModel):
     absent because they measure spending rather than progress, and
     ``pending_work_ids`` is carried — not scored — so a run that is still
     holding deferred evidence can say so instead of being called stalled.
+
+    ``error_count`` is the one bookkeeping field: how many errors the run had
+    recorded when this snapshot was taken. It is not progress either — it is
+    the mark that lets the stop decision read only the errors of the pass it is
+    judging, so an outage the run already survived cannot be re-read as the
+    reason the *next* loop stopped.
     """
 
     completed_target_ids: list[str] = Field(default_factory=list)
@@ -2112,6 +2112,7 @@ class ResearchProgress(ContractModel):
     pending_work_ids: list[str] = Field(default_factory=list)
     unresolved_major_gap_ids: list[str] = Field(default_factory=list)
     composition_fingerprint: str = ""
+    error_count: int = Field(default=0, ge=0)
 
 
 def _gained(after: Sequence[str], before: Sequence[str]) -> bool:

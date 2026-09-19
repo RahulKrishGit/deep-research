@@ -1755,6 +1755,20 @@ def format_review_problems(review: PlanReviewDraft) -> str:
     )
 
 
+def _planned_omission(state: ResearchState) -> str | None:
+    """The original-question omission the graph routed to this node, if any.
+
+    The instruction to extend the plan is the typed ``extend_plan`` job in
+    ``state.refinement_targets`` — the same object the refinement hop's edge
+    dispatched on — so the Planner never re-reads the critique's prose to learn
+    why it was entered, and cannot mistake a re-plan for an extension.
+    """
+    for job in state.refinement_targets:
+        if job.action == "extend_plan":
+            return job.problem
+    return None
+
+
 def extension_messages(
     contract: AnswerContract,
     existing: Sequence[SubTopic],
@@ -2115,6 +2129,12 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         ``query_memory`` is offered at all), and whether the session already
         has a frozen answer contract (which decides whether this pass may
         stamp one).
+
+        A third fact decides which of the two jobs this run has. When the
+        graph's refinement hop routed an ``extend_plan`` job here — the typed
+        expression of an original-question omission — the run *extends* the
+        plan already in state and skips the scoping loop entirely. Anything
+        else is a plan: a first plan, or a re-plan of a session that has none.
         """
         self._restricted_toolset = (
             self._toolset.without("query_memory")
@@ -2130,6 +2150,15 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
         ]
+        omission = _planned_omission(state)
+        if (
+            omission is not None
+            and state.sub_topics
+            and state.answer_contract is not None
+        ):
+            return await self._extension_run(
+                state, omission=omission, events=events
+            )
         try:
             outcome = await super().run(state)
         except ProviderError as error:
@@ -2143,6 +2172,55 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             react=outcome.react,
             errors=outcome.errors,
             state_update={**outcome.state_update, "events": events},
+            call_fingerprints=dict(outcome.call_fingerprints),
+        )
+
+    async def _extension_run(
+        self,
+        state: ResearchState,
+        *,
+        omission: str,
+        events: list[ResearchEvent],
+    ) -> AgentRun[ResearchPlan]:
+        """Answer one reviewed omission with added sub-topics, and only.
+
+        The scoping loop is skipped on purpose: this session is already
+        scoped, the omission is already named by the Critic, and the one call
+        that can close it is a structured extension request. Nothing is
+        re-planned, so no existing id, priority, obligation, or the frozen
+        contract can move (Section 2.3) — ``extend_plan`` itself refuses a
+        capacity conflict rather than dropping a difficult topic.
+        """
+        async with self.tracker.agent_span(self.name) as span:
+            plan = await self.extend_plan(state, omission=omission)
+            react = ReActRun(agent_name=self.name, stop_reason="finished")
+            span.set_outputs(
+                {
+                    "agent_name": self.name,
+                    "stop_reason": react.stop_reason,
+                    "iterations": react.iterations,
+                    "tool_calls": react.tool_calls,
+                    "produced_result": plan is not None,
+                    "call_fingerprints": dict(self._call_fingerprints),
+                }
+            )
+        outcome: AgentRun[ResearchPlan] = AgentRun(
+            agent_name=self.name,
+            result=plan,
+            react=react,
+            errors=[],
+            state_update=self.state_update(plan, react),
+            call_fingerprints=dict(self._call_fingerprints),
+        )
+        return AgentRun(
+            agent_name=outcome.agent_name,
+            result=outcome.result,
+            react=outcome.react,
+            errors=outcome.errors,
+            state_update={
+                **outcome.state_update,
+                "events": [*events, planning_completed_event(outcome)],
+            },
             call_fingerprints=dict(outcome.call_fingerprints),
         )
 

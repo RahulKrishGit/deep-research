@@ -32,6 +32,7 @@ from deep_research.graph.state import (
     load_state,
     pending_repair_work,
     progress_snapshot,
+    repair_capacity_spent,
     repair_stop_reason,
 )
 from deep_research.utils.types import (
@@ -46,6 +47,9 @@ from deep_research.utils.types import (
     CritiqueGap,
     EvidenceTarget,
     MemorySnapshot,
+    ReportComposition,
+    ReportPoint,
+    ReportStatement,
     ResearchError,
     ResearchProgress,
     SubTopic,
@@ -550,6 +554,31 @@ def _provider_error() -> ResearchError:
     )
 
 
+def _statement_composition(
+    statement_id: str,
+    text: str,
+    *,
+    duplicate: bool = False,
+) -> ReportComposition:
+    """One substantive reader statement, optionally printed twice."""
+    row = ReportStatement(
+        statement_id=statement_id,
+        text=text,
+        mode="settled",
+        target_ids=["target-01"],
+        answered_dimensions=["cost"],
+    )
+    rows = [row, row.model_copy(update={"statement_id": f"{statement_id}b"})]
+    return ReportComposition(
+        question="How mature is quantum error correction?",
+        session_id="session-1",
+        summary=[
+            ReportPoint(text=item.text, statement=item)
+            for item in (rows if duplicate else rows[:1])
+        ],
+    )
+
+
 def test_the_repair_stop_reasons_are_exactly_the_five_named_ones() -> None:
     assert REPAIR_STOP_REASONS == (
         "no_progress",
@@ -703,8 +732,9 @@ def test_a_provider_outage_is_never_reported_as_a_stalled_repair() -> None:
         errors=[_provider_error()],
         critique=fake_critique(should_continue=True, score=4),
     )
-    before = progress_snapshot(state)
-    after = progress_snapshot(state, previous=before)
+    after = progress_snapshot(state)
+    # The previous snapshot was taken before this pass recorded its error.
+    before = after.model_copy(update={"error_count": 0})
     reason = repair_stop_reason(state, before=before, after=after)
 
     assert reason == "provider_failure"
@@ -728,15 +758,95 @@ def test_a_failed_review_still_outranks_every_repair_stop_reason() -> None:
     assert graph_status(state) == "failed"
 
 
-def test_a_fixed_duplicated_paragraph_moves_the_composition_fingerprint() -> None:
-    state = fake_research_state(report="# Report\n\nSame paragraph.\n")
-    duplicated = state.model_copy(
-        update={"report": "# Report\n\nSame paragraph.\n\nSame paragraph.\n"}
+def test_a_duplicated_statement_moves_the_composition_fingerprint() -> None:
+    """A repeated paragraph is structural: the same fact stated twice."""
+    once = fake_research_state(
+        composition=_statement_composition("S001", "The cost is 40 EUR.")
+    )
+    twice = fake_research_state(
+        composition=_statement_composition(
+            "S001", "The cost is 40 EUR.", duplicate=True
+        )
     )
 
-    assert progress_snapshot(state).composition_fingerprint != (
-        progress_snapshot(duplicated).composition_fingerprint
+    assert progress_snapshot(once).composition_fingerprint != (
+        progress_snapshot(twice).composition_fingerprint
     )
+
+
+def test_a_reworded_report_over_the_same_statements_is_not_progress() -> None:
+    """Wording is not evidence: a real synthesizer re-words every pass.
+
+    Fingerprinting the rendered prose made every pass look like progress, so
+    ``no_progress`` was reachable only against byte-identical fakes.
+    """
+    first = fake_research_state(
+        report="# Report\n\nThe cost is 40 EUR per tonne.\n",
+        composition=_statement_composition("S001", "The cost is 40 EUR."),
+    )
+    reworded = first.model_copy(
+        update={"report": "# Report\n\nCosts run at roughly 40 EUR a tonne.\n"}
+    )
+
+    assert progress_snapshot(first).composition_fingerprint == (
+        progress_snapshot(reworded).composition_fingerprint
+    )
+    assert not progress_improved(
+        progress_snapshot(first), progress_snapshot(reworded)
+    )
+
+
+def test_an_old_provider_error_does_not_outrank_pending_work() -> None:
+    """Only the failure of the pass just finished stops the loop as one."""
+    old_error = fake_research_state(errors=[_provider_error()])
+    before = progress_snapshot(old_error).model_copy(update={"error_count": 1})
+    state = fake_research_state(
+        sub_topics=[_unmet_topic()],
+        max_iterations=3,
+        iteration=1,
+        errors=[_provider_error()],
+        acquisition_state_by_target={
+            "target-01": _deferred_state(remaining_calls=4)
+        },
+    )
+    after = progress_snapshot(state)
+
+    assert after.error_count == 1
+    assert repair_stop_reason(state, before=before, after=after) is None
+
+
+def test_a_provider_failure_in_the_pass_just_finished_is_reported() -> None:
+    state = fake_research_state(
+        sub_topics=[_unmet_topic()],
+        max_iterations=3,
+        iteration=1,
+        errors=[_provider_error()],
+    )
+    after = progress_snapshot(state)
+    # The previous snapshot was taken before this pass recorded its error.
+    before = after.model_copy(update={"error_count": 0})
+
+    assert (
+        repair_stop_reason(state, before=before, after=after)
+        == "provider_failure"
+    )
+
+
+def test_capacity_remains_while_a_pass_can_still_be_opened() -> None:
+    """``refine`` can open pass ``iteration + 1`` while ``iteration < max``."""
+    state = fake_research_state(
+        sub_topics=[_unmet_topic()],
+        max_iterations=3,
+        iteration=2,
+        acquisition_state_by_target={
+            "target-01": _deferred_state(remaining_calls=4)
+        },
+    )
+    before = progress_snapshot(state)
+    after = progress_snapshot(state, previous=before)
+
+    assert repair_capacity_spent(state) is False
+    assert repair_stop_reason(state, before=before, after=after) is None
 
 
 def test_the_progress_snapshot_names_completed_targets_and_open_defects() -> None:
