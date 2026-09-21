@@ -2023,7 +2023,7 @@ def derive_statement(
             if evidence_id in evidence and evidence_id not in evidence_ids:
                 evidence_ids.append(evidence_id)
     for claim in claims:
-        for evidence_id in claim.evidence_selection.values():
+        for evidence_id in claim.evidence_selection:
             if evidence_id in evidence and evidence_id not in evidence_ids:
                 evidence_ids.append(evidence_id)
     target_ids: list[str] = []

@@ -229,7 +229,7 @@ def _cited_read_incidence(state: ResearchState) -> dict[str, tuple[str, str]]:
     """
     cited: dict[str, tuple[str, str]] = {}
     for claim in state.verified_claims:
-        for evidence_id in claim.evidence_selection.values():
+        for evidence_id in claim.evidence_selection:
             unit = state.evidence_units.get(evidence_id)
             if unit is None:
                 continue

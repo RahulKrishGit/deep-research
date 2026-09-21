@@ -911,7 +911,7 @@ def _evidence_lines(
 def _selected_ids(claim: Claim, cluster: ClaimCluster | None) -> list[str]:
     if cluster is not None and cluster.evidence_ids:
         return list(cluster.evidence_ids)
-    return list(claim.evidence_selection.values())
+    return list(claim.evidence_selection)
 
 
 def _packet_dates(
@@ -1438,7 +1438,7 @@ def _cited_evidence(claims: Sequence[Claim], context: DraftContext) -> str:
     """
     parts: list[str] = []
     for claim in claims:
-        for evidence_id in claim.evidence_selection.values():
+        for evidence_id in claim.evidence_selection:
             unit = context.evidence.get(evidence_id)
             if unit is not None:
                 parts.append(unit.excerpt)
