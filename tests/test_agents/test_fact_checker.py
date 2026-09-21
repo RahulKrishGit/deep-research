@@ -12,10 +12,17 @@ import deep_research.providers.contracts as contracts_module
 from deep_research.agents import fact_checker as fact_checker_module
 from deep_research.agents.base import AgentRun
 from deep_research.agents.claim_clusters import (
+    MAX_EQUIVALENCE_ATOMS,
+    AtomicPairDraft,
+    ClaimCluster,
+    ClaimEquivalenceDraft,
     _canonical_claim,
+    _resolve_stored_cluster,
+    claim_cluster_id,
     claim_meets_support_policy,
     cluster_for_atom,
     extract_atoms,
+    extract_text_atoms,
 )
 from deep_research.agents.evidence import (
     EvidenceEligibility,
@@ -114,10 +121,14 @@ from deep_research.utils.types import (
     Finding,
     MemorySnapshot,
     RefinementTarget,
+    ReportComposition,
+    ReportStatement,
     ResearchState,
     ScoredSource,
     SubTopic,
+    clusters_for_claims,
     merge_research_state,
+    statement_claims,
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
 from tests.research_fakes import (
@@ -5259,3 +5270,577 @@ def test_a_legacy_contradicted_claim_is_contested() -> None:
     )
     assert supported.verdict == "unverified"
     assert supported.evidence_status == "source_supported"
+
+
+# --------------------------------------------------------------------------
+# Consolidation: the pass that adjudicates a claim is the pass that clusters it
+# --------------------------------------------------------------------------
+#
+# ``consolidate_claims`` was built and tested in isolation, and called from
+# nowhere in ``src/``: ``state.claim_clusters`` was ``{}`` on every real run,
+# so ``clusters_for_claims``, ``statement_claims``, and every consumer Tasks
+# 7-11 built on them read a field that was always empty. These tests drive a
+# real ``FactCheckerAgent.run(state)`` and check the producer.
+
+QUEUE_TEXTS = (
+    "The 2024 interconnection queue held 10 GW of capacity.",
+    "10 GW sat in the 2024 interconnection queue.",
+)
+QUEUE_PRIOR_PERIOD_TEXT = "The 2023 interconnection queue held 10 GW of capacity."
+QUEUE_URL_A = "https://example.org/a"
+QUEUE_URL_B = "https://example.org/b"
+
+
+def _queue_finding(url: str, text: str) -> Finding:
+    return _check_finding(url, content=text, sub_topic=ALPHA)
+
+
+def _queue_state(*pairs: tuple[str, str]) -> ResearchState:
+    return _check_state(
+        [_queue_finding(url, text) for url, text in pairs],
+        sources=[_scored(url) for url, _ in pairs],
+    )
+
+
+def _queue_draft(*pairs: tuple[str, str]) -> ClaimsDraft:
+    return ClaimsDraft(
+        claims=[ClaimDraft(text=text, source_urls=[url]) for url, text in pairs]
+    )
+
+
+def _proposal(*pairs: tuple[int, int]) -> ClaimEquivalenceDraft:
+    """The provider's reply to the equivalence request, by position."""
+    return ClaimEquivalenceDraft(
+        pairs=[AtomicPairDraft(left=left, right=right) for left, right in pairs]
+    )
+
+
+def _judged_records(claims: list[Claim]) -> list[dict[str, object]]:
+    """The adjudicated record of each claim, without its cluster linkage.
+
+    Two runs are compared on what was judged, so the two fields consolidation
+    writes are excluded: a difference about which cluster a claim joined must
+    not be able to hide a difference in the verdict itself.
+    """
+    return [
+        claim.model_dump(mode="json", exclude={"cluster_id", "cluster_aliases"})
+        for claim in claims
+    ]
+
+
+async def _queue_pass(
+    tracker: Tracker, outputs: list[object]
+) -> tuple[AgentRun[VerifiedClaims], ResearchState, ScriptedCompleter]:
+    """One real two-claim pass over two paraphrases, every reply scripted."""
+    completer = ScriptedCompleter(
+        decisions=[*_check_decisions(), *_check_decisions()], outputs=outputs
+    )
+    agent = _checker_for_passes(tracker, completer, searches=2)
+    state = _queue_state(
+        (QUEUE_URL_A, QUEUE_TEXTS[0]), (QUEUE_URL_B, QUEUE_TEXTS[1])
+    )
+    async with tracker.session_span(state.session_id, state.original_question):
+        return await agent.run(state), state, completer
+
+
+def _paraphrase_pass(*, equivalence: object) -> list[object]:
+    """The scripted replies of one two-claim pass, minus the loop decisions."""
+    return [
+        _queue_draft(
+            (QUEUE_URL_A, QUEUE_TEXTS[0]), (QUEUE_URL_B, QUEUE_TEXTS[1])
+        ),
+        _verdict_draft(verdict="verified"),
+        _verdict_draft(verdict="verified"),
+        equivalence,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_publishes_the_cluster_its_adjudicated_claims_join(
+    tracker: Tracker,
+) -> None:
+    """Two paraphrases of one fact publish one cluster, and both claims say so.
+
+    The producer Tasks 7-11 were built against and never got: before this
+    wiring ``consolidate_claims`` was called from nowhere in ``src/``, so
+    ``claim_clusters`` was ``{}`` on every real run while every fixture
+    hand-injected a cluster and passed.
+    """
+    outcome, state, completer = await _queue_pass(
+        tracker, _paraphrase_pass(equivalence=_proposal((1, 2)))
+    )
+
+    registry = outcome.state_update["claim_clusters"]
+    assert len(registry) == 1
+    published = outcome.state_update["verified_claims"]
+    assert len(published) == 2
+    cluster_ids = {claim.cluster_id for claim in published}
+    # One id, and it is a real one: publishing the registry without stamping
+    # the claims would leave both at ``None``.
+    assert len(cluster_ids) == 1
+    cluster_id = cluster_ids.pop()
+    assert cluster_id is not None
+    assert cluster_id in registry
+    assert registry[cluster_id].member_claim_ids == [
+        claim.claim_id for claim in published
+    ]
+    # ``merge_claim_cluster_registry`` raises on a key that is not its
+    # cluster's own id and on a cluster re-anchored on a proposition that does
+    # not mint it, and no production update had ever exercised it.
+    merged = merge_research_state(state, outcome.state_update)
+    assert merged.claim_clusters == registry
+    # R8: consolidation spends a model call, never a tool call. The two loops
+    # consumed the four tool decisions the script queued, which is the number
+    # this same scenario spent before the wiring existed.
+    assert outcome.react.tool_calls == 4
+    assert [name for name, _, _ in completer.calls] == [
+        "ClaimsDraft",
+        "PassageVerdictDraft",
+        "PassageVerdictDraft",
+        "ClaimEquivalenceDraft",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_stated_period_difference_survives_a_provider_pair(
+    tracker: Tracker,
+) -> None:
+    """The negative control: merging needs more than the provider saying so.
+
+    The same scripted "these two are a pair" reply as the headline case, over
+    two claims that differ in observation period. Without this, "both claims
+    carry one cluster id" is satisfied by an implementation that merges
+    everything the provider points at.
+    """
+    completer = ScriptedCompleter(
+        decisions=[*_check_decisions(), *_check_decisions()],
+        outputs=[
+            _queue_draft(
+                (QUEUE_URL_A, QUEUE_TEXTS[0]),
+                (QUEUE_URL_B, QUEUE_PRIOR_PERIOD_TEXT),
+            ),
+            _verdict_draft(verdict="verified"),
+            _verdict_draft(verdict="verified"),
+            _proposal((1, 2)),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=2)
+    state = _queue_state(
+        (QUEUE_URL_A, QUEUE_TEXTS[0]),
+        (QUEUE_URL_B, QUEUE_PRIOR_PERIOD_TEXT),
+    )
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    registry = outcome.state_update["claim_clusters"]
+    assert len(registry) == 2
+    published = outcome.state_update["verified_claims"]
+    assert len({claim.cluster_id for claim in published}) == 2
+    assert {claim.cluster_id for claim in published} == set(registry)
+    assert (
+        merge_research_state(state, outcome.state_update).claim_clusters
+        == registry
+    )
+    # The refusal is recorded, so a report can say why two rows stand where
+    # one was proposed.
+    completed = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "fact_checker.fact_check.completed"
+    )
+    assert completed.metadata["cluster_count"] == 2
+    assert completed.metadata["consolidation_diagnostics"] == [
+        "equivalence_candidate_incompatible:1:2"
+    ]
+    assert outcome.react.tool_calls == 4
+
+
+@pytest.mark.asyncio
+async def test_a_refinement_pass_keeps_the_stored_cluster_identity(
+    tracker: Tracker,
+) -> None:
+    """``existing=`` is wired, and ``drafts`` is this pass's claims only.
+
+    A pass that handed the whole ``verified_claims`` snapshot in as ``drafts``
+    and passed no ``existing`` would mint a second cluster for one fact and
+    publish two rows for one assertion.
+    """
+    first_completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[
+            _queue_draft((QUEUE_URL_A, QUEUE_TEXTS[0])),
+            _verdict_draft(verdict="verified"),
+        ],
+    )
+    first_agent = _checker_for_passes(tracker, first_completer, searches=1)
+    state = _queue_state((QUEUE_URL_A, QUEUE_TEXTS[0]))
+    async with tracker.session_span(state.session_id, state.original_question):
+        first = await first_agent.run(state)
+
+    first_claim = first.state_update["verified_claims"][0]
+    first_cluster_id = first_claim.cluster_id
+    assert first_cluster_id is not None
+
+    carried = merge_research_state(state, first.state_update)
+    second_state = carried.model_copy(
+        update={
+            "raw_findings": [
+                *carried.raw_findings,
+                _queue_finding(QUEUE_URL_B, QUEUE_TEXTS[1]),
+            ],
+            "evaluated_sources": [
+                *carried.evaluated_sources,
+                _scored(QUEUE_URL_B),
+            ],
+        }
+    )
+    second_completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[
+            _queue_draft((QUEUE_URL_B, QUEUE_TEXTS[1])),
+            _verdict_draft(verdict="verified"),
+            _proposal((1, 2)),
+        ],
+    )
+    second_agent = _checker_for_passes(tracker, second_completer, searches=1)
+    async with tracker.session_span(
+        second_state.session_id, second_state.original_question
+    ):
+        second = await second_agent.run(second_state)
+
+    registry = second.state_update["claim_clusters"]
+    assert list(registry) == [first_cluster_id]
+    published = {
+        claim.text: claim for claim in second.state_update["verified_claims"]
+    }
+    survivor = registry[first_cluster_id]
+    assert sorted(survivor.member_claim_ids) == sorted(
+        [first_claim.claim_id, published[QUEUE_TEXTS[1]].claim_id]
+    )
+    # Both claims carry pass one's identity: the refinement joined the stored
+    # cluster, it did not mint a second one beside it.
+    assert published[QUEUE_TEXTS[0]].cluster_id == first_cluster_id
+    assert published[QUEUE_TEXTS[1]].cluster_id == first_cluster_id
+    assert (
+        merge_research_state(second_state, second.state_update).claim_clusters
+        == registry
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_adjudicates_nothing_consolidates_nothing(
+    tracker: Tracker,
+) -> None:
+    """R6: nothing adjudicated means nothing to consolidate, and no call.
+
+    With no drafts the candidate list is just the stored propositions, so the
+    call could only re-merge stored identities against each other with no new
+    evidence. The pass makes one structured call and publishes no
+    ``claim_clusters`` key at all rather than an empty one.
+    """
+    completer = ScriptedCompleter(
+        decisions=[_output_limit_error()],
+        outputs=[
+            _queue_draft(
+                (QUEUE_URL_A, QUEUE_TEXTS[0]), (QUEUE_URL_B, QUEUE_TEXTS[1])
+            )
+        ],
+    )
+    agent = _checker(tracker, completer)
+    state = _queue_state(
+        (QUEUE_URL_A, QUEUE_TEXTS[0]), (QUEUE_URL_B, QUEUE_TEXTS[1])
+    )
+
+    async with tracker.session_span(state.session_id, state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert outcome.result.claims == []
+    assert [schema for schema, _, _ in completer.calls] == ["ClaimsDraft"]
+    assert completer.budgets == [None]
+    assert "claim_clusters" not in outcome.state_update
+
+
+@pytest.mark.asyncio
+async def test_a_one_claim_pass_consolidates_without_an_equivalence_call(
+    tracker: Tracker,
+) -> None:
+    """R6: the caller adds no ``len(atoms) <= 1`` skip of its own.
+
+    ``consolidate_claims`` already skips its own provider call at one atom
+    while still minting the cluster. A caller-side skip would produce no
+    clusters at all for the single-claim pass — the common case.
+    """
+    completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[
+            _queue_draft((QUEUE_URL_A, QUEUE_TEXTS[0])),
+            _verdict_draft(verdict="verified"),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=1)
+    state = _queue_state((QUEUE_URL_A, QUEUE_TEXTS[0]))
+
+    async with tracker.session_span(state.session_id, state.original_question):
+        outcome = await agent.run(state)
+
+    assert [name for name, _, _ in completer.calls] == [
+        "ClaimsDraft",
+        "PassageVerdictDraft",
+    ]
+    registry = outcome.state_update["claim_clusters"]
+    assert len(registry) == 1
+    published = outcome.state_update["verified_claims"]
+    assert len(published) == 1
+    assert published[0].cluster_id in registry
+    merged = merge_research_state(state, outcome.state_update)
+    assert merged.claim_clusters == registry
+
+
+@pytest.mark.asyncio
+async def test_a_failed_equivalence_provider_still_publishes_the_clusters(
+    tracker: Tracker,
+) -> None:
+    """R7: a degraded consolidation is non-halting, and still publishes.
+
+    The ids come from ``claim_cluster_id`` — a pure function of the assertion,
+    folded by local identity — so the degraded result is under-merged, never
+    wrongly merged. ``{}`` would be strictly worse: it reproduces the defect
+    this wiring removes.
+    """
+    control, _, _ = await _queue_pass(
+        tracker, _paraphrase_pass(equivalence=_proposal((1, 2)))
+    )
+    degraded, state, completer = await _queue_pass(
+        tracker,
+        _paraphrase_pass(
+            equivalence=ProviderTimeoutError(
+                "the equivalence request timed out"
+            )
+        ),
+    )
+
+    assert degraded.result is not None
+    assert [name for name, _, _ in completer.calls][-1] == "ClaimEquivalenceDraft"
+    # Section 2.1: not one verdict or badge moved.
+    assert _judged_records(degraded.state_update["verified_claims"]) == (
+        _judged_records(control.state_update["verified_claims"])
+    )
+    assert degraded.react.stop_reason == control.react.stop_reason
+    assert degraded.react.stop_reason != "provider_error"
+    assert degraded.react.tool_calls == control.react.tool_calls == 4
+    # The clusters are still published, and each claim still names its own.
+    registry = degraded.state_update["claim_clusters"]
+    assert len(registry) == 2
+    assert {
+        claim.cluster_id for claim in degraded.state_update["verified_claims"]
+    } == set(registry)
+    merged = merge_research_state(state, degraded.state_update)
+    assert merged.claim_clusters == registry
+    # Exactly one recoverable error, and it travels in the merged run.
+    assert [error.error_type for error in degraded.errors] == [
+        "fact_checker_claim_consolidation_degraded"
+    ]
+    recorded = degraded.errors[0]
+    assert recorded.recoverable is True
+    assert recorded.source == "agent.fact_checker"
+    assert recorded.details["diagnostics"] == ["equivalence_provider_failed"]
+    assert recorded in degraded.react.errors
+
+
+@pytest.mark.asyncio
+async def test_a_cluster_addressed_statement_resolves_to_the_adjudicated_claims(
+    tracker: Tracker,
+) -> None:
+    """The consumer that was dead: a statement names a cluster, not a claim.
+
+    ``statement_claims`` resolves a cluster id only through ``claim.claim_id``
+    or ``claim.cluster_id`` / ``claim.cluster_aliases``, and a cluster id is
+    not a claim id — so every cluster-addressed statement resolved to zero
+    claims and ``statement_satisfies_support_policy`` could not see the
+    evidence behind it.
+    """
+    outcome, state, _ = await _queue_pass(
+        tracker, _paraphrase_pass(equivalence=_proposal((1, 2)))
+    )
+    merged = merge_research_state(state, outcome.state_update)
+    claims = list(merged.verified_claims)
+    assert len(claims) == 2
+    cluster_id = claims[0].cluster_id
+    assert cluster_id is not None
+    assert cluster_id in merged.claim_clusters
+    assert clusters_for_claims(claims, merged.claim_clusters) == [cluster_id]
+
+    statement = ReportStatement(
+        statement_id="S1",
+        text="The 2024 interconnection queue held 10 GW of capacity.",
+        claim_cluster_ids=[cluster_id],
+    )
+    composition = ReportComposition(
+        question=merged.original_question,
+        session_id=merged.session_id,
+        claims=claims,
+        claim_clusters=merged.claim_clusters,
+    )
+
+    assert [
+        claim.claim_id for claim in statement_claims(composition, statement)
+    ] == [claim.claim_id for claim in claims]
+    # The control: the same claims with no cluster link — what every real run
+    # published before this wiring — resolve a cluster-addressed statement to
+    # nothing at all.
+    unstamped = [
+        claim.model_copy(update={"cluster_id": None, "cluster_aliases": []})
+        for claim in claims
+    ]
+    assert (
+        statement_claims(
+            ReportComposition(
+                question=merged.original_question,
+                session_id=merged.session_id,
+                claims=unstamped,
+                claim_clusters=merged.claim_clusters,
+            ),
+            statement,
+        )
+        == []
+    )
+
+
+def _stored_cluster(index: int) -> ClaimCluster:
+    """One already-persisted cluster, for a state that arrives with a registry."""
+    claim_id = f"stored-{index}"
+    atom = extract_text_atoms(
+        f"The {1980 + index} interconnection queue held {10 + index} GW of "
+        "capacity.",
+        claim_id=claim_id,
+    )[0]
+    return cluster_for_atom(atom, claim_id=claim_id, created_seq=index + 1)
+
+
+@pytest.mark.asyncio
+async def test_characterization_a_full_registry_starves_this_passes_new_atom(
+    tracker: Tracker,
+) -> None:
+    """CHARACTERIZATION, not a fix: this pins the behaviour that exists today.
+
+    ``consolidate_claims`` lists every stored cluster's proposition ahead of
+    this pass's own atoms, and ``equivalence_messages`` truncates that list to
+    ``MAX_EQUIVALENCE_ATOMS``. Once the registry holds that many rows, this
+    pass's new atom is never shown to the provider and can never merge with
+    anything. Changing the ordering or the bound is a design change with its
+    own adversarial cases, so this test records the starvation rather than
+    removing it; the atom itself still publishes, under-merged.
+    """
+    stored = [_stored_cluster(index) for index in range(MAX_EQUIVALENCE_ATOMS)]
+    assert len({cluster.cluster_id for cluster in stored}) == MAX_EQUIVALENCE_ATOMS
+    completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[
+            _queue_draft((QUEUE_URL_A, QUEUE_TEXTS[0])),
+            _verdict_draft(verdict="verified"),
+            _proposal(),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=1)
+    state = _queue_state((QUEUE_URL_A, QUEUE_TEXTS[0])).model_copy(
+        update={"claim_clusters": {c.cluster_id: c for c in stored}}
+    )
+
+    async with tracker.session_span(state.session_id, state.original_question):
+        outcome = await agent.run(state)
+
+    # The bound is a ceiling on what ONE call lists, not on how many atoms are
+    # considered: 40 stored atoms plus this pass's one still makes one call.
+    assert [name for name, _, _ in completer.calls] == [
+        "ClaimsDraft",
+        "PassageVerdictDraft",
+        "ClaimEquivalenceDraft",
+    ]
+    request = "\n".join(message.content for message in completer.calls[-1][2])
+    new_atom = extract_text_atoms(QUEUE_TEXTS[0], claim_id="new")[0]
+    assert new_atom.text not in request
+    listed = [
+        line for line in request.splitlines() if re.match(r"^\d+\. ", line)
+    ]
+    assert len(listed) == MAX_EQUIVALENCE_ATOMS
+    assert listed[0].startswith(f"1. {stored[0].proposition.text}")
+    assert listed[-1].startswith(
+        f"{MAX_EQUIVALENCE_ATOMS}. {stored[-1].proposition.text}"
+    )
+    # Starved, and still published: the atom is its own cluster rather than a
+    # row that merged with anything.
+    published = outcome.state_update["verified_claims"]
+    assert len(published) == 1
+    registry = outcome.state_update["claim_clusters"]
+    new_cluster_id = published[0].cluster_id
+    assert new_cluster_id == claim_cluster_id(new_atom)
+    assert new_cluster_id in registry
+    assert registry[new_cluster_id].proposition.text == new_atom.text
+    assert registry[new_cluster_id].member_claim_ids == [published[0].claim_id]
+    # The stored rows come back as themselves: nothing was merged into them
+    # and nothing was dropped.
+    assert len(registry) == MAX_EQUIVALENCE_ATOMS + 1
+    assert set(registry) == {c.cluster_id for c in stored} | {new_cluster_id}
+
+
+def _prior_paraphrase_cluster(index: int) -> ClaimCluster:
+    """One stored cluster for a paraphrase of the same 2024 fact."""
+    claim_id = f"prior-{index}"
+    atom = extract_text_atoms(QUEUE_TEXTS[index], claim_id=claim_id)[0]
+    return cluster_for_atom(atom, claim_id=claim_id, created_seq=index + 1)
+
+
+@pytest.mark.asyncio
+async def test_two_stored_clusters_that_merge_leave_the_absorbed_row_behind(
+    tracker: Tracker,
+) -> None:
+    """R4, deferred: the registry has no delete path, so the row stays.
+
+    Two clusters that were ALREADY stored merge this pass. The absorbed id
+    becomes an alias on the survivor, but the earlier pass's claims are not in
+    this pass's ``drafts`` and are not restamped, and
+    ``merge_claim_cluster_registry`` only ever unions — so the absorbed id
+    stays as a stale key, and ``_resolve_stored_cluster`` cannot reach it from
+    the survivor. Compacting it means changing the reducer contract, which is
+    a separate task's design decision.
+    """
+    stored = [_prior_paraphrase_cluster(0), _prior_paraphrase_cluster(1)]
+    survivor_id, absorbed_id = (cluster.cluster_id for cluster in stored)
+    assert survivor_id != absorbed_id
+
+    new_text = "Queue capacity rose 30 percent in 2025."
+    completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[
+            _queue_draft((QUEUE_URL_A, new_text)),
+            _verdict_draft(verdict="verified"),
+            _proposal((1, 2)),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=1)
+    state = _check_state(
+        [_queue_finding(QUEUE_URL_A, new_text)], sources=[_scored(QUEUE_URL_A)]
+    ).model_copy(update={"claim_clusters": {c.cluster_id: c for c in stored}})
+
+    async with tracker.session_span(state.session_id, state.original_question):
+        outcome = await agent.run(state)
+
+    merged = merge_research_state(state, outcome.state_update)
+    registry = merged.claim_clusters
+    # The two stored clusters are one fact now, and the merge kept the older
+    # identity — but the absorbed row is still a row.
+    assert sorted(registry) == sorted([survivor_id, absorbed_id])
+    assert registry[survivor_id].cluster_aliases == [absorbed_id]
+    assert registry[absorbed_id].cluster_id == absorbed_id
+    # The stale row cannot be reached from the survivor: resolution matches
+    # the stored record's own id or an alias on it, and this row carries
+    # neither.
+    assert _resolve_stored_cluster(absorbed_id, [registry[survivor_id]]) is None
+    # What is NOT lost: the stored member claims still resolve through the
+    # survivor's own ``member_claim_ids``.
+    assert set(registry[survivor_id].member_claim_ids) >= {
+        "prior-0",
+        "prior-1",
+    }
