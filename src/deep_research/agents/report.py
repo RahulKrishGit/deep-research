@@ -287,14 +287,52 @@ _REASON_CHARS = 60
 #:
 #: ``researcher_sub_topic_skipped`` joined after a run lost three planned
 #: sub-topics and the ledger could not say why: its details are a locally
-#: stamped ``coverage_id`` (``topic-01``), an integer ``priority``, one of three
+#: stamped ``coverage_id`` (``topic-01``), an integer ``priority``, one of four
 #: enumerated ``reason`` strings, and a summarised sub-topic title — the same
 #: kind of content this artifact already prints for claims and sources. The
 #: reason is what distinguishes "truncated by the cap" from "a provider failure
 #: stopped the pass" from "already satisfied on a refinement pass", which is
 #: exactly the difference between a coverage gap and an acceptable skip.
+_SUB_TOPIC_SKIP_ERROR_TYPE = "researcher_sub_topic_skipped"
+
+# The enumerated reasons ``agents.researcher.sub_topic_skipped_error`` stamps on
+# a skip, and the reading each one gets. The producer writes one message for all
+# four, and that message says the topic was never researched — true of a cap
+# truncation and of a stopped pass, false for a topic an earlier pass already
+# answered. Ruling 5 keeps prior completion, deferred work and never-attempted
+# work distinct, so the reading follows the enumerated reason and the
+# never-researched sentence is printed only where it is true. A reason outside
+# this map falls back to the producer's own message rather than guessing.
+SUB_TOPIC_SKIP_MESSAGES: dict[str, str] = {
+    "required_targets_completed": (
+        "This planned sub-topic already met its required targets on an earlier "
+        "pass, so no new research was owed for it."
+    ),
+    "interim_satisfaction": (
+        "This planned sub-topic already carried a finding from an earlier pass, "
+        "so the refinement did not research it again."
+    ),
+    "cap": (
+        "This planned sub-topic was deferred: the pass reached its sub-topic "
+        "limit before its turn came up."
+    ),
+    "provider_failure_stopped_processing": (
+        "A planned sub-topic was never researched; a provider failure stopped "
+        "the pass before it could run."
+    ),
+}
+
+#: The skip reasons that are prior completion rather than lost coverage: the
+#: topic owed nothing, so nothing was lost by omitting it. Both mean the topic
+#: *was* researched — on an earlier pass — or, in the legacy target-less case,
+#: already carried a finding. Every other reason is a real gap and stays a
+#: warning.
+SATISFIED_SKIP_REASONS = frozenset(
+    {"required_targets_completed", "interim_satisfaction"}
+)
+
 _DETAILED_ERROR_TYPES = frozenset(
-    {"agent_tool_failed", "researcher_sub_topic_skipped"}
+    {"agent_tool_failed", _SUB_TOPIC_SKIP_ERROR_TYPE}
 )
 _NO_DATED_EVIDENCE = "no dated evidence was recorded"
 _NO_SCOPE = "not stated"
@@ -1959,6 +1997,46 @@ def _published_details(error: ResearchError) -> str:
     return ", ".join(f"{key}={value}" for key, value in ordered)
 
 
+def _sub_topic_skip_reason(error: ResearchError) -> str:
+    """The enumerated skip reason one record carries, or ``""`` for anything else.
+
+    Read from the typed ``reason`` detail the producer stamps, never inferred
+    from a message: the message is the same sentence for every reason.
+    """
+    if error.error_type != _SUB_TOPIC_SKIP_ERROR_TYPE:
+        return ""
+    reason = error.details.get("reason")
+    return reason.strip() if isinstance(reason, str) else ""
+
+
+def is_prior_completion(error: ResearchError) -> bool:
+    """True when a skipped sub-topic owed nothing rather than lost coverage.
+
+    ``required_targets_completed`` and ``interim_satisfaction`` are recorded
+    when every required target the topic carries is already answered (or, in
+    the legacy target-less case, a finding already exists) and the Critic asked
+    for no new searches. Omission cost the pass nothing, so a caller must not
+    count such a record as a coverage error — and must never print the
+    never-researched message for it.
+    """
+    return _sub_topic_skip_reason(error) in SATISFIED_SKIP_REASONS
+
+
+def error_reading(error: ResearchError) -> str:
+    """The sentence to print for one error record, reason-aware where needed.
+
+    Every record carries its own message except ``researcher_sub_topic_skipped``:
+    that type has one message for four reasons and the message describes the
+    unattempted case, so a deferred or prior-completion skip would otherwise be
+    published as work that was never researched. The reason is enumerated, so
+    the reading follows it.
+    """
+    return (
+        SUB_TOPIC_SKIP_MESSAGES.get(_sub_topic_skip_reason(error))
+        or error.message
+    )
+
+
 def _run_errors(composition: ReportComposition) -> str:
     if not composition.errors:
         return "(no error was recorded for this pass)"
@@ -1968,7 +2046,7 @@ def _run_errors(composition: ReportComposition) -> str:
             _cell(error.error_type, limit=120),
             _cell(error.source, limit=120),
             "recoverable" if error.recoverable else "fatal",
-            _cell(error.message, limit=_ERROR_MESSAGE_CHARS),
+            _cell(error_reading(error), limit=_ERROR_MESSAGE_CHARS),
             _cell(_published_details(error), limit=_DETAILS_CHARS),
         ]
         for position, error in enumerate(composition.errors, start=1)

@@ -64,6 +64,7 @@ from deep_research.agents.report import (
     statement_source_urls,
     validate_report_statements,
 )
+from deep_research.agents.researcher import sub_topic_skipped_error
 from deep_research.utils.types import (
     EVIDENCE_BADGE_LABELS,
     QUALITY_CONTRACT_VERSION,
@@ -1121,6 +1122,50 @@ def test_the_run_errors_block_names_why_a_sub_topic_was_skipped() -> None:
 
     assert "coverage_id=topic-04" in errors
     assert "reason=provider_failure_stopped_processing" in errors
+
+
+def test_the_run_errors_block_reads_each_skip_reason_distinctly() -> None:
+    """Prior completion is not a stopped pass, and neither reads "never researched".
+
+    ``sub_topic_skipped_error`` writes one message for all four of its
+    reasons, and that message says the topic was never researched — which the
+    ledger printed for every reason, including a topic an earlier pass had
+    already answered. Ruling 5 keeps prior completion, deferred work and
+    never-attempted work distinct, so the reading follows the enumerated
+    reason and the never-researched sentence is printed only where it is true.
+    """
+    ledger = render_evidence_ledger(
+        _composition(
+            errors=[
+                sub_topic_skipped_error(
+                    _sub_topic("topic-01"), reason="required_targets_completed"
+                ),
+                sub_topic_skipped_error(_sub_topic("topic-04"), reason="cap"),
+                sub_topic_skipped_error(
+                    _sub_topic("topic-06"),
+                    reason="provider_failure_stopped_processing",
+                ),
+            ]
+        )
+    )
+
+    errors = _section_body(ledger, "## Run errors")
+
+    assert "already met its required targets" in errors
+    assert "was deferred" in errors
+    assert "a provider failure stopped the pass" in errors
+    assert errors.count("never researched") == 1
+
+
+def _sub_topic(coverage_id: str) -> SubTopic:
+    return SubTopic(
+        coverage_id=coverage_id,
+        title="Alpha",
+        rationale="First.",
+        search_queries=["alpha"],
+        success_criteria=["alpha evidence"],
+        priority=1,
+    )
 
 
 # --- identity and citation helpers -------------------------------------------

@@ -44,6 +44,7 @@ from typing import TextIO
 
 from pydantic import JsonValue
 
+from deep_research.agents.report import error_reading, is_prior_completion
 from deep_research.main import (
     DEFAULT_CONFIG_PATH,
     SUPPORTED_OUTPUT_FORMATS,
@@ -586,13 +587,16 @@ def _named_coverage_ids(errors: Sequence[ResearchError]) -> list[str]:
 
 
 def _warning_line(error: ResearchError) -> str:
-    """One recorded error as its enumerated type and its recorded reason.
+    """One recorded error as its enumerated type and its reading.
 
     Both are project-owned: ``agents.errors`` and ``graph.errors`` build every
     record from an enumeration, and neither ever records ``str(exception)`` or
-    provider text, so these lines are safe to print.
+    provider text, so these lines are safe to print. The reading is
+    ``agents.report.error_reading``: a skip record has one message for four
+    reasons, and the reason is what says whether the topic was never
+    attempted, deferred, or already answered by an earlier pass.
     """
-    return f"warning: [{error.error_type}] {error.message}"
+    return f"warning: [{error.error_type}] {error_reading(error)}"
 
 
 # The typed detail keys a producer records a *cause* under. Read in this order,
@@ -742,12 +746,34 @@ def render_warnings(
     so an access problem that ended a pass names the question it leaves
     unanswered.
 
+    A sub-topic skip that cost the pass nothing is not one of these errors: a
+    topic whose required targets are already answered was researched on an
+    earlier pass, so it is reported on its own line rather than counted as a
+    coverage loss (ruling 5).
+
     The messages are verbose detail: they are enumerated and safe, but a
     concrete cause with its targets is what makes the run actionable.
     """
     if not outcome.errors:
         return []
-    errors = list(outcome.errors)
+    all_errors = list(outcome.errors)
+    errors = [error for error in all_errors if not is_prior_completion(error)]
+    satisfied = [error for error in all_errors if is_prior_completion(error)]
+    titles = _topic_titles(outcome)
+    lines = _warning_lines(errors, titles=titles, verbose=verbose)
+    lines.extend(_skip_lines(satisfied, titles=titles, verbose=verbose))
+    return lines
+
+
+def _warning_lines(
+    errors: Sequence[ResearchError],
+    *,
+    titles: dict[str, str],
+    verbose: bool,
+) -> list[str]:
+    """The header and one block per source for the errors that lost coverage."""
+    if not errors:
+        return []
     resolved = sum(_recorded_resolution(error) for error in errors)
     fatal = sum(
         not _recorded_resolution(error) and not error.recoverable
@@ -759,7 +785,6 @@ def render_warnings(
         f"({resolved} recovered, {len(errors) - resolved - fatal} non-fatal, "
         f"{fatal} fatal)"
     ]
-    titles = _topic_titles(outcome)
     for source, rows in _errors_by_source(errors).items():
         coverage = _named_coverage_ids(rows)
         detail = f" (coverage {', '.join(coverage)})" if coverage else ""
@@ -768,6 +793,36 @@ def render_warnings(
         lines.extend(_error_breakdown(rows, titles=titles))
         if verbose:
             lines.extend(f"    {_warning_line(error)}" for error in rows)
+    return lines
+
+
+def _skip_lines(
+    errors: Sequence[ResearchError],
+    *,
+    titles: dict[str, str],
+    verbose: bool,
+) -> list[str]:
+    """The sub-topic skips that cost the pass nothing, apart from the warnings.
+
+    A refinement pass omits a topic whose required targets are already answered
+    and which the Critic asked no new searches for: the topic was researched —
+    on an earlier pass — and owes nothing now. Counting it as an error under
+    its coverage id prints a coverage loss the run does not have, and the
+    producer's message for all four skip reasons reads "never researched",
+    which is false here. Deferred and never-attempted skips stay warnings;
+    these get a line that names the topics and says what happened.
+    """
+    if not errors:
+        return []
+    targets = _error_targets(errors, titles=titles)
+    detail = f": {', '.join(targets)}" if targets else ""
+    count = f"{len(errors)} sub-topic" + ("" if len(errors) == 1 else "s")
+    lines = [f"Skipped: {count} that owed nothing this pass{detail}"]
+    if verbose:
+        lines.extend(
+            f"    note: [{error.error_type}] {error_reading(error)}"
+            for error in errors
+        )
     return lines
 
 
