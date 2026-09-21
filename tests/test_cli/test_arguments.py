@@ -108,6 +108,7 @@ def test_the_help_text_names_every_documented_option(capsys) -> None:
         "--output-format",
         "--config",
         "--verbose",
+        "--debug-events",
         "--require-quality",
         "--request-deepseek-attempt-ceiling",
         "--request-openai-attempt-ceiling",
@@ -115,6 +116,24 @@ def test_the_help_text_names_every_documented_option(capsys) -> None:
         "--request-stop-fraction",
     ):
         assert flag in help_text
+
+
+def test_debug_events_is_off_by_default() -> None:
+    """The diagnostic event log is opt-in, like every other detail surface."""
+    options = parse_arguments([QUESTION])
+
+    assert options.debug_events is False
+
+
+def test_debug_events_parses_beside_verbose() -> None:
+    """The two switches are independent: each adds its own surface."""
+    both = parse_arguments([QUESTION, "--debug-events", "--verbose"])
+    alone = parse_arguments([QUESTION, "--debug-events"])
+
+    assert both.debug_events is True
+    assert both.verbose is True
+    assert alone.debug_events is True
+    assert alone.verbose is False
 
 
 REQUEST_CEILING_FLAGS = (

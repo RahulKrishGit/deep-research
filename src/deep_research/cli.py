@@ -25,6 +25,12 @@ once. ``RequestBudgetStream`` serializes those lines and, like the rest of the
 diagnostic detail, prints them only under ``--verbose``. The terminal section
 in the summary is the same data read once, from the budget's own immutable
 snapshots.
+
+Three levels of detail, and each adds its own surface rather than repeating
+another: plain output streams progress and prints the summary, ``--verbose``
+adds tool-call, budget and token totals, and ``--debug-events`` streams the
+complete bounded event record — every recorded event, identified by its
+enumerated type and source, with no event metadata rendered.
 """
 
 from __future__ import annotations
@@ -88,6 +94,13 @@ class CliOptions:
     config: str
     verbose: bool
     require_quality: bool
+    debug_events: bool = False
+    """True when ``--debug-events`` asked for the complete bounded event log.
+
+    A fourth output level beside the summary, the progress stream, and
+    ``--verbose``'s totals: the event record itself, one line per recorded
+    event, printed with the enumerated type and source that identify it.
+    """
 
     # Request-scoped budget controls. ``None`` means "this run requested
     # nothing", so the value the config file declares stays in force; the CLI
@@ -197,6 +210,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--debug-events",
+        action="store_true",
+        help=(
+            "print every recorded event, with its type and source "
+            "(a diagnostic stream; the span lifecycle stays out)"
+        ),
+    )
+    parser.add_argument(
         "--require-quality",
         action="store_true",
         help=(
@@ -274,6 +295,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
         config=namespace.config,
         verbose=bool(namespace.verbose),
         require_quality=bool(namespace.require_quality),
+        debug_events=bool(namespace.debug_events),
         request_deepseek_attempt_ceiling=(
             namespace.request_deepseek_attempt_ceiling
         ),
@@ -357,16 +379,29 @@ STATUS_NOTES = {
 }
 
 
-def is_streamed_event(event_type: str, *, verbose: bool) -> bool:
+def is_streamed_event(
+    event_type: str,
+    *,
+    verbose: bool,
+    debug: bool = False,
+) -> bool:
     """True when one event type belongs in the live progress stream.
 
     Type-gated on purpose. Verbose adds agent completion records and the
     enumerated failure records above, and *only* those: a report body, provider
     text, or evidence excerpt is never streamed, because none of them is an
     event and no other event type is ever rendered.
+
+    ``debug`` is the complete record: every event type is streamed, including
+    the ones neither plain output nor verbose shows. Two exclusions remain,
+    and both are structural rather than editorial — the tracker's own span
+    lifecycle (two records per span, which would bury the log), and the
+    request-budget updates, which are a separate channel on their own switch.
     """
     if event_type.startswith(SPAN_EVENT_PREFIX):
         return False
+    if debug:
+        return True
     if event_type in PROGRESS_EVENT_TYPES:
         return True
     if not verbose:
@@ -377,16 +412,31 @@ def is_streamed_event(event_type: str, *, verbose: bool) -> bool:
     )
 
 
-def render_progress(event: ResearchEvent, *, verbose: bool) -> str | None:
+def render_progress(
+    event: ResearchEvent,
+    *,
+    verbose: bool,
+    debug: bool = False,
+) -> str | None:
     """The one line ``event`` streams, or ``None`` when the stream skips it.
 
     Called the moment the graph records the event, so a run that takes minutes
     shows progress while it runs. The final summary is a different surface and
     never reprints these records; every event therefore appears exactly once.
+
+    The debug form prefixes the enumerated ``event_type`` and ``source`` so a
+    record is identifiable rather than merely readable. Only those bounded
+    fields are added: the event's ``metadata`` is never rendered, so no URL,
+    query, or provider value can reach the terminal through this surface.
     """
-    if not is_streamed_event(event.event_type, verbose=verbose):
+    if not is_streamed_event(event.event_type, verbose=verbose, debug=debug):
         return None
     iteration = event.metadata.get("iteration", 0)
+    if debug:
+        return (
+            f"  [{iteration}] {event.event_type} ({event.source}): "
+            f"{event.message}"
+        )
     return f"  [{iteration}] {event.message}"
 
 
@@ -407,12 +457,21 @@ class ProgressStream:
     not need one here.
     """
 
-    def __init__(self, stream: TextIO, *, verbose: bool) -> None:
+    def __init__(
+        self,
+        stream: TextIO,
+        *,
+        verbose: bool,
+        debug: bool = False,
+    ) -> None:
         self._stream = stream
         self._verbose = verbose
+        self._debug = debug
 
     def __call__(self, event: ResearchEvent) -> None:
-        line = render_progress(event, verbose=self._verbose)
+        line = render_progress(
+            event, verbose=self._verbose, debug=self._debug
+        )
         if line is not None:
             print(line, file=self._stream, flush=True)
 
@@ -832,7 +891,9 @@ def main(
         for line in lines:
             print(line, file=out)
 
-    progress = ProgressStream(out, verbose=options.verbose)
+    progress = ProgressStream(
+        out, verbose=options.verbose, debug=options.debug_events
+    )
     budget = RequestBudgetStream(out, verbose=options.verbose)
 
     try:

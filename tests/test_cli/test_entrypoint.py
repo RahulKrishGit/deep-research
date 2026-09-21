@@ -8,6 +8,7 @@ import threading
 import pytest
 import yaml
 
+from deep_research.agents.events import agent_event
 from deep_research.cli import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_GRAPH_FAILED,
@@ -749,6 +750,81 @@ def test_an_unexpected_exception_is_not_swallowed() -> None:
 
     with pytest.raises(RuntimeError, match="a defect"):
         main([QUESTION], runner=runner, stream=io.StringIO())
+
+
+def test_debug_events_prints_the_complete_bounded_event_log_once() -> None:
+    """``--debug-events`` shows every recorded event, and only once.
+
+    The three records below are the three surfaces: a progress event both
+    plain output and debug show, a completion only verbose and debug show, and
+    an agent-internal record only debug shows. Each is printed exactly once,
+    with its enumerated type and source beside it.
+    """
+    events = [
+        session_started_event(
+            session_id="session-1", max_iterations=2, checkpointing=False
+        ),
+        node_completed_event(
+            "planner", iteration=0, event_count=2, error_count=0
+        ),
+        agent_event(
+            agent_name="researcher",
+            event_type="researcher.tool_call",
+            message="The researcher called web_search.",
+            metadata={"iteration": 0},
+        ),
+    ]
+    runner = StreamingRunner(events)
+    stream = io.StringIO()
+
+    code = main([QUESTION, "--debug-events"], runner=runner, stream=stream)
+    printed = stream.getvalue()
+
+    assert code == EXIT_OK
+    for event in events:
+        assert printed.count(event.message) == 1
+    assert "graph.node.completed (graph.planner): Node planner completed." in printed
+    assert (
+        "researcher.tool_call (agent.researcher): The researcher called "
+        "web_search." in printed
+    )
+    # The debug log is a diagnostic stream, not a second copy of the summary.
+    assert printed.index(events[-1].message) < printed.index("Session ID:")
+
+
+def test_debug_events_does_not_flood_budget_update_rows() -> None:
+    """The budget's own update stream stays behind ``--verbose``.
+
+    ``--debug-events`` shows events. A budget update is a different channel —
+    one line per reserved attempt — and letting it ride the debug switch is
+    how a diagnostic log becomes unreadable.
+    """
+    runner = BudgetReportingRunner()
+    stream = io.StringIO()
+
+    code = main([QUESTION, "--debug-events"], runner=runner, stream=stream)
+    printed = stream.getvalue()
+
+    assert code == EXIT_OK
+    assert "request budget:" not in printed
+    assert "Request budget" not in printed
+    assert "tavily" not in printed
+
+
+def test_verbose_still_streams_budget_updates_beside_the_debug_log() -> None:
+    """The two switches compose: verbose keeps the budget rows it always had."""
+    runner = BudgetReportingRunner()
+    stream = io.StringIO()
+
+    main(
+        [QUESTION, "--debug-events", "--verbose"],
+        runner=runner,
+        stream=stream,
+    )
+    printed = stream.getvalue()
+
+    assert "request budget: tavily attempt reserved" in printed
+    assert printed.count("request budget: tavily attempt reserved") == 1
 
 
 def test_the_module_entry_point_exposes_main() -> None:

@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import io
+
 from deep_research.agents.events import agent_event
-from deep_research.cli import render_progress, render_summary, render_warnings
+from deep_research.cli import (
+    ProgressStream,
+    render_progress,
+    render_summary,
+    render_warnings,
+)
 from deep_research.graph.events import (
     node_completed_event,
     node_started_event,
@@ -288,6 +295,85 @@ def test_verbose_progress_streams_nothing_else() -> None:
 
     assert render_progress(started, verbose=True) is None
     assert render_progress(tool_call, verbose=True) is None
+
+
+# --- the debug event log ---------------------------------------------------
+
+
+def test_debug_events_streams_every_recorded_event_type() -> None:
+    """The debug log is the complete event record, not a filtered subset.
+
+    A record neither the plain stream nor ``--verbose`` shows — a mid-agent
+    progress event — is exactly what the debug surface exists to reveal, and
+    it is printed with the enumerated type and source that identify it.
+    """
+    tool_call = agent_event(
+        agent_name="researcher",
+        event_type="researcher.tool_call",
+        message="The researcher called web_search.",
+        metadata={"iteration": 2},
+    )
+
+    assert render_progress(tool_call, verbose=False, debug=False) is None
+    assert render_progress(tool_call, verbose=True, debug=False) is None
+    assert render_progress(tool_call, verbose=False, debug=True) == (
+        "  [2] researcher.tool_call (agent.researcher): "
+        "The researcher called web_search."
+    )
+
+
+def test_debug_events_streams_nothing_twice() -> None:
+    """One record, one line: debug never reprints what verbose already did.
+
+    Both switches on is the composed surface — the record appears once, in the
+    debug form that identifies it, rather than once per switch.
+    """
+    completed = node_completed_event(
+        "planner", iteration=1, event_count=2, error_count=0
+    )
+    stream = io.StringIO()
+    handler = ProgressStream(stream, verbose=True, debug=True)
+
+    handler(completed)
+
+    lines = [line for line in stream.getvalue().splitlines() if line]
+    assert lines == [
+        "  [1] graph.node.completed (graph.planner): Node planner completed."
+    ]
+    assert render_progress(completed, verbose=False, debug=True) == lines[0]
+
+
+def test_debug_events_keeps_the_span_lifecycle_out() -> None:
+    """Two records per span would bury the log; they stay excluded."""
+    span = ResearchEvent(
+        event_type="observability.span.started",
+        source="observability",
+        message="agent.planner started.",
+    )
+
+    assert render_progress(span, verbose=False, debug=True) is None
+    assert render_progress(span, verbose=True, debug=True) is None
+
+
+def test_debug_events_never_print_event_metadata() -> None:
+    """Bounded fields only: no metadata value, URL, or query can reach stdout."""
+    event = agent_event(
+        agent_name="researcher",
+        event_type="researcher.tool_call",
+        message="The researcher called web_search.",
+        metadata={
+            "iteration": 0,
+            "url": "https://example.invalid/secret-page",
+            "query": "confidential search query",
+        },
+    )
+
+    line = render_progress(event, verbose=False, debug=True)
+
+    assert line is not None
+    assert "https://" not in line
+    assert "secret-page" not in line
+    assert "confidential search query" not in line
 
 
 # --- grouped warnings ------------------------------------------------------
