@@ -58,7 +58,7 @@ from deep_research.runtime.errors import (
     ResearchConfigurationError,
     configuration_error,
 )
-from deep_research.runtime.outcome import ResearchOutcome
+from deep_research.runtime.outcome import DroppedProposals, ResearchOutcome
 from deep_research.utils.types import (
     GAP_MATERIAL_SEVERITIES,
     QUALITY_STATUS_ACCEPTED,
@@ -1145,6 +1145,28 @@ def _artifact_lines(outcome: ResearchOutcome) -> list[str]:
     return lines
 
 
+def _dropped_proposal_lines(dropped: DroppedProposals) -> list[str]:
+    """Proposals the researcher did not keep, by reason, as their own number.
+
+    Ruling 7 labels these apart from the calls and tokens beside them: a
+    proposal the pass dropped is not a failed call and not evidence, and its
+    two reasons stay distinct. A zero a recorded pass measured is printed —
+    it is an answer — while a run with no researcher record at all prints
+    nothing, because no record is not the same claim as a measured zero.
+    """
+    if dropped.total == 0:
+        return ["Dropped proposals: none"]
+    reasons: list[str] = []
+    if dropped.duplicates:
+        reasons.append(
+            f"{dropped.duplicates} duplicate finding"
+            + ("" if dropped.duplicates == 1 else "s")
+        )
+    if dropped.beyond_cap:
+        reasons.append(f"{dropped.beyond_cap} past the per-sub-topic cap")
+    return [f"Dropped proposals: {dropped.total} ({', '.join(reasons)})"]
+
+
 def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
     """Render the run's identity, verdict, counts, artifacts, and costs.
 
@@ -1185,14 +1207,24 @@ def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
         if outcome.tool_calls:
             lines.append("Tool calls:")
             for summary in outcome.tool_calls:
-                failures = (
-                    f" ({summary.failures} failed)" if summary.failures else ""
-                )
+                notes: list[str] = []
+                if summary.failures:
+                    notes.append(f"{summary.failures} failed")
+                if summary.retries:
+                    notes.append(
+                        f"{summary.retries} retr"
+                        + ("y" if summary.retries == 1 else "ies")
+                    )
+                detail = f" ({', '.join(notes)})" if notes else ""
                 lines.append(
-                    f"  {summary.tool_name}: {summary.calls} calls{failures}"
+                    f"  {summary.tool_name}: {summary.calls} calls{detail}"
                 )
         else:
             lines.append("Tool calls: none recorded")
+
+        dropped = outcome.dropped_proposals
+        if dropped is not None:
+            lines.extend(_dropped_proposal_lines(dropped))
 
         if outcome.request_budget_snapshots:
             # The budget reported the tokens, per provider, so the pooled

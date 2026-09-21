@@ -60,14 +60,49 @@ QUALITY_PATH_METADATA_KEY = "quality_path"
 PUBLICATION_FAILURE_ERROR_TYPE = "graph_publication_failed"
 """The enumerated error type one failed terminal write records."""
 
+RESEARCHER_SUB_TOPIC_EVENT = "researcher.sub_topic.completed"
+"""The researcher's per-sub-topic completion record, whose metadata carries
+the two drop counts and every other count this pass produced."""
+
+DROPPED_DUPLICATE_METADATA_KEY = "findings_dropped_duplicate"
+DROPPED_CAP_METADATA_KEY = "findings_dropped_cap"
+
 
 @dataclass(frozen=True, slots=True)
 class ToolCallSummary:
-    """How often one tool was called during a session, and how often it failed."""
+    """One tool's calls, failures and retries during a session.
+
+    Three counts of three different things: a call is one tool invocation, a
+    failure is one invocation that raised, and a retry is one extra transport
+    attempt an invocation made. A retry is never folded into the call count —
+    the tracker's spans record it separately, so the summary reports it
+    separately.
+    """
 
     tool_name: str
     calls: int
     failures: int
+    retries: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DroppedProposals:
+    """What the researcher proposed and did not keep, by reason (ruling 7).
+
+    Two reasons, counted apart because they are different events: a duplicate
+    is a restatement folded into a finding the pass already held, and a cap
+    drop is a distinct finding past the per-sub-topic limit. Neither entered
+    research state and neither is a failure — which is why they are their own
+    numbers rather than a subtraction from the findings that did.
+    """
+
+    duplicates: int
+    beyond_cap: int
+
+    @property
+    def total(self) -> int:
+        """Every proposal the pass dropped, whatever the reason."""
+        return self.duplicates + self.beyond_cap
 
 
 def _terminal_artifact_path(
@@ -166,6 +201,10 @@ def tool_call_summaries(
 ) -> list[ToolCallSummary]:
     """Group one session's tool spans by tool name, alphabetically.
 
+    Each span contributes one call, a failure when it did not succeed, and the
+    retries the span itself recorded — so a call that retried twice is still
+    one call, with its two retries counted beside it rather than inside it.
+
     Pass ``session_id`` to exclude spans the tracker accumulated for other
     sessions — a resumed run shares its tracker with the run that made the
     checkpoint, and mixing the two would double-count.
@@ -176,14 +215,30 @@ def tool_call_summaries(
             continue
         if session_id is not None and metric.session_id != session_id:
             continue
-        entry = counts.setdefault(metric.tool_name, [0, 0])
+        entry = counts.setdefault(metric.tool_name, [0, 0, 0])
         entry[0] += 1
         if not metric.success:
             entry[1] += 1
+        entry[2] += metric.retry_count
     return [
-        ToolCallSummary(tool_name=name, calls=calls, failures=failures)
-        for name, (calls, failures) in sorted(counts.items())
+        ToolCallSummary(
+            tool_name=name, calls=calls, failures=failures, retries=retries
+        )
+        for name, (calls, failures, retries) in sorted(counts.items())
     ]
+
+
+def _recorded_count(event: ResearchEvent, key: str) -> int:
+    """One non-negative integer a recorded event carries, else zero.
+
+    Event metadata is public JSON: a count that is missing, negative, a float,
+    a string or a bool is not a measurement this reader can add, and reading
+    one as a count would print a number the producer never recorded.
+    """
+    value = event.metadata.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
 
 
 def total_token_usage(
@@ -448,6 +503,28 @@ class ResearchOutcome:
             # re-derive the same rows.
             **evidence_status_counts(composition.claims),
         )
+
+    @property
+    def dropped_proposals(self) -> DroppedProposals | None:
+        """The researcher's own drop counts, or ``None`` with no record.
+
+        Read from the sub-topic completion events the researcher emits, which
+        carry both counts as metadata — nothing here is re-derived from the
+        findings that did enter state. A run whose researcher completed no
+        sub-topic reports ``None``: no record is not a measured zero.
+        """
+        duplicates = 0
+        beyond_cap = 0
+        recorded = False
+        for event in self.state.events:
+            if event.event_type != RESEARCHER_SUB_TOPIC_EVENT:
+                continue
+            recorded = True
+            duplicates += _recorded_count(event, DROPPED_DUPLICATE_METADATA_KEY)
+            beyond_cap += _recorded_count(event, DROPPED_CAP_METADATA_KEY)
+        if not recorded:
+            return None
+        return DroppedProposals(duplicates=duplicates, beyond_cap=beyond_cap)
 
     @property
     def failed_publication_artifacts(self) -> tuple[str, ...]:

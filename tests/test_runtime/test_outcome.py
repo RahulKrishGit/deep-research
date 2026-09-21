@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from deep_research.agents.events import agent_event
+from deep_research.agents.researcher import sub_topic_completed_event
+from deep_research.agents.steps import ReActRun
 from deep_research.graph.events import report_published_event
 from deep_research.graph.orchestrator import GraphRun
 from deep_research.observability import TokenUsageMetric, ToolMetric
@@ -30,6 +32,7 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchEvent,
     ResearchState,
+    SubTopic,
 )
 from tests.graph_fakes import fake_report_review
 
@@ -241,6 +244,94 @@ def test_tool_call_summaries_group_by_tool_and_count_failures() -> None:
         ToolCallSummary(tool_name="query_memory", calls=1, failures=0),
         ToolCallSummary(tool_name="web_search", calls=2, failures=1),
     ]
+
+
+def test_tool_call_summaries_carry_the_retries_the_tracker_recorded() -> None:
+    """A retry is its own number, never pooled into the call it retried.
+
+    The tracker's tool spans record how many transport retries a call made, so
+    the summary reports them beside the call and failure counts: two calls that
+    retried twice and once are two calls and three retries, and a tool that
+    never retried reports zero rather than inheriting another tool's count.
+    """
+    metrics = [
+        ToolMetric(
+            session_id="session-1",
+            tool_name="web_search",
+            latency_ms=1.0,
+            success=True,
+            retry_count=2,
+        ),
+        ToolMetric(
+            session_id="session-1",
+            tool_name="web_search",
+            latency_ms=1.0,
+            success=False,
+            retry_count=1,
+            error_type="ProviderTimeoutError",
+        ),
+        ToolMetric(
+            session_id="session-1",
+            tool_name="read_url",
+            latency_ms=1.0,
+            success=True,
+        ),
+    ]
+
+    summaries = {
+        summary.tool_name: summary for summary in tool_call_summaries(metrics)
+    }
+
+    assert summaries["web_search"] == ToolCallSummary(
+        tool_name="web_search", calls=2, failures=1, retries=3
+    )
+    assert summaries["read_url"].retries == 0
+
+
+def sub_topic_event(duplicates: int, beyond_cap: int) -> object:
+    """One sub-topic completion, exactly as the researcher records it."""
+    return sub_topic_completed_event(
+        SubTopic(
+            coverage_id="topic-01",
+            title="Alpha",
+            rationale="First sub-topic.",
+            search_queries=["alpha evidence"],
+            success_criteria=["alpha answered"],
+            priority=1,
+        ),
+        ReActRun(agent_name="researcher", stop_reason="finished"),
+        index=1,
+        findings=4,
+        dropped_duplicate=duplicates,
+        dropped_cap=beyond_cap,
+        sources_retained=2,
+        publishers_retained=2,
+        source_urls_retained=2,
+        findings_retained=4,
+    )
+
+
+def test_dropped_proposals_are_summed_from_the_researchers_own_records() -> None:
+    """What the pass proposed and did not keep, from its own sub-topic records.
+
+    A duplicate is a restatement folded into a finding already held, and a cap
+    drop is a distinct finding past the per-sub-topic limit. Both are counted
+    here as their own numbers rather than left invisible behind the findings
+    that did enter state, and the two reasons stay distinct.
+    """
+    state = base_state(events=[sub_topic_event(2, 1), sub_topic_event(0, 4)])
+
+    dropped = outcome_of(state).dropped_proposals
+
+    assert dropped is not None
+    assert dropped.duplicates == 2
+    assert dropped.beyond_cap == 5
+    assert dropped.total == 7
+
+
+def test_dropped_proposals_are_absent_without_a_researchers_record() -> None:
+    """No sub-topic completion is no answer, never a zero drop count."""
+    assert outcome_of(base_state()).dropped_proposals is None
 
 
 def test_total_token_usage_sums_every_llm_span() -> None:

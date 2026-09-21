@@ -5,7 +5,11 @@ from __future__ import annotations
 import io
 
 from deep_research.agents.events import agent_event
-from deep_research.agents.researcher import sub_topic_skipped_error
+from deep_research.agents.researcher import (
+    sub_topic_completed_event,
+    sub_topic_skipped_error,
+)
+from deep_research.agents.steps import ReActRun
 from deep_research.cli import (
     ProgressStream,
     render_progress,
@@ -937,6 +941,88 @@ def test_verbose_summary_reports_tool_calls_and_tokens() -> None:
     assert "web_search: 4 calls (1 failed)" in joined
     assert "query_memory: 2 calls" in joined
     assert "Tokens: 1000 total (900 in / 100 out)" in joined
+
+
+def sub_topic_event(duplicates: int, beyond_cap: int) -> ResearchEvent:
+    """One sub-topic completion, exactly as the researcher records it."""
+    return sub_topic_completed_event(
+        SubTopic(
+            coverage_id="topic-01",
+            title="Alpha",
+            rationale="First sub-topic.",
+            search_queries=["alpha evidence"],
+            success_criteria=["alpha answered"],
+            priority=1,
+        ),
+        ReActRun(agent_name="researcher", stop_reason="finished"),
+        index=1,
+        findings=4,
+        dropped_duplicate=duplicates,
+        dropped_cap=beyond_cap,
+        sources_retained=2,
+        publishers_retained=2,
+        source_urls_retained=2,
+        findings_retained=4,
+    )
+
+
+def test_verbose_tool_totals_label_retries_beside_calls_and_failures() -> None:
+    outcome = build_outcome(
+        tool_calls=(
+            ToolCallSummary(
+                tool_name="web_search", calls=4, failures=1, retries=2
+            ),
+            ToolCallSummary(tool_name="read_url", calls=2, failures=0),
+            ToolCallSummary(
+                tool_name="document_reader", calls=1, failures=0, retries=1
+            ),
+        )
+    )
+
+    joined = "\n".join(render_summary(outcome, verbose=True))
+
+    assert "web_search: 4 calls (1 failed, 2 retries)" in joined
+    assert "document_reader: 1 calls (1 retry)" in joined
+    # A tool that never retried carries no retry label at all: the retry count
+    # is its own number rather than a suffix every line wears.
+    assert "read_url: 2 calls" in joined
+    assert "read_url: 2 calls (" not in joined
+
+
+def test_verbose_totals_label_the_proposals_the_researcher_dropped() -> None:
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        events=[sub_topic_event(2, 1), sub_topic_event(0, 4)],
+    )
+
+    joined = "\n".join(render_summary(build_outcome(state=state), verbose=True))
+
+    assert (
+        "Dropped proposals: 7 "
+        "(2 duplicate findings, 5 past the per-sub-topic cap)" in joined
+    )
+
+
+def test_verbose_totals_invent_no_drop_count_the_records_do_not_carry() -> None:
+    """Absent and zero are different readings of the same line.
+
+    No researcher sub-topic completion is no record at all, so the line is
+    absent rather than a zero the run never measured; a recorded pass that
+    dropped nothing says ``none``, which is a measurement.
+    """
+    without_records = "\n".join(render_summary(build_outcome(), verbose=True))
+    assert "Dropped proposals" not in without_records
+
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        events=[sub_topic_event(0, 0)],
+    )
+    recorded_zero = "\n".join(
+        render_summary(build_outcome(state=state), verbose=True)
+    )
+    assert "Dropped proposals: none" in recorded_zero
 
 
 def test_verbose_summary_says_tokens_are_unavailable_when_none_were_seen() -> None:
