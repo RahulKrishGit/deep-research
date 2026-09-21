@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 
 import pytest
 
+from deep_research.agents.synthesizer import (
+    evidence_report_filename,
+    quality_report_filename,
+    report_filename,
+)
 from deep_research.evaluation import config as evaluation_config
 from deep_research.evaluation.config import (
     _TARGET_REACT_TRANSPORT,
@@ -626,12 +631,22 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # extension now records a failed extension instead of letting the PlanningError
 # halt a run that already holds a publishable report. Same false positive, same
 # reason — a behavioural fix inside a module the fingerprint hashes in full.
+#
+# Task 11 re-pinned the synthesizer alone (`0ec21503cc00` -> `2af90b7ac8a8`).
+# As with Task 9's re-pins, no prompt instruction changed: the synthesizer's
+# only edit in the round was adding the `quality_report_filename` helper, which
+# names the third publication artifact (`-quality.json`) the way the evidence
+# ledger's name is already derived from the reader report's. The shared
+# `agents.prompts` library was not edited at all, and the other five agents'
+# pins did not move (verified by recomputing all six). The move is a false
+# positive of the documented design — the fingerprint hashes the whole module
+# source, so a new pure name helper shifts it exactly as a prompt edit would.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "f2507b56d0c6",
     "researcher": "4f68ae8f190d",
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "77ac66835773",
-    "synthesizer": "0ec21503cc00",
+    "synthesizer": "2af90b7ac8a8",
     "critic": "9694e44926d3",
 }
 
@@ -1012,6 +1027,36 @@ def test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift() -> Non
     assert {
         name: agent_prompt_fingerprint(name) for name in AGENT_NAMES
     } == PINNED_TARGET_PROMPT_FINGERPRINTS
+
+
+def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None:
+    """Record that Task 11's synthesizer re-pin is a false positive, not drift.
+
+    The pin above moved for the synthesizer in Task 11. The reason recorded next
+    to it is that the only edit to that module was adding the
+    ``quality_report_filename`` helper naming the publication's third artifact;
+    no prompt instruction changed and the shared ``agents.prompts`` library was
+    not touched. This test is the evidence for that claim rather than a comment
+    asserting it: the helper must be present and exported, its ledger sibling
+    must still produce the same family of names, and the fingerprint must be
+    exactly the value the re-pin recorded.
+
+    What it protects: if a later edit moves the synthesizer's prompt text, the
+    fingerprint moves again and this test fails on the recorded value, so the
+    next author has to attribute the change instead of inheriting Task 11's
+    re-pin as cover.
+    """
+    pre_task_11 = "0ec21503cc00"
+
+    assert quality_report_filename(session_id="probe", iteration=0) == (
+        "report-probe-0-quality.json"
+    )
+    assert evidence_report_filename(session_id="probe", iteration=0) == (
+        "report-probe-0-evidence.md"
+    )
+    assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
+    assert agent_prompt_fingerprint("synthesizer") == "2af90b7ac8a8"
+    assert agent_prompt_fingerprint("synthesizer") != pre_task_11
 
 
 def test_the_judge_fingerprint_is_pinned_beside_the_six_target_pins() -> None:
