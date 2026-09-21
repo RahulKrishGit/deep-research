@@ -3490,6 +3490,65 @@ def test_a_source_supported_reading_still_needs_one_supporting_publisher(
     )
 
 
+def _partial_support_only() -> Claim:
+    """The shape the adjudicator writes when nothing complete supports a claim.
+
+    One passage is considered and judged a *partial* support — the
+    ``complete_support``/``scope_compatible`` conjunction fails — so the
+    supports list is filtered to complete supports and comes back empty while
+    the candidate list does not. That is the ``no_complete_support`` branch of
+    ``validate_adjudication``: the claim is honestly source-supported and
+    publishes no supporting passage at all.
+    """
+    packet = _pair_packet(_eligibility(), _independent_second()).model_copy(
+        update={"claim_target_ids": [TASK6_TARGET]}
+    )
+    return validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.4,
+            assessments=[
+                SupportAssessment(
+                    evidence_id="ev-left",
+                    stance="supports",
+                    complete_support=False,
+                    scope_compatible=True,
+                    independent=True,
+                )
+            ],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="The passage supports only part of the claim.",
+        ),
+        packet,
+        None,
+    )
+
+
+def test_a_reading_with_no_complete_support_carries_no_publisher() -> None:
+    """The floor's invariant: this branch publishes no supporting passage.
+
+    ``no_complete_support`` writes ``source_supported`` beside
+    ``insufficient_evidence`` for a claim no complete support stands behind.
+    The admission floor (``supporting_publishers >= 1``) is the only thing
+    keeping that badge from crediting a target, and it holds *because* this
+    branch records no supporting passage: the supports list was filtered to
+    complete supports and is empty here, so the claim carries no publisher.
+    Nothing asserted that directly — it was emergent. A change that recorded
+    refused or partial selections as supporting passages would start reporting
+    a publisher for a claim no source fully supports, reopening the hole with
+    the suite green.
+    """
+    claim = _partial_support_only()
+
+    assert claim.evidence_status == "source_supported"
+    assert "no_complete_support" in claim.audit_flags
+    assert supporting_publisher_count(claim) == 0
+    assert admitted_target_ids(
+        claim, {TASK6_TARGET: "primary_attribution"}
+    ) == []
+
+
 @pytest.mark.parametrize("policy", ["primary_attribution", "derivation"])
 def test_an_omitted_evidence_status_is_the_conservative_reading(
     policy: str,
