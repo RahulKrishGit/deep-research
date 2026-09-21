@@ -33,6 +33,7 @@ from deep_research.agents.quality import compute_report_quality, review_status_f
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
     render_evidence_ledger,
+    render_quality_json,
     render_reader_report,
 )
 from deep_research.agents.report_review import (
@@ -44,6 +45,7 @@ from deep_research.agents.synthesizer import (
     evidence_report_filename,
     high_confidence_claims,
     memory_payload,
+    quality_report_filename,
     report_filename,
 )
 from deep_research.graph.errors import (
@@ -352,10 +354,16 @@ class ReportPublisher(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class _Publication:
-    """What the terminal publication step actually achieved."""
+    """What the terminal publication step actually achieved.
+
+    ``document_writes`` is the truthful count of writes that succeeded, whether
+    or not the set is complete. The three paths, by contrast, are all-or-
+    nothing: a set missing any required artifact advertises no path at all.
+    """
 
     report_path: str | None
     evidence_path: str | None
+    quality_path: str | None
     document_writes: int
     memory_writes: int
     errors: tuple[ResearchError, ...]
@@ -364,25 +372,50 @@ class _Publication:
 def _terminal_artifacts(
     state: ResearchState,
     status: str,
-) -> tuple[str, str, ReportComposition | None]:
-    """The exact Markdown both artifacts publish, stamped with the verdict.
+) -> tuple[str, str, str, ReportComposition | None]:
+    """The exact text of all three artifacts, from one frozen composition.
 
     Re-rendered from the composition in state when there is one: the reader
     must see the status the terminal gates decided, not the
     ``not yet quality-gated`` placeholder the pass composed it under. With no
-    composition, the state's own Markdown is authoritative and is left alone.
-    Both strings are stripped to what ``ResearchState`` will hold, so the file
-    and the state can never differ by a trailing newline.
+    composition, the state's own Markdown is authoritative and is left alone —
+    and the quality record, which describes a composition, is not invented for
+    a pass that never had one; it is rendered as the empty record of a pass
+    nothing composed.
+
+    The quality record is rendered from the *same* finalized composition the
+    other two render from, and hashes those two exact strings. One composition
+    in, three artifacts out: no renderer re-derives the fit, and no hash
+    describes a document other than the one written beside it.
     """
     composition = state.composition
     if composition is None:
-        return state.report or "", state.report_evidence or "", None
+        reader = state.report or ""
+        evidence = state.report_evidence or ""
+        quality = render_quality_json(
+            state,
+            None,
+            state.report_review,
+            artifacts={
+                "reader_markdown": reader,
+                "evidence_markdown": evidence,
+            },
+            quality_status=status,
+        )
+        return reader, evidence, quality, None
     finalized = composition.model_copy(update={"quality_status": status})
-    return (
-        render_reader_report(finalized).strip(),
-        render_evidence_ledger(finalized).strip(),
+    reader = render_reader_report(finalized).strip()
+    evidence = render_evidence_ledger(finalized).strip()
+    quality = render_quality_json(
+        state,
         finalized,
+        state.report_review,
+        artifacts={
+            "reader_markdown": reader,
+            "evidence_markdown": evidence,
+        },
     )
+    return reader, evidence, quality, finalized
 
 
 async def _publish(
@@ -391,17 +424,28 @@ async def _publish(
     *,
     markdown: str,
     evidence: str,
+    quality: str,
     status: str,
 ) -> _Publication:
-    """Write both artifacts, then keep claims only for an accepted report.
+    """Write the artifact set, then keep claims only for an accepted report.
 
-    The two document writes are independent: each records its own error and
-    its own path, so one failing never hides the other and a path is only
-    ever set from a write that actually succeeded. Memory is written last and
-    only for ``accepted`` — a partial report is published, never remembered.
+    The three document writes are staged independently: each records its own
+    error, so one failing never hides another and the failure record names
+    every write that did not complete. What is *not* independent is what gets
+    advertised. The paths are published only once the whole set — reader
+    Markdown, evidence Markdown, quality record — has been written, because a
+    front-end handed two paths out of three cannot tell from the paths which
+    artifact is missing, and the two documents on their own cannot be checked
+    against the IDs and hashes that describe them. Nothing here claims the set
+    is written atomically: the writes are separate operations, and this is a
+    decision about what may be advertised, not a claim about the filesystem.
+
+    Memory is written last and only for ``accepted`` — a partial report is
+    published, never remembered.
     """
     if publisher is None:
         return _Publication(
+            None,
             None,
             None,
             0,
@@ -430,10 +474,22 @@ async def _publish(
     )
     if failure is not None:
         errors.append(failure)
-
-    document_writes = sum(
-        path is not None for path in (report_path, evidence_path)
+    quality_path, failure = await _write_document(
+        publisher,
+        filename=quality_report_filename(
+            session_id=state.session_id, iteration=state.iteration
+        ),
+        content=quality,
+        artifact="quality",
     )
+    if failure is not None:
+        errors.append(failure)
+
+    written = (report_path, evidence_path, quality_path)
+    document_writes = sum(path is not None for path in written)
+    if document_writes != len(written):
+        report_path = evidence_path = quality_path = None
+
     memory_writes = 0
     if status == QUALITY_STATUS_ACCEPTED:
         for claim in high_confidence_claims(
@@ -459,6 +515,7 @@ async def _publish(
     return _Publication(
         report_path,
         evidence_path,
+        quality_path,
         document_writes,
         memory_writes,
         tuple(errors),
@@ -492,23 +549,30 @@ async def _write_document(
 
 
 def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
-    """Publish the composed artifacts, once, at the one terminal node.
+    """Publish the composed artifact set, once, at the one terminal node.
 
     This is the run's only writer — synthesis composes and writes nothing —
     and it is reached only by a run that was not halted. It:
 
     * stamps the terminal quality status the router decided onto the report;
-    * writes the reader report and the evidence ledger as two independent
-      documents, recording a separate error and a separate path for each;
+    * writes the reader report, the evidence ledger and the quality record
+      from one frozen composition, recording a separate error for each write
+      that did not complete;
+    * advertises no artifact path unless the whole set was written, so a
+      front-end is never pointed at an earlier refinement pass's file and never
+      at an incomplete set;
     * keeps high-confidence verified claims in long-term memory only when the
       status is ``accepted``;
-    * emits the terminal ``graph.report.published`` event carrying both paths,
-      ``None`` for any write that failed, so a front-end is never pointed at
-      an earlier refinement pass's file;
+    * emits the terminal ``graph.report.published`` event carrying all three
+      paths — each ``None`` when the set is incomplete — and the truthful
+      count of writes that succeeded;
     * leaves the Markdown authoritative in state whatever the filesystem did.
 
     Nothing here halts the run: a failed write is a recorded recoverable
     error, because the report a reader receives is the Markdown, not the file.
+    And nothing here claims the writes are one atomic filesystem operation:
+    they are three separate writes, and what the incomplete case guarantees is
+    that none of them is advertised.
     """
 
     async def node(channel: ResearchGraphState) -> ResearchGraphState:
@@ -527,12 +591,15 @@ def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
             },
         )
         status = graph_quality_status(started)
-        markdown, evidence, composition = _terminal_artifacts(started, status)
+        markdown, evidence, quality, composition = _terminal_artifacts(
+            started, status
+        )
         publication = await _publish(
             started,
             publisher,
             markdown=markdown,
             evidence=evidence,
+            quality=quality,
             status=status,
         )
         return _with(
@@ -543,12 +610,14 @@ def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
                 "composition": composition,
                 "report_path": publication.report_path,
                 "evidence_path": publication.evidence_path,
+                "quality_path": publication.quality_path,
                 "errors": list(publication.errors),
                 "events": [
                     report_published_event(
                         quality_status=status,
                         report_path=publication.report_path,
                         evidence_path=publication.evidence_path,
+                        quality_path=publication.quality_path,
                         document_writes=publication.document_writes,
                         memory_writes=publication.memory_writes,
                         error_count=len(publication.errors),

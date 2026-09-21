@@ -726,9 +726,10 @@ async def test_the_observed_report_shape_publishes_once_after_three_refinements(
     assert final.quality.duplicate_claims == 0
     assert final.quality.hard_failures == []
     assert publisher.memory_writes == 1
-    assert publisher.report_writes == 2  # reader + evidence, terminal only
+    assert publisher.report_writes == 3  # reader, evidence, quality: terminal only
     assert final.report_path == "report-session-1-3.md"
     assert final.evidence_path == "report-session-1-3-evidence.md"
+    assert final.quality_path == "report-session-1-3-quality.json"
     assert graph_status(final) == "completed"
 
 
@@ -908,7 +909,7 @@ async def test_a_provider_failure_in_the_routed_extension_does_not_halt_the_run(
     assert any("provider" in error.error_type for error in state.errors)
     # The report the run already held is still published.
     assert state.report_path is not None
-    assert publisher.report_writes == 2
+    assert publisher.report_writes == 3
 
 
 @pytest.mark.asyncio
@@ -988,7 +989,7 @@ async def test_an_accepted_run_publishes_both_artifacts_and_one_memory_entry(
     assert len(published) == 1
     assert published[0].metadata["quality_status"] == QUALITY_STATUS_ACCEPTED
     assert published[0].metadata["report_path"] == "report-session-1-0.md"
-    assert published[0].metadata["document_writes"] == 2
+    assert published[0].metadata["document_writes"] == 3
     assert publisher.memory_writes == 1
     assert "**Quality status:** accepted" in (state.report or "")
     # The judgement that made it accepted must still be on the state. A review

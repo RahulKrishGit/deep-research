@@ -207,17 +207,21 @@ def report_published_event(
     quality_status: str,
     report_path: str | None,
     evidence_path: str | None,
+    quality_path: str | None = None,
     document_writes: int,
     memory_writes: int,
     error_count: int,
 ) -> ResearchEvent:
-    """Record the one terminal publication of both composed artifacts.
+    """Record the one terminal publication of the composed artifact set.
 
-    This is the only event that names where the session's final report lives,
-    and it carries *both* paths. A path is ``None`` when that write failed, so
-    a front-end reading this event is never pointed at an earlier refinement
-    pass's file. ``quality_status`` is an enumerated ``QUALITY_STATUS_*``
-    value; the counts are write outcomes, never content.
+    This is the only event that names where the session's final artifacts live,
+    and it carries all three paths. A path is ``None`` when that write failed
+    *or* when any other required write failed — the set is published whole or
+    advertised not at all, so a front-end reading this event is never pointed
+    at an earlier refinement pass's file, and never at two thirds of a set.
+    ``quality_path`` defaults to ``None`` so a record written before the third
+    artifact existed stays readable. ``quality_status`` is an enumerated
+    ``QUALITY_STATUS_*`` value; the counts are write outcomes, never content.
     """
     return graph_event(
         event_type="graph.report.published",
@@ -227,6 +231,7 @@ def report_published_event(
             "quality_status": quality_status,
             "report_path": report_path,
             "evidence_path": evidence_path,
+            "quality_path": quality_path,
             "document_writes": document_writes,
             "memory_writes": memory_writes,
             "error_count": error_count,

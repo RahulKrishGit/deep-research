@@ -2061,7 +2061,7 @@ def artifact_content_hashes(
 
 def distinct_retention_counts(
     state: ResearchState,
-    composition: ReportComposition,
+    composition: ReportComposition | None,
 ) -> dict[str, int]:
     """Distinct counts, each of a different thing (Sections 2.3 and 2.5).
 
@@ -2077,14 +2077,33 @@ def distinct_retention_counts(
     to match. ``publishers`` counts only sources whose publisher identity is
     established; an unresolved issuer is not a publisher, and nothing here is
     ever derived from memory recall.
+
+    A session with no composition is counted from the state's own canonical
+    snapshots — the same records the quality pass reads when a composition
+    carries none — so the read-side counts stay truthful rather than becoming
+    zeroes. Nothing is cited without a reader report, and that is reported as
+    zero cited sources, not as an absent field.
     """
     from deep_research.agents.evidence import (  # noqa: PLC0415
         retained_work_count,
     )
 
     reads = list(state.read_records.values())
-    sources = canonical_sources(composition.sources)
-    cited = {citation.url for citation in reader_citations(composition)}
+    rows = (
+        composition.sources if composition is not None else state.evaluated_sources
+    )
+    findings = (
+        composition.findings if composition is not None else state.raw_findings
+    )
+    claims = (
+        composition.claims if composition is not None else state.verified_claims
+    )
+    sources = canonical_sources(rows)
+    cited = (
+        {citation.url for citation in reader_citations(composition)}
+        if composition is not None
+        else set()
+    )
     urls = [normalize_source_url(source.url) for source in sources]
     return {
         "read_records": len(reads),
@@ -2097,16 +2116,16 @@ def distinct_retention_counts(
             {source.publisher_id for source in sources if source.publisher_id}
         ),
         "source_urls": len(set(urls)),
-        "findings": len(deduplicate_findings(composition.findings)),
+        "findings": len(deduplicate_findings(findings)),
         "assessed_sources": len(sources),
         "cited_assessed_sources": len(set(urls) & cited),
-        "checked_claims": len(canonical_claims(composition.claims)),
+        "checked_claims": len(canonical_claims(claims)),
     }
 
 
 def _coverage_counts(
     state: ResearchState,
-    composition: ReportComposition,
+    composition: ReportComposition | None,
 ) -> dict[str, JsonValue]:
     """Target and topic progress, read from the snapshot the gates judged.
 
@@ -2222,19 +2241,20 @@ def _review_record(review: ReportReview | None) -> dict[str, JsonValue]:
 
 def render_quality_record(
     state: ResearchState,
-    composition: ReportComposition,
+    composition: ReportComposition | None,
     review: ReportReview | None,
     *,
     artifacts: Mapping[str, str] | None = None,
+    quality_status: str | None = None,
 ) -> dict[str, JsonValue]:
     """The quality JSON: one pass's evidence, decisions and hashes, by ID.
 
     The record is the replay surface for the other two artifacts. Every reader
-    statement is serialized with the claim clusters and evidence units it rests
-    on, each of those names the read it came from, and each read names its
-    content digest and how it was acquired — so "which source supports this
-    sentence, and was it read or remembered" is answerable from the record
-    alone, with no prose parsed anywhere.
+    statement is serialized with the claim clusters and evidence units it
+    rests on, each of those names the read it came from, and each read names
+    its content digest and how it was acquired — so "which source supports
+    this sentence, and was it read or remembered" is answerable from the
+    record alone, with no prose parsed anywhere.
 
     Four rules shape what is here, and each is a defect this artifact exists to
     prevent:
@@ -2254,39 +2274,83 @@ def render_quality_record(
     ``artifacts`` maps an artifact name to the exact final text published under
     it. A caller that supplies none gets no hashes rather than invented ones:
     a digest of text nobody published would be a fabricated provenance claim.
+
+    ``composition`` is ``None`` for a session whose Markdown predates the
+    composition contract. That is recorded as ``composition_present: false``
+    with empty registries and an empty composition fingerprint — never as an
+    empty composition's own digest, which would name a report nobody composed.
+    ``quality_status`` states the terminal verdict for such a session; without
+    it, the record carries the composition's own badge or nothing at all.
     """
-    sources = canonical_sources(composition.sources)
-    claims = canonical_claims(composition.claims)
-    cited = {citation.url for citation in reader_citations(composition)}
+    sources = (
+        canonical_sources(composition.sources) if composition is not None else []
+    )
+    claims = (
+        canonical_claims(composition.claims) if composition is not None else []
+    )
+    cited = (
+        {citation.url for citation in reader_citations(composition)}
+        if composition is not None
+        else set()
+    )
     reads = sorted(state.read_records.values(), key=lambda read: read.read_id)
-    units = sorted(
-        composition.evidence_units.values(),
-        key=lambda unit: unit.evidence_id,
+    units = (
+        sorted(
+            composition.evidence_units.values(),
+            key=lambda unit: unit.evidence_id,
+        )
+        if composition is not None
+        else []
     )
-    clusters = sorted(
-        composition.claim_clusters.values(),
-        key=lambda cluster: cluster.cluster_id,
+    clusters = (
+        sorted(
+            composition.claim_clusters.values(),
+            key=lambda cluster: cluster.cluster_id,
+        )
+        if composition is not None
+        else []
     )
+    statements = composition.statements if composition is not None else []
     from deep_research.agents.report_review import (  # noqa: PLC0415
         composition_semantic_fingerprint,
     )
 
+    if quality_status is not None:
+        status = quality_status
+    elif composition is not None:
+        status = composition.quality_status
+    else:
+        status = ""
+
     record: dict[str, JsonValue] = {
         "quality_contract_version": state.quality_contract_version,
+        "composition_present": composition is not None,
         "session_id": state.session_id,
-        "iteration": composition.iteration,
-        "question": composition.question,
-        "scope": composition.scope,
-        "as_of": composition.as_of,
-        "generated_on": composition.generated_on,
-        "date_basis": composition.date_basis,
-        "answer_kind": composition.answer_kind or "",
-        "quality_status": composition.quality_status,
+        "iteration": (
+            composition.iteration if composition is not None else state.iteration
+        ),
+        "question": (
+            composition.question
+            if composition is not None
+            else state.original_question
+        ),
+        "scope": composition.scope if composition is not None else "",
+        "as_of": composition.as_of if composition is not None else "",
+        "generated_on": (
+            composition.generated_on if composition is not None else ""
+        ),
+        "date_basis": composition.date_basis if composition is not None else "",
+        "answer_kind": (
+            (composition.answer_kind or "") if composition is not None else ""
+        ),
+        "quality_status": status,
         "artifacts": artifact_content_hashes(artifacts or {}),
         "configuration": {
             "quality_contract_version": state.quality_contract_version,
             "composition_fingerprint": (
                 composition_semantic_fingerprint(composition)
+                if composition is not None
+                else ""
             ),
             "review_input_fingerprint": (
                 review.input_fingerprint if review is not None else ""
@@ -2307,7 +2371,7 @@ def render_quality_record(
             "contradicted_claims": sum(
                 claim.verdict == "contradicted" for claim in claims
             ),
-            "reader_statements": len(composition.statements),
+            "reader_statements": len(statements),
         },
         "evidence_status": evidence_status_counts(claims),
         "sources": [
@@ -2450,10 +2514,18 @@ def render_quality_record(
                     else ""
                 ),
             }
-            for statement in composition.statements
+            for statement in statements
         ],
-        "statement_dispositions": list(composition.statement_dispositions),
-        "returned_to_fact_checker": list(composition.returned_to_fact_checker),
+        "statement_dispositions": (
+            list(composition.statement_dispositions)
+            if composition is not None
+            else []
+        ),
+        "returned_to_fact_checker": (
+            list(composition.returned_to_fact_checker)
+            if composition is not None
+            else []
+        ),
         "review": _review_record(review),
     }
     return record
@@ -2461,10 +2533,11 @@ def render_quality_record(
 
 def render_quality_json(
     state: ResearchState,
-    composition: ReportComposition,
+    composition: ReportComposition | None,
     review: ReportReview | None,
     *,
     artifacts: Mapping[str, str] | None = None,
+    quality_status: str | None = None,
 ) -> str:
     """The quality record as the bytes that are published.
 
@@ -2474,6 +2547,10 @@ def render_quality_json(
     ``render_quality_record`` produced, serialized once.
     """
     record = render_quality_record(
-        state, composition, review, artifacts=artifacts
+        state,
+        composition,
+        review,
+        artifacts=artifacts,
+        quality_status=quality_status,
     )
     return json.dumps(record, sort_keys=True, indent=2, ensure_ascii=False) + "\n"

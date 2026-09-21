@@ -2514,6 +2514,15 @@ class ResearchState(ContractModel):
     Written only by the terminal finalizer, from the write that actually
     succeeded; ``None`` until a ledger has been published.
     """
+    quality_path: str | None = None
+    """The file the quality record was published under, or ``None``.
+
+    The third artifact of one publication, and written the same way the other
+    two are: only the terminal finalizer sets it, only from a write that
+    succeeded, and only when the whole set was written. An incomplete set
+    publishes no paths at all, so ``None`` here means "this session has no
+    advertised quality record", never "read an earlier pass's file".
+    """
     composition: ReportComposition | None = None
     """The typed composition ``report`` and ``report_evidence`` render.
 

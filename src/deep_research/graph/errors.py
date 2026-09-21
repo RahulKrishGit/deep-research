@@ -61,7 +61,7 @@ GRAPH_ERROR_REASONS = {
 
 # The terminal writes that fail independently of one another. Enumerated so a
 # reader — or a CLI — can tell which artifact is missing its file.
-PUBLICATION_ARTIFACTS = ("reader", "evidence", "memory")
+PUBLICATION_ARTIFACTS = ("reader", "evidence", "quality", "memory")
 
 
 class GraphError(Exception):

@@ -571,6 +571,17 @@ def evidence_report_filename(*, session_id: str, iteration: int) -> str:
     return f"{stem.removesuffix('.md')}-evidence.md"
 
 
+def quality_report_filename(*, session_id: str, iteration: int) -> str:
+    """Return the quality record's filename for the same pass.
+
+    Derived the same way the ledger's name is, so the three artifacts of one
+    publication are one name family: nothing about which set a file belongs to
+    depends on a caller remembering a second slug.
+    """
+    stem = report_filename(session_id=session_id, iteration=iteration)
+    return f"{stem.removesuffix('.md')}-quality.json"
+
+
 def claim_label(position: int) -> str:
     """The label a prompt uses to address one checked claim.
 

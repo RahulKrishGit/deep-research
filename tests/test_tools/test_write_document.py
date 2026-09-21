@@ -110,6 +110,50 @@ async def test_writer_atomically_replaces_existing_markdown_file(
 
 
 @pytest.mark.asyncio
+async def test_writer_publishes_a_json_artifact_beside_markdown(
+    tracker, tmp_path
+) -> None:
+    """The quality record is a file the same writer publishes.
+
+    One publisher writes the whole set, so the third artifact is not a second
+    write path with its own rules: traversal, the directory check, and the
+    atomic replace are the same ones the Markdown artifacts already get.
+    """
+    output_root = tmp_path / "output"
+    content = '{\n  "session_id": "session-1"\n}\n'
+
+    async with tracker.session_span("session-1", "question"):
+        result = await WriteDocumentTool(tracker, output_root).execute(
+            filename="reports/quality-1.json", content=content
+        )
+
+    assert result.success is True
+    assert result.data == {
+        "path": "reports/quality-1.json",
+        "bytes_written": 32,
+    }
+    assert (output_root / "reports" / "quality-1.json").read_text(
+        encoding="utf-8"
+    ) == content
+    assert result.metadata == {"format": "json", "retry_count": 0}
+
+
+@pytest.mark.asyncio
+async def test_writer_rejects_an_unknown_suffix(tracker, tmp_path) -> None:
+    """Allowing JSON widens nothing else: every other suffix still fails."""
+    output_root = tmp_path / "output"
+
+    async with tracker.session_span("session-1", "question"):
+        result = await WriteDocumentTool(tracker, output_root).execute(
+            filename="report.yaml", content="session: 1\n"
+        )
+
+    assert result.success is False
+    assert result.error is not None
+    assert list(output_root.rglob("*")) == []
+
+
+@pytest.mark.asyncio
 async def test_writer_redacts_report_body_from_span_inputs(tmp_path) -> None:
     from contextlib import asynccontextmanager
 

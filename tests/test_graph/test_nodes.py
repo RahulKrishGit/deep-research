@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -870,7 +871,7 @@ def _finalized_state(
 
 
 @pytest.mark.asyncio
-async def test_the_finalizer_publishes_both_artifacts_exactly_once() -> None:
+async def test_the_finalizer_publishes_every_artifact_exactly_once() -> None:
     publisher = FakePublisher()
 
     result = await finalize_report_node(publisher)(
@@ -878,24 +879,60 @@ async def test_the_finalizer_publishes_both_artifacts_exactly_once() -> None:
     )
     state = load_state(result)
 
-    assert publisher.report_writes == 2
+    assert publisher.report_writes == 3
     assert state.report_path == "report-session-1-0.md"
     assert state.evidence_path == "report-session-1-0-evidence.md"
+    assert state.quality_path == "report-session-1-0-quality.json"
     assert publisher.written_paths == [
         "report-session-1-0.md",
         "report-session-1-0-evidence.md",
+        "report-session-1-0-quality.json",
     ]
     assert publisher.document_named("report-session-1-0.md")[1] == (
         "# Reader report"
     )
     assert publisher.document_named("-evidence.md")[1] == "# Evidence ledger"
+    quality = json.loads(publisher.document_named("-quality.json")[1])
+    assert quality["session_id"] == "session-1"
+    assert quality["quality_status"] == QUALITY_STATUS_ACCEPTED
     assert not state.errors
     published = state.events[-2]
     assert published.event_type == "graph.report.published"
     assert published.metadata["report_path"] == "report-session-1-0.md"
     assert published.metadata["evidence_path"] == "report-session-1-0-evidence.md"
+    assert published.metadata["quality_path"] == (
+        "report-session-1-0-quality.json"
+    )
     assert published.metadata["quality_status"] == QUALITY_STATUS_ACCEPTED
-    assert published.metadata["document_writes"] == 2
+    assert published.metadata["document_writes"] == 3
+
+
+@pytest.mark.asyncio
+async def test_the_published_quality_record_hashes_the_two_documents_it_describes(
+) -> None:
+    """The set is internally checkable from the record it was published with."""
+    publisher = FakePublisher()
+
+    state = load_state(
+        await finalize_report_node(publisher)(
+            dump_state(_finalized_state(quality=fake_quality()))
+        )
+    )
+
+    reader_text = publisher.document_named("report-session-1-0.md")[1]
+    ledger_text = publisher.document_named("-evidence.md")[1]
+    record = json.loads(publisher.document_named("-quality.json")[1])
+
+    def digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    assert record["artifacts"] == {
+        "reader_markdown": digest(reader_text),
+        "evidence_markdown": digest(ledger_text),
+    }
+    assert reader_text == state.report
+    assert ledger_text == state.report_evidence
+    assert record["quality_status"] == QUALITY_STATUS_ACCEPTED
 
 
 @pytest.mark.asyncio
@@ -940,13 +977,23 @@ async def test_the_real_synthesizer_publishes_both_artifacts_into_a_real_root(
     assert state.errors == []
     assert state.report_path == "report-session-1-0.md"
     assert state.evidence_path == "report-session-1-0-evidence.md"
+    assert state.quality_path == "report-session-1-0-quality.json"
     reader = tmp_path / "report-session-1-0.md"
     ledger = tmp_path / "report-session-1-0-evidence.md"
-    assert reader.is_file() and ledger.is_file()
+    quality = tmp_path / "report-session-1-0-quality.json"
+    assert reader.is_file() and ledger.is_file() and quality.is_file()
     assert reader.read_text(encoding="utf-8") == state.report
     assert ledger.read_text(encoding="utf-8") == state.report_evidence
+    record = json.loads(quality.read_text(encoding="utf-8"))
+    # The record the filesystem holds describes the files the filesystem holds.
+    assert record["artifacts"]["reader_markdown"] == hashlib.sha256(
+        reader.read_bytes()
+    ).hexdigest()
+    assert record["artifacts"]["evidence_markdown"] == hashlib.sha256(
+        ledger.read_bytes()
+    ).hexdigest()
     published = state.events[-2]
-    assert published.metadata["document_writes"] == 2
+    assert published.metadata["document_writes"] == 3
     assert published.metadata["memory_writes"] == 1
     assert memory.saved
 
@@ -980,7 +1027,7 @@ async def test_a_partial_report_publishes_artifacts_but_saves_no_claim() -> None
         )
     )
 
-    assert publisher.report_writes == 2
+    assert publisher.report_writes == 3
     assert publisher.memory_writes == 0
     assert load_state(result).events[-2].metadata["quality_status"] == (
         QUALITY_STATUS_PARTIAL
@@ -995,7 +1042,7 @@ async def test_an_ungated_report_is_partial_and_saves_no_claim() -> None:
         dump_state(_finalized_state(quality=None))
     )
 
-    assert publisher.report_writes == 2
+    assert publisher.report_writes == 3
     assert publisher.memory_writes == 0
     assert load_state(result).events[-2].metadata["quality_status"] == (
         QUALITY_STATUS_PARTIAL
@@ -1004,7 +1051,13 @@ async def test_an_ungated_report_is_partial_and_saves_no_claim() -> None:
 
 @pytest.mark.asyncio
 async def test_a_failed_write_keeps_the_markdown_authoritative() -> None:
-    """Step 7: state holds the artifacts whether or not a file exists."""
+    """Step 7: state holds the artifacts whether or not a file exists.
+
+    And an incomplete set advertises nothing: the reader Markdown is in state,
+    the other two files may well be on disk, and no path is published, because
+    a front-end pointed at two thirds of a set cannot tell which third is
+    missing from the paths alone.
+    """
     publisher = FakePublisher(fail_documents=("report-session-1-0.md",))
 
     result = await finalize_report_node(publisher)(
@@ -1015,17 +1068,29 @@ async def test_a_failed_write_keeps_the_markdown_authoritative() -> None:
     assert state.report == "# Reader report"
     assert state.report_evidence == "# Evidence ledger"
     assert state.report_path is None
-    assert state.evidence_path == "report-session-1-0-evidence.md"
+    assert state.evidence_path is None
+    assert state.quality_path is None
     assert [error.error_type for error in state.errors] == [
         "graph_publication_failed"
     ]
     assert state.errors[0].details["artifact"] == "reader"
-    assert state.events[-2].metadata["report_path"] is None
+    published = state.events[-2]
+    assert published.metadata["report_path"] is None
+    assert published.metadata["evidence_path"] is None
+    assert published.metadata["quality_path"] is None
+    # The count is the truthful one: two writes succeeded.
+    assert published.metadata["document_writes"] == 2
 
 
 @pytest.mark.asyncio
-async def test_the_two_artifact_writes_fail_independently() -> None:
-    publisher = FakePublisher(fail_documents=("-evidence.md",))
+async def test_a_failed_quality_write_withholds_the_whole_advertised_set() -> None:
+    """A required artifact that did not publish leaves no accepted output.
+
+    The quality record is part of the set, not an optional extra: without it
+    the two Markdown documents cannot be checked against the IDs and hashes
+    that describe them, so the publication is incomplete and says so.
+    """
+    publisher = FakePublisher(fail_documents=("-quality.json",))
 
     state = load_state(
         await finalize_report_node(publisher)(
@@ -1033,9 +1098,34 @@ async def test_the_two_artifact_writes_fail_independently() -> None:
         )
     )
 
-    assert state.report_path == "report-session-1-0.md"
+    assert state.report is not None and state.report_evidence is not None
+    assert state.report_path is None
     assert state.evidence_path is None
-    assert [error.details["artifact"] for error in state.errors] == ["evidence"]
+    assert state.quality_path is None
+    assert [error.details["artifact"] for error in state.errors] == ["quality"]
+    assert state.errors[0].details["failure_type"] == "ValidationError"
+    assert state.events[-2].metadata["document_writes"] == 2
+
+
+@pytest.mark.asyncio
+async def test_each_artifact_write_fails_independently() -> None:
+    """Each write records its own error; none of them hides another's."""
+    publisher = FakePublisher(fail_documents=("-evidence.md", "-quality.json"))
+
+    state = load_state(
+        await finalize_report_node(publisher)(
+            dump_state(_finalized_state(quality=fake_quality()))
+        )
+    )
+
+    assert state.report_path is None
+    assert state.evidence_path is None
+    assert state.quality_path is None
+    assert [error.details["artifact"] for error in state.errors] == [
+        "evidence",
+        "quality",
+    ]
+    assert state.events[-2].metadata["document_writes"] == 1
 
 
 @pytest.mark.asyncio
@@ -1058,8 +1148,10 @@ async def test_a_terminal_write_failure_never_advertises_an_earlier_artifact() -
     published = state.events[-2]
     assert published.metadata["report_path"] is None
     assert published.metadata["evidence_path"] is None
+    assert published.metadata["quality_path"] is None
     assert state.report_path is None
     assert state.evidence_path is None
+    assert state.quality_path is None
     assert "report-session-1-1-evidence.md" not in str(published.metadata)
 
 
@@ -1073,6 +1165,7 @@ async def test_a_run_with_no_publisher_writes_nothing_and_says_so() -> None:
     assert state.report == "# Reader report"
     assert state.report_path is None
     assert state.evidence_path is None
+    assert state.quality_path is None
     assert [error.error_type for error in state.errors] == [
         "graph_publication_unavailable"
     ]

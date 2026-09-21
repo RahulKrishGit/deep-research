@@ -203,7 +203,7 @@ def _accounted_target_ids(
 
 def compute_substantive_coverage(
     state: ResearchState,
-    composition: ReportComposition,
+    composition: ReportComposition | None,
 ) -> SubstantiveCoverage:
     """Section 2.3 coverage, from the plan's obligations and the answers.
 
@@ -226,6 +226,12 @@ def compute_substantive_coverage(
     reads reader statements from the state, and a caller that scored one
     composition while the state held another would otherwise get an answer
     about the wrong report.
+
+    ``composition`` may be ``None`` for a session whose Markdown predates the
+    composition contract. That is the "no reader statement was composed"
+    reading, which is what ``target_is_answered`` already returns for a state
+    with no composition: every obligation stands unanswered at the plan's own
+    denominator.
     """
 
     view = (
