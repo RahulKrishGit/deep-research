@@ -18,6 +18,7 @@ from deep_research.cli import (
     build_parser,
     main,
     render_progress,
+    strict_quality_exit,
 )
 from deep_research.graph.events import (
     node_completed_event,
@@ -616,6 +617,65 @@ def test_a_failed_graph_run_outranks_the_quality_flag() -> None:
     )
 
     assert code == EXIT_GRAPH_FAILED
+
+
+def test_missing_semantic_review_keeps_strict_exit_four() -> None:
+    """A report the terminal review never judged is not an accepted report.
+
+    ``semantic_review_status`` is ``incomplete`` and the quality status is
+    ``partial``, so strict mode exits 4 however clean the structural counters
+    look. The same snapshot without ``--require-quality`` is the ordinary
+    completed-run exit 0, which is what a run did — never a claim that the
+    report was accepted.
+    """
+    snapshot = {
+        "hard_failures": [],
+        "critic_score": 8,
+        "semantic_review_status": "incomplete",
+        "quality_status": "partial",
+    }
+
+    assert (
+        strict_quality_exit(snapshot, require_quality=True)
+        == EXIT_QUALITY_UNACCEPTED
+    )
+    assert strict_quality_exit(snapshot, require_quality=False) == EXIT_OK
+
+
+def test_strict_quality_exit_reads_the_verdict_and_nothing_else() -> None:
+    """No counter can buy acceptance: only the enumerated verdict clears it.
+
+    A snapshot carrying an empty hard-failure list, a perfect critic score, a
+    scored review at 1.00 and full coverage still exits 4 while its verdict is
+    ``partial`` — the counters are diagnostics, not the decision. A snapshot
+    with no verdict at all is not accepted either: an absent judgement is
+    never an acceptance.
+    """
+    flattering = {
+        "hard_failures": [],
+        "critic_score": 10,
+        "critic_review_status": "reviewed",
+        "semantic_review_status": "scored",
+        "semantic_review_score": 1.0,
+        "coverage_ratio": 1.0,
+        "verified_claims": 16,
+        "quality_status": "partial",
+    }
+
+    assert (
+        strict_quality_exit(flattering, require_quality=True)
+        == EXIT_QUALITY_UNACCEPTED
+    )
+    assert (
+        strict_quality_exit(
+            {"quality_status": "accepted"}, require_quality=True
+        )
+        == EXIT_OK
+    )
+    assert strict_quality_exit({}, require_quality=True) == (
+        EXIT_QUALITY_UNACCEPTED
+    )
+    assert strict_quality_exit({}, require_quality=False) == EXIT_OK
 
 
 def test_an_incomplete_run_still_exits_zero_and_says_why() -> None:

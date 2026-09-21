@@ -32,7 +32,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TextIO
 
@@ -53,6 +53,7 @@ from deep_research.runtime.errors import (
 )
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.types import (
+    QUALITY_STATUS_ACCEPTED,
     ReportQualitySnapshot,
     ResearchError,
     ResearchEvent,
@@ -710,6 +711,43 @@ EXIT_GRAPH_FAILED = 3
 EXIT_QUALITY_UNACCEPTED = 4
 EXIT_INTERRUPTED = 130
 
+QUALITY_STATUS_KEY = "quality_status"
+"""The one key ``strict_quality_exit`` reads, and the name it reads it under."""
+
+
+def strict_quality_exit(
+    snapshot: Mapping[str, object],
+    *,
+    require_quality: bool,
+) -> int:
+    """The exit code a *completed* run's quality verdict earns.
+
+    A pure helper, and deliberately a narrow one: it answers one question —
+    did this run's terminal quality status accept the report? — and it is
+    called only after the configuration, usage, graph-failure and interrupt
+    exits have already been decided. Those stay where they are; nothing here
+    can reorder them.
+
+    The verdict is read from the enumerated status alone. Every other field a
+    snapshot may carry (hard-failure names, the critic's score, the semantic
+    review's status and mean, coverage ratios, claim counts) is a diagnostic,
+    and none of them can buy acceptance: a report the terminal gates did not
+    accept exits 4 under ``--require-quality`` even when every counter looks
+    clean. A snapshot with no status at all is not accepted either — an absent
+    judgement is never an acceptance, and a missing key must not read as a
+    pass.
+
+    Without ``--require-quality`` a completed run exits 0 whether or not the
+    report was accepted. That 0 means "the run finished"; it is explicitly not
+    a claim that the report was accepted, which is why the summary prints the
+    quality status beside it on every run.
+    """
+    if not require_quality:
+        return EXIT_OK
+    if snapshot.get(QUALITY_STATUS_KEY) == QUALITY_STATUS_ACCEPTED:
+        return EXIT_OK
+    return EXIT_QUALITY_UNACCEPTED
+
 INTERACTIVE_PROMPT = "Research question: "
 
 _STARTING_NOTICE = (
@@ -822,7 +860,10 @@ def main(
     emit(render_summary(outcome, verbose=options.verbose))
     if outcome.failed:
         return EXIT_GRAPH_FAILED
-    if options.require_quality and not outcome.accepted:
+    quality_exit = strict_quality_exit(
+        {QUALITY_STATUS_KEY: outcome.quality_status},
+        require_quality=options.require_quality,
+    )
+    if quality_exit == EXIT_QUALITY_UNACCEPTED:
         emit([_QUALITY_UNACCEPTED_NOTICE])
-        return EXIT_QUALITY_UNACCEPTED
-    return EXIT_OK
+    return quality_exit
