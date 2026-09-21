@@ -3,6 +3,8 @@
 from deep_research.graph.errors import (
     GRAPH_ERROR_REASONS,
     PUBLICATION_ARTIFACTS,
+    PUBLICATION_DOCUMENT_ARTIFACTS,
+    PUBLICATION_MEMORY_ARTIFACT,
     GraphConfigurationError,
     GraphError,
     GraphResumeError,
@@ -116,6 +118,8 @@ __all__ = [
     "NODE_NAMES",
     "PLANNER_NODE",
     "PUBLICATION_ARTIFACTS",
+    "PUBLICATION_DOCUMENT_ARTIFACTS",
+    "PUBLICATION_MEMORY_ARTIFACT",
     "REFINE_NODE",
     "REPAIR_NODES",
     "REPORT_REVIEW_NODE",

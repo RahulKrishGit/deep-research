@@ -59,9 +59,22 @@ GRAPH_ERROR_REASONS = {
     ),
 }
 
+# The three files published as one set: the reader report, its evidence ledger
+# and the quality record. The set is advertised whole or not at all, so a
+# failure in any one of them withholds every path.
+PUBLICATION_DOCUMENT_ARTIFACTS = ("reader", "evidence", "quality")
+
+# The one terminal write outside that set: a claim handed to memory, attempted
+# only for an accepted report and only after the documents. Its failure loses a
+# memory record — never a file the run advertised — so it must not be read as
+# an incomplete publication.
+PUBLICATION_MEMORY_ARTIFACT = "memory"
+
 # The terminal writes that fail independently of one another. Enumerated so a
 # reader — or a CLI — can tell which artifact is missing its file.
-PUBLICATION_ARTIFACTS = ("reader", "evidence", "quality", "memory")
+PUBLICATION_ARTIFACTS = PUBLICATION_DOCUMENT_ARTIFACTS + (
+    PUBLICATION_MEMORY_ARTIFACT,
+)
 
 
 class GraphError(Exception):

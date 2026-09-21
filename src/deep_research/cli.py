@@ -1101,6 +1101,9 @@ def _artifact_lines(outcome: ResearchOutcome) -> list[str]:
     file does not exist, because a sibling write may well have succeeded and
     left a file on disk. A run that never attempted a publication keeps the
     older wording, which is true of it.
+
+    A memory-claim write is outside the set: its failures are counted, and the
+    three artifact lines are unaffected by them.
     """
     failed = outcome.failed_publication_artifacts
     lines: list[str] = []
@@ -1131,6 +1134,14 @@ def _artifact_lines(outcome: ResearchOutcome) -> list[str]:
             lines.append(f"{label}: {withheld}")
         else:
             lines.append(f"{label}: {missing}")
+    memory_failures = outcome.failed_memory_writes
+    if memory_failures:
+        count = f"{memory_failures} claim write"
+        lines.append(
+            f"Memory: {count}{'' if memory_failures == 1 else 's'} to memory "
+            "failed; memory writes are outside the artifact set, so the paths "
+            "above are unaffected."
+        )
     return lines
 
 

@@ -610,6 +610,51 @@ def test_a_failed_quality_write_advertises_no_paths_at_all() -> None:
     assert outcome.evidence_path is None
     assert outcome.quality_path is None
     assert outcome.failed_publication_artifacts == ("quality",)
+    assert outcome.failed_memory_writes == 0
+
+
+def test_a_failed_memory_write_is_counted_and_withholds_no_path() -> None:
+    """Memory is outside the published set; its failures are counted.
+
+    ``nodes`` attempts a memory write only for an accepted report and only
+    after the three documents, and the paths do not depend on it. Reading a
+    failed claim write as an incomplete publication printed "Publication:
+    incomplete … No artifact path is advertised" above all three advertised
+    paths — and named ``memory`` once per failed claim.
+    """
+    state = base_state(
+        events=[publication_event()],
+        errors=[
+            ResearchError(
+                error_type="graph_publication_failed",
+                source="graph.finalize_report",
+                message="A publication write did not complete.",
+                details={
+                    "artifact": "memory",
+                    "tool": "write_memory",
+                    "failure_type": "OSError",
+                },
+            ),
+            ResearchError(
+                error_type="graph_publication_failed",
+                source="graph.finalize_report",
+                message="A publication write did not complete.",
+                details={
+                    "artifact": "memory",
+                    "tool": "write_memory",
+                    "failure_type": "OSError",
+                },
+            ),
+        ],
+    )
+
+    outcome = outcome_of(state)
+
+    assert outcome.failed_publication_artifacts == ()
+    assert outcome.failed_memory_writes == 2
+    assert outcome.report_path == REPORT_PATH
+    assert outcome.evidence_path == EVIDENCE_PATH
+    assert outcome.quality_path == QUALITY_PATH
 
 
 def test_the_outcome_reports_the_session_span_the_events_cover() -> None:

@@ -53,6 +53,7 @@ QUESTION = "How mature is quantum error correction?"
 
 REPORT_PATH = "output/report-session-1-0.md"
 EVIDENCE_PATH = "output/report-session-1-0-evidence.md"
+QUALITY_PATH = "output/report-session-1-0-quality.json"
 
 
 def build_outcome(**overrides) -> ResearchOutcome:
@@ -649,6 +650,94 @@ def _skip_error(coverage_id: str, reason: str) -> ResearchError:
     return sub_topic_skipped_error(
         _topic(coverage_id, "A planned sub-topic"), reason=reason
     )
+
+
+def test_a_memory_write_failure_does_not_withhold_the_artifact_paths() -> None:
+    """Memory is a separate write; its failure is not an incomplete set.
+
+    Three document writes succeeded and two claim writes to memory failed. The
+    summary called the publication incomplete, said no artifact path was
+    advertised, and then printed all three paths — and the failure list read
+    "memory, memory". Memory is not part of the set whose completeness gates
+    the paths (``nodes`` attempts it only for an accepted report, after the
+    three documents), so the paths stand and the memory failures are counted
+    under their own name.
+    """
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        errors=[
+            publication_write_error(
+                node="finalize_report",
+                artifact="memory",
+                tool="write_memory",
+                failure_type="OSError",
+            ),
+            publication_write_error(
+                node="finalize_report",
+                artifact="memory",
+                tool="write_memory",
+                failure_type="OSError",
+            ),
+        ],
+    )
+
+    lines = render_summary(
+        build_outcome(
+            state=state,
+            evidence_path=EVIDENCE_PATH,
+            quality_path=QUALITY_PATH,
+        ),
+        verbose=False,
+    )
+    joined = "\n".join(lines)
+
+    assert "Publication: incomplete" not in joined
+    assert "not advertised" not in joined
+    assert f"Report: {REPORT_PATH}" in joined
+    assert f"Evidence ledger: {EVIDENCE_PATH}" in joined
+    assert f"Quality record: {QUALITY_PATH}" in joined
+    assert "Memory: 2 claim writes to memory failed" in joined
+
+
+def test_a_failed_document_write_withholds_every_artifact_path() -> None:
+    """The set is published whole or advertised not at all.
+
+    A document failure is the case the withholding sentence is for: the
+    sibling writes may have left files on disk, and the summary must not
+    advertise any of the three.
+    """
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        errors=[
+            publication_write_error(
+                node="finalize_report",
+                artifact="quality",
+                tool="write_document",
+                failure_type="OSError",
+            )
+        ],
+    )
+
+    lines = render_summary(
+        build_outcome(
+            state=state,
+            # A failed document write nulls all three paths at the seam
+            # (``nodes``), which is the shape the summary renders from.
+            report_path=None,
+            evidence_path=None,
+            quality_path=None,
+        ),
+        verbose=False,
+    )
+    joined = "\n".join(lines)
+
+    assert "Publication: incomplete; these writes failed: quality." in joined
+    assert f"Report: {REPORT_PATH}" not in joined
+    assert f"Evidence ledger: {EVIDENCE_PATH}" not in joined
+    assert f"Quality record: {QUALITY_PATH}" not in joined
+    assert joined.count("not advertised") == 3
 
 
 def test_verbose_warnings_add_the_typed_messages() -> None:

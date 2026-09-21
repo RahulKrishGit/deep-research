@@ -23,6 +23,10 @@ from deep_research.agents.report import (
     distinct_retention_counts,
     evidence_status_counts,
 )
+from deep_research.graph.errors import (
+    PUBLICATION_DOCUMENT_ARTIFACTS,
+    PUBLICATION_MEMORY_ARTIFACT,
+)
 from deep_research.graph.orchestrator import GraphRun
 from deep_research.graph.state import graph_quality_status
 from deep_research.observability import (
@@ -447,7 +451,36 @@ class ResearchOutcome:
 
     @property
     def failed_publication_artifacts(self) -> tuple[str, ...]:
-        """The enumerated artifacts whose terminal write did not complete."""
+        """The published set's artifacts whose terminal write did not complete.
+
+        The set is the reader report, its evidence ledger and the quality
+        record: the three files advertised together or not at all. A failed
+        memory-claim write is recorded under the same error type but is not
+        part of the set, so it never withholds a path — reading it as one
+        printed "Publication: incomplete … No artifact path is advertised"
+        above all three advertised paths.
+        """
+        return tuple(
+            artifact
+            for artifact in self._failed_write_artifacts()
+            if artifact in PUBLICATION_DOCUMENT_ARTIFACTS
+        )
+
+    @property
+    def failed_memory_writes(self) -> int:
+        """How many writes of a claim to memory failed.
+
+        Counted rather than listed: two failed claims are two lost memory
+        records, and the artifact name repeated once per claim says nothing a
+        count does not.
+        """
+        return sum(
+            artifact == PUBLICATION_MEMORY_ARTIFACT
+            for artifact in self._failed_write_artifacts()
+        )
+
+    def _failed_write_artifacts(self) -> tuple[str, ...]:
+        """Every failed terminal write's artifact name, in recorded order."""
         return tuple(
             artifact
             for error in self.errors
