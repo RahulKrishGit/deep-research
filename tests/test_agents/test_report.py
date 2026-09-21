@@ -2292,10 +2292,12 @@ def _artifact_texts(composition: ReportComposition) -> dict[str, str]:
 def test_the_quality_record_replays_every_statement_from_its_own_ids() -> None:
     """Every cited statement resolves inside the record, with no prose parsing.
 
-    A replay reads the record alone: the statement ids it publishes, the claim
-    clusters and claims those statements name, the evidence units behind them,
-    and the source rows the reader's citations point at. Each of those links is
-    asserted to exist here, in the record's own serialized form.
+    A replay reads the record alone: the statement rows it publishes, the claim
+    clusters and claims those rows name, the evidence units behind them, and the
+    source rows the reader's citations point at. Every link is asserted on the
+    serialized rows rather than on the composition that produced them — a record
+    whose statement rows carry no evidence ids is exactly the regression this
+    test exists to catch, and reading the composition would not see it.
     """
     composition = _evidence_composition(
         sources=[
@@ -2309,24 +2311,44 @@ def test_the_quality_record_replays_every_statement_from_its_own_ids() -> None:
         state, composition, None, artifacts=_artifact_texts(composition)
     )
 
-    statement_ids = {row["statement_id"] for row in record["statements"]}
-    evidence_ids = {row["evidence_id"] for row in record["evidence"]}
-    cluster_ids = {row["cluster_id"] for row in record["claim_clusters"]}
-    claim_ids = {row["claim_id"] for row in record["claims"]}
-    assert {statement.statement_id for statement in composition.statements} == (
-        statement_ids
-    )
-    assert evidence_ids
-    assert cluster_ids
-    for statement in composition.statements:
-        assert set(statement.evidence_ids) <= evidence_ids, statement.statement_id
-        assert set(statement.claim_cluster_ids) <= cluster_ids, (
-            statement.statement_id
+    statements = {row["statement_id"]: row for row in record["statements"]}
+    evidence_rows = {row["evidence_id"]: row for row in record["evidence"]}
+    cluster_rows = {row["cluster_id"]: row for row in record["claim_clusters"]}
+    claim_rows = {row["claim_id"] for row in record["claims"]}
+    source_rows = {row["url"] for row in record["sources"]}
+
+    assert set(statements) == {
+        statement.statement_id for statement in composition.statements
+    }
+    assert evidence_rows
+    assert cluster_rows
+    # At least one statement row carries links: an emptied list on every row
+    # would otherwise satisfy every "is a subset" assertion below.
+    assert any(row["evidence_ids"] for row in record["statements"])
+    for row in record["statements"]:
+        assert set(row["evidence_ids"]) <= set(evidence_rows), row["statement_id"]
+        assert set(row["claim_cluster_ids"]) <= set(cluster_rows), (
+            row["statement_id"]
         )
-    assert {claim.claim_id for claim in composition.claims} <= claim_ids
+        for cluster_id in row["claim_cluster_ids"]:
+            cluster = cluster_rows[cluster_id]
+            assert set(cluster["member_claim_ids"]) <= claim_rows
+            assert set(cluster["evidence_ids"]) <= set(evidence_rows)
+        for evidence_id in row["evidence_ids"]:
+            assert evidence_rows[evidence_id]["source_url"] in source_rows
     cited = {citation.url for citation in reader_citations(composition)}
     assert cited
-    assert cited <= {row["url"] for row in record["sources"]}
+    # The URLs reached through those rows are source rows the reader cites.
+    cited_through_statements = {
+        evidence_rows[evidence_id]["source_url"]
+        for row in record["statements"]
+        for evidence_id in row["evidence_ids"]
+    }
+    assert cited_through_statements
+    assert cited_through_statements <= source_rows
+    assert cited_through_statements <= {
+        row["url"] for row in record["sources"] if row["cited"]
+    }
     # The reader's own reference numbers resolve to the same source rows.
     assert {
         citation.url for citation in reader_citations(composition)

@@ -1170,26 +1170,64 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
     assert composition is not None
 
     # --- the quality record makes the other two replayable --------------------
-    # Every reader statement resolves inside the record: its claim clusters,
-    # the exact evidence units behind those clusters, and the reads and source
-    # rows the record serializes. Nothing here parses report prose.
+    # Every reader statement resolves inside the record: the statement rows it
+    # actually published, the claim clusters those rows name, the exact
+    # evidence units behind those clusters, and the source rows the reader's
+    # citations point at. Every link is asserted on the serialized rows rather
+    # than on the composition they were written from — a record whose statement
+    # rows carried no evidence ids would satisfy every composition-side subset
+    # check while making the published report unreplayable. Nothing here parses
+    # report prose.
     record_statements = {row["statement_id"]: row for row in record["statements"]}
-    record_evidence = {row["evidence_id"] for row in record["evidence"]}
-    record_clusters = {row["cluster_id"] for row in record["claim_clusters"]}
+    record_evidence = {row["evidence_id"]: row for row in record["evidence"]}
+    record_clusters = {row["cluster_id"]: row for row in record["claim_clusters"]}
     record_claims = {row["claim_id"] for row in record["claims"]}
     record_sources = {row["url"] for row in record["sources"]}
     assert record_statements
     assert set(record_statements) == {
         statement.statement_id for statement in composition.statements
     }
-    for statement in composition.statements:
-        assert set(statement.evidence_ids) <= record_evidence, (
-            statement.statement_id
+    # Each published row carries exactly the links the composition carried.
+    # Reading the record's own columns is the point: a statement row that
+    # dropped its links satisfies every subset assertion below while making the
+    # published report unreplayable. This mocked run registers no evidence
+    # units or clusters, so the fixture with links to lose — and the mutation
+    # that empties them — lives in test_report.py's replay test.
+    assert {
+        row["statement_id"]: (row["evidence_ids"], row["claim_cluster_ids"])
+        for row in record["statements"]
+    } == {
+        statement.statement_id: (
+            list(statement.evidence_ids),
+            list(statement.claim_cluster_ids),
         )
-        assert set(statement.claim_cluster_ids) <= record_clusters, (
-            statement.statement_id
+        for statement in composition.statements
+    }
+    for row in record["statements"]:
+        assert set(row["evidence_ids"]) <= set(record_evidence), (
+            row["statement_id"]
         )
+        assert set(row["claim_cluster_ids"]) <= set(record_clusters), (
+            row["statement_id"]
+        )
+        for cluster_id in row["claim_cluster_ids"]:
+            cluster = record_clusters[cluster_id]
+            assert set(cluster["member_claim_ids"]) <= record_claims
+            assert set(cluster["evidence_ids"]) <= set(record_evidence)
+        for evidence_id in row["evidence_ids"]:
+            assert record_evidence[evidence_id]["source_url"] in record_sources
     assert {claim.claim_id for claim in composition.claims} <= record_claims
+    # The reader's citation URLs resolve through those rows rather than by
+    # re-reading the report.
+    cited_through_statements = {
+        record_evidence[evidence_id]["source_url"]
+        for row in record["statements"]
+        for evidence_id in row["evidence_ids"]
+    }
+    assert cited_through_statements <= record_sources
+    assert cited_through_statements <= {
+        row["url"] for row in record["sources"] if row["cited"]
+    }
     assert {citation.url for citation in reader_citations(composition)} <= (
         record_sources
     )
