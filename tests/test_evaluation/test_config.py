@@ -641,12 +641,21 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # pins did not move (verified by recomputing all six). The move is a false
 # positive of the documented design — the fingerprint hashes the whole module
 # source, so a new pure name helper shifts it exactly as a prompt edit would.
+#
+# Task 12 re-pinned the researcher and the synthesizer together (`4f68ae8f190d`
+# -> `613603dc5cbd`, `2af90b7ac8a8` -> `97cf77acbb15`). As with Tasks 9 and 11,
+# no prompt instruction changed: the round corrected the orientation of
+# `Claim.evidence_selection`, which is keyed by the evidence id and valued with
+# the stance, and one call site in each of those two modules read `.values()`
+# where an evidence id is required, so the stance string was handed to every
+# consumer expecting an id. The shared `agents.prompts` library was not edited,
+# and the other four pins did not move (verified by recomputing all six).
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "f2507b56d0c6",
-    "researcher": "4f68ae8f190d",
+    "researcher": "613603dc5cbd",
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "77ac66835773",
-    "synthesizer": "2af90b7ac8a8",
+    "synthesizer": "97cf77acbb15",
     "critic": "9694e44926d3",
 }
 
@@ -1045,6 +1054,10 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
     fingerprint moves again and this test fails on the recorded value, so the
     next author has to attribute the change instead of inheriting Task 11's
     re-pin as cover.
+
+    Task 12 moved the synthesizer's fingerprint again, to ``97cf77acbb15``, for
+    the ``evidence_selection`` orientation fix recorded in the pin comment
+    above; that move is attributed there and this assertion follows it.
     """
     pre_task_11 = "0ec21503cc00"
 
@@ -1055,7 +1068,7 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
         "report-probe-0-evidence.md"
     )
     assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
-    assert agent_prompt_fingerprint("synthesizer") == "2af90b7ac8a8"
+    assert agent_prompt_fingerprint("synthesizer") == "97cf77acbb15"
     assert agent_prompt_fingerprint("synthesizer") != pre_task_11
 
 
