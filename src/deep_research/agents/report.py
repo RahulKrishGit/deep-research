@@ -28,11 +28,17 @@ appear twice and no identity is ever re-derived locally.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
+from pydantic import JsonValue
+
+from deep_research.agents.evidence import resolve_read_work_keys
 from deep_research.agents.identity import (
+    deduplicate_findings,
     finding_fingerprint,
     merge_claim_snapshot,
     merge_source_snapshot,
@@ -52,10 +58,12 @@ from deep_research.utils.types import (
     ReportComposition,
     ReportConstraint,
     ReportPoint,
+    ReportReview,
     ReportSection,
     ReportStatement,
     ResearchError,
     ResearchEvent,
+    ResearchState,
     ScoredSource,
     SubTopic,
 )
@@ -64,10 +72,14 @@ __all__ = [
     "ANSWER_SECTION_HEADINGS",
     "DEFAULT_READER_WORD_LIMIT",
     "EVIDENCE_SECTIONS",
+    "EVIDENCE_STATUS_LABELS",
     "EVIDENCE_TITLE_PREFIX",
     "LIMITATION_REASONS",
     "LIMITATION_TOPICS",
     "MAX_BACKMATTER_RATIO",
+    "QUALITY_RECORD_ARTIFACT_NAMES",
+    "QUALITY_RECORD_EXCERPT_CHARS",
+    "QUALITY_RECORD_TEXT_CHARS",
     "QUALITY_STATUS_ACCEPTED",
     "QUALITY_STATUS_NOT_GATED",
     "QUALITY_STATUS_PARTIAL",
@@ -81,6 +93,7 @@ __all__ = [
     "ReportSection",
     "StatementMappingError",
     "UnknownEvidenceError",
+    "artifact_content_hashes",
     "backmatter_ratio",
     "build_citation_index",
     "canonical_claims",
@@ -88,6 +101,9 @@ __all__ = [
     "citation_markers",
     "collapse_mirror_urls",
     "composition_statements",
+    "distinct_retention_counts",
+    "evidence_status_bucket",
+    "evidence_status_counts",
     "fit_report_composition",
     "reader_citations",
     "reader_sections",
@@ -96,6 +112,8 @@ __all__ = [
     "render_citations",
     "render_evidence_ledger",
     "render_limitations",
+    "render_quality_json",
+    "render_quality_record",
     "render_reader_report",
     "render_statement_map",
     "report_as_of",
@@ -1958,3 +1976,504 @@ def _run_errors(composition: ReportComposition) -> str:
     return _table(
         ("#", "Type", "Source", "Severity", "Message", "Details"), rows
     )
+
+
+# --- the quality record -------------------------------------------------------
+#
+# The third artifact of one pass. The reader report answers "what is settled";
+# the evidence ledger answers "what was checked"; this one answers "how would a
+# replay verify either of those claims" — from IDs rather than prose, and from
+# counts that keep distinct quantities distinct.
+#
+# It is JSON because a consumer reads it by key, not by eye, and its content is
+# bounded by construction: excerpts are clipped to the ledger's own excerpt
+# bound, claim and statement text to its claim-text bound, and nothing here
+# carries a whole extracted page, a provider payload, or a model prompt.
+
+QUALITY_RECORD_ARTIFACT_NAMES = ("reader_markdown", "evidence_markdown")
+"""The artifacts the quality record hashes, and never the quality JSON itself.
+
+A document cannot carry the digest of the bytes that contain that digest, so
+the record hashes the two Markdown artifacts and leaves itself out. Both
+digests are taken from the exact final bytes published — after the terminal
+status stamp — so a reader holding the pair can prove it is the pair the record
+describes.
+"""
+
+QUALITY_RECORD_EXCERPT_CHARS = _EVIDENCE_CHARS
+QUALITY_RECORD_TEXT_CHARS = _CLAIM_TEXT_CHARS
+
+EVIDENCE_STATUS_LABELS: dict[str, str] = {
+    "corroborated": "independently corroborated",
+    "primary_attributed": (
+        "primary-source attribution; independent corroboration not established"
+    ),
+    "contested": "contested; both sides recorded",
+    "not_established": "no corroboration classification recorded",
+}
+"""The four reader-facing readings of a claim's recorded corroboration badge.
+
+These are the *counted* buckets, and the only four. "Checked" is not one of
+them: how many claims were examined and how many are corroborated are two
+different quantities, and a report that prints the first under the second's
+name is making a claim its evidence does not support.
+"""
+
+_BADGE_BUCKETS: dict[str, str] = {
+    "verified_pair": "corroborated",
+    "source_supported": "primary_attributed",
+    "contested": "contested",
+}
+
+
+def evidence_status_bucket(badge: str | None) -> str:
+    """One recorded badge as one of the four counted readings.
+
+    An absent or unrecognized badge is ``not_established`` — never
+    corroborated. A claim nobody classified has not been shown to stand on
+    independent support, which is exactly what the bucket name says.
+    """
+    return _BADGE_BUCKETS.get(badge or "", "not_established")
+
+
+def evidence_status_counts(claims: Sequence[Claim]) -> dict[str, int]:
+    """How many checked claims recorded each corroboration badge."""
+    counts = dict.fromkeys(EVIDENCE_STATUS_LABELS, 0)
+    for claim in claims:
+        counts[evidence_status_bucket(claim.evidence_status)] += 1
+    return counts
+
+
+def artifact_content_hashes(
+    artifacts: Mapping[str, str],
+) -> dict[str, JsonValue]:
+    """The SHA-256 of each artifact's exact final text, in name order.
+
+    Computed from the bytes as published, never from a re-render: a hash that
+    described a document nobody holds would prove nothing about the document
+    that was written.
+    """
+    return {
+        name: hashlib.sha256(text.encode("utf-8")).hexdigest()
+        for name, text in sorted(artifacts.items())
+    }
+
+
+def distinct_retention_counts(
+    state: ResearchState,
+    composition: ReportComposition,
+) -> dict[str, int]:
+    """Distinct counts, each of a different thing (Sections 2.3 and 2.5).
+
+    Kept apart on purpose. A physical read call is not a unique validated work
+    (two reads can serve one document), a source URL is not a work (a mirror is
+    a transport relation), a finding is not a source, and "every assessed
+    source" is not "every cited assessed source" — the last run assessed ten
+    and cited eight, and one number cannot report both.
+
+    ``unique_works`` is ``retained_work_count``: the identity-resolved count
+    over already-retained sources, which resolves an unknown read to its own
+    unresolved entry rather than folding it into a neighbour it was never shown
+    to match. ``publishers`` counts only sources whose publisher identity is
+    established; an unresolved issuer is not a publisher, and nothing here is
+    ever derived from memory recall.
+    """
+    from deep_research.agents.evidence import (  # noqa: PLC0415
+        retained_work_count,
+    )
+
+    reads = list(state.read_records.values())
+    sources = canonical_sources(composition.sources)
+    cited = {citation.url for citation in reader_citations(composition)}
+    urls = [normalize_source_url(source.url) for source in sources]
+    return {
+        "read_records": len(reads),
+        "network_reads": sum(
+            read.acquisition_kind == "network" for read in reads
+        ),
+        "cache_reads": sum(read.acquisition_kind == "cache" for read in reads),
+        "unique_works": retained_work_count(urls, reads),
+        "publishers": len(
+            {source.publisher_id for source in sources if source.publisher_id}
+        ),
+        "source_urls": len(set(urls)),
+        "findings": len(deduplicate_findings(composition.findings)),
+        "assessed_sources": len(sources),
+        "cited_assessed_sources": len(set(urls) & cited),
+        "checked_claims": len(canonical_claims(composition.claims)),
+    }
+
+
+def _coverage_counts(
+    state: ResearchState,
+    composition: ReportComposition,
+) -> dict[str, JsonValue]:
+    """Target and topic progress, read from the snapshot the gates judged.
+
+    The snapshot is preferred because it is the measurement acceptance was
+    decided on. A state holding no snapshot is measured here, at the same
+    denominator — never a smaller one: an absent record must not read as a
+    completed obligation.
+    """
+    quality = state.quality
+    if quality is None:
+        from deep_research.agents.quality import (  # noqa: PLC0415
+            compute_substantive_coverage,
+        )
+
+        substantive = compute_substantive_coverage(state, composition)
+        return {
+            "planned_topics": substantive.planned_topics,
+            "covered_topics": substantive.covered_topics,
+            "substantive_topic_ratio": substantive.topic_ratio,
+            "planned_targets": substantive.planned_targets,
+            "required_targets": substantive.required_targets,
+            "answered_targets": substantive.answered_targets,
+            "critical_targets": substantive.critical_targets,
+            "answered_critical_targets": substantive.answered_critical_targets,
+            "unanswered_required_target_ids": list(
+                substantive.unanswered_required_target_ids
+            ),
+            "unanswered_critical_target_ids": list(
+                substantive.unanswered_critical_target_ids
+            ),
+            "accounted_target_ids": list(substantive.accounted_target_ids),
+            "unaccounted_target_ids": list(substantive.unaccounted_target_ids),
+            "initial_target_ids": list(substantive.initial_target_ids),
+            "expanded_target_ids": list(substantive.expanded_target_ids),
+        }
+    answered_critical = max(
+        0,
+        quality.critical_targets - len(quality.unanswered_critical_target_ids),
+    )
+    return {
+        "planned_topics": quality.planned_topics,
+        "covered_topics": quality.covered_topics,
+        "substantive_topic_ratio": quality.substantive_topic_ratio,
+        "planned_targets": quality.planned_targets,
+        "required_targets": quality.required_targets,
+        "answered_targets": quality.answered_targets,
+        "critical_targets": quality.critical_targets,
+        "answered_critical_targets": answered_critical,
+        "unanswered_required_target_ids": [
+            target_id
+            for target_id in (
+                quality.unaccounted_target_ids
+                + quality.unanswered_critical_target_ids
+            )
+        ],
+        "unanswered_critical_target_ids": list(
+            quality.unanswered_critical_target_ids
+        ),
+        "accounted_target_ids": [],
+        "unaccounted_target_ids": list(quality.unaccounted_target_ids),
+        "initial_target_ids": list(state.initial_target_ids),
+        "expanded_target_ids": list(state.expanded_target_ids),
+    }
+
+
+def _review_record(review: ReportReview | None) -> dict[str, JsonValue]:
+    """The semantic judgement, or the honest record that none was made."""
+    if review is None:
+        return {
+            "status": "",
+            "mean_score": None,
+            "rubric_version": None,
+            "input_fingerprint": "",
+            "composition_fingerprint": "",
+            "coverage_complete": False,
+            "unreviewed_statement_ids": [],
+            "omitted_evidence_ids": [],
+            "unsettled_statement_ids": [],
+            "dimensions": {},
+            "per_statement_dispositions": {},
+            "defects": [],
+            "rationale": "",
+        }
+    return {
+        "status": review.status,
+        "mean_score": review.mean_score,
+        "rubric_version": review.rubric_version,
+        "input_fingerprint": review.input_fingerprint,
+        "composition_fingerprint": review.composition_fingerprint,
+        "coverage_complete": review.coverage_complete,
+        "unreviewed_statement_ids": list(review.unreviewed_statement_ids),
+        "omitted_evidence_ids": list(review.omitted_evidence_ids),
+        "unsettled_statement_ids": review.unsettled_statement_ids,
+        "dimensions": dict(review.dimensions),
+        "per_statement_dispositions": dict(review.per_statement_dispositions),
+        "defects": [
+            {
+                "gap_id": gap.gap_id,
+                "kind": gap.kind,
+                "severity": gap.severity,
+                "repair_action": gap.repair_action,
+                "coverage_id": gap.coverage_id or "",
+                "target_ids": list(gap.target_ids),
+                "statement_ids": list(gap.statement_ids),
+                "claim_cluster_ids": list(gap.claim_cluster_ids),
+                "problem": _clamped(gap.problem, limit=QUALITY_RECORD_TEXT_CHARS),
+            }
+            for gap in review.defects
+        ],
+        "rationale": _clamped(review.rationale, limit=_RATIONALE_CHARS),
+    }
+
+
+def render_quality_record(
+    state: ResearchState,
+    composition: ReportComposition,
+    review: ReportReview | None,
+    *,
+    artifacts: Mapping[str, str] | None = None,
+) -> dict[str, JsonValue]:
+    """The quality JSON: one pass's evidence, decisions and hashes, by ID.
+
+    The record is the replay surface for the other two artifacts. Every reader
+    statement is serialized with the claim clusters and evidence units it rests
+    on, each of those names the read it came from, and each read names its
+    content digest and how it was acquired — so "which source supports this
+    sentence, and was it read or remembered" is answerable from the record
+    alone, with no prose parsed anywhere.
+
+    Four rules shape what is here, and each is a defect this artifact exists to
+    prevent:
+
+    * **distinct quantities stay distinct** (Section 2.5). Read calls, network
+      reads, cache reuses, unique works, publishers, source URLs, findings,
+      assessed sources, cited assessed sources and checked claims are ten
+      different numbers, not one.
+    * **counted is not corroborated.** ``evidence_status`` counts the four
+      badges a claim actually recorded; a claim nobody classified is counted as
+      not established.
+    * **no self-reference.** ``artifacts`` hashes the two published Markdown
+      documents and never this JSON, and no field here hashes itself.
+    * **bounded content.** Excerpts and text are clipped to the ledger's own
+      bounds; page bodies, prompts and provider payloads never enter.
+
+    ``artifacts`` maps an artifact name to the exact final text published under
+    it. A caller that supplies none gets no hashes rather than invented ones:
+    a digest of text nobody published would be a fabricated provenance claim.
+    """
+    sources = canonical_sources(composition.sources)
+    claims = canonical_claims(composition.claims)
+    cited = {citation.url for citation in reader_citations(composition)}
+    reads = sorted(state.read_records.values(), key=lambda read: read.read_id)
+    units = sorted(
+        composition.evidence_units.values(),
+        key=lambda unit: unit.evidence_id,
+    )
+    clusters = sorted(
+        composition.claim_clusters.values(),
+        key=lambda cluster: cluster.cluster_id,
+    )
+    from deep_research.agents.report_review import (  # noqa: PLC0415
+        composition_semantic_fingerprint,
+    )
+
+    record: dict[str, JsonValue] = {
+        "quality_contract_version": state.quality_contract_version,
+        "session_id": state.session_id,
+        "iteration": composition.iteration,
+        "question": composition.question,
+        "scope": composition.scope,
+        "as_of": composition.as_of,
+        "generated_on": composition.generated_on,
+        "date_basis": composition.date_basis,
+        "answer_kind": composition.answer_kind or "",
+        "quality_status": composition.quality_status,
+        "artifacts": artifact_content_hashes(artifacts or {}),
+        "configuration": {
+            "quality_contract_version": state.quality_contract_version,
+            "composition_fingerprint": (
+                composition_semantic_fingerprint(composition)
+            ),
+            "review_input_fingerprint": (
+                review.input_fingerprint if review is not None else ""
+            ),
+            "review_composition_fingerprint": (
+                review.composition_fingerprint if review is not None else ""
+            ),
+            "review_rubric_version": (
+                review.rubric_version if review is not None else None
+            ),
+        },
+        "counts": {
+            **_coverage_counts(state, composition),
+            **distinct_retention_counts(state, composition),
+            "verified_claims": sum(
+                claim.verdict == "verified" for claim in claims
+            ),
+            "contradicted_claims": sum(
+                claim.verdict == "contradicted" for claim in claims
+            ),
+            "reader_statements": len(composition.statements),
+        },
+        "evidence_status": evidence_status_counts(claims),
+        "sources": [
+            {
+                "url": normalize_source_url(source.url),
+                "title": source.title,
+                "publisher_id": source.publisher_id or "",
+                "work_id": source.work_id or "",
+                "serving_host": source.serving_host or "",
+                "transport_relation": source.transport_relation,
+                "source_role": source.source_role,
+                "evaluation_status": source.evaluation_status,
+                "assessment_revision": source.assessment_revision,
+                "target_ids": list(source.target_ids),
+                "cited": normalize_source_url(source.url) in cited,
+            }
+            for source in sources
+        ],
+        "reads": [
+            {
+                "read_id": read.read_id,
+                "requested_url": read.requested_url,
+                "resolved_url": read.resolved_url,
+                "content_sha256": read.content_sha256,
+                "extraction_complete": read.extraction_complete,
+                "acquisition_kind": read.acquisition_kind,
+                "origin_session_id": read.origin_session_id,
+                "retrieved_at": read.retrieved_at,
+                "locator_count": len(read.passages),
+                "target_ids": list(read.target_ids),
+            }
+            for read in reads
+        ],
+        "work_keys": {
+            url: key
+            for url, key in sorted(
+                resolve_read_work_keys(reads).items()
+            )
+        },
+        "evidence": [
+            {
+                "evidence_id": unit.evidence_id,
+                "read_id": unit.read_id,
+                "source_url": unit.source_url,
+                "locator": unit.locator,
+                "target_ids": list(unit.target_ids),
+                "origin": unit.origin,
+                "excerpt": _clamped(
+                    unit.excerpt, limit=QUALITY_RECORD_EXCERPT_CHARS
+                ),
+            }
+            for unit in units
+        ],
+        "dispositions": [
+            {
+                "item_id": disposition.item_id,
+                "stage": disposition.stage,
+                "reason": _clamped(
+                    disposition.reason, limit=QUALITY_RECORD_TEXT_CHARS
+                ),
+                "target_ids": list(disposition.target_ids),
+                "retained_equivalent_id": (
+                    disposition.retained_equivalent_id or ""
+                ),
+            }
+            for disposition in state.evidence_dispositions
+        ],
+        "boundary_audits": [
+            {
+                "audit_id": audit.audit_id,
+                "job_id": audit.job_id,
+                "agent_name": audit.agent_name,
+                "operation": audit.operation,
+                "status": audit.status,
+                "target_ids": list(audit.target_ids),
+                "claim_cluster_ids": list(audit.claim_cluster_ids),
+                "input_ids": list(audit.input_ids),
+                "selected_ids": list(audit.selected_ids),
+                "returned_ids": list(audit.returned_ids),
+                "accepted_ids": list(audit.accepted_ids),
+                "deferred_ids": list(audit.deferred_ids),
+                "disposition_ids": list(audit.disposition_ids),
+                "packet_fingerprint": audit.packet_fingerprint,
+                "schema_version": audit.schema_version,
+                "configuration_fingerprint": audit.configuration_fingerprint,
+            }
+            for audit in sorted(
+                state.boundary_audits.values(),
+                key=lambda audit: audit.audit_id,
+            )
+        ],
+        "claim_clusters": [
+            {
+                "cluster_id": cluster.cluster_id,
+                "status": cluster.status,
+                "member_claim_ids": list(cluster.member_claim_ids),
+                "evidence_ids": list(cluster.evidence_ids),
+                "target_ids": list(cluster.target_ids),
+                "source_urls": list(cluster.source_urls),
+                "verdicts": list(cluster.verdicts),
+                "verdict_evidence_status": dict(
+                    cluster.verdict_evidence_status
+                ),
+                "cluster_aliases": list(cluster.cluster_aliases),
+                "consumed_coverage_ids": list(
+                    cluster.consumed_coverage_ids
+                ),
+            }
+            for cluster in clusters
+        ],
+        "claims": [
+            {
+                "claim_id": claim.claim_id,
+                "cluster_id": claim.cluster_id or "",
+                "cluster_aliases": list(claim.cluster_aliases),
+                "text": _clamped(claim.text, limit=QUALITY_RECORD_TEXT_CHARS),
+                "verdict": claim.verdict,
+                "evidence_status": claim.evidence_status or "",
+                "confidence": claim.confidence,
+                "source_urls": sorted(claim.source_urls),
+                "consumed_coverage_ids": list(claim.consumed_coverage_ids),
+                "insufficient_reason": claim.insufficient_reason or "",
+            }
+            for claim in claims
+        ],
+        "statements": [
+            {
+                "statement_id": statement.statement_id,
+                "mode": statement.mode,
+                "text": _clamped(
+                    statement.text, limit=QUALITY_RECORD_TEXT_CHARS
+                ),
+                "claim_cluster_ids": list(statement.claim_cluster_ids),
+                "evidence_ids": list(statement.evidence_ids),
+                "target_ids": list(statement.target_ids),
+                "answered_dimensions": list(statement.answered_dimensions),
+                "basis": (
+                    _clamped(statement.basis, limit=_RATIONALE_CHARS)
+                    if statement.basis
+                    else ""
+                ),
+            }
+            for statement in composition.statements
+        ],
+        "statement_dispositions": list(composition.statement_dispositions),
+        "returned_to_fact_checker": list(composition.returned_to_fact_checker),
+        "review": _review_record(review),
+    }
+    return record
+
+
+def render_quality_json(
+    state: ResearchState,
+    composition: ReportComposition,
+    review: ReportReview | None,
+    *,
+    artifacts: Mapping[str, str] | None = None,
+) -> str:
+    """The quality record as the bytes that are published.
+
+    Sorted keys and a trailing newline, so the file is stable across runs that
+    produced the same record and a diff of two records is readable. Nothing
+    here is re-derived from the record: the text returned is what
+    ``render_quality_record`` produced, serialized once.
+    """
+    record = render_quality_record(
+        state, composition, review, artifacts=artifacts
+    )
+    return json.dumps(record, sort_keys=True, indent=2, ensure_ascii=False) + "\n"

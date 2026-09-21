@@ -13,19 +13,25 @@ Nothing here performs I/O, so both artifacts are asserted directly.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import get_args
 
 import pytest
 
 from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
+from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
     DEFAULT_ANSWER_HEADING,
     DEFAULT_READER_WORD_LIMIT,
     EVIDENCE_SECTIONS,
+    EVIDENCE_STATUS_LABELS,
     EVIDENCE_TITLE_PREFIX,
     LIMITATION_REASONS,
     LIMITATION_TOPICS,
+    QUALITY_RECORD_EXCERPT_CHARS,
+    QUALITY_RECORD_TEXT_CHARS,
     QUALITY_STATUS_NOT_GATED,
     REPORT_SECTIONS,
     REPORT_SUMMARY_FALLBACK,
@@ -42,6 +48,7 @@ from deep_research.agents.report import (
     canonical_sources,
     citation_markers,
     composition_statements,
+    evidence_status_counts,
     reader_citations,
     reader_sections,
     reader_word_count,
@@ -49,6 +56,7 @@ from deep_research.agents.report import (
     render_citations,
     render_evidence_ledger,
     render_limitations,
+    render_quality_record,
     render_reader_report,
     render_statement_map,
     report_as_of,
@@ -58,6 +66,7 @@ from deep_research.agents.report import (
 )
 from deep_research.utils.types import (
     EVIDENCE_BADGE_LABELS,
+    QUALITY_CONTRACT_VERSION,
     AtomicProposition,
     Claim,
     ClaimCluster,
@@ -69,6 +78,7 @@ from deep_research.utils.types import (
     ReportStatement,
     ResearchError,
     ResearchEvent,
+    ResearchState,
     ScoredSource,
     SourceTemporal,
     StatementMode,
@@ -143,18 +153,24 @@ def _claim(
     coverage_ids: list[str] | None = None,
     finding_fingerprints: list[str] | None = None,
     insufficient_reason: str | None = None,
+    badge: str | None = None,
 ) -> Claim:
+    """One checked claim. ``badge`` overrides the verdict-derived badge."""
     return Claim(
         claim_id=claim_fingerprint(text),
         text=text,
         source_urls=urls or [SOURCE_URL],
         verdict=verdict,
         evidence_status=(
-            "verified_pair"
-            if verdict == "verified"
-            else "source_supported"
-            if verdict == "insufficient_evidence"
-            else None
+            badge
+            if badge is not None
+            else (
+                "verified_pair"
+                if verdict == "verified"
+                else "source_supported"
+                if verdict == "insufficient_evidence"
+                else None
+            )
         ),
         confidence=confidence,
         evidence=["An independent review states the same figure."],
@@ -2190,3 +2206,202 @@ def _reader_points(composition: ReportComposition) -> list[ReportPoint]:
     for section in composition.sections:
         points.extend(section.points)
     return points
+
+
+# --- the quality record -------------------------------------------------------
+#
+# The third published artifact: one JSON document that makes the other two
+# auditable. It carries IDs rather than prose, hashes the bytes it describes
+# without describing itself, and must serialize everything a replay needs to
+# resolve a cited statement back to the exact evidence it rests on.
+
+
+def _record_state(composition: ReportComposition) -> ResearchState:
+    """The state the terminal finalizer holds when it publishes the set."""
+    state = ResearchState(
+        session_id=composition.session_id,
+        original_question=composition.question,
+        composition=composition,
+        report=render_reader_report(composition),
+        report_evidence=render_evidence_ledger(composition),
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+    )
+    return state.model_copy(
+        update={"quality": compute_report_quality(state, composition)}
+    )
+
+
+def _artifact_texts(composition: ReportComposition) -> dict[str, str]:
+    return {
+        "reader_markdown": render_reader_report(composition),
+        "evidence_markdown": render_evidence_ledger(composition),
+    }
+
+
+def test_the_quality_record_replays_every_statement_from_its_own_ids() -> None:
+    """Every cited statement resolves inside the record, with no prose parsing.
+
+    A replay reads the record alone: the statement ids it publishes, the claim
+    clusters and claims those statements name, the evidence units behind them,
+    and the source rows the reader's citations point at. Each of those links is
+    asserted to exist here, in the record's own serialized form.
+    """
+    composition = _evidence_composition(
+        sources=[
+            _source(),
+            _source(url=THIRD_URL, title="Independent review"),
+        ]
+    )
+    state = _record_state(composition)
+
+    record = render_quality_record(
+        state, composition, None, artifacts=_artifact_texts(composition)
+    )
+
+    statement_ids = {row["statement_id"] for row in record["statements"]}
+    evidence_ids = {row["evidence_id"] for row in record["evidence"]}
+    cluster_ids = {row["cluster_id"] for row in record["claim_clusters"]}
+    claim_ids = {row["claim_id"] for row in record["claims"]}
+    assert {statement.statement_id for statement in composition.statements} == (
+        statement_ids
+    )
+    assert evidence_ids
+    assert cluster_ids
+    for statement in composition.statements:
+        assert set(statement.evidence_ids) <= evidence_ids, statement.statement_id
+        assert set(statement.claim_cluster_ids) <= cluster_ids, (
+            statement.statement_id
+        )
+    assert {claim.claim_id for claim in composition.claims} <= claim_ids
+    cited = {citation.url for citation in reader_citations(composition)}
+    assert cited
+    assert cited <= {row["url"] for row in record["sources"]}
+    # The reader's own reference numbers resolve to the same source rows.
+    assert {
+        citation.url for citation in reader_citations(composition)
+    } == {row["url"] for row in record["sources"] if row["cited"]}
+
+
+def test_the_quality_record_hashes_the_published_bytes_and_never_itself() -> None:
+    """Artefact hashes are of the final bytes, and the JSON has no self-hash.
+
+    A document cannot carry the digest of the bytes that contain that digest,
+    so the quality JSON is deliberately outside its own ``artifacts`` map. The
+    two Markdown digests are recomputed here from the exact strings published.
+    """
+    composition = _evidence_composition()
+    state = _record_state(composition)
+    texts = _artifact_texts(composition)
+
+    record = render_quality_record(
+        state, composition, None, artifacts=texts
+    )
+    encoded = json.dumps(record, sort_keys=True, ensure_ascii=False)
+
+    assert set(record["artifacts"]) == {
+        "reader_markdown",
+        "evidence_markdown",
+    }
+    for name, text in texts.items():
+        assert record["artifacts"][name] == hashlib.sha256(
+            text.encode("utf-8")
+        ).hexdigest()
+    own_digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    assert own_digest not in encoded
+    assert "quality_json" not in record["artifacts"]
+
+
+def test_the_semantic_fingerprint_moves_on_content_and_not_on_the_badge() -> None:
+    """The record's fingerprint excludes exactly the generated badge.
+
+    ``quality_status`` is presentation: the terminal finalizer rewrites it on
+    the way out, and a judgement must survive that. Everything a review judges
+    — content, references, targets — moves the fingerprint, so the record and
+    the review cannot disagree about which report was judged.
+    """
+    composition = _evidence_composition()
+    state = _record_state(composition)
+
+    base = render_quality_record(state, composition, None)
+    restamped = composition.model_copy(update={"quality_status": "accepted"})
+    assert render_quality_record(state, restamped, None)["configuration"][
+        "composition_fingerprint"
+    ] == base["configuration"]["composition_fingerprint"]
+
+    for field, value in (
+        ("scope", "A materially different scope."),
+        ("as_of", "2027-01-01T00:00:00+00:00"),
+        ("question", "A different question entirely?"),
+    ):
+        changed = composition.model_copy(update={field: value})
+        assert render_quality_record(state, changed, None)["configuration"][
+            "composition_fingerprint"
+        ] != base["configuration"]["composition_fingerprint"], field
+
+    retargeted = composition.model_copy(
+        update={
+            "sub_topics": [
+                *composition.sub_topics,
+                SubTopic(
+                    coverage_id="topic-extra",
+                    title="A target the review never saw",
+                    rationale="Added after the review.",
+                    search_queries=["new query"],
+                    success_criteria=["A read source answers it."],
+                    priority=1,
+                ),
+            ]
+        }
+    )
+    assert render_quality_record(state, retargeted, None)["configuration"][
+        "composition_fingerprint"
+    ] != base["configuration"]["composition_fingerprint"]
+
+
+def test_the_quality_record_is_bounded_json_without_page_payloads() -> None:
+    """It is JSON, it is bounded, and a whole extracted page never enters it."""
+    page = "the complete extracted page text " * 200
+    composition = _evidence_composition(
+        evidence_units={"e1": _unit(excerpt=page)}
+    )
+    state = _record_state(composition)
+
+    record = render_quality_record(state, composition, None)
+    encoded = json.dumps(record, sort_keys=True)
+
+    assert page not in encoded
+    for row in record["evidence"]:
+        assert len(row["excerpt"]) <= QUALITY_RECORD_EXCERPT_CHARS
+    for row in record["claims"]:
+        assert len(row["text"]) <= QUALITY_RECORD_TEXT_CHARS
+    assert json.loads(encoded) == record
+
+
+def test_every_corroboration_badge_has_its_own_distinct_count() -> None:
+    """Four labels, four counts, and they add up to the claims that were checked.
+
+    "Sixteen claims were checked" is not "sixteen claims are verified": the
+    counts below are the reader-facing reading of the badge each canonical
+    claim actually recorded, and a claim with no recorded classification is
+    counted as not established rather than as corroborated.
+    """
+    claims = [
+        _claim(),
+        _claim(
+            text="A claim with primary-source attribution.",
+            verdict="insufficient_evidence",
+        ),
+        _claim(text="A contested claim.", verdict="contradicted", badge="contested"),
+        _claim(text="A claim with no recorded badge.", verdict="unverified"),
+    ]
+
+    counts = evidence_status_counts(claims)
+
+    assert counts == {
+        "corroborated": 1,
+        "primary_attributed": 1,
+        "contested": 1,
+        "not_established": 1,
+    }
+    assert sum(counts.values()) == len(claims)
+    assert set(counts) == set(EVIDENCE_STATUS_LABELS)
