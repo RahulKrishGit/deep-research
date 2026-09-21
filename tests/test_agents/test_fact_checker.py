@@ -1942,6 +1942,9 @@ async def test_a_changed_finding_at_the_same_url_reopens_the_claim(
                 verdict="verified",
                 evidence=["A second independent review confirms the figure."],
             ),
+            # This pass adjudicated a claim, so it makes its one bounded
+            # equivalence call over the stored proposition and the new atom.
+            ClaimEquivalenceDraft(pairs=[]),
         ],
     )
     agent = _checker_for_passes(tracker, completer, searches=2)
@@ -1959,6 +1962,7 @@ async def test_a_changed_finding_at_the_same_url_reopens_the_claim(
     assert _structured_names(completer, after_first) == [
         "ClaimsDraft",
         "PassageVerdictDraft",
+        "ClaimEquivalenceDraft",
     ]
     snapshot = _snapshot(second)
     assert len(snapshot) == 1
@@ -2004,6 +2008,7 @@ async def test_an_untouched_coverage_id_sharing_the_url_stays_uncovered(
                 ]
             ),
             _verdict_draft(verdict="verified"),
+            ClaimEquivalenceDraft(pairs=[]),
         ],
     )
     agent = _checker_for_passes(tracker, completer, searches=2)
@@ -2029,6 +2034,7 @@ async def test_an_untouched_coverage_id_sharing_the_url_stays_uncovered(
     assert _structured_names(completer, after_first) == [
         "ClaimsDraft",
         "PassageVerdictDraft",
+        "ClaimEquivalenceDraft",
     ]
     snapshot = _snapshot(second)
     assert [claim.text for claim in snapshot] == [CLAIM_A_TEXT, CLAIM_B_TEXT]
@@ -2071,6 +2077,7 @@ async def test_a_critic_reverification_replaces_the_claim_without_duplicating(
                 verdict="verified",
                 contradictions=["A regulator disputes the figure."],
             ),
+            ClaimEquivalenceDraft(pairs=[]),
         ],
     )
     agent = _checker_for_passes(tracker, completer, searches=2)
@@ -2097,6 +2104,7 @@ async def test_a_critic_reverification_replaces_the_claim_without_duplicating(
     assert _structured_names(completer, after_first) == [
         "ClaimsDraft",
         "PassageVerdictDraft",
+        "ClaimEquivalenceDraft",
     ]
     snapshot = _snapshot(second)
     assert len(snapshot) == 1
@@ -2141,6 +2149,7 @@ async def test_a_typed_adjudication_job_re_opens_a_claim_without_prose(
                 verdict="verified",
                 contradictions=["A regulator disputes the figure."],
             ),
+            ClaimEquivalenceDraft(pairs=[]),
         ],
     )
     agent = _checker_for_passes(tracker, completer, searches=2)
@@ -2188,6 +2197,7 @@ async def test_a_typed_adjudication_job_re_opens_a_claim_without_prose(
     assert _structured_names(completer, after_first) == [
         "ClaimsDraft",
         "PassageVerdictDraft",
+        "ClaimEquivalenceDraft",
     ]
     snapshot = _snapshot(second)
     assert snapshot[0].claim_id == first_claim.claim_id
@@ -2721,6 +2731,7 @@ async def test_a_batch_takes_one_claim_per_target_before_extra_slots(
             _obligated_draft(),
             _independent_pair_verdict(),
             _independent_pair_verdict(),
+            ClaimEquivalenceDraft(pairs=[]),
         ],
     )
     agent = _checker(
@@ -2768,7 +2779,12 @@ async def test_a_claim_that_only_reached_the_batch_is_never_marked_consumed(
     """Consumed means adjudicated. The pending claim consumed nothing."""
     completer = ScriptedCompleter(
         decisions=_three_claim_decisions(),
-        outputs=[_obligated_draft(), _verdict_draft(), _verdict_draft()],
+        outputs=[
+            _obligated_draft(),
+            _verdict_draft(),
+            _verdict_draft(),
+            ClaimEquivalenceDraft(pairs=[]),
+        ],
     )
     agent = _checker(
         tracker,
@@ -2813,7 +2829,12 @@ async def test_the_completed_event_reports_the_batch_bounds_and_pending_claims(
 ) -> None:
     completer = ScriptedCompleter(
         decisions=_three_claim_decisions(),
-        outputs=[_obligated_draft(), _verdict_draft(), _verdict_draft()],
+        outputs=[
+            _obligated_draft(),
+            _verdict_draft(),
+            _verdict_draft(),
+            ClaimEquivalenceDraft(pairs=[]),
+        ],
     )
     agent = _checker(
         tracker,
@@ -2854,9 +2875,11 @@ async def test_a_deferred_claim_resumes_on_the_next_pass(
             _obligated_draft(),
             _verdict_draft(),
             _verdict_draft(),
+            ClaimEquivalenceDraft(pairs=[]),
             _obligated_draft(),
             _verdict_draft(),
             _verdict_draft(),
+            ClaimEquivalenceDraft(pairs=[]),
         ],
     )
     agent = _checker(
@@ -2919,6 +2942,7 @@ async def test_a_resumed_claim_keeps_the_obligation_it_was_extracted_for(
             _obligated_draft(),
             _independent_pair_verdict(),
             _independent_pair_verdict(),
+            ClaimEquivalenceDraft(pairs=[]),
             ClaimsDraft(claims=[]),
             _independent_pair_verdict(),
         ],
@@ -5684,9 +5708,19 @@ async def test_a_cluster_addressed_statement_resolves_to_the_adjudicated_claims(
         claim_clusters=merged.claim_clusters,
     )
 
-    assert [
-        claim.claim_id for claim in statement_claims(composition, statement)
-    ] == [claim.claim_id for claim in claims]
+    resolved = statement_claims(composition, statement)
+    # Before this wiring this was ``[]`` for every cluster-addressed
+    # statement: a cluster id is not a claim id, and nothing stamped the
+    # claims with the cluster they joined.
+    assert resolved
+    assert {claim.cluster_id for claim in resolved} == {cluster_id}
+    assert {claim.claim_id for claim in resolved} <= {
+        claim.claim_id for claim in claims
+    }
+    # A statement names a cluster, not a claim, so one named cluster resolves
+    # to its representative claim; the whole member union behind it is what
+    # ``clusters_for_claims`` returns, and it returns the same cluster.
+    assert clusters_for_claims(resolved, merged.claim_clusters) == [cluster_id]
     # The control: the same claims with no cluster link — what every real run
     # published before this wiring — resolve a cluster-addressed statement to
     # nothing at all.
@@ -5829,15 +5863,26 @@ async def test_two_stored_clusters_that_merge_leave_the_absorbed_row_behind(
 
     merged = merge_research_state(state, outcome.state_update)
     registry = merged.claim_clusters
+    published = list(merged.verified_claims)
+    assert len(published) == 1
+    new_cluster_id = published[0].cluster_id
     # The two stored clusters are one fact now, and the merge kept the older
-    # identity — but the absorbed row is still a row.
-    assert sorted(registry) == sorted([survivor_id, absorbed_id])
+    # identity — but the absorbed row is still a row, beside this pass's own
+    # new cluster.
+    assert sorted(registry) == sorted(
+        [survivor_id, absorbed_id, new_cluster_id]
+    )
     assert registry[survivor_id].cluster_aliases == [absorbed_id]
     assert registry[absorbed_id].cluster_id == absorbed_id
-    # The stale row cannot be reached from the survivor: resolution matches
-    # the stored record's own id or an alias on it, and this row carries
-    # neither.
-    assert _resolve_stored_cluster(absorbed_id, [registry[survivor_id]]) is None
+    # The absorbed id DOES resolve from the survivor — that half is why the
+    # merge loses no resolution.
+    assert _resolve_stored_cluster(absorbed_id, [registry[survivor_id]]) is (
+        registry[survivor_id]
+    )
+    # The stale row is the half that does not: it carries neither the
+    # survivor's own id nor an alias to it, so the reducer can never resolve
+    # this row and can never replace it. There is no delete path.
+    assert _resolve_stored_cluster(survivor_id, [registry[absorbed_id]]) is None
     # What is NOT lost: the stored member claims still resolve through the
     # survivor's own ``member_claim_ids``.
     assert set(registry[survivor_id].member_claim_ids) >= {

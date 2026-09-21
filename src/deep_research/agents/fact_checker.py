@@ -32,9 +32,11 @@ from deep_research.agents.acquisition import (
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.claim_clusters import (
     LEGACY_COVERAGE_DIMENSION,
+    ClaimConsolidation,
     atom_answers_target,
     claim_cluster_id,
     claim_meets_support_policy,
+    consolidate_claims,
     critical_target_ids,
     extract_text_atoms,
     select_claim_batch_indices,
@@ -95,6 +97,7 @@ from deep_research.utils.types import (
     MAX_CONSUMED_FINDING_FINGERPRINTS,
     BoundaryAudit,
     Claim,
+    ClaimCluster,
     ClaimVerdict,
     ConflictAssessment,
     ContractModel,
@@ -735,6 +738,31 @@ def invalid_claim_error(rejected: Sequence[str]) -> ResearchError:
         error_type="fact_checker_invalid_claim",
         message="Some extracted claims were malformed and were dropped.",
         details={"rejected": list(rejected)},
+    )
+
+
+def claim_consolidation_degraded_error(
+    diagnostics: Sequence[str],
+) -> ResearchError:
+    """Record that the one equivalence proposal could not be obtained.
+
+    Recoverable, and deliberately not a stop. The cluster ids are minted from
+    ``claim_cluster_id`` — a pure function of the assertion, folded by local
+    identity — so a pass whose provider failed still publishes clusters that
+    are *under-merged*, never wrongly merged, and a later pass with a working
+    provider merges them. Publishing nothing instead would reproduce exactly
+    the defect the wiring removes. ``diagnostics`` carries only
+    project-generated strings, never provider text.
+    """
+    return agent_error(
+        agent_name=FACT_CHECKER_NAME,
+        error_type="fact_checker_claim_consolidation_degraded",
+        message=(
+            "The equivalence proposal could not be obtained; this pass's "
+            "claims are published as separate clusters and a later pass may "
+            "merge them."
+        ),
+        details={"diagnostics": list(diagnostics)},
     )
 
 
@@ -2251,6 +2279,9 @@ def fact_check_completed_event(
     deferred_claim_count: int = 0,
     memory_candidates: int = 0,
     memory_recalls: int = 0,
+    cluster_count: int = 0,
+    consolidation_diagnostics: Sequence[str] = (),
+    cluster_aliases: Mapping[str, str] | None = None,
 ) -> ResearchEvent:
     """Report the whole fact-checking pass.
 
@@ -2259,6 +2290,11 @@ def fact_check_completed_event(
     the pending count travel here too, so a report can say how much claim work
     one pass was allowed and how much of it is still outstanding rather than
     leaving the prefix implicit.
+
+    The consolidation travels as bounded counts and ids, never excerpts: the
+    diagnostics are project-generated strings, and the aliases are cluster ids
+    a reader resolves against the registry rather than text the provider
+    wrote.
     """
     counts = verdict_counts(claims)
     contradiction_count = sum(1 for claim in claims if claim.contradictions)
@@ -2294,6 +2330,9 @@ def fact_check_completed_event(
             "adjudicated_claim_count": len(claims),
             "pending_claim_count": pending_claim_count,
             "deferred_claim_count": deferred_claim_count,
+            "cluster_count": cluster_count,
+            "consolidation_diagnostics": list(consolidation_diagnostics),
+            "cluster_aliases": dict(cluster_aliases or {}),
         },
     )
 
@@ -2394,6 +2433,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # synthesis and refinement rather than keeping it inside the loop.
         self._new_reads: dict[str, ReadRecord] = {}
         self._new_evidence: dict[str, EvidenceUnit] = {}
+        # The clusters this pass's own adjudications minted, keyed by the
+        # identity each was minted from. Empty means this pass consolidated
+        # nothing, so ``state_update`` publishes no ``claim_clusters`` key at
+        # all rather than an empty registry that would replace the stored one.
+        self._new_clusters: dict[str, ClaimCluster] = {}
         self._new_dispositions: list[EvidenceDisposition] = []
         self._adjudication_flags: dict[str, list[str]] = {}
         self._adjudication_audits: dict[str, BoundaryAudit] = {}
@@ -3246,6 +3290,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             update["read_records"] = dict(self._new_reads)
         if self._new_evidence:
             update["evidence_units"] = dict(self._new_evidence)
+        if self._new_clusters:
+            update["claim_clusters"] = dict(self._new_clusters)
         if self._new_dispositions:
             update["evidence_dispositions"] = list(self._new_dispositions)
         if self._adjudication_audits:
@@ -3330,6 +3376,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._run_acquisition_state = dict(state.acquisition_state_by_target)
         self._new_reads = {}
         self._new_evidence = {}
+        self._new_clusters = {}
         self._new_dispositions = []
         self._adjudication_flags = {}
         self._adjudication_audits = {}
@@ -3616,6 +3663,92 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # clean first attempt, so without this the categories and field paths
         # of the rejected reply are collected and then dropped.
         events.extend(self._repair_events)
+        # One bounded provider call per pass, and only when this pass
+        # adjudicated something: with no drafts the candidate list is the
+        # stored propositions alone, so the call could only re-merge stored
+        # identities against each other with no new evidence. The call is a
+        # model call, not a tool call, so it is not gated by
+        # ``tool_budget_for`` and ``merged.tool_calls`` is unmoved by it.
+        consolidation: ClaimConsolidation | None = None
+        consolidation_diagnostics: list[str] = []
+        if claims:
+            async with self.tracker.agent_span(self.name) as span:
+                consolidation = await consolidate_claims(
+                    self.provider,
+                    # This pass's own adjudications, never the whole published
+                    # snapshot: a stored claim is already represented by its
+                    # cluster in ``existing``, and resubmitting it would give
+                    # one fact two candidates and two identities.
+                    claims,
+                    existing=list(state.claim_clusters.values()),
+                    # The run's whole known registry, a plain overlay rather
+                    # than the conflict-detecting reducer: a claim may cite a
+                    # passage an earlier pass admitted, and a read-only view
+                    # assembled for one provider call is not the place to fail
+                    # a run.
+                    evidence=list(
+                        {**state.evidence_units, **self._new_evidence}.values()
+                    ),
+                )
+                span.set_outputs(
+                    {
+                        "agent_name": self.name,
+                        "phase": "consolidation",
+                        "cluster_count": len(consolidation.clusters),
+                        "provider_failed": consolidation.provider_failed,
+                    }
+                )
+            self._new_clusters = {
+                cluster.cluster_id: cluster
+                for cluster in consolidation.clusters
+            }
+            # The claim-to-cluster link exists on the cluster side already:
+            # ``extract_atoms`` stamps each atom with its claim id and
+            # ``cluster_for_atom`` folds those into ``member_claim_ids``. The
+            # published claim has to carry it too — ``statement_claims``
+            # resolves a cluster-addressed statement only through
+            # ``claim.cluster_id`` / ``claim.cluster_aliases``, and a cluster
+            # id is not a claim id.
+            cluster_for_claim = {
+                claim_id: cluster
+                for cluster in consolidation.clusters
+                for claim_id in cluster.member_claim_ids
+            }
+            claims = [
+                claim.model_copy(
+                    update={
+                        "cluster_id": cluster.cluster_id,
+                        "cluster_aliases": list(cluster.cluster_aliases),
+                    }
+                )
+                if (cluster := cluster_for_claim.get(claim.claim_id))
+                is not None
+                else claim
+                for claim in claims
+            ]
+            # A claim no cluster claims is left unstamped rather than given a
+            # fabricated identity, and is named here so the omission has a
+            # recorded reason.
+            consolidation_diagnostics = sorted(
+                {
+                    *consolidation.diagnostics,
+                    *(
+                        f"unclustered_claim:{claim.claim_id}"
+                        for claim in claims
+                        if claim.cluster_id is None
+                    ),
+                }
+            )
+            if consolidation.provider_failed:
+                # R7: a degraded consolidation is non-halting. The clusters are
+                # still published and the claims are still stamped, because
+                # their ids are locally derived; the pass is under-merged, and
+                # the next pass with a working provider merges what is left.
+                errors.append(
+                    claim_consolidation_degraded_error(
+                        consolidation_diagnostics
+                    )
+                )
         merged = merge_react_runs(self.name, runs).model_copy(
             update={"errors": errors}
         )
@@ -3634,6 +3767,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 deferred_claim_count=deferred_count,
                 memory_candidates=memory_candidates_seen,
                 memory_recalls=memory_recalls_seen,
+                cluster_count=len(self._new_clusters),
+                consolidation_diagnostics=consolidation_diagnostics,
+                cluster_aliases=(
+                    consolidation.aliases if consolidation is not None else {}
+                ),
             )
         )
         result = VerifiedClaims(
