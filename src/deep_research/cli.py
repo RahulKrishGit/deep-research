@@ -653,20 +653,52 @@ def _error_targets(
     return tokens
 
 
-def _recovery_phrase(errors: Sequence[ResearchError]) -> str:
-    """Whether a group's records were recovered from, or are still open.
+# The typed details a producer stamps when it recorded *how* a failure was
+# resolved — a validated cache entry that answered a refused read, say.
+# Presence of a non-empty one is the resolution, and the only thing that earns
+# the word "recovered": ``recoverable`` means something else entirely, so it
+# can never be read as one.
+_RESOLUTION_DETAIL_KEYS = ("resolved_by", "recovered_by")
 
-    ``recoverable`` is the producer's own field: a refused URL that fell back
-    to a validated cache entry is a *recovered* error and is not an unresolved
-    report defect, while a failure nothing recovered from is. A group whose
-    records disagree says so rather than picking a side.
+
+def _recorded_resolution(error: ResearchError) -> bool:
+    """True when some producer recorded that this failure was resolved."""
+    for key in _RESOLUTION_DETAIL_KEYS:
+        value = error.details.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
+
+
+def _recovery_phrase(errors: Sequence[ResearchError]) -> str:
+    """How a group's records ended: recovered, non-fatal, or fatal.
+
+    "Recovered" is earned by a recorded resolution and nothing else: a
+    producer stamps one only when something actually answered the failure.
+    ``recoverable`` is not that. It is the producer's own field meaning *the
+    run continued past this* — a provider-failed terminal review and a failed
+    terminal write both carry it, and neither was resolved by anyone — so it
+    is rendered here in the ledger's own vocabulary, ``non-fatal`` for
+    ``recoverable`` and ``fatal`` for its absence. The two surfaces then say
+    the same thing about the same record instead of the CLI claiming a
+    recovery the ledger does not.
     """
-    recovered = sum(error.recoverable for error in errors)
-    if recovered == len(errors):
+    total = len(errors)
+    resolved = sum(_recorded_resolution(error) for error in errors)
+    if resolved == total:
         return "recovered"
-    if recovered == 0:
-        return "unresolved"
-    return f"partly recovered: {recovered} of {len(errors)}"
+    unresolved = [error for error in errors if not _recorded_resolution(error)]
+    fatal = sum(not error.recoverable for error in unresolved)
+    parts: list[str] = []
+    if resolved:
+        parts.append(f"recovered {resolved} of {total}")
+    if fatal == len(unresolved):
+        parts.append("fatal")
+    elif fatal:
+        parts.append(f"fatal {fatal} of {len(unresolved)}")
+    else:
+        parts.append("non-fatal")
+    return "; ".join(parts)
 
 
 def _error_breakdown(
@@ -700,13 +732,15 @@ def render_warnings(
 ) -> list[str]:
     """Render repeated errors grouped by agent, type, and cause.
 
-    The header counts what was recovered and what is still open, because those
-    are different facts about a run: a refused fetch that a validated cache
-    entry answered is not an unresolved defect, and a run that names it as one
-    is reporting a failure it did not have. Each source then gets a line, and
-    each (type, cause) inside it gets a line that keeps the affected coverage
-    topics — with the plan's own title for each, so an unrecovered access
-    problem names the question it leaves unanswered.
+    The header counts the same three readings each group line reports:
+    resolutions that were recorded, failures the run continued past, and
+    failures no producer recorded as recoverable. Counting ``recoverable`` as
+    "recovered" — as this header once did — publishes a recovery nobody made,
+    so a record earns the first count only from a recorded resolution. Each
+    source then gets a line, and each (type, cause) inside it gets a line that
+    keeps the affected coverage topics — with the plan's own title for each,
+    so an access problem that ended a pass names the question it leaves
+    unanswered.
 
     The messages are verbose detail: they are enumerated and safe, but a
     concrete cause with its targets is what makes the run actionable.
@@ -714,12 +748,16 @@ def render_warnings(
     if not outcome.errors:
         return []
     errors = list(outcome.errors)
-    recovered = sum(error.recoverable for error in errors)
-    unresolved = len(errors) - recovered
+    resolved = sum(_recorded_resolution(error) for error in errors)
+    fatal = sum(
+        not _recorded_resolution(error) and not error.recoverable
+        for error in errors
+    )
     counts = f"{len(errors)} error" + ("" if len(errors) == 1 else "s")
     lines = [
         f"Warnings: {counts} "
-        f"({recovered} recovered, {unresolved} unresolved)"
+        f"({resolved} recovered, {len(errors) - resolved - fatal} non-fatal, "
+        f"{fatal} fatal)"
     ]
     titles = _topic_titles(outcome)
     for source, rows in _errors_by_source(errors).items():

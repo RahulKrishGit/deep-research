@@ -11,6 +11,10 @@ from deep_research.cli import (
     render_summary,
     render_warnings,
 )
+from deep_research.graph.errors import (
+    publication_write_error,
+    report_review_unavailable_error,
+)
 from deep_research.graph.events import (
     node_completed_event,
     node_started_event,
@@ -392,12 +396,12 @@ def test_warnings_group_by_the_source_that_recorded_them() -> None:
     lines = render_warnings(build_outcome(state=error_state()))
 
     assert lines == [
-        "Warnings: 3 errors (3 recovered, 0 unresolved)",
+        "Warnings: 3 errors (0 recovered, 3 non-fatal, 0 fatal)",
         "  agent.researcher: 2 errors (coverage topic-03, topic-05)",
-        "    researcher_sub_topic_skipped (recovered; reason cap): topic-03",
-        "    researcher_extraction_provider_error (recovered): topic-05",
+        "    researcher_sub_topic_skipped (non-fatal; reason cap): topic-03",
+        "    researcher_extraction_provider_error (non-fatal): topic-05",
         "  tools.web_search: 1 error",
-        "    web_search_failed (recovered)",
+        "    web_search_failed (non-fatal)",
     ]
 
 
@@ -415,45 +419,89 @@ def test_warnings_omit_the_coverage_fragment_when_none_is_named() -> None:
     )
 
     assert render_warnings(build_outcome(state=state)) == [
-        "Warnings: 1 error (1 recovered, 0 unresolved)",
+        "Warnings: 1 error (0 recovered, 1 non-fatal, 0 fatal)",
         "  tools.web_search: 1 error",
-        "    web_search_failed (recovered)",
+        "    web_search_failed (non-fatal)",
     ]
 
 
-def test_a_resolved_fallback_is_not_counted_as_an_unresolved_defect() -> None:
-    """``recoverable`` is the difference between a fallback and an open defect.
+def test_a_recoverable_failure_is_not_printed_as_recovered() -> None:
+    """``recoverable`` means the run continued, not that anything resolved it.
 
-    A refused fetch that a validated cache entry answered is a recovered error.
-    Counting it as unresolved reports a failure the run did not have; counting
-    a failure nothing recovered from as recovered hides one it did.
+    Both records below come from the production constructors for failures a
+    run survives without any resolution: a terminal semantic review whose
+    provider failed, and the terminal quality write that withheld the whole
+    advertised artifact set. Nothing recovered either one, and calling them
+    recovered would publish a judgement no producer made. ``recoverable`` is
+    the producer saying the run carried on, which is what is printed.
+    """
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        errors=[
+            report_review_unavailable_error(
+                node="review_report",
+                review_status="provider_failed",
+                reason="provider_error",
+            ),
+            publication_write_error(
+                node="finalize_report",
+                artifact="quality",
+                tool="write_document",
+                failure_type="OSError",
+            ),
+        ],
+    )
+
+    lines = render_warnings(build_outcome(state=state))
+    joined = "\n".join(lines)
+
+    assert lines[0] == "Warnings: 2 errors (0 recovered, 2 non-fatal, 0 fatal)"
+    assert "(recovered" not in joined
+    assert (
+        "graph_report_review_unavailable (non-fatal; reason provider_error)"
+        in joined
+    )
+    assert "graph_publication_failed (non-fatal; failure_type OSError)" in joined
+
+
+def test_only_a_recorded_resolution_prints_as_recovered() -> None:
+    """A resolution marker is the one thing that earns the word ``recovered``.
+
+    No producer stamps one today, and a run that recorded none prints none:
+    the count follows the same rule as the phrase, so a header can never
+    report a recovery the records do not carry.
     """
     resolved = ResearchState(
         session_id="session-1",
         original_question=QUESTION,
         errors=[
             ResearchError(
-                error_type="researcher_url_denied",
-                source="agent.researcher",
-                message="One candidate refused the read.",
+                error_type="web_scraper_failed",
+                source="tools.web_scraper",
+                message="The scraper fell back to a cached body.",
                 recoverable=True,
-                details={"coverage_id": "topic-03"},
+                details={"resolved_by": "validated_cache_read"},
             )
         ],
     )
-    open_defect = resolved.model_copy(
+    fatal = resolved.model_copy(
         update={
             "errors": [
-                resolved.errors[0].model_copy(update={"recoverable": False})
+                resolved.errors[0].model_copy(
+                    update={"recoverable": False, "details": {}}
+                )
             ]
         }
     )
 
-    assert render_warnings(build_outcome(state=resolved))[0] == (
-        "Warnings: 1 error (1 recovered, 0 unresolved)"
-    )
-    assert render_warnings(build_outcome(state=open_defect))[0] == (
-        "Warnings: 1 error (0 recovered, 1 unresolved)"
+    assert render_warnings(build_outcome(state=resolved)) == [
+        "Warnings: 1 error (1 recovered, 0 non-fatal, 0 fatal)",
+        "  tools.web_scraper: 1 error",
+        "    web_scraper_failed (recovered)",
+    ]
+    assert render_warnings(build_outcome(state=fatal))[0] == (
+        "Warnings: 1 error (0 recovered, 0 non-fatal, 1 fatal)"
     )
 
 
@@ -486,9 +534,9 @@ def test_an_unresolved_access_problem_names_the_question_it_left_open() -> None:
     lines = render_warnings(build_outcome(state=state))
     joined = "\n".join(lines)
 
-    assert lines[0] == "Warnings: 1 error (0 recovered, 1 unresolved)"
+    assert lines[0] == "Warnings: 1 error (0 recovered, 0 non-fatal, 1 fatal)"
     assert (
-        'researcher_extraction_provider_error (unresolved; reason '
+        'researcher_extraction_provider_error (fatal; reason '
         'provider_timeout): topic-03 "Siting, permitting, and fire safety rules"'
         in joined
     )
@@ -513,9 +561,9 @@ def test_repeated_identical_errors_collapse_to_one_aggregated_line() -> None:
     lines = render_warnings(build_outcome(state=state))
 
     assert lines == [
-        "Warnings: 5 errors (5 recovered, 0 unresolved)",
+        "Warnings: 5 errors (0 recovered, 5 non-fatal, 0 fatal)",
         "  tools.web_search: 5 errors",
-        "    web_search_failed (x5; recovered; reason provider_timeout)",
+        "    web_search_failed (x5; non-fatal; reason provider_timeout)",
     ]
 
 
@@ -527,16 +575,16 @@ def test_verbose_warnings_add_the_typed_messages() -> None:
     lines = render_warnings(build_outcome(state=error_state()), verbose=True)
 
     assert lines == [
-        "Warnings: 3 errors (3 recovered, 0 unresolved)",
+        "Warnings: 3 errors (0 recovered, 3 non-fatal, 0 fatal)",
         "  agent.researcher: 2 errors (coverage topic-03, topic-05)",
-        "    researcher_sub_topic_skipped (recovered; reason cap): topic-03",
-        "    researcher_extraction_provider_error (recovered): topic-05",
+        "    researcher_sub_topic_skipped (non-fatal; reason cap): topic-03",
+        "    researcher_extraction_provider_error (non-fatal): topic-05",
         "    warning: [researcher_sub_topic_skipped] A planned sub-topic was "
         "never researched; the report will be incomplete for it.",
         "    warning: [researcher_extraction_provider_error] The model "
         "provider failed during research.",
         "  tools.web_search: 1 error",
-        "    web_search_failed (recovered)",
+        "    web_search_failed (non-fatal)",
         "    warning: [web_search_failed] The search provider timed out.",
     ]
 
