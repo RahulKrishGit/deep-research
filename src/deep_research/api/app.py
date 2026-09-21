@@ -31,6 +31,7 @@ from deep_research.api.sessions import (
     ResearchRunner,
     ResearchSession,
     SessionStore,
+    outcome_response_fields,
 )
 from deep_research.main import (
     DEFAULT_CONFIG_PATH,
@@ -121,6 +122,7 @@ def _session_response(session: ResearchSession) -> ResearchSessionResponse:
         report_path=session.report_path,
         trace_url=session.trace_url,
         errors=[error.model_copy(deep=True) for error in session.errors],
+        **outcome_response_fields(session.outcome),
     )
 
 

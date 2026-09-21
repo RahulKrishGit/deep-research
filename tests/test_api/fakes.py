@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from deep_research.observability import TokenUsage
-from deep_research.runtime.outcome import ResearchOutcome
+from deep_research.runtime.outcome import ResearchOutcome, recorded_session_span
 from deep_research.utils.types import ResearchError, ResearchEvent, ResearchState
 
 
@@ -31,16 +31,25 @@ def make_outcome(
     report: str | None = None,
     errors: Sequence[ResearchError] = (),
     events: Sequence[ResearchEvent] = (),
+    state: ResearchState | None = None,
+    evidence_path: str | None = None,
+    quality_path: str | None = None,
 ) -> ResearchOutcome:
-    """Build one real outcome carrying the given session facts."""
-    state = ResearchState(
-        session_id=session_id,
-        original_question=question,
-        iteration=iteration,
-        report=report,
-        errors=list(errors),
-        events=list(events),
-    )
+    """Build one real outcome carrying the given session facts.
+
+    ``state`` replaces the bare state the shorter arguments build, for a test
+    that needs a judged pass — a quality snapshot, a composition — rather than
+    the identity fields alone.
+    """
+    if state is None:
+        state = ResearchState(
+            session_id=session_id,
+            original_question=question,
+            iteration=iteration,
+            report=report,
+            errors=list(errors),
+            events=list(events),
+        )
     return ResearchOutcome(
         session_id=session_id,
         question=question,
@@ -50,6 +59,13 @@ def make_outcome(
         report_path=report_path,
         token_usage=TokenUsage(input_tokens=1, output_tokens=1),
         tool_calls=(),
+        # Read from the state the same way ``build_outcome`` reads it, so a
+        # double that is handed a judged state carries that state's artifact
+        # set and contract version rather than the legacy defaults.
+        evidence_path=evidence_path or state.evidence_path,
+        quality_path=quality_path or state.quality_path,
+        quality_contract_version=state.quality_contract_version,
+        duration_seconds=recorded_session_span(state.events),
     )
 
 
@@ -71,6 +87,9 @@ class ScriptedRunner:
         trace_url: str | None = None,
         report: str | None = None,
         error: Exception | None = None,
+        state: ResearchState | None = None,
+        evidence_path: str | None = None,
+        quality_path: str | None = None,
     ) -> None:
         self.events = list(events)
         self.status = status
@@ -79,6 +98,9 @@ class ScriptedRunner:
         self.trace_url = trace_url
         self.report = report
         self.error = error
+        self.state = state
+        self.evidence_path = evidence_path
+        self.quality_path = quality_path
         self.calls: list[dict[str, Any]] = []
 
     async def __call__(
@@ -112,6 +134,9 @@ class ScriptedRunner:
             trace_url=self.trace_url,
             report=self.report,
             events=self.events,
+            state=self.state,
+            evidence_path=self.evidence_path,
+            quality_path=self.quality_path,
         )
 
 

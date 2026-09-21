@@ -17,10 +17,89 @@ from deep_research.api.models import (
     TraceResponse,
     ValidationIssue,
 )
-from deep_research.api.sessions import SessionStore
+from deep_research.api.sessions import SessionStore, outcome_response_fields
+from deep_research.graph.orchestrator import GraphRun
 from deep_research.runtime.errors import configuration_error
-from deep_research.utils.types import ResearchError, ResearchEvent
+from deep_research.runtime.outcome import ResearchOutcome, build_outcome
+from deep_research.utils.types import (
+    QUALITY_CONTRACT_VERSION,
+    REVIEW_DIMENSIONS,
+    ResearchError,
+    ResearchEvent,
+    ResearchState,
+)
+from tests.graph_fakes import (
+    fake_claim,
+    fake_finding,
+    fake_quality,
+    fake_reader_composition,
+    fake_report_review,
+    fake_research_state,
+    fake_scored_source,
+    fake_sub_topic,
+)
 from tests.test_api.fakes import GateRunner, ScriptedRunner
+
+REPORT_PATH = "output/report-session-1-0.md"
+EVIDENCE_PATH = "output/report-session-1-0-evidence.md"
+QUALITY_PATH = "output/report-session-1-0-quality.json"
+
+
+def judged_state() -> ResearchState:
+    """One judged pass: a quality snapshot, a review, and a composition.
+
+    The snapshot carries the critical-target reading the coverage block
+    publishes and the composition carries the claims and sources the evidence
+    block counts, so every additive field has a typed record behind it.
+    """
+    state = fake_research_state(
+        raw_findings=[fake_finding()],
+        evaluated_sources=[fake_scored_source()],
+        verified_claims=[fake_claim()],
+        sub_topics=[fake_sub_topic()],
+        quality=fake_quality().model_copy(
+            update={
+                "covered_topics": 1,
+                "critical_targets": 2,
+                "unanswered_critical_target_ids": ["t2"],
+            }
+        ),
+        report_review=fake_report_review(
+            dimensions={name: 0.75 for name in REVIEW_DIMENSIONS}
+        ),
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+        evidence_path=EVIDENCE_PATH,
+        quality_path=QUALITY_PATH,
+        events=[
+            ResearchEvent(
+                event_type="graph.node.started",
+                source="graph.planner",
+                message="Node planner started.",
+                timestamp="2026-08-03T12:00:00+00:00",
+            ),
+            ResearchEvent(
+                event_type="graph.node.completed",
+                source="graph.planner",
+                message="Node planner completed.",
+                timestamp="2026-08-03T12:00:30+00:00",
+            ),
+        ],
+    )
+    composition = fake_reader_composition(state)
+    return state.model_copy(update={"composition": composition})
+
+
+def outcome_of(state: ResearchState) -> ResearchOutcome:
+    """The outcome one finished session holds, paths and all."""
+    return build_outcome(
+        GraphRun(
+            session_id="session-1",
+            state=state,
+            status="completed",
+            trace_url=None,
+        ),
+        metrics=(),
+    )
 
 
 def start_session(
@@ -133,6 +212,68 @@ def test_session_response_accepts_a_complete_lifecycle() -> None:
     assert response.iteration == 2
     assert response.report_path == "report-session-1.md"
     assert response.errors[0].recoverable is False
+
+
+def test_session_response_defaults_the_outcome_fields_to_no_answer() -> None:
+    """A running session answers ``None``, not a zero it never measured.
+
+    The additive fields are the finished outcome's own readings, so a session
+    that has none carries no path, no version, no score, no span and no
+    counts — never a legacy version, an empty bucket set or a zero duration.
+    """
+    response = ResearchSessionResponse(
+        session_id="session-1",
+        status="running",
+        iteration=0,
+        started_at=datetime.now(timezone.utc),
+    )
+
+    assert response.evidence_path is None
+    assert response.quality_path is None
+    assert response.quality_contract_version is None
+    assert response.semantic_review_status is None
+    assert response.semantic_review_score is None
+    assert response.duration_seconds is None
+    assert response.coverage is None
+    assert response.evidence_counts is None
+
+
+def test_session_response_reads_the_typed_measurements_a_pass_recorded() -> None:
+    """Every additive field is the outcome property, not a re-derived number.
+
+    The coverage block keeps the two denominators apart, the evidence block
+    keeps ten distinct counts of ten different things, and the review fields
+    carry the status and score the snapshot was stamped with. An empty review
+    status is ``None`` here: "no review was recorded" is not a status.
+    """
+    state = judged_state()
+    response = ResearchSessionResponse(
+        session_id="session-1",
+        status="completed",
+        iteration=1,
+        started_at=datetime.now(timezone.utc),
+        report_path=REPORT_PATH,
+        **outcome_response_fields(outcome_of(state)),
+    )
+
+    assert response.evidence_path == EVIDENCE_PATH
+    assert response.quality_path == QUALITY_PATH
+    assert response.quality_contract_version == QUALITY_CONTRACT_VERSION
+    assert response.semantic_review_status == "scored"
+    assert response.semantic_review_score == 0.75
+    assert response.duration_seconds == 30.0
+    assert response.coverage is not None
+    assert response.coverage.planned_topics == 2
+    assert response.coverage.covered_topics == 1
+    assert response.coverage.unanswered_critical_target_ids == ["t2"]
+    assert response.evidence_counts is not None
+    assert response.evidence_counts.corroborated == 1
+    assert response.evidence_counts.checked_claims == 1
+
+
+def test_session_response_fields_are_empty_without_an_outcome() -> None:
+    """No outcome contributes nothing: no field is defaulted into the reply."""
+    assert outcome_response_fields(None) == {}
 
 
 @pytest.mark.parametrize(

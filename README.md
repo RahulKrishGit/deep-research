@@ -700,6 +700,18 @@ The `202` response carries the session snapshot: `session_id`, `status`,
 `incomplete`, or `failed`. Poll `status` or subscribe to the stream —
 nothing blocks on research work.
 
+A finished session's snapshot also carries the outcome's own readings, added
+to the response without changing any existing field: `evidence_path` and
+`quality_path` (the other two files of the published set), the
+`quality_contract_version`, the `semantic_review_status` and
+`semantic_review_score`, the `duration_seconds` the recorded events cover, and
+two nested blocks — `coverage` (topic and target progress with the unanswered
+critical and unaccounted target ids) and `evidence_counts` (the distinct
+read/work/source/finding/claim counts and the four corroboration readings).
+While a session is still running every one of those fields is `null` rather
+than `0`: nothing has been measured yet, and a zero would be a claim the run
+never made.
+
 Streams are server-sent events: each frame is one typed `ResearchEvent` as
 JSON, preceded by its id and event type:
 
@@ -760,7 +772,8 @@ python -m deep_research --resume <session_id>
 | `--max-iterations N` | Macro refinement passes the critic may request. Defaults to `graph.max_iterations`. |
 | `--output-format` | Report format. Only `markdown` is supported in this build. |
 | `--config PATH` | YAML config file. Defaults to `config.yaml`. |
-| `--verbose` | Print every progress event, tool call counts, and token totals. |
+| `--verbose` | Print every progress event and the run's totals: per-tool calls with their failures and retries, the proposals the researcher dropped, per-provider attempts and tokens. |
+| `--debug-events` | Print the complete bounded event record: every recorded event, named by its enumerated type and source, with no event metadata rendered. |
 | `--require-quality` | Exit 4 unless the terminal quality gates accepted the report; without it, a finished partial report exits 0. |
 
 Every interface calls the same `deep_research.main.run_research()`, which loads
@@ -796,6 +809,54 @@ pretending a checkpoint exists. A durable saver drops into
 and evidence paths and the normal summary, but returns exit code 4 when the
 terminal status is not `accepted`. The default exit code remains 0 for a
 finished partial report so an operator can inspect its limitations.
+
+### Artifacts
+
+A finished run publishes three files under `output.directory`, and it
+advertises all three or none of them: a publication that failed a write prints
+no path at all rather than pointing at an earlier refinement pass's file. The
+three names are one family, derived from the session id and the pass:
+
+| Artifact | Answers | Name |
+| --- | --- | --- |
+| Reader report | What is settled, how strongly, and where it is uncertain. Every settled statement ends in its own citation markers, and **References** lists only the sources those points actually cite. | `report-<session>-<iteration>.md` |
+| Evidence ledger | What was checked and what the check found. It carries the whole checked-claim registry, every source assessment — including sources no reader point cites — the verification passages, the drafted content the pass refused, the findings no claim consumed, and the run's error inventory. | `report-<session>-<iteration>-evidence.md` |
+| Quality record | The replay surface: counts, ids, the SHA-256 of each published document, the quality contract version, and the review's status and packet fingerprint. | `report-<session>-<iteration>-quality.json` |
+
+Claim-to-memory writes are a *separate* write, attempted only for an accepted
+report, and they are outside that artifact set: a failed memory write is
+reported as its own count and leaves the three paths advertised.
+
+Both Markdown documents print an **As of** line read from the newest timestamp
+the *recorded evidence* carries — never a clock read — so the same session
+always renders the same date and a session with no dated evidence says so
+instead of printing when it happened to be printed. Sources are attributed
+where the report cites them; the ledger keeps the assessments of the sources
+the reader report does not cite, so "what was assessed" and "what was cited"
+stay separately answerable.
+
+The quality record counts four corroboration readings and keeps them apart:
+independently corroborated, primary-source attribution without independent
+corroboration, contested with both sides recorded, and no classification
+recorded. "Checked" is not one of the four, and a claim whose verdict is
+`contradicted` is counted contested whatever badge it carries.
+
+### Quality Semantics
+
+The terminal status is printed on every summary and stamped on all three
+artifacts. A run is **accepted** only when all three of these hold:
+
+- the deterministic quality gates found no hard failure — including broad-plan
+  coverage below 0.80 when the plan has five or more topics, any unanswered
+  critical target, and any required target unaccounted for with no recorded
+  reason;
+- the Critic accepted at 7/10 or above and asked for no further pass;
+- the semantic review scored a mean of 0.80 or above over its seven
+  dimensions.
+
+Anything else is **partial** — including a report no quality pass ever judged,
+and one whose semantic review was missing, incomplete, or lost to a provider
+failure. Only an accepted report's claims are written to memory.
 
 ## Individual Agent Evaluation
 

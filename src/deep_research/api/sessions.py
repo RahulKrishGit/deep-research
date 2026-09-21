@@ -17,7 +17,11 @@ from typing import TypeAlias
 
 from pydantic import JsonValue
 
-from deep_research.api.models import SessionStatus
+from deep_research.api.models import (
+    CoverageProgressResponse,
+    EvidenceCountsResponse,
+    SessionStatus,
+)
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.types import ResearchError, ResearchEvent
@@ -64,6 +68,69 @@ class ResearchSession:
         if isinstance(iteration, int):
             self.iteration = iteration
         self.changed.set()
+
+
+def outcome_response_fields(
+    outcome: ResearchOutcome | None,
+) -> dict[str, object]:
+    """The additive API fields one finished outcome contributes, or ``{}``.
+
+    Every value is the outcome's own typed property, which is built from the
+    same records the summary, the reader report and the quality JSON render
+    from — so the API cannot disagree with the CLI about one run, and nothing
+    here re-derives a number from a report body.
+
+    A session with no outcome contributes nothing at all: a running session
+    has no artifact paths, no contract version, no review, no coverage and no
+    span, and defaulting any of them would answer a question the run has not
+    reached. An empty review status is ``None`` for the same reason — "no
+    review was recorded" is not a status.
+    """
+    if outcome is None:
+        return {}
+    fields: dict[str, object] = {
+        "evidence_path": outcome.evidence_path,
+        "quality_path": outcome.quality_path,
+        "quality_contract_version": outcome.quality_contract_version,
+        "semantic_review_status": outcome.semantic_review_status or None,
+        "semantic_review_score": outcome.semantic_review_score,
+        "duration_seconds": outcome.duration_seconds,
+    }
+    coverage = outcome.coverage
+    if coverage is not None:
+        fields["coverage"] = CoverageProgressResponse(
+            planned_topics=coverage.planned_topics,
+            covered_topics=coverage.covered_topics,
+            substantive_topic_ratio=coverage.substantive_topic_ratio,
+            planned_targets=coverage.planned_targets,
+            required_targets=coverage.required_targets,
+            answered_targets=coverage.answered_targets,
+            critical_targets=coverage.critical_targets,
+            answered_critical_targets=coverage.answered_critical_targets,
+            unanswered_critical_target_ids=list(
+                coverage.unanswered_critical_target_ids
+            ),
+            unaccounted_target_ids=list(coverage.unaccounted_target_ids),
+        )
+    counts = outcome.evidence_counts
+    if counts is not None:
+        fields["evidence_counts"] = EvidenceCountsResponse(
+            read_records=counts.read_records,
+            network_reads=counts.network_reads,
+            cache_reads=counts.cache_reads,
+            unique_works=counts.unique_works,
+            publishers=counts.publishers,
+            source_urls=counts.source_urls,
+            findings=counts.findings,
+            assessed_sources=counts.assessed_sources,
+            cited_assessed_sources=counts.cited_assessed_sources,
+            checked_claims=counts.checked_claims,
+            corroborated=counts.corroborated,
+            primary_attributed=counts.primary_attributed,
+            contested=counts.contested,
+            not_established=counts.not_established,
+        )
+    return fields
 
 
 class SessionStore:

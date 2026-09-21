@@ -17,9 +17,15 @@ from fastapi.testclient import TestClient
 
 from deep_research.api.app import create_app
 from deep_research.api.events import encode_sse
-from deep_research.utils.types import ResearchEvent
+from deep_research.utils.types import QUALITY_CONTRACT_VERSION, ResearchEvent
 from tests.test_api.fakes import GateRunner, ScriptedRunner
 from tests.test_api.test_app import valid_preflight, wait_until_terminal
+from tests.test_api.test_sessions import (
+    EVIDENCE_PATH,
+    QUALITY_PATH,
+    REPORT_PATH,
+    judged_state,
+)
 
 
 def test_encode_sse_frames_one_event_with_its_id() -> None:
@@ -184,3 +190,72 @@ def test_trace_returns_metadata_for_running_sessions() -> None:
         "route": "/research/{session_id}/trace",
         "status": "running",
     }
+
+
+# --- the additive status fields --------------------------------------------
+
+
+def test_status_carries_the_artifacts_and_measurements_of_a_finished_run() -> (
+    None
+):
+    """The outcome's own readings reach the wire, not just the report path.
+
+    A finished session's status reply names all three published artifacts,
+    the contract version that wrote them, the review status and score, the
+    span the events cover, both coverage denominators and the distinct
+    evidence counts.
+    """
+    app = create_app(
+        runner=ScriptedRunner(
+            state=judged_state(),
+            report_path=REPORT_PATH,
+        ),
+        preflight=valid_preflight,
+    )
+
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/research",
+            json={"query": "Question"},
+        ).json()["session_id"]
+        wait_until_terminal(client, session_id)
+        body = client.get(f"/research/{session_id}/status").json()
+
+    assert body["report_path"] == REPORT_PATH
+    assert body["evidence_path"] == EVIDENCE_PATH
+    assert body["quality_path"] == QUALITY_PATH
+    assert body["quality_contract_version"] == QUALITY_CONTRACT_VERSION
+    assert body["semantic_review_status"] == "scored"
+    assert body["semantic_review_score"] == 0.75
+    assert body["duration_seconds"] == 30.0
+    assert body["coverage"]["planned_topics"] == 2
+    assert body["coverage"]["covered_topics"] == 1
+    assert body["coverage"]["unanswered_critical_target_ids"] == ["t2"]
+    assert body["evidence_counts"]["findings"] == 1
+    assert body["evidence_counts"]["checked_claims"] == 1
+    assert body["evidence_counts"]["corroborated"] == 1
+
+
+def test_status_says_nothing_it_has_not_measured_while_the_session_runs() -> (
+    None
+):
+    """No outcome means no field: every additive value is ``None``, not zero."""
+    runner = GateRunner()
+    app = create_app(runner=runner, preflight=valid_preflight)
+
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/research",
+            json={"query": "Question"},
+        ).json()["session_id"]
+        body = client.get(f"/research/{session_id}/status").json()
+
+    assert body["report_path"] is None
+    assert body["evidence_path"] is None
+    assert body["quality_path"] is None
+    assert body["quality_contract_version"] is None
+    assert body["semantic_review_status"] is None
+    assert body["semantic_review_score"] is None
+    assert body["duration_seconds"] is None
+    assert body["coverage"] is None
+    assert body["evidence_counts"] is None

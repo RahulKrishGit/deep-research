@@ -58,8 +58,60 @@ class ResearchRequest(ApiModel):
         return value
 
 
+class CoverageProgressResponse(ApiModel):
+    """Target and topic progress, kept apart (Section 2.3).
+
+    Two denominators and two readings, because they fail differently: most of
+    the targets can be answered while one critical topic is untouched, and one
+    blended ratio hides exactly that. An unanswered critical target is listed
+    whether or not its topic counted as covered.
+    """
+
+    planned_topics: int = Field(ge=0)
+    covered_topics: int = Field(ge=0)
+    substantive_topic_ratio: float
+    planned_targets: int = Field(ge=0)
+    required_targets: int = Field(ge=0)
+    answered_targets: int = Field(ge=0)
+    critical_targets: int = Field(ge=0)
+    answered_critical_targets: int = Field(ge=0)
+    unanswered_critical_target_ids: list[str] = Field(default_factory=list)
+    unaccounted_target_ids: list[str] = Field(default_factory=list)
+
+
+class EvidenceCountsResponse(ApiModel):
+    """Distinct quantities, each of a different thing (Section 2.5).
+
+    A read call is not a work, a work is not a publisher, a source URL is not
+    a finding, and "checked" is not "corroborated". Each field here answers a
+    question the others cannot, which is why none of them is an alias of
+    another and why a read-call count never stands in for unique works.
+    """
+
+    read_records: int = Field(ge=0)
+    network_reads: int = Field(ge=0)
+    cache_reads: int = Field(ge=0)
+    unique_works: int = Field(ge=0)
+    publishers: int = Field(ge=0)
+    source_urls: int = Field(ge=0)
+    findings: int = Field(ge=0)
+    assessed_sources: int = Field(ge=0)
+    cited_assessed_sources: int = Field(ge=0)
+    checked_claims: int = Field(ge=0)
+    corroborated: int = Field(ge=0)
+    primary_attributed: int = Field(ge=0)
+    contested: int = Field(ge=0)
+    not_established: int = Field(ge=0)
+
+
 class ResearchSessionResponse(ApiModel):
-    """The immutable snapshot of one session the API returns."""
+    """The immutable snapshot of one session the API returns.
+
+    The first three fields exist from the moment a session starts; everything
+    from ``evidence_path`` down is the finished run's own reading, so a
+    running session answers ``None`` for each of them rather than a zero or a
+    default it never measured.
+    """
 
     session_id: str = Field(min_length=1)
     status: SessionStatus
@@ -70,6 +122,39 @@ class ResearchSessionResponse(ApiModel):
     report_path: str | None = None
     trace_url: str | None = None
     errors: list[ResearchError] = Field(default_factory=list)
+    evidence_path: str | None = None
+    """The file the evidence ledger was published under, or ``None``."""
+
+    quality_path: str | None = None
+    """The file the quality record was published under, or ``None``.
+
+    The three paths are one published set: all of them are advertised together
+    or none is, so a missing quality path is an incomplete publication rather
+    than a file to look for elsewhere.
+    """
+
+    quality_contract_version: str | None = None
+    """Which evidence/quality contract wrote this session's snapshot."""
+
+    semantic_review_status: str | None = None
+    """The terminal review's own status, or ``None`` when none was recorded."""
+
+    semantic_review_score: float | None = None
+    """The review's mean over its dimensions, or ``None`` without one.
+
+    ``None`` is "no score was recorded", never a zero: an incomplete or
+    provider-failed review has no score, and reporting one would be inventing
+    a judgement nobody made.
+    """
+
+    duration_seconds: float | None = Field(default=None, ge=0)
+    """The span the session's recorded events cover, or ``None``."""
+
+    coverage: CoverageProgressResponse | None = None
+    """Target and topic progress, or ``None`` when nothing judged it."""
+
+    evidence_counts: EvidenceCountsResponse | None = None
+    """The distinct counts, or ``None`` without a composition to count."""
 
 
 class TraceMetadata(ApiModel):
