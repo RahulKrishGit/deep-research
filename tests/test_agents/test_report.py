@@ -48,6 +48,7 @@ from deep_research.agents.report import (
     canonical_sources,
     citation_markers,
     composition_statements,
+    evidence_status_bucket,
     evidence_status_counts,
     reader_citations,
     reader_sections,
@@ -86,6 +87,7 @@ from deep_research.utils.types import (
     StatementMode,
     SubTopic,
     answered_atom_dimensions,
+    statement_mode_for_claims,
 )
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
@@ -2548,3 +2550,40 @@ def test_every_corroboration_badge_has_its_own_distinct_count() -> None:
     }
     assert sum(counts.values()) == len(claims)
     assert set(counts) == set(EVIDENCE_STATUS_LABELS)
+
+
+def test_a_contradicted_claim_is_counted_the_way_the_reader_reads_it() -> None:
+    """One claim, one reading: the counts follow the reader's own contract.
+
+    The badge is stamped before adjudication finishes, so the claim an
+    independent source contradicted can still carry ``verified_pair``. Counting
+    the badge alone published it as "independently corroborated" while the
+    reader's statement contract called the same claim contested — two surfaces
+    disagreeing about one claim. Section 2.1: verified requires that no
+    unresolved material contradiction defeats settlement.
+    """
+    contradicted = _claim(
+        text="An independent source contradicted this.",
+        verdict="contradicted",
+        badge="verified_pair",
+    )
+    settled = _claim()
+
+    assert evidence_status_counts([contradicted, settled]) == {
+        "corroborated": 1,
+        "primary_attributed": 0,
+        "contested": 1,
+        "not_established": 0,
+    }
+    assert statement_mode_for_claims([contradicted]) == "contested"
+    assert statement_mode_for_claims([settled]) == "settled"
+    assert (
+        evidence_status_bucket(
+            contradicted.evidence_status, verdict=contradicted.verdict
+        )
+        == "contested"
+    )
+    assert (
+        evidence_status_bucket(settled.evidence_status, verdict=settled.verdict)
+        == "corroborated"
+    )

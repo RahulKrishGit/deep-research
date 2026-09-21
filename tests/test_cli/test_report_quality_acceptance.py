@@ -1538,14 +1538,18 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
     assert verdict_counts["contradicted"] == 1
 
     # The judgment the two vocabularies exist to keep apart, read across
-    # surfaces: this fixture holds 16 claims carrying a corroboration badge and
-    # 15 carrying a `verified` verdict, because one claim's verdict was
-    # contradicted while its badge records a pair. The CLI prints each against
-    # its own name and never presents the check count as the verified one.
+    # surfaces: this fixture holds 16 claims, 15 carrying a `verified` verdict
+    # and one whose verdict was contradicted while its badge records a pair.
+    # That claim is counted as contested, which is how the reader's own
+    # statement contract reads it — a badge stamped before adjudication cannot
+    # outvote the contradiction. The CLI prints each reading against its own
+    # name and never presents the check count as the verified one.
     assert printed["checked_claims"] == len(composition.claims) == 16
-    assert printed["corroborated_claims"] == 16
+    assert printed["corroborated_claims"] == 15
+    assert printed["contested_claims"] == 1
+    assert printed["contested_claims"] + printed["corroborated_claims"] == 16
     assert printed["verified_claims"] == 15
-    assert printed["corroborated_claims"] != printed["verified_claims"]
+    assert printed["checked_claims"] != printed["verified_claims"]
 
     # The final header/status update cannot alter what was reviewed. The
     # terminal re-render stamps the verdict the gates decided and nothing else:

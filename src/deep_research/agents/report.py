@@ -2090,7 +2090,7 @@ EVIDENCE_STATUS_LABELS: dict[str, str] = {
     "contested": "contested; both sides recorded",
     "not_established": "no corroboration classification recorded",
 }
-"""The four reader-facing readings of a claim's recorded corroboration badge.
+"""The four reader-facing readings of a claim's recorded corroboration.
 
 These are the *counted* buckets, and the only four. "Checked" is not one of
 them: how many claims were examined and how many are corroborated are two
@@ -2104,22 +2104,40 @@ _BADGE_BUCKETS: dict[str, str] = {
     "contested": "contested",
 }
 
+# The verdict that overrides the badge: an unresolved material contradiction
+# defeats settlement whatever the claim's badge recorded.
+_CONTRADICTED_VERDICT = "contradicted"
 
-def evidence_status_bucket(badge: str | None) -> str:
-    """One recorded badge as one of the four counted readings.
+
+def evidence_status_bucket(
+    badge: str | None, *, verdict: str | None = None
+) -> str:
+    """One recorded badge and verdict as one of the four counted readings.
+
+    The verdict is consulted exactly as the reader's own statement contract
+    consults it (``statement_mode_for_claims``): a contradicted verdict is
+    ``contested`` whatever badge was stamped. The badge is written before
+    adjudication finishes, so a claim an independent source contradicted can
+    still carry ``verified_pair``; reading the badge alone published that claim
+    as "independently corroborated" while the reader called the same claim
+    contested, and Section 2.1 settles the disagreement the reader's way.
 
     An absent or unrecognized badge is ``not_established`` — never
     corroborated. A claim nobody classified has not been shown to stand on
     independent support, which is exactly what the bucket name says.
     """
+    if verdict == _CONTRADICTED_VERDICT:
+        return "contested"
     return _BADGE_BUCKETS.get(badge or "", "not_established")
 
 
 def evidence_status_counts(claims: Sequence[Claim]) -> dict[str, int]:
-    """How many checked claims recorded each corroboration badge."""
+    """How many checked claims recorded each corroboration reading."""
     counts = dict.fromkeys(EVIDENCE_STATUS_LABELS, 0)
     for claim in claims:
-        counts[evidence_status_bucket(claim.evidence_status)] += 1
+        counts[
+            evidence_status_bucket(claim.evidence_status, verdict=claim.verdict)
+        ] += 1
     return counts
 
 
