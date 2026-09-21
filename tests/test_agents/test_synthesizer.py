@@ -38,13 +38,16 @@ from deep_research.agents.synthesizer import (
     SYNTHESIS_OPEN_QUESTIONS_CHARS,
     AnswerRowDraft,
     ConstraintDraft,
+    DraftContext,
     ReportDraft,
     ReportPointDraft,
     ReportSectionDraft,
     SynthesisTask,
     SynthesizedReport,
     SynthesizerAgent,
+    _cited_evidence,
     _corpus_tokens,
+    _selected_ids,
     _significant_figures,
     _strip_unsupported_figures,
     bounded_claim_packet,
@@ -1736,6 +1739,22 @@ def test_a_figure_token_does_not_swallow_the_word_after_it() -> None:
     assert _significant_figures("capacity reached 890 GW") == ["890 GW"]
 
 
+def test_the_cited_evidence_is_the_passage_the_selected_id_names() -> None:
+    """The corpus is looked up by evidence id, not by the stance beside it.
+
+    Read the wrong way round, the lookup asks the registry for evidence called
+    "supports", finds nothing, and contributes no text at all — a statement
+    drafted from a passage the packet does hold reads as unattested.
+    """
+    excerpt = "The London pilot used an area licence with camera enforcement."
+    claim = _claim().model_copy(
+        update={"evidence_selection": {EVIDENCE_ID: "supports"}}
+    )
+    context = DraftContext(evidence={EVIDENCE_ID: _unit(excerpt=excerpt)})
+
+    assert excerpt.casefold() in _cited_evidence([claim], context)
+
+
 def test_a_two_letter_place_the_evidence_never_names_is_refused() -> None:
     assert unattested_atoms("Deployment grew in the EU.", "output rose") == ["EU"]
 
@@ -2106,6 +2125,24 @@ def test_the_canonical_packet_lists_omitted_ids_and_continuation_batches() -> No
     assert len(packet.continuation_batches) == 2
     assert "continuation batch 1:" in rendered
     assert "cannot be cited by this draft" in rendered
+
+
+def test_the_packet_selects_the_evidence_ids_and_not_the_stances() -> None:
+    """``evidence_selection`` is keyed by evidence id, valued with its stance.
+
+    Read the wrong way round, the packet's selected-passage lines name a
+    stance where an id belongs. Nothing in the registry answers to "supports",
+    so the claim is presented with no support block at all — and every other
+    test in the suite stays green while it is.
+    """
+    claim = _claim().model_copy(
+        update={"evidence_selection": {EVIDENCE_ID: "supports"}}
+    )
+
+    assert _selected_ids(claim, None) == [EVIDENCE_ID]
+    # An empty cluster is not a cluster with evidence: the claim's own
+    # selection is what the fallback reads.
+    assert _selected_ids(claim, _cluster(evidence_ids=[])) == [EVIDENCE_ID]
 
 
 def test_report_messages_carry_the_canonical_packet_and_the_answer_form() -> None:
