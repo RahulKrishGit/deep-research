@@ -209,6 +209,7 @@ from deep_research.agents.fact_checker import (
     build_claim_drafts,
     claim_attribution,
     claim_checked_event,
+    claim_consolidation_degraded_error,
     claim_eligibility,
     claim_evidence_pool,
     claim_extraction_messages,
@@ -1163,4 +1164,10 @@ __all__ = [
     "quality_report_filename",
     "render_quality_json",
     "render_quality_record",
+    # Task 6 repair: the degraded-consolidation record. Appended as one block,
+    # the way Task 5 and Task 11 appended theirs, because
+    # ``tests/test_imports.py`` walks each submodule's AST and requires every
+    # public top-level name to be reachable here — the consolidation wiring
+    # adds one public helper, and defined-but-unexported is a real gap.
+    "claim_consolidation_degraded_error",
 ]
