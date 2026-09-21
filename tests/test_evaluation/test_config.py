@@ -658,11 +658,21 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # helper, and one update key to the module. The shared `agents.prompts` library
 # was not edited, and the other five pins and the judge did not move (verified
 # by recomputing all six and the judge).
+#
+# The support-policy repair re-pinned the fact_checker alone (`246b797b9534` ->
+# `7012a186eb59`). No prompt instruction changed, and no prompt text moved: the
+# claim admission gate now passes the claim's own ``evidence_status`` through
+# ``admitted_target_ids`` into ``claim_meets_support_policy`` — the predicate
+# lives in ``agents/claim_clusters.py``, which this fingerprint does not hash —
+# so that a faithful source-supported primary attribution can answer a
+# ``primary_attribution``/``derivation`` target, and the call site says so.
+# The shared `agents.prompts` library was not edited, and the other five pins
+# and the judge did not move (verified by recomputing all six and the judge).
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "f2507b56d0c6",
     "researcher": "613603dc5cbd",
     "source_evaluator": "6c12c0fffc92",
-    "fact_checker": "246b797b9534",
+    "fact_checker": "7012a186eb59",
     "synthesizer": "97cf77acbb15",
     "critic": "9694e44926d3",
 }
