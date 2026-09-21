@@ -650,11 +650,19 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # where an evidence id is required, so the stance string was handed to every
 # consumer expecting an id. The shared `agents.prompts` library was not edited,
 # and the other four pins did not move (verified by recomputing all six).
+#
+# Task 6 repair re-pinned the fact_checker alone (`77ac66835773` ->
+# `246b797b9534`). As with the re-pins above, no prompt instruction changed: the
+# round wired `consolidate_claims` into `FactCheckerAgent.run`, which added one
+# call site, one completion-event metadata field, one degraded-consolidation
+# helper, and one update key to the module. The shared `agents.prompts` library
+# was not edited, and the other five pins and the judge did not move (verified
+# by recomputing all six and the judge).
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "f2507b56d0c6",
     "researcher": "613603dc5cbd",
     "source_evaluator": "6c12c0fffc92",
-    "fact_checker": "77ac66835773",
+    "fact_checker": "246b797b9534",
     "synthesizer": "97cf77acbb15",
     "critic": "9694e44926d3",
 }
