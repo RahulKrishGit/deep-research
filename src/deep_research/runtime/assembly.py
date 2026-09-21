@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from deep_research.agents.base import AgentCompleter
@@ -17,6 +17,7 @@ from deep_research.agents.critic import CriticAgent
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.fact_checker import FactCheckerAgent
 from deep_research.agents.planner import PlannerAgent
+from deep_research.agents.report_review import REPORT_JUDGE_ROLE, ReportReviewer
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.agents.source_evaluator import (
     ReputationSource,
@@ -48,7 +49,7 @@ from deep_research.tools.memory_tools import QueryMemoryTool, SaveToMemoryTool
 from deep_research.tools.web_scraper import WebScraperTool
 from deep_research.tools.web_search import WebSearchTool
 from deep_research.tools.write_document import WriteDocumentTool
-from deep_research.utils.config import ConfigSettings
+from deep_research.utils.config import SERVICE_ROLE_NAMES, ConfigSettings
 
 TAVILY_API_KEY_VARIABLE = "TAVILY_API_KEY"
 
@@ -100,7 +101,10 @@ def build_tools(
 
 
 # The six agents, in graph order. Equal to ``graph.state.NODE_NAMES[:6]``
-# by construction: node names deliberately equal agent names.
+# by construction: node names deliberately equal agent names. The service roles
+# below are deliberately not in this tuple — they are not agents, they hold no
+# ReAct loop, and no consumer that means "the agents that research" should pick
+# one up.
 AGENT_NAMES = (
     "planner",
     "researcher",
@@ -236,6 +240,29 @@ def build_agents(
         ) from error
 
 
+def build_report_reviewer(
+    settings: ConfigSettings,
+    *,
+    tracker: Tracker,
+    provider: AgentCompleter,
+) -> ReportReviewer:
+    """Construct the terminal semantic reviewer as its own service role.
+
+    Resolved through ``LLMConfig.resolve_for("report_judge")`` rather than
+    through an agent's profile: the reviewer is a separate call role with its
+    own model and effort, and giving it one of the six agents' configurations
+    would silently tie a quality judgement to whichever agent happened to be
+    configured that way. It is tool-free by construction — there is no toolset
+    parameter to pass it.
+    """
+    return ReportReviewer(
+        provider=provider,
+        tracker=tracker,
+        config=settings.agents,
+        model_profile=settings.llm.resolve_for(REPORT_JUDGE_ROLE),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ResearchRuntime:
     """One session's compiled graph and the collaborators that outlive it."""
@@ -271,7 +298,9 @@ async def build_runtime(
     sees as a traceback.
     """
     try:
-        validate_agent_model_configs(settings.llm, AGENT_NAMES)
+        validate_agent_model_configs(
+            settings.llm, (*AGENT_NAMES, *SERVICE_ROLE_NAMES)
+        )
     except ProviderConfigurationError as error:
         raise configuration_error(
             reason="provider_unconfigured",
@@ -354,8 +383,15 @@ async def build_runtime(
         session_id=session_id,
         reputation=long_term,
     )
+    reviewer = build_report_reviewer(
+        settings, tracker=tracker, provider=provider
+    )
+    # One place supplies the reviewer: the dataclass slot the graph reads. A
+    # second `report_reviewer=` argument on the graph builders would be a second
+    # source of the same fact, and the two could disagree about which reviewer
+    # judged a report.
     graph = compile_research_graph(
-        agents,
+        replace(agents, report_reviewer=reviewer),
         checkpointer=build_checkpointer(
             enabled=settings.graph.checkpointing_enabled
         ),

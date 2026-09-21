@@ -21,10 +21,12 @@ from deep_research.runtime.outcome import ResearchOutcome, ToolCallSummary
 from deep_research.utils.types import (
     Critique,
     ReportQualitySnapshot,
+    ReportReview,
     ResearchError,
     ResearchEvent,
     ResearchState,
 )
+from tests.graph_fakes import fake_report_review
 
 QUESTION = "How mature is quantum error correction?"
 
@@ -55,11 +57,20 @@ def quality_state(
     critique: Critique | None = None,
     quality: ReportQualitySnapshot | None = None,
     with_critique: bool = True,
+    report_review: ReportReview | None = None,
 ) -> ResearchState:
-    """One composed, judged pass: the numbers the summary must print."""
+    """One composed, judged pass: the numbers the summary must print.
+
+    Carries a scored semantic review by default, because since Task 10 a pass
+    with no review is never accepted — a test that wants the unreviewed reading
+    passes ``report_review=None`` explicitly and says so.
+    """
     return ResearchState(
         session_id="session-1",
         original_question=QUESTION,
+        report_review=(
+            fake_report_review() if report_review is None else report_review
+        ),
         quality=quality
         if quality is not None
         else quality_snapshot(),

@@ -643,6 +643,82 @@ def test_build_agents_uses_the_shared_constructor_mapping(
     assert calls == list(AGENT_NAMES)
 
 
+@pytest.mark.asyncio
+async def test_a_bad_report_judge_override_fails_before_any_collaborator(
+    tracker, monkeypatch
+) -> None:
+    """Task 10: the extra service role is preflighted like an agent.
+
+    The report judge is not one of the six agents, but a run that cannot
+    configure it cannot be accepted either, so the same fail-fast rule applies:
+    the misconfiguration is reported before a collaborator exists rather than
+    at the review that decides the run's outcome.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(
+        assembly,
+        "build_embedding_provider",
+        lambda *_args, **_kwargs: calls.append("embeddings"),
+    )
+    settings = ConfigSettings.model_validate(
+        {
+            "llm": {
+                "model_overrides": {
+                    "report_judge": {"reasoning_effort": "medium"}
+                }
+            }
+        }
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(settings, session_id="session-1", tracker=tracker)
+
+    assert caught.value.reason == "provider_unconfigured"
+    assert "report_judge" in str(caught.value)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_runtime_wires_the_report_judge_as_its_own_service_role(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """The reviewer is built from its own resolved profile, not an agent's."""
+    built: list[dict[str, object]] = []
+    real_reviewer = assembly.ReportReviewer
+
+    def recording_reviewer(**kwargs: object) -> object:
+        built.append(kwargs)
+        return real_reviewer(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(assembly, "ReportReviewer", recording_reviewer)
+    memory = LongTermMemory(
+        collection=FakeCollection(), embeddings=FakeEmbeddings()
+    )
+    procedural = ProceduralMemory(tmp_path / "strategies.json")
+    settings = ConfigSettings.model_validate(
+        {
+            "output": {"directory": str(tmp_path)},
+            "llm": {"model_overrides": {"report_judge": {"reasoning_effort": "max"}}},
+        }
+    )
+
+    runtime = await build_runtime(
+        settings,
+        session_id="session-1",
+        tracker=tracker,
+        chat_provider=RecordingProvider(),
+        long_term=memory,
+        procedural=procedural,
+        search_client=FakeSearchClient(),
+    )
+
+    assert len(built) == 1
+    profile = built[0]["model_profile"]
+    assert profile.reasoning_effort == "max"  # type: ignore[union-attr]
+    assert built[0]["tracker"] is tracker
+    assert runtime.graph is not None
+
+
 def test_validate_agent_models_resolves_all_six_before_runtime() -> None:
     config = LLMConfig(
         model_overrides={

@@ -34,6 +34,14 @@ llm:
       reasoning_effort: high
     source_evaluator:
       reasoning_effort: high
+    # The terminal semantic report judge is a *service role*, not a seventh
+    # agent: it holds no tool loop and no slot in the six-agent registry, but it
+    # resolves its model and effort here like one, so the review that decides
+    # whether a report is accepted is independently configured from every agent
+    # whose work it judges. `max` because a wrong acceptance is more expensive
+    # than a slower review.
+    report_judge:
+      reasoning_effort: max
   timeout: 60.0
   # Repo-owned retry policy: up to 5 retries with exponential backoff from
   # 1s doubling to a 16s cap (the openai SDK only exposes max_retries with a
@@ -127,6 +135,12 @@ agents:
   # 4096 it returned non-JSON text on both the initial attempt and the single
   # repair in three consecutive live canaries.
   critic_review_max_tokens: 32768
+  # Operation-specific output budget for the report judge's single request
+  # (AGENTS_REPORT_REVIEW_MAX_TOKENS overrides this). One reply carries seven
+  # dimension scores, a disposition for every reader statement, and the typed
+  # defects found, so it is the Critic's review budget's size class and not a
+  # small reply.
+  report_review_max_tokens: 32768
   # Operation-specific output budget for the judge's JudgeVerdict request
   # (AGENTS_JUDGE_MAX_TOKENS overrides this). The verdict carries six common
   # dimensions, the agent-specific dimensions, and a rationale; once the

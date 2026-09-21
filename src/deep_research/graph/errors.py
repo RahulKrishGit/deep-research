@@ -53,6 +53,10 @@ GRAPH_ERROR_REASONS = {
     "graph_publication_failed": (
         "The report publisher could not complete one of the terminal writes."
     ),
+    "graph_report_review_unavailable": (
+        "The terminal semantic review produced no judgement of the report, so "
+        "the report is published without a scored quality assessment."
+    ),
 }
 
 # The terminal writes that fail independently of one another. Enumerated so a
@@ -191,6 +195,32 @@ def request_attempt_limit_error(
             "ceiling": snapshot.ceiling,
             "effective_limit": snapshot.effective_limit,
         },
+    )
+
+
+def report_review_unavailable_error(
+    *,
+    node: str,
+    review_status: str,
+    reason: str,
+) -> ResearchError:
+    """Record that the terminal semantic review produced no judgement.
+
+    ``recoverable`` on purpose, and deliberately *not* a halting type: the
+    report and its evidence are complete and are still published, so the run
+    did not fail — what failed is the quality assessment. The run's quality
+    status is ``partial`` and strict mode exits 4, which is the honest outcome
+    for a report nothing has judged. Classifying it as a graph failure would
+    report the report as lost when it is intact, and classifying it as a
+    successful review is the defect this record exists to prevent.
+
+    ``review_status`` is one of the review's own enumerated statuses and
+    ``reason`` is project-generated text; neither is provider output.
+    """
+    return graph_error(
+        error_type="graph_report_review_unavailable",
+        node=node,
+        details={"review_status": review_status, "reason": reason},
     )
 
 

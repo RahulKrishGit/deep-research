@@ -59,6 +59,8 @@ from tests.graph_fakes import (
     fake_critique,
     fake_failed_critique,
     fake_quality,
+    fake_rejected_report_review,
+    fake_report_review,
     fake_research_state,
     fake_sub_topic,
     halting_error,
@@ -297,6 +299,14 @@ def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
                 critique=fake_critique(should_continue=True),
                 repair_stop_reason="provider_failure",
             ),
+            # Task 10: a *scored* semantic review that refused the report. A
+            # review that was never made does not add a reason of its own — it
+            # blocks acceptance without buying a pass.
+            fake_research_state(
+                critique=fake_critique(should_continue=False, score=9),
+                quality=fake_quality(),
+                report_review=fake_rejected_report_review(),
+            ),
         )
     }
 
@@ -317,6 +327,7 @@ def test_a_failed_review_is_not_an_acceptance() -> None:
     accepted = fake_research_state(
         critique=fake_critique(should_continue=False, score=9),
         quality=fake_quality(),
+        report_review=fake_report_review(),
     )
     failed = fake_research_state(
         critique=fake_failed_critique(),
@@ -418,12 +429,79 @@ def test_only_a_clean_gate_the_critic_accepted_is_accepted() -> None:
     state = fake_research_state(
         critique=fake_critique(should_continue=False, score=9),
         quality=fake_quality(hard_failures=[]),
+        report_review=fake_report_review(),
         iteration=0,
         max_iterations=3,
     )
 
     assert graph_route(state) == (ROUTE_FINALIZE, "critique_satisfied")
     assert graph_quality_status(state) == QUALITY_STATUS_ACCEPTED
+
+
+def test_a_clean_gate_with_no_semantic_review_is_never_accepted() -> None:
+    """Task 10: critic-only acceptance is not acceptance.
+
+    Every other signal here is a clean acceptance — no hard failure, the Critic
+    scored 9 and stopped asking — and the report still must not be called
+    accepted, because nothing judged its substance. This is the case a missing
+    semantic review has to be, and it is why acceptance reads the review
+    directly rather than only the route.
+    """
+    state = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(hard_failures=[]),
+        iteration=0,
+        max_iterations=3,
+    )
+
+    assert state.report_review is None
+    assert graph_route(state) == (ROUTE_FINALIZE, "critique_satisfied")
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+
+
+def test_a_scored_review_below_the_threshold_buys_one_bounded_pass() -> None:
+    """A refusing review consumes the refinement opportunity, and no more.
+
+    The review's defect is a real finding with a node to run, so it routes like
+    a Critic gap while budget remains. At the ceiling it publishes `incomplete`
+    with `partial` quality — never `completed`, which would claim the gates
+    cleared a report the reviewer refused.
+    """
+    review = fake_rejected_report_review(repair_action="acquire")
+    with_budget = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(),
+        report_review=review,
+        iteration=0,
+        max_iterations=3,
+    )
+    spent = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(),
+        report_review=review,
+        iteration=3,
+        max_iterations=3,
+    )
+
+    assert graph_route(with_budget) == (ROUTE_REFINE, "semantic_review_gap")
+    assert graph_route(spent) == (ROUTE_FINALIZE, "semantic_review_gap")
+    assert graph_status(spent) == "incomplete"
+    assert graph_quality_status(spent) == QUALITY_STATUS_PARTIAL
+
+
+def test_an_incomplete_review_never_buys_a_pass_and_never_accepts() -> None:
+    """No judgement is not a rejection and not an acceptance."""
+    review = fake_report_review(status="incomplete")
+    state = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(),
+        report_review=review,
+        iteration=0,
+        max_iterations=3,
+    )
+
+    assert graph_route(state) == (ROUTE_FINALIZE, "critique_satisfied")
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
 
 
 def test_a_run_no_quality_pass_judged_is_never_accepted() -> None:

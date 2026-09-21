@@ -35,6 +35,7 @@ from tests.graph_fakes import (
     fake_research_agents,
     fake_research_state,
     fake_scored_source,
+    fake_synthesis_update,
     progressing_fact_checker,
 )
 from tests.test_observability_tracker import RecordingTraceFactory
@@ -200,7 +201,14 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace() -> None
                 {"critique": fake_critique(should_continue=True, score=4)},
                 {"critique": fake_critique(should_continue=False, score=9)},
             ],
-        )
+        ),
+        # A Synthesizer that composes the typed composition production always
+        # composes. Since Task 10 a report with no statement records behind it
+        # cannot be reviewed, and a run whose report cannot be reviewed records
+        # that fact instead of reporting a clean trace.
+        synthesizer=FakeAgent(
+            "synthesizer", [], update_factory=fake_synthesis_update
+        ),
     )
 
     run = await run_research_graph(

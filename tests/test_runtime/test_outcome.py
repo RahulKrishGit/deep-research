@@ -27,6 +27,7 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchState,
 )
+from tests.graph_fakes import fake_report_review
 
 QUESTION = "How mature is quantum error correction?"
 
@@ -405,7 +406,9 @@ def test_quality_is_the_typed_snapshot_from_state() -> None:
 
 def test_quality_status_names_the_terminal_verdict() -> None:
     accepted = base_state(
-        quality=quality_snapshot(), critique=accepted_critique()
+        quality=quality_snapshot(),
+        critique=accepted_critique(),
+        report_review=fake_report_review(),
     )
 
     assert outcome_of(accepted).quality_status == QUALITY_STATUS_ACCEPTED
@@ -413,24 +416,37 @@ def test_quality_status_names_the_terminal_verdict() -> None:
 
 
 def test_accepted_is_true_only_for_an_accepted_terminal_status() -> None:
-    """Acceptance needs both a snapshot and the critic's satisfied route."""
+    """Acceptance needs a snapshot, the critic's satisfied route, and a review.
+
+    Task 10 adds the third: the Critic's own acceptance and a clean gate are
+    not a judgement of the report's substance, so a state that carries both and
+    no scored review is `partial` — the case this test's last line now pins.
+    """
     accepted = base_state(
-        quality=quality_snapshot(), critique=accepted_critique()
+        quality=quality_snapshot(),
+        critique=accepted_critique(),
+        report_review=fake_report_review(),
     )
     budget_spent = base_state(
         quality=quality_snapshot(),
         critique=accepted_critique(),
+        report_review=fake_report_review(),
         iteration=1,
         max_iterations=1,
     )
     hard_failure = base_state(
         quality=quality_snapshot(hard_failures=["duplicate_claims"]),
         critique=accepted_critique(),
+        report_review=fake_report_review(),
+    )
+    unreviewed = base_state(
+        quality=quality_snapshot(), critique=accepted_critique()
     )
 
     assert outcome_of(accepted).accepted is True
     assert outcome_of(budget_spent).accepted is False
     assert outcome_of(hard_failure).accepted is False
+    assert outcome_of(unreviewed).quality_status == QUALITY_STATUS_PARTIAL
     assert outcome_of(base_state()).accepted is False
 
 

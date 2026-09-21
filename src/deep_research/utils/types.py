@@ -956,8 +956,64 @@ class ClaimCluster(ContractModel):
     """
 
 
+class SubstantiveCoverage(ContractModel):
+    """Section 2.3 coverage, read from answers rather than from claim counts.
+
+    A target is answered only when a reader statement names it, asserts
+    something in a substantive mode, fills every required dimension, and rests
+    on evidence that carries the target's own support policy — that is
+    ``target_is_answered``, applied here to every counted required target in
+    the plan. A topic is covered only when it has counted obligations and every
+    one of them is answered: a topic that owes nothing has demonstrated
+    nothing, which is exactly the legacy plan that has to be replanned, and
+    calling it covered is the vacuous 100% this contract exists to prevent.
+
+    Target and topic metrics are reported apart because they fail differently:
+    nine tenths of the targets can be answered while one critical topic is
+    untouched, and a single blended ratio hides exactly that.
+    """
+
+    planned_topics: int = Field(ge=0)
+    covered_topics: int = Field(ge=0)
+    topic_ratio: UnitScore
+    planned_targets: int = Field(ge=0)
+    required_targets: int = Field(ge=0)
+    answered_targets: int = Field(ge=0)
+    critical_targets: int = Field(ge=0)
+    answered_critical_targets: int = Field(ge=0)
+    unanswered_required_target_ids: list[str] = Field(default_factory=list)
+    unanswered_critical_target_ids: list[str] = Field(default_factory=list)
+    accounted_target_ids: list[str] = Field(default_factory=list)
+    """Unanswered required targets with a recorded reason on the audit trail."""
+    unaccounted_target_ids: list[str] = Field(default_factory=list)
+    """Unanswered required targets with no recorded reason at all."""
+    initial_target_ids: list[str] = Field(default_factory=list)
+    expanded_target_ids: list[str] = Field(default_factory=list)
+    """The frozen inventory, kept so a denominator can only ever grow."""
+
+
 class ReportQualitySnapshot(ContractModel):
-    """Deterministic integrity and coverage metrics for one report pass."""
+    """Deterministic integrity and coverage metrics for one report pass.
+
+    Every field here is a *structural* diagnostic: a count, a ratio, or an
+    enumerated hard-failure name derived from typed state and the composition.
+    Nothing in this model is a reader-quality judgement, which is why the
+    terminal semantic review is stored on its own (``semantic_review_status``,
+    ``semantic_review_score``) rather than folded into ``hard_failures`` or
+    into the Critic's own score: a structural clean bill of health and a
+    semantic acceptance are two different claims, and the reviewed baseline
+    showed a report can hold the first while failing the second.
+
+    ``coverage_ratio`` and ``covered_topics`` are the *claimed* reading — the
+    share of planned topics some checked claim recorded consuming. They are
+    kept because historical artifacts carry them, and they are never the
+    acceptance metric: a claim that consumed a topic id is not an answered
+    obligation. ``substantive_topic_ratio`` and ``answered_targets`` are that
+    stricter reading (Section 2.3), computed from the target-answer
+    assessments plus local evidence-policy validation, over the same
+    denominator — the union of the initial and expanded target inventories is
+    read from the plan, and no missing record shrinks it.
+    """
 
     coverage_ratio: UnitScore
     planned_topics: int = Field(ge=0)
@@ -973,6 +1029,29 @@ class ReportQualitySnapshot(ContractModel):
     duplicate_source_rows: int = Field(ge=0)
     uncited_settled_points: int = Field(ge=0)
     hard_failures: list[str] = Field(default_factory=list)
+    # --- Task 10: the substantive reading of the same denominator -----------
+    substantive_topic_ratio: UnitScore = 0.0
+    """Topics whose every counted required target is answered, over the plan."""
+    planned_targets: int = Field(default=0, ge=0)
+    required_targets: int = Field(default=0, ge=0)
+    answered_targets: int = Field(default=0, ge=0)
+    critical_targets: int = Field(default=0, ge=0)
+    unanswered_critical_target_ids: list[str] = Field(default_factory=list)
+    unaccounted_target_ids: list[str] = Field(default_factory=list)
+    """Required targets with neither an answer nor a recorded reason."""
+    # --- Task 10: the semantic judgement, kept apart from the two above -----
+    semantic_review_status: str = ""
+    """``scored`` / ``incomplete`` / ``provider_failed``, or ``""`` for none.
+
+    Deliberately not a ``hard_failure``: a review that could not be made is an
+    absent judgement, and the hard-failure list is a closed set of defects
+    found in the report. Deliberately not the Critic's ``review_status``
+    either — that one is a terminal signal on a different contract.
+    """
+    semantic_review_score: float | None = None
+    """The review's mean over the seven dimensions, or ``None`` for no score."""
+    semantic_review_fingerprint: str = ""
+    """The exact packet fingerprint the stored judgement was made over."""
 
 
 # --- Task 8: the Critic's typed defect vocabulary ---------------------------
@@ -1259,6 +1338,237 @@ class Critique(ContractModel):
         )
 
         return normalize_gap_drafts(values)
+
+
+# --- Task 10: the terminal semantic report review --------------------------
+#
+# The seven reader-facing dimensions keep the names the whole-report campaign
+# already used, so a historical artifact and a semantic review speak the same
+# vocabulary. What changed is what each one *means*: it is a judgement about
+# the report's substance, made by a reviewer that reads the report and the
+# evidence behind it, rather than a formula over counts.
+REVIEW_DIMENSIONS: frozenset[str] = frozenset(
+    {
+        "completeness",
+        "prioritization",
+        "evidence_quality",
+        "attribution",
+        "uncertainty",
+        "readability",
+        "actionability",
+    }
+)
+"""Exactly the seven dimensions a semantic review scores, and no others."""
+
+SEMANTIC_REVIEW_MEAN: float = 0.80
+"""The mean over ``REVIEW_DIMENSIONS`` a review must reach to pass."""
+
+REVIEW_RUBRIC_VERSION = 2
+"""Which semantic rubric a review was made under.
+
+Version 1 is the structural formula (``judge_whole_report``); version 2 is the
+seven semantic definitions. The version travels on the record so a historical
+diagnostic and a semantic judgement can never be compared as if they were the
+same measurement.
+"""
+
+# How one review ended. Deliberately a *third* vocabulary, distinct from
+# ``CritiqueReviewStatus`` (the Critic's ``reviewed``/``failed``) and from
+# ``RepairStopReason`` (why the machine stopped): a semantic review that could
+# not be completed, a Critic that never produced a review, and a repair loop
+# that ran out of leads are three different facts, and collapsing any two of
+# them is how "no judgement" starts reading as a verdict.
+ReportReviewStatus: TypeAlias = Literal["scored", "incomplete", "provider_failed"]
+REPORT_REVIEW_STATUSES: tuple[ReportReviewStatus, ...] = (
+    "scored",
+    "incomplete",
+    "provider_failed",
+)
+
+# What one review concluded about one reader statement. ``supported`` and
+# ``attributed`` are the two ways a statement may stand on its evidence
+# (independently corroborated, or primary-source attribution); ``inference`` is
+# a recorded derivation; ``unsupported`` is a statement the evidence does not
+# carry; and ``returned_to_fact_checker`` is the disposition for prose the
+# reviewer cannot settle from the evidence it was shown — the vocabulary Task
+# 7's cell attestation needed and could not reach offline.
+StatementReviewDisposition: TypeAlias = Literal[
+    "supported",
+    "attributed",
+    "inference",
+    "unsupported",
+    "returned_to_fact_checker",
+    "not_reviewed",
+]
+STATEMENT_REVIEW_DISPOSITIONS: tuple[StatementReviewDisposition, ...] = (
+    "supported",
+    "attributed",
+    "inference",
+    "unsupported",
+    "returned_to_fact_checker",
+    "not_reviewed",
+)
+
+UNREVIEWED_STATEMENT_DISPOSITION: StatementReviewDisposition = "not_reviewed"
+"""The disposition of a statement the review never reached.
+
+The honest default, and never a pass: a scored review may not carry one, so
+missing coverage cannot be recorded as a clean result.
+"""
+
+UNSETTLED_STATEMENT_DISPOSITIONS: frozenset[str] = frozenset(
+    {"unsupported", "returned_to_fact_checker", UNREVIEWED_STATEMENT_DISPOSITION}
+)
+"""Dispositions that mean "this statement is not established as written".
+
+``not_reviewed`` is included because an unexamined statement is not an
+accepted one: both must keep the review from passing, and both must be
+representable as a material defect so the routing layer can see them.
+"""
+
+
+class ReportReview(ContractModel):
+    """One complete, source-bound judgement of the reader report.
+
+    The terminal counterpart of the Critic's review, and deliberately its own
+    contract: the Critic judges whether more research is worth buying from the
+    packet it was handed, while this judges whether the *report* answers the
+    question on the evidence the run actually holds. Both can be present, and
+    they disagree often enough that merging them would lose the disagreement.
+
+    ``status`` is this review's own three-valued outcome. A ``scored`` review
+    is one that saw the whole report, covered every reader statement and every
+    piece of evidence it was given, and returned exactly the seven dimensions
+    over a fingerprint that still matches the packet: the model validators
+    below refuse the combination that would let a partial review claim a
+    score. ``incomplete`` and ``provider_failed`` carry no score at all —
+    ``dimensions`` stays empty — because a missing judgement must not be
+    averageable into an acceptance.
+
+    ``per_statement_dispositions`` is where a statement the reviewer could not
+    settle is recorded, and it is load-bearing: a scored review whose
+    dispositions leave a statement unsupported *must* carry a material defect
+    naming it (``derived_defect_statement_ids`` says which defects this project
+    derived from a disposition rather than the reviewer returning). That is
+    what keeps one narrow judgement — "this sentence is not in the source" —
+    from being recorded as an observation while the review still passes.
+    """
+
+    status: ReportReviewStatus = "incomplete"
+    dimensions: dict[str, UnitScore] = Field(default_factory=dict)
+    defects: list[CritiqueGap] = Field(default_factory=list)
+    per_statement_dispositions: dict[str, StatementReviewDisposition] = Field(
+        default_factory=dict
+    )
+    reviewed_statement_ids: list[str] = Field(default_factory=list)
+    unreviewed_statement_ids: list[str] = Field(default_factory=list)
+    reviewed_evidence_ids: list[str] = Field(default_factory=list)
+    omitted_evidence_ids: list[str] = Field(default_factory=list)
+    reviewed_batch_ids: list[str] = Field(default_factory=list)
+    expected_batch_ids: list[str] = Field(default_factory=list)
+    reviewed_target_ids: list[str] = Field(default_factory=list)
+    derived_defect_statement_ids: list[str] = Field(default_factory=list)
+    """Statements whose material defect this project derived from a disposition."""
+    input_fingerprint: str = ""
+    composition_fingerprint: str = ""
+    """The semantic fingerprint of the composition this judgement was made over.
+
+    Read by ``merge_research_state``: a composition replacement invalidates the
+    stored review unless this still matches the incoming composition, so a
+    judgement can never be carried over to a report whose content, references,
+    or targets changed. It is not the same value as ``input_fingerprint`` —
+    that one covers the packet the reviewer actually read, including the
+    state-level evidence and coverage the composition does not carry.
+    """
+    rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
+    rationale: str = ""
+
+    @property
+    def coverage_complete(self) -> bool:
+        """True when every statement and every batch the packet carried was read."""
+        if self.unreviewed_statement_ids:
+            return False
+        return not set(self.expected_batch_ids).difference(self.reviewed_batch_ids)
+
+    @property
+    def material_defects(self) -> list[CritiqueGap]:
+        """The defects that must be closed before the report may be accepted."""
+        return [gap for gap in self.defects if gap.severity in GAP_MATERIAL_SEVERITIES]
+
+    @property
+    def unsettled_statement_ids(self) -> list[str]:
+        """Statements this review did not establish as written, in id order."""
+        return sorted(
+            statement_id
+            for statement_id, disposition in self.per_statement_dispositions.items()
+            if disposition in UNSETTLED_STATEMENT_DISPOSITIONS
+        )
+
+    @property
+    def mean_score(self) -> float | None:
+        """The mean over the seven dimensions, or ``None`` without a full set."""
+        if set(self.dimensions) != REVIEW_DIMENSIONS:
+            return None
+        return sum(self.dimensions.values()) / len(REVIEW_DIMENSIONS)
+
+    @model_validator(mode="after")
+    def validate_scored_review(self) -> "ReportReview":
+        """A scored review must actually be one.
+
+        Stated on the type rather than only in the acceptance helper, because
+        the record is what persists: a review that says ``scored`` while one
+        statement went unread, a dimension is missing, or no fingerprint is
+        named would be read by every later consumer as a complete judgement.
+        ``semantic_review_passes`` still re-checks all of it — the type keeps
+        the record honest, and the helper keeps the *decision* from trusting
+        the record.
+        """
+        if self.status != "scored":
+            if self.dimensions:
+                raise ValueError(
+                    "a review that is not scored carries no dimension scores"
+                )
+            return self
+        missing = REVIEW_DIMENSIONS.difference(self.dimensions)
+        if missing or set(self.dimensions).difference(REVIEW_DIMENSIONS):
+            raise ValueError(
+                "a scored review scores exactly the seven review dimensions"
+            )
+        if not self.input_fingerprint.strip():
+            raise ValueError(
+                "a scored review must name the packet fingerprint it judged"
+            )
+        if self.unreviewed_statement_ids:
+            raise ValueError(
+                "a scored review must cover every reader statement it was given"
+            )
+        undispositioned = sorted(
+            statement_id
+            for statement_id in self.reviewed_statement_ids
+            if statement_id not in self.per_statement_dispositions
+        )
+        if undispositioned:
+            # Reading a statement is not judging it. Without this the reply's
+            # own account of what it read would be the only record, and a
+            # review could claim a complete per-statement reading while
+            # recording no judgement of any statement it read.
+            raise ValueError(
+                "a scored review must record a disposition for every statement "
+                "it reviewed: " + ", ".join(undispositioned)
+            )
+        unscoped = sorted(
+            statement_id
+            for statement_id in self.unsettled_statement_ids
+            if not any(
+                statement_id in gap.statement_ids for gap in self.material_defects
+            )
+        )
+        if unscoped:
+            raise ValueError(
+                "an unsettled statement must be named by a material defect: "
+                + ", ".join(unscoped)
+            )
+        return self
 
 
 class MemorySnapshot(ContractModel):
@@ -2010,17 +2320,21 @@ REPAIR_STOP_REASONS: tuple[RepairStopReason, ...] = (
 )
 
 RefinementOrigin: TypeAlias = Literal[
-    "critic_gap", "unanswered_target", "returned_assertion"
+    "critic_gap", "review_defect", "unanswered_target", "returned_assertion"
 ]
 """Where one repair job came from.
 
 ``critic_gap`` is a defect the Critic named, routed exactly as it typed it.
-``unanswered_target`` is a mechanically unmet planned obligation: a required
-target whose reader statement does not satisfy it yet. The second origin is
-what makes "the Critic said nothing" unable to suppress a required target.
-``returned_assertion`` is a factual assertion the Synthesizer detected and sent
-back (Task 7's ``ReportComposition.returned_to_fact_checker``); Task 9 owns
-routing it to adjudication rather than letting it re-enter the report.
+``review_defect`` is a defect the terminal semantic review named: the same
+contract and the same routing, from a reviewer whose input is the report and
+its evidence rather than the packet the Critic weighed, so the two stay apart
+on the record even when they route identically. ``unanswered_target`` is a
+mechanically unmet planned obligation: a required target whose reader
+statement does not satisfy it yet. The second origin is what makes "the Critic
+said nothing" unable to suppress a required target. ``returned_assertion`` is a
+factual assertion the Synthesizer detected and sent back (Task 7's
+``ReportComposition.returned_to_fact_checker``); Task 9 owns routing it to
+adjudication rather than letting it re-enter the report.
 """
 
 
@@ -2255,6 +2569,16 @@ class ResearchState(ContractModel):
     cannot prove its reads. New runs stamp ``QUALITY_CONTRACT_VERSION``.
     """
     critique: Critique | None = None
+    report_review: ReportReview | None = None
+    """The terminal semantic judgement of ``report``, or ``None``.
+
+    Replaced only by a review of the same semantic input fingerprint: a
+    composition whose content, references, or targets changed is a different
+    report, and a judgement of the old one cannot vouch for it. The quality
+    snapshot's ``semantic_review_*`` fields are filled from this record, so a
+    consumer that reads only the snapshot still sees which judgement stood —
+    and sees that there was none.
+    """
     refinement_targets: list[RefinementTarget] = Field(default_factory=list)
     """The repair jobs the graph routed for the pass it is about to run.
 
@@ -2312,6 +2636,7 @@ class ResearchStateUpdate(TypedDict, total=False):
     acquisition_state_by_target: dict[str, AcquisitionState]
     quality_contract_version: str
     critique: Critique | None
+    report_review: ReportReview | None
     refinement_targets: list[RefinementTarget]
     progress_history: list[ResearchProgress]
     repair_stop_reason: RepairStopReason | None
@@ -2685,6 +3010,27 @@ def merge_research_state(
             payload[field_name] = deepcopy(merged)
         else:
             payload[field_name] = deepcopy(value)
+
+    if "composition" in update and "report_review" not in update:
+        # Task 10: a judgement belongs to the report it judged. Replacing the
+        # composition drops the stored review unless the incoming composition
+        # still carries the same semantic fingerprint — the check is on
+        # content, references, and targets, never on the generated quality
+        # badge the terminal finalizer rewrites on the way out. A review is
+        # *replaced* by whoever runs one next, and an absent review is never an
+        # acceptance: it is what makes the terminal gates report `partial`.
+        stored = payload.get("report_review")
+        if stored is not None:
+            incoming = update["composition"]
+            if isinstance(incoming, dict):
+                incoming = ReportComposition.model_validate(incoming)
+            from deep_research.agents.report_review import (  # noqa: PLC0415
+                composition_semantic_fingerprint,
+            )
+
+            fingerprint = composition_semantic_fingerprint(incoming)
+            if not fingerprint or stored.get("composition_fingerprint") != fingerprint:
+                payload["report_review"] = None
 
     # The macro-iteration ceiling plus the initial checkpoint: one snapshot per
     # pass, and the oldest are dropped so a long run's checkpoint stays bounded

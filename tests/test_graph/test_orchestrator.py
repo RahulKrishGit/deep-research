@@ -32,6 +32,7 @@ from deep_research.graph.state import (
     FINALIZE_NODE,
     NODE_NAMES,
     REFINE_NODE,
+    REPORT_REVIEW_NODE,
     graph_quality_status,
     graph_route,
     graph_status,
@@ -333,9 +334,12 @@ def test_the_agent_node_order_matches_the_designed_sequence() -> None:
     )
     # Order matters, not just membership: the graph's real edges read
     # ``AGENT_NODE_ORDER``, so it must be exactly the head of ``NODE_NAMES``.
+    # Task 10 puts the terminal semantic review between the Critic and the
+    # refinement hop: the report has to be judged before the route is chosen.
     assert NODE_NAMES == (
         *AGENT_NODE_ORDER,
         CRITIC_NODE,
+        REPORT_REVIEW_NODE,
         REFINE_NODE,
         FINALIZE_NODE,
     )
@@ -350,13 +354,20 @@ async def test_the_happy_path_runs_every_agent_once_in_order() -> None:
     assert _nodes_visited(state) == [
         *AGENT_NODE_ORDER,
         CRITIC_NODE,
+        REPORT_REVIEW_NODE,
         FINALIZE_NODE,
     ]
     assert state.report == "# Research report: pass 1"
     assert state.iteration == 0
     assert _route_reasons(state) == ["critique_satisfied"]
     assert graph_status(state) == "completed"
-    assert not state.errors
+    # The report this double composes carries no typed composition, so there is
+    # nothing a review can be tied to: the run publishes it, and records that
+    # nothing judged it rather than calling it reviewed.
+    assert [error.error_type for error in state.errors] == [
+        "graph_report_review_unavailable"
+    ]
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
 
 
 @pytest.mark.asyncio
@@ -387,11 +398,13 @@ async def test_the_critic_can_send_the_graph_back_to_the_researcher() -> None:
     assert _nodes_visited(state) == [
         *AGENT_NODE_ORDER,
         CRITIC_NODE,
+        REPORT_REVIEW_NODE,
         "researcher",
         "source_evaluator",
         "fact_checker",
         "synthesizer",
         CRITIC_NODE,
+        REPORT_REVIEW_NODE,
         FINALIZE_NODE,
     ]
     assert len(agents.planner.calls) == 1
@@ -575,7 +588,7 @@ async def test_an_agent_failure_stops_the_run_and_keeps_what_was_collected(
         for event in state.events
         if event.event_type == "graph.node.skipped"
     ]
-    assert skipped == ["synthesizer", "critic"]
+    assert skipped == ["synthesizer", "critic", "report_review"]
 
 
 @pytest.mark.asyncio
@@ -596,7 +609,11 @@ async def test_a_recoverable_agent_error_never_stops_the_graph() -> None:
 
     assert graph_status(state) == "completed"
     assert [error.error_type for error in state.errors] == [
-        "researcher_sub_topic_without_findings"
+        "researcher_sub_topic_without_findings",
+        # The same pass composed no typed composition, so the terminal review
+        # recorded that nothing judged it. That is a recoverable assessment
+        # failure, not a graph failure — the run still completes.
+        "graph_report_review_unavailable",
     ]
 
 
@@ -974,6 +991,16 @@ async def test_an_accepted_run_publishes_both_artifacts_and_one_memory_entry(
     assert published[0].metadata["document_writes"] == 2
     assert publisher.memory_writes == 1
     assert "**Quality status:** accepted" in (state.report or "")
+    # The judgement that made it accepted must still be on the state. A review
+    # the merge dropped would leave the published badge reading `accepted`
+    # beside a run whose own status computes `partial` — and nothing asserted
+    # this, so a double that never carried the composition fingerprint could
+    # silently discard every review the graph recorded.
+    from deep_research.agents.report_review import semantic_review_passes
+
+    assert state.report_review is not None
+    assert state.report_review.status == "scored"
+    assert semantic_review_passes(state.report_review)
 
 
 # --- resolving the one writer -------------------------------------------------
@@ -1046,7 +1073,8 @@ async def test_an_unwired_graph_records_that_nothing_was_published() -> None:
     state = await _run(agents)
 
     assert [error.error_type for error in state.errors] == [
-        "graph_publication_unavailable"
+        "graph_report_review_unavailable",
+        "graph_publication_unavailable",
     ]
     assert state.errors[0].recoverable is True
     assert state.report_path is None

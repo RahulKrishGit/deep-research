@@ -178,6 +178,18 @@ PRODUCTION_AGENT_NAMES = (
     "critic",
 )
 
+SERVICE_ROLE_NAMES = ("report_judge",)
+"""The call roles production runs that are not agents.
+
+A service role makes one kind of request and holds no loop, no toolset, and no
+conversation: the report judge reads a finished report against its evidence.
+It resolves through the same ``llm.model_overrides`` table as the six agents,
+so it can be configured independently, and it is deliberately *not* added to
+``PRODUCTION_AGENT_NAMES`` — a role in that tuple would be offered a tool
+budget it cannot spend and counted by every consumer that means "the agents
+that research".
+"""
+
 
 class AgentRuntimeConfig(BaseModel):
     """Bounds every ReAct agent runs under.
@@ -264,6 +276,14 @@ class AgentRuntimeConfig(BaseModel):
     claim_batches_per_pass: int = Field(default=6, ge=1)
     planner_final_max_tokens: int = Field(default=32768, ge=1)
     critic_review_max_tokens: int = Field(default=32768, ge=1)
+    report_review_max_tokens: int = Field(default=32768, ge=1)
+    """Operation-specific output budget for the report judge's one request.
+
+    One reply carries the seven dimension scores, a disposition for every
+    reader statement, and the typed defects found, so it is the same size class
+    as the Critic's review — which is why it starts at the same generous value
+    rather than at the global cap the Critic's own review once failed under.
+    """
     judge_max_tokens: int = Field(default=32768, ge=1)
     react_decision_max_tokens: int = Field(default=32768, ge=1)
 
@@ -499,6 +519,10 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_CRITIC_REVIEW_MAX_TOKENS": (
         "agents",
         "critic_review_max_tokens",
+    ),
+    "AGENTS_REPORT_REVIEW_MAX_TOKENS": (
+        "agents",
+        "report_review_max_tokens",
     ),
     "AGENTS_JUDGE_MAX_TOKENS": (
         "agents",

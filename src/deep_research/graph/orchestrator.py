@@ -8,15 +8,18 @@ wiring and the rules are testable without compiling anything.
 Graph shape:
 
     START -> planner -> researcher -> source_evaluator -> fact_checker
-          -> synthesizer -> critic -> {refine -> researcher
-                                     | finalize_report -> END}
+          -> synthesizer -> critic -> report_review
+          -> {refine -> researcher | finalize_report -> END}
 
-``refine`` is the hop that carries the macro-iteration increment. It exists
-because a LangGraph conditional edge chooses a destination but cannot write
-state, and the increment has to happen somewhere both the graph and a test
-can see. ``finalize_report`` is the run's only writer: it publishes the two
-composed artifacts once, at the terminal node, and is the reason the graph
-has three destinations after the Critic rather than two.
+``report_review`` is the terminal semantic review: it judges the candidate the
+Critic just read, and it runs before the route because a review that refuses
+the report is a defect with somewhere to go. ``refine`` is the hop that carries
+the macro-iteration increment. It exists because a LangGraph conditional edge
+chooses a destination but cannot write state, and the increment has to happen
+somewhere both the graph and a test can see. ``finalize_report`` is the run's
+only writer: it publishes the two composed artifacts once, at the terminal
+node, and is the reason the graph has three destinations after the review
+rather than two.
 """
 
 from __future__ import annotations
@@ -35,11 +38,13 @@ from deep_research.graph.events import (
 )
 from deep_research.graph.nodes import (
     ReportPublisher,
+    ReportReviewerLike,
     ResearchAgent,
     agent_node,
     critic_node,
     finalize_report_node,
     refine_node,
+    report_review_node,
     route_after_critic,
     route_after_refine,
     synthesizer_node,
@@ -52,6 +57,7 @@ from deep_research.graph.state import (
     NODE_NAMES,
     PLANNER_NODE,
     REFINE_NODE,
+    REPORT_REVIEW_NODE,
     RESEARCHER_NODE,
     ROUTE_END,
     ROUTE_FINALIZE,
@@ -75,25 +81,33 @@ from deep_research.utils.types import (
 )
 
 # The five agent nodes that run before the Critic, in order. The Critic, the
-# refinement hop, and the terminal finalizer are named separately because they
-# are wired by different calls: one conditional edge, one plain edge back, and
-# one plain edge to END. Derived from ``NODE_NAMES`` so the execution order
-# lives in exactly one place.
+# terminal review, the refinement hop, and the terminal finalizer are named
+# separately because they are wired by different calls: one extra node, one
+# conditional edge, one plain edge back, and one plain edge to END. Derived
+# from ``NODE_NAMES`` so the execution order lives in exactly one place.
 AGENT_NODE_ORDER = NODE_NAMES[:5]
 
 
 @dataclass(frozen=True)
 class ResearchAgents:
-    """The six agents one research graph runs, plus its one writer.
+    """The six agents one research graph runs, plus its reviewer and writer.
 
     A dataclass rather than a mapping so ``build_research_graph`` has a
-    typed six-field signature: forgetting the Fact Checker is a
-    ``TypeError`` at construction, not a ``KeyError`` deep inside assembly.
+    typed signature: forgetting the Fact Checker is a ``TypeError`` at
+    construction, not a ``KeyError`` deep inside assembly.
 
     ``publisher`` is the graph's terminal writer. Left ``None``, the
     Synthesizer is asked instead (see ``terminal_publisher``); a graph whose
     Synthesizer cannot write records that nothing was published rather than
     dropping the artifacts silently.
+
+    ``report_reviewer`` is the terminal semantic reviewer, and it is the one
+    collaborator whose absence is *recorded* rather than substituted: a graph
+    without one still runs and still publishes, and the review node writes an
+    explicit ``incomplete`` judgement with a recoverable error. There is no
+    fallback that would let an unreviewed report be accepted, because a silent
+    fallback to critic-only acceptance is the defect this wiring exists to
+    remove.
     """
 
     planner: ResearchAgent
@@ -103,6 +117,7 @@ class ResearchAgents:
     synthesizer: ResearchAgent
     critic: ResearchAgent
     publisher: ReportPublisher | None = None
+    report_reviewer: ReportReviewerLike | None = None
 
 
 def terminal_publisher(agents: ResearchAgents) -> ReportPublisher | None:
@@ -139,6 +154,9 @@ def build_research_graph(agents: ResearchAgents) -> StateGraph:
     )
     builder.add_node(SYNTHESIZER_NODE, synthesizer_node(agents.synthesizer))
     builder.add_node(CRITIC_NODE, critic_node(agents.critic, node_name=CRITIC_NODE))
+    builder.add_node(
+        REPORT_REVIEW_NODE, report_review_node(agents.report_reviewer)
+    )
     builder.add_node(REFINE_NODE, refine_node)
     builder.add_node(
         FINALIZE_NODE, finalize_report_node(terminal_publisher(agents))
@@ -149,8 +167,12 @@ def build_research_graph(agents: ResearchAgents) -> StateGraph:
         AGENT_NODE_ORDER, (*AGENT_NODE_ORDER[1:], CRITIC_NODE), strict=True
     ):
         builder.add_edge(source, destination)
+    # The Critic's review is written before the terminal review reads the same
+    # candidate; the route is decided after the terminal review, because a
+    # semantic refusal is a defect the loop can act on.
+    builder.add_edge(CRITIC_NODE, REPORT_REVIEW_NODE)
     builder.add_conditional_edges(
-        CRITIC_NODE,
+        REPORT_REVIEW_NODE,
         route_after_critic,
         {
             ROUTE_REFINE: REFINE_NODE,

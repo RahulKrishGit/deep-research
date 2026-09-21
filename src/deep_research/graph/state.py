@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from typing import TypedDict
 
 from pydantic import JsonValue
 
+from deep_research.agents.report_review import semantic_review_passes
 from deep_research.utils.types import (
     GAP_MATERIAL_SEVERITIES,
     QUALITY_CONTRACT_VERSION,
@@ -33,8 +35,10 @@ from deep_research.utils.types import (
     QUALITY_STATUS_PARTIAL,
     AcquisitionState,
     Critique,
+    CritiqueGap,
     MemorySnapshot,
     RepairStopReason,
+    ReportReview,
     ResearchProgress,
     ResearchState,
     counted_evidence_targets,
@@ -51,12 +55,15 @@ SOURCE_EVALUATOR_NODE = "source_evaluator"
 FACT_CHECKER_NODE = "fact_checker"
 SYNTHESIZER_NODE = "synthesizer"
 CRITIC_NODE = "critic"
+REPORT_REVIEW_NODE = "report_review"
 REFINE_NODE = "refine"
 FINALIZE_NODE = "finalize_report"
 
-# Execution order, with the refinement hop and the terminal publication step
-# last. Node names deliberately equal agent names so a LangSmith trace reads
-# the same as this tuple; ``finalize_report`` is the one node with no agent.
+# Execution order, with the terminal semantic review, the refinement hop, and
+# the terminal publication step last. Node names deliberately equal agent names
+# so a LangSmith trace reads the same as this tuple; ``report_review`` is the
+# graph's own reviewer rather than one of the six agents, and
+# ``finalize_report`` is the one node with no model call at all.
 NODE_NAMES = (
     PLANNER_NODE,
     RESEARCHER_NODE,
@@ -64,6 +71,7 @@ NODE_NAMES = (
     FACT_CHECKER_NODE,
     SYNTHESIZER_NODE,
     CRITIC_NODE,
+    REPORT_REVIEW_NODE,
     REFINE_NODE,
     FINALIZE_NODE,
 )
@@ -108,6 +116,11 @@ GRAPH_ROUTES = {
     "missing_critique": (
         "No critique was recorded, so no refinement can be justified."
     ),
+    "semantic_review_gap": (
+        "The terminal semantic review did not accept the report: it found a "
+        "material defect, or its mean over the seven dimensions is below the "
+        "acceptance threshold."
+    ),
     "halted": "The run stopped on a non-recoverable error.",
 }
 
@@ -120,6 +133,13 @@ _STATUS_BY_ROUTE_REASON = {
     "missing_critique": "incomplete",
     "refinement_requested": "incomplete",
     "quality_gate_failed": "incomplete",
+    # A semantic review that judged the report and did not accept it is a
+    # verdict about the answer, and a report the gates would publish as
+    # "completed" is not one. The run publishes it honestly as incomplete with
+    # `partial` quality — never as `failed`, which belongs to a run that could
+    # not finish, and never as `completed`, which would claim the gates cleared
+    # a report the reviewer refused.
+    "semantic_review_gap": "incomplete",
     # A repair stop is a statement about the machine, never about the report:
     # the report was reviewed, and the loop stopped because repeating it would
     # change nothing, because deferred evidence could not fit, because the
@@ -248,6 +268,16 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     ``should_continue`` would publish an unreviewed report as accepted. The
     reason names the real cause and beats the iteration bound, because "the
     budget ran out" would describe a report that was in fact never judged.
+
+    The terminal semantic review is consulted for one thing only, and
+    deliberately: a **scored** review that did not accept the report consumes
+    the refinement opportunity the Critic's silence would otherwise leave
+    unspent, because "the report is not good enough" is a defect with somewhere
+    to go. A review that was never made — missing, incomplete, or failed on the
+    provider — does not buy a pass: it says nothing about the report, and
+    another research cycle would not produce a judgement. It blocks acceptance
+    through ``graph_quality_status`` instead, which is the honest place for
+    "no verdict".
     """
     if is_halted(state):
         return ROUTE_END, "halted"
@@ -256,19 +286,23 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
         return ROUTE_FINALIZE, "missing_critique"
     if critique.review_status == "failed":
         return ROUTE_FINALIZE, "critique_failed"
+    rejected = semantic_review_rejects(state)
     if state.iteration >= state.max_iterations:
-        return ROUTE_FINALIZE, "max_iterations_reached"
+        return (
+            ROUTE_FINALIZE,
+            "semantic_review_gap" if rejected else "max_iterations_reached",
+        )
     stopped = state.repair_stop_reason
     if stopped is not None and stopped != "max_iterations" and _wants_another_pass(
         state, critique
     ):
-        # Another pass is wanted — by the Critic, or by the deterministic gate —
-        # and the last repair loop already established that buying one would
-        # repeat work. The budget is spent on the stall's own terms rather than
-        # on another identical pass, and the reason names which stall it was.
-        # Checked *after* the iteration bound so "the budget ran out" keeps
-        # naming the ceiling, and after a failed review so a review that never
-        # happened is never reported as a stalled repair.
+        # Another pass is wanted — by the Critic, by the deterministic gate, or
+        # by the semantic review — and the last repair loop already established
+        # that buying one would repeat work. The budget is spent on the stall's
+        # own terms rather than on another identical pass, and the reason names
+        # which stall it was. Checked *after* the iteration bound so "the budget
+        # ran out" keeps naming the ceiling, and after a failed review so a
+        # review that never happened is never reported as a stalled repair.
         return ROUTE_FINALIZE, stopped
     if critique.should_continue:
         return ROUTE_REFINE, "refinement_requested"
@@ -276,6 +310,8 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
         # A model score cannot override a deterministic hard failure: while
         # budget remains, the gate sends the report back for another pass.
         return ROUTE_REFINE, "quality_gate_failed"
+    if rejected:
+        return ROUTE_REFINE, "semantic_review_gap"
     return ROUTE_FINALIZE, "critique_satisfied"
 
 
@@ -283,7 +319,25 @@ def _wants_another_pass(state: ResearchState, critique: Critique) -> bool:
     """True when something other than the budget is asking for another pass."""
     if critique.should_continue:
         return True
-    return state.quality is not None and bool(state.quality.hard_failures)
+    if state.quality is not None and bool(state.quality.hard_failures):
+        return True
+    return semantic_review_rejects(state)
+
+
+def semantic_review_rejects(state: ResearchState) -> bool:
+    """True when a *scored* semantic review judged the report and refused it.
+
+    Only a scored review can reject: `incomplete` and `provider_failed` are
+    the absence of a judgement, and treating an absent judgement as a
+    rejection would let a provider outage buy research passes and then report
+    the report as reviewed-and-refused. A missing review is therefore a
+    non-acceptance that routes nowhere, which is what
+    ``graph_quality_status`` exists to express.
+    """
+    review = state.report_review
+    return review is not None and review.status == "scored" and not (
+        semantic_review_passes(review)
+    )
 
 
 def repair_is_terminal(state: ResearchState) -> bool:
@@ -318,12 +372,13 @@ def graph_quality_status(state: ResearchState) -> str:
 
     Read from the same pure decision the router used, so the status a reader
     sees and the edge the graph took cannot disagree. Only a report the gates
-    cleared *and* the Critic accepted is ``accepted``: ``critique_satisfied``
-    is itself reachable only once the gates found no hard failure while budget
-    remained, so a run that exhausted its budget with failures ends
-    ``partial``. A run no quality pass ever judged is ``partial`` too —
-    nothing unjudged may be called accepted, and the finalizer saves no claim
-    to memory for a partial run.
+    cleared *and* the Critic accepted *and* the terminal semantic review scored
+    at or above the threshold is ``accepted``: ``critique_satisfied`` is itself
+    reachable only once the gates found no hard failure while budget remained,
+    so a run that exhausted its budget with failures ends ``partial``. A run no
+    quality pass ever judged is ``partial`` too — nothing unjudged may be
+    called accepted, and the finalizer saves no claim to memory for a partial
+    run.
 
     A failed review is the case this distinction exists for: its score is the
     floor and its gap list is empty, so every other signal it carries reads
@@ -331,12 +386,21 @@ def graph_quality_status(state: ResearchState) -> str:
     ``critique_satisfied``, so an unreviewed report is ``partial`` — visible as
     unpublished-to-memory and not-accepted rather than indistinguishable from a
     report the Critic actually cleared.
+
+    Task 10 adds the second reviewer, and it is checked here rather than only
+    in the route: a report whose semantic review is missing, incomplete, or
+    provider-failed is *never* accepted, and that is true no matter which edge
+    the graph took. Missing reviewer support must not silently revert strict
+    acceptance to critic-only, and the only way to guarantee that is to make
+    acceptance a property of the review rather than of the route.
     """
     if state.quality is None:
         return QUALITY_STATUS_PARTIAL
+    if graph_route(state)[1] != "critique_satisfied":
+        return QUALITY_STATUS_PARTIAL
     return (
         QUALITY_STATUS_ACCEPTED
-        if graph_route(state)[1] == "critique_satisfied"
+        if semantic_review_passes(state.report_review)
         else QUALITY_STATUS_PARTIAL
     )
 
@@ -344,7 +408,7 @@ def graph_quality_status(state: ResearchState) -> str:
 # --- Task 9: repair progress and repair stop reasons ------------------------
 
 
-def open_material_gap_ids(critique: Critique | None) -> list[str]:
+def _material_gap_ids(gaps: Sequence[CritiqueGap]) -> list[str]:
     """The stable identity of every open material defect, sorted.
 
     A ``gap_id`` is positional *within one review* (``gap-01``, ``gap-02``), so
@@ -354,8 +418,6 @@ def open_material_gap_ids(critique: Critique | None) -> list[str]:
     across passes — and it is the same identity routing folds jobs by, so a
     defect cannot be open for the router and closed for the progress check.
     """
-    if critique is None or critique.review_status != "reviewed":
-        return []
     keys = {
         "|".join(
             (
@@ -366,10 +428,30 @@ def open_material_gap_ids(critique: Critique | None) -> list[str]:
                 ",".join(sorted(gap.claim_cluster_ids)),
             )
         )
-        for gap in critique.gaps
+        for gap in gaps
         if gap.severity in GAP_MATERIAL_SEVERITIES
     }
     return sorted(keys)
+
+
+def open_material_gap_ids(critique: Critique | None) -> list[str]:
+    """Every open material defect the Critic named, by stable identity."""
+    if critique is None or critique.review_status != "reviewed":
+        return []
+    return _material_gap_ids(critique.gaps)
+
+
+def open_review_defect_ids(review: ReportReview | None) -> list[str]:
+    """Every open material defect the semantic review named.
+
+    Read from a *scored* review only. An incomplete or provider-failed review
+    judged nothing, so its empty defect list is an absence of findings rather
+    than a finding of none — and reporting its defects as "resolved" next pass
+    would credit the run with closing defects nobody ever raised.
+    """
+    if review is None or review.status != "scored":
+        return []
+    return _material_gap_ids(review.defects)
 
 
 def pending_repair_work(state: ResearchState) -> list[str]:
@@ -457,7 +539,10 @@ def progress_snapshot(
         for target in counted_evidence_targets(topic.evidence_targets)
         if target_is_answered(state, target)
     ]
-    unresolved = open_material_gap_ids(state.critique)
+    unresolved = [
+        *open_material_gap_ids(state.critique),
+        *open_review_defect_ids(state.report_review),
+    ]
     resolved = (
         []
         if previous is None

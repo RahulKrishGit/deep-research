@@ -76,6 +76,11 @@ from deep_research.agents.report import (
     report_as_of,
     report_scope,
 )
+from deep_research.agents.report_review import (
+    build_report_review_input,
+    composition_semantic_fingerprint,
+    report_review_input_fingerprint,
+)
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActRun
 from deep_research.cli import EXIT_OK, is_streamed_event, render_progress
@@ -105,6 +110,7 @@ from deep_research.utils.types import (
     SubTopic,
 )
 from tests.agent_fakes import ScriptedCompleter
+from tests.graph_fakes import fake_report_review
 from tests.research_fakes import critic_tools
 
 BATTERY_QUESTION = (
@@ -745,7 +751,23 @@ def _fixture() -> _Fixture:
         }
     )
     state = state.model_copy(
-        update={"quality": compute_report_quality(state, composition)}
+        update={
+            "quality": compute_report_quality(state, composition),
+            # Task 10: acceptance requires a *scored* semantic review, so a
+            # fixture that models an accepted run carries one. Both
+            # fingerprints are the packet and the composition this state would
+            # actually present, so the fixture cannot claim a review of some
+            # other report — and the terminal re-render, which changes only the
+            # quality badge, leaves the composition fingerprint intact.
+            "report_review": fake_report_review(
+                fingerprint=report_review_input_fingerprint(
+                    build_report_review_input(state)
+                ),
+                composition_fingerprint=composition_semantic_fingerprint(
+                    state.composition
+                ),
+            ),
+        }
     )
     return _Fixture(
         state=state,

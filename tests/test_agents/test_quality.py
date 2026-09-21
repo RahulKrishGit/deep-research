@@ -11,7 +11,10 @@ from deep_research.agents.report import ReportComposition, ReportPoint, ReportSe
 from deep_research.utils import ReportQualitySnapshot as UtilsReportQualitySnapshot
 from deep_research.utils.types import (
     Claim,
+    EvidenceTarget,
+    EvidenceUnit,
     Finding,
+    ReportStatement,
     ResearchState,
     ScoredSource,
     SubTopic,
@@ -153,13 +156,42 @@ def _state_and_composition() -> tuple[ResearchState, ReportComposition]:
     return state, composition
 
 
+def _targeted_topic(index: int) -> SubTopic:
+    """One planned topic with the required obligation it actually owes.
+
+    Task 10 reads broad coverage from answered obligations rather than from
+    claims that recorded consuming a topic id, so a fixture that wants to model
+    "this topic is covered" has to say what the topic required.
+    """
+    return SubTopic(
+        coverage_id=f"topic-{index:02d}",
+        title=f"Topic {index}",
+        rationale="This topic matters to the answer.",
+        search_queries=[f"topic {index} evidence"],
+        success_criteria=["A checked claim answers the topic."],
+        priority=index,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id=f"t{index}",
+                coverage_id=f"topic-{index:02d}",
+                question=f"What does topic {index} require?",
+                required_dimensions=["finding"],
+                required=True,
+                critical=False,
+                support_policy="independent_pair",
+            )
+        ],
+    )
+
+
 def _complete_state_and_composition(
     covered: int,
 ) -> tuple[ResearchState, ReportComposition]:
-    topics = [_topic(index) for index in range(1, 6)]
+    topics = [_targeted_topic(index) for index in range(1, 6)]
     source = _source("https://example.test/a")
     findings: list[Finding] = []
     claims: list[Claim] = []
+    units: dict[str, EvidenceUnit] = {}
     points: list[ReportPoint] = []
     for index in range(1, covered + 1):
         finding = _finding(
@@ -170,9 +202,34 @@ def _complete_state_and_composition(
             coverage_id=f"topic-{index:02d}",
             finding=finding,
         )
+        evidence_id = f"e{index}"
         findings.append(finding)
         claims.append(claim)
-        points.append(_point(finding.content, claim))
+        units[evidence_id] = EvidenceUnit(
+            evidence_id=evidence_id,
+            read_id=f"read-{index}",
+            source_url="https://example.test/a",
+            source_title="Example source",
+            locator="chunk-0",
+            excerpt=finding.content,
+            target_ids=[f"t{index}"],
+            origin="researcher",
+        )
+        points.append(
+            ReportPoint(
+                text=finding.content,
+                claim_ids=[claim.claim_id],
+                source_urls=["https://example.test/a"],
+                statement=ReportStatement(
+                    statement_id=f"S{index:03d}",
+                    text=finding.content,
+                    claim_cluster_ids=[claim.claim_id],
+                    evidence_ids=[evidence_id],
+                    target_ids=[f"t{index}"],
+                    answered_dimensions=["finding"],
+                ),
+            )
+        )
     state = ResearchState(
         session_id="session-complete",
         original_question="What happened?",
@@ -192,6 +249,7 @@ def _complete_state_and_composition(
         claims=claims,
         sources=[source],
         findings=findings,
+        evidence_units=units,
         summary=points,
     )
     return state, composition
@@ -249,6 +307,32 @@ def test_broad_plan_coverage_threshold_is_exactly_eighty_percent() -> None:
     assert "broad_plan_coverage_below_0.80" not in complete.hard_failures
     assert partial.coverage_ratio == 0.6
     assert "broad_plan_coverage_below_0.80" in partial.hard_failures
+
+
+def test_the_broad_plan_gate_reads_substantive_coverage_not_the_claimed_ratio() -> None:
+    """Task 10: 80% of *answered* topics, over the plan's own denominator.
+
+    Four of five topics answered is 0.80 on both readings here, so the gate
+    passes; one more topic left unanswered drops it below and fails. The
+    denominator stays the plan's five topics in both cases — nothing shrinks it.
+    """
+    four_state, four_composition = _complete_state_and_composition(4)
+    four = compute_report_quality(four_state, four_composition)
+    assert four.substantive_topic_ratio == 0.8
+    assert four.planned_topics == 5
+    assert four.required_targets == 5
+    assert four.answered_targets == 4
+    assert "broad_plan_coverage_below_0.80" not in four.hard_failures
+    # The one unanswered obligation has no recorded reason, which is a separate
+    # failure: Section 2.3 requires every remaining target to be accounted for.
+    assert four.unaccounted_target_ids == ["t5"]
+    assert "unaccounted_required_targets" in four.hard_failures
+
+    three_state, three_composition = _complete_state_and_composition(3)
+    three = compute_report_quality(three_state, three_composition)
+    assert three.substantive_topic_ratio == 0.6
+    assert three.planned_topics == 5
+    assert "broad_plan_coverage_below_0.80" in three.hard_failures
 
 
 def test_quality_snapshot_flags_unresolved_markers_and_uncited_points() -> None:

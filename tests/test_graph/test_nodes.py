@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
+from deep_research.agents.report import render_reader_report
+from deep_research.agents.report_review import build_report_review_input
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.graph.errors import GRAPH_ERROR_REASONS, GraphConfigurationError
 from deep_research.graph.nodes import (
@@ -20,6 +22,7 @@ from deep_research.graph.nodes import (
     invalidation_update,
     refine_node,
     refinement_targets_for,
+    report_review_node,
     route_after_critic,
     route_after_refine,
     route_refinement,
@@ -31,6 +34,8 @@ from deep_research.graph.state import (
     ROUTE_REFINE,
     ResearchGraphState,
     dump_state,
+    graph_quality_status,
+    graph_status,
     is_halted,
     load_state,
     progress_snapshot,
@@ -53,6 +58,7 @@ from deep_research.utils.types import (
     EvidenceTarget,
     RefinementTarget,
     ReportQualitySnapshot,
+    ReportReview,
     ResearchError,
     ResearchState,
     SubTopic,
@@ -62,11 +68,14 @@ from tests.agent_fakes import ScriptedCompleter
 from tests.graph_fakes import (
     FakeAgent,
     FakePublisher,
+    FakeReviewer,
     fake_claim,
     fake_critique,
     fake_finding,
     fake_quality,
     fake_reader_composition,
+    fake_rejected_report_review,
+    fake_report_review,
     fake_research_state,
     fake_scored_source,
     fake_sub_topic,
@@ -411,6 +420,249 @@ async def test_the_critic_node_records_the_bound_overriding_the_critic() -> None
     assert route_after_critic(result) == ROUTE_FINALIZE
 
 
+# --- Task 10: the terminal semantic review node ------------------------------
+
+
+def _reviewable_state(**overrides: object) -> ResearchState:
+    """A pass whose report has a typed composition behind it.
+
+    The review reads statements, targets, and evidence, so a state without a
+    composition is one nothing can judge — which is its own test below.
+    """
+    base = fake_research_state(
+        sub_topics=[fake_sub_topic()],
+        raw_findings=[fake_finding()],
+        evaluated_sources=[fake_scored_source()],
+        verified_claims=[fake_claim()],
+        quality=fake_quality(),
+        critique=fake_critique(should_continue=False, score=9),
+        report="# Reader report",
+        report_evidence="# Evidence ledger",
+    )
+    payload: dict[str, object] = {
+        "composition": fake_reader_composition(base),
+        "report": render_reader_report(fake_reader_composition(base)),
+    }
+    payload.update(overrides)
+    return base.model_copy(update=payload)
+
+
+@pytest.mark.asyncio
+async def test_the_review_node_records_a_scored_review_beside_the_diagnostics() -> None:
+    reviewer = FakeReviewer()
+    state = _reviewable_state()
+
+    result = await report_review_node(reviewer)(dump_state(state))
+    loaded = load_state(result)
+
+    assert reviewer.calls == 1
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "scored"
+    assert loaded.report_review.input_fingerprint
+    assert loaded.quality is not None
+    assert loaded.quality.semantic_review_status == "scored"
+    assert loaded.quality.semantic_review_score == 1.0
+    # The judgement is recorded beside the structural diagnostics, never inside
+    # them: a review that passed is not a hard failure and vice versa.
+    assert loaded.quality.hard_failures == state.quality.hard_failures
+    assert not loaded.errors
+    assert not is_halted(loaded)
+    reviewed = [
+        event
+        for event in loaded.events
+        if event.event_type == "graph.report.reviewed"
+    ]
+    assert len(reviewed) == 1
+    assert reviewed[0].metadata["review_status"] == "scored"
+    assert reviewed[0].metadata["reused"] is False
+
+
+@pytest.mark.asyncio
+async def test_an_unreviewed_report_is_recorded_as_unreviewed_not_accepted() -> None:
+    """A provider failure is a quality-assessment failure, not a graph failure.
+
+    The report and its evidence are complete and still publish; what did not
+    happen is the judgement, so the status says ``provider_failed``, the quality
+    snapshot records it, and the error is recoverable — never a halt, and never
+    an acceptance.
+    """
+    state = _reviewable_state()
+    reviewer = FakeReviewer([fake_report_review(status="provider_failed")])
+
+    loaded = load_state(await report_review_node(reviewer)(dump_state(state)))
+
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "provider_failed"
+    assert loaded.quality is not None
+    assert loaded.quality.semantic_review_status == "provider_failed"
+    assert loaded.quality.semantic_review_score is None
+    assert [error.error_type for error in loaded.errors] == [
+        "graph_report_review_unavailable"
+    ]
+    assert loaded.errors[0].recoverable is True
+    assert not is_halted(loaded)
+    # The report itself is untouched: nothing about publishing it changed.
+    assert loaded.report == (state.report or "").strip()
+    assert graph_quality_status(loaded) == QUALITY_STATUS_PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_the_published_state_keeps_the_record_that_nothing_judged_it() -> None:
+    """A judgement is invalidated by *changed* content, not by a re-render.
+
+    The terminal finalizer re-renders the composition with only the quality
+    badge stamped on it, which is the same semantic material the review judged:
+    that is the whole reason the fingerprint ignores the badge. A record of "no
+    review was made" that carried no composition fingerprint could never match,
+    so it was dropped by that merge — silently, at the node that publishes —
+    and the state lost the honest record that the report went unreviewed while
+    the quality snapshot still mentioned it.
+    """
+    state = _reviewable_state()
+    reviewed = load_state(await report_review_node(None)(dump_state(state)))
+
+    assert reviewed.report_review is not None
+    assert reviewed.report_review.status == "incomplete"
+    assert reviewed.report_review.composition_fingerprint
+
+    published = load_state(
+        await finalize_report_node(FakePublisher())(dump_state(reviewed))
+    )
+
+    assert published.report_review is not None
+    assert published.report_review.status == "incomplete"
+    assert published.report_review.input_fingerprint == (
+        reviewed.report_review.input_fingerprint
+    )
+    assert published.quality is not None
+    assert published.quality.semantic_review_status == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_a_report_with_no_composition_is_never_sent_for_review() -> None:
+    """Nothing reviewable: refused locally rather than scored over prose.
+
+    A hand-built report with no statement records behind it cannot be tied to
+    any evidence, so a reviewer that answered anyway would be scoring text
+    nothing can check. The node does not ask.
+    """
+    reviewer = FakeReviewer()
+    state = fake_research_state(
+        critique=fake_critique(should_continue=False, score=9),
+        quality=fake_quality(),
+        report="# Reader report",
+        report_evidence="# Evidence ledger",
+    )
+
+    loaded = load_state(await report_review_node(reviewer)(dump_state(state)))
+
+    assert reviewer.calls == 0
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "incomplete"
+    assert loaded.report_review.input_fingerprint
+    assert loaded.quality is not None
+    assert loaded.quality.semantic_review_status == "incomplete"
+    assert graph_quality_status(loaded) == QUALITY_STATUS_PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_a_review_of_the_identical_fingerprint_costs_no_call() -> None:
+    state = _reviewable_state()
+    packet = build_report_review_input(state)
+    stored = fake_report_review(fingerprint=packet.fingerprint)
+    state = state.model_copy(update={"report_review": stored})
+    reviewer = FakeReviewer()
+
+    loaded = load_state(await report_review_node(reviewer)(dump_state(state)))
+
+    assert reviewer.calls == 0
+    assert loaded.report_review == stored
+    reused = [
+        event
+        for event in loaded.events
+        if event.event_type == "graph.report.reviewed"
+    ]
+    assert reused[0].metadata["reused"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_review_of_other_content_is_made_again() -> None:
+    state = _reviewable_state()
+    stored = fake_report_review(fingerprint="a-different-packet")
+    state = state.model_copy(update={"report_review": stored})
+    reviewer = FakeReviewer()
+
+    loaded = load_state(await report_review_node(reviewer)(dump_state(state)))
+
+    assert reviewer.calls == 1
+    assert loaded.report_review is not None
+    assert loaded.report_review.input_fingerprint != "a-different-packet"
+
+
+@pytest.mark.asyncio
+async def test_a_refusing_review_records_the_route_it_changed() -> None:
+    """The Critic accepted; the review did not, so the edge moves."""
+    reviewer = FakeReviewer([fake_rejected_report_review()])
+    state = _reviewable_state(iteration=0, max_iterations=3)
+
+    loaded = load_state(await report_review_node(reviewer)(dump_state(state)))
+
+    reasons = [
+        event.metadata["reason"]
+        for event in loaded.events
+        if event.event_type == "graph.route.decided"
+    ]
+    assert reasons == ["semantic_review_gap"]
+    assert route_after_critic(dump_state(loaded)) == ROUTE_REFINE
+    assert graph_status(loaded) == "incomplete"
+    assert graph_quality_status(loaded) == QUALITY_STATUS_PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_route_is_recorded_once() -> None:
+    """A review that agrees with the Critic does not re-announce the route."""
+    reviewer = FakeReviewer()
+    state = _reviewable_state()
+
+    loaded = load_state(await report_review_node(reviewer)(dump_state(state)))
+
+    assert [
+        event.metadata["reason"]
+        for event in loaded.events
+        if event.event_type == "graph.route.decided"
+    ] == []
+
+
+def test_a_review_defect_becomes_a_typed_refinement_job() -> None:
+    state = _reviewable_state(
+        report_review=fake_rejected_report_review(repair_action="acquire"),
+    )
+
+    jobs = [
+        job
+        for job in refinement_targets_for(state)
+        if job.origin == "review_defect"
+    ]
+
+    assert len(jobs) == 1
+    assert jobs[0].action == "acquire"
+    assert jobs[0].statement_ids == ["S001"]
+    assert jobs[0].target_ids == ["t1"]
+
+
+def test_an_incomplete_review_contributes_no_repair_jobs() -> None:
+    """No judgement means no defects and no invented work."""
+    state = _reviewable_state(
+        report_review=fake_report_review(status="incomplete"),
+    )
+
+    assert [
+        job
+        for job in refinement_targets_for(state)
+        if job.origin == "review_defect"
+    ] == []
+
+
 @pytest.mark.asyncio
 async def test_a_halted_critic_node_still_records_a_route() -> None:
     agent = FakeAgent("critic", [{"critique": fake_critique(should_continue=True)}])
@@ -588,8 +840,14 @@ def _finalized_state(
     max_iterations: int = 3,
     should_continue: bool = False,
     errors: list[ResearchError] | None = None,
+    report_review: ReportReview | None = None,
 ) -> ResearchState:
-    """A run that has finished its Critic pass and is ready to be finalized."""
+    """A run that has finished its Critic pass and is ready to be finalized.
+
+    ``report_review`` defaults to a scored pass, because since Task 10 nothing
+    is accepted without one: a state with no review is a state nothing judged,
+    and a test that wants that outcome passes ``report_review=`` explicitly.
+    """
     return fake_research_state(
         sub_topics=[fake_sub_topic()],
         raw_findings=[fake_finding()],
@@ -598,6 +856,9 @@ def _finalized_state(
         report=report,
         report_evidence=report_evidence,
         quality=quality,
+        report_review=(
+            fake_report_review() if report_review is None else report_review
+        ),
         critique=fake_critique(
             should_continue=should_continue,
             score=9 if not should_continue else 4,

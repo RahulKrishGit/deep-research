@@ -569,3 +569,104 @@ def test_judge_input_rejects_raw_provider_and_tool_fields() -> None:
                 }
             }
         )
+
+
+# --- Task 10: structural diagnostics versus semantic judgements -------------
+
+
+def test_the_whole_report_judge_is_labelled_structural_only() -> None:
+    """The legacy formula stays available and stops claiming to be a judge.
+
+    Its inputs are ratios, a length band, and decision language — several of
+    which restate hard integrity gates — so a consumer must be able to see that
+    from the record alone rather than from a comment in this repository.
+    """
+    case, state, _dependencies, metrics = _accepted_fixture()
+    verdict = judge_whole_report(build_judge_input(case, state, metrics))
+
+    assert verdict.structural_only is True
+    assert "structural-only" in verdict.rationale.casefold()
+    assert "not an independent report judge" in verdict.rationale
+
+
+def _review(**overrides: object):
+    from deep_research.utils.types import REVIEW_DIMENSIONS, ReportReview
+
+    payload: dict[str, object] = {
+        "status": "scored",
+        "dimensions": {name: 1.0 for name in REVIEW_DIMENSIONS},
+        "defects": [],
+        "per_statement_dispositions": {"S001": "supported"},
+        "reviewed_statement_ids": ["S001"],
+        "reviewed_evidence_ids": ["e1"],
+        "reviewed_batch_ids": ["batch-01"],
+        "expected_batch_ids": ["batch-01"],
+        "input_fingerprint": "packet-1",
+        "rubric_version": 2,
+        "rationale": "Recorded for the evaluator tests.",
+    }
+    payload.update(overrides)
+    return ReportReview.model_validate(payload)
+
+
+def test_the_semantic_review_evaluator_reads_every_dimension_and_defect() -> None:
+    from deep_research.e2e_evaluation.evaluators import semantic_review_summary
+    from deep_research.utils.types import REVIEW_DIMENSIONS, CritiqueGap
+
+    summary = semantic_review_summary(_review())
+
+    assert summary.status == "scored"
+    assert summary.score == 1.0
+    assert summary.accepted is True
+    assert set(summary.dimensions) == REVIEW_DIMENSIONS
+    assert summary.coverage_complete is True
+    assert summary.defect_count == 0
+    assert summary.input_fingerprint == "packet-1"
+
+    # A critical defect with every dimension at 1.0 is not an acceptance, and
+    # the summary has to say so from the defect list rather than from the mean.
+    rejected = semantic_review_summary(
+        _review(
+            defects=[
+                CritiqueGap(
+                    gap_id="review-01",
+                    target_ids=["t1"],
+                    statement_ids=["S001"],
+                    kind="missing_support",
+                    severity="critical",
+                    repair_action="adjudicate",
+                    problem="The main number is not in the source.",
+                )
+            ],
+            per_statement_dispositions={"S001": "unsupported"},
+        )
+    )
+    assert rejected.score == 1.0
+    assert rejected.accepted is False
+    assert rejected.material_defect_count == 1
+    assert "S001" in rejected.reviewed_statement_ids
+
+
+def test_a_missing_semantic_review_is_recorded_as_missing_not_as_a_pass() -> None:
+    from deep_research.e2e_evaluation.evaluators import semantic_review_summary
+
+    summary = semantic_review_summary(None)
+
+    assert summary.missing is True
+    assert summary.scored is False
+    assert summary.accepted is False
+    assert summary.score is None
+    assert summary.dimensions == {}
+    assert summary.status == ""
+
+
+def test_an_incomplete_semantic_review_is_never_accepted() -> None:
+    from deep_research.e2e_evaluation.evaluators import semantic_review_summary
+
+    summary = semantic_review_summary(
+        _review().model_copy(update={"status": "incomplete", "dimensions": {}})
+    )
+
+    assert summary.missing is True
+    assert summary.accepted is False
+    assert summary.score is None

@@ -40,6 +40,7 @@ from deep_research.utils.types import (
     ResearchEvent,
     ResearchState,
 )
+from tests.graph_fakes import fake_report_review
 
 QUESTION = "How mature is quantum error correction?"
 
@@ -67,6 +68,9 @@ def accepted_state() -> ResearchState:
     return ResearchState(
         session_id="session-1",
         original_question=QUESTION,
+        # Task 10: a report nothing reviewed is never accepted, so an accepted
+        # fixture carries the scored review that made it accepted.
+        report_review=fake_report_review(),
         quality=ReportQualitySnapshot(
             coverage_ratio=1.0,
             planned_topics=2,

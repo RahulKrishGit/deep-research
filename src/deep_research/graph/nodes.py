@@ -29,11 +29,16 @@ from pydantic import JsonValue
 from deep_research.agents.base import AgentRun
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.identity import merge_claim_snapshot, normalize_source_url
-from deep_research.agents.quality import compute_report_quality
+from deep_research.agents.quality import compute_report_quality, review_status_fields
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
     render_evidence_ledger,
     render_reader_report,
+)
+from deep_research.agents.report_review import (
+    ReportReviewInput,
+    build_report_review_input,
+    review_defects_as_refinement_jobs,
 )
 from deep_research.agents.synthesizer import (
     evidence_report_filename,
@@ -50,6 +55,7 @@ from deep_research.graph.errors import (
     provider_configuration_error,
     publication_unavailable_error,
     publication_write_error,
+    report_review_unavailable_error,
     request_attempt_limit_error,
 )
 from deep_research.graph.events import (
@@ -59,6 +65,7 @@ from deep_research.graph.events import (
     quality_assessed_event,
     refinement_started_event,
     report_published_event,
+    report_review_completed_event,
     route_decided_event,
 )
 from deep_research.graph.state import (
@@ -67,6 +74,7 @@ from deep_research.graph.state import (
     FINALIZE_NODE,
     PLANNER_NODE,
     REFINE_NODE,
+    REPORT_REVIEW_NODE,
     RESEARCHER_NODE,
     ROUTE_FINALIZE,
     SOURCE_EVALUATOR_NODE,
@@ -90,6 +98,8 @@ from deep_research.utils.types import (
     RefinementTarget,
     RepairAction,
     ReportComposition,
+    ReportQualitySnapshot,
+    ReportReview,
     ResearchError,
     ResearchState,
     ResearchStateUpdate,
@@ -115,6 +125,26 @@ class ResearchAgent(Protocol):
 
     async def run(self, state: ResearchState) -> AgentRun[Any]:
         """Run one agent pass over research state."""
+        raise NotImplementedError
+
+
+@runtime_checkable
+class ReportReviewerLike(Protocol):
+    """The one capability the terminal review node needs.
+
+    Structural, like ``ReportPublisher``: the production ``ReportReviewer``
+    satisfies it, and so does a two-line double in a graph test — which is why
+    a graph test can exercise "the review refused the report" without a
+    provider, a prompt, or a tracker.
+    """
+
+    async def review(
+        self,
+        packet: ReportReviewInput,
+        *,
+        previous: ReportReview | None = None,
+    ) -> ReportReview:
+        """Judge one report packet, reusing an identical earlier judgement."""
         raise NotImplementedError
 
 
@@ -536,6 +566,237 @@ def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
     return node
 
 
+def report_review_node(reviewer: ReportReviewerLike | None) -> GraphNode:
+    """Run the terminal semantic review, then record the route it produced.
+
+    This node is where the report is judged rather than merely measured. It
+    runs after the Critic and before the route, for one reason: a review that
+    refuses the report is a defect with somewhere to go, so its finding has to
+    exist before the edge is chosen. Nothing else about the graph changes —
+    the review buys no pass of its own, and a review that was never made buys
+    nothing at all.
+
+    Three outcomes, and the difference between them is the point:
+
+    * a *scored* review is recorded, the quality snapshot carries its status
+      and mean beside its structural diagnostics, and the route may consume one
+      refinement opportunity if it refused the report;
+    * an *incomplete* or *provider_failed* review is recorded with no score at
+      all, a recoverable error names it, and the route is left exactly as the
+      Critic and the deterministic gates decided. Acceptance is then blocked by
+      ``graph_quality_status``, so the report publishes as ``partial`` — never
+      as accepted, and never as a graph failure;
+    * a review that a previous pass already made over the identical semantic
+      fingerprint is reused, at no provider cost, because the report it judged
+      is the report this pass produced.
+
+    A reused or skipped call is recorded as such in the review event, so the
+    trace says whether a model was asked this pass.
+    """
+    async def node(channel: ResearchGraphState) -> ResearchGraphState:
+        state = load_state(channel)
+        if is_halted(state):
+            return _skipped(state, REPORT_REVIEW_NODE)
+
+        started = merge_research_state(
+            state,
+            {
+                "events": [
+                    node_started_event(
+                        REPORT_REVIEW_NODE, iteration=state.iteration
+                    )
+                ]
+            },
+        )
+        before = graph_route(started)[1]
+
+        review, errors, reused = await _review_report(
+            started, reviewer
+        )
+        merged = merge_research_state(
+            started,
+            {
+                "report_review": review,
+                "quality": _quality_with_review(started, review),
+                "errors": list(errors),
+            },
+        )
+        after, reason = graph_route(merged)
+        events = [
+            report_review_completed_event(
+                iteration=started.iteration,
+                review_status=review.status,
+                mean_score=review.mean_score,
+                material_defects=len(review.material_defects),
+                reviewed_statements=len(review.reviewed_statement_ids),
+                omitted_evidence=len(review.omitted_evidence_ids),
+                fingerprint=review.input_fingerprint,
+                reused=reused,
+            ),
+            node_completed_event(
+                REPORT_REVIEW_NODE,
+                iteration=started.iteration,
+                event_count=1,
+                error_count=len(errors),
+            ),
+        ]
+        if reason != before:
+            # The Critic's node already recorded the route as its own review
+            # left it. Only a review that *changed* the destination records a
+            # second decision, so the event stream shows one decision per run
+            # unless the semantic review is the reason it moved.
+            events.append(
+                route_decided_event(
+                    destination=after,
+                    reason=reason,
+                    iteration=started.iteration,
+                    max_iterations=started.max_iterations,
+                    should_continue=bool(
+                        merged.critique is not None
+                        and merged.critique.should_continue
+                    ),
+                )
+            )
+        return _with(merged, {"events": events})
+
+    return node
+
+
+async def _review_report(
+    state: ResearchState,
+    reviewer: ReportReviewerLike | None,
+) -> tuple[ReportReview, list[ResearchError], bool]:
+    """Judge the candidate, or record honestly that nothing judged it.
+
+    The packet is always built, even with no reviewer wired: it is the record
+    of what a review *would* have judged, its fingerprint is what a later
+    reuse is checked against, and a composition-less report is recorded as
+    unreviewable rather than as reviewed-and-fine.
+    """
+    packet = build_report_review_input(state, state.composition)
+    previous = state.report_review
+    if (
+        previous is not None
+        and previous.status == "scored"
+        and previous.input_fingerprint == packet.fingerprint
+    ):
+        return previous, [], True
+    if not packet.reader_content.strip() or state.composition is None:
+        # Nothing reviewable exists: no reader content, or prose with no typed
+        # record behind it. Refused here rather than asked of the reviewer,
+        # because "is there a report to judge at all" is not a judgement — and a
+        # reviewer that answered anyway would be scoring prose that no
+        # statement, target, or excerpt can be tied to.
+        review = _unreviewed(
+            packet,
+            (
+                "No reviewable report is recorded for this pass: the reader "
+                "content or its typed composition is missing, so no judgement "
+                "of the report exists."
+            ),
+            status="incomplete",
+        )
+        return (
+            review,
+            [
+                report_review_unavailable_error(
+                    node=REPORT_REVIEW_NODE,
+                    review_status=review.status,
+                    reason="report_unreviewable",
+                )
+            ],
+            False,
+        )
+    if reviewer is None:
+        review = _unreviewed(
+            packet,
+            (
+                "No terminal report reviewer is configured for this run, so "
+                "no judgement of the report exists."
+            ),
+            status="incomplete",
+        )
+        return (
+            review,
+            [
+                report_review_unavailable_error(
+                    node=REPORT_REVIEW_NODE,
+                    review_status=review.status,
+                    reason="report_reviewer_unconfigured",
+                )
+            ],
+            False,
+        )
+    review = await reviewer.review(packet, previous=previous)
+    errors: list[ResearchError] = []
+    if review.status != "scored":
+        errors.append(
+            report_review_unavailable_error(
+                node=REPORT_REVIEW_NODE,
+                review_status=review.status,
+                reason=(
+                    "report_review_provider_failed"
+                    if review.status == "provider_failed"
+                    else "report_review_incomplete"
+                ),
+            )
+        )
+    return review, errors, False
+
+
+def _unreviewed(packet: ReportReviewInput, reason: str, *, status: str) -> ReportReview:
+    """An explicit "nothing judged this report" record, with no score.
+
+    Built through the review contract rather than by hand, so an unreviewed
+    report cannot accidentally be recorded in a shape the acceptance rule would
+    read as a pass: there are no dimensions, the status is not ``scored``, and
+    the packet fingerprint still names what was not judged.
+
+    ``composition_fingerprint`` travels too, and it is load-bearing: the state
+    merge drops a stored judgement when the *composition* changes, matching on
+    this value. Without it the record could never match the composition the
+    terminal finalizer re-renders — the same material with only the quality
+    badge stamped — so "no review was made" was dropped at exactly the node
+    that publishes, and the state kept no record of the review that never
+    happened. Changed content still invalidates it, which is the rule.
+    """
+    return ReportReview(
+        status=status,  # type: ignore[arg-type]
+        dimensions={},
+        defects=[],
+        per_statement_dispositions={},
+        reviewed_statement_ids=[],
+        unreviewed_statement_ids=list(packet.expected_statement_ids),
+        reviewed_evidence_ids=[],
+        omitted_evidence_ids=list(packet.evidence_ids),
+        reviewed_batch_ids=[],
+        expected_batch_ids=list(packet.expected_batch_ids),
+        reviewed_target_ids=[target.target_id for target in packet.targets],
+        input_fingerprint=packet.fingerprint,
+        composition_fingerprint=packet.composition_fingerprint,
+        rubric_version=packet.rubric_version,
+        rationale=reason,
+    )
+
+
+def _quality_with_review(
+    state: ResearchState,
+    review: ReportReview,
+) -> ReportQualitySnapshot | None:
+    """The snapshot with the review's status and score recorded beside it.
+
+    The review fields are written onto the existing structural snapshot rather
+    than into ``hard_failures``: a review that was not made is an absent
+    judgement, and the hard-failure list is a closed set of defects found *in
+    the report*. Keeping them apart is what lets a reader see "the gates found
+    nothing and nothing judged the report" as the distinct state it is.
+    """
+    quality = state.quality
+    if quality is None:
+        return None
+    return quality.model_copy(update=review_status_fields(review))
+
+
 async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
     """Open the next macro iteration, routing the repair it is about to run.
 
@@ -697,12 +958,15 @@ than a new capability.
 
 # Which origin wins when two defects become one job. A Critic-named defect is
 # the most specific record of it — it carries the queries and the gap id — so
-# it outranks an assertion the Synthesizer returned, which in turn outranks
-# the graph's own mechanical reading of an unmet target.
+# it outranks a defect the terminal reviewer named, which carries the same
+# typed shape from a different review; both outrank an assertion the
+# Synthesizer returned, which in turn outranks the graph's own mechanical
+# reading of an unmet target.
 _ORIGIN_RANK: dict[RefinementOrigin, int] = {
     "critic_gap": 0,
-    "returned_assertion": 1,
-    "unanswered_target": 2,
+    "review_defect": 1,
+    "returned_assertion": 2,
+    "unanswered_target": 3,
 }
 
 _SEVERITY_RANK: dict[str, int] = {"critical": 3, "major": 2, "minor": 1}
@@ -781,6 +1045,27 @@ def refinement_targets_for(state: ResearchState) -> list[RefinementTarget]:
                     ),
                 )
             )
+
+    # The terminal semantic review's defects are jobs like any other: routed by
+    # the action they were typed with, over the scope they named. They are read
+    # only from a *scored* review, so a review that never happened contributes
+    # no "no defects found" and no invented work — the report is simply
+    # unreviewed, and `graph_quality_status` says so.
+    for gap in review_defects_as_refinement_jobs(state.report_review):
+        jobs.append(
+            RefinementTarget(
+                gap_id=gap.gap_id,
+                coverage_id=gap.coverage_id,
+                target_ids=list(gap.target_ids),
+                claim_cluster_ids=list(gap.claim_cluster_ids),
+                statement_ids=list(gap.statement_ids),
+                action=gap.repair_action,
+                queries=list(gap.recommended_queries),
+                origin="review_defect",
+                severity=gap.severity,
+                problem=gap.problem,
+            )
+        )
 
     composition = state.composition
     if composition is not None:

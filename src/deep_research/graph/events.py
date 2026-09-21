@@ -17,6 +17,7 @@ from deep_research.graph.state import (
     GRAPH_ROUTES,
     GRAPH_SOURCE,
     GRAPH_STATUSES,
+    REPORT_REVIEW_NODE,
 )
 from deep_research.utils.types import ReportQualitySnapshot, ResearchEvent
 
@@ -157,6 +158,46 @@ def quality_assessed_event(
             "duplicate_claims": quality.duplicate_claims,
             "duplicate_source_rows": quality.duplicate_source_rows,
             "uncited_settled_points": quality.uncited_settled_points,
+        },
+    )
+
+
+def report_review_completed_event(
+    *,
+    iteration: int,
+    review_status: str,
+    mean_score: float | None,
+    material_defects: int,
+    reviewed_statements: int,
+    omitted_evidence: int,
+    fingerprint: str,
+    reused: bool,
+) -> ResearchEvent:
+    """Record the terminal semantic review's outcome for one pass.
+
+    Counts, an enumerated status, and the packet fingerprint only — never the
+    review's prose and never a defect's text, which are provider output. The
+    status is one of ``scored``/``incomplete``/``provider_failed``, kept apart
+    from the Critic's own ``review_status`` so a reader of the event stream can
+    tell which reviewer the record is about.
+    """
+    return graph_event(
+        event_type="graph.report.reviewed",
+        message=(
+            "The report was reviewed and scored."
+            if review_status == "scored"
+            else "The report review did not produce a score."
+        ),
+        node=REPORT_REVIEW_NODE,
+        metadata={
+            "iteration": iteration,
+            "review_status": review_status,
+            "mean_score": mean_score,
+            "material_defects": material_defects,
+            "reviewed_statements": reviewed_statements,
+            "omitted_evidence": omitted_evidence,
+            "input_fingerprint": fingerprint,
+            "reused": reused,
         },
     )
 

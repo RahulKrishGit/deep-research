@@ -637,6 +637,34 @@ def test_langsmith_metadata_has_graph_prompts_schemas_models_and_requests(
     assert metadata["request_counts"]["judge"] == 1
 
 
+def test_a_repetition_records_the_semantic_review_its_run_made(tmp_path) -> None:
+    """The harness's semantic record is fed, not merely defined.
+
+    ``CampaignRepetition.semantic_review`` is where the evaluation harness
+    reads the terminal review, and ``semantic_review_summary`` is the evaluator
+    that reads it. A repetition whose runner left that field unset would make
+    the evaluator's input permanently absent: every campaign would report "no
+    judgement" whatever the run actually judged, which is the failure mode a
+    metric that skips its inputs has. The scripted campaign wires no reviewer,
+    so the honest record here is the incomplete review the graph recorded — a
+    review present, not scored, and never an acceptance.
+    """
+    result = run_case(
+        "refinement-evidence-recovery",
+        tier="controlled",
+        output_directory=tmp_path,
+    )
+
+    review = result.repetitions[0].state.report_review
+    recorded = result.repetitions[0].semantic_review
+    assert review is not None
+    assert recorded is not None
+    assert recorded.status == review.status
+    assert recorded.score == review.mean_score
+    assert recorded.missing is True
+    assert recorded.accepted is False
+
+
 def test_judge_metadata_builder_is_content_free() -> None:
     metadata = build_judge_metadata(
         graph_revision="abc123",

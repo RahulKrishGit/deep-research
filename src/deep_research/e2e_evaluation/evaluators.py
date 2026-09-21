@@ -18,18 +18,20 @@ from deep_research.agents.report import (
     render_evidence_ledger,
     render_reader_report,
 )
+from deep_research.agents.report_review import semantic_review_passes
 from deep_research.agents.sources import normalize_source_url
 from deep_research.e2e_evaluation.cases import ScriptedDependencies
 from deep_research.e2e_evaluation.models import (
     ControlledCase,
     DeterministicEvaluation,
     EvidenceLedgerSummary,
+    SemanticReviewSummary,
     SnapshotPass,
     WholeReportJudgeInput,
     WholeReportJudgeScore,
     WholeReportRubric,
 )
-from deep_research.utils.types import ReportPoint, ResearchState
+from deep_research.utils.types import ReportPoint, ReportReview, ResearchState
 
 MAX_READER_REPORT_WORDS = 8_000
 MAX_EVIDENCE_SUMMARY_SOURCES = 16
@@ -839,12 +841,59 @@ def judge_whole_report(
         for dimension in rubric_value.dimensions
     }
     score = max(0.0, min(1.0, fsum(dimensions.values()) / len(dimensions)))
-    rationale = "Deterministic seven-dimension score from bounded reader evidence."
+    rationale = (
+        "Structural-only seven-dimension score from bounded reader evidence. "
+        "This is not an independent report judge: completeness, prioritization "
+        "and uncertainty are ratios, readability is a length band, "
+        "actionability is decision language, and evidence_quality and "
+        "attribution restate hard integrity gates. The semantic review is "
+        "semantic_review_summary."
+    )
     return WholeReportJudgeScore(
         score=score,
         dimensions=dimensions,
         rationale=rationale,
         rubric=rubric_value,
+        structural_only=True,
+    )
+
+
+def semantic_review_summary(
+    review: ReportReview | None,
+) -> SemanticReviewSummary:
+    """Read one terminal semantic review into the harness's own record.
+
+    Every input the review carries is read: its status, its mean, all seven
+    dimensions, every defect with its materiality, the statements and evidence
+    it covered, the batches it answered for, and the fingerprint it judged.
+    ``accepted`` is the review's own rule, not the mean — a metric that scored
+    a report with an unresolved critical defect as accepted would be reporting
+    success while skipping the input that says otherwise, which is the failure
+    mode this evaluator exists to avoid.
+
+    ``None`` yields a summary with no status and no score, and
+    ``SemanticReviewSummary.missing`` is then true: no judgement is recorded as
+    no judgement, never as a clean review.
+    """
+    if review is None:
+        return SemanticReviewSummary()
+    return SemanticReviewSummary(
+        rubric_version=review.rubric_version,
+        status=review.status,
+        score=review.mean_score,
+        accepted=semantic_review_passes(review),
+        dimensions=dict(review.dimensions),
+        defect_count=len(review.defects),
+        material_defect_count=len(review.material_defects),
+        derived_defect_count=len(review.derived_defect_statement_ids),
+        reviewed_statement_ids=list(review.reviewed_statement_ids),
+        unreviewed_statement_ids=list(review.unreviewed_statement_ids),
+        reviewed_evidence_ids=list(review.reviewed_evidence_ids),
+        omitted_evidence_ids=list(review.omitted_evidence_ids),
+        expected_batch_ids=list(review.expected_batch_ids),
+        reviewed_batch_ids=list(review.reviewed_batch_ids),
+        input_fingerprint=review.input_fingerprint,
+        coverage_complete=review.coverage_complete,
     )
 
 
@@ -882,6 +931,7 @@ __all__ = [
     "evidence_ledger_summary",
     "judge_whole_report",
     "production_cli_summary",
+    "semantic_review_summary",
     "build_whole_report_judge_input",
     "repetition_accepted",
 ]

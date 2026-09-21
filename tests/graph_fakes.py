@@ -35,10 +35,13 @@ from deep_research.agents.steps import ReActRun
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.tools.base import ToolError, ToolResult
 from deep_research.utils.types import (
+    REVIEW_DIMENSIONS,
     Claim,
     Critique,
+    CritiqueGap,
     Finding,
     ReportQualitySnapshot,
+    ReportReview,
     ResearchError,
     ResearchState,
     ResearchStateUpdate,
@@ -413,6 +416,150 @@ class FakePublisher:
         )
 
 
+def fake_report_review(
+    *,
+    status: str = "scored",
+    dimensions: Mapping[str, float] | None = None,
+    defects: Sequence[CritiqueGap] = (),
+    dispositions: Mapping[str, str] | None = None,
+    reviewed_statement_ids: Sequence[str] = ("S001",),
+    fingerprint: str = "packet-1",
+    composition_fingerprint: str = "composition-1",
+) -> ReportReview:
+    """A terminal semantic review, complete unless a test says otherwise.
+
+    ``scored`` needs the seven dimensions, a fingerprint, and no unreviewed
+    statement — the contract refuses anything less — so the default is a clean
+    pass and every other shape is asked for explicitly. A test that wants "the
+    reviewer refused the report" passes one material defect; a test that wants
+    "no judgement exists" uses ``incomplete``.
+    """
+    payload: dict[str, object] = {
+        "status": status,
+        "dimensions": {},
+        "defects": list(defects),
+        "per_statement_dispositions": dict(dispositions or {}),
+        "reviewed_statement_ids": [],
+        "reviewed_batch_ids": ["batch-01"],
+        "expected_batch_ids": ["batch-01"],
+        "input_fingerprint": fingerprint,
+        "composition_fingerprint": composition_fingerprint,
+        "rubric_version": 2,
+        "rationale": "Recorded for graph tests.",
+    }
+    if status == "scored":
+        payload["dimensions"] = dict(
+            dimensions
+            if dimensions is not None
+            else {name: 1.0 for name in REVIEW_DIMENSIONS}
+        )
+        payload["reviewed_statement_ids"] = list(reviewed_statement_ids)
+        payload["per_statement_dispositions"] = dict(
+            dispositions
+            if dispositions is not None
+            else {statement_id: "supported" for statement_id in reviewed_statement_ids}
+        )
+    return ReportReview.model_validate(payload)
+
+
+def fake_rejected_report_review(
+    *,
+    kind: str = "missing_support",
+    severity: str = "major",
+    repair_action: str = "adjudicate",
+    statement_ids: Sequence[str] = ("S001",),
+    target_ids: Sequence[str] = ("t1",),
+) -> ReportReview:
+    """A scored review that judged the report and refused it."""
+    return fake_report_review(
+        dimensions={name: 0.5 for name in REVIEW_DIMENSIONS},
+        defects=[
+            CritiqueGap(
+                gap_id="review-01",
+                target_ids=list(target_ids),
+                statement_ids=list(statement_ids),
+                kind=kind,
+                severity=severity,
+                repair_action=repair_action,
+                problem="The cited passage does not carry this statement.",
+            )
+        ],
+        dispositions={statement_id: "unsupported" for statement_id in statement_ids},
+        reviewed_statement_ids=statement_ids,
+    )
+
+
+class FakeReviewer:
+    """Serve scripted semantic reviews instead of calling a provider.
+
+    ``reviews`` is consumed one entry per call and the final entry repeats, the
+    same contract ``FakeAgent`` uses. ``previous`` is honoured exactly as the
+    production reviewer honours it — a scored review of the identical
+    fingerprint is reused with no call — so a graph test can assert that a pass
+    over unchanged content costs nothing.
+    """
+
+    def __init__(self, reviews: Sequence[ReportReview] = ()) -> None:
+        self._reviews = list(reviews) or [fake_report_review()]
+        self.packets: list[object] = []
+
+    @property
+    def calls(self) -> int:
+        return len(self.packets)
+
+    async def review(
+        self,
+        packet: object,
+        *,
+        previous: ReportReview | None = None,
+    ) -> ReportReview:
+        fingerprint = getattr(packet, "fingerprint", "")
+        if (
+            previous is not None
+            and previous.status == "scored"
+            and previous.input_fingerprint == fingerprint
+        ):
+            return previous
+        self.packets.append(packet)
+        position = min(len(self.packets) - 1, len(self._reviews) - 1)
+        review = self._reviews[position]
+        update: dict[str, object] = {"input_fingerprint": fingerprint}
+        if review.status == "scored":
+            # A scored review covers the packet it was handed — that is what
+            # "scored" means — so the double records the same coverage the real
+            # reviewer would, rather than leaving a scored review of nothing.
+            batches = list(getattr(packet, "expected_batch_ids", []))
+            update["expected_batch_ids"] = batches
+            update["reviewed_batch_ids"] = batches
+            # The composition fingerprint too, or the judgement is attached to
+            # no report the merge can recognise: ``merge_research_state`` drops
+            # a stored review whose fingerprint does not match the incoming
+            # composition, so a double keeping its fixture value left every
+            # compiled-graph run with no review on the state at all — an
+            # accepted badge beside a ``partial`` status, and nothing asserting
+            # that a review survives to publication.
+            update["composition_fingerprint"] = getattr(
+                packet, "composition_fingerprint", ""
+            )
+            reviewed = list(review.reviewed_statement_ids) or list(
+                getattr(packet, "expected_statement_ids", [])
+            )
+            update["reviewed_statement_ids"] = reviewed
+            # Reading is not judging: every statement the double reports as read
+            # carries the disposition the real reviewer records for it, so the
+            # review it serves is one the contract would accept rather than one
+            # claiming a coverage it never judged.
+            dispositions = dict(review.per_statement_dispositions)
+            for statement_id in reviewed:
+                dispositions.setdefault(statement_id, "supported")
+            update["per_statement_dispositions"] = dispositions
+            if not review.reviewed_evidence_ids:
+                update["reviewed_evidence_ids"] = list(
+                    getattr(packet, "evidence_ids", [])
+                )
+        return review.model_copy(update=update)
+
+
 def fake_research_agents(**overrides: object) -> ResearchAgents:
     """A full set of agents whose default pass answers the question once.
 
@@ -440,6 +587,7 @@ def fake_research_agents(**overrides: object) -> ResearchAgents:
             [{"critique": fake_critique(should_continue=False, score=9)}],
         ),
         "publisher": FakePublisher(),
+        "report_reviewer": FakeReviewer(),
     }
     defaults.update(overrides)
     return ResearchAgents(**defaults)

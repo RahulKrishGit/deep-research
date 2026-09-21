@@ -938,11 +938,42 @@ def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
         "critic": {"reasoning_effort": "max"},
         "researcher": {"reasoning_effort": "high"},
         "source_evaluator": {"reasoning_effort": "high"},
+        # Task 10's terminal semantic reviewer, resolved as its own service
+        # role: a separate call role with its own effort, not a seventh agent.
+        "report_judge": {"reasoning_effort": "max"},
     }
     # The snippet amends the ``llm`` mapping; the other fields stay.
     assert raw["llm"]["provider"] == "deepseek"
     assert raw["llm"]["max_tokens"] == 32768
     assert raw["llm"]["reasoning_effort"] == "high"
+
+
+def test_the_shipped_service_role_is_configured_but_is_not_an_agent() -> None:
+    """The report judge resolves like an agent and is counted like none.
+
+    Preflight has to validate the role, or a mistyped model fails a paid run at
+    its first review request; and the six-agent registry must not grow, or
+    every consumer that means "the agents that research" would pick up a
+    reviewer that never researches and has no tool budget to spend.
+    """
+    from deep_research.providers import validate_agent_model_configs
+    from deep_research.utils.config import (
+        PRODUCTION_AGENT_NAMES,
+        SERVICE_ROLE_NAMES,
+    )
+
+    settings = load_config("config.yaml")
+
+    assert SERVICE_ROLE_NAMES == ("report_judge",)
+    assert "report_judge" not in PRODUCTION_AGENT_NAMES
+    resolved = validate_agent_model_configs(
+        settings.llm, (*PRODUCTION_AGENT_NAMES, *SERVICE_ROLE_NAMES)
+    )
+    assert resolved["report_judge"].reasoning_effort == "max"
+    assert settings.llm.resolve_for("report_judge").reasoning_effort == "max"
+    # The role is not a place for a tool budget: the table still refuses it.
+    with pytest.raises(ValidationError):
+        AgentRuntimeConfig(tool_budget_overrides={"report_judge": 3})
 
 
 def test_the_shipped_per_agent_efforts_are_supported_by_the_provider() -> None:

@@ -28,6 +28,7 @@ from deep_research.e2e_evaluation.evaluators import (
     deterministic_evaluation,
     judge_whole_report,
     production_cli_summary,
+    semantic_review_summary,
 )
 from deep_research.e2e_evaluation.models import (
     AGENT_NAMES,
@@ -187,6 +188,16 @@ def _scripted_repetition(
         evidence_ledger=state.report_evidence or "",
         deterministic=metrics,
         judge=judge_result,
+        # The terminal semantic review the run recorded, read into the harness's
+        # own vocabulary. ``None`` stays reserved for a repetition that holds no
+        # review at all; a run whose review could not be made records the
+        # incomplete status it has, so "no judgement" is visible as itself
+        # rather than as a missing field a reader might read as success.
+        semantic_review=(
+            None
+            if state.report_review is None
+            else semantic_review_summary(state.report_review)
+        ),
         cli_summary=summary,
         cli_output=list(cli_output),
         judge_input=judge_input,

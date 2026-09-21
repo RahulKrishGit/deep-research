@@ -116,12 +116,70 @@ class WholeReportRubric(ContractModel):
 
 
 class WholeReportJudgeScore(ContractModel):
-    """A bounded judge verdict; no judge prose is needed by the gates."""
+    """A bounded judge verdict; no judge prose is needed by the gates.
+
+    ``structural_only`` is not decoration. The whole-report judge this contract
+    was written for computes its seven dimensions from counts, ratios, and
+    keywords — a length band for "readability", the presence of decision
+    language for "actionability", and ratios a hard integrity gate already
+    requires to be 1.0 for two more. It stays available because historical
+    campaign artifacts carry its scores and re-scoring them would make old and
+    new results incomparable, and it is labelled here so no consumer can read
+    it as an independent judgement of the report's substance. Task 10's
+    semantic review (``SemanticReviewSummary``) is that judgement, and
+    production imports neither of these — they are evaluation diagnostics.
+    """
 
     score: float = Field(ge=0.0, le=1.0)
     dimensions: dict[str, float] = Field(default_factory=dict)
     rationale: str = Field(default="", max_length=1_000)
     rubric: WholeReportRubric = Field(default_factory=WholeReportRubric)
+    structural_only: bool = True
+
+
+class SemanticReviewSummary(ContractModel):
+    """The harness's reading of one terminal semantic report review.
+
+    The evaluation mirror of ``utils.types.ReportReview``, and deliberately
+    lossless where the review's own counts matter: every dimension, every
+    defect by severity, the statements and evidence the review covered, and the
+    fingerprint it judged. A summary that dropped the defect list would report
+    a review of a report with a critical false claim as a high-scoring pass —
+    which is the defect this record exists to make visible in the harness, and
+    the reason ``accepted`` is computed by the review's own rule rather than
+    from the mean alone.
+    """
+
+    rubric_version: int = Field(default=1, ge=1)
+    status: str = Field(default="", min_length=0)
+    """``scored`` / ``incomplete`` / ``provider_failed``, or ``""`` for none."""
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    accepted: bool = False
+    dimensions: dict[str, float] = Field(default_factory=dict)
+    defect_count: int = Field(default=0, ge=0)
+    material_defect_count: int = Field(default=0, ge=0)
+    derived_defect_count: int = Field(default=0, ge=0)
+    reviewed_statement_ids: list[str] = Field(default_factory=list)
+    unreviewed_statement_ids: list[str] = Field(default_factory=list)
+    reviewed_evidence_ids: list[str] = Field(default_factory=list)
+    omitted_evidence_ids: list[str] = Field(default_factory=list)
+    expected_batch_ids: list[str] = Field(default_factory=list)
+    reviewed_batch_ids: list[str] = Field(default_factory=list)
+    input_fingerprint: str = ""
+    coverage_complete: bool = False
+
+    @property
+    def scored(self) -> bool:
+        return self.status == "scored"
+
+    @property
+    def missing(self) -> bool:
+        """True when no judgement exists at all.
+
+        The distinct case a metric must never round to a pass: an absent
+        review is not a review that found nothing.
+        """
+        return self.status != "scored"
 
 
 class DeterministicEvaluation(ContractModel):
@@ -248,6 +306,14 @@ class CampaignRepetition(ContractModel):
     evidence_ledger: str = Field(min_length=1)
     deterministic: DeterministicEvaluation
     judge: WholeReportJudgeScore
+    semantic_review: SemanticReviewSummary | None = None
+    """The terminal semantic review this repetition's report was judged by.
+
+    ``None`` for a historical repetition, or one whose run produced no review —
+    which is exactly the case a reader has to be able to tell apart from a
+    review that passed, so it is recorded as absent rather than defaulted to an
+    empty summary.
+    """
     cli_summary: dict[str, JsonValue] = Field(default_factory=dict)
     cli_output: list[str] = Field(default_factory=list)
     judge_input: WholeReportJudgeInput
