@@ -1725,6 +1725,11 @@ def admitted_target_ids(claim: Claim, policies: Mapping[str, str]) -> list[str]:
     credit, which is the conservative direction — the obligation stays
     outstanding instead of being marked answered by evidence that never
     supported it.
+
+    What each policy *is* stays ``claim_meets_support_policy``'s rule: the
+    claim's own ``evidence_status`` travels with the verdict because the
+    weaker policies answer on a ``source_supported`` reading, and a gate that
+    cannot see the badge would have to guess it.
     """
     publishers = supporting_publisher_count(claim)
     return [
@@ -1734,6 +1739,7 @@ def admitted_target_ids(claim: Claim, policies: Mapping[str, str]) -> list[str]:
             support_policy=policies.get(target_id, "independent_pair"),
             verdict=claim.verdict,
             supporting_publishers=publishers,
+            evidence_status=claim.evidence_status,
         )
     ]
 

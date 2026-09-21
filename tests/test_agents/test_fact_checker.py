@@ -54,6 +54,7 @@ from deep_research.agents.fact_checker import (
     _finding_is_new,
     _packet_independent_publishers,
     adjudication_repaired_event,
+    admitted_target_ids,
     build_adjudication_packet,
     build_claim,
     build_claim_drafts,
@@ -76,6 +77,7 @@ from deep_research.agents.fact_checker import (
     provider_failure_reason,
     resolve_verdict,
     retrieved_source_urls,
+    supporting_publisher_count,
     union_claim_provenance,
     valid_verification_passages,
     validate_adjudication,
@@ -2764,11 +2766,11 @@ async def test_a_batch_takes_one_claim_per_target_before_extra_slots(
         for claim in outcome.result.claims
         for target in claim.target_ids
     }
-    # ``claim_meets_support_policy`` requires ``verified`` for EVERY policy -
-    # ``primary_attribution`` and ``derivation`` included - and a passage-path
-    # claim can never carry the strict badge, so it answers no obligation at
-    # all. The targets stay outstanding instead of being credited to evidence
-    # that was never tested as a pair.
+    # The passage path publishes ``unverified`` at best - it has no pair test
+    # to run - and an ``unverified`` claim has evidence that does not address
+    # it, so it answers no obligation under any policy. The targets stay
+    # outstanding instead of being credited to evidence that was never tested
+    # as a pair.
     assert targets == set()
 
 
@@ -3302,16 +3304,23 @@ async def test_a_bounded_pass_never_loses_a_parked_claim(
 
 
 def test_an_independent_pair_needs_two_independent_supporting_publishers() -> None:
-    """An insufficient claim cannot retain an ``independent_pair`` target."""
+    """An insufficient claim cannot retain an ``independent_pair`` target.
+
+    The badge is stated explicitly here: this is the *strongest* an unverified
+    claim can be (the other policies' acceptance path), and the strict pair
+    still refuses it.
+    """
     assert not claim_meets_support_policy(
         support_policy="independent_pair",
         verdict="insufficient_evidence",
         supporting_publishers=2,
+        evidence_status="source_supported",
     )
     assert not claim_meets_support_policy(
         support_policy="independent_pair",
         verdict="unverified",
         supporting_publishers=2,
+        evidence_status="source_supported",
     )
     # The control: a genuinely independent pair holds.
     assert claim_meets_support_policy(
@@ -3338,6 +3347,159 @@ def test_a_contradicted_claim_earns_no_target_under_any_policy() -> None:
             verdict="contradicted",
             supporting_publishers=3,
         )
+
+
+_SUPPORT_POLICIES = ("independent_pair", "primary_attribution", "derivation")
+
+
+def _lone_publisher_support() -> Claim:
+    """The shape the packet path writes for one complete primary support.
+
+    One in-scope, complete support from the claim's own single publisher, and
+    judged exactly as the local test judges such a support — not independent
+    of the claim's origin — so the claim is ``insufficient_evidence`` beside
+    ``source_supported``: one publisher standing behind a claim is
+    attribution, not the independent pair a ``verified`` badge would show.
+    """
+    packet = _pair_packet(_eligibility(), _independent_second()).model_copy(
+        update={"claim_target_ids": [TASK6_TARGET]}
+    )
+    return validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.7,
+            assessments=[
+                SupportAssessment(
+                    evidence_id="ev-left",
+                    stance="supports",
+                    complete_support=True,
+                    scope_compatible=True,
+                    independent=False,
+                )
+            ],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="Only the operator's own report supports it.",
+        ),
+        packet,
+        None,
+    )
+
+
+@pytest.mark.parametrize("policy", ["primary_attribution", "derivation"])
+def test_a_source_supported_claim_answers_the_weaker_policies_own_target(
+    policy: str,
+) -> None:
+    """Plan line 124: source-supported is not verified, and it is enough here.
+
+    A primary report can support "report X estimates Y" without another
+    publisher reproducing the measurement, which is what a
+    ``primary_attribution``/``derivation`` target actually asks for. Demanding
+    the strict pair of it — amendment defect item 6, "a strict verification
+    badge was conflated with faithful primary attribution" — made all three
+    policies one policy and left every official-measurement and calculation
+    obligation unanswerable.
+    """
+    claim = _lone_publisher_support()
+
+    assert claim.target_ids == [TASK6_TARGET]
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status == "source_supported"
+    assert supporting_publisher_count(claim) == 1
+
+    assert admitted_target_ids(claim, {TASK6_TARGET: policy}) == [TASK6_TARGET]
+
+
+def test_a_source_supported_claim_never_answers_the_strict_pair() -> None:
+    """C4 stands unchanged: ``independent_pair`` still needs the verified pair.
+
+    The same claim that now answers the weaker policies keeps earning nothing
+    here, and a ``verified`` claim with one supporting publisher is refused by
+    the two-publisher floor.
+    """
+    claim = _lone_publisher_support()
+
+    assert admitted_target_ids(claim, {TASK6_TARGET: "independent_pair"}) == []
+    assert not claim_meets_support_policy(
+        support_policy="independent_pair",
+        verdict="insufficient_evidence",
+        supporting_publishers=2,
+        evidence_status="source_supported",
+    )
+    assert not claim_meets_support_policy(
+        support_policy="independent_pair",
+        verdict="verified",
+        supporting_publishers=1,
+        evidence_status="verified_pair",
+    )
+
+
+@pytest.mark.parametrize("policy", _SUPPORT_POLICIES)
+def test_a_verified_pair_keeps_answering_every_policy(policy: str) -> None:
+    """The strict pair is the strongest evidence, so it satisfies every policy."""
+    assert claim_meets_support_policy(
+        support_policy=policy,
+        verdict="verified",
+        supporting_publishers=2,
+        evidence_status="verified_pair",
+    )
+
+
+@pytest.mark.parametrize(
+    ("verdict", "evidence_status"),
+    [
+        ("contradicted", None),
+        ("contradicted", "contested"),
+        ("contradicted", "verified_pair"),
+        ("unverified", None),
+        ("unverified", "source_supported"),
+        ("insufficient_evidence", None),
+        ("insufficient_evidence", "contested"),
+        ("insufficient_evidence", "verified_pair"),
+    ],
+)
+@pytest.mark.parametrize("policy", _SUPPORT_POLICIES)
+def test_nothing_short_of_a_source_supported_reading_answers(
+    policy: str, verdict: str, evidence_status: str | None
+) -> None:
+    """The one widened path is ``insufficient_evidence`` + ``source_supported``.
+
+    A contradicted claim has evidence against it, an ``unverified`` one has
+    evidence that does not address it, and an ``insufficient_evidence`` claim
+    whose badge is anything else was never judged source-supported — none of
+    them may be credited under any policy.
+    """
+    assert not claim_meets_support_policy(
+        support_policy=policy,
+        verdict=verdict,
+        supporting_publishers=3,
+        evidence_status=evidence_status,
+    )
+
+
+@pytest.mark.parametrize("policy", ["primary_attribution", "derivation"])
+def test_a_source_supported_reading_still_needs_one_supporting_publisher(
+    policy: str,
+) -> None:
+    """A badge with no supporting publisher behind it supports nothing."""
+    assert not claim_meets_support_policy(
+        support_policy=policy,
+        verdict="insufficient_evidence",
+        supporting_publishers=0,
+        evidence_status="source_supported",
+    )
+
+
+@pytest.mark.parametrize("policy", ["primary_attribution", "derivation"])
+def test_an_omitted_evidence_status_is_the_conservative_reading(
+    policy: str,
+) -> None:
+    """A caller that does not state the badge has not shown the weaker path."""
+    assert not claim_meets_support_policy(
+        support_policy=policy,
+        verdict="insufficient_evidence",
+        supporting_publishers=3,
+    )
 
 
 @pytest.mark.asyncio
@@ -3384,10 +3546,12 @@ async def test_a_legacy_passage_claim_retains_no_obligation_at_all(
 ) -> None:
     """A passage-path claim cannot answer an obligation under any policy.
 
-    ``claim_meets_support_policy`` requires ``verified`` for every policy, and
-    the capped legacy path never publishes it, so the claim is written honestly
-    as unverified and the target stays outstanding rather than being credited
-    to evidence that was never tested as a pair.
+    The capped legacy path never publishes ``verified``, so the claim is
+    written honestly as ``unverified`` - and a claim whose evidence does not
+    address it answers nothing, under every policy: the weaker policies take a
+    ``source_supported`` *``insufficient_evidence``* claim, never this one. The
+    target stays outstanding rather than being credited to evidence that was
+    never tested as a pair.
     """
     completer = ScriptedCompleter(
         decisions=_pair_decisions(),

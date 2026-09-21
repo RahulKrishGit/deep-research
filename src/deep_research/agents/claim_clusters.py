@@ -671,23 +671,43 @@ def claim_meets_support_policy(
     support_policy: str,
     verdict: str,
     supporting_publishers: int,
+    evidence_status: str | None = None,
 ) -> bool:
     """Whether an *adjudicated* claim satisfies a target's support policy.
 
     Called after verification, never before: a policy constrains the evidence
-    that exists, and a claim with no verdict has none. Every policy requires a
-    verified claim — an ``insufficient_evidence`` one retrieved nothing
-    independent, a ``contradicted`` one has evidence against it, and an
-    ``unverified`` one has evidence that does not address it — and
-    ``independent_pair`` additionally needs two supporting publishers, because
-    one publisher is one source and a pair of passages from it is not a pair.
+    that exists, and a claim with no verdict has none.
+
+    ``independent_pair`` is the strict badge and nothing less: it needs the
+    ``verified`` verdict the pair test writes, plus two supporting publishers,
+    because one publisher is one source and a pair of passages from it is not
+    a pair. A ``contradicted`` claim has evidence against it and an
+    ``unverified`` one has evidence that does not address it, so neither
+    answers a target under any policy.
+
+    The weaker policies take that strict pair too, and additionally take a
+    faithful scoped attribution: ``insufficient_evidence`` beside
+    ``source_supported``, which is what one complete, in-scope support from a
+    single publisher is — a primary report can support "report X estimates Y"
+    without another publisher reproducing X's measurement. That is the only
+    path the weakening opens, and it still needs the badge *and* at least one
+    supporting publisher behind the claim; an ``insufficient_evidence`` claim
+    judged anything else was never found source-supported. ``evidence_status``
+    defaults to the conservative ``None``, so a caller that does not state the
+    claim's own badge cannot open the weaker path by omission.
     """
-    if verdict != "verified":
-        return False
-    if support_policy == "independent_pair":
-        return supporting_publishers >= 2
-    if support_policy in ("primary_attribution", "derivation"):
-        return True
+    if verdict == "verified":
+        if support_policy == "independent_pair":
+            return supporting_publishers >= 2
+        return support_policy in ("primary_attribution", "derivation")
+    if (
+        verdict == "insufficient_evidence"
+        and evidence_status == "source_supported"
+    ):
+        return (
+            support_policy in ("primary_attribution", "derivation")
+            and supporting_publishers >= 1
+        )
     return False
 
 
