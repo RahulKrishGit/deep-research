@@ -13,9 +13,11 @@ import deep_research.e2e_evaluation.runner as campaign_runner
 from deep_research.e2e_evaluation.cases import (
     CONTROLLED_CASE_IDS,
     LIVE_CASE_IDS,
+    ControlledDependencyError,
     ScriptedGraphPublisher,
     case_by_id,
     dependencies_for,
+    publication_operation_for,
     scripted_research_agents,
 )
 from deep_research.e2e_evaluation.evaluators import deterministic_evaluation
@@ -30,6 +32,30 @@ from deep_research.e2e_evaluation.runner import (
 from deep_research.graph.orchestrator import compile_research_graph, run_research_graph
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.runtime.outcome import build_outcome
+
+
+def test_a_published_artifact_is_classified_by_name_not_by_default() -> None:
+    """An unclassifiable publication must fail, not be recorded as the reader.
+
+    The scripted publisher used to record every name that was not the ledger as
+    ``reader_document``. When Task 11 added the quality record as a third
+    artifact, that default silently recorded it as a second reader write, so the
+    publication-order gate compared a sequence that no longer described the run
+    and failed a correct run. This is the regression guard for that class of
+    bug: the third artifact is named for what it is, and a name this double
+    cannot classify raises instead of being absorbed by the reader fallback.
+    """
+    stem = "report-controlled-broad-constraints-r1-1"
+
+    assert publication_operation_for(f"{stem}.md") == "reader_document"
+    assert publication_operation_for(f"{stem}-evidence.md") == "evidence_document"
+    assert publication_operation_for(f"{stem}-quality.json") == "quality_document"
+
+    # Not an artifact this double knows: a fallback here is what hid the bug.
+    with pytest.raises(ControlledDependencyError):
+        publication_operation_for(f"{stem}-appendix.json")
+    with pytest.raises(ControlledDependencyError):
+        publication_operation_for(f"{stem}-quality.jsonl")
 
 
 def test_controlled_case_runs_exactly_three_repetitions_and_writes_artifact(
@@ -58,8 +84,15 @@ def test_controlled_case_runs_exactly_three_repetitions_and_writes_artifact(
     assert repetition_root.joinpath(
         "report-controlled-broad-constraints-r1-1-evidence.md"
     ).is_file()
+    assert repetition_root.joinpath(
+        "report-controlled-broad-constraints-r1-1-quality.json"
+    ).is_file()
     assert result.repetitions[0].metadata.request_counts["query_memory"] == 1
-    assert result.repetitions[0].metadata.request_counts["write_document"] == 2
+    # Three artifacts, one write each: the reader Markdown, the evidence ledger,
+    # and the quality record Task 11 added. The count is asserted together with
+    # the three names above so a run that published a different set — or one
+    # artifact twice under two names — cannot satisfy it.
+    assert result.repetitions[0].metadata.request_counts["write_document"] == 3
     restored = json.loads(
         tmp_path.joinpath("broad-constraints", "case.json").read_text()
     )

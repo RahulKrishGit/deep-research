@@ -33,6 +33,7 @@ from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActRun, ReActStep
 from deep_research.agents.synthesizer import (
     evidence_report_filename,
+    quality_report_filename,
     report_filename,
 )
 from deep_research.e2e_evaluation.models import (
@@ -528,15 +529,61 @@ class ScriptedGraphAgent:
         )
 
 
-# The ledger's name is derived from the reader report's by production
-# (``evidence_report_filename``). Read the suffix from that function rather than
-# repeating the literal here, so a change to the production naming rule cannot
-# leave this double classifying artifacts by a stale convention.
-_LEDGER_NAME_SUFFIX = evidence_report_filename(
-    session_id="probe", iteration=0
-).removeprefix(
-    report_filename(session_id="probe", iteration=0).removesuffix(".md")
+# The ledger and quality names are derived from the reader report's by
+# production (``evidence_report_filename`` / ``quality_report_filename``). Read
+# the suffixes from those functions rather than repeating the literals here, so
+# a change to the production naming rule cannot leave this double classifying
+# artifacts by a stale convention.
+_NAME_PROBE = {"session_id": "probe", "iteration": 0}
+_PROBE_STEM = report_filename(**_NAME_PROBE).removesuffix(".md")
+
+# ``(suffix, operation)`` ordered longest-suffix-first, so the classification of
+# a name cannot depend on which entry happens to be listed first.
+_PUBLICATION_OPERATIONS_BY_SUFFIX = tuple(
+    sorted(
+        (
+            (
+                evidence_report_filename(**_NAME_PROBE).removeprefix(_PROBE_STEM),
+                "evidence_document",
+            ),
+            (
+                quality_report_filename(**_NAME_PROBE).removeprefix(_PROBE_STEM),
+                "quality_document",
+            ),
+        ),
+        key=lambda entry: len(entry[0]),
+        reverse=True,
+    )
 )
+
+
+def publication_operation_for(filename: str) -> str:
+    """Name the operation a published document *is*, from its real filename.
+
+    The ledger and quality suffixes are matched longest-first, and derived from
+    the production naming functions rather than hard-coded, so a rename in
+    production cannot leave this double classifying artifacts by a stale
+    convention.
+
+    The reader report is the fallback for Markdown because its name carries no
+    distinguishing suffix — it is the stem the other two are derived from. That
+    fallback is deliberately *narrow*: only ``.md``, and only after the ledger
+    (the one other Markdown artifact) has failed to match. Anything else raises.
+    The earlier form defaulted **every** unrecognised name to the reader, which
+    is how the quality record the terminal node publishes third was recorded as
+    a second reader write, and how the publication-order gate came to compare a
+    sequence that no longer described the run. The recorded operation is what
+    that gate reads, so an unclassifiable write must fail loudly rather than
+    satisfy it.
+    """
+    for suffix, operation in _PUBLICATION_OPERATIONS_BY_SUFFIX:
+        if filename.endswith(suffix):
+            return operation
+    if filename.endswith(".md"):
+        return "reader_document"
+    raise ControlledDependencyError(
+        f"unclassified publication artifact: {filename!r}"
+    )
 
 
 @dataclass
@@ -557,13 +604,16 @@ class ScriptedGraphPublisher:
         call ``report.md``, second ``evidence-ledger.md``) meant a finalizer
         regression that published both artifacts under one name, or swapped
         them, still looked like a clean publication.
+
+        The operation is resolved from the name rather than defaulted to the
+        reader. The earlier form classified everything that was not the ledger
+        as a reader document, so the quality record the terminal node publishes
+        third was recorded as a second reader write and the publication-order
+        gate compared the wrong sequence. A name this double cannot classify
+        raises instead — see ``publication_operation_for``.
         """
         self.document_calls += 1
-        operation = (
-            "evidence_document"
-            if filename.endswith(_LEDGER_NAME_SUFFIX)
-            else "reader_document"
-        )
+        operation = publication_operation_for(filename)
         self.dependencies.record_publication(operation)
         target = self.artifact_directory / Path(filename).name
         self.artifact_directory.mkdir(parents=True, exist_ok=True)

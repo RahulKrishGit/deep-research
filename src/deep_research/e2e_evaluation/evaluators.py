@@ -285,12 +285,22 @@ def _terminal_counts(state: ResearchState) -> tuple[int, int, int, int, int]:
 def _publication_operations_match(
     dependencies: ScriptedDependencies | None, memory_writes: int
 ) -> bool:
-    """Check the scripted publisher's exact terminal operation sequence."""
+    """Check the scripted publisher's exact terminal operation sequence.
+
+    The terminal node publishes a three-artifact set — reader Markdown, evidence
+    Markdown, then the quality record — and only then writes memory, for an
+    accepted report. The expectation names all three: the earlier two-artifact
+    form predates the quality record, and while the double classified the third
+    document as a second reader write, this compared a sequence that no longer
+    described the run and reported an order failure that had not happened.
+    """
     if dependencies is None:
         return True
-    expected = ["reader_document", "evidence_document"] + [
-        "memory_claim"
-    ] * memory_writes
+    expected = [
+        "reader_document",
+        "evidence_document",
+        "quality_document",
+    ] + ["memory_claim"] * memory_writes
     return dependencies.publication_operations == expected
 
 

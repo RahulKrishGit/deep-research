@@ -477,17 +477,28 @@ def test_rendered_citation_mapping_rejects_swapped_point_markers() -> None:
 
 
 def test_publication_operations_are_reader_then_ledger_then_memory() -> None:
+    """The terminal set is published in one order, and memory comes last.
+
+    The set is three artifacts, not two: Task 11 added the quality record, so the
+    expectation names it. What the test protected before is preserved and
+    sharpened — the reader Markdown is still first and the ledger still second,
+    the remaining operations are still exclusively memory claims, and the count
+    still ties to ``metrics.memory_writes``. The quality record is now asserted
+    to be the third operation rather than being indistinguishable from a second
+    reader write, which is what the scripted publisher used to record it as.
+    """
     case, state, dependencies, metrics = _accepted_fixture()
 
-    assert dependencies.publication_operations[:2] == [
+    assert dependencies.publication_operations[:3] == [
         "reader_document",
         "evidence_document",
+        "quality_document",
     ]
     assert all(
         operation == "memory_claim"
-        for operation in dependencies.publication_operations[2:]
+        for operation in dependencies.publication_operations[3:]
     )
-    assert len(dependencies.publication_operations) == 2 + metrics.memory_writes
+    assert len(dependencies.publication_operations) == 3 + metrics.memory_writes
 
 
 def test_reordered_publication_operations_are_a_hard_integrity_failure() -> None:
